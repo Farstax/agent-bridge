@@ -72,7 +72,14 @@ jobs:
 
       - name: Compile target runtime
         working-directory: target-source
-        run: npm run build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if node -e "process.exit((require('./package.json').scripts||{}).build ? 0 : 1)"; then
+            npm run build
+          else
+            echo "no build script in package.json; skipping compile (source-tsx artifact strategy)"
+          fi
 
       - name: Retain target production dependencies only
         working-directory: target-source
@@ -93,9 +100,11 @@ jobs:
         run: |
           set -Eeuo pipefail
           materials="$RUNNER_TEMP/target-materials.tar.gz"
+          paths="src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json node_modules"
+          if [ -d target-source/dist ]; then paths="dist $paths"; fi
           tar --create --gzip --file "$materials" \
             --directory target-source --sort=name --owner=0 --group=0 --numeric-owner \
-            dist src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json node_modules
+            $paths
           echo "materials=$materials" >> "$GITHUB_OUTPUT"
         id: materials
 
