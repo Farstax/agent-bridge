@@ -85,6 +85,7 @@ export function buildReleaseProvenance({
     workflowSha256,
     manifestToolSha256,
     packageLockSha256: manifestData.package_lock_sha256,
+    buildStrategy: manifestData.build_strategy,
     runtime: { node: nodeVersion, platform, arch },
     archiveSha256: sha256File(archive),
     archiveMembersSha256: sha256File(archiveMembers),
