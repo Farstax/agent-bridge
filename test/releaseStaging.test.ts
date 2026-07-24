@@ -7,11 +7,17 @@ import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
 
 const COMMIT = "1".repeat(40);
 const TREE = "2".repeat(40);
+// buildReleaseManifest now requires valid package.json content to derive a build strategy
+// (compiled requires a non-empty dist/). This fixture exercises the generic staging/hardlink/
+// tamper mechanism, not build-strategy semantics, so it just satisfies "compiled" minimally.
+const PACKAGE_JSON_CONTENT = `${JSON.stringify({ name: "stage-test", scripts: { build: "true" } })}\n`;
 
 function makeArchive(withHardlink = false, withExecutable = false): { archive: string; root: string } {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-stage-input-"));
   writeFileSync(join(root, "package-lock.json"), "lock\n");
-  writeFileSync(join(root, "package.json"), "package\n");
+  writeFileSync(join(root, "package.json"), PACKAGE_JSON_CONTENT);
+  mkdirSync(join(root, "dist"));
+  writeFileSync(join(root, "dist", "placeholder.js"), "// placeholder\n");
   if (withHardlink) {
     linkSync(join(root, "package.json"), join(root, "package-copy.json"));
   }
@@ -57,7 +63,7 @@ describe("immutable release staging", () => {
     const release = join(releaseRoot, COMMIT);
 
     expect(output).toMatch(new RegExp(`staged ${COMMIT}`));
-    expect(readFileSync(join(release, "package.json"), "utf8")).toBe("package\n");
+    expect(readFileSync(join(release, "package.json"), "utf8")).toBe(PACKAGE_JSON_CONTENT);
     expect(statSync(join(release, "package.json")).mode & 0o222).toBe(0);
     expect(statSync(release).mode & 0o222).toBe(0);
   });
@@ -76,7 +82,7 @@ describe("immutable release staging", () => {
     const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
 
     expect(runStage(archive, releaseRoot)).toMatch(new RegExp(`staged ${COMMIT}`));
-    expect(readFileSync(join(releaseRoot, COMMIT, "package-copy.json"), "utf8")).toBe("package\n");
+    expect(readFileSync(join(releaseRoot, COMMIT, "package-copy.json"), "utf8")).toBe(PACKAGE_JSON_CONTENT);
   });
 
   it("is idempotent for an already validated release", () => {
