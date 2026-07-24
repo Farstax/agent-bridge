@@ -17,6 +17,7 @@ function buildRealisticFixture(root: string) {
   writeFileSync(join(root, "dist", "index.js"), "#!/usr/bin/env node\nconsole.log('release');\n");
   execFileSync("chmod", ["755", join(root, "dist", "index.js")]);
   writeFileSync(join(root, "package-lock.json"), "{\"lockfileVersion\": 3}\n");
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "agent-bridge", scripts: { build: "tsc" } }));
   mkdirSync(join(root, "node_modules", ".bin"), { recursive: true });
   symlinkSync("../tsx/dist/cli.mjs", join(root, "node_modules", ".bin", "tsx"));
   mkdirSync(join(root, "node_modules", ".dedup"), { recursive: true });
@@ -88,6 +89,7 @@ describe("historical release provenance", () => {
     expect(provenance.manifestSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(provenance.provenanceToolSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(provenance.packageLockSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(provenance.buildStrategy).toBe("compiled");
 
     for (const { path } of provenance.modeInventory) {
       expect(path.startsWith("./")).toBe(false);
