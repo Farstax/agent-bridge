@@ -89,6 +89,31 @@ describe("recovery-readiness reconciliation guards", () => {
     expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM execution_locks").get()).toEqual({ n: 0 });
   });
 
+  it("does not release a stale-classified lock while its acquisition still owns a claim", () => {
+    const bridge = open();
+    const lock = bridge.acquireLock("telegram:interactive", "chat-1");
+    expect(lock).not.toBeNull();
+    bridge.enqueueMsg("telegram:interactive", "chat-1", { prompt: "claimed", chatId: 1, chatType: "private" });
+    bridge.raw.prepare(`UPDATE pending_messages
+      SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?`)
+      .run(lock!.runId, lock!.acquisitionId);
+
+    expect(bridge.reconcileStaleExecutionLocks({
+      containmentState: () => "proven",
+      lockState: () => "stale",
+      reason: "claimed-work-boundary",
+    })).toEqual([]);
+    expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM execution_locks").get()).toEqual({ n: 1 });
+  });
+
+  it("only exposes reconciliation_audit through the migration-owned schema", () => {
+    const bridge = open();
+    expect(Number(bridge.raw.pragma("user_version", { simple: true }))).toBe(4);
+    expect(bridge.raw.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'"
+    ).get()).toBeTruthy();
+  });
+
   it("does not replay or rewrite claimed work when reconciliation is repeated", async () => {
     const bridge = open();
     staleRun(bridge, "claimed-run");
