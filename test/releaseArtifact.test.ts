@@ -323,12 +323,12 @@ describe("release artifact manifest", () => {
 
   it("binds historical artifact provenance to the builder ref rather than the target ref", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/historical-release-artifact.yml"), "utf8");
-    expect(workflow).toContain("expected_schema:");
+    expect(workflow).toContain("Derive target schema contract");
     expect(workflow).toContain('RUN_HEAD: ${{ github.sha }}');
     expect(workflow).toContain('test "$RUN_HEAD" = "$BUILDER_COMMIT"');
     expect(workflow).toContain('--builder-workflow-run "$GITHUB_RUN_ID"');
     expect(workflow).toContain('--builder-workflow-head "$BUILDER_COMMIT"');
-    expect(workflow).toContain('--database-schema-version "$EXPECTED_SCHEMA"');
+    expect(workflow).toContain('--database-schema-version "$target_schema"');
   });
 
   it("hashes the manifest and provenance tool and derives evidence from archived-not-staged content", () => {
