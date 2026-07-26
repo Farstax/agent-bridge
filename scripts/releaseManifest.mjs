@@ -50,21 +50,39 @@ function deriveBuildStrategy(packageJson) {
 }
 
 function validateBuildStrategy(strategy, files, packageJson) {
+  const regularFile = (file) => file.type !== "symlink";
   const hasDist = files.some((file) => file.path === "dist" || file.path.startsWith("dist/"));
   if (strategy === "compiled") {
-    if (!hasDist) throw new Error("compiled artifact requires a non-empty dist directory");
+    if (!files.some((file) => regularFile(file) && file.path.startsWith("dist/"))) {
+      throw new Error("compiled artifact requires a regular file beneath dist/");
+    }
     return;
   }
   if (hasDist) throw new Error("source-tsx artifact must not contain a dist directory");
   if (!(packageJson.dependencies && packageJson.dependencies.tsx)) {
     throw new Error("source-tsx artifact requires tsx as a production dependency");
   }
-  if (!files.some((file) => file.path === "node_modules/tsx/dist/cli.mjs")) {
+  const tsxCli = files.find((file) => file.path === "node_modules/tsx/dist/cli.mjs");
+  if (!tsxCli) {
     throw new Error("source-tsx artifact is missing the tsx runtime CLI: node_modules/tsx/dist/cli.mjs");
   }
+  if (!regularFile(tsxCli)) {
+    throw new Error("source-tsx artifact requires a regular tsx runtime CLI: node_modules/tsx/dist/cli.mjs");
+  }
+  const tsconfig = files.find((file) => file.path === "tsconfig.json");
+  if (!tsconfig) {
+    throw new Error("source-tsx artifact is missing required runtime configuration: tsconfig.json");
+  }
+  if (!regularFile(tsconfig)) {
+    throw new Error("source-tsx artifact requires a regular runtime configuration: tsconfig.json");
+  }
   for (const entrypoint of REQUIRED_SOURCE_TSX_ENTRYPOINTS) {
-    if (!files.some((file) => file.path === entrypoint)) {
+    const sourceEntry = files.find((file) => file.path === entrypoint);
+    if (!sourceEntry) {
       throw new Error(`source-tsx artifact is missing required runtime entrypoint: ${entrypoint}`);
+    }
+    if (!regularFile(sourceEntry)) {
+      throw new Error(`source-tsx artifact requires a regular runtime entrypoint: ${entrypoint}`);
     }
   }
 }
