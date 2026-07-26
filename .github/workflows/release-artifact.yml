@@ -59,6 +59,8 @@ jobs:
           set -Eeuo pipefail
           commit="$(git rev-parse HEAD)"
           tree="$(git rev-parse HEAD^{tree})"
+          builder_head="${{ github.event.pull_request.head.sha || github.sha }}"
+          database_schema_version="$(node --input-type=module -e 'import("./dist/db/schema.js").then((m) => console.log(m.CURRENT_SCHEMA_VERSION))')"
           root="$RUNNER_TEMP/agent-bridge-release"
           archive="$RUNNER_TEMP/agent-bridge-${commit}.tar.gz"
           mkdir -p "$root"
@@ -70,7 +72,11 @@ jobs:
             --tree "$tree" \
             --node-version "$(node --version)" \
             --platform "$(node -p 'process.platform')" \
-            --arch "$(node -p 'process.arch')"
+            --arch "$(node -p 'process.arch')" \
+            --builder-commit "$commit" \
+            --builder-workflow-run "$GITHUB_RUN_ID" \
+            --builder-workflow-head "$builder_head" \
+            --database-schema-version "$database_schema_version"
           tar --create --gzip --file "$archive" \
             --directory "$root" --sort=name --owner=0 --group=0 --numeric-owner .
           ( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" ) | tee "$archive.sha256"

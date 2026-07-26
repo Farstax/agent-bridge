@@ -38,10 +38,13 @@ export interface OrphanReconciliationOptions {
   nowMs?: number;
   minAgeMs: number;
   processState: (run: RunningRun) => OrphanProcessState;
+  candidateRuns?: RunningRun[];
   containmentState?: (run: RunningRun, processState: OrphanProcessState) => ReconciliationContainment;
   beforeMutation?: (run: RunningRun) => void;
   onReconciled?: (run: RunningRun & { ended_at: string }) => void | Promise<void>;
 }
+
+class ReconciliationLostRace extends Error {}
 
 export interface StaleLockReconciliationOptions {
   nowMs?: number;
@@ -680,7 +683,7 @@ export class BridgeDb {
     }
       const nowMs = options.nowMs ?? Date.now();
     const reconciled: Array<RunningRun & { ended_at: string }> = [];
-    for (const run of this.runs.listRunningRuns()) {
+    for (const run of options.candidateRuns ?? this.runs.listRunningRuns()) {
       const startedMs = Date.parse(run.started_at);
       if (!Number.isFinite(startedMs) || nowMs - startedMs < options.minAgeMs) continue;
       const processState = options.processState(run);
@@ -704,19 +707,24 @@ export class BridgeDb {
       };
       const auditId = randomUUID();
       const before = { status: "running", processState, containmentState, lockState, claimedMessages: claimed };
-      const transitioned = this.runInTransaction(() => {
-        this.raw.prepare(`INSERT INTO reconciliation_audit
-          (id, kind, subject_id, status, reason, cutoff_ms, before_json, created_at)
-          VALUES (?, 'run', ?, 'started', ?, ?, ?, ?)`)
-          .run(auditId, run.run_id, evidence.reason, options.minAgeMs, JSON.stringify(before), endedAt);
-        options.beforeMutation?.(run);
-        const changed = this.runs.reconcileOrphanedRun(run.run_id, endedAt, evidence);
-        if (!changed) return false;
-        const after = { status: "failed", endedAt };
-        this.raw.prepare(`UPDATE reconciliation_audit SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
-          .run(JSON.stringify(after), endedAt, auditId);
-        return true;
-      });
+      let transitioned = false;
+      try {
+        transitioned = this.runInTransaction(() => {
+          this.raw.prepare(`INSERT INTO reconciliation_audit
+            (id, kind, subject_id, status, reason, cutoff_ms, before_json, created_at)
+            VALUES (?, 'run', ?, 'started', ?, ?, ?, ?)`)
+            .run(auditId, run.run_id, evidence.reason, options.minAgeMs, JSON.stringify(before), endedAt);
+          options.beforeMutation?.(run);
+          const changed = this.runs.reconcileOrphanedRun(run.run_id, endedAt, evidence);
+          if (!changed) throw new ReconciliationLostRace();
+          const after = { status: "failed", endedAt };
+          this.raw.prepare(`UPDATE reconciliation_audit SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
+            .run(JSON.stringify(after), endedAt, auditId);
+          return true;
+        });
+      } catch (error) {
+        if (!(error instanceof ReconciliationLostRace)) throw error;
+      }
       if (!transitioned) continue;
       const result = { ...run, ended_at: endedAt };
       reconciled.push(result);

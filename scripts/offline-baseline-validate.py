@@ -9,7 +9,6 @@ import os
 import shutil
 import sqlite3
 import stat
-import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
@@ -63,8 +62,10 @@ def walk(root: Path) -> dict[str, dict[str, object]]:
     return entries
 
 
-def validate_artifact(archive: Path, target_commit: str, expected_tree: str) -> dict[str, object]:
-    if len(target_commit) != SHA or len(expected_tree) != SHA:
+def validate_artifact(archive: Path, target_commit: str, expected_tree: str, builder_commit: str,
+                      artifact_run_id: str, expected_schema: int) -> dict[str, object]:
+    if len(target_commit) != SHA or len(expected_tree) != SHA \
+            or any(character not in "0123456789abcdef" for character in target_commit + expected_tree):
         fail("target commit and tree must be full Git SHAs")
     archive_sha = digest(archive)
     with tempfile.TemporaryDirectory(prefix="agent-bridge-offline-") as temporary:
@@ -76,6 +77,13 @@ def validate_artifact(archive: Path, target_commit: str, expected_tree: str) -> 
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("commit") != target_commit or manifest.get("tree") != expected_tree:
             fail("manifest target identity mismatch")
+        builder = manifest.get("builder")
+        if not isinstance(builder, dict) or builder.get("commit") != builder_commit \
+                or str(builder.get("workflow_run")) != str(artifact_run_id) \
+                or builder.get("workflow_head") != target_commit:
+            fail("manifest builder provenance mismatch")
+        if manifest.get("database_schema_version") != expected_schema:
+            fail("manifest database schema identity mismatch")
         expected = {entry["path"]: entry for entry in manifest.get("files", [])}
         actual = walk(root)
         if set(expected) != set(actual):
@@ -152,13 +160,13 @@ def simulate_prestart_rollback(databases: list[Path]) -> dict[str, object]:
         (releases / "target").mkdir()
         current = releases / "current"
         current.symlink_to("previous", target_is_directory=True)
-        current.replace(releases / "current.old")
-        (releases / "current.new").symlink_to("target", target_is_directory=True)
-        (releases / "current.new").replace(current)
+        replacement = releases / ".current.target"
+        replacement.symlink_to("target", target_is_directory=True)
+        os.replace(replacement, current)
         switched_target = os.readlink(current)
-        current.unlink()
-        (releases / "current.restore").symlink_to("previous", target_is_directory=True)
-        (releases / "current.restore").replace(current)
+        restoration = releases / ".current.previous"
+        restoration.symlink_to("previous", target_is_directory=True)
+        os.replace(restoration, current)
         restored_target = os.readlink(current)
         return {
             "state_machine": [
@@ -180,25 +188,19 @@ def main() -> None:
     parser.add_argument("--target-commit", required=True)
     parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--builder-commit", required=True)
+    parser.add_argument("--artifact-run-id", required=True)
     parser.add_argument("--rollout-helper-sha256", required=True)
     parser.add_argument("--rollout-helper", type=Path, required=True)
-    parser.add_argument("--builder-root", type=Path, default=Path("."))
     parser.add_argument("--db-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--expected-schema", type=int, default=3)
+    parser.add_argument("--expected-schema", type=int, required=True)
     args = parser.parse_args()
     if args.db_root.as_posix().startswith(("/opt/", "/var/", "/etc/")):
         fail("database root looks like a production path; use copied fixtures")
-    if len(args.builder_commit) != SHA:
+    if len(args.builder_commit) != SHA or any(character not in "0123456789abcdef" for character in args.builder_commit):
         fail("builder identity or rollout-helper hash is malformed")
-    try:
-        computed_builder = subprocess.check_output(
-            ["git", "-C", str(args.builder_root), "rev-parse", "HEAD"], text=True
-        ).strip()
-    except (OSError, subprocess.CalledProcessError) as error:
-        fail(f"cannot compute builder identity: {error}")
-    if computed_builder != args.builder_commit:
-        fail("builder identity does not match the checked-out workflow builder")
+    if not str(args.artifact_run_id).strip():
+        fail("artifact workflow run identity is required")
     if args.rollout_helper.is_symlink() or not args.rollout_helper.is_file():
         fail("rollout helper must be a regular file")
     computed_helper = digest(args.rollout_helper)
@@ -211,10 +213,13 @@ def main() -> None:
         "schema_version": 1,
         "target_commit": args.target_commit,
         "builder_commit": args.builder_commit,
+        "artifact_run_id": str(args.artifact_run_id),
+        "expected_schema": args.expected_schema,
         "rollout_helper_sha256": computed_helper,
-        "artifact": validate_artifact(args.archive, args.target_commit, args.expected_tree),
+        "artifact": validate_artifact(args.archive, args.target_commit, args.expected_tree,
+                                       args.builder_commit, args.artifact_run_id, args.expected_schema),
         "databases": [snapshot_database(path, args.expected_schema) for path in databases],
-        "startup_compatibility": "schema, integrity and required runtime tables verified against copied fixtures",
+        "schema_compatibility": "schema, integrity and required runtime tables verified against copied fixtures",
         "prestart_rollback_simulation": simulate_prestart_rollback(databases),
         "preservation": "read-only snapshot; no queue, claim, lock or run rows were modified",
     }

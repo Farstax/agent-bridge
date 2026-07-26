@@ -19,6 +19,9 @@ on:
       builder_commit:
         required: true
         type: string
+      expected_schema:
+        required: true
+        type: number
       db_fixture_artifact:
         description: GitHub artifact name containing copied .sqlite fixtures
         required: true
@@ -45,6 +48,8 @@ jobs:
             --name "${{ inputs.artifact }}" --dir offline-input/artifact
           gh run download "${{ inputs.db_fixture_run_id }}" --repo "$GITHUB_REPOSITORY" \
             --name "${{ inputs.db_fixture_artifact }}" --dir offline-input/databases
+          run_head="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
+          test "$run_head" = "${{ inputs.target_commit }}"
           archive="$(find offline-input/artifact -type f -name '*.tar.gz' -print -quit)"
           test -n "$archive"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
@@ -55,9 +60,10 @@ jobs:
             --target-commit "${{ inputs.target_commit }}" \
             --expected-tree "${{ inputs.expected_tree }}" \
             --builder-commit "${{ inputs.builder_commit }}" \
+            --artifact-run-id "${{ inputs.artifact_run_id }}" \
+            --expected-schema "${{ inputs.expected_schema }}" \
             --rollout-helper "scripts/rollout-agent-bridge.sh" \
             --rollout-helper-sha256 "$(sha256sum scripts/rollout-agent-bridge.sh | awk '{print $1}')" \
-            --builder-root . \
             --db-root offline-input/databases \
             --output offline-baseline-evidence.json
       - uses: actions/upload-artifact@v4
