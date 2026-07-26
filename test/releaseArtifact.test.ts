@@ -38,6 +38,7 @@ function compiledRoot(root: string) {
 // node_modules, and every canonical src/index*.ts entrypoint exists. No dist/.
 function sourceTsxRoot(root: string) {
   writeFileSync(join(root, "package-lock.json"), "{\"lockfileVersion\": 3}\n");
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: { module: "NodeNext", resolveJsonModule: true } }));
   writeFileSync(
     join(root, "package.json"),
     JSON.stringify({
@@ -82,6 +83,7 @@ describe("release artifact manifest", () => {
     const manifest = buildReleaseManifest({ root, ...baseArgs() });
 
     expect(manifest.build_strategy).toBe("source-tsx");
+    expect(manifest.files.map((file: { path: string }) => file.path)).toContain("tsconfig.json");
     expect(manifest.files.map((file: { path: string }) => file.path)).toContain("node_modules/tsx/dist/cli.mjs");
     for (const entrypoint of REQUIRED_ENTRYPOINTS) {
       expect(manifest.files.map((file: { path: string }) => file.path)).toContain(entrypoint);
@@ -95,6 +97,16 @@ describe("release artifact manifest", () => {
     // src/index-worker.ts via node_modules/tsx/dist/cli.mjs.
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-"));
     writeFileSync(join(root, "package-lock.json"), "{\"lockfileVersion\": 3}\n");
+    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        target: "ES2022",
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        esModuleInterop: true,
+        resolveJsonModule: true,
+        strict: true,
+      },
+    }));
     writeFileSync(
       join(root, "package.json"),
       JSON.stringify({
@@ -139,7 +151,18 @@ describe("release artifact manifest", () => {
     writeFileSync(join(root, "package-lock.json"), "{\"lockfileVersion\": 3}\n");
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "agent-bridge", scripts: { build: "tsc" } }));
 
-    expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/compiled artifact requires a non-empty dist directory/);
+    expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/compiled artifact requires a regular file beneath dist/);
+  });
+
+  it("rejects a compiled strategy satisfied only by a dist symlink", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-"));
+    writeFileSync(join(root, "package-lock.json"), "{\"lockfileVersion\": 3}\n");
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "agent-bridge", scripts: { build: "tsc" } }));
+    mkdirSync(join(root, "dist-real"));
+    writeFileSync(join(root, "dist-real", "index.js"), "console.log('release');\n");
+    symlinkSync("dist-real", join(root, "dist"));
+
+    expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/compiled artifact requires a regular file beneath dist/);
   });
 
   it("rejects a source-tsx artifact containing an unexpected dist directory", () => {
@@ -168,6 +191,26 @@ describe("release artifact manifest", () => {
     }
 
     expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/source-tsx artifact is missing the tsx runtime CLI: node_modules\/tsx\/dist\/cli\.mjs/);
+  });
+
+  it("rejects source-tsx runtime files replaced by symlinks", () => {
+    const root = sourceTsxRoot(mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-")));
+    const target = join(root, "tsx-cli-target.mjs");
+    writeFileSync(target, "#!/usr/bin/env node\n");
+    rmSync(join(root, "node_modules", "tsx", "dist", "cli.mjs"));
+    symlinkSync(target, join(root, "node_modules", "tsx", "dist", "cli.mjs"));
+
+    expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/source-tsx artifact requires a regular tsx runtime CLI/);
+  });
+
+  it("rejects source-tsx entrypoints replaced by symlinks", () => {
+    const root = sourceTsxRoot(mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-")));
+    const target = join(root, "entrypoint-target.ts");
+    writeFileSync(target, "// target\n");
+    rmSync(join(root, "src", "index-worker.ts"));
+    symlinkSync(target, join(root, "src", "index-worker.ts"));
+
+    expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/source-tsx artifact requires a regular runtime entrypoint: src\/index-worker\.ts/);
   });
 
   it("rejects a source-tsx artifact missing a required runtime entrypoint", () => {
@@ -234,6 +277,13 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain("releaseProvenance.mjs");
     expect(workflow).toContain("archive.members.txt");
     expect(workflow).not.toContain("secrets.");
+  });
+
+  it("packages and verifies tsconfig.json for the historical source-tsx strategy", () => {
+    const workflow = readFileSync(join(process.cwd(), ".github/workflows/historical-release-artifact.yml"), "utf8");
+
+    expect(workflow).toContain("package-lock.json tsconfig.json node_modules");
+    expect(workflow).toContain("package-lock.json tsconfig.json)");
   });
 
   it("isolates target execution from trusted proving in separate jobs", () => {
