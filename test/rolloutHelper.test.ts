@@ -111,7 +111,7 @@ describe("guarded rollout helper", () => {
 
   it("rejects a rollout pointer that differs from the pointer loaded by systemd services", () => {
     const fixture = createFixture();
-    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture);
+    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
     writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
 
     const result = runRollout(fixture);
@@ -125,7 +125,7 @@ describe("guarded rollout helper", () => {
 
   it("runs immutable release mode through containment and records release evidence", () => {
     const fixture = createFixture();
-    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture);
+    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
 
     const result = runRollout(fixture);
     execFileSync("find", [releaseDir, "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
@@ -163,8 +163,10 @@ describe("guarded rollout helper", () => {
     execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const log = actions(fixture);
-    expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf("release-activate:"));
-    expect(log.indexOf("release-activate:")).toBeLessThan(log.indexOf("systemctl:start"));
+    const activationLine = log.split("\n").find((line) => line.startsWith("release-activate:") && !line.includes("--validate-only"));
+    expect(activationLine).toBeDefined();
+    expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf(activationLine!));
+    expect(log.indexOf(activationLine!)).toBeLessThan(log.indexOf("systemctl:start"));
     expect(readlinkSync(currentPointer)).toBe(fixture.expectedCommit);
     const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
     expect(JSON.parse(readFileSync(join(artifacts, "pointer-switch-evidence.json"), "utf8"))).toEqual(expect.objectContaining({
@@ -188,6 +190,18 @@ describe("guarded rollout helper", () => {
     }));
     expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).databases[0].claimRunAcquisitionCorrelation)
       .toBe(beforeEvidence.databases[0].claimRunAcquisitionCorrelation);
+  }, 15_000);
+
+  it("does not execute an acceptance validator supplied by the target release", () => {
+    const fixture = createFixture();
+    writeFileSync(join(fixture.project, "scripts", "rollout-acceptance.py"), "#!/bin/sh\necho target-owned-validator-executed >&2\nexit 91\n", { mode: 0o755 });
+    chmodSync(join(fixture.project, "scripts", "rollout-acceptance.py"), 0o755);
+    const { releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture);
+    execFileSync("find", [releaseDir, "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain("target-owned-validator-executed");
   }, 15_000);
 
   it("restores the verified databases and previous release after a pre-start migration failure", () => {

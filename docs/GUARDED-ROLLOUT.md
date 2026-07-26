@@ -17,6 +17,14 @@ activates `current`, and starts the selected services from that pointer.
 
 The enforced sequence is:
 
+Before this sequence, production requires a canonical mode-0600 authorization
+file containing `principal`, `reference`, `approved_target_commit`, UTC
+`approved_at`, UTC `expires_at`, and bounded `scope`. The target and expiry are
+validated against the invocation; absent, malformed, stale, or mismatched
+approval fails closed. A current pointer already equal to the target is a
+no-op and is rejected: it cannot emit `POINTER_SWITCHED`, `ACCEPTED`, or
+`COMPLETE`.
+
 1. Acquire the exclusive OS rollout lock.
 2. Verify the root-owned config, selected units from the compiled seven-unit allowlist, clean `main`, and the exact expected commit. In immutable release mode, every selected service's effective `BRIDGE_CURRENT_RELEASE_DIR` must equal the configured `current_pointer`; explicit systemd overrides are rejected. Units may already be quiesced; any active unit must be stably running, and every unit is still stopped and containment-verified before migration. Every Git command runs as the runtime user.
 3. Resolve each selected unit's effective `DB_PATH` or `HEALTH_DB_PATH` using shared-then-unit environment-file precedence. Reject defaults, unknown units, missing files, non-canonical paths, duplicates, inventory mismatches, unknown schemas, integrity failures, or nonzero legacy queues.
@@ -38,6 +46,8 @@ Review and install the helper and fixed inventory as root:
 ```bash
 sudo install -D -m 0750 -o root -g root scripts/rollout-agent-bridge.sh /usr/local/sbin/rollout-agent-bridge
 sudo install -D -m 0750 -o root -g root scripts/rollout-restore.py /usr/local/libexec/agent-bridge-rollout-restore
+sudo install -D -m 0750 -o root -g root scripts/rollout-authorization.py /usr/local/libexec/agent-bridge-rollout-authorization.py
+sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local/libexec/agent-bridge-rollout-acceptance.py
 sudo install -d -m 0700 -o root -g root /var/backups/agent-bridge /var/log/agent-bridge-rollouts
 sudo install -D -m 0600 -o root -g root systemd/agent-bridge-rollout.conf.example /etc/agent-bridge/rollout.conf
 sudo sha256sum /usr/local/sbin/rollout-agent-bridge
@@ -49,6 +59,11 @@ Write the displayed digest as `rollout_helper_sha256=` in the root-owned
 config. Production execution fails closed when this pin is missing, malformed,
 or does not match the installed helper bytes, preventing a stale legacy helper
 from stopping services under an immutable-release configuration.
+
+Also record the SHA-256 digests of the independently installed validators as
+`authorization_validator_sha256=` and `acceptance_validator_sha256=`. The
+rollout helper verifies both pins before reading the target release or running
+target-owned code; target-release copies of these validators are never trusted.
 
 Sudoers content:
 
@@ -63,8 +78,17 @@ The config must remain `root:root` and must not be group/world writable. Select 
 Only after separate production approval:
 
 ```bash
-sudo -n /usr/local/sbin/rollout-agent-bridge --expected-commit <full-40-character-main-sha>
+sudo -n /usr/local/sbin/rollout-agent-bridge --expected-commit <full-40-character-main-sha> --authorization-file <root-owned-approval.json>
 ```
+
+The manifest/runtime contract must prove every declared archived path, type,
+hash, symlink target, package-lock digest, migration helper, authorization
+validator, entrypoint, `tsconfig.json`, and `tsx` runtime. After startup,
+bounded acceptance compares each database's queue counts, claim/acquisition
+correlation, execution-lock state, run/lock correlation, and delivery state
+before and after. Any active or ambiguous lock fails closed; only a separately
+documented continuation contract can permit it. Sentinel removal and
+`COMPLETE` occur only after this evidence passes.
 
 Artifacts are written beneath the configured `log_dir`; database snapshots are written beneath `backup_dir`. On any failure, keep services stopped and inspect the newest artifact path recorded in `log_dir/latest` before taking further action.
 

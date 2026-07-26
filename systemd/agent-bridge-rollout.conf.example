@@ -6,6 +6,8 @@ release_root=/opt/agent-bridge/releases
 current_pointer=/opt/agent-bridge/releases/current
 # Replace this placeholder with the SHA-256 of the installed helper before use.
 rollout_helper_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_HELPER
+authorization_validator_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_AUTHORIZATION_VALIDATOR
+acceptance_validator_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_ACCEPTANCE_VALIDATOR
 runtime_user=content-crawler
 node_bin=/home/content-crawler/.nvm/versions/node/v24.15.0/bin/node
 backup_dir=/var/backups/agent-bridge

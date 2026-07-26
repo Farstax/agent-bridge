@@ -6,6 +6,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,6 +26,10 @@ export const helperPath = fileURLToPath(new URL("../../scripts/rollout-agent-bri
 export const sentinelClearPath = fileURLToPath(new URL("../../scripts/rollout-sentinel-clear.sh", import.meta.url));
 export const restoreHelperPath = fileURLToPath(new URL("../../scripts/rollout-restore.py", import.meta.url));
 export const migrationScript = fileURLToPath(new URL("../../scripts/rollout-db.ts", import.meta.url));
+export const migrationImplScript = fileURLToPath(new URL("../../scripts/rollout-db-impl.ts", import.meta.url));
+export const authorizationScript = fileURLToPath(new URL("../../scripts/rollout-authorization.py", import.meta.url));
+export const acceptanceScript = fileURLToPath(new URL("../../scripts/rollout-acceptance.py", import.meta.url));
+export const tsconfigFile = fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
 export const sourceDir = fileURLToPath(new URL("../../src", import.meta.url));
 export const nodeModules = fileURLToPath(new URL("../../node_modules", import.meta.url));
 
@@ -162,19 +167,26 @@ if [ "\${FAKE_RESTORE_FAIL:-}" = 1 ]; then
 fi
 exec sudo -n env AGENT_BRIDGE_RESTORE_TEST_MODE=1 "${restoreHelperPath}" "$@"
 `);
+  copyFileSync(authorizationScript, join(bin, "rollout-authorization-trusted"));
+  copyFileSync(acceptanceScript, join(bin, "rollout-acceptance-trusted"));
+  chmodSync(join(bin, "rollout-authorization-trusted"), 0o755);
+  chmodSync(join(bin, "rollout-acceptance-trusted"), 0o755);
   executable(join(bin, "release-activate"), `#!/usr/bin/env bash
 set -euo pipefail
 echo "release-activate:$*" >> "${fixture.actionLog}"
 current=""
 expected=""
+validate_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --current) current="$2"; shift 2 ;;
     --expected-commit) expected="$2"; shift 2 ;;
     --release-root) shift 2 ;;
+    --validate-only) validate_only=1; shift ;;
     *) echo "unknown release activation argument: $1" >&2; exit 2 ;;
   esac
 done
+if [ "$validate_only" = 1 ]; then exit 0; fi
 tmp="\${current}.test-new"
 rm -f -- "$tmp"
 ln -s "$expected" "$tmp"
@@ -362,7 +374,12 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   }
   symlinkSync(sourceDir, join(project, "src"));
   symlinkSync(nodeModules, join(project, "node_modules"));
-  if (existsSync(migrationScript)) symlinkSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
+  if (existsSync(migrationScript)) copyFileSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
+  if (existsSync(migrationImplScript)) copyFileSync(migrationImplScript, join(project, "scripts", "rollout-db-impl.ts"));
+  if (existsSync(authorizationScript)) copyFileSync(authorizationScript, join(project, "scripts", "rollout-authorization.py"));
+  if (existsSync(acceptanceScript)) copyFileSync(acceptanceScript, join(project, "scripts", "rollout-acceptance.py"));
+  if (existsSync(tsconfigFile)) copyFileSync(tsconfigFile, join(project, "tsconfig.json"));
+  writeFileSync(join(project, "package.json"), JSON.stringify({ type: "module" }) + "\n");
   writeFileSync(join(project, "README.md"), "rollout fixture\n");
   execFileSync("git", ["init", "-q", project]);
   execFileSync("git", ["-C", project, "config", "user.email", "rollout@example.invalid"]);
