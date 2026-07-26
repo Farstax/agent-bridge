@@ -46,6 +46,18 @@ function runBootstrap(args: string[], env: Record<string, string> = {}): { statu
   }
 }
 
+function runProvenanceCheck(path: string, role: string, installationId: string): { status: number; stdout: string; stderr: string } {
+  try {
+    const stdout = execFileSync(process.execPath, [tsxCli, migrationScript, "verify-provenance", "--db", path, "--role", role, "--installation-id", installationId], {
+      encoding: "utf8",
+      env: { ...process.env },
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err: any) {
+    return { status: err.status ?? 1, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+  }
+}
+
 /** Runs with AGENT_BRIDGE_BOOTSTRAP_TEST_MODE=1 set, for the test-only fault-injection hooks. */
 function runBootstrapTestMode(args: string[], env: Record<string, string> = {}) {
   return runBootstrap(args, { AGENT_BRIDGE_BOOTSTRAP_TEST_MODE: "1", ...env });
@@ -56,20 +68,34 @@ afterEach(() => {
 });
 
 describe("rollout-db.ts bootstrap", () => {
-  it("creates a brand-new database at CURRENT_SCHEMA_VERSION and records the role in evidence", () => {
+  it("creates a brand-new database at CURRENT_SCHEMA_VERSION and records installation provenance", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
     const evidencePath = join(dir, "evidence.json");
-    const res = runBootstrap([...bootstrapArgs(dbPath, "worker"), "--evidence", evidencePath]);
+    const res = runBootstrap([...bootstrapArgs(dbPath, "worker"), "--evidence", evidencePath], { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
     expect(res.status, res.stderr).toBe(0);
     expect(existsSync(dbPath)).toBe(true);
     const db = new Database(dbPath, { readonly: true });
     expect(db.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
+    expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("agent_bridge_installation_id")).toEqual({ value: "install-test" });
+    expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("agent_bridge_database_provenance")).toBeTruthy();
     db.close();
+    expect(existsSync(`${dbPath}.provenance.json`)).toBe(true);
+    expect(JSON.parse(readFileSync(`${dbPath}.provenance.json`, "utf8")).databaseSha256).toMatch(/^[a-f0-9]{64}$/);
     const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
     expect(evidence.mode).toBe("bootstrap");
     expect(evidence.databases[0].role).toBe("worker");
     expect(evidence.databases[0].path).toBe(dbPath);
+  });
+
+  it("verifies the complete installation provenance contract", () => {
+    const dir = tempDir();
+    const dbPath = join(dir, "bridge.sqlite");
+    const res = runBootstrap(bootstrapArgs(dbPath, "worker"), { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
+    expect(res.status, res.stderr).toBe(0);
+    expect(runProvenanceCheck(dbPath, "worker", "install-test").status).toBe(0);
+    expect(runProvenanceCheck(dbPath, "interactive", "install-test").status).not.toBe(0);
+    expect(runProvenanceCheck(dbPath, "worker", "install-other").status).not.toBe(0);
   });
 
   it("rejects an unrecognized role name", () => {

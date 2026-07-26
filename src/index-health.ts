@@ -78,7 +78,12 @@ const cliBotConfig = {
 const dbPath = process.env.HEALTH_DB_PATH || ".data-health/health.sqlite";
 
 // ── Infrastructure ───────────────────────────────────────────────────────────
-const bridgeDb = openProductionDb(dbPath, { serviceId: "telegram:health" });
+const bridgeDb = openProductionDb(dbPath, {
+  serviceId: "telegram:health",
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+  databaseRole: "health",
+});
 const rawDb = bridgeDb.raw;
 const client = new TelegramClient(token, fetch, resolveTimeoutsForKind(cliBot).fetchTimeoutMs);
 

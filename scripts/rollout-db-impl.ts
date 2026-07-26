@@ -7,10 +7,10 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { openDb } from "../src/db.js";
+import { openDb, openProductionDb } from "../src/db.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "../src/db/roleAssignmentsMigration.js";
 
@@ -103,6 +103,40 @@ interface BootstrapOptions {
   path: string;
   role: string;
   evidencePath: string | null;
+}
+
+interface ProvenanceCheckOptions {
+  path: string;
+  role: string;
+  installationId: string;
+}
+
+function parseProvenanceCheckArgs(argv: string[]): ProvenanceCheckOptions {
+  let path: string | null = null;
+  let role: string | null = null;
+  let installationId: string | null = null;
+  while (argv.length > 0) {
+    const flag = argv.shift();
+    const value = argv.shift();
+    if (!value) throw new Error(`missing value for ${flag}`);
+    if (flag === "--db") {
+      if (path) throw new Error("verify-provenance accepts exactly one --db");
+      path = value;
+    } else if (flag === "--role") {
+      if (role) throw new Error("verify-provenance accepts exactly one --role");
+      if (!VALID_ROLES.has(value)) throw new Error(`--role must be one of ${[...VALID_ROLES].join(", ")}, got: ${value}`);
+      role = value;
+    } else if (flag === "--installation-id") {
+      if (installationId) throw new Error("verify-provenance accepts exactly one --installation-id");
+      installationId = value;
+    } else {
+      throw new Error(`unknown argument: ${flag}`);
+    }
+  }
+  if (!path) throw new Error("--db is required");
+  if (!role) throw new Error("--role is required");
+  if (!installationId) throw new Error("--installation-id is required");
+  return { path, role, installationId };
 }
 
 /**
@@ -702,6 +736,20 @@ async function bootstrapDatabase(path: string, role: string, evidencePath: strin
         raw.close();
       }
       openDb(tempPath, { serviceId: `rollout:bootstrap:${role}` }).close();
+      const installationId = process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()
+        || `install-${randomBytes(16).toString("hex")}`;
+      const createdAt = new Date().toISOString();
+      const metadata = new Database(tempPath);
+      metadata.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(
+        "agent_bridge_installation_id", installationId,
+      );
+      metadata.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(
+        "agent_bridge_database_provenance",
+        JSON.stringify({ schemaVersion: 1, source: "fresh-install", role, path, installationId, createdAt }),
+      );
+      metadata.close();
 
       // Real production checkpoint 1: unconditional, always present.
       await yieldToEventLoop();
@@ -741,6 +789,18 @@ async function bootstrapDatabase(path: string, role: string, evidencePath: strin
 
       removeSidecars(tempPath);
       const evidence = { ...inspectDatabase(path, true), role };
+      const provenancePath = `${path}.provenance.json`;
+      const provenanceTemp = `${provenancePath}.tmp-${randomBytes(8).toString("hex")}`;
+      writeFileSync(provenanceTemp, `${JSON.stringify({
+        schemaVersion: 1,
+        source: "fresh-install",
+        role,
+        path,
+        installationId,
+        createdAt,
+        databaseSha256: evidence.sha256,
+      })}\n`, { mode: 0o600 });
+      renameSync(provenanceTemp, provenancePath);
 
       // Real production checkpoint 4: unconditional, always present, after
       // the (synchronous, but now-complete) inspection read and before the
@@ -791,6 +851,17 @@ async function main(): Promise<void> {
     // writeEvidence() runs *inside* bootstrapDatabase(), still within
     // withSignalCleanup()'s guarded region — see its checkpoint 4/5 comments.
     await bootstrapDatabase(options.path, options.role, options.evidencePath);
+    return;
+  }
+  if (argv[0] === "verify-provenance") {
+    const options = parseProvenanceCheckArgs(argv.slice(1));
+    const db = openProductionDb(options.path, {
+      serviceId: `rollout:verify-provenance:${options.role}`,
+      installationId: options.installationId,
+      requireInstallationIdentity: true,
+      databaseRole: options.role,
+    });
+    db.close();
     return;
   }
   const options = parseArgs(argv);
