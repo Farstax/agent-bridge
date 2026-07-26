@@ -621,6 +621,7 @@ describe("BridgeDb runs and events persistence", () => {
         nowMs: Date.now(),
         minAgeMs: 0,
         processState: () => "absent",
+        containmentState: () => "proven",
         onReconciled: (run) => {
         orphanedRuns.push(run);
         },

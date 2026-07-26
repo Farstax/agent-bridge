@@ -4,6 +4,36 @@ This document records the non-production activation boundary implemented for
 Issue #183. It does not authorize deployment or change live services,
 databases, queues, or workspaces.
 
+## Recovery-readiness gate
+
+Issue #193 owns stale runtime reconciliation. A `running` row is audit state,
+not proof of liveness. Reconciliation may fail a run only after an explicit
+age cutoff, proven process containment, absent execution locks for the run and
+chat, and zero claimed pending messages. Ambiguous ownership remains untouched.
+Stale lock release requires the same containment proof plus an explicit stale
+lock observation. Run, event, queue, and pending-message rows are never
+deleted, replayed, discarded, or rewritten. Every successful mutation records
+before/after evidence; an interruption rolls back the transaction.
+
+The current `10ccfe…` release is not an automatic rollback baseline, and the
+staged `3958013…` release is not accepted as one until schema, queue, claim,
+lock, and delivery compatibility are independently proven. The interim design
+therefore has no automatic rollback baseline. The linear path is:
+
+```text
+reconcile stale runtime state
+  -> build fresh immutable baseline
+  -> validate artifact and copied database cohort offline
+  -> independent approval
+  -> separately authorized guarded rollout
+```
+
+`scripts/offline-baseline-validate.py` and the manual
+`offline-baseline-validation.yml` workflow are fixture-only. They reject
+production-looking database roots, require exact artifact identities and
+strict manifest equality, open copied SQLite files read-only, and emit durable
+evidence. They do not stage artifacts or access live databases.
+
 ## State machine
 
 ```text

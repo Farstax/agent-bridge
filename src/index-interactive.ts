@@ -98,6 +98,7 @@ const client = new TelegramClient(token, fetch, 45_000);
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
   processState: (run) => getExecutionProcessState(run.run_id),
+  containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
   onReconciled: async (run) => {
     const parts = run.chat_id.split(":");
     const chatId = Number(parts[0]);

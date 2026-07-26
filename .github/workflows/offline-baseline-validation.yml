@@ -1,0 +1,51 @@
+name: Offline Baseline Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: Repository-relative path to a downloaded non-production artifact
+        required: true
+        type: string
+      target_commit:
+        required: true
+        type: string
+      expected_tree:
+        required: true
+        type: string
+      builder_commit:
+        required: true
+        type: string
+      rollout_helper_sha256:
+        required: true
+        type: string
+      db_fixture_dir:
+        description: Repository-relative directory containing copied .sqlite fixtures
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject production-looking inputs
+        run: |
+          case "${{ inputs.db_fixture_dir }}" in /opt/*|/var/*|/etc/*) exit 1;; esac
+      - name: Validate copied databases and artifact offline
+        run: |
+          python3 scripts/offline-baseline-validate.py \
+            --archive "${{ inputs.artifact }}" \
+            --target-commit "${{ inputs.target_commit }}" \
+            --expected-tree "${{ inputs.expected_tree }}" \
+            --builder-commit "${{ inputs.builder_commit }}" \
+            --rollout-helper-sha256 "${{ inputs.rollout_helper_sha256 }}" \
+            --db-root "${{ inputs.db_fixture_dir }}" \
+            --output offline-baseline-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-baseline-evidence
+          path: offline-baseline-evidence.json

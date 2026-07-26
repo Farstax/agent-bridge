@@ -85,7 +85,7 @@ describe("recovery-readiness reconciliation guards", () => {
       containmentState: () => "proven",
       lockState: () => "stale",
       reason: "offline-recovery-test",
-    })).toEqual([expect.objectContaining({ runId: lock!.runId, acquisitionId: lock!.acquisitionId })]);
+    })).toEqual([expect.objectContaining({ run_id: lock!.runId, acquisition_id: lock!.acquisitionId })]);
     expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM execution_locks").get()).toEqual({ n: 0 });
   });
 
@@ -104,5 +104,34 @@ describe("recovery-readiness reconciliation guards", () => {
       containmentState: () => "proven",
     })).toEqual([]);
     expect(bridge.raw.prepare("SELECT * FROM pending_messages").all()).toEqual(before);
+  });
+
+  it("blocks a stale run when another run owns the same chat lock", async () => {
+    const bridge = open();
+    staleRun(bridge, "run-a");
+    const lock = bridge.acquireLock("telegram:interactive", "chat-1");
+    expect(lock).not.toBeNull();
+    bridge.raw.prepare("UPDATE execution_locks SET run_id = ? WHERE chat_key = ?").run("run-b", "chat-1");
+    expect(await bridge.reconcileOrphanedRuns({
+      nowMs: NOW,
+      minAgeMs: 60_000,
+      processState: () => "absent",
+      containmentState: () => "proven",
+    })).toEqual([]);
+    expect(bridge.getRun("run-a").status).toBe("running");
+  });
+
+  it("rolls back all reconciliation writes if interrupted", async () => {
+    const bridge = open();
+    staleRun(bridge, "interrupted");
+    await expect(bridge.reconcileOrphanedRuns({
+      nowMs: NOW,
+      minAgeMs: 60_000,
+      processState: () => "absent",
+      containmentState: () => "proven",
+      beforeMutation: () => { throw new Error("injected interruption"); },
+    })).rejects.toThrow("injected interruption");
+    expect(bridge.getRun("interrupted").status).toBe("running");
+    expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM reconciliation_audit").get()).toEqual({ n: 0 });
   });
 });
