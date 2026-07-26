@@ -56,6 +56,7 @@ const ALLOWED_TABLES = new Set([
   "project_memories_fts_config", "project_memories_fts_content", "project_memories_fts_data",
   "project_memories_fts_docsize", "project_memories_fts_idx", "prompts", "settings", "sqlite_sequence",
   "role_assignment_revisions", "role_assignments", "work_item_plans", "work_items", "work_jobs",
+  "reconciliation_audit",
 ]);
 
 const REQUIRED_TABLES = new Set(["bridge_state", "pending_messages", "settings"]);

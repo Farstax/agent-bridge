@@ -16,6 +16,16 @@ export interface LockRepositoryOptions {
   clock?: () => number;
 }
 
+export interface ExecutionLockRecord {
+  surface: string;
+  chat_key: string;
+  service_id: string;
+  run_id: string;
+  acquisition_id: string;
+  acquired_at: string;
+  lease_expires_at: string;
+}
+
 export class LockRepository {
   private readonly now: () => number;
 
@@ -78,6 +88,32 @@ export class LockRepository {
     return !!this.db.prepare(`
       SELECT 1 FROM execution_locks WHERE run_id = ? LIMIT 1
     `).get(runId);
+  }
+
+  hasChatLock(chatKey: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM execution_locks WHERE chat_key = ? LIMIT 1`).get(chatKey);
+  }
+
+  listLocks(): ExecutionLockRecord[] {
+    return this.db.prepare(`
+      SELECT surface, chat_key, service_id, run_id, acquisition_id, acquired_at, lease_expires_at
+      FROM execution_locks ORDER BY surface, chat_key
+    `).all() as ExecutionLockRecord[];
+  }
+
+  releaseExact(record: ExecutionLockRecord): boolean {
+    const claimed = this.db.prepare(`
+      SELECT 1 FROM pending_messages
+      WHERE (surface = ? AND chat_key = ?)
+         OR claim_run_id = ?
+         OR claim_acquisition_id = ?
+      LIMIT 1
+    `).get(record.surface, record.chat_key, record.run_id, record.acquisition_id);
+    if (claimed) return false;
+    return this.db.prepare(`
+      DELETE FROM execution_locks
+      WHERE surface = ? AND chat_key = ? AND service_id = ? AND run_id = ? AND acquisition_id = ?
+    `).run(record.surface, record.chat_key, record.service_id, record.run_id, record.acquisition_id).changes === 1;
   }
 
   unlock(handle: ExecutionLaneHandle): boolean {

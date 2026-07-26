@@ -1,0 +1,78 @@
+name: Offline Baseline Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: GitHub artifact name containing the non-production release archive
+        required: true
+        type: string
+      artifact_run_id:
+        required: true
+        type: string
+      target_commit:
+        required: true
+        type: string
+      expected_tree:
+        required: true
+        type: string
+      builder_commit:
+        required: true
+        type: string
+      db_fixture_artifact:
+        description: GitHub artifact name containing copied .sqlite fixtures
+        required: true
+        type: string
+      db_fixture_run_id:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the exact non-production inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p offline-input/artifact offline-input/databases
+          gh run download "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" \
+            --name "${{ inputs.artifact }}" --dir offline-input/artifact
+          gh run download "${{ inputs.db_fixture_run_id }}" --repo "$GITHUB_REPOSITORY" \
+            --name "${{ inputs.db_fixture_artifact }}" --dir offline-input/databases
+          run_status="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json status --jq .status)"
+          run_conclusion="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
+          run_name="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json name --jq .name)"
+          run_head="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
+          test "$run_status" = "completed"
+          test "$run_conclusion" = "success"
+          test "$run_name" = "Historical Release Artifact"
+          test "$run_head" = "${{ inputs.builder_commit }}"
+          archive="$(find offline-input/artifact -type f -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          expected_schema="$(tar --extract --gzip --to-stdout --file "$archive" ./manifest.json | jq -r .database_schema_version)"
+          [[ "$expected_schema" =~ ^[1-9][0-9]*$ ]]
+          echo "EXPECTED_SCHEMA=$expected_schema" >> "$GITHUB_ENV"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+      - name: Validate copied databases and artifact offline
+        run: |
+          python3 scripts/offline-baseline-validate.py \
+            --archive "$ARCHIVE" \
+            --target-commit "${{ inputs.target_commit }}" \
+            --expected-tree "${{ inputs.expected_tree }}" \
+            --builder-commit "${{ inputs.builder_commit }}" \
+            --artifact-run-id "${{ inputs.artifact_run_id }}" \
+            --expected-schema "$EXPECTED_SCHEMA" \
+            --rollout-helper "scripts/rollout-agent-bridge.sh" \
+            --rollout-helper-sha256 "$(sha256sum scripts/rollout-agent-bridge.sh | awk '{print $1}')" \
+            --db-root offline-input/databases \
+            --output offline-baseline-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-baseline-evidence
+          path: offline-baseline-evidence.json

@@ -87,7 +87,10 @@ function validateBuildStrategy(strategy, files, packageJson) {
   }
 }
 
-export function buildReleaseManifest({ root, commit, tree, nodeVersion, platform, arch }) {
+export function buildReleaseManifest({
+  root, commit, tree, nodeVersion, platform, arch,
+  builderCommit, builderWorkflowRun, builderWorkflowHead, databaseSchemaVersion,
+}) {
   const artifactRoot = resolve(root);
   if (!SHA256.test(commit) || !SHA256.test(tree)) {
     throw new Error("commit and tree must be full lowercase 40-character Git SHAs");
@@ -102,7 +105,7 @@ export function buildReleaseManifest({ root, commit, tree, nodeVersion, platform
   const buildStrategy = deriveBuildStrategy(packageJson);
   validateBuildStrategy(buildStrategy, files, packageJson);
 
-  return {
+  const manifest = {
     schema_version: 1,
     commit,
     tree,
@@ -111,6 +114,23 @@ export function buildReleaseManifest({ root, commit, tree, nodeVersion, platform
     runtime: { node: nodeVersion, platform, arch },
     files,
   };
+  if (builderCommit !== undefined || builderWorkflowRun !== undefined || builderWorkflowHead !== undefined) {
+    if (!SHA256.test(builderCommit ?? "") || !SHA256.test(builderWorkflowHead ?? "") || !String(builderWorkflowRun ?? "").trim()) {
+      throw new Error("builder provenance requires commit, workflow run and workflow head");
+    }
+    manifest.builder = {
+      commit: builderCommit,
+      workflow_run: String(builderWorkflowRun),
+      workflow_head: builderWorkflowHead,
+    };
+  }
+  if (databaseSchemaVersion !== undefined) {
+    if (!Number.isInteger(databaseSchemaVersion) || databaseSchemaVersion < 1) {
+      throw new Error("database schema version must be a positive integer");
+    }
+    manifest.database_schema_version = databaseSchemaVersion;
+  }
+  return manifest;
 }
 
 function argument(name) {
@@ -129,6 +149,11 @@ if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
     nodeVersion: argument("--node-version") ?? process.version,
     platform: argument("--platform") ?? process.platform,
     arch: argument("--arch") ?? process.arch,
+    builderCommit: argument("--builder-commit"),
+    builderWorkflowRun: argument("--builder-workflow-run"),
+    builderWorkflowHead: argument("--builder-workflow-head"),
+    databaseSchemaVersion: argument("--database-schema-version") === undefined
+      ? undefined : Number(argument("--database-schema-version")),
   });
   writeFileSync(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o640 });
 }

@@ -132,8 +132,8 @@ describe("role assignment repository migration", () => {
     const config = configuredAssignments();
 
     const migrated = openDb(path, { serviceId: "role-assignment-migration-test" });
-    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(3);
-    expect(CURRENT_SCHEMA_VERSION).toBe(3);
+    expect(migrated.raw.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
+    expect(CURRENT_SCHEMA_VERSION).toBe(4);
     assertFixturePreserved(migrated, snapshot);
 
     const first = migrated.createRoleAssignmentRevision(config);
@@ -153,7 +153,7 @@ describe("role assignment repository migration", () => {
     migrated.close();
 
     const reopened = openDb(path, { serviceId: "role-assignment-reopen-test" });
-    expect(reopened.raw.pragma("user_version", { simple: true })).toBe(3);
+    expect(reopened.raw.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
     expect(reopened.getCurrentRoleAssignmentRevision(config.scopeKey)).toEqual(first);
     assertFixturePreserved(reopened, snapshot);
     expect(reopened.raw.pragma("foreign_key_check")).toEqual([]);

@@ -81,6 +81,7 @@ const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
   processState: (run) => getExecutionProcessState(run.run_id),
+  containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
   onReconciled: (run) => console.warn(`[bridge] reconciled orphaned run ${run.run_id}`),
 });
 

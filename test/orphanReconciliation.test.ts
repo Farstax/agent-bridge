@@ -31,6 +31,7 @@ describe("orphaned run reconciliation", () => {
       nowMs: NOW,
       minAgeMs: CUTOFF_MS,
       processState: () => "absent",
+      containmentState: () => "proven",
       onReconciled: async (run) => { notified.push(run.run_id); },
     });
 
@@ -41,10 +42,12 @@ describe("orphaned run reconciliation", () => {
       error: "Process interrupted by bridge restart",
     });
     expect(bridge.getEventsForRun("stale")).toEqual([
-      expect.objectContaining({ type: "run.reconciled", seq: 1 }),
+      expect.objectContaining({ type: "reconciliation.started", seq: 1 }),
+      expect.objectContaining({ type: "run.reconciled", seq: 2 }),
+      expect.objectContaining({ type: "reconciliation.completed", seq: 3 }),
     ]);
     expect(JSON.parse(bridge.getEventsForRun("stale")[0].payload_json)).toMatchObject({
-      reason: "Process interrupted by bridge restart",
+      reason: "stale_after_cutoff",
       processState: "absent",
       lockState: "absent",
     });
@@ -67,6 +70,7 @@ describe("orphaned run reconciliation", () => {
       nowMs: NOW,
       minAgeMs: CUTOFF_MS,
       processState: (run) => run.run_id === "live" ? "live" : run.run_id === "ambiguous" ? "ambiguous" : "absent",
+      containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
     });
 
     expect(reconciled).toEqual([]);
@@ -82,10 +86,11 @@ describe("orphaned run reconciliation", () => {
       nowMs: NOW,
       minAgeMs: CUTOFF_MS,
       processState: () => "absent" as const,
+      containmentState: () => "proven" as const,
     };
 
     expect((await bridge.reconcileOrphanedRuns(options)).map((run) => run.run_id)).toEqual(["once"]);
     expect(await bridge.reconcileOrphanedRuns(options)).toEqual([]);
-    expect(bridge.getEventsForRun("once")).toHaveLength(1);
+    expect(bridge.getEventsForRun("once")).toHaveLength(3);
   });
 });

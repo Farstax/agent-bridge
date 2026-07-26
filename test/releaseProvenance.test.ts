@@ -109,6 +109,28 @@ describe("historical release provenance", () => {
     );
   });
 
+  it("binds the release manifest to the builder workflow and schema contract", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-manifest-provenance-"));
+    const built = buildRealisticFixture(root);
+    const manifest = buildReleaseManifest({
+      root,
+      commit: "a".repeat(40),
+      tree: "b".repeat(40),
+      nodeVersion: "v24.15.0",
+      platform: "linux",
+      arch: "x64",
+      builderCommit: "c".repeat(40),
+      builderWorkflowRun: "123456789",
+      builderWorkflowHead: "a".repeat(40),
+      databaseSchemaVersion: 4,
+    });
+    expect(manifest.builder).toEqual({
+      commit: "c".repeat(40), workflow_run: "123456789", workflow_head: "a".repeat(40),
+    });
+    expect(manifest.database_schema_version).toBe(4);
+    expect(built).toBeDefined();
+  });
+
   it("rejects a non-SHA identity", () => {
     const fixture = baseFixture({ builderCommit: "not-a-sha" });
     expect(() => buildReleaseProvenance(fixture)).toThrow(/builderCommit must be a full lowercase Git SHA/);

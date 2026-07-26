@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { RoleAssignmentConfig } from "./agentRoles.js";
-import { LockRepository, type ExecutionLaneHandle } from "./repositories/lockRepository.js";
+import { LockRepository, type ExecutionLaneHandle, type ExecutionLockRecord } from "./repositories/lockRepository.js";
 export type { ExecutionLaneHandle } from "./repositories/lockRepository.js";
 import { MemoryRepository } from "./repositories/memoryRepository.js";
 import { RunRepository, type RunningRun } from "./repositories/runRepository.js";
@@ -31,12 +31,27 @@ import {
 export type { RoleAssignmentRevisionRecord } from "./repositories/roleAssignmentRepository.js";
 
 type OrphanProcessState = "live" | "absent" | "ambiguous";
+export type ReconciliationContainment = "proven" | "unproven" | "ambiguous";
+export type ReconciliationLockState = "absent" | "live" | "stale" | "ambiguous";
 
 export interface OrphanReconciliationOptions {
   nowMs?: number;
   minAgeMs: number;
   processState: (run: RunningRun) => OrphanProcessState;
+  candidateRuns?: RunningRun[];
+  containmentState?: (run: RunningRun, processState: OrphanProcessState) => ReconciliationContainment;
+  beforeMutation?: (run: RunningRun) => void;
   onReconciled?: (run: RunningRun & { ended_at: string }) => void | Promise<void>;
+}
+
+class ReconciliationLostRace extends Error {}
+
+export interface StaleLockReconciliationOptions {
+  nowMs?: number;
+  reason: string;
+  candidateLocks?: ExecutionLockRecord[];
+  containmentState: (lock: ExecutionLockRecord) => ReconciliationContainment;
+  lockState: (lock: ExecutionLockRecord) => Exclude<ReconciliationLockState, "absent">;
 }
 import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS } from "./repositories/conversationRepository.js";
 export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./repositories/conversationRepository.js";
@@ -667,22 +682,50 @@ export class BridgeDb {
     if (!Number.isFinite(options.minAgeMs) || options.minAgeMs < 0) {
       throw new Error("minAgeMs must be a finite non-negative number");
     }
-    const nowMs = options.nowMs ?? Date.now();
+      const nowMs = options.nowMs ?? Date.now();
     const reconciled: Array<RunningRun & { ended_at: string }> = [];
-    for (const run of this.runs.listRunningRuns()) {
+    for (const run of options.candidateRuns ?? this.runs.listRunningRuns()) {
       const startedMs = Date.parse(run.started_at);
       if (!Number.isFinite(startedMs) || nowMs - startedMs < options.minAgeMs) continue;
       const processState = options.processState(run);
-      if (processState !== "absent" || this.locks.hasRunLock(run.run_id)) continue;
+      const containmentState = options.containmentState?.(run, processState) ?? "ambiguous";
+      if (processState !== "absent" || containmentState !== "proven") continue;
+      const lockState = this.locks.hasRunLock(run.run_id) || this.locks.hasChatLock(run.chat_id) ? "live" : "absent" as const;
+      const claimed = this.raw.prepare(`
+        SELECT id, state, claim_run_id, claim_acquisition_id
+        FROM pending_messages WHERE claim_run_id = ? ORDER BY id
+      `).all(run.run_id) as Array<Record<string, unknown>>;
+      if (lockState !== "absent" || claimed.length > 0) continue;
       const endedAt = new Date(nowMs).toISOString();
       const evidence = {
-        reason: "Process interrupted by bridge restart",
+        reason: "stale_after_cutoff",
         reconciledAt: endedAt,
         processState,
-        lockState: "absent" as const,
+        containmentState,
+        lockState,
+        claimedMessages: claimed,
         cutoffMs: options.minAgeMs,
       };
-      const transitioned = this.runInTransaction(() => this.runs.reconcileOrphanedRun(run.run_id, endedAt, evidence));
+      const auditId = randomUUID();
+      const before = { status: "running", processState, containmentState, lockState, claimedMessages: claimed };
+      let transitioned = false;
+      try {
+        transitioned = this.runInTransaction(() => {
+          this.raw.prepare(`INSERT INTO reconciliation_audit
+            (id, kind, subject_id, status, reason, cutoff_ms, before_json, created_at)
+            VALUES (?, 'run', ?, 'started', ?, ?, ?, ?)`)
+            .run(auditId, run.run_id, evidence.reason, options.minAgeMs, JSON.stringify(before), endedAt);
+          options.beforeMutation?.(run);
+          const changed = this.runs.reconcileOrphanedRun(run.run_id, endedAt, evidence);
+          if (!changed) throw new ReconciliationLostRace();
+          const after = { status: "failed", endedAt };
+          this.raw.prepare(`UPDATE reconciliation_audit SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
+            .run(JSON.stringify(after), endedAt, auditId);
+          return true;
+        });
+      } catch (error) {
+        if (!(error instanceof ReconciliationLostRace)) throw error;
+      }
       if (!transitioned) continue;
       const result = { ...run, ended_at: endedAt };
       reconciled.push(result);
@@ -693,6 +736,34 @@ export class BridgeDb {
       }
     }
     return reconciled;
+  }
+
+  reconcileStaleExecutionLocks(options: StaleLockReconciliationOptions): ExecutionLockRecord[] {
+    if (!options.reason.trim()) throw new Error("reconciliation reason is required");
+    const now = new Date(options.nowMs ?? Date.now()).toISOString();
+    const released: ExecutionLockRecord[] = [];
+    for (const lock of options.candidateLocks ?? this.locks.listLocks()) {
+      if (options.containmentState(lock) !== "proven" || options.lockState(lock) !== "stale") continue;
+      const auditId = randomUUID();
+      let changed = false;
+      try {
+        changed = this.runInTransaction(() => {
+          this.raw.prepare(`INSERT INTO reconciliation_audit
+            (id, kind, subject_id, status, reason, before_json, created_at)
+            VALUES (?, 'lock', ?, 'started', ?, ?, ?)`)
+            .run(auditId, `${lock.surface}:${lock.chat_key}`, options.reason, JSON.stringify(lock), now);
+          const removed = this.locks.releaseExact(lock);
+          if (!removed) throw new ReconciliationLostRace();
+          this.raw.prepare(`UPDATE reconciliation_audit SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
+            .run(JSON.stringify({ released: true, releasedAt: now }), now, auditId);
+          return true;
+        });
+      } catch (error) {
+        if (!(error instanceof ReconciliationLostRace)) throw error;
+      }
+      if (changed) released.push(lock);
+    }
+    return released;
   }
 
   // ── Conversation turns ──────────────────────────────────────────────────

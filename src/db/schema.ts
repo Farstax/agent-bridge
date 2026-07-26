@@ -2,9 +2,10 @@ import type Database from "better-sqlite3";
 import { applyLegacyCompatibleBaseline } from "./legacyBaselineMigration.js";
 import { dropLegacyPromptOverrides } from "./dropLegacyPromptOverridesMigration.js";
 import { applyRoleAssignmentsMigration } from "./roleAssignmentsMigration.js";
+import { applyReconciliationAuditMigration } from "./reconciliationAuditMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export interface Migration {
   version: number;
@@ -122,10 +123,12 @@ export function applyMigrations(
  * Version 1 owns the legacy-compatible DDL and historical repair path.
  * Version 2 removes the empty legacy prompt-override table.
  * Version 3 adds dormant, versioned role-assignment persistence.
+ * Version 4 adds schema-owned reconciliation evidence for Issue #193.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "legacy-compatible-baseline", up: applyLegacyCompatibleBaseline },
   { version: 2, name: "drop-empty-legacy-prompt-overrides", up: dropLegacyPromptOverrides },
   { version: 3, name: "add-dormant-role-assignments", up: applyRoleAssignmentsMigration },
+  { version: 4, name: "add-reconciliation-audit", up: applyReconciliationAuditMigration },
 ];

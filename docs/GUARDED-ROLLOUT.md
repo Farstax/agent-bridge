@@ -92,6 +92,35 @@ documented continuation contract can permit it. Sentinel removal and
 
 Artifacts are written beneath the configured `log_dir`; database snapshots are written beneath `backup_dir`. On any failure, keep services stopped and inspect the newest artifact path recorded in `log_dir/latest` before taking further action.
 
+## Recovery-readiness baseline gate
+
+Issue #193 reconciliation is a recovery-readiness operation, not a rollout
+authorization. It may classify and reconcile only demonstrably stale runs or
+locks after containment is proven; it never deletes or replays queue, claim,
+run, event, or pending-message rows. Ambiguous ownership remains preserved for
+manual review.
+
+The offline baseline validator requires copied database fixtures and an
+artifact manifest containing the exact target commit/tree, package-lock hash,
+builder commit, builder workflow run/head, and target database schema version.
+The workflow independently verifies the artifact run's head before invoking
+the validator. Its result is named `schema_compatibility` because it validates
+copied-fixture integrity and schema, not the target runtime opener. The
+pre-start simulation uses atomic temporary-symlink replacement for both target
+activation and restoration; it never touches production pointers or databases.
+
+For historical artifacts, the successful workflow run must be the named
+`Historical Release Artifact` workflow, its run head must equal the reviewed
+builder commit, and the manifest must still bind the target commit/tree to the
+historical inputs. The expected target schema is an explicit workflow input;
+it is never inferred from the current checkout.
+
+The forward path is therefore: reconcile proven stale state; build a fresh
+immutable artifact; validate it offline against copied production-state
+fixtures; obtain independent approval; then request a separately authorized
+guarded rollout. No existing ambiguous release is an automatic rollback
+baseline.
+
 Legacy queue discard is intentionally unsupported. A nonzero legacy queue count aborts before service stop and requires a separate explicit operational decision and tool.
 
 ## Bootstrap: genuinely missing databases (Phase 4C.3, issue #135)

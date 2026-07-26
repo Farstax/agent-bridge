@@ -187,6 +187,7 @@ const client = new DiscordClient({
     reconciliationReady = db.reconcileOrphanedRuns({
       minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
       processState: (run) => getExecutionProcessState(run.run_id),
+      containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
       onReconciled: async (run) => {
         await client.sendMessage({
           chat_id: run.chat_id,

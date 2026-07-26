@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyLegacyCompatibleBaseline } from "../src/db/legacyBaselineMigration.js";
 import { dropLegacyPromptOverrides } from "../src/db/dropLegacyPromptOverridesMigration.js";
 import { openProductionDb } from "../src/db.js";
-import { applyMigrationsUpTo } from "../src/db/schema.js";
+import { applyMigrationsUpTo, CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 
 const migrationScript = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
 const roots: string[] = [];
@@ -58,14 +58,14 @@ describe("schema 3 rollout qualification", () => {
     expect(before.tables).not.toContain("role_assignments");
 
     const migrated = runRolloutDb("migrate", path).databases[0];
-    expect(migrated).toMatchObject({ schemaVersion: 3, schema: "current" });
+    expect(migrated).toMatchObject({ schemaVersion: CURRENT_SCHEMA_VERSION, schema: "current" });
     expect(migrated.tables).toEqual(expect.arrayContaining([
       "role_assignment_revisions",
       "role_assignments",
     ]));
 
     const validated = runRolloutDb("validate", path).databases[0];
-    expect(validated).toMatchObject({ schemaVersion: 3, schema: "current" });
+    expect(validated).toMatchObject({ schemaVersion: CURRENT_SCHEMA_VERSION, schema: "current" });
   });
 
   it("rejects schema 3 when a role-assignment table has the wrong exact columns", () => {
