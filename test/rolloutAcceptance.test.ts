@@ -22,6 +22,8 @@ function evidence(overrides: Record<string, unknown> = {}): object {
       claimRunAcquisitionCorrelation: "same-claim",
       runLockCorrelation: { queue: [{ id: 1, state: "claimed", claim_run_id: "run-1", claim_acquisition_id: "acq-1" }], locks: [] },
       deliveryState: { running: 1 },
+      runIdentityCorrelation: [{ run_id: "run-1", status: "running", started_at: "2026-07-26T12:00:00Z" }],
+      deliveryIdentityCorrelation: [{ id: "run-1:1", run_id: "run-1", seq: 1, type: "run.started" }],
       ...overrides,
     }],
   };
@@ -50,5 +52,12 @@ describe("rollout acceptance evidence", () => {
     expect(() => run(evidence(), evidence({
       runLockCorrelation: { queue: [{ id: 1, state: "claimed", claim_run_id: "run-2", claim_acquisition_id: "acq-2" }], locks: [] },
     }))).toThrow(/correlation|duplicate|replay/i);
+  });
+
+  it("rejects replacement runs and repeated delivery with unchanged counts", () => {
+    expect(() => run(evidence(), evidence({
+      runIdentityCorrelation: [{ run_id: "replacement-run", status: "running", started_at: "2026-07-26T12:00:00Z" }],
+      deliveryIdentityCorrelation: [{ id: "replacement-run:1", run_id: "replacement-run", seq: 1, type: "run.started" }],
+    }))).toThrow(/identity|delivery|replay/i);
   });
 });

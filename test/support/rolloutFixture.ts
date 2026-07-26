@@ -167,20 +167,26 @@ if [ "\${FAKE_RESTORE_FAIL:-}" = 1 ]; then
 fi
 exec sudo -n env AGENT_BRIDGE_RESTORE_TEST_MODE=1 "${restoreHelperPath}" "$@"
 `);
+  copyFileSync(authorizationScript, join(bin, "rollout-authorization-trusted"));
+  copyFileSync(acceptanceScript, join(bin, "rollout-acceptance-trusted"));
+  chmodSync(join(bin, "rollout-authorization-trusted"), 0o755);
+  chmodSync(join(bin, "rollout-acceptance-trusted"), 0o755);
   executable(join(bin, "release-activate"), `#!/usr/bin/env bash
 set -euo pipefail
 echo "release-activate:$*" >> "${fixture.actionLog}"
 current=""
 expected=""
+validate_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --current) current="$2"; shift 2 ;;
     --expected-commit) expected="$2"; shift 2 ;;
     --release-root) shift 2 ;;
-    --validate-only) shift ;;
+    --validate-only) validate_only=1; shift ;;
     *) echo "unknown release activation argument: $1" >&2; exit 2 ;;
   esac
 done
+if [ "$validate_only" = 1 ]; then exit 0; fi
 tmp="\${current}.test-new"
 rm -f -- "$tmp"
 ln -s "$expected" "$tmp"
