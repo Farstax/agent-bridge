@@ -109,6 +109,61 @@ describe("recovery-readiness reconciliation guards", () => {
     expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM execution_locks").get()).toEqual({ n: 1 });
   });
 
+  it("preserves locks and claims for every mismatched lane/run/acquisition correlation", () => {
+    const bridge = open();
+    const lockA = bridge.acquireLock("telegram:interactive", "chat-a");
+    const lockB = bridge.acquireLock("telegram:interactive", "chat-b");
+    expect(lockA).not.toBeNull();
+    expect(lockB).not.toBeNull();
+    bridge.enqueueMsg("telegram:interactive", "chat-a", { prompt: "a", chatId: 1, chatType: "private" });
+    bridge.enqueueMsg("telegram:interactive", "chat-b", { prompt: "b", chatId: 2, chatType: "private" });
+    bridge.raw.prepare(`UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?
+      WHERE chat_key = ?`).run(lockA!.runId, "different-acquisition", "chat-a");
+    bridge.raw.prepare(`UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?
+      WHERE chat_key = ?`).run("different-run", lockB!.acquisitionId, "chat-b");
+    const beforeClaims = bridge.raw.prepare(
+      "SELECT id, state, claim_run_id, claim_acquisition_id FROM pending_messages ORDER BY id"
+    ).all();
+
+    expect(bridge.reconcileStaleExecutionLocks({
+      containmentState: () => "proven",
+      lockState: () => "stale",
+      reason: "mismatched-claim-boundary",
+    })).toEqual([]);
+    expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM execution_locks").get()).toEqual({ n: 2 });
+    expect(bridge.raw.prepare(
+      "SELECT id, state, claim_run_id, claim_acquisition_id FROM pending_messages ORDER BY id"
+    ).all()).toEqual(beforeClaims);
+    expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM reconciliation_audit").get()).toEqual({ n: 0 });
+  });
+
+  it("rolls back lock audit evidence when another connection wins the deletion race", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-lock-race-"));
+    const path = join(root, "bridge.sqlite");
+    const first = openDb(path);
+    const second = openDb(path);
+    try {
+      const lock = first.acquireLock("telegram:interactive", "chat-race");
+      expect(lock).not.toBeNull();
+      const candidate = first.raw.prepare(
+        "SELECT surface, chat_key, service_id, run_id, acquisition_id, acquired_at, lease_expires_at FROM execution_locks WHERE surface = ? AND chat_key = ?"
+      ).get(lock!.surface, lock!.chatKey);
+      second.raw.prepare("DELETE FROM execution_locks WHERE surface = ? AND chat_key = ?")
+        .run(lock!.surface, lock!.chatKey);
+      expect(first.reconcileStaleExecutionLocks({
+        candidateLocks: [candidate],
+        containmentState: () => "proven",
+        lockState: () => "stale",
+        reason: "deletion-race",
+      })).toEqual([]);
+      expect(first.raw.prepare("SELECT COUNT(*) AS n FROM reconciliation_audit").get()).toEqual({ n: 0 });
+    } finally {
+      first.close();
+      second.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("only exposes reconciliation_audit through the migration-owned schema", () => {
     const bridge = open();
     expect(Number(bridge.raw.pragma("user_version", { simple: true }))).toBe(4);

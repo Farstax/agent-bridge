@@ -15,6 +15,8 @@ describe("offline baseline validator", () => {
     expect(workflow).toContain("expected_schema:");
     expect(workflow).toContain("--artifact-run-id");
     expect(workflow).toContain("gh run view");
+    expect(workflow).toContain('test "$run_head" = "${{ inputs.builder_commit }}"');
+    expect(workflow).toContain('test "$run_name" = "Historical Release Artifact"');
     expect(workflow).not.toContain("--builder-root");
     expect(workflow).not.toContain("Repository-relative path to a downloaded");
   });
@@ -39,7 +41,7 @@ describe("offline baseline validator", () => {
       builder: {
         commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
         workflow_run: "123",
-        workflow_head: "a".repeat(40),
+        workflow_head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
       },
       database_schema_version: 4,
     }));
