@@ -28,6 +28,13 @@ no-op and is rejected: it cannot emit `POINTER_SWITCHED`, `ACCEPTED`, or
 1. Acquire the exclusive OS rollout lock.
 2. Verify the root-owned config, selected units from the compiled seven-unit allowlist, clean `main`, and the exact expected commit. In immutable release mode, every selected service's effective `BRIDGE_CURRENT_RELEASE_DIR` must equal the configured `current_pointer`; explicit systemd overrides are rejected. Units may already be quiesced; any active unit must be stably running, and every unit is still stopped and containment-verified before migration. Every Git command runs as the runtime user.
 3. Resolve each selected unit's effective `DB_PATH` or `HEALTH_DB_PATH` using shared-then-unit environment-file precedence. Reject defaults, unknown units, missing files, non-canonical paths, duplicates, inventory mismatches, unknown schemas, integrity failures, or nonzero legacy queues.
+
+The target database schema is not an operator-supplied workflow input. Historical
+artifact builds derive the schema contract from the target source/runtime and
+record it in the manifest; offline validation extracts that recorded contract
+and applies the corresponding schema-specific table checks. A claimed schema
+that does not match the artifact manifest is rejected.
+
 4. Stop every service and prove containment from `MainPID=0`, `ControlPID=0`, and an empty unit cgroup. A nonzero stop result is retained as diagnostic evidence; `inactive/dead`, `inactive/exited`, and process-free `failed/dead|failed` states are accepted. An empty `ControlGroup` is accepted only as systemd's affirmative no-cgroup report on a dead unit; a non-empty `ControlGroup` must resolve to a real, non-symlink, fully readable cgroup directory, and any cgroup state that cannot be inspected reliably fails containment.
 5. After containment, run the runtime-user SQLite checkpoint phase with `wal_checkpoint(TRUNCATE)` for every database. This is an offline drain: a non-empty WAL is incorporated into the main database before backup, never deleted directly. A busy/failed checkpoint, a remaining non-empty WAL, or an uncertain sidecar remains a hard failure.
 6. Remove only regular, non-symlink SQLite sidecars whose WAL is exactly zero bytes, and record the checkpoint evidence and SHA-256 manifest.
