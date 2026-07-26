@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import tempfile
+import hashlib
 from pathlib import Path
 
 
@@ -41,7 +42,54 @@ def validate_release_root(path: Path) -> Path:
     return path
 
 
-def validate_release(release: Path, expected_commit: str) -> None:
+def _regular(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def _manifest_files(release: Path, manifest: dict) -> None:
+    entries = manifest.get("files")
+    if not isinstance(entries, list):
+        fail("strict release manifest must contain files")
+    expected: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            fail("release manifest contains an invalid file entry")
+        relative = entry["path"]
+        candidate = (release / relative).resolve()
+        if Path(relative).is_absolute() or candidate != release and release not in candidate.parents:
+            fail(f"release manifest contains an unsafe path: {relative}")
+        if relative in expected:
+            fail(f"release manifest contains a duplicate path: {relative}")
+        expected[relative] = entry
+    actual: dict[str, Path] = {}
+    for current, directories, files in os.walk(release, followlinks=False):
+        for name in files:
+            path = Path(current) / name
+            actual[str(path.relative_to(release))] = path
+        for name in directories:
+            path = Path(current) / name
+            if path.is_symlink():
+                actual[str(path.relative_to(release))] = path
+    if set(actual) != set(expected):
+        fail("release manifest paths do not match the archived filesystem")
+    package_lock = expected.get("package-lock.json")
+    if package_lock and manifest.get("package_lock_sha256") != package_lock.get("sha256"):
+        fail("release manifest package-lock hash does not match its file entry")
+    for relative, path in actual.items():
+        entry = expected[relative]
+        kind = "symlink" if path.is_symlink() else "file" if path.is_file() else "directory" if path.is_dir() else "other"
+        if entry.get("type") != kind:
+            fail(f"release manifest type mismatch: {relative}")
+        if kind == "file":
+            if entry.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+                fail(f"release manifest hash mismatch: {relative}")
+            if entry.get("size") != path.stat().st_size:
+                fail(f"release manifest size mismatch: {relative}")
+        if kind == "symlink" and entry.get("target") != os.readlink(path):
+            fail(f"release manifest symlink mismatch: {relative}")
+
+
+def validate_release(release: Path, expected_commit: str, strict: bool = False) -> None:
     if release.is_symlink() or not release.is_dir():
         fail("target release must be an immutable regular directory")
     manifest_path = release / "manifest.json"
@@ -53,6 +101,16 @@ def validate_release(release: Path, expected_commit: str) -> None:
         fail(f"invalid target release manifest: {error}")
     if manifest.get("schema_version") != 1 or manifest.get("commit") != expected_commit:
         fail("target release manifest identity does not match expected commit")
+    if strict:
+        _manifest_files(release, manifest)
+        required = ("scripts/rollout-db.ts", "scripts/rollout-db-impl.ts", "scripts/rollout-authorization.py")
+        if any(not _regular(release / path) for path in required):
+            fail("release runtime contract is missing a required regular helper")
+        strategy = manifest.get("build_strategy", "source-tsx")
+        if strategy == "source-tsx":
+            for path in ("tsconfig.json", "node_modules/tsx/dist/cli.mjs", "src/index.ts", "src/index-interactive.ts", "src/index-discord-interactive.ts", "src/index-health.ts", "src/index-worker.ts"):
+                if not _regular(release / path):
+                    fail(f"source-tsx runtime contract requires regular file: {path}")
 
     for current, directories, files in os.walk(release, followlinks=False):
         for name in directories + files:
@@ -90,6 +148,8 @@ def activate(release_root: Path, current: Path, expected_commit: str) -> str:
         fail("current pointer must be release-root/current")
     validate_release(release_root / expected_commit, expected_commit)
     previous = current_target(current, release_root)
+    if previous == expected_commit:
+        fail("same target pointer is a no-op activation; refusing POINTER_SWITCHED")
 
     descriptor, temporary_name = tempfile.mkstemp(prefix=".current-", dir=release_root)
     os.close(descriptor)
@@ -111,10 +171,16 @@ def main() -> int:
     parser.add_argument("--release-root", type=Path, required=True)
     parser.add_argument("--current", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0 and production_mode():
         fail("release activation must run as root")
-    print(activate(args.release_root, args.current, args.expected_commit))
+    validate_release_root(args.release_root)
+    validate_release(args.release_root / args.expected_commit, args.expected_commit, strict=args.validate_only or production_mode())
+    if args.validate_only:
+        print(f"validated {args.expected_commit}")
+    else:
+        print(activate(args.release_root, args.current, args.expected_commit))
     return 0
 
 

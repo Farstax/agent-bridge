@@ -29,11 +29,15 @@ die() {
 }
 
 expected_commit=""
-if [[ "${1:-}" == "--expected-commit" && -n "${2:-}" && $# -eq 2 ]]; then
-  expected_commit="$2"
-else
-  die "usage: rollout-agent-bridge --expected-commit <40-character SHA>"
-fi
+authorization_file=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --expected-commit) [[ -z "$expected_commit" && -n "${2:-}" ]] || die "invalid or duplicate --expected-commit"; expected_commit="$2"; shift 2 ;;
+    --authorization-file) [[ -z "$authorization_file" && -n "${2:-}" ]] || die "invalid or duplicate --authorization-file"; authorization_file="$2"; shift 2 ;;
+    *) die "usage: rollout-agent-bridge --expected-commit <40-character SHA> --authorization-file <approval.json>" ;;
+  esac
+done
+[[ -n "$expected_commit" ]] || die "missing --expected-commit"
 [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || die "expected commit must be a full 40-character lowercase SHA"
 
 test_root="${AGENT_BRIDGE_ROLLOUT_TEST_ROOT:-}"
@@ -113,6 +117,7 @@ if [[ -n "$release_root" || -n "$current_pointer" ]]; then
 fi
 if (( release_mode == 1 )); then
   [[ -x "$activation_cmd" ]] || die "release activation helper is unavailable: $activation_cmd"
+  if (( test_mode == 0 )); then [[ -n "$authorization_file" ]] || die "production rollout requires --authorization-file"; fi
 fi
 for value_name in runtime_user node_bin backup_dir log_dir; do
   [[ -n "${!value_name}" ]] || die "missing rollout config key: $value_name"
@@ -172,6 +177,7 @@ if [[ -n "$release_root" || -n "$current_pointer" ]]; then
   [[ -z "$unsafe_release_owner" ]] || die "active release contains an entry with unsafe ownership: $unsafe_release_owner"
   [[ "$(/usr/bin/stat -c %u "$current_pointer")" == "$secure_owner_uid" ]] || die "current pointer has unsafe ownership"
   project_dir="$release_dir"
+  [[ "$pointer_target" != "$expected_commit" ]] || die "current pointer already targets expected commit; refusing same-target no-op activation"
   release_mode=1
 fi
 if (( test_mode == 0 )) || [[ -n "$rollout_helper_sha256" ]]; then
@@ -260,8 +266,10 @@ git_check() {
 }
 code_check() {
   if (( release_mode == 1 )); then
-    [[ -f "$project_dir/scripts/rollout-db.ts" ]] || die "migration helper is missing from active release"
-    [[ -f "$project_dir/node_modules/tsx/dist/cli.mjs" ]] || die "tsx runtime is missing from active release"
+    [[ -f "$project_dir/scripts/rollout-db.ts" && ! -L "$project_dir/scripts/rollout-db.ts" ]] || die "migration helper is missing from active release"
+    [[ -f "$project_dir/scripts/rollout-db-impl.ts" && ! -L "$project_dir/scripts/rollout-db-impl.ts" ]] || die "database implementation helper is missing from active release"
+    [[ -f "$project_dir/scripts/rollout-authorization.py" && ! -L "$project_dir/scripts/rollout-authorization.py" ]] || die "authorization validator is missing from active release"
+    [[ -f "$project_dir/node_modules/tsx/dist/cli.mjs" && ! -L "$project_dir/node_modules/tsx/dist/cli.mjs" ]] || die "tsx runtime is missing from active release"
   else
     git_check
   fi
@@ -806,11 +814,20 @@ echo "database_count=${#databases[@]}"
 
 code_check
 if (( release_mode == 1 )); then
+  authorization_evidence_sha256=""
+  if [[ -n "$authorization_file" ]]; then
+    /usr/bin/python3 "$project_dir/scripts/rollout-authorization.py" --file "$authorization_file" --expected-commit "$expected_commit" --output "$artifact_dir/authorization-evidence.json" || die "rollout authorization validation failed"
+    hash_evidence_file "$artifact_dir/authorization-evidence.json"
+    authorization_evidence_sha256="$(/usr/bin/sha256sum "$artifact_dir/authorization-evidence.json" | /usr/bin/cut -d' ' -f1)"
+  fi
+  if (( test_mode == 0 )); then
+    "$activation_cmd" --validate-only --release-root "$release_root" --current "$current_pointer" --expected-commit "$expected_commit" || die "active release contract validation failed"
+  fi
   previous_pointer_target="$pointer_target"
   rollout_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d ' ' -f1)"
   {
-    printf '{\n  "expectedCommit": "%s",\n  "previousCommit": "%s",\n  "currentPointer": "%s",\n  "releaseRoot": "%s",\n  "releaseDir": "%s",\n  "rolloutHelperSha256": "%s"\n}\n' \
-      "$expected_commit" "$previous_pointer_target" "$current_pointer" "$release_root" "$release_dir" "$rollout_helper_sha256"
+    printf '{\n  "expectedCommit": "%s",\n  "previousCommit": "%s",\n  "currentPointer": "%s",\n  "releaseRoot": "%s",\n  "releaseDir": "%s",\n  "rolloutHelperSha256": "%s",\n  "authorizationEvidenceSha256": "%s"\n}\n' \
+      "$expected_commit" "$previous_pointer_target" "$current_pointer" "$release_root" "$release_dir" "$rollout_helper_sha256" "$authorization_evidence_sha256"
   } > "$artifact_dir/release-evidence.json"
   /usr/bin/sha256sum "$artifact_dir/release-evidence.json" > "$artifact_dir/release-evidence.sha256"
 fi
@@ -898,6 +915,8 @@ for unit in "${units[@]}"; do
 done
 run_db_tool validate --evidence - "${db_args[@]}" > "$artifact_dir/post-start-evidence.json"
 hash_evidence_file "$artifact_dir/post-start-evidence.json"
+/usr/bin/python3 "$project_dir/scripts/rollout-acceptance.py" --before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --output "$artifact_dir/acceptance-evidence.json" || die "bounded queue/claim/lock acceptance failed"
+hash_evidence_file "$artifact_dir/acceptance-evidence.json"
 record_phase ACCEPTED
 
 completed=1

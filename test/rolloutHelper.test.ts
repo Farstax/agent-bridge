@@ -111,7 +111,7 @@ describe("guarded rollout helper", () => {
 
   it("rejects a rollout pointer that differs from the pointer loaded by systemd services", () => {
     const fixture = createFixture();
-    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture);
+    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
     writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
 
     const result = runRollout(fixture);
@@ -125,7 +125,7 @@ describe("guarded rollout helper", () => {
 
   it("runs immutable release mode through containment and records release evidence", () => {
     const fixture = createFixture();
-    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture);
+    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
 
     const result = runRollout(fixture);
     execFileSync("find", [releaseDir, "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);

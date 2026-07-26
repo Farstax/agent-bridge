@@ -42,6 +42,7 @@ interface DbEvidence {
   claimStateCounts: Record<string, number>;
   executionLockState: { total: number; active: number };
   claimRunAcquisitionCorrelation: string;
+  runLockCorrelation: { queue: Array<Record<string, unknown>>; locks: Array<Record<string, unknown>> };
   deliveryState: Record<string, number>;
   role?: string;
 }
@@ -286,7 +287,8 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
     return {
       path, sha256: hashFile(path), integrity, schemaVersion: userVersion, schema, legacyQueueCount, pendingQueueCount,
       tables, pendingColumns, lockColumns, resolvingUnits, queueStateCounts, claimStateCounts, executionLockState,
-      claimRunAcquisitionCorrelation: digestRows({ queueRows, lockRows }), deliveryState,
+      claimRunAcquisitionCorrelation: digestRows({ queueRows, lockRows }),
+      runLockCorrelation: { queue: queueRows, locks: lockRows as Array<Record<string, unknown>> }, deliveryState,
     };
   } finally {
     db.close();
