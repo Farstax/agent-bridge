@@ -99,13 +99,13 @@ export class RunRepository {
       `INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json)
        VALUES (?, ?, ?, ?, ?, ?)`
     );
-    insert.run(`${runId}:${nextSeq}`, runId, nextSeq, "reconciliation.started", timestamp, JSON.stringify(evidence));
     const result = this.db.prepare(
       `UPDATE bridge_runs
        SET status = 'failed', ended_at = ?, error = ?
        WHERE run_id = ? AND status = 'running'`
-      ).run(endedAt, "Process interrupted by bridge restart", runId);
+    ).run(endedAt, "Process interrupted by bridge restart", runId);
     if (result.changes !== 1) return false;
+    insert.run(`${runId}:${nextSeq}`, runId, nextSeq, "reconciliation.started", timestamp, JSON.stringify(evidence));
 
     insert.run(`${runId}:${nextSeq + 1}`, runId, nextSeq + 1, "run.reconciled", timestamp, JSON.stringify(evidence));
     insert.run(`${runId}:${nextSeq + 2}`, runId, nextSeq + 2, "reconciliation.completed", timestamp, JSON.stringify({

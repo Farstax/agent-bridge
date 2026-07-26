@@ -9,13 +9,14 @@ import os
 import shutil
 import sqlite3
 import stat
+import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
 
 SHA = 40
 SHA256 = 64
-REQUIRED_TABLES = {"bridge_runs", "bridge_events", "execution_locks", "pending_messages"}
+REQUIRED_TABLES = {"bridge_runs", "bridge_events", "execution_locks", "pending_messages", "reconciliation_audit"}
 
 
 def fail(message: str) -> None:
@@ -135,11 +136,30 @@ def simulate_prestart_rollback(databases: list[Path]) -> dict[str, object]:
         before = {path.name: digest(path) for path in databases}
         restored: dict[str, str] = {}
         for path in databases:
-            copy = root / path.name
-            shutil.copy2(path, copy)
-            restored[path.name] = digest(copy)
+            working = root / path.name
+            backup = root / f"{path.name}.backup"
+            shutil.copy2(path, backup)
+            shutil.copy2(path, working)
+            with working.open("ab") as stream:
+                stream.write(b"offline-mutation")
+            shutil.copy2(backup, working)
+            restored[path.name] = digest(working)
         if before != restored:
             fail("offline pre-start rollback simulation changed a database copy")
+        releases = root / "releases"
+        releases.mkdir()
+        (releases / "previous").mkdir()
+        (releases / "target").mkdir()
+        current = releases / "current"
+        current.symlink_to("previous", target_is_directory=True)
+        current.replace(releases / "current.old")
+        (releases / "current.new").symlink_to("target", target_is_directory=True)
+        (releases / "current.new").replace(current)
+        switched_target = os.readlink(current)
+        current.unlink()
+        (releases / "current.restore").symlink_to("previous", target_is_directory=True)
+        (releases / "current.restore").replace(current)
+        restored_target = os.readlink(current)
         return {
             "state_machine": [
                 "PRECHECKED", "BACKUP_VERIFIED", "POINTER_SWITCH_SIMULATED",
@@ -148,6 +168,8 @@ def simulate_prestart_rollback(databases: list[Path]) -> dict[str, object]:
             ],
             "database_hashes_before": before,
             "database_hashes_after_restore": restored,
+            "pointer_target_after_switch": switched_target,
+            "pointer_target_after_restore": restored_target,
             "production_access": False,
         }
 
@@ -159,14 +181,29 @@ def main() -> None:
     parser.add_argument("--expected-tree", required=True)
     parser.add_argument("--builder-commit", required=True)
     parser.add_argument("--rollout-helper-sha256", required=True)
+    parser.add_argument("--rollout-helper", type=Path, required=True)
+    parser.add_argument("--builder-root", type=Path, default=Path("."))
     parser.add_argument("--db-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--expected-schema", type=int, default=3)
     args = parser.parse_args()
     if args.db_root.as_posix().startswith(("/opt/", "/var/", "/etc/")):
         fail("database root looks like a production path; use copied fixtures")
-    if len(args.builder_commit) != SHA or len(args.rollout_helper_sha256) != SHA256:
+    if len(args.builder_commit) != SHA:
         fail("builder identity or rollout-helper hash is malformed")
+    try:
+        computed_builder = subprocess.check_output(
+            ["git", "-C", str(args.builder_root), "rev-parse", "HEAD"], text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail(f"cannot compute builder identity: {error}")
+    if computed_builder != args.builder_commit:
+        fail("builder identity does not match the checked-out workflow builder")
+    if args.rollout_helper.is_symlink() or not args.rollout_helper.is_file():
+        fail("rollout helper must be a regular file")
+    computed_helper = digest(args.rollout_helper)
+    if computed_helper != args.rollout_helper_sha256:
+        fail("rollout-helper SHA-256 does not match installed builder bytes")
     databases = sorted(args.db_root.glob("*.sqlite"))
     if not databases:
         fail("--db-root must contain copied .sqlite fixtures")
@@ -174,7 +211,7 @@ def main() -> None:
         "schema_version": 1,
         "target_commit": args.target_commit,
         "builder_commit": args.builder_commit,
-        "rollout_helper_sha256": args.rollout_helper_sha256,
+        "rollout_helper_sha256": computed_helper,
         "artifact": validate_artifact(args.archive, args.target_commit, args.expected_tree),
         "databases": [snapshot_database(path, args.expected_schema) for path in databases],
         "startup_compatibility": "schema, integrity and required runtime tables verified against copied fixtures",

@@ -177,20 +177,6 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
   }
   const leaseMs = options.lockLeaseMs ?? 90_000;
   if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error("lockLeaseMs must be greater than zero");
-  raw.exec(`
-    CREATE TABLE IF NOT EXISTS reconciliation_audit (
-      id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL,
-      subject_id TEXT NOT NULL,
-      status TEXT NOT NULL CHECK (status IN ('started', 'completed')),
-      reason TEXT NOT NULL,
-      cutoff_ms INTEGER,
-      before_json TEXT NOT NULL,
-      after_json TEXT,
-      created_at TEXT NOT NULL,
-      completed_at TEXT
-    )
-  `);
   return new BridgeDb(raw, {
     serviceId: options.serviceId ?? "diagnostic",
     runId: options.runId ?? randomUUID(),
