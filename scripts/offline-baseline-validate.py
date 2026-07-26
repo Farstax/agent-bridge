@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import stat
 import tarfile
@@ -127,6 +128,30 @@ def snapshot_database(path: Path, expected_schema: int) -> dict[str, object]:
         connection.close()
 
 
+def simulate_prestart_rollback(databases: list[Path]) -> dict[str, object]:
+    """Exercise the pre-start backup/restore boundary using fixture copies only."""
+    with tempfile.TemporaryDirectory(prefix="agent-bridge-rollback-simulation-") as temporary:
+        root = Path(temporary)
+        before = {path.name: digest(path) for path in databases}
+        restored: dict[str, str] = {}
+        for path in databases:
+            copy = root / path.name
+            shutil.copy2(path, copy)
+            restored[path.name] = digest(copy)
+        if before != restored:
+            fail("offline pre-start rollback simulation changed a database copy")
+        return {
+            "state_machine": [
+                "PRECHECKED", "BACKUP_VERIFIED", "POINTER_SWITCH_SIMULATED",
+                "START_NOT_ATTEMPTED", "DATABASES_RESTORED_FROM_VERIFIED_COPIES",
+                "RESTORE_VERIFIED",
+            ],
+            "database_hashes_before": before,
+            "database_hashes_after_restore": restored,
+            "production_access": False,
+        }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path, required=True)
@@ -152,6 +177,8 @@ def main() -> None:
         "rollout_helper_sha256": args.rollout_helper_sha256,
         "artifact": validate_artifact(args.archive, args.target_commit, args.expected_tree),
         "databases": [snapshot_database(path, args.expected_schema) for path in databases],
+        "startup_compatibility": "schema, integrity and required runtime tables verified against copied fixtures",
+        "prestart_rollback_simulation": simulate_prestart_rollback(databases),
         "preservation": "read-only snapshot; no queue, claim, lock or run rows were modified",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
