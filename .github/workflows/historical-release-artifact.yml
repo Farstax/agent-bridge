@@ -15,10 +15,6 @@ on:
         description: Reviewed builder/workflow/tooling commit
         required: true
         type: string
-      expected_schema:
-        description: Target artifact database schema version
-        required: true
-        type: number
 
 permissions:
   contents: read
@@ -97,14 +93,27 @@ jobs:
           set -Eeuo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_COMMIT"
           git diff --quiet HEAD -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json
-          test -z "$(git status --porcelain -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json)"
+           test -z "$(git status --porcelain -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json)"
+
+      - name: Derive target schema contract
+        working-directory: target-source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ -f dist/db/schema.js ]; then
+            schema_version="$(node --input-type=module -e 'import("./dist/db/schema.js").then((m) => console.log(m.CURRENT_SCHEMA_VERSION))')"
+          else
+            schema_version="$(./node_modules/.bin/tsx --eval 'import("./src/db/schema.ts").then((m) => console.log(m.CURRENT_SCHEMA_VERSION))')"
+          fi
+          [[ "$schema_version" =~ ^[1-9][0-9]*$ ]]
+          printf '{"schema_version":%s}\n' "$schema_version" > target-schema.json
 
       - name: Package raw target materials
         shell: bash
         run: |
           set -Eeuo pipefail
           materials="$RUNNER_TEMP/target-materials.tar.gz"
-          paths="src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json node_modules"
+           paths="src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json node_modules target-schema.json"
           if [ -d target-source/dist ]; then paths="dist $paths"; fi
           tar --create --gzip --file "$materials" \
             --directory target-source --sort=name --owner=0 --group=0 --numeric-owner \
@@ -173,11 +182,13 @@ jobs:
           BUILDER_COMMIT: ${{ inputs.builder_commit }}
           TARGET_COMMIT: ${{ inputs.target_commit }}
           EXPECTED_TREE: ${{ inputs.expected_tree }}
-          EXPECTED_SCHEMA: ${{ inputs.expected_schema }}
         run: |
           set -Eeuo pipefail
-          root="$RUNNER_TEMP/agent-bridge-historical-release"
-          archive="$RUNNER_TEMP/agent-bridge-${TARGET_COMMIT}.tar.gz"
+           root="$RUNNER_TEMP/agent-bridge-historical-release"
+           archive="$RUNNER_TEMP/agent-bridge-${TARGET_COMMIT}.tar.gz"
+           target_schema="$(jq -r .schema_version "$root/target-schema.json")"
+           [[ "$target_schema" =~ ^[1-9][0-9]*$ ]]
+           rm "$root/target-schema.json"
 
           node trusted-builder/scripts/releaseManifest.mjs \
             --root "$root" \
@@ -190,7 +201,7 @@ jobs:
             --builder-commit "$BUILDER_COMMIT" \
             --builder-workflow-run "$GITHUB_RUN_ID" \
             --builder-workflow-head "$BUILDER_COMMIT" \
-            --database-schema-version "$EXPECTED_SCHEMA"
+             --database-schema-version "$target_schema"
 
           tar --create --gzip --file "$archive" \
             --directory "$root" --sort=name --owner=0 --group=0 --numeric-owner .

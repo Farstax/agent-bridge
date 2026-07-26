@@ -19,9 +19,6 @@ on:
       builder_commit:
         required: true
         type: string
-      expected_schema:
-        required: true
-        type: number
       db_fixture_artifact:
         description: GitHub artifact name containing copied .sqlite fixtures
         required: true
@@ -58,6 +55,9 @@ jobs:
           test "$run_head" = "${{ inputs.builder_commit }}"
           archive="$(find offline-input/artifact -type f -name '*.tar.gz' -print -quit)"
           test -n "$archive"
+          expected_schema="$(tar --extract --gzip --to-stdout --file "$archive" ./manifest.json | jq -r .database_schema_version)"
+          [[ "$expected_schema" =~ ^[1-9][0-9]*$ ]]
+          echo "EXPECTED_SCHEMA=$expected_schema" >> "$GITHUB_ENV"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
       - name: Validate copied databases and artifact offline
         run: |
@@ -67,7 +67,7 @@ jobs:
             --expected-tree "${{ inputs.expected_tree }}" \
             --builder-commit "${{ inputs.builder_commit }}" \
             --artifact-run-id "${{ inputs.artifact_run_id }}" \
-            --expected-schema "${{ inputs.expected_schema }}" \
+            --expected-schema "$EXPECTED_SCHEMA" \
             --rollout-helper "scripts/rollout-agent-bridge.sh" \
             --rollout-helper-sha256 "$(sha256sum scripts/rollout-agent-bridge.sh | awk '{print $1}')" \
             --db-root offline-input/databases \

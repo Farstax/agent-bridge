@@ -15,7 +15,8 @@ from pathlib import Path
 
 SHA = 40
 SHA256 = 64
-REQUIRED_TABLES = {"bridge_runs", "bridge_events", "execution_locks", "pending_messages", "reconciliation_audit"}
+CORE_TABLES = {"bridge_runs", "bridge_events", "execution_locks", "pending_messages"}
+SCHEMA_TABLES = {4: CORE_TABLES | {"reconciliation_audit"}}
 
 
 def fail(message: str) -> None:
@@ -124,11 +125,12 @@ def snapshot_database(path: Path, expected_schema: int) -> dict[str, object]:
         if version != expected_schema:
             fail(f"schema version mismatch for {path}: {version} != {expected_schema}")
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        missing = sorted(REQUIRED_TABLES - tables)
+        required_tables = SCHEMA_TABLES.get(expected_schema, CORE_TABLES)
+        missing = sorted(required_tables - tables)
         if missing:
             fail(f"database {path} is missing required tables: {missing}")
         snapshots: dict[str, object] = {}
-        for table in sorted(REQUIRED_TABLES):
+        for table in sorted(required_tables):
             columns = [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
             count = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             snapshots[table] = {"columns": columns, "count": count}
