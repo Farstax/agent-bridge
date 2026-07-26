@@ -63,20 +63,43 @@ describe("Issue #135 Phase 4C.2: openProductionDb()", () => {
       const dbPath = join(dir, "bridge.sqlite");
       const seeded = openDb(dbPath);
       seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_installation_id", "install-current");
-      seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", JSON.stringify({ role: "interactive", source: "fresh-install" }));
+      seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", JSON.stringify({ schemaVersion: 1, role: "interactive", source: "fresh-install", installationId: "install-current", path: dbPath }));
       seeded.raw.prepare("INSERT INTO bridge_state (chat_id, codex_session_id) VALUES (?, ?)").run("chat", "stale-session");
       seeded.close();
-      expect(() => openProductionDb(dbPath, { installationId: "install-current", requireInstallationIdentity: true }))
+      expect(() => openProductionDb(dbPath, { installationId: "install-current", requireInstallationIdentity: true, databaseRole: "interactive" }))
         .toThrow(/first boot.*session/i);
 
       const cleanPath = join(dir, "clean.sqlite");
       const clean = openDb(cleanPath);
       clean.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_installation_id", "install-clean");
-      clean.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", JSON.stringify({ role: "interactive", source: "fresh-install" }));
+      clean.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", JSON.stringify({ schemaVersion: 1, role: "interactive", source: "fresh-install", installationId: "install-clean", path: cleanPath }));
       clean.close();
-      const opened = openProductionDb(cleanPath, { installationId: "install-clean", requireInstallationIdentity: true });
+      const opened = openProductionDb(cleanPath, { installationId: "install-clean", requireInstallationIdentity: true, databaseRole: "interactive" });
       expect(opened.raw.prepare("SELECT value FROM settings WHERE key = ?").get("agent_bridge_first_boot_verified")).toBeTruthy();
       opened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["malformed JSON", "not-json"],
+    ["wrong role", JSON.stringify({ schemaVersion: 1, source: "fresh-install", installationId: "install-current", role: "worker", path: "/expected/interactive.sqlite" })],
+    ["wrong path", JSON.stringify({ schemaVersion: 1, source: "fresh-install", installationId: "install-current", role: "interactive", path: "/wrong.sqlite" })],
+    ["wrong identity", JSON.stringify({ schemaVersion: 1, source: "fresh-install", installationId: "install-other", role: "interactive", path: "/expected/interactive.sqlite" })],
+  ])("rejects provenance with %s", (_label, provenance) => {
+    const dir = tempDir("invalid-provenance");
+    try {
+      const dbPath = join(dir, "bridge.sqlite");
+      const seeded = openDb(dbPath);
+      seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_installation_id", "install-current");
+      seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", provenance);
+      seeded.close();
+      expect(() => openProductionDb(dbPath, {
+        installationId: "install-current",
+        requireInstallationIdentity: true,
+        databaseRole: "interactive",
+      })).toThrow(/provenance/i);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
