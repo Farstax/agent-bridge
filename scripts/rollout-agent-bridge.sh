@@ -52,6 +52,8 @@ if [[ -n "$test_root" ]]; then
   cp_cmd="$test_root/bin/cp"
   restore_cmd="$test_root/bin/rollout-restore"
   activation_cmd="$test_root/bin/release-activate"
+  authorization_validator="$test_root/bin/rollout-authorization-trusted"
+  acceptance_validator="$test_root/bin/rollout-acceptance-trusted"
   defaults_dir="$test_root/etc/default"
   cgroup_root="$test_root/sys/fs/cgroup"
   smoke_delay=0
@@ -66,6 +68,8 @@ else
   cp_cmd="/usr/bin/cp"
   restore_cmd="/usr/local/libexec/agent-bridge-rollout-restore"
   activation_cmd="/usr/local/libexec/agent-bridge-release-activate"
+  authorization_validator="/usr/local/libexec/agent-bridge-rollout-authorization.py"
+  acceptance_validator="/usr/local/libexec/agent-bridge-rollout-acceptance.py"
   defaults_dir="/etc/default"
   cgroup_root="/sys/fs/cgroup"
   smoke_delay=5
@@ -86,6 +90,8 @@ project_dir=""
 release_root=""
 current_pointer=""
 rollout_helper_sha256=""
+authorization_validator_sha256=""
+acceptance_validator_sha256=""
 runtime_user=""
 node_bin=""
 backup_dir=""
@@ -100,6 +106,8 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     release_root) [[ -z "$release_root" ]] || die "duplicate release_root"; release_root="$value" ;;
     current_pointer) [[ -z "$current_pointer" ]] || die "duplicate current_pointer"; current_pointer="$value" ;;
     rollout_helper_sha256) [[ -z "$rollout_helper_sha256" ]] || die "duplicate rollout_helper_sha256"; rollout_helper_sha256="$value" ;;
+    authorization_validator_sha256) [[ -z "$authorization_validator_sha256" ]] || die "duplicate authorization_validator_sha256"; authorization_validator_sha256="$value" ;;
+    acceptance_validator_sha256) [[ -z "$acceptance_validator_sha256" ]] || die "duplicate acceptance_validator_sha256"; acceptance_validator_sha256="$value" ;;
     runtime_user) [[ -z "$runtime_user" ]] || die "duplicate runtime_user"; runtime_user="$value" ;;
     node_bin) [[ -z "$node_bin" ]] || die "duplicate node_bin"; node_bin="$value" ;;
     backup_dir) [[ -z "$backup_dir" ]] || die "duplicate backup_dir"; backup_dir="$value" ;;
@@ -117,7 +125,14 @@ if [[ -n "$release_root" || -n "$current_pointer" ]]; then
 fi
 if (( release_mode == 1 )); then
   [[ -x "$activation_cmd" ]] || die "release activation helper is unavailable: $activation_cmd"
-  if (( test_mode == 0 )); then [[ -n "$authorization_file" ]] || die "production rollout requires --authorization-file"; fi
+  if (( test_mode == 0 )); then
+    [[ -n "$authorization_file" ]] || die "production rollout requires --authorization-file"
+    [[ -x "$authorization_validator" && -x "$acceptance_validator" ]] || die "trusted rollout validators are unavailable"
+    [[ "$authorization_validator_sha256" =~ ^[0-9a-f]{64}$ ]] || die "authorization validator SHA-256 pin is missing or malformed"
+    [[ "$acceptance_validator_sha256" =~ ^[0-9a-f]{64}$ ]] || die "acceptance validator SHA-256 pin is missing or malformed"
+    [[ "$(/usr/bin/sha256sum "$authorization_validator" | /usr/bin/cut -d' ' -f1)" == "$authorization_validator_sha256" ]] || die "authorization validator SHA-256 mismatch"
+    [[ "$(/usr/bin/sha256sum "$acceptance_validator" | /usr/bin/cut -d' ' -f1)" == "$acceptance_validator_sha256" ]] || die "acceptance validator SHA-256 mismatch"
+  fi
 fi
 for value_name in runtime_user node_bin backup_dir log_dir; do
   [[ -n "${!value_name}" ]] || die "missing rollout config key: $value_name"
@@ -179,6 +194,12 @@ if [[ -n "$release_root" || -n "$current_pointer" ]]; then
   project_dir="$release_dir"
   [[ "$pointer_target" != "$expected_commit" ]] || die "current pointer already targets expected commit; refusing same-target no-op activation"
   release_mode=1
+fi
+if (( release_mode == 1 )); then
+  if [[ -n "$authorization_file" ]]; then
+    "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" >/dev/null || die "rollout authorization validation failed"
+  fi
+  "$activation_cmd" --validate-only --release-root "$release_root" --current "$current_pointer" --expected-commit "$expected_commit" || die "active release contract validation failed"
 fi
 if (( test_mode == 0 )) || [[ -n "$rollout_helper_sha256" ]]; then
   [[ "$rollout_helper_sha256" =~ ^[0-9a-f]{64}$ ]] || die "rollout_helper_sha256 must be a full lowercase SHA-256 pin"
@@ -268,7 +289,6 @@ code_check() {
   if (( release_mode == 1 )); then
     [[ -f "$project_dir/scripts/rollout-db.ts" && ! -L "$project_dir/scripts/rollout-db.ts" ]] || die "migration helper is missing from active release"
     [[ -f "$project_dir/scripts/rollout-db-impl.ts" && ! -L "$project_dir/scripts/rollout-db-impl.ts" ]] || die "database implementation helper is missing from active release"
-    [[ -f "$project_dir/scripts/rollout-authorization.py" && ! -L "$project_dir/scripts/rollout-authorization.py" ]] || die "authorization validator is missing from active release"
     [[ -f "$project_dir/node_modules/tsx/dist/cli.mjs" && ! -L "$project_dir/node_modules/tsx/dist/cli.mjs" ]] || die "tsx runtime is missing from active release"
   else
     git_check
@@ -816,12 +836,9 @@ code_check
 if (( release_mode == 1 )); then
   authorization_evidence_sha256=""
   if [[ -n "$authorization_file" ]]; then
-    /usr/bin/python3 "$project_dir/scripts/rollout-authorization.py" --file "$authorization_file" --expected-commit "$expected_commit" --output "$artifact_dir/authorization-evidence.json" || die "rollout authorization validation failed"
+    "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" --output "$artifact_dir/authorization-evidence.json" || die "rollout authorization validation failed"
     hash_evidence_file "$artifact_dir/authorization-evidence.json"
     authorization_evidence_sha256="$(/usr/bin/sha256sum "$artifact_dir/authorization-evidence.json" | /usr/bin/cut -d' ' -f1)"
-  fi
-  if (( test_mode == 0 )); then
-    "$activation_cmd" --validate-only --release-root "$release_root" --current "$current_pointer" --expected-commit "$expected_commit" || die "active release contract validation failed"
   fi
   previous_pointer_target="$pointer_target"
   rollout_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d ' ' -f1)"
@@ -915,7 +932,7 @@ for unit in "${units[@]}"; do
 done
 run_db_tool validate --evidence - "${db_args[@]}" > "$artifact_dir/post-start-evidence.json"
 hash_evidence_file "$artifact_dir/post-start-evidence.json"
-/usr/bin/python3 "$project_dir/scripts/rollout-acceptance.py" --before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --output "$artifact_dir/acceptance-evidence.json" || die "bounded queue/claim/lock acceptance failed"
+"$acceptance_validator" --before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --output "$artifact_dir/acceptance-evidence.json" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
 record_phase ACCEPTED
 

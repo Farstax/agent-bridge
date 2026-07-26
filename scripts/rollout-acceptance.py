@@ -33,12 +33,15 @@ def compare(before: dict, after: dict) -> dict:
         old, new = left[path], right[path]
         if old.get("integrity") != "ok" or new.get("integrity") != "ok":
             fail(f"database integrity is not ok: {path}")
-        if new.get("schema") != "current":
-            fail(f"database schema is not current: {path}")
         if new.get("executionLockState", {}).get("active", 0) or new.get("executionLockState", {}).get("total", 0):
             fail(f"active execution lock requires an explicit continuation contract: {path}")
         if old.get("executionLockState", {}).get("active", 0) or old.get("executionLockState", {}).get("total", 0):
             fail(f"pre-existing execution lock is ambiguous: {path}")
+        for key in ("runIdentityCorrelation", "deliveryIdentityCorrelation"):
+            if old.get(key) != new.get(key):
+                fail(f"durable run/delivery identity changed for {path}: {key}")
+        if new.get("schema") != "current":
+            fail(f"database schema is not current: {path}")
         if old.get("schema") != "current":
             if old.get("pendingQueueCount") != new.get("pendingQueueCount"):
                 fail(f"queue count changed across schema migration for {path}")

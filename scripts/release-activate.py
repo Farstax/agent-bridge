@@ -103,7 +103,7 @@ def validate_release(release: Path, expected_commit: str, strict: bool = False) 
         fail("target release manifest identity does not match expected commit")
     if strict:
         _manifest_files(release, manifest)
-        required = ("scripts/rollout-db.ts", "scripts/rollout-db-impl.ts", "scripts/rollout-authorization.py")
+        required = ("scripts/rollout-db.ts", "scripts/rollout-db-impl.ts")
         if any(not _regular(release / path) for path in required):
             fail("release runtime contract is missing a required regular helper")
         strategy = manifest.get("build_strategy", "source-tsx")

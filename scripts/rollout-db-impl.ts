@@ -43,6 +43,8 @@ interface DbEvidence {
   executionLockState: { total: number; active: number };
   claimRunAcquisitionCorrelation: string;
   runLockCorrelation: { queue: Array<Record<string, unknown>>; locks: Array<Record<string, unknown>> };
+  runIdentityCorrelation: Array<Record<string, unknown>>;
+  deliveryIdentityCorrelation: Array<Record<string, unknown>>;
   deliveryState: Record<string, number>;
   role?: string;
 }
@@ -284,11 +286,18 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
     const deliveryState = tables.includes("bridge_runs")
       ? countBy((db.prepare("SELECT status FROM bridge_runs ORDER BY run_id").all() as Array<{ status: string }>).map((row) => row.status))
       : {};
+    const runIdentityCorrelation = tables.includes("bridge_runs")
+      ? db.prepare("SELECT run_id, chat_id, bot, status, started_at, ended_at, session_id FROM bridge_runs ORDER BY run_id").all() as Array<Record<string, unknown>>
+      : [];
+    const deliveryIdentityCorrelation = tables.includes("bridge_events")
+      ? db.prepare("SELECT id, run_id, seq, type, timestamp FROM bridge_events ORDER BY run_id, seq, id").all() as Array<Record<string, unknown>>
+      : [];
     return {
       path, sha256: hashFile(path), integrity, schemaVersion: userVersion, schema, legacyQueueCount, pendingQueueCount,
       tables, pendingColumns, lockColumns, resolvingUnits, queueStateCounts, claimStateCounts, executionLockState,
       claimRunAcquisitionCorrelation: digestRows({ queueRows, lockRows }),
       runLockCorrelation: { queue: queueRows, locks: lockRows as Array<Record<string, unknown>> }, deliveryState,
+      runIdentityCorrelation, deliveryIdentityCorrelation,
     };
   } finally {
     db.close();

@@ -46,6 +46,8 @@ Review and install the helper and fixed inventory as root:
 ```bash
 sudo install -D -m 0750 -o root -g root scripts/rollout-agent-bridge.sh /usr/local/sbin/rollout-agent-bridge
 sudo install -D -m 0750 -o root -g root scripts/rollout-restore.py /usr/local/libexec/agent-bridge-rollout-restore
+sudo install -D -m 0750 -o root -g root scripts/rollout-authorization.py /usr/local/libexec/agent-bridge-rollout-authorization.py
+sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local/libexec/agent-bridge-rollout-acceptance.py
 sudo install -d -m 0700 -o root -g root /var/backups/agent-bridge /var/log/agent-bridge-rollouts
 sudo install -D -m 0600 -o root -g root systemd/agent-bridge-rollout.conf.example /etc/agent-bridge/rollout.conf
 sudo sha256sum /usr/local/sbin/rollout-agent-bridge
@@ -57,6 +59,11 @@ Write the displayed digest as `rollout_helper_sha256=` in the root-owned
 config. Production execution fails closed when this pin is missing, malformed,
 or does not match the installed helper bytes, preventing a stale legacy helper
 from stopping services under an immutable-release configuration.
+
+Also record the SHA-256 digests of the independently installed validators as
+`authorization_validator_sha256=` and `acceptance_validator_sha256=`. The
+rollout helper verifies both pins before reading the target release or running
+target-owned code; target-release copies of these validators are never trusted.
 
 Sudoers content:
 
