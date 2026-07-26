@@ -28,11 +28,15 @@ reconcile stale runtime state
   -> separately authorized guarded rollout
 ```
 
-`scripts/offline-baseline-validate.py` and the manual
+Schema version 4 owns the `reconciliation_audit` table; ordinary startup no
+longer creates reconciliation schema objects. `scripts/offline-baseline-validate.py` and the manual
 `offline-baseline-validation.yml` workflow are fixture-only. They reject
-production-looking database roots, require exact artifact identities and
-strict manifest equality, open copied SQLite files read-only, and emit durable
-evidence. They do not stage artifacts or access live databases.
+production-looking database roots, download named non-production artifact and
+fixture bundles, compute the checked-out builder and helper identities, require
+exact artifact identities and strict manifest equality, open copied SQLite
+files read-only, and emit durable evidence. Their rollback simulation mutates
+and restores only temporary fixture copies and switches only a temporary
+pointer. They do not stage artifacts or access live databases.
 
 ## State machine
 
