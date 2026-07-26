@@ -314,6 +314,13 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('test "$BUILDER_COMMIT" = "$WORKFLOW_SHA"');
   });
 
+  it("requires artifact manifests to carry builder workflow and schema identities", () => {
+    const workflow = readFileSync(join(process.cwd(), ".github/workflows/release-artifact.yml"), "utf8");
+    expect(workflow).toContain("--builder-workflow-run \"$GITHUB_RUN_ID\"");
+    expect(workflow).toContain("--builder-workflow-head");
+    expect(workflow).toContain("--database-schema-version");
+  });
+
   it("hashes the manifest and provenance tool and derives evidence from archived-not-staged content", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/historical-release-artifact.yml"), "utf8");
 

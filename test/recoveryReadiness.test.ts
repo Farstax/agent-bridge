@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { openDb, type BridgeDb } from "../src/db.js";
 
 const NOW = Date.parse("2026-07-26T12:00:00.000Z");
@@ -158,5 +161,37 @@ describe("recovery-readiness reconciliation guards", () => {
     })).rejects.toThrow("injected interruption");
     expect(bridge.getRun("interrupted").status).toBe("running");
     expect(bridge.raw.prepare("SELECT COUNT(*) AS n FROM reconciliation_audit").get()).toEqual({ n: 0 });
+  });
+
+  it("leaves no audit residue when a second connection wins the reconciliation race", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-reconcile-race-"));
+    const path = join(root, "bridge.sqlite");
+    const first = openDb(path);
+    const second = openDb(path);
+    try {
+      staleRun(first, "raced-run");
+      const candidates = first.raw.prepare(
+        "SELECT run_id, chat_id, bot, started_at FROM bridge_runs WHERE status = 'running'"
+      ).all() as Array<{ run_id: string; chat_id: string; bot: string; started_at: string }>;
+      const options = {
+        nowMs: NOW,
+        minAgeMs: 60_000,
+        processState: () => "absent" as const,
+        containmentState: () => "proven" as const,
+      };
+
+      expect(await second.reconcileOrphanedRuns(options)).toHaveLength(1);
+      expect(await first.reconcileOrphanedRuns({ ...options, candidateRuns: candidates })).toEqual([]);
+      expect(first.raw.prepare(
+        "SELECT status, after_json FROM reconciliation_audit WHERE subject_id = ? ORDER BY created_at"
+      ).all("raced-run")).toEqual([expect.objectContaining({ status: "completed" })]);
+      expect(first.raw.prepare(
+        "SELECT type FROM bridge_events WHERE run_id = ? ORDER BY seq"
+      ).all("raced-run")).toHaveLength(3);
+    } finally {
+      first.close();
+      second.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
