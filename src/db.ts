@@ -99,6 +99,10 @@ export interface OpenDbOptions {
   lockLeaseMs?: number;
   /** Test-only clock injection for deterministic lease expiry. */
   clock?: () => number;
+  /** Appliance installation identity expected by production startup. */
+  installationId?: string;
+  /** Fail closed when the database has no fresh-install provenance. */
+  requireInstallationIdentity?: boolean;
 }
 
 export class ExecutionLockLostError extends Error {
@@ -168,6 +172,27 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
   });
 }
 
+function assertProductionInstallation(raw: Database.Database, options: OpenDbOptions): void {
+  if (!options.requireInstallationIdentity && !options.installationId) return;
+  const expected = options.installationId?.trim();
+  if (!expected) throw new Error("agent bridge installation identity is required");
+  const get = (key: string): string | null => {
+    const row = raw.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value?: string | null } | undefined;
+    return row?.value ?? null;
+  };
+  const stored = get("agent_bridge_installation_id");
+  if (!stored || stored !== expected) throw new Error("database installation provenance is missing or mismatched");
+  if (!get("agent_bridge_database_provenance")) throw new Error("database installation provenance is missing");
+  if (get("agent_bridge_first_boot_verified")) return;
+  const sessionCount = Number((raw.prepare(`SELECT COUNT(*) AS n FROM bridge_state
+    WHERE codex_session_id IS NOT NULL OR claude_session_id IS NOT NULL
+       OR antigravity_session_id IS NOT NULL OR kimchi_session_id IS NOT NULL`).get() as { n: number }).n);
+  const runCount = Number((raw.prepare("SELECT COUNT(*) AS n FROM bridge_runs").get() as { n: number }).n);
+  if (sessionCount > 0 || runCount > 0) throw new Error("first boot database already contains sessions or runs");
+  raw.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run("agent_bridge_first_boot_verified", new Date().toISOString());
+}
+
 export function openDb(dbPath: string, options: OpenDbOptions = {}): BridgeDb {
   if (dbPath !== ":memory:") {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -227,6 +252,7 @@ export function openProductionDb(dbPath: string, options: OpenDbOptions = {}): B
   try {
     assertExactRoleAssignmentSchema(raw);
     assertDatabaseForeignKeyIntegrity(raw);
+    assertProductionInstallation(raw, options);
   } catch (error) {
     raw.close();
     throw error;

@@ -7,7 +7,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { openDb } from "../src/db.js";
@@ -702,6 +702,20 @@ async function bootstrapDatabase(path: string, role: string, evidencePath: strin
         raw.close();
       }
       openDb(tempPath, { serviceId: `rollout:bootstrap:${role}` }).close();
+      const installationId = process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()
+        || `install-${randomBytes(16).toString("hex")}`;
+      const createdAt = new Date().toISOString();
+      const metadata = new Database(tempPath);
+      metadata.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(
+        "agent_bridge_installation_id", installationId,
+      );
+      metadata.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(
+        "agent_bridge_database_provenance",
+        JSON.stringify({ schemaVersion: 1, source: "fresh-install", role, path, installationId, createdAt }),
+      );
+      metadata.close();
 
       // Real production checkpoint 1: unconditional, always present.
       await yieldToEventLoop();
@@ -741,6 +755,18 @@ async function bootstrapDatabase(path: string, role: string, evidencePath: strin
 
       removeSidecars(tempPath);
       const evidence = { ...inspectDatabase(path, true), role };
+      const provenancePath = `${path}.provenance.json`;
+      const provenanceTemp = `${provenancePath}.tmp-${randomBytes(8).toString("hex")}`;
+      writeFileSync(provenanceTemp, `${JSON.stringify({
+        schemaVersion: 1,
+        source: "fresh-install",
+        role,
+        path,
+        installationId,
+        createdAt,
+        databaseSha256: evidence.sha256,
+      })}\n`, { mode: 0o600 });
+      renameSync(provenanceTemp, provenancePath);
 
       // Real production checkpoint 4: unconditional, always present, after
       // the (synchronous, but now-complete) inspection read and before the

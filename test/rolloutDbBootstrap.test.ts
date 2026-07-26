@@ -56,16 +56,20 @@ afterEach(() => {
 });
 
 describe("rollout-db.ts bootstrap", () => {
-  it("creates a brand-new database at CURRENT_SCHEMA_VERSION and records the role in evidence", () => {
+  it("creates a brand-new database at CURRENT_SCHEMA_VERSION and records installation provenance", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
     const evidencePath = join(dir, "evidence.json");
-    const res = runBootstrap([...bootstrapArgs(dbPath, "worker"), "--evidence", evidencePath]);
+    const res = runBootstrap([...bootstrapArgs(dbPath, "worker"), "--evidence", evidencePath], { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
     expect(res.status, res.stderr).toBe(0);
     expect(existsSync(dbPath)).toBe(true);
     const db = new Database(dbPath, { readonly: true });
     expect(db.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
+    expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("agent_bridge_installation_id")).toEqual({ value: "install-test" });
+    expect(db.prepare("SELECT value FROM settings WHERE key = ?").get("agent_bridge_database_provenance")).toBeTruthy();
     db.close();
+    expect(existsSync(`${dbPath}.provenance.json`)).toBe(true);
+    expect(JSON.parse(readFileSync(`${dbPath}.provenance.json`, "utf8")).databaseSha256).toMatch(/^[a-f0-9]{64}$/);
     const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
     expect(evidence.mode).toBe("bootstrap");
     expect(evidence.databases[0].role).toBe("worker");

@@ -42,6 +42,46 @@ describe("Issue #135 Phase 4C.2: openProductionDb()", () => {
     }
   });
 
+  it("fails closed when an appliance database has no installation provenance", () => {
+    const dir = tempDir("missing-provenance");
+    try {
+      const dbPath = join(dir, "bridge.sqlite");
+      openDb(dbPath).close();
+      expect(() => openProductionDb(dbPath, {
+        serviceId: "test:production",
+        installationId: "install-current",
+        requireInstallationIdentity: true,
+      })).toThrow(/installation provenance/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a pre-populated first-boot database and accepts a clean one", () => {
+    const dir = tempDir("fresh-install");
+    try {
+      const dbPath = join(dir, "bridge.sqlite");
+      const seeded = openDb(dbPath);
+      seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_installation_id", "install-current");
+      seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", JSON.stringify({ role: "interactive", source: "fresh-install" }));
+      seeded.raw.prepare("INSERT INTO bridge_state (chat_id, codex_session_id) VALUES (?, ?)").run("chat", "stale-session");
+      seeded.close();
+      expect(() => openProductionDb(dbPath, { installationId: "install-current", requireInstallationIdentity: true }))
+        .toThrow(/first boot.*session/i);
+
+      const cleanPath = join(dir, "clean.sqlite");
+      const clean = openDb(cleanPath);
+      clean.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_installation_id", "install-clean");
+      clean.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", JSON.stringify({ role: "interactive", source: "fresh-install" }));
+      clean.close();
+      const opened = openProductionDb(cleanPath, { installationId: "install-clean", requireInstallationIdentity: true });
+      expect(opened.raw.prepare("SELECT value FROM settings WHERE key = ?").get("agent_bridge_first_boot_verified")).toBeTruthy();
+      opened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when a current-version database has a malformed role-assignment table", () => {
     const dir = tempDir("malformed-role-schema");
     try {

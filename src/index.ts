@@ -70,7 +70,11 @@ const soulContext = loadSoulContext({
 });
 if (soulContext) console.log(`[bridge] loaded SOUL.md context (${soulContext.length} chars)`);
 
-const db = openProductionDb(config.dbPath, { serviceId: standaloneServiceId() });
+const db = openProductionDb(config.dbPath, {
+  serviceId: standaloneServiceId(),
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production",
+});
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 
 await db.reconcileOrphanedRuns({

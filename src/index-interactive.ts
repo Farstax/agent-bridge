@@ -86,7 +86,11 @@ const soulContext = loadSoulContext({
 });
 if (soulContext) console.log(`[interactive] loaded SOUL.md context (${soulContext.length} chars)`);
 
-const db = openProductionDb(dbPath, { serviceId: "telegram:interactive" });
+const db = openProductionDb(dbPath, {
+  serviceId: "telegram:interactive",
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production",
+});
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const client = new TelegramClient(token, fetch, 45_000);
 

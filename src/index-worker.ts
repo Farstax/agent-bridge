@@ -99,7 +99,11 @@ const roleScopeKey = roleAssignmentConfig?.scopeKey
   ?? process.env.WORKER_ROLE_ASSIGNMENT_SCOPE?.trim()
   ?? "worker:default";
 
-const db = openProductionDb(dbPath, { serviceId: "telegram:worker" });
+const db = openProductionDb(dbPath, {
+  serviceId: "telegram:worker",
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production",
+});
 const roleAssignmentRevision = roleAssignmentConfig
   ? db.createRoleAssignmentRevision(roleAssignmentConfig)
   : db.getCurrentRoleAssignmentRevision(roleScopeKey);
