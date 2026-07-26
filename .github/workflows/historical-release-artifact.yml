@@ -15,6 +15,10 @@ on:
         description: Reviewed builder/workflow/tooling commit
         required: true
         type: string
+      expected_schema:
+        description: Target artifact database schema version
+        required: true
+        type: number
 
 permissions:
   contents: read
@@ -133,11 +137,13 @@ jobs:
         env:
           BUILDER_COMMIT: ${{ inputs.builder_commit }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUN_HEAD: ${{ github.sha }}
         run: |
           set -Eeuo pipefail
           [[ "$BUILDER_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git -C trusted-builder rev-parse HEAD)" = "$BUILDER_COMMIT"
           test "$BUILDER_COMMIT" = "$WORKFLOW_SHA"
+          test "$RUN_HEAD" = "$BUILDER_COMMIT"
           test -f trusted-builder/scripts/releaseManifest.mjs
           test -f trusted-builder/scripts/releaseProvenance.mjs
 
@@ -167,6 +173,7 @@ jobs:
           BUILDER_COMMIT: ${{ inputs.builder_commit }}
           TARGET_COMMIT: ${{ inputs.target_commit }}
           EXPECTED_TREE: ${{ inputs.expected_tree }}
+          EXPECTED_SCHEMA: ${{ inputs.expected_schema }}
         run: |
           set -Eeuo pipefail
           root="$RUNNER_TEMP/agent-bridge-historical-release"
@@ -179,7 +186,11 @@ jobs:
             --tree "$EXPECTED_TREE" \
             --node-version "$(node --version)" \
             --platform "$(node -p 'process.platform')" \
-            --arch "$(node -p 'process.arch')"
+            --arch "$(node -p 'process.arch')" \
+            --builder-commit "$BUILDER_COMMIT" \
+            --builder-workflow-run "$GITHUB_RUN_ID" \
+            --builder-workflow-head "$BUILDER_COMMIT" \
+            --database-schema-version "$EXPECTED_SCHEMA"
 
           tar --create --gzip --file "$archive" \
             --directory "$root" --sort=name --owner=0 --group=0 --numeric-owner .

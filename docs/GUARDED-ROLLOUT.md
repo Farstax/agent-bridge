@@ -109,6 +109,12 @@ copied-fixture integrity and schema, not the target runtime opener. The
 pre-start simulation uses atomic temporary-symlink replacement for both target
 activation and restoration; it never touches production pointers or databases.
 
+For historical artifacts, the successful workflow run must be the named
+`Historical Release Artifact` workflow, its run head must equal the reviewed
+builder commit, and the manifest must still bind the target commit/tree to the
+historical inputs. The expected target schema is an explicit workflow input;
+it is never inferred from the current checkout.
+
 The forward path is therefore: reconcile proven stale state; build a fresh
 immutable artifact; validate it offline against copied production-state
 fixtures; obtain independent approval; then request a separately authorized

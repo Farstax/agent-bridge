@@ -104,8 +104,11 @@ export class LockRepository {
   releaseExact(record: ExecutionLockRecord): boolean {
     const claimed = this.db.prepare(`
       SELECT 1 FROM pending_messages
-      WHERE claim_run_id = ? AND claim_acquisition_id = ? LIMIT 1
-    `).get(record.run_id, record.acquisition_id);
+      WHERE (surface = ? AND chat_key = ?)
+         OR claim_run_id = ?
+         OR claim_acquisition_id = ?
+      LIMIT 1
+    `).get(record.surface, record.chat_key, record.run_id, record.acquisition_id);
     if (claimed) return false;
     return this.db.prepare(`
       DELETE FROM execution_locks

@@ -48,8 +48,14 @@ jobs:
             --name "${{ inputs.artifact }}" --dir offline-input/artifact
           gh run download "${{ inputs.db_fixture_run_id }}" --repo "$GITHUB_REPOSITORY" \
             --name "${{ inputs.db_fixture_artifact }}" --dir offline-input/databases
+          run_status="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json status --jq .status)"
+          run_conclusion="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)"
+          run_name="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json name --jq .name)"
           run_head="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
-          test "$run_head" = "${{ inputs.target_commit }}"
+          test "$run_status" = "completed"
+          test "$run_conclusion" = "success"
+          test "$run_name" = "Historical Release Artifact"
+          test "$run_head" = "${{ inputs.builder_commit }}"
           archive="$(find offline-input/artifact -type f -name '*.tar.gz' -print -quit)"
           test -n "$archive"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"

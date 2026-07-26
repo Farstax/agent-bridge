@@ -49,6 +49,7 @@ class ReconciliationLostRace extends Error {}
 export interface StaleLockReconciliationOptions {
   nowMs?: number;
   reason: string;
+  candidateLocks?: ExecutionLockRecord[];
   containmentState: (lock: ExecutionLockRecord) => ReconciliationContainment;
   lockState: (lock: ExecutionLockRecord) => Exclude<ReconciliationLockState, "absent">;
 }
@@ -741,20 +742,25 @@ export class BridgeDb {
     if (!options.reason.trim()) throw new Error("reconciliation reason is required");
     const now = new Date(options.nowMs ?? Date.now()).toISOString();
     const released: ExecutionLockRecord[] = [];
-    for (const lock of this.locks.listLocks()) {
+    for (const lock of options.candidateLocks ?? this.locks.listLocks()) {
       if (options.containmentState(lock) !== "proven" || options.lockState(lock) !== "stale") continue;
       const auditId = randomUUID();
-      const changed = this.runInTransaction(() => {
-        this.raw.prepare(`INSERT INTO reconciliation_audit
-          (id, kind, subject_id, status, reason, before_json, created_at)
-          VALUES (?, 'lock', ?, 'started', ?, ?, ?)`)
-          .run(auditId, `${lock.surface}:${lock.chat_key}`, options.reason, JSON.stringify(lock), now);
-        const removed = this.locks.releaseExact(lock);
-        if (!removed) return false;
-        this.raw.prepare(`UPDATE reconciliation_audit SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
-          .run(JSON.stringify({ released: true, releasedAt: now }), now, auditId);
-        return true;
-      });
+      let changed = false;
+      try {
+        changed = this.runInTransaction(() => {
+          this.raw.prepare(`INSERT INTO reconciliation_audit
+            (id, kind, subject_id, status, reason, before_json, created_at)
+            VALUES (?, 'lock', ?, 'started', ?, ?, ?)`)
+            .run(auditId, `${lock.surface}:${lock.chat_key}`, options.reason, JSON.stringify(lock), now);
+          const removed = this.locks.releaseExact(lock);
+          if (!removed) throw new ReconciliationLostRace();
+          this.raw.prepare(`UPDATE reconciliation_audit SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
+            .run(JSON.stringify({ released: true, releasedAt: now }), now, auditId);
+          return true;
+        });
+      } catch (error) {
+        if (!(error instanceof ReconciliationLostRace)) throw error;
+      }
       if (changed) released.push(lock);
     }
     return released;

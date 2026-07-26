@@ -80,7 +80,7 @@ def validate_artifact(archive: Path, target_commit: str, expected_tree: str, bui
         builder = manifest.get("builder")
         if not isinstance(builder, dict) or builder.get("commit") != builder_commit \
                 or str(builder.get("workflow_run")) != str(artifact_run_id) \
-                or builder.get("workflow_head") != target_commit:
+                or builder.get("workflow_head") != builder_commit:
             fail("manifest builder provenance mismatch")
         if manifest.get("database_schema_version") != expected_schema:
             fail("manifest database schema identity mismatch")
