@@ -95,7 +95,8 @@ if (soulContext) console.log(`[discord-interactive] loaded SOUL.md context (${so
 const db = openProductionDb(dbPath, {
   serviceId: "discord:interactive",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
-  requireInstallationIdentity: process.env.NODE_ENV === "production",
+  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+  databaseRole: "discord",
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 

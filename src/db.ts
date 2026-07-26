@@ -103,6 +103,8 @@ export interface OpenDbOptions {
   installationId?: string;
   /** Fail closed when the database has no fresh-install provenance. */
   requireInstallationIdentity?: boolean;
+  /** Expected provenance role for this service's database. */
+  databaseRole?: string;
 }
 
 export class ExecutionLockLostError extends Error {
@@ -172,7 +174,7 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
   });
 }
 
-function assertProductionInstallation(raw: Database.Database, options: OpenDbOptions): void {
+function assertProductionInstallation(raw: Database.Database, dbPath: string, options: OpenDbOptions): void {
   if (!options.requireInstallationIdentity && !options.installationId) return;
   const expected = options.installationId?.trim();
   if (!expected) throw new Error("agent bridge installation identity is required");
@@ -182,7 +184,18 @@ function assertProductionInstallation(raw: Database.Database, options: OpenDbOpt
   };
   const stored = get("agent_bridge_installation_id");
   if (!stored || stored !== expected) throw new Error("database installation provenance is missing or mismatched");
-  if (!get("agent_bridge_database_provenance")) throw new Error("database installation provenance is missing");
+  const provenanceText = get("agent_bridge_database_provenance");
+  if (!provenanceText) throw new Error("database installation provenance is missing");
+  let provenance: unknown;
+  try { provenance = JSON.parse(provenanceText); } catch { throw new Error("database installation provenance is malformed"); }
+  if (!provenance || typeof provenance !== "object" || Array.isArray(provenance)) {
+    throw new Error("database installation provenance is malformed");
+  }
+  const record = provenance as Record<string, unknown>;
+  if (record.schemaVersion !== 1 || (record.source !== "fresh-install" && record.source !== "adopted-existing")
+    || record.installationId !== expected || record.role !== options.databaseRole || record.path !== dbPath) {
+    throw new Error("database installation provenance is invalid");
+  }
   if (get("agent_bridge_first_boot_verified")) return;
   const sessionCount = Number((raw.prepare(`SELECT COUNT(*) AS n FROM bridge_state
     WHERE codex_session_id IS NOT NULL OR claude_session_id IS NOT NULL
@@ -252,7 +265,7 @@ export function openProductionDb(dbPath: string, options: OpenDbOptions = {}): B
   try {
     assertExactRoleAssignmentSchema(raw);
     assertDatabaseForeignKeyIntegrity(raw);
-    assertProductionInstallation(raw, options);
+    assertProductionInstallation(raw, dbPath, options);
   } catch (error) {
     raw.close();
     throw error;

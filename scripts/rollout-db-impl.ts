@@ -10,7 +10,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { openDb } from "../src/db.js";
+import { openDb, openProductionDb } from "../src/db.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "../src/db/roleAssignmentsMigration.js";
 
@@ -103,6 +103,40 @@ interface BootstrapOptions {
   path: string;
   role: string;
   evidencePath: string | null;
+}
+
+interface ProvenanceCheckOptions {
+  path: string;
+  role: string;
+  installationId: string;
+}
+
+function parseProvenanceCheckArgs(argv: string[]): ProvenanceCheckOptions {
+  let path: string | null = null;
+  let role: string | null = null;
+  let installationId: string | null = null;
+  while (argv.length > 0) {
+    const flag = argv.shift();
+    const value = argv.shift();
+    if (!value) throw new Error(`missing value for ${flag}`);
+    if (flag === "--db") {
+      if (path) throw new Error("verify-provenance accepts exactly one --db");
+      path = value;
+    } else if (flag === "--role") {
+      if (role) throw new Error("verify-provenance accepts exactly one --role");
+      if (!VALID_ROLES.has(value)) throw new Error(`--role must be one of ${[...VALID_ROLES].join(", ")}, got: ${value}`);
+      role = value;
+    } else if (flag === "--installation-id") {
+      if (installationId) throw new Error("verify-provenance accepts exactly one --installation-id");
+      installationId = value;
+    } else {
+      throw new Error(`unknown argument: ${flag}`);
+    }
+  }
+  if (!path) throw new Error("--db is required");
+  if (!role) throw new Error("--role is required");
+  if (!installationId) throw new Error("--installation-id is required");
+  return { path, role, installationId };
 }
 
 /**
@@ -817,6 +851,17 @@ async function main(): Promise<void> {
     // writeEvidence() runs *inside* bootstrapDatabase(), still within
     // withSignalCleanup()'s guarded region — see its checkpoint 4/5 comments.
     await bootstrapDatabase(options.path, options.role, options.evidencePath);
+    return;
+  }
+  if (argv[0] === "verify-provenance") {
+    const options = parseProvenanceCheckArgs(argv.slice(1));
+    const db = openProductionDb(options.path, {
+      serviceId: `rollout:verify-provenance:${options.role}`,
+      installationId: options.installationId,
+      requireInstallationIdentity: true,
+      databaseRole: options.role,
+    });
+    db.close();
     return;
   }
   const options = parseArgs(argv);
