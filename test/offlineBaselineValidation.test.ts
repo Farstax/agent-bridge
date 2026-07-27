@@ -115,6 +115,19 @@ describe("offline baseline validator", () => {
     execFileSync(process.execPath, ["--import", "tsx", "scripts/rollout-db.ts", "migrate", "--db", fixture, "--evidence", "-"], { encoding: "utf8" });
     const database = new Database(fixture);
     database.exec("DROP TABLE reconciliation_audit; PRAGMA user_version = 3;");
+    database.exec(`
+      INSERT INTO pending_messages
+        (surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id, state, claim_run_id, claim_acquisition_id, claimed_at, attachments_json)
+      VALUES ('discord', 'chat:claimed', 'claimed prompt', 42, 7, 'private', 99, 'claimed', 'run-claimed', 'acq-claimed', '2026-07-27T00:00:00Z', '["attachment.txt"]');
+      INSERT INTO bridge_runs
+        (run_id, chat_id, bot, status, started_at, ended_at, session_id, final_text_preview, error)
+      VALUES ('run-claimed', '42', 'codex', 'failed', '2026-07-27T00:00:00Z', '2026-07-27T00:01:00Z', 'session-claimed', 'result preview', 'failure detail');
+      INSERT INTO bridge_events (id, run_id, seq, type, timestamp, payload_json)
+      VALUES ('event-claimed', 'run-claimed', 1, 'run.failed', '2026-07-27T00:01:00Z', '{"payload":"preserve"}');
+      INSERT INTO execution_locks
+        (surface, chat_key, service_id, run_id, acquisition_id, acquired_at, lease_expires_at)
+      VALUES ('discord', 'chat:claimed', 'service-claimed', 'run-claimed', 'acq-claimed', '2026-07-27T00:00:00Z', '2026-07-27T01:00:00Z');
+    `);
     database.close();
     const artifactRoot = join(root, "artifact");
     mkdirSync(artifactRoot, { recursive: true });
@@ -159,4 +172,29 @@ describe("offline baseline validator", () => {
       evidence.prestart_rollback_simulation.database_hashes_before,
     );
   }, 30000);
+
+  it("rejects tampering with a protected identity column", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-identity-tamper-test-"));
+    const before = join(root, "before.sqlite");
+    const after = join(root, "after.sqlite");
+    createLegacyFixture(before);
+    execFileSync(process.execPath, ["--import", "tsx", "scripts/rollout-db.ts", "migrate", "--db", before, "--evidence", "-"], { encoding: "utf8" });
+    const seeded = new Database(before);
+    seeded.exec(`
+      INSERT INTO bridge_runs (run_id, chat_id, bot, status, started_at, final_text_preview, error)
+      VALUES ('run-tamper', '42', 'codex', 'failed', '2026-07-27T00:00:00Z', 'preview', 'original');
+    `);
+    seeded.close();
+    cpSync(before, after);
+    const database = new Database(after);
+    database.prepare("UPDATE bridge_runs SET error = ? WHERE run_id = ?").run("tampered", "run-tamper");
+    database.close();
+    expect(() => execFileSync("python3", ["-c", `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("validator", "scripts/offline-baseline-validate.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.assert_identity_preserved(module.identity_snapshot(sys.argv[1]), module.identity_snapshot(sys.argv[2]))
+`, before, after], { encoding: "utf8" })).toThrow(/identity changed/);
+  });
 });
