@@ -51,7 +51,7 @@ jobs:
           run_head="$(gh run view "${{ inputs.artifact_run_id }}" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)"
           test "$run_status" = "completed"
           test "$run_conclusion" = "success"
-          test "$run_name" = "Historical Release Artifact"
+          [[ "$run_name" == "Release Artifact" || "$run_name" == "Historical Release Artifact" ]]
           test "$run_head" = "${{ inputs.builder_commit }}"
           archive="$(find offline-input/artifact -type f -name '*.tar.gz' -print -quit)"
           test -n "$archive"
@@ -59,6 +59,8 @@ jobs:
           [[ "$expected_schema" =~ ^[1-9][0-9]*$ ]]
           echo "EXPECTED_SCHEMA=$expected_schema" >> "$GITHUB_ENV"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+          mkdir -p offline-input/runtime
+          tar --extract --gzip --file "$archive" --directory offline-input/runtime
       - name: Validate copied databases and artifact offline
         run: |
           python3 scripts/offline-baseline-validate.py \
@@ -68,6 +70,7 @@ jobs:
             --builder-commit "${{ inputs.builder_commit }}" \
             --artifact-run-id "${{ inputs.artifact_run_id }}" \
             --expected-schema "$EXPECTED_SCHEMA" \
+            --runtime-root offline-input/runtime \
             --rollout-helper "scripts/rollout-agent-bridge.sh" \
             --rollout-helper-sha256 "$(sha256sum scripts/rollout-agent-bridge.sh | awk '{print $1}')" \
             --db-root offline-input/databases \
