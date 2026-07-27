@@ -163,6 +163,10 @@ fi
 if (( test_mode == 0 )); then /usr/bin/id -u "$runtime_user" >/dev/null || die "runtime user does not exist"; fi
 rollout_config_sha256="$(/usr/bin/sha256sum "$config_file" | /usr/bin/cut -d' ' -f1)"
 installed_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d' ' -f1)"
+if (( test_mode == 1 )); then
+  [[ -n "$authorization_validator_sha256" ]] || authorization_validator_sha256="$(/usr/bin/sha256sum "$authorization_validator" | /usr/bin/cut -d' ' -f1)"
+  [[ -n "$acceptance_validator_sha256" ]] || acceptance_validator_sha256="$(/usr/bin/sha256sum "$acceptance_validator" | /usr/bin/cut -d' ' -f1)"
+fi
 authorization_identity_args=(
   --expected-artifact-sha256 "$approved_artifact_sha256"
   --expected-evidence-sha256 "$approved_evidence_sha256"
