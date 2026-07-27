@@ -39,11 +39,15 @@ def safe_extract(archive: Path, destination: Path) -> None:
             name = Path(member.name)
             if name.is_absolute() or ".." in name.parts:
                 fail(f"archive path escapes extraction root: {member.name}")
-            if member.issym() or member.islnk():
+            if member.issym():
                 target = Path(os.path.normpath(str(name.parent / member.linkname)))
                 if target.is_absolute() or ".." in target.parts:
                     fail(f"archive link escapes extraction root: {member.name}")
-            if not (member.isdir() or member.isfile() or member.issym()):
+            elif member.islnk():
+                target = Path(os.path.normpath(member.linkname))
+                if target.is_absolute() or ".." in target.parts:
+                    fail(f"archive link escapes extraction root: {member.name}")
+            if not (member.isdir() or member.isfile() or member.issym() or member.islnk()):
                 fail(f"unsupported archive member: {member.name}")
         tar.extractall(destination)
 
