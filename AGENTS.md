@@ -58,6 +58,75 @@ Before planning, implementing, reviewing, or releasing software changes, read th
 
 Skills supplement these repository invariants; they do not override them. If native skill discovery is unavailable, read the relevant `SKILL.md` directly.
 
+# Simplified Approval and Release Workflow
+
+Use a two-approval model for normal delivery. Safety is enforced by machine-verifiable invariants and fail-closed execution, not by requesting repeated human approval for every procedural step.
+
+## Approval 1 — exact-head merge approval
+
+One independent review approves one exact PR head SHA after required tests and checks pass.
+
+Before merge approval, agents may perform without additional approval:
+
+- implementation and review repairs in an isolated branch or worktree;
+- tests, typecheck, build, lint, syntax and diff checks;
+- CI reruns and exact-head artifact generation;
+- read-only inspection and evidence collection;
+- offline fixture validation, copied-database migration and rollback simulation;
+- artifact, manifest, provenance and helper-identity verification;
+- publication of evidence and review findings.
+
+A head change invalidates the approval. Merge still requires an explicit merge instruction unless an already-authorised merge automation is operating within its exact-head contract.
+
+## Approval 2 — exact-release deployment approval
+
+After merge, automation must produce one release qualification record bound to the exact environment and containing at least:
+
+- main commit and tree;
+- artifact name, builder workflow/run and archive SHA-256;
+- manifest, package-lock, migration-helper and rollout-helper identities;
+- source and target database schemas;
+- copied-fixture cohort and offline evidence SHA-256;
+- integrity, foreign-key and full-row queue/claim/run/lock preservation results;
+- rollback simulation and byte-exact restoration results;
+- current production preflight identity and state.
+
+One explicit deployment approval authorises the complete guarded operation described by that record: immutable staging, containment, verified backup, migration, atomic pointer switch, restart and post-start verification. Do not request routine approval again between successful phases.
+
+## Exception-only stops
+
+Stop and require manual review only when an approved invariant changes or the result is ambiguous, including:
+
+- target commit, artifact, helper, config, host or environment identity differs from the qualification record;
+- production state has materially changed since preflight;
+- active processes, locks, claims, runs or queue ownership cannot be reconciled safely;
+- integrity, provenance, preservation, containment or rollback checks fail;
+- a failure occurs after services may have accepted writes;
+- rollback safety or final active state cannot be proven;
+- the authorisation has expired or its exact scope cannot be established.
+
+Do not create new approval gates merely because a verification step exists. Verification should be automatic and reusable. A successful normal path is:
+
+`BUILD → QUALIFIED → DEPLOYMENT APPROVED → GUARDED ROLLOUT → VERIFIED`
+
+Any failed invariant moves to:
+
+`STOPPED — MANUAL REVIEW REQUIRED`
+
+## Actions that do not need separate approval
+
+Unless they mutate production or cross another explicit repository boundary, do not ask for separate permission for:
+
+- read-only production probes;
+- demonstrably read-only fixture capture;
+- artifact download and verification;
+- offline work on disposable copies;
+- evidence generation or publication;
+- immutable release-directory creation that does not alter active pointers or services;
+- repeating unchanged qualification checks.
+
+Avoid approval inflation, repeated restatement of already-proven evidence and token-heavy gate narration. Report only material changes, blockers, exact identities and the next decision required.
+
 # Review-Derived Engineering Invariants
 
 These rules address recurring defects found during independent review. A passing suite does not override a known contract, lifecycle, wiring, or deployment violation.
