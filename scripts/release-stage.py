@@ -285,6 +285,10 @@ def stage(archive: Path, release_root: Path, expected_commit: str, expected_arch
         replacement = os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_REPLACE_ARCHIVE")
         if replacement and not production_mode():
             os.replace(replacement, archive)
+        if os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_MUTATE_ARCHIVE") and not production_mode():
+            with archive.open("r+b") as mutated:
+                mutated.truncate(0)
+                mutated.write(b"mutated after hashing")
 
         release = release_root / expected_commit
         if release.exists() or release.is_symlink():

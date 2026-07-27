@@ -135,6 +135,16 @@ describe("immutable release staging", () => {
     expect(readFileSync(join(releaseRoot, COMMIT, "package.json"), "utf8")).toBe(PACKAGE_JSON_CONTENT);
   });
 
+  it("extracts from a private snapshot if the source inode is mutated after hashing", () => {
+    const original = makeArchive(false, false, PACKAGE_JSON_CONTENT);
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
+
+    expect(runStage(original.archive, releaseRoot, COMMIT, {
+      AGENT_BRIDGE_RELEASE_STAGE_TEST_MUTATE_ARCHIVE: "1",
+    })).toMatch(new RegExp(`staged ${COMMIT}`));
+    expect(readFileSync(join(releaseRoot, COMMIT, "package.json"), "utf8")).toBe(PACKAGE_JSON_CONTENT);
+  });
+
   it("rejects a tampered archive before publication", () => {
     const { root } = makeArchive();
     writeFileSync(join(root, "package.json"), "tampered\n");
