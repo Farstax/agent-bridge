@@ -515,7 +515,7 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
     `;
 
     const events: BridgeEvent[] = [];
-    const p = runCli(process.execPath, ["-e", script], cliTestCwd, {
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
       chatId: "dns-retry-test-1",
       bot: "antigravity",
       eventContext: { runId: "test-run-1", bot: "antigravity", chatId: "dns-retry-test-1" },
@@ -549,7 +549,7 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
     `;
 
     const events: BridgeEvent[] = [];
-    const res = await runCli(process.execPath, ["-e", script], cliTestCwd, {
+    const res = await runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
       chatId: "dns-success-retry-test",
       bot: "antigravity",
       eventContext: { runId: "test-run-2", bot: "antigravity", chatId: "dns-success-retry-test" },
@@ -565,7 +565,7 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
     expect(completedEvents.length).toBe(1);
   }, 10_000);
 
-  it("stops retrying and cancels backoff immediately when aborted via abortExecutionAndWait (production /stop)", async () => {
+  it("stops retrying and cancels backoff immediately when aborted via abortExecutionAndWait (production /stop), emitting exactly one started and one cancelled event", async () => {
     const cancelCountFile = join(cliTestCwd, ".dns-cancel-count");
     if (existsSync(cancelCountFile)) rmSync(cancelCountFile);
 
@@ -580,9 +580,12 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
       process.exit(1);
     `;
 
-    const p = runCli(process.execPath, ["-e", cancelScript], cliTestCwd, {
+    const events: BridgeEvent[] = [];
+    const p = runCli(process.execPath, ["-e", cancelScript, "--", "--sandbox"], cliTestCwd, {
       chatId: "dns-cancel-test",
       bot: "antigravity",
+      eventContext: { runId: "test-cancel-run", bot: "antigravity", chatId: "dns-cancel-test" },
+      onEvent: (e) => events.push(e),
     });
 
     // We must call beginExecutionLifecycle because abortExecutionAndWait awaits active.lifecycleDone
@@ -599,6 +602,14 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
     // Wait to ensure no subsequent retries are executed
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(parseInt(readFileSync(cancelCountFile, "utf8"), 10)).toBe(1);
+
+    // Verify exactly one started and one cancelled event (no failures!)
+    const startEvents = events.filter((e) => e.type === "run.started");
+    const cancelEvents = events.filter((e) => e.type === "run.cancelled");
+    const failEvents = events.filter((e) => e.type === "run.failed");
+    expect(startEvents.length).toBe(1);
+    expect(cancelEvents.length).toBe(1);
+    expect(failEvents.length).toBe(0);
   }, 10_000);
 
   it("does not retry for non-antigravity providers (e.g. claude)", async () => {
@@ -616,7 +627,7 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
       process.exit(1);
     `;
 
-    const p = runCli(process.execPath, ["-e", script], cliTestCwd, {
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
       chatId: "dns-claude-test",
       bot: "claude",
     });
@@ -641,12 +652,54 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
       process.exit(1);
     `;
 
-    const p = runCli(process.execPath, ["-e", script], cliTestCwd, {
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
       chatId: "dns-side-effect-test",
       bot: "antigravity",
     });
 
     await expect(p).rejects.toThrow(/CLI exited with code 1/);
     expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(1);
+  }, 10_000);
+
+  it("does not retry if the Agy run is not sandboxed/read-only (missing --sandbox)", async () => {
+    const countFile = join(cliTestCwd, ".dns-writable-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const p = runCli(process.execPath, ["-e", script], cliTestCwd, {
+      chatId: "dns-writable-test",
+      bot: "antigravity",
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(1);
+  }, 10_000);
+
+  it("does not let observer event callback throwing break CLI execution", async () => {
+    const script = `
+      console.log('{"response": "success output"}');
+      process.exit(0);
+    `;
+
+    const res = await runCli(process.execPath, ["-e", script], cliTestCwd, {
+      chatId: "event-callback-fail-test",
+      bot: "antigravity",
+      eventContext: { runId: "test-cb-fail", bot: "antigravity", chatId: "event-callback-fail-test" },
+      onEvent: () => {
+        throw new Error("Observer callback failed fatally!");
+      },
+    });
+
+    expect(res).toContain("success output");
   }, 10_000);
 });

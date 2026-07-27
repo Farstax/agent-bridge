@@ -57,7 +57,7 @@ import {
   registerAbortCallback,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
-import { type as evtType } from "./events/types.js";
+import { type as evtType, type BridgeEvent } from "./events/types.js";
 
 export {
   getExecutionProcessState,
@@ -228,6 +228,51 @@ export function getNextFallbackModel(currentModel: string | null, modelPreferenc
 }
 
 
+function emitSafe(onEvent: ((e: BridgeEvent) => void) | undefined, e: BridgeEvent): void {
+  try {
+    onEvent?.(e);
+  } catch {
+    /* never let event emission break execution */
+  }
+}
+
+function isPreExecutionDnsFailure(
+  bot: string | undefined,
+  args: string[],
+  stdout: string,
+  stderr: string
+): boolean {
+  if (bot !== "antigravity") return false;
+
+  // 0. Proactively reject if there is any stdout at all (which implies output was produced)
+  if (stdout.trim() !== "") return false;
+
+  // 1. Match exact Agy eligibility/loadCodeAssist failure class
+  const hasEligibilityFailure =
+    stderr.includes("Error: Eligibility check failed") &&
+    stderr.includes("daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") &&
+    (stderr.includes("i/o timeout") || stderr.includes("temporary failure") || stderr.includes("lookup"));
+
+  if (!hasEligibilityFailure) return false;
+
+  // 2. Reject retry after any execution/cascade markers (proven pre-execution only)
+  const hasExecutionMarkers =
+    stdout.includes("🧠 Memory Loaded:") ||
+    stdout.includes("Print mode: conversation=") ||
+    stdout.includes("Created conversation") ||
+    stderr.includes("🧠 Memory Loaded:") ||
+    stderr.includes("Print mode: conversation=") ||
+    stderr.includes("Created conversation");
+
+  if (hasExecutionMarkers) return false;
+
+  // 3. Limit retry to tool-free/read-only (sandboxed) runs
+  const isSandboxed = args.includes("--sandbox");
+  if (!isSandboxed) return false;
+
+  return true;
+}
+
 async function runSupervisedProcessWithRetry(
   command: string,
   args: string[],
@@ -237,7 +282,6 @@ async function runSupervisedProcessWithRetry(
 ): Promise<{ stdout: string }> {
   const isAntigravity =
     options.bot === "antigravity" ||
-    command.includes("agy") ||
     options.eventContext?.bot === "antigravity";
 
   if (!isAntigravity) {
@@ -247,127 +291,111 @@ async function runSupervisedProcessWithRetry(
   const { eventContext, onEvent } = options;
 
   // Emit the single, outer run.started event
-  if (eventContext && onEvent) {
-    onEvent(
-      evtType.runStarted({
-        ...eventContext,
-        command,
-        cwd,
-        model: null,
-      })
-    );
+  if (eventContext) {
+    emitSafe(onEvent, evtType.runStarted({
+      ...eventContext,
+      command,
+      cwd,
+      model: null,
+    }));
   }
 
   const maxAttempts = 3;
   let lastError: Error | null = null;
   let isCancelled = false;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const holder = { cancel: undefined as (() => void) | undefined };
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const holder = { cancel: undefined as (() => void) | undefined };
 
-    const abortPromise = new Promise<never>((_, reject) => {
-      if (options.chatId != null) {
-        holder.cancel = registerAbortCallback(options.chatId, () => {
-          isCancelled = true;
-          reject(new Error("CLI execution aborted by user"));
-        });
-      }
-    });
+      const abortPromise = new Promise<never>((_, reject) => {
+        if (options.chatId != null) {
+          holder.cancel = registerAbortCallback(options.chatId, () => {
+            isCancelled = true;
+            reject(new Error("CLI execution aborted by user"));
+          });
+        }
+      });
 
-    try {
-      if (isCancelled) {
-        throw new Error("CLI execution aborted by user");
-      }
+      try {
+        if (isCancelled) {
+          throw new Error("CLI execution aborted by user");
+        }
 
-      // Suppress attempt-level terminal/started events by removing eventContext
-      const innerOptions = { ...options, eventContext: undefined };
-      const runPromise = runSupervisedProcess(command, args, cwd, innerOptions, onProgress);
-      const result = await Promise.race([runPromise, abortPromise]);
+        // Suppress attempt-level terminal/started events by removing eventContext
+        const innerOptions = { ...options, eventContext: undefined };
+        const runPromise = runSupervisedProcess(command, args, cwd, innerOptions, onProgress);
+        const result = await Promise.race([runPromise, abortPromise]);
 
-      holder.cancel?.();
+        holder.cancel?.();
 
-      // Successful attempt! Emit the single, outer run.completed event
-      if (eventContext && onEvent) {
-        onEvent(
-          evtType.runCompleted({
+        // Successful attempt! Emit the single, outer run.completed event
+        if (eventContext) {
+          emitSafe(onEvent, evtType.runCompleted({
             ...eventContext,
             sessionId: null,
             text: result.stdout,
-          })
-        );
-      }
-      return result;
-    } catch (err) {
-      holder.cancel?.();
-
-      lastError = err instanceof Error ? err : new Error(String(err));
-
-      if (isCancelled || lastError.message.includes("aborted by user")) {
-        if (eventContext && onEvent) {
-          onEvent(evtType.runCancelled({ ...eventContext, reason: "user" }));
+          }));
         }
+        return result;
+      } catch (err) {
+        holder.cancel?.();
+
+        lastError = err instanceof Error ? err : new Error(String(err));
+
+        if (isCancelled || lastError.message.includes("aborted by user")) {
+          throw lastError;
+        }
+
+        // Pre-execution transport failure retry logic check
+        const stdout = (lastError as any).stdout || "";
+        const stderr = (lastError as any).stderr || "";
+
+        const isRetryable = isPreExecutionDnsFailure(options.bot || eventContext?.bot, args, stdout, stderr);
+
+        if (isRetryable && attempt < maxAttempts) {
+          const delay = 1000 * attempt;
+          console.warn(`[cli] Transient DNS lookup failure detected for antigravity (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`, lastError.message);
+
+          await new Promise<void>((resolve, reject) => {
+            let timeout: NodeJS.Timeout | null = null;
+            let cancelBackoff: (() => void) | null = null;
+
+            if (options.chatId != null) {
+              cancelBackoff = registerAbortCallback(options.chatId, () => {
+                isCancelled = true;
+                if (timeout) clearTimeout(timeout);
+                reject(new Error("CLI execution aborted by user"));
+              });
+            }
+
+            timeout = setTimeout(() => {
+              if (cancelBackoff) cancelBackoff();
+              resolve();
+            }, delay);
+          });
+
+          continue;
+        }
+
         throw lastError;
       }
-
-      // Classified, pre-execution transport failure retry logic:
-      // Must check that no side-effects occurred (stdout must be empty/blank).
-      const stdout = (lastError as any).stdout || "";
-      const isPreExecution = stdout.trim() === "";
-
-      const isTransientDns =
-        isPreExecution &&
-        lastError.message.includes("daily-cloudcode-pa.googleapis.com") &&
-        (lastError.message.includes("i/o timeout") || lastError.message.includes("temporary failure") || lastError.message.includes("lookup"));
-
-      if (isTransientDns && attempt < maxAttempts) {
-        const delay = 1000 * attempt;
-        console.warn(`[cli] Transient DNS lookup failure detected for antigravity (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`, lastError.message);
-
-        await new Promise<void>((resolve, reject) => {
-          let timeout: NodeJS.Timeout | null = null;
-          let cancelBackoff: (() => void) | null = null;
-
-          if (options.chatId != null) {
-            cancelBackoff = registerAbortCallback(options.chatId, () => {
-              isCancelled = true;
-              if (timeout) clearTimeout(timeout);
-              reject(new Error("CLI execution aborted by user"));
-            });
-          }
-
-          timeout = setTimeout(() => {
-            if (cancelBackoff) cancelBackoff();
-            resolve();
-          }, delay);
-        });
-
-        continue;
-      }
-
-      if (eventContext && onEvent) {
-        onEvent(
-          evtType.runFailed({
-            ...eventContext,
-            error: lastError.message,
-            category: "cli",
-          })
-        );
-      }
-      throw lastError;
     }
+    throw lastError ?? new Error("CLI execution failed");
+  } catch (error: any) {
+    if (eventContext) {
+      if (isCancelled || error.message.includes("aborted by user")) {
+        emitSafe(onEvent, evtType.runCancelled({ ...eventContext, reason: "user" }));
+      } else {
+        emitSafe(onEvent, evtType.runFailed({
+          ...eventContext,
+          error: error.message,
+          category: "cli",
+        }));
+      }
+    }
+    throw error;
   }
-  
-  const finalError = lastError ?? new Error("CLI execution failed");
-  if (eventContext && onEvent) {
-    onEvent(
-      evtType.runFailed({
-        ...eventContext,
-        error: finalError.message,
-        category: "cli",
-      })
-    );
-  }
-  throw finalError;
 }
 
 /**

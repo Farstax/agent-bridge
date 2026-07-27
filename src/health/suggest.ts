@@ -50,6 +50,7 @@ export async function generateSuggestion(
   try {
     const stdout = await runCli(invocation.command, invocation.args, process.cwd(), {
       timeoutMs: SUGGEST_TIMEOUT_MS,
+      bot,
     });
     const result = parseCliResult({ bot, stdout, logContent: null });
     const text = result.text.trim();
