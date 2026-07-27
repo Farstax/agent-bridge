@@ -170,9 +170,8 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     writeFileSync(join(artifactRoot, "package.json"), JSON.stringify({ type: "module", dependencies: { tsx: "^4.21.0" } }));
     cpSync("tsconfig.json", join(artifactRoot, "tsconfig.json"));
     cpSync("src", join(artifactRoot, "src"), { recursive: true });
-    mkdirSync(join(artifactRoot, "scripts"), { recursive: true });
-    cpSync("scripts/rollout-db.ts", join(artifactRoot, "scripts", "rollout-db.ts"));
-    cpSync("scripts/rollout-db-impl.ts", join(artifactRoot, "scripts", "rollout-db-impl.ts"));
+    cpSync("scripts/rollout-db.ts", join(artifactRoot, "rollout-db.ts"));
+    cpSync("scripts/rollout-db-impl.ts", join(artifactRoot, "rollout-db-impl.ts"));
     cpSync("node_modules", join(artifactRoot, "node_modules"), { recursive: true, dereference: true });
     rmSync(join(artifactRoot, "node_modules", ".bin"), { recursive: true, force: true });
     mkdirSync(join(artifactRoot, "node_modules", ".bin"));
