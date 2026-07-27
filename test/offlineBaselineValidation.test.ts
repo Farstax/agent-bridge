@@ -11,6 +11,7 @@ import { createLegacyFixture } from "./support/legacyDbFixture.js";
 describe("offline baseline validator", () => {
   it("downloads named artifact and fixture bundles instead of assuming runner paths", () => {
     const workflow = readFileSync(".github/workflows/offline-baseline-validation.yml", "utf8");
+    const releaseWorkflow = readFileSync(".github/workflows/release-artifact.yml", "utf8");
     expect(workflow).toContain("gh run download");
     expect(workflow).toContain("actions: read");
     expect(workflow).toContain("artifact_run_id");
@@ -20,6 +21,8 @@ describe("offline baseline validator", () => {
     expect(workflow).toContain("gh run view");
     expect(workflow).toContain('test "$run_head" = "${{ inputs.builder_commit }}"');
     expect(workflow).toContain('[[ "$run_name" == "Release Artifact" || "$run_name" == "Historical Release Artifact" ]]');
+    expect(releaseWorkflow).toContain('mkdir -p "$root/scripts"');
+    expect(releaseWorkflow).toContain('cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts "$root/scripts/"');
     expect(workflow).toContain('expected_schema="$(tar --extract');
     expect(workflow).not.toContain("--builder-root");
     expect(workflow).not.toContain("Repository-relative path to a downloaded");
@@ -170,8 +173,9 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     writeFileSync(join(artifactRoot, "package.json"), JSON.stringify({ type: "module", dependencies: { tsx: "^4.21.0" } }));
     cpSync("tsconfig.json", join(artifactRoot, "tsconfig.json"));
     cpSync("src", join(artifactRoot, "src"), { recursive: true });
-    cpSync("scripts/rollout-db.ts", join(artifactRoot, "rollout-db.ts"));
-    cpSync("scripts/rollout-db-impl.ts", join(artifactRoot, "rollout-db-impl.ts"));
+    mkdirSync(join(artifactRoot, "scripts"), { recursive: true });
+    cpSync("scripts/rollout-db.ts", join(artifactRoot, "scripts", "rollout-db.ts"));
+    cpSync("scripts/rollout-db-impl.ts", join(artifactRoot, "scripts", "rollout-db-impl.ts"));
     cpSync("node_modules", join(artifactRoot, "node_modules"), { recursive: true, dereference: true });
     rmSync(join(artifactRoot, "node_modules", ".bin"), { recursive: true, force: true });
     mkdirSync(join(artifactRoot, "node_modules", ".bin"));
