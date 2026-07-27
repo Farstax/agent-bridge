@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -48,6 +49,7 @@ function runStage(archive: string, releaseRoot: string, expectedCommit = COMMIT)
     "--archive", archive,
     "--release-root", releaseRoot,
     "--expected-commit", expectedCommit,
+    "--archive-sha256", createHash("sha256").update(readFileSync(archive)).digest("hex"),
   ], {
     encoding: "utf8",
     env: { ...process.env, AGENT_BRIDGE_RELEASE_STAGE_TEST: "1" },
@@ -66,6 +68,8 @@ describe("immutable release staging", () => {
     expect(readFileSync(join(release, "package.json"), "utf8")).toBe(PACKAGE_JSON_CONTENT);
     expect(statSync(join(release, "package.json")).mode & 0o222).toBe(0);
     expect(statSync(release).mode & 0o222).toBe(0);
+    const provenance = JSON.parse(readFileSync(join(releaseRoot, `.${COMMIT}.staging-provenance.json`), "utf8"));
+    expect(provenance).toEqual({ commit: COMMIT, archive_sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"), schema_version: 1 });
   });
 
   it("preserves executable mode bits for runtime entries", () => {
@@ -99,12 +103,24 @@ describe("immutable release staging", () => {
     expect(() => execFileSync("python3", [
       "scripts/release-stage.py", "--archive", archive,
       "--release-root", releaseRoot, "--expected-commit", "3".repeat(40),
+      "--archive-sha256", createHash("sha256").update(readFileSync(archive)).digest("hex"),
     ], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, AGENT_BRIDGE_RELEASE_STAGE_TEST: "1" },
     })).toThrow();
 
+    expect(existsSync(join(releaseRoot, COMMIT))).toBe(false);
+  });
+
+  it("rejects an archive whose bytes do not match the approved digest before publication", () => {
+    const { archive } = makeArchive();
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
+    expect(() => execFileSync("python3", [
+      "scripts/release-stage.py", "--archive", archive,
+      "--release-root", releaseRoot, "--expected-commit", COMMIT,
+      "--archive-sha256", "0".repeat(64),
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_BRIDGE_RELEASE_STAGE_TEST: "1" } })).toThrow(/archive SHA-256/i);
     expect(existsSync(join(releaseRoot, COMMIT))).toBe(false);
   });
 
