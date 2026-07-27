@@ -18,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 
 SHA = 40
@@ -47,12 +48,28 @@ def safe_target(path: Path, target: str, root: Path) -> None:
         fail(f"symlink escaped release root: {path} -> {target}")
 
 
-def digest(path: Path) -> str:
+def digest_stream(stream: BinaryIO) -> str:
     hasher = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(chunk)
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return digest_stream(stream)
+
+
+def open_archive(path: Path) -> BinaryIO:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as error:
+        fail(f"unable to open archive safely: {error}")
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        os.close(descriptor)
+        fail("archive must resolve to a regular file")
+    return os.fdopen(descriptor, "rb", closefd=True)
 
 
 def provenance_path(release_root: Path, expected_commit: str) -> Path:
@@ -163,11 +180,9 @@ def verify_manifest(root: Path, manifest: dict) -> None:
         fail("package-lock hash binding is invalid")
 
 
-def extract_archive(archive: Path, destination: Path) -> None:
-    if not archive.is_file() or archive.is_symlink():
-        fail("archive must be a regular non-symlink file")
+def extract_archive(archive: BinaryIO, destination: Path) -> None:
     seen: set[str] = set()
-    with tarfile.open(archive, "r:gz") as bundle:
+    with tarfile.open(fileobj=archive, mode="r:gz") as bundle:
         members = bundle.getmembers()
         for member in members:
             if member.name in (".", "./"):
@@ -262,35 +277,39 @@ def stage(archive: Path, release_root: Path, expected_commit: str, expected_arch
         fail("expected commit must be a full lowercase 40-character SHA")
     if len(expected_archive_sha256) != SHA256 or any(c not in "0123456789abcdef" for c in expected_archive_sha256):
         fail("expected archive SHA-256 must be a full lowercase SHA-256")
-    if not archive.is_file() or archive.is_symlink():
-        fail("archive must be a regular non-symlink file")
-    archive_sha256 = digest(archive)
-    if archive_sha256 != expected_archive_sha256:
-        fail("archive SHA-256 does not match the expected digest")
     release_root = validate_release_root(release_root)
-    release = release_root / expected_commit
-    if release.exists() or release.is_symlink():
-        return validate_existing(release, release_root, expected_commit, archive_sha256)
+    with open_archive(archive) as archive_stream:
+        archive_sha256 = digest_stream(archive_stream)
+        if archive_sha256 != expected_archive_sha256:
+            fail("archive SHA-256 does not match the expected digest")
+        replacement = os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_REPLACE_ARCHIVE")
+        if replacement and not production_mode():
+            os.replace(replacement, archive)
 
-    temporary = Path(tempfile.mkdtemp(prefix=f".staging-{expected_commit}-", dir=release_root))
-    try:
-        extract_archive(archive, temporary)
-        manifest = load_manifest(temporary)
-        if manifest["commit"] != expected_commit:
-            fail("archive manifest commit does not match expected commit")
-        verify_manifest(temporary, manifest)
-        make_immutable(temporary)
-        try:
-            os.rename(temporary, release)
-        except FileExistsError:
-            shutil.rmtree(temporary)
+        release = release_root / expected_commit
+        if release.exists() or release.is_symlink():
             return validate_existing(release, release_root, expected_commit, archive_sha256)
-        publish_provenance(release_root, expected_commit, archive_sha256)
-        return f"staged {expected_commit}"
-    except Exception:
-        if temporary.exists():
-            shutil.rmtree(temporary)
-        raise
+
+        temporary = Path(tempfile.mkdtemp(prefix=f".staging-{expected_commit}-", dir=release_root))
+        try:
+            archive_stream.seek(0)
+            extract_archive(archive_stream, temporary)
+            manifest = load_manifest(temporary)
+            if manifest["commit"] != expected_commit:
+                fail("archive manifest commit does not match expected commit")
+            verify_manifest(temporary, manifest)
+            make_immutable(temporary)
+            try:
+                os.rename(temporary, release)
+            except FileExistsError:
+                shutil.rmtree(temporary)
+                return validate_existing(release, release_root, expected_commit, archive_sha256)
+            publish_provenance(release_root, expected_commit, archive_sha256)
+            return f"staged {expected_commit}"
+        except Exception:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+            raise
 
 
 def main() -> int:
