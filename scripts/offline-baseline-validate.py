@@ -212,8 +212,13 @@ def validate_runtime_root(runtime_root: Path, archive: Path) -> None:
             fail("migration runtime root does not exactly match the verified artifact archive")
 
 
-def migrate_fixture_copies(databases: list[Path], runtime_root: Path, archive: Path, target_schema: int, source_schema: int) -> dict[str, object]:
+def migrate_fixture_copies(databases: list[Path], runtime_root: Path | None, archive: Path, target_schema: int, source_schema: int) -> dict[str, object]:
     """Migrate only temporary fixture copies using the exact artifact runtime."""
+    if runtime_root is None:
+        with tempfile.TemporaryDirectory(prefix="agent-bridge-runtime-") as extracted:
+            extracted_root = Path(extracted)
+            safe_extract(archive, extracted_root)
+            return migrate_fixture_copies(databases, extracted_root, archive, target_schema, source_schema)
     validate_runtime_root(runtime_root, archive)
     with tempfile.TemporaryDirectory(prefix="agent-bridge-schema-simulation-") as temporary:
         root = Path(temporary)
@@ -345,8 +350,6 @@ def main() -> None:
     source_schema = next(iter(source_versions))
     migrated = None
     if source_schema < args.expected_schema:
-        if args.runtime_root is None:
-            fail("schema migration requires --runtime-root containing the exact artifact runtime")
         migrated = migrate_fixture_copies(databases, args.runtime_root, args.archive, args.expected_schema, source_schema)
     result = {
         "schema_version": 1,
