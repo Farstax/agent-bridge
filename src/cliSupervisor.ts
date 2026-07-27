@@ -281,7 +281,12 @@ export async function abortExecutionAndWait(chatId: number | string): Promise<Ex
   const active = activeExecutions.get(chatId);
   if (!active) return null;
   const handle = active.lifecycleHandle;
-  if (active.child) await abortCliProcessAndWait(chatId);
+  if (active.child) {
+    await abortCliProcessAndWait(chatId);
+  } else if (active.abortCallbacks) {
+    for (const cb of active.abortCallbacks) cb();
+    active.abortCallbacks = [];
+  }
   await active.lifecycleDone;
   return handle;
 }
@@ -483,11 +488,17 @@ export async function runSupervisedProcess(
       } else if (signal) {
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI killed by signal ${signal}`, category: "cli" }));
         const combined = [stderr.trim(), stdout.slice(-2000).trim()].filter(Boolean).join("\n");
-        doReject(new Error(`CLI killed by signal ${signal}: ${combined}`));
+        const err = new Error(`CLI killed by signal ${signal}: ${combined}`);
+        (err as any).stdout = stdout;
+        (err as any).stderr = stderr;
+        doReject(err);
       } else if (code !== 0 && code !== null) {
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI exited with code ${code}`, category: "cli" }));
         const combined = [stderr.trim(), stdout.slice(-2000).trim()].filter(Boolean).join("\n");
-        doReject(new Error(`CLI exited with code ${code}: ${combined}`));
+        const err = new Error(`CLI exited with code ${code}: ${combined}`);
+        (err as any).stdout = stdout;
+        (err as any).stderr = stderr;
+        doReject(err);
       } else {
         if (evtCtx) emit(evtType.runCompleted({ ...evtCtx, text: stdout, sessionId: null }));
         doResolve({ stdout });

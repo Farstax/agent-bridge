@@ -125,6 +125,7 @@ export interface CliOptions {
   contextEnv?: Record<string, string>;
   /** Strip advisor authority from nested provider children. */
   advisorChild?: boolean;
+  bot?: "codex" | "antigravity" | "claude" | "kimchi";
   /** Context for BridgeEvent emission. When provided, runCliAsync emits lifecycle events. */
   eventContext?: { runId: string; bot: "codex" | "antigravity" | "claude" | "kimchi"; chatId: string; threadId?: string };
   /** Called with each emitted BridgeEvent. Requires eventContext to be set. */

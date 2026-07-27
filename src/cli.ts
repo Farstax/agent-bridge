@@ -57,6 +57,7 @@ import {
   registerAbortCallback,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
+import { type as evtType } from "./events/types.js";
 
 export {
   getExecutionProcessState,
@@ -235,50 +236,86 @@ async function runSupervisedProcessWithRetry(
   onProgress?: (text: string) => void
 ): Promise<{ stdout: string }> {
   const isAntigravity =
+    options.bot === "antigravity" ||
     command.includes("agy") ||
-    options.eventContext?.bot === "antigravity" ||
-    (options.processWatch && options.processWatch.includes("agy"));
+    options.eventContext?.bot === "antigravity";
 
   if (!isAntigravity) {
     return await runSupervisedProcess(command, args, cwd, options, onProgress);
   }
 
+  const { eventContext, onEvent } = options;
+
+  // Emit the single, outer run.started event
+  if (eventContext && onEvent) {
+    onEvent(
+      evtType.runStarted({
+        ...eventContext,
+        command,
+        cwd,
+        model: null,
+      })
+    );
+  }
+
   const maxAttempts = 3;
   let lastError: Error | null = null;
+  let isCancelled = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let aborted = false;
-    let cancelTimer: (() => void) | null = null;
+    const holder = { cancel: undefined as (() => void) | undefined };
 
     const abortPromise = new Promise<never>((_, reject) => {
       if (options.chatId != null) {
-        cancelTimer = registerAbortCallback(options.chatId, () => {
-          aborted = true;
+        holder.cancel = registerAbortCallback(options.chatId, () => {
+          isCancelled = true;
           reject(new Error("CLI execution aborted by user"));
         });
       }
     });
 
     try {
-      if (aborted) {
+      if (isCancelled) {
         throw new Error("CLI execution aborted by user");
       }
 
-      const runPromise = runSupervisedProcess(command, args, cwd, options, onProgress);
+      // Suppress attempt-level terminal/started events by removing eventContext
+      const innerOptions = { ...options, eventContext: undefined };
+      const runPromise = runSupervisedProcess(command, args, cwd, innerOptions, onProgress);
       const result = await Promise.race([runPromise, abortPromise]);
 
-      if (cancelTimer) cancelTimer();
+      holder.cancel?.();
+
+      // Successful attempt! Emit the single, outer run.completed event
+      if (eventContext && onEvent) {
+        onEvent(
+          evtType.runCompleted({
+            ...eventContext,
+            sessionId: null,
+            text: result.stdout,
+          })
+        );
+      }
       return result;
     } catch (err) {
-      if (cancelTimer) cancelTimer();
+      holder.cancel?.();
 
       lastError = err instanceof Error ? err : new Error(String(err));
 
-      if (lastError.message.includes("aborted by user")) {
+      if (isCancelled || lastError.message.includes("aborted by user")) {
+        if (eventContext && onEvent) {
+          onEvent(evtType.runCancelled({ ...eventContext, reason: "user" }));
+        }
         throw lastError;
       }
 
+      // Classified, pre-execution transport failure retry logic:
+      // Must check that no side-effects occurred (stdout must be empty/blank).
+      const stdout = (lastError as any).stdout || "";
+      const isPreExecution = stdout.trim() === "";
+
       const isTransientDns =
+        isPreExecution &&
         lastError.message.includes("daily-cloudcode-pa.googleapis.com") &&
         (lastError.message.includes("i/o timeout") || lastError.message.includes("temporary failure") || lastError.message.includes("lookup"));
 
@@ -292,6 +329,7 @@ async function runSupervisedProcessWithRetry(
 
           if (options.chatId != null) {
             cancelBackoff = registerAbortCallback(options.chatId, () => {
+              isCancelled = true;
               if (timeout) clearTimeout(timeout);
               reject(new Error("CLI execution aborted by user"));
             });
@@ -305,10 +343,31 @@ async function runSupervisedProcessWithRetry(
 
         continue;
       }
+
+      if (eventContext && onEvent) {
+        onEvent(
+          evtType.runFailed({
+            ...eventContext,
+            error: lastError.message,
+            category: "cli",
+          })
+        );
+      }
       throw lastError;
     }
   }
-  throw lastError ?? new Error("CLI execution failed");
+  
+  const finalError = lastError ?? new Error("CLI execution failed");
+  if (eventContext && onEvent) {
+    onEvent(
+      evtType.runFailed({
+        ...eventContext,
+        error: finalError.message,
+        category: "cli",
+      })
+    );
+  }
+  throw finalError;
 }
 
 /**
