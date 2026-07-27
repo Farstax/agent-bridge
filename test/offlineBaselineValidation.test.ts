@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, linkSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -40,6 +40,7 @@ describe("offline baseline validator", () => {
     mkdirSync(join(containedRoot, "node_modules", ".bin"), { recursive: true });
     writeFileSync(join(containedRoot, "node_modules", "tool"), "tool\n");
     symlinkSync("../tool", join(containedRoot, "node_modules", ".bin", "tool"));
+    linkSync(join(containedRoot, "node_modules", "tool"), join(containedRoot, "node_modules", "hard-tool"));
     const containedArchive = join(root, "contained.tar.gz");
     execFileSync("tar", ["-czf", containedArchive, "-C", containedRoot, "."]);
     const extracted = join(root, "extracted");
@@ -52,6 +53,7 @@ spec.loader.exec_module(module)
 module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
 `, containedArchive, extracted], { encoding: "utf8" });
     expect(readFileSync(join(extracted, "node_modules", ".bin", "tool"), "utf8")).toBe("tool\n");
+    expect(readFileSync(join(extracted, "node_modules", "hard-tool"), "utf8")).toBe("tool\n");
 
     const escapeRoot = join(root, "escape");
     mkdirSync(escapeRoot);
