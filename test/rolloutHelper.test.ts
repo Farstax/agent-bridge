@@ -151,6 +151,7 @@ describe("guarded rollout helper", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
     const provenance = join(fixture.root, "releases", `.${fixture.expectedCommit}.staging-provenance.json`);
+    chmodSync(provenance, 0o644);
     writeFileSync(provenance, JSON.stringify({ schema_version: 1, commit: fixture.expectedCommit, archive_sha256: "d".repeat(64) }) + "\n", { mode: 0o444 });
     chmodSync(provenance, 0o444);
     const approval = writeAuthorization(fixture);
