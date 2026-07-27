@@ -259,7 +259,9 @@ describe("release artifact manifest", () => {
   it("packages the source entrypoints and guarded migration scripts required by the service contract", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/release-artifact.yml"), "utf8");
 
-    expect(workflow).toContain("cp -a dist src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json node_modules");
+    expect(workflow).toContain("cp -a dist src package.json package-lock.json node_modules");
+    expect(workflow).toContain('mkdir -p "$root/scripts"');
+    expect(workflow).toContain('cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts "$root/scripts/"');
     for (const entrypoint of [...REQUIRED_ENTRYPOINTS, "scripts/rollout-db.ts", "scripts/rollout-db-impl.ts"]) {
       expect(readFileSync(join(process.cwd(), entrypoint), "utf8")).not.toHaveLength(0);
     }
