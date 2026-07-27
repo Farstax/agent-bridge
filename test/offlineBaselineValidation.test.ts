@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, linkSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -11,6 +11,7 @@ import { createLegacyFixture } from "./support/legacyDbFixture.js";
 describe("offline baseline validator", () => {
   it("downloads named artifact and fixture bundles instead of assuming runner paths", () => {
     const workflow = readFileSync(".github/workflows/offline-baseline-validation.yml", "utf8");
+    const releaseWorkflow = readFileSync(".github/workflows/release-artifact.yml", "utf8");
     expect(workflow).toContain("gh run download");
     expect(workflow).toContain("actions: read");
     expect(workflow).toContain("artifact_run_id");
@@ -20,7 +21,11 @@ describe("offline baseline validator", () => {
     expect(workflow).toContain("gh run view");
     expect(workflow).toContain('test "$run_head" = "${{ inputs.builder_commit }}"');
     expect(workflow).toContain('[[ "$run_name" == "Release Artifact" || "$run_name" == "Historical Release Artifact" ]]');
+    expect(releaseWorkflow).toContain('mkdir -p "$root/scripts"');
+    expect(releaseWorkflow).toContain('cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts "$root/scripts/"');
     expect(workflow).toContain('expected_schema="$(tar --extract');
+    expect(workflow).not.toContain('tar --extract --gzip --file "$archive" --directory offline-input/runtime');
+    expect(workflow).not.toContain("--runtime-root offline-input/runtime");
     expect(workflow).not.toContain("--builder-root");
     expect(workflow).not.toContain("Repository-relative path to a downloaded");
   });
@@ -32,6 +37,62 @@ describe("offline baseline validator", () => {
     expect(validator).not.toContain("current.unlink()");
     expect(validator).toContain('"schema_compatibility"');
     expect(validator).not.toContain('"startup_compatibility"');
+  });
+
+  it("accepts contained relative artifact symlinks but rejects links escaping the archive root", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-symlink-safety-test-"));
+    const containedRoot = join(root, "contained");
+    mkdirSync(join(containedRoot, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(containedRoot, "node_modules", "tool"), "tool\n");
+    symlinkSync("../tool", join(containedRoot, "node_modules", ".bin", "tool"));
+    linkSync(join(containedRoot, "node_modules", "tool"), join(containedRoot, "node_modules", "hard-tool"));
+    const containedArchive = join(root, "contained.tar.gz");
+    execFileSync("tar", ["-czf", containedArchive, "-C", containedRoot, "."]);
+    const extracted = join(root, "extracted");
+    mkdirSync(extracted);
+    execFileSync("python3", ["-c", `
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("validator", "scripts/offline-baseline-validate.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+`, containedArchive, extracted], { encoding: "utf8" });
+    expect(readFileSync(join(extracted, "node_modules", ".bin", "tool"), "utf8")).toBe("tool\n");
+    expect(readFileSync(join(extracted, "node_modules", "hard-tool"), "utf8")).toBe("tool\n");
+
+    const escapeRoot = join(root, "escape");
+    mkdirSync(escapeRoot);
+    symlinkSync("../../outside", join(escapeRoot, "escape"));
+    const escapeArchive = join(root, "escape.tar.gz");
+    execFileSync("tar", ["-czf", escapeArchive, "-C", escapeRoot, "."]);
+    const escapeExtracted = join(root, "escape-extracted");
+    expect(() => execFileSync("python3", ["-c", `
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("validator", "scripts/offline-baseline-validate.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+`, escapeArchive, escapeExtracted], { encoding: "utf8" })).toThrow(/escapes extraction root/);
+    expect(existsSync(join(escapeExtracted, "escape"))).toBe(false);
+
+    const hardlinkArchive = join(root, "hardlink-escape.tar.gz");
+    execFileSync("python3", ["-c", `
+import tarfile, sys
+with tarfile.open(sys.argv[1], "w:gz") as archive:
+    member = tarfile.TarInfo("hard-escape")
+    member.type = tarfile.LNKTYPE
+    member.linkname = "../../outside"
+    archive.addfile(member)
+`, hardlinkArchive], { encoding: "utf8" });
+    const hardlinkExtracted = join(root, "hardlink-extracted");
+    expect(() => execFileSync("python3", ["-c", `
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("validator", "scripts/offline-baseline-validate.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+`, hardlinkArchive, hardlinkExtracted], { encoding: "utf8" })).toThrow(/escapes extraction root/);
+    expect(existsSync(join(hardlinkExtracted, "hard-escape"))).toBe(false);
   });
 
   it("rejects unmanifested archive members and never needs production paths", () => {
