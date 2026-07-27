@@ -494,3 +494,60 @@ describe("12. abort and shutdown wait for the full process tree, not just the le
     await p.catch(() => "rejected");
   }, 8_000);
 });
+
+describe("13. Antigravity DNS retry and cancellation behavior", () => {
+  it("retries up to 3 times on transient DNS lookup failures for antigravity only", async () => {
+    const countFile = join(cliTestCwd, ".dns-retry-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const p = runCli(process.execPath, ["-e", script], cliTestCwd, {
+      chatId: "dns-retry-test-1",
+      eventContext: { bot: "antigravity" } as any,
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(3);
+  }, 10_000);
+
+  it("stops retrying and cancels backoff immediately when aborted during backoff delay", async () => {
+    const cancelCountFile = join(cliTestCwd, ".dns-cancel-count");
+    if (existsSync(cancelCountFile)) rmSync(cancelCountFile);
+
+    const cancelScript = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${cancelCountFile}')) {
+        count = parseInt(fs.readFileSync('${cancelCountFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${cancelCountFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const p = runCli(process.execPath, ["-e", cancelScript], cliTestCwd, {
+      chatId: "dns-cancel-test",
+      eventContext: { bot: "antigravity" } as any,
+    });
+
+    // Wait briefly for first attempt to fail and enter first backoff delay (1000ms)
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await abortCliProcessAndWait("dns-cancel-test");
+
+    await expect(p).rejects.toThrow(/CLI execution aborted by user/i);
+
+    // Wait to ensure no subsequent retries are executed
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(parseInt(readFileSync(cancelCountFile, "utf8"), 10)).toBe(1);
+  }, 10_000);
+});

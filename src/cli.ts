@@ -54,6 +54,7 @@ import {
   redactArgs,
   CliTimeoutError,
   resolveSupervisorTimeouts,
+  registerAbortCallback,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 
@@ -226,12 +227,96 @@ export function getNextFallbackModel(currentModel: string | null, modelPreferenc
 }
 
 
+async function runSupervisedProcessWithRetry(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: CliOptions,
+  onProgress?: (text: string) => void
+): Promise<{ stdout: string }> {
+  const isAntigravity =
+    command.includes("agy") ||
+    options.eventContext?.bot === "antigravity" ||
+    (options.processWatch && options.processWatch.includes("agy"));
+
+  if (!isAntigravity) {
+    return await runSupervisedProcess(command, args, cwd, options, onProgress);
+  }
+
+  const maxAttempts = 3;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let aborted = false;
+    let cancelTimer: (() => void) | null = null;
+
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (options.chatId != null) {
+        cancelTimer = registerAbortCallback(options.chatId, () => {
+          aborted = true;
+          reject(new Error("CLI execution aborted by user"));
+        });
+      }
+    });
+
+    try {
+      if (aborted) {
+        throw new Error("CLI execution aborted by user");
+      }
+
+      const runPromise = runSupervisedProcess(command, args, cwd, options, onProgress);
+      const result = await Promise.race([runPromise, abortPromise]);
+
+      if (cancelTimer) cancelTimer();
+      return result;
+    } catch (err) {
+      if (cancelTimer) cancelTimer();
+
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (lastError.message.includes("aborted by user")) {
+        throw lastError;
+      }
+
+      const isTransientDns =
+        lastError.message.includes("daily-cloudcode-pa.googleapis.com") &&
+        (lastError.message.includes("i/o timeout") || lastError.message.includes("temporary failure") || lastError.message.includes("lookup"));
+
+      if (isTransientDns && attempt < maxAttempts) {
+        const delay = 1000 * attempt;
+        console.warn(`[cli] Transient DNS lookup failure detected for antigravity (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`, lastError.message);
+
+        await new Promise<void>((resolve, reject) => {
+          let timeout: NodeJS.Timeout | null = null;
+          let cancelBackoff: (() => void) | null = null;
+
+          if (options.chatId != null) {
+            cancelBackoff = registerAbortCallback(options.chatId, () => {
+              if (timeout) clearTimeout(timeout);
+              reject(new Error("CLI execution aborted by user"));
+            });
+          }
+
+          timeout = setTimeout(() => {
+            if (cancelBackoff) cancelBackoff();
+            resolve();
+          }, delay);
+        });
+
+        continue;
+      }
+      throw lastError;
+    }
+  }
+  throw lastError ?? new Error("CLI execution failed");
+}
+
 /**
  * Runs a CLI command and returns stdout. Thin adapter over the shared
  * supervised process core in src/cliSupervisor.ts.
  */
 export async function runCli(command: string, args: string[], cwd: string, options: CliOptions = {}): Promise<string> {
-  const { stdout } = await runSupervisedProcess(command, args, cwd, {
+  const { stdout } = await runSupervisedProcessWithRetry(command, args, cwd, {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   });
@@ -248,7 +333,7 @@ export async function runCliAsync(
   cwd: string,
   options: CliOptions = {}
 ): Promise<{ text: string }> {
-  const { stdout } = await runSupervisedProcess(command, args, cwd, {
+  const { stdout } = await runSupervisedProcessWithRetry(command, args, cwd, {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   }, options.onProgress);

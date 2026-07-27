@@ -27,6 +27,7 @@ interface ActiveExecution {
   lifecycleHandle: ExecutionLaneHandle | null;
   lifecycleDone: Promise<void> | null;
   finishLifecycle: (() => void) | null;
+  abortCallbacks?: (() => void)[];
 }
 
 // The single process registry. Both runCli() and runCliAsync() route through
@@ -216,25 +217,64 @@ export function isExecutionActive(runId: string): boolean {
 }
 
 export function abortCliProcess(chatId: number | string): boolean {
-  const child = activeExecutions.get(chatId)?.child;
-  if (!child) return false;
-  killChild(child);
-  return true;
+  const active = activeExecutions.get(chatId);
+  let abortedSomething = false;
+  if (active?.child) {
+    killChild(active.child);
+    abortedSomething = true;
+  }
+  if (active?.abortCallbacks) {
+    for (const cb of active.abortCallbacks) cb();
+    active.abortCallbacks = [];
+    abortedSomething = true;
+  }
+  return abortedSomething;
 }
 
 export async function abortCliProcessAndWait(chatId: number | string): Promise<boolean> {
-  const child = activeExecutions.get(chatId)?.child;
-  if (!child) return false;
-  const closed = new Promise<void>((resolve) => {
-    const done = () => resolve();
-    child.once("close", done);
-    child.once("error", done);
-  });
-  // Resolves only once BOTH the direct child has closed AND the full
-  // process-group kill (including any TERM-resistant descendant) is
-  // confirmed complete — not merely once the group leader has exited.
-  await Promise.all([closed, killChild(child)]);
-  return true;
+  const active = activeExecutions.get(chatId);
+  let abortedSomething = false;
+  const closedPromises: Promise<void>[] = [];
+
+  if (active?.child) {
+    const child = active.child;
+    const closed = new Promise<void>((resolve) => {
+      const done = () => resolve();
+      child.once("close", done);
+      child.once("error", done);
+    });
+    closedPromises.push(closed);
+    closedPromises.push(killChild(child));
+    abortedSomething = true;
+  }
+
+  if (active?.abortCallbacks) {
+    for (const cb of active.abortCallbacks) cb();
+    active.abortCallbacks = [];
+    abortedSomething = true;
+  }
+
+  if (closedPromises.length > 0) {
+    await Promise.all(closedPromises);
+  }
+  return abortedSomething;
+}
+
+export function registerAbortCallback(chatId: number | string, cb: () => void): () => void {
+  let active = activeExecutions.get(chatId);
+  if (!active) {
+    active = { child: null, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null };
+    activeExecutions.set(chatId, active);
+  }
+  if (!active.abortCallbacks) active.abortCallbacks = [];
+  active.abortCallbacks.push(cb);
+
+  return () => {
+    const act = activeExecutions.get(chatId);
+    if (act?.abortCallbacks) {
+      act.abortCallbacks = act.abortCallbacks.filter(c => c !== cb);
+    }
+  };
 }
 
 export async function abortExecutionAndWait(chatId: number | string): Promise<ExecutionLaneHandle | null> {
