@@ -143,33 +143,53 @@ def snapshot_database(path: Path, expected_schema: int) -> dict[str, object]:
         connection.close()
 
 
-def identity_snapshot(path: Path) -> dict[str, list[dict[str, object]]]:
+def _json_value(value: object) -> object:
+    if isinstance(value, bytes):
+        return {"__bytes__": value.hex()}
+    return value
+
+
+def identity_snapshot(path: Path, columns_by_table: dict[str, list[str]] | None = None) -> dict[str, dict[str, object]]:
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        result: dict[str, list[dict[str, object]]] = {}
-        queries = {
-            "queue": "SELECT id, chat_key, prompt, chat_id, thread_id, chat_type, user_id, created_at FROM pending_messages ORDER BY id",
-            "runs": "SELECT run_id, status, started_at, ended_at, session_id, chat_id, bot FROM bridge_runs ORDER BY run_id",
-            "events": "SELECT id, run_id, seq, type, timestamp FROM bridge_events ORDER BY id",
-            "locks": "SELECT surface, chat_key, service_id, run_id, acquired_at, lease_expires_at FROM execution_locks ORDER BY surface, chat_key",
+        result: dict[str, dict[str, object]] = {}
+        table_names = {
+            "queue": "pending_messages", "runs": "bridge_runs",
+            "events": "bridge_events", "locks": "execution_locks",
         }
-        for name, query in queries.items():
-            if name == "queue" and "pending_messages" not in tables:
-                continue
-            table = {"queue": "pending_messages", "runs": "bridge_runs", "events": "bridge_events", "locks": "execution_locks"}[name]
+        for name, table in table_names.items():
             if table not in tables:
                 continue
-            available = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-            columns = [column for column in query[query.index("SELECT") + 7:query.index(" FROM")].split(", ") if column in available]
-            if not columns:
-                continue
-            result[name] = [dict(zip(columns, row)) for row in connection.execute(
-                f"SELECT {', '.join(columns)} FROM {table} ORDER BY {columns[0]}"
-            ).fetchall()]
+            metadata = connection.execute(f"PRAGMA table_info({table})").fetchall()
+            all_columns = [str(row[1]) for row in metadata]
+            columns = (columns_by_table or {}).get(name, all_columns)
+            if any(column not in all_columns for column in columns):
+                fail(f"identity snapshot requested a missing {name} column")
+            primary_key = [str(row[1]) for row in sorted(metadata, key=lambda row: int(row[5])) if int(row[5]) > 0]
+            ordering = primary_key or [all_columns[0]]
+            rows = [
+                {column: _json_value(value) for column, value in zip(columns, row)}
+                for row in connection.execute(
+                    f"SELECT {', '.join(columns)} FROM {table} ORDER BY {', '.join(ordering)}"
+                ).fetchall()
+            ]
+            canonical = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+            result[name] = {
+                "columns": columns,
+                "row_count": len(rows),
+                "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            }
         return result
     finally:
         connection.close()
+
+
+def assert_identity_preserved(before: dict[str, dict[str, object]], after: dict[str, dict[str, object]]) -> None:
+    for table, expected in before.items():
+        observed = after.get(table)
+        if observed is None or observed["sha256"] != expected["sha256"]:
+            fail(f"queue/run/event/lock identity changed for {table}")
 
 
 def validate_runtime_root(runtime_root: Path, archive: Path) -> None:
@@ -195,7 +215,8 @@ def migrate_fixture_copies(databases: list[Path], runtime_root: Path, archive: P
         root = Path(temporary)
         working: list[Path] = []
         backups: dict[str, str] = {}
-        before_identity: dict[str, dict[str, list[dict[str, object]]]] = {}
+        before_identity: dict[str, dict[str, dict[str, object]]] = {}
+        before_columns: dict[str, dict[str, list[str]]] = {}
         for path in databases:
             backup = root / f"{path.name}.backup"
             target = root / path.name
@@ -203,6 +224,10 @@ def migrate_fixture_copies(databases: list[Path], runtime_root: Path, archive: P
             shutil.copy2(path, target)
             backups[path.name] = digest(backup)
             before_identity[path.name] = identity_snapshot(target)
+            before_columns[path.name] = {
+                table: list(snapshot["columns"])
+                for table, snapshot in before_identity[path.name].items()
+            }
             working.append(target)
         command = ["node", "--import", "tsx", "scripts/rollout-db.ts", "migrate", "--evidence", "-"]
         for path in working:
@@ -214,9 +239,12 @@ def migrate_fixture_copies(databases: list[Path], runtime_root: Path, archive: P
         for path in working:
             current = snapshot_database(path, target_schema)
             current["source_schema_version"] = source_schema
+            after_identity = identity_snapshot(path)
+            projected_after = identity_snapshot(path, before_columns[path.name])
+            assert_identity_preserved(before_identity[path.name], projected_after)
+            current["identity_columns"] = after_identity
+            current["identity_projected_source_columns"] = projected_after
             migrated[path.name] = current
-            if identity_snapshot(path) != before_identity[path.name]:
-                fail(f"queue/run/event/lock identity changed during offline migration: {path.name}")
         restored: dict[str, str] = {}
         for path in working:
             shutil.copy2(root / f"{path.name}.backup", path)
