@@ -19,11 +19,14 @@ The enforced sequence is:
 
 Before this sequence, production requires a canonical mode-0600 authorization
 file containing `principal`, `reference`, `approved_target_commit`, UTC
-`approved_at`, UTC `expires_at`, and bounded `scope`. The target and expiry are
-validated against the invocation; absent, malformed, stale, or mismatched
-approval fails closed. A current pointer already equal to the target is a
-no-op and is rejected: it cannot emit `POINTER_SWITCHED`, `ACCEPTED`, or
-`COMPLETE`.
+`approved_at`, UTC `expires_at`, bounded `scope`, and the exact approved
+artifact/evidence, environment, rollout-helper, rollout-config,
+authorization-validator, and acceptance-validator SHA-256 identities. The
+trusted validator compares every identity against the invocation and the
+root-owned fixed configuration before any mutation; absent, malformed, stale,
+or mismatched approval fails closed. A current pointer already equal to the
+target is a no-op and is rejected: it cannot emit `POINTER_SWITCHED`,
+`ACCEPTED`, or `COMPLETE`.
 
 1. Acquire the exclusive OS rollout lock.
 2. Verify the root-owned config, selected units from the compiled seven-unit allowlist, clean `main`, and the exact expected commit. In immutable release mode, every selected service's effective `BRIDGE_CURRENT_RELEASE_DIR` must equal the configured `current_pointer`; explicit systemd overrides are rejected. Units may already be quiesced; any active unit must be stably running, and every unit is still stopped and containment-verified before migration. Every Git command runs as the runtime user.
@@ -71,6 +74,19 @@ Also record the SHA-256 digests of the independently installed validators as
 `authorization_validator_sha256=` and `acceptance_validator_sha256=`. The
 rollout helper verifies both pins before reading the target release or running
 target-owned code; target-release copies of these validators are never trusted.
+Record a stable `environment=` identity in the same fixed config. The approval
+must repeat that identity exactly. The deployment invocation must also provide
+the independently verified artifact and qualification-evidence SHA-256 values:
+
+```bash
+sudo -n /usr/local/sbin/rollout-agent-bridge \
+  --expected-commit <full-40-character-main-sha> \
+  --artifact-sha256 <artifact-sha256> \
+  --evidence-sha256 <qualification-evidence-sha256> \
+  --environment <fixed-environment-identity> \
+  --evidence-file <root-owned-qualification-evidence.json> \
+  --authorization-file <root-owned-approval.json>
+```
 
 Sudoers content:
 
@@ -85,7 +101,7 @@ The config must remain `root:root` and must not be group/world writable. Select 
 Only after separate production approval:
 
 ```bash
-sudo -n /usr/local/sbin/rollout-agent-bridge --expected-commit <full-40-character-main-sha> --authorization-file <root-owned-approval.json>
+sudo -n /usr/local/sbin/rollout-agent-bridge --expected-commit <full-40-character-main-sha> --artifact-sha256 <artifact-sha256> --evidence-sha256 <qualification-evidence-sha256> --environment <fixed-environment-identity> --evidence-file <root-owned-qualification-evidence.json> --authorization-file <root-owned-approval.json>
 ```
 
 The manifest/runtime contract must prove every declared archived path, type,

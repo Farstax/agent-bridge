@@ -421,6 +421,7 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   writeFileSync(configFile, [
     `project_dir=${project}`,
     "runtime_user=rollout-test",
+    "environment=production-content-crawler",
     `node_bin=${process.execPath}`,
     `backup_dir=${backupDir}`,
     `log_dir=${logDir}`,

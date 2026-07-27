@@ -68,10 +68,115 @@ function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expect
     `current_pointer=${currentPointer}`,
   ]);
   writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
+  writeFileSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), JSON.stringify({
+    schema_version: 1,
+    commit: fixture.expectedCommit,
+    archive_sha256: "b".repeat(64),
+  }) + "\n", { mode: 0o444 });
+  chmodSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), 0o444);
   return { currentPointer, releaseDir };
 }
 
+function writeAuthorization(fixture: Fixture, overrides: Record<string, unknown> = {}): string {
+  const path = join(fixture.root, "approval.json");
+  const evidencePath = join(fixture.root, "qualification-evidence.json");
+  writeFileSync(evidencePath, '{"qualification":"offline-pass","commit":"' + fixture.expectedCommit + '"}\n', { mode: 0o600 });
+  writeFileSync(path, JSON.stringify({
+    principal: "operator@example.invalid",
+    reference: "issue-183-deployment-qualification",
+    approved_target_commit: fixture.expectedCommit,
+    approved_at: "2026-07-26T12:00:00Z",
+    expires_at: "2099-07-26T12:00:00Z",
+    scope: "issue-183-production-activation",
+    approved_artifact_sha256: "b".repeat(64),
+    approved_evidence_sha256: sha256(evidencePath),
+    approved_environment: "production-content-crawler",
+    approved_rollout_helper_sha256: sha256(helperPath),
+    approved_rollout_config_sha256: sha256(fixture.configFile),
+    approved_authorization_validator_sha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
+    approved_acceptance_validator_sha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
+    ...overrides,
+  }) + "\n", { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return path;
+}
+
+function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overrides: Record<string, string> = {}) {
+  return spawnSync("bash", [helperPath,
+    "--expected-commit", fixture.expectedCommit,
+    "--artifact-sha256", overrides.artifact ?? "b".repeat(64),
+    "--evidence-sha256", overrides.evidence ?? sha256(join(fixture.root, "qualification-evidence.json")),
+    "--environment", overrides.environment ?? "production-content-crawler",
+    "--evidence-file", join(fixture.root, "qualification-evidence.json"),
+    "--authorization-file", authorizationFile,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root, FAKE_CORRUPT_DB: fixture.dbPaths[0] },
+  });
+}
+
 describe("guarded rollout helper", () => {
+  it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const approval = writeAuthorization(fixture);
+
+    const result = runAuthorizedRollout(fixture, approval);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
+    expect(JSON.parse(readFileSync(join(artifacts, "release-evidence.json"), "utf8"))).toEqual(expect.objectContaining({
+      environment: "production-content-crawler",
+      artifactSha256: "b".repeat(64),
+      qualificationEvidenceSha256: sha256(join(fixture.root, "qualification-evidence.json")),
+      rolloutConfigSha256: sha256(fixture.configFile),
+      authorizationValidatorSha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
+      acceptanceValidatorSha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
+    }));
+  }, 15_000);
+
+  it("rejects an identity mismatch before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const approval = writeAuthorization(fixture, { approved_artifact_sha256: "d".repeat(64) });
+
+    const result = runAuthorizedRollout(fixture, approval);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/artifact/i);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
+  it("rejects staged provenance drift before publishing the sentinel", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const provenance = join(fixture.root, "releases", `.${fixture.expectedCommit}.staging-provenance.json`);
+    chmodSync(provenance, 0o644);
+    writeFileSync(provenance, JSON.stringify({ schema_version: 1, commit: fixture.expectedCommit, archive_sha256: "d".repeat(64) }) + "\n", { mode: 0o444 });
+    chmodSync(provenance, 0o444);
+    const approval = writeAuthorization(fixture);
+
+    const result = runAuthorizedRollout(fixture, approval);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/staging provenance.*artifact|artifact.*staging provenance/i);
+    expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(false);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
+  it("rejects qualification evidence drift before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const approval = writeAuthorization(fixture);
+    writeFileSync(join(fixture.root, "qualification-evidence.json"), "tampered\n", { mode: 0o600 });
+
+    const result = runAuthorizedRollout(fixture, approval);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/evidence.*SHA-256|evidence/i);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
   it("requires a validated immutable current pointer before stopping services", () => {
     const fixture = createFixture();
     const releaseRoot = join(fixture.root, "releases");
