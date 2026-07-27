@@ -19,6 +19,6 @@ unit=agent-bridge-interactive.service
 unit=agent-bridge-worker-bot.service
 database=/home/content-crawler/agent-bridge/.data/bridge.sqlite
 database=/home/content-crawler/agent-bridge/.data/discord-interactive.sqlite
-database=/home/content-crawler/agent-bridge/.data-health/health.sqlite
+database=/home/content-crawler/runtime/agent-bridge/health/health.sqlite
 database=/home/content-crawler/runtime/agent-bridge/interactive/bridge.sqlite
 database=/home/content-crawler/runtime/agent-bridge/worker/bridge.sqlite

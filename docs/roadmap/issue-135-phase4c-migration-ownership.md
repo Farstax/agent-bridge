@@ -56,7 +56,7 @@ Current production topology (`systemd/agent-bridge-rollout.conf.example`), seven
 |---|---|---|
 | `agent-bridge-antigravity.service`, `agent-bridge-claude.service`, `agent-bridge-codex.service` | `/home/content-crawler/agent-bridge/.data/bridge.sqlite` (shared — see note) | **shared** |
 | `agent-bridge-discord-interactive.service` | `/home/content-crawler/agent-bridge/.data/discord-interactive.sqlite` | **discord** |
-| `agent-bridge-health.service` | `/home/content-crawler/agent-bridge/.data-health/health.sqlite` | **health** |
+| `agent-bridge-health.service` | `/home/content-crawler/runtime/agent-bridge/health/health.sqlite` | **health** |
 | `agent-bridge-interactive.service` | `/home/content-crawler/runtime/agent-bridge/interactive/bridge.sqlite` | **interactive** |
 | `agent-bridge-worker-bot.service` | `/home/content-crawler/runtime/agent-bridge/worker/bridge.sqlite` | **worker** |
 

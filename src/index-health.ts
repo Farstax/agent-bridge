@@ -73,6 +73,7 @@ const cliBot = _healthCliParsed.bot;
 const cliBotConfig = {
   command: _healthCliParsed.command ?? defaultHealthCliCommand(cliBot),
   modelPreference: _healthCliParsed.modelPreference,
+  executionMode: (process.env.BRIDGE_EXECUTION_MODE as "safe" | "trusted") || "safe",
 };
 
 const dbPath = process.env.HEALTH_DB_PATH || ".data-health/health.sqlite";
@@ -155,7 +156,7 @@ const engine = new BridgeEngine(
     executionKind: cliBot,
     botConfig: { command: cliBotConfig.command, modelPreference: cliBotConfig.modelPreference },
     allowedUserIds,
-    executionMode: "safe",
+    executionMode: (process.env.BRIDGE_EXECUTION_MODE as "safe" | "trusted") || "safe",
     asyncEnabled: false,
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 1000),
     soulContext,

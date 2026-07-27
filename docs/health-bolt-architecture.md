@@ -10,7 +10,7 @@ The Agent Bridge has two separate Telegram bot pathways:
 1. **Agent Bots ([index.ts](file:///home/content-crawler/agent-bridge/src/index.ts)):** Manages Codex, Claude, and Antigravity bots. It features robust polling, concurrency locking, message queuing, media buffering, error resilience, rate-limit retries, and `/stop` or `/cancel` hooks.
 2. **Health Bot ([index-health.ts](file:///home/content-crawler/agent-bridge/src/index-health.ts)):** A separate background service that monitors system health. It implements its own bare-bones long-polling loop, manual CLI execution, and basic command routing.
 
-While the Health Bot achieves **state isolation** (separate database `.data-health/health.sqlite` and separate Telegram token `TELEGRAM_BOT_TOKEN_HEALTH`), it duplicates message parsing and lacks critical quality-of-life and safety features of the main bot, such as:
+While the Health Bot achieves **state isolation** (separate database `/home/content-crawler/runtime/agent-bridge/health/health.sqlite` and separate Telegram token `TELEGRAM_BOT_TOKEN_HEALTH`), it duplicates message parsing and lacks critical quality-of-life and safety features of the main bot, such as:
 - **Concurrency Locks & Queues:** If a user runs multiple commands concurrently or triggers `/health` repeatedly, it spawns multiple concurrent CLI scripts without locking.
 - **Process Aborts:** The `/stop` or `/cancel` commands are not captured, meaning a hanging script or agent suggestion run cannot be killed from chat.
 - **Progress indicators:** Lacks standard typing progress or "Working..." updates.

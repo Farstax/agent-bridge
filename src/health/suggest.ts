@@ -25,7 +25,7 @@ export function buildSuggestionPrompt(report: HealthReport): string {
 
 export function buildSuggestionInvocation(
   bot: BotKind,
-  botConfig: { command: string; modelPreference: string[] },
+  botConfig: { command: string; modelPreference: string[]; executionMode?: "safe" | "trusted" },
   prompt: string,
 ): { command: string; args: string[] } {
   return buildCliInvocation({
@@ -35,7 +35,7 @@ export function buildSuggestionInvocation(
     prompt,
     sessionId: null,
     effort: resolveDefaultEffort(bot),
-    executionMode: "safe",
+    executionMode: botConfig.executionMode ?? "safe",
     outputFormat: bot !== "antigravity" ? "json" : null,
   });
 }
@@ -43,7 +43,7 @@ export function buildSuggestionInvocation(
 export async function generateSuggestion(
   report: HealthReport,
   bot: BotKind,
-  botConfig: { command: string; modelPreference: string[] },
+  botConfig: { command: string; modelPreference: string[]; executionMode?: "safe" | "trusted" },
 ): Promise<string | null> {
   const prompt = buildSuggestionPrompt(report);
   const invocation = buildSuggestionInvocation(bot, botConfig, prompt);
