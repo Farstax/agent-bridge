@@ -8,6 +8,8 @@ current_pointer=/opt/agent-bridge/releases/current
 rollout_helper_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_HELPER
 authorization_validator_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_AUTHORIZATION_VALIDATOR
 acceptance_validator_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_ACCEPTANCE_VALIDATOR
+# Stable deployment-environment identity; approvals must match it exactly.
+environment=production-content-crawler
 runtime_user=content-crawler
 node_bin=/home/content-crawler/.nvm/versions/node/v24.15.0/bin/node
 backup_dir=/var/backups/agent-bridge

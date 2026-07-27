@@ -30,11 +30,17 @@ die() {
 
 expected_commit=""
 authorization_file=""
+approved_artifact_sha256=""
+approved_evidence_sha256=""
+approved_environment=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --expected-commit) [[ -z "$expected_commit" && -n "${2:-}" ]] || die "invalid or duplicate --expected-commit"; expected_commit="$2"; shift 2 ;;
     --authorization-file) [[ -z "$authorization_file" && -n "${2:-}" ]] || die "invalid or duplicate --authorization-file"; authorization_file="$2"; shift 2 ;;
-    *) die "usage: rollout-agent-bridge --expected-commit <40-character SHA> --authorization-file <approval.json>" ;;
+    --artifact-sha256) [[ -z "$approved_artifact_sha256" && -n "${2:-}" ]] || die "invalid or duplicate --artifact-sha256"; approved_artifact_sha256="$2"; shift 2 ;;
+    --evidence-sha256) [[ -z "$approved_evidence_sha256" && -n "${2:-}" ]] || die "invalid or duplicate --evidence-sha256"; approved_evidence_sha256="$2"; shift 2 ;;
+    --environment) [[ -z "$approved_environment" && -n "${2:-}" ]] || die "invalid or duplicate --environment"; approved_environment="$2"; shift 2 ;;
+    *) die "usage: rollout-agent-bridge --expected-commit <40-character SHA> --authorization-file <approval.json> --artifact-sha256 <SHA-256> --evidence-sha256 <SHA-256> --environment <identity>" ;;
   esac
 done
 [[ -n "$expected_commit" ]] || die "missing --expected-commit"
@@ -92,6 +98,7 @@ current_pointer=""
 rollout_helper_sha256=""
 authorization_validator_sha256=""
 acceptance_validator_sha256=""
+environment_identity=""
 runtime_user=""
 node_bin=""
 backup_dir=""
@@ -108,6 +115,7 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     rollout_helper_sha256) [[ -z "$rollout_helper_sha256" ]] || die "duplicate rollout_helper_sha256"; rollout_helper_sha256="$value" ;;
     authorization_validator_sha256) [[ -z "$authorization_validator_sha256" ]] || die "duplicate authorization_validator_sha256"; authorization_validator_sha256="$value" ;;
     acceptance_validator_sha256) [[ -z "$acceptance_validator_sha256" ]] || die "duplicate acceptance_validator_sha256"; acceptance_validator_sha256="$value" ;;
+    environment) [[ -z "$environment_identity" ]] || die "duplicate environment"; environment_identity="$value" ;;
     runtime_user) [[ -z "$runtime_user" ]] || die "duplicate runtime_user"; runtime_user="$value" ;;
     node_bin) [[ -z "$node_bin" ]] || die "duplicate node_bin"; node_bin="$value" ;;
     backup_dir) [[ -z "$backup_dir" ]] || die "duplicate backup_dir"; backup_dir="$value" ;;
@@ -127,6 +135,10 @@ if (( release_mode == 1 )); then
   [[ -x "$activation_cmd" ]] || die "release activation helper is unavailable: $activation_cmd"
   if (( test_mode == 0 )); then
     [[ -n "$authorization_file" ]] || die "production rollout requires --authorization-file"
+    [[ "$approved_artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || die "production rollout requires --artifact-sha256"
+    [[ "$approved_evidence_sha256" =~ ^[0-9a-f]{64}$ ]] || die "production rollout requires --evidence-sha256"
+    [[ -n "$approved_environment" && "$approved_environment" == "$environment_identity" ]] || die "production rollout environment identity does not match fixed config"
+    [[ "$environment_identity" =~ ^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$ ]] || die "environment identity is malformed"
     [[ -x "$authorization_validator" && -x "$acceptance_validator" ]] || die "trusted rollout validators are unavailable"
     [[ "$authorization_validator_sha256" =~ ^[0-9a-f]{64}$ ]] || die "authorization validator SHA-256 pin is missing or malformed"
     [[ "$acceptance_validator_sha256" =~ ^[0-9a-f]{64}$ ]] || die "acceptance validator SHA-256 pin is missing or malformed"
@@ -149,6 +161,17 @@ fi
 [[ -x "$node_bin" && ! -L "$node_bin" ]] || die "configured Node binary is missing or symlinked"
 [[ "$runtime_user" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "invalid runtime user"
 if (( test_mode == 0 )); then /usr/bin/id -u "$runtime_user" >/dev/null || die "runtime user does not exist"; fi
+rollout_config_sha256="$(/usr/bin/sha256sum "$config_file" | /usr/bin/cut -d' ' -f1)"
+installed_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d' ' -f1)"
+authorization_identity_args=(
+  --expected-artifact-sha256 "$approved_artifact_sha256"
+  --expected-evidence-sha256 "$approved_evidence_sha256"
+  --expected-environment "$approved_environment"
+  --expected-rollout-helper-sha256 "$installed_helper_sha256"
+  --expected-rollout-config-sha256 "$rollout_config_sha256"
+  --expected-authorization-validator-sha256 "$authorization_validator_sha256"
+  --expected-acceptance-validator-sha256 "$acceptance_validator_sha256"
+)
 
 secure_owner_uid="$EUID"
 if (( test_mode == 0 )); then secure_owner_uid=0; fi
@@ -197,7 +220,7 @@ if [[ -n "$release_root" || -n "$current_pointer" ]]; then
 fi
 if (( release_mode == 1 )); then
   if [[ -n "$authorization_file" ]]; then
-    "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" >/dev/null || die "rollout authorization validation failed"
+    "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" >/dev/null || die "rollout authorization validation failed"
   fi
   "$activation_cmd" --validate-only --release-root "$release_root" --current "$current_pointer" --expected-commit "$expected_commit" || die "active release contract validation failed"
 fi
@@ -836,15 +859,15 @@ code_check
 if (( release_mode == 1 )); then
   authorization_evidence_sha256=""
   if [[ -n "$authorization_file" ]]; then
-    "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" --output "$artifact_dir/authorization-evidence.json" || die "rollout authorization validation failed"
+    "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" --output "$artifact_dir/authorization-evidence.json" || die "rollout authorization validation failed"
     hash_evidence_file "$artifact_dir/authorization-evidence.json"
     authorization_evidence_sha256="$(/usr/bin/sha256sum "$artifact_dir/authorization-evidence.json" | /usr/bin/cut -d' ' -f1)"
   fi
   previous_pointer_target="$pointer_target"
   rollout_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d ' ' -f1)"
   {
-    printf '{\n  "expectedCommit": "%s",\n  "previousCommit": "%s",\n  "currentPointer": "%s",\n  "releaseRoot": "%s",\n  "releaseDir": "%s",\n  "rolloutHelperSha256": "%s",\n  "authorizationEvidenceSha256": "%s"\n}\n' \
-      "$expected_commit" "$previous_pointer_target" "$current_pointer" "$release_root" "$release_dir" "$rollout_helper_sha256" "$authorization_evidence_sha256"
+    printf '{\n  "expectedCommit": "%s",\n  "previousCommit": "%s",\n  "currentPointer": "%s",\n  "releaseRoot": "%s",\n  "releaseDir": "%s",\n  "environment": "%s",\n  "artifactSha256": "%s",\n  "qualificationEvidenceSha256": "%s",\n  "rolloutHelperSha256": "%s",\n  "rolloutConfigSha256": "%s",\n  "authorizationValidatorSha256": "%s",\n  "acceptanceValidatorSha256": "%s",\n  "authorizationEvidenceSha256": "%s"\n}\n' \
+      "$expected_commit" "$previous_pointer_target" "$current_pointer" "$release_root" "$release_dir" "$environment_identity" "$approved_artifact_sha256" "$approved_evidence_sha256" "$rollout_helper_sha256" "$rollout_config_sha256" "$authorization_validator_sha256" "$acceptance_validator_sha256" "$authorization_evidence_sha256"
   } > "$artifact_dir/release-evidence.json"
   /usr/bin/sha256sum "$artifact_dir/release-evidence.json" > "$artifact_dir/release-evidence.sha256"
 fi
