@@ -98,6 +98,7 @@ project_dir=""
 release_root=""
 current_pointer=""
 rollout_helper_sha256=""
+activation_helper_sha256=""
 authorization_validator_sha256=""
 acceptance_validator_sha256=""
 environment_identity=""
@@ -115,6 +116,7 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     release_root) [[ -z "$release_root" ]] || die "duplicate release_root"; release_root="$value" ;;
     current_pointer) [[ -z "$current_pointer" ]] || die "duplicate current_pointer"; current_pointer="$value" ;;
     rollout_helper_sha256) [[ -z "$rollout_helper_sha256" ]] || die "duplicate rollout_helper_sha256"; rollout_helper_sha256="$value" ;;
+    activation_helper_sha256) [[ -z "$activation_helper_sha256" ]] || die "duplicate activation_helper_sha256"; activation_helper_sha256="$value" ;;
     authorization_validator_sha256) [[ -z "$authorization_validator_sha256" ]] || die "duplicate authorization_validator_sha256"; authorization_validator_sha256="$value" ;;
     acceptance_validator_sha256) [[ -z "$acceptance_validator_sha256" ]] || die "duplicate acceptance_validator_sha256"; acceptance_validator_sha256="$value" ;;
     environment) [[ -z "$environment_identity" ]] || die "duplicate environment"; environment_identity="$value" ;;
@@ -145,6 +147,8 @@ if (( release_mode == 1 )); then
     [[ -x "$authorization_validator" && -x "$acceptance_validator" ]] || die "trusted rollout validators are unavailable"
     [[ "$authorization_validator_sha256" =~ ^[0-9a-f]{64}$ ]] || die "authorization validator SHA-256 pin is missing or malformed"
     [[ "$acceptance_validator_sha256" =~ ^[0-9a-f]{64}$ ]] || die "acceptance validator SHA-256 pin is missing or malformed"
+    [[ "$activation_helper_sha256" =~ ^[0-9a-f]{64}$ ]] || die "activation helper SHA-256 pin is missing or malformed"
+    [[ "$(/usr/bin/sha256sum "$activation_cmd" | /usr/bin/cut -d' ' -f1)" == "$activation_helper_sha256" ]] || die "activation helper SHA-256 mismatch"
     [[ "$(/usr/bin/sha256sum "$authorization_validator" | /usr/bin/cut -d' ' -f1)" == "$authorization_validator_sha256" ]] || die "authorization validator SHA-256 mismatch"
     [[ "$(/usr/bin/sha256sum "$acceptance_validator" | /usr/bin/cut -d' ' -f1)" == "$acceptance_validator_sha256" ]] || die "acceptance validator SHA-256 mismatch"
   fi
@@ -176,6 +180,7 @@ authorization_identity_args=(
   --expected-environment "$approved_environment"
   --expected-rollout-helper-sha256 "$installed_helper_sha256"
   --expected-rollout-config-sha256 "$rollout_config_sha256"
+  --expected-activation-helper-sha256 "$activation_helper_sha256"
   --expected-authorization-validator-sha256 "$authorization_validator_sha256"
   --expected-acceptance-validator-sha256 "$acceptance_validator_sha256"
 )
@@ -890,6 +895,8 @@ if (( release_mode == 1 )); then
       "$expected_commit" "$previous_pointer_target" "$current_pointer" "$release_root" "$release_dir" "$environment_identity" "$approved_artifact_sha256" "$qualification_evidence_file" "$approved_evidence_sha256" "$rollout_helper_sha256" "$rollout_config_sha256" "$authorization_validator_sha256" "$acceptance_validator_sha256" "$authorization_evidence_sha256"
   } > "$artifact_dir/release-evidence.json"
   /usr/bin/sha256sum "$artifact_dir/release-evidence.json" > "$artifact_dir/release-evidence.sha256"
+  printf '{"activationHelperSha256":"%s"}\n' "$activation_helper_sha256" > "$artifact_dir/activation-helper-evidence.json"
+  /usr/bin/sha256sum "$artifact_dir/activation-helper-evidence.json" > "$artifact_dir/activation-helper-evidence.sha256"
 fi
 [[ -f "$project_dir/scripts/rollout-db.ts" ]] || die "migration helper is missing from expected commit"
 [[ -f "$project_dir/node_modules/tsx/dist/cli.mjs" ]] || die "tsx runtime is missing"
