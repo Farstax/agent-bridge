@@ -48,7 +48,17 @@ function validate(path: string, expectedCommit = COMMIT, now = "2026-07-26T13:00
 
 describe("rollout authorization", () => {
   it("validates a complete, target-bound, unexpired approval", () => {
-    expect(validate(writeAuthorization())).toContain(`"approved_target_commit": "${COMMIT}"`);
+    const output = validate(writeAuthorization());
+    expect(output).toContain(`"approved_target_commit": "${COMMIT}"`);
+    for (const field of [
+      "approved_artifact_sha256",
+      "approved_evidence_sha256",
+      "approved_environment",
+      "approved_rollout_helper_sha256",
+      "approved_rollout_config_sha256",
+      "approved_authorization_validator_sha256",
+      "approved_acceptance_validator_sha256",
+    ]) expect(output).toContain(`"${field}"`);
   });
 
   it.each([
@@ -60,6 +70,10 @@ describe("rollout authorization", () => {
     ["mismatched artifact", { approved_artifact_sha256: "c".repeat(64) }, /artifact/i],
     ["missing evidence", { approved_evidence_sha256: null }, /evidence/i],
     ["mismatched environment", { approved_environment: "other-environment" }, /environment/i],
+    ["mismatched rollout helper", { approved_rollout_helper_sha256: "c".repeat(64) }, /rollout_helper/i],
+    ["mismatched rollout config", { approved_rollout_config_sha256: "c".repeat(64) }, /rollout_config/i],
+    ["mismatched authorization validator", { approved_authorization_validator_sha256: "c".repeat(64) }, /authorization_validator/i],
+    ["mismatched acceptance validator", { approved_acceptance_validator_sha256: "c".repeat(64) }, /acceptance_validator/i],
   ])("rejects %s", (_label, overrides, error) => {
     expect(() => validate(writeAuthorization(overrides))).toThrow(error);
   });
