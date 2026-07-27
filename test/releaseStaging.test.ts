@@ -13,10 +13,10 @@ const TREE = "2".repeat(40);
 // tamper mechanism, not build-strategy semantics, so it just satisfies "compiled" minimally.
 const PACKAGE_JSON_CONTENT = `${JSON.stringify({ name: "stage-test", scripts: { build: "true" } })}\n`;
 
-function makeArchive(withHardlink = false, withExecutable = false): { archive: string; root: string } {
+function makeArchive(withHardlink = false, withExecutable = false, packageContent = PACKAGE_JSON_CONTENT): { archive: string; root: string } {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-stage-input-"));
   writeFileSync(join(root, "package-lock.json"), "lock\n");
-  writeFileSync(join(root, "package.json"), PACKAGE_JSON_CONTENT);
+  writeFileSync(join(root, "package.json"), packageContent);
   mkdirSync(join(root, "dist"));
   writeFileSync(join(root, "dist", "placeholder.js"), "// placeholder\n");
   if (withHardlink) {
@@ -38,12 +38,12 @@ function makeArchive(withHardlink = false, withExecutable = false): { archive: s
   });
   writeFileSync(join(root, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   chmodSync(join(root, "package.json"), 0o644);
-  const archive = join(tmpdir(), `agent-bridge-${COMMIT}.tar.gz`);
+  const archive = join(tmpdir(), `agent-bridge-${COMMIT}-${Date.now()}-${Math.random().toString(16).slice(2)}.tar.gz`);
   execFileSync("tar", ["-czf", archive, "-C", root, "."]);
   return { archive, root };
 }
 
-function runStage(archive: string, releaseRoot: string, expectedCommit = COMMIT): string {
+function runStage(archive: string, releaseRoot: string, expectedCommit = COMMIT, extraEnv: Record<string, string> = {}): string {
   return execFileSync("python3", [
     "scripts/release-stage.py",
     "--archive", archive,
@@ -52,7 +52,7 @@ function runStage(archive: string, releaseRoot: string, expectedCommit = COMMIT)
     "--archive-sha256", createHash("sha256").update(readFileSync(archive)).digest("hex"),
   ], {
     encoding: "utf8",
-    env: { ...process.env, AGENT_BRIDGE_RELEASE_STAGE_TEST: "1" },
+    env: { ...process.env, AGENT_BRIDGE_RELEASE_STAGE_TEST: "1", ...extraEnv },
   });
 }
 
@@ -122,6 +122,17 @@ describe("immutable release staging", () => {
       "--archive-sha256", "0".repeat(64),
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_BRIDGE_RELEASE_STAGE_TEST: "1" } })).toThrow(/archive SHA-256/i);
     expect(existsSync(join(releaseRoot, COMMIT))).toBe(false);
+  });
+
+  it("extracts from the hashed descriptor even if the archive pathname is replaced after hashing", () => {
+    const original = makeArchive(false, false, PACKAGE_JSON_CONTENT);
+    const replacement = makeArchive(false, false, `${JSON.stringify({ name: "replacement", scripts: { build: "true" } })}\n`);
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
+
+    expect(runStage(original.archive, releaseRoot, COMMIT, {
+      AGENT_BRIDGE_RELEASE_STAGE_TEST_REPLACE_ARCHIVE: replacement.archive,
+    })).toMatch(new RegExp(`staged ${COMMIT}`));
+    expect(readFileSync(join(releaseRoot, COMMIT, "package.json"), "utf8")).toBe(PACKAGE_JSON_CONTENT);
   });
 
   it("rejects a tampered archive before publication", () => {
