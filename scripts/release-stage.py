@@ -55,6 +55,15 @@ def digest_stream(stream: BinaryIO) -> str:
     return hasher.hexdigest()
 
 
+def snapshot_stream(source: BinaryIO, snapshot: BinaryIO) -> str:
+    hasher = hashlib.sha256()
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        hasher.update(chunk)
+        snapshot.write(chunk)
+    snapshot.flush()
+    return hasher.hexdigest()
+
+
 def digest(path: Path) -> str:
     with path.open("rb") as stream:
         return digest_stream(stream)
@@ -279,41 +288,42 @@ def stage(archive: Path, release_root: Path, expected_commit: str, expected_arch
         fail("expected archive SHA-256 must be a full lowercase SHA-256")
     release_root = validate_release_root(release_root)
     with open_archive(archive) as archive_stream:
-        archive_sha256 = digest_stream(archive_stream)
-        if archive_sha256 != expected_archive_sha256:
-            fail("archive SHA-256 does not match the expected digest")
-        replacement = os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_REPLACE_ARCHIVE")
-        if replacement and not production_mode():
-            os.replace(replacement, archive)
-        if os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_MUTATE_ARCHIVE") and not production_mode():
-            with archive.open("r+b") as mutated:
-                mutated.truncate(0)
-                mutated.write(b"mutated after hashing")
+        with tempfile.TemporaryFile(prefix="agent-bridge-archive-") as snapshot:
+            archive_sha256 = snapshot_stream(archive_stream, snapshot)
+            if archive_sha256 != expected_archive_sha256:
+                fail("archive SHA-256 does not match the expected digest")
+            replacement = os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_REPLACE_ARCHIVE")
+            if replacement and not production_mode():
+                os.replace(replacement, archive)
+            if os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST_MUTATE_ARCHIVE") and not production_mode():
+                with archive.open("r+b") as mutated:
+                    mutated.truncate(0)
+                    mutated.write(b"mutated after hashing")
 
-        release = release_root / expected_commit
-        if release.exists() or release.is_symlink():
-            return validate_existing(release, release_root, expected_commit, archive_sha256)
-
-        temporary = Path(tempfile.mkdtemp(prefix=f".staging-{expected_commit}-", dir=release_root))
-        try:
-            archive_stream.seek(0)
-            extract_archive(archive_stream, temporary)
-            manifest = load_manifest(temporary)
-            if manifest["commit"] != expected_commit:
-                fail("archive manifest commit does not match expected commit")
-            verify_manifest(temporary, manifest)
-            make_immutable(temporary)
-            try:
-                os.rename(temporary, release)
-            except FileExistsError:
-                shutil.rmtree(temporary)
+            release = release_root / expected_commit
+            if release.exists() or release.is_symlink():
                 return validate_existing(release, release_root, expected_commit, archive_sha256)
-            publish_provenance(release_root, expected_commit, archive_sha256)
-            return f"staged {expected_commit}"
-        except Exception:
-            if temporary.exists():
-                shutil.rmtree(temporary)
-            raise
+
+            temporary = Path(tempfile.mkdtemp(prefix=f".staging-{expected_commit}-", dir=release_root))
+            try:
+                snapshot.seek(0)
+                extract_archive(snapshot, temporary)
+                manifest = load_manifest(temporary)
+                if manifest["commit"] != expected_commit:
+                    fail("archive manifest commit does not match expected commit")
+                verify_manifest(temporary, manifest)
+                make_immutable(temporary)
+                try:
+                    os.rename(temporary, release)
+                except FileExistsError:
+                    shutil.rmtree(temporary)
+                    return validate_existing(release, release_root, expected_commit, archive_sha256)
+                publish_provenance(release_root, expected_commit, archive_sha256)
+                return f"staged {expected_commit}"
+            except Exception:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
+                raise
 
 
 def main() -> int:
