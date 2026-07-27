@@ -33,6 +33,7 @@ authorization_file=""
 approved_artifact_sha256=""
 approved_evidence_sha256=""
 approved_environment=""
+qualification_evidence_file=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --expected-commit) [[ -z "$expected_commit" && -n "${2:-}" ]] || die "invalid or duplicate --expected-commit"; expected_commit="$2"; shift 2 ;;
@@ -40,7 +41,8 @@ while [[ $# -gt 0 ]]; do
     --artifact-sha256) [[ -z "$approved_artifact_sha256" && -n "${2:-}" ]] || die "invalid or duplicate --artifact-sha256"; approved_artifact_sha256="$2"; shift 2 ;;
     --evidence-sha256) [[ -z "$approved_evidence_sha256" && -n "${2:-}" ]] || die "invalid or duplicate --evidence-sha256"; approved_evidence_sha256="$2"; shift 2 ;;
     --environment) [[ -z "$approved_environment" && -n "${2:-}" ]] || die "invalid or duplicate --environment"; approved_environment="$2"; shift 2 ;;
-    *) die "usage: rollout-agent-bridge --expected-commit <40-character SHA> --authorization-file <approval.json> --artifact-sha256 <SHA-256> --evidence-sha256 <SHA-256> --environment <identity>" ;;
+    --evidence-file) [[ -z "$qualification_evidence_file" && -n "${2:-}" ]] || die "invalid or duplicate --evidence-file"; qualification_evidence_file="$2"; shift 2 ;;
+    *) die "usage: rollout-agent-bridge --expected-commit <40-character SHA> --authorization-file <approval.json> --artifact-sha256 <SHA-256> --evidence-sha256 <SHA-256> --environment <identity> --evidence-file <qualification-evidence.json>" ;;
   esac
 done
 [[ -n "$expected_commit" ]] || die "missing --expected-commit"
@@ -137,6 +139,7 @@ if (( release_mode == 1 )); then
     [[ -n "$authorization_file" ]] || die "production rollout requires --authorization-file"
     [[ "$approved_artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || die "production rollout requires --artifact-sha256"
     [[ "$approved_evidence_sha256" =~ ^[0-9a-f]{64}$ ]] || die "production rollout requires --evidence-sha256"
+    [[ -n "$qualification_evidence_file" ]] || die "production rollout requires --evidence-file"
     [[ -n "$approved_environment" && "$approved_environment" == "$environment_identity" ]] || die "production rollout environment identity does not match fixed config"
     [[ "$environment_identity" =~ ^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$ ]] || die "environment identity is malformed"
     [[ -x "$authorization_validator" && -x "$acceptance_validator" ]] || die "trusted rollout validators are unavailable"
@@ -193,6 +196,12 @@ validate_secure_path() {
 }
 validate_secure_path "$backup_dir" directory
 validate_secure_path "$log_dir" directory
+if (( release_mode == 1 )) && { [[ -n "$authorization_file" ]] || (( test_mode == 0 )); }; then
+  [[ -n "$qualification_evidence_file" ]] || die "authorized release requires --evidence-file"
+  validate_secure_path "$qualification_evidence_file" file
+  actual_qualification_evidence_sha256="$(/usr/bin/sha256sum "$qualification_evidence_file" | /usr/bin/cut -d' ' -f1)"
+  [[ "$actual_qualification_evidence_sha256" == "$approved_evidence_sha256" ]] || die "qualification evidence SHA-256 does not match the approved evidence identity"
+fi
 
 if [[ -n "$release_root" || -n "$current_pointer" ]]; then
   [[ "$release_root" == /* && "$current_pointer" == /* ]] || die "release paths must be absolute"
@@ -223,6 +232,13 @@ if [[ -n "$release_root" || -n "$current_pointer" ]]; then
   release_mode=1
 fi
 if (( release_mode == 1 )); then
+  if [[ -n "$authorization_file" ]]; then
+    staging_provenance="$release_root/.${expected_commit}.staging-provenance.json"
+    validate_secure_path "$staging_provenance" file
+    provenance_commit="$(/usr/bin/grep -m1 -oE '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{40})"/\1/')"
+    provenance_artifact_sha256="$(/usr/bin/grep -m1 -oE '"archive_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{64})"/\1/')"
+    [[ "$provenance_commit" == "$expected_commit" && "$provenance_artifact_sha256" == "$approved_artifact_sha256" ]] || die "staging provenance does not match the approved artifact identity"
+  fi
   if [[ -n "$authorization_file" ]]; then
     "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" >/dev/null || die "rollout authorization validation failed"
   fi
@@ -863,15 +879,15 @@ code_check
 if (( release_mode == 1 )); then
   authorization_evidence_sha256=""
   if [[ -n "$authorization_file" ]]; then
-    "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" --output "$artifact_dir/authorization-evidence.json" || die "rollout authorization validation failed"
+  "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" --output "$artifact_dir/authorization-evidence.json" || die "rollout authorization validation failed"
     hash_evidence_file "$artifact_dir/authorization-evidence.json"
     authorization_evidence_sha256="$(/usr/bin/sha256sum "$artifact_dir/authorization-evidence.json" | /usr/bin/cut -d' ' -f1)"
   fi
   previous_pointer_target="$pointer_target"
   rollout_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d ' ' -f1)"
   {
-    printf '{\n  "expectedCommit": "%s",\n  "previousCommit": "%s",\n  "currentPointer": "%s",\n  "releaseRoot": "%s",\n  "releaseDir": "%s",\n  "environment": "%s",\n  "artifactSha256": "%s",\n  "qualificationEvidenceSha256": "%s",\n  "rolloutHelperSha256": "%s",\n  "rolloutConfigSha256": "%s",\n  "authorizationValidatorSha256": "%s",\n  "acceptanceValidatorSha256": "%s",\n  "authorizationEvidenceSha256": "%s"\n}\n' \
-      "$expected_commit" "$previous_pointer_target" "$current_pointer" "$release_root" "$release_dir" "$environment_identity" "$approved_artifact_sha256" "$approved_evidence_sha256" "$rollout_helper_sha256" "$rollout_config_sha256" "$authorization_validator_sha256" "$acceptance_validator_sha256" "$authorization_evidence_sha256"
+    printf '{\n  "expectedCommit": "%s",\n  "previousCommit": "%s",\n  "currentPointer": "%s",\n  "releaseRoot": "%s",\n  "releaseDir": "%s",\n  "environment": "%s",\n  "artifactSha256": "%s",\n  "qualificationEvidenceFile": "%s",\n  "qualificationEvidenceSha256": "%s",\n  "rolloutHelperSha256": "%s",\n  "rolloutConfigSha256": "%s",\n  "authorizationValidatorSha256": "%s",\n  "acceptanceValidatorSha256": "%s",\n  "authorizationEvidenceSha256": "%s"\n}\n' \
+      "$expected_commit" "$previous_pointer_target" "$current_pointer" "$release_root" "$release_dir" "$environment_identity" "$approved_artifact_sha256" "$qualification_evidence_file" "$approved_evidence_sha256" "$rollout_helper_sha256" "$rollout_config_sha256" "$authorization_validator_sha256" "$acceptance_validator_sha256" "$authorization_evidence_sha256"
   } > "$artifact_dir/release-evidence.json"
   /usr/bin/sha256sum "$artifact_dir/release-evidence.json" > "$artifact_dir/release-evidence.sha256"
 fi

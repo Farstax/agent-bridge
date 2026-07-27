@@ -84,6 +84,7 @@ sudo -n /usr/local/sbin/rollout-agent-bridge \
   --artifact-sha256 <artifact-sha256> \
   --evidence-sha256 <qualification-evidence-sha256> \
   --environment <fixed-environment-identity> \
+  --evidence-file <root-owned-qualification-evidence.json> \
   --authorization-file <root-owned-approval.json>
 ```
 
@@ -100,7 +101,7 @@ The config must remain `root:root` and must not be group/world writable. Select 
 Only after separate production approval:
 
 ```bash
-sudo -n /usr/local/sbin/rollout-agent-bridge --expected-commit <full-40-character-main-sha> --artifact-sha256 <artifact-sha256> --evidence-sha256 <qualification-evidence-sha256> --environment <fixed-environment-identity> --authorization-file <root-owned-approval.json>
+sudo -n /usr/local/sbin/rollout-agent-bridge --expected-commit <full-40-character-main-sha> --artifact-sha256 <artifact-sha256> --evidence-sha256 <qualification-evidence-sha256> --environment <fixed-environment-identity> --evidence-file <root-owned-qualification-evidence.json> --authorization-file <root-owned-approval.json>
 ```
 
 The manifest/runtime contract must prove every declared archived path, type,

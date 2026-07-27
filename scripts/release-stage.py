@@ -21,6 +21,7 @@ from pathlib import Path
 
 
 SHA = 40
+SHA256 = 64
 
 
 def production_mode() -> bool:
@@ -52,6 +53,49 @@ def digest(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def provenance_path(release_root: Path, expected_commit: str) -> Path:
+    return release_root / f".{expected_commit}.staging-provenance.json"
+
+
+def load_provenance(path: Path, expected_commit: str, expected_archive_sha256: str) -> dict:
+    if path.is_symlink() or not path.is_file():
+        fail("staging provenance is missing or is not a regular file")
+    if path.stat().st_mode & 0o222:
+        fail("staging provenance must be immutable")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"invalid staging provenance: {error}")
+    if value != {"archive_sha256": expected_archive_sha256, "commit": expected_commit, "schema_version": 1}:
+        fail("staging provenance identity does not match the expected commit or archive SHA-256")
+    return value
+
+
+def publish_provenance(release_root: Path, expected_commit: str, archive_sha256: str) -> None:
+    target = provenance_path(release_root, expected_commit)
+    if target.exists() or target.is_symlink():
+        load_provenance(target, expected_commit, archive_sha256)
+        return
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{expected_commit}.provenance-", dir=release_root)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(json.dumps({
+            "schema_version": 1,
+            "commit": expected_commit,
+            "archive_sha256": archive_sha256,
+        }, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o444)
+        if production_mode():
+            os.chown(temporary, 0, 0)
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            load_provenance(target, expected_commit, archive_sha256)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_manifest(root: Path) -> dict:
@@ -197,7 +241,7 @@ def validate_release_root(release_root: Path) -> Path:
     return release_root
 
 
-def validate_existing(release: Path, expected_commit: str) -> str:
+def validate_existing(release: Path, release_root: Path, expected_commit: str, archive_sha256: str) -> str:
     if release.is_symlink() or not release.is_dir():
         fail(f"existing release path is not a directory: {release}")
     manifest = load_manifest(release)
@@ -209,16 +253,24 @@ def validate_existing(release: Path, expected_commit: str) -> str:
             path = Path(current) / name
             if not path.is_symlink() and path.stat().st_mode & 0o222:
                 fail("existing release is writable")
+    load_provenance(provenance_path(release_root, expected_commit), expected_commit, archive_sha256)
     return f"already staged {expected_commit}"
 
 
-def stage(archive: Path, release_root: Path, expected_commit: str) -> str:
+def stage(archive: Path, release_root: Path, expected_commit: str, expected_archive_sha256: str) -> str:
     if len(expected_commit) != SHA or any(c not in "0123456789abcdef" for c in expected_commit):
         fail("expected commit must be a full lowercase 40-character SHA")
+    if len(expected_archive_sha256) != SHA256 or any(c not in "0123456789abcdef" for c in expected_archive_sha256):
+        fail("expected archive SHA-256 must be a full lowercase SHA-256")
+    if not archive.is_file() or archive.is_symlink():
+        fail("archive must be a regular non-symlink file")
+    archive_sha256 = digest(archive)
+    if archive_sha256 != expected_archive_sha256:
+        fail("archive SHA-256 does not match the expected digest")
     release_root = validate_release_root(release_root)
     release = release_root / expected_commit
     if release.exists() or release.is_symlink():
-        return validate_existing(release, expected_commit)
+        return validate_existing(release, release_root, expected_commit, archive_sha256)
 
     temporary = Path(tempfile.mkdtemp(prefix=f".staging-{expected_commit}-", dir=release_root))
     try:
@@ -232,7 +284,8 @@ def stage(archive: Path, release_root: Path, expected_commit: str) -> str:
             os.rename(temporary, release)
         except FileExistsError:
             shutil.rmtree(temporary)
-            return validate_existing(release, expected_commit)
+            return validate_existing(release, release_root, expected_commit, archive_sha256)
+        publish_provenance(release_root, expected_commit, archive_sha256)
         return f"staged {expected_commit}"
     except Exception:
         if temporary.exists():
@@ -245,10 +298,11 @@ def main() -> int:
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--release-root", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--archive-sha256", required=True)
     args = parser.parse_args()
     if os.geteuid() != 0 and os.environ.get("AGENT_BRIDGE_RELEASE_STAGE_TEST") != "1":
         fail("release staging must run as root")
-    print(stage(args.archive, args.release_root, args.expected_commit))
+    print(stage(args.archive, args.release_root, args.expected_commit, args.archive_sha256))
     return 0
 
 
