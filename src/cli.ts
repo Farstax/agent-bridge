@@ -299,8 +299,27 @@ async function runSupervisedProcessWithRetry(
           throw new Error("CLI execution aborted by user");
         }
 
-        // Suppress attempt-level terminal/started events by removing eventContext
-        const innerOptions = { ...options, eventContext: undefined };
+        // Suppress attempt-level terminal/started events by intercepting onEvent
+        const innerOptions: CliOptions = {
+          ...options,
+          onEvent: (event: BridgeEvent) => {
+            if (
+              event.type === "run.started" ||
+              event.type === "run.completed" ||
+              event.type === "run.failed" ||
+              event.type === "run.cancelled"
+            ) {
+              return;
+            }
+            if (onEvent) {
+              try {
+                onEvent(event);
+              } catch {
+                /* ignore */
+              }
+            }
+          },
+        };
         const runPromise = runSupervisedProcess(command, args, cwd, innerOptions, onProgress);
         const result = await Promise.race([runPromise, abortPromise]);
 
@@ -367,7 +386,7 @@ async function runSupervisedProcessWithRetry(
         emitSafe(onEvent, evtType.runFailed({
           ...eventContext,
           error: error.message,
-          category: "cli",
+          category: error.category || "cli",
         }));
       }
     }

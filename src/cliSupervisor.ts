@@ -139,6 +139,7 @@ function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Pr
  * #177) — callers must branch on `timeoutKind`, not on Error#message text.
  */
 export class CliTimeoutError extends Error {
+  public readonly category = "timeout";
   constructor(message: string, public readonly timeoutKind: "hard" | "idle") {
     super(message);
     this.name = "CliTimeoutError";
@@ -439,6 +440,7 @@ export async function runSupervisedProcess(
         if (settled || pendingError) return;
         console.error(`[PROCESS WATCH] ${error.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: error.message, category }));
+        (error as any).category = category;
         pendingError = error;
         pendingKill = killChildTree(child, killGraceMs);
       },

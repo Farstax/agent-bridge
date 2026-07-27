@@ -571,11 +571,13 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
 
     expect(res).toContain("success output");
 
-    // Verify exactly one started and one completed event
+    // Verify exactly one started and one completed event, with no attempt terminal events (no failures)
     const startEvents = events.filter((e) => e.type === "run.started");
     const completedEvents = events.filter((e) => e.type === "run.completed");
+    const failEvents = events.filter((e) => e.type === "run.failed");
     expect(startEvents.length).toBe(1);
     expect(completedEvents.length).toBe(1);
+    expect(failEvents.length).toBe(0);
   }, 10_000);
 
   it("stops retrying and cancels backoff immediately when aborted via abortExecutionAndWait (production /stop), emitting exactly one started and one cancelled event", async () => {
@@ -755,5 +757,47 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
 
     await expect(p).rejects.toThrow(/CLI exited with code 1/);
     expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(3);
+  }, 10_000);
+
+  it("Agy hard timeout emits exactly one outer run.failed with category timeout", async () => {
+    const script = `
+      setTimeout(() => {}, 10000);
+    `;
+
+    const events: BridgeEvent[] = [];
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-timeout-category-test",
+      bot: "antigravity",
+      timeoutMs: 200,
+      eventContext: { runId: "test-timeout-run", bot: "antigravity", chatId: "dns-timeout-category-test" },
+      onEvent: (e) => events.push(e),
+    });
+
+    await expect(p).rejects.toThrow(/timeout/i);
+
+    const startEvents = events.filter((e) => e.type === "run.started");
+    const failEvents = events.filter((e) => e.type === "run.failed");
+    expect(startEvents.length).toBe(1);
+    expect(failEvents.length).toBe(1);
+    expect((failEvents[0] as any).category).toBe("timeout");
+  }, 10_000);
+
+  it("Agy stdout -> text.delta still reaches the collector", async () => {
+    const script = `
+      console.log("hello stdout delta");
+      process.exit(0);
+    `;
+
+    const events: BridgeEvent[] = [];
+    await runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-stdout-delta-test",
+      bot: "antigravity",
+      eventContext: { runId: "test-delta-run", bot: "antigravity", chatId: "dns-stdout-delta-test" },
+      onEvent: (e) => events.push(e),
+    });
+
+    const deltaEvents = events.filter((e) => e.type === "text.delta");
+    expect(deltaEvents.length).toBeGreaterThan(0);
+    expect((deltaEvents[0] as any).text).toContain("hello stdout delta");
   }, 10_000);
 });
