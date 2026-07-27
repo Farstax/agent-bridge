@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   abortCliProcess,
   abortCliProcessAndWait,
@@ -14,6 +14,10 @@ import {
   abortExecutionAndWait,
   beginExecutionLifecycle,
   completeExecutionLifecycle,
+  hasAbortCallback,
+  buildCliInvocation,
+  buildExecutionOptions,
+  isChildRunning,
 } from "../src/cli.js";
 import type { BridgeEvent } from "../src/events/types.js";
 import type { CliOptions } from "../src/types.js";
@@ -70,7 +74,16 @@ async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
 }
 
 const roots: string[] = [];
+const previousLockMode = process.env.BRIDGE_WORKSPACE_LOCK_MODE;
+
+beforeEach(() => {
+  // Enable workspace locking by default for tests in this file
+  delete process.env.BRIDGE_WORKSPACE_LOCK_MODE;
+});
+
 afterEach(async () => {
+  if (previousLockMode === undefined) delete process.env.BRIDGE_WORKSPACE_LOCK_MODE;
+  else process.env.BRIDGE_WORKSPACE_LOCK_MODE = previousLockMode;
   await shutdownCliProcessesAndWait();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -580,6 +593,9 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
       process.exit(1);
     `;
 
+    // We must call beginExecutionLifecycle because abortExecutionAndWait awaits active.lifecycleDone
+    const token = beginExecutionLifecycle("dns-cancel-test", { runId: "test-cancel-run" } as any);
+
     const events: BridgeEvent[] = [];
     const p = runCli(process.execPath, ["-e", cancelScript, "--", "--sandbox"], cliTestCwd, {
       chatId: "dns-cancel-test",
@@ -588,11 +604,12 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
       onEvent: (e) => events.push(e),
     });
 
-    // We must call beginExecutionLifecycle because abortExecutionAndWait awaits active.lifecycleDone
-    const token = beginExecutionLifecycle("dns-cancel-test", {} as any);
+    // Wait deterministically for first attempt to execute and enter first backoff delay
+    await waitForFile(cancelCountFile);
+    while (isChildRunning("dns-cancel-test")) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
 
-    // Wait briefly for first attempt to fail and enter first backoff delay (1000ms)
-    await new Promise((resolve) => setTimeout(resolve, 300));
     const abortPromise = abortExecutionAndWait("dns-cancel-test");
 
     await expect(p).rejects.toThrow(/CLI execution aborted by user/i);
@@ -701,5 +718,42 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
     });
 
     expect(res).toContain("success output");
+  }, 10_000);
+
+  it("integrates with production buildCliInvocation and retries when toolMode is none", async () => {
+    const countFile = join(cliTestCwd, ".dns-prod-integration-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const invocation = buildCliInvocation({
+      bot: "antigravity",
+      command: process.execPath,
+      model: "gemini-3.5-flash-high",
+      prompt: "test prompt",
+      sessionId: null,
+      toolMode: "none",
+      executionMode: "safe",
+    });
+
+    const args = ["-e", script, "--", ...invocation.args];
+
+    const p = runCli(invocation.command, args, cliTestCwd, {
+      chatId: "dns-prod-integration-test",
+      ...buildExecutionOptions("antigravity"),
+      bypassWorkspaceLock: true,
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(3);
   }, 10_000);
 });

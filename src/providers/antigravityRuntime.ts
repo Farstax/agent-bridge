@@ -434,3 +434,40 @@ export function parseResult(stdout: string, logContent?: string | null): CliResu
 
   return { text, sessionId };
 }
+
+export function isPreExecutionDnsFailure(
+  bot: string | undefined,
+  args: string[],
+  stdout: string,
+  stderr: string
+): boolean {
+  if (bot !== "antigravity") return false;
+
+  // 0. Proactively reject if there is any stdout at all (which implies output was produced)
+  if (stdout.trim() !== "") return false;
+
+  // 1. Match exact Agy eligibility/loadCodeAssist failure class
+  const hasEligibilityFailure =
+    stderr.includes("Error: Eligibility check failed") &&
+    stderr.includes("daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") &&
+    (stderr.includes("i/o timeout") || stderr.includes("temporary failure") || stderr.includes("lookup"));
+
+  if (!hasEligibilityFailure) return false;
+
+  // 2. Reject retry after any execution/cascade markers (proven pre-execution only)
+  const hasExecutionMarkers =
+    stdout.includes("🧠 Memory Loaded:") ||
+    stdout.includes("Print mode: conversation=") ||
+    stdout.includes("Created conversation") ||
+    stderr.includes("🧠 Memory Loaded:") ||
+    stderr.includes("Print mode: conversation=") ||
+    stderr.includes("Created conversation");
+
+  if (hasExecutionMarkers) return false;
+
+  // 3. Limit retry to tool-free/read-only (sandboxed) runs
+  const isSandboxed = args.includes("--sandbox");
+  if (!isSandboxed) return false;
+
+  return true;
+}

@@ -108,7 +108,7 @@ async function executeAdvisorPrompt<T>(
         toolMode: "none",
       });
       const raw = await withTimeout(
-        runCli(invocation.command, invocation.args, cwd, { timeoutMs: config.timeoutMs, advisorChild: true }),
+        runCli(invocation.command, invocation.args, cwd, { timeoutMs: config.timeoutMs, advisorChild: true, bot }),
         config.timeoutMs,
       );
       const value = parseRawResult(target.provider, raw, parser);

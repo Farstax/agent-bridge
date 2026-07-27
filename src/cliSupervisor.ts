@@ -277,6 +277,16 @@ export function registerAbortCallback(chatId: number | string, cb: () => void): 
   };
 }
 
+export function hasAbortCallback(chatId: string | number): boolean {
+  const active = activeExecutions.get(chatId);
+  return !!(active?.abortCallbacks && active.abortCallbacks.length > 0);
+}
+
+export function isChildRunning(chatId: string | number): boolean {
+  const active = activeExecutions.get(chatId);
+  return !!active?.child;
+}
+
 export async function abortExecutionAndWait(chatId: number | string): Promise<ExecutionLaneHandle | null> {
   const active = activeExecutions.get(chatId);
   if (!active) return null;
