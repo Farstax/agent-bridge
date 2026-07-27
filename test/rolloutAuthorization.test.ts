@@ -13,6 +13,7 @@ const EXPECTED_IDENTITIES = [
   "--expected-environment", "production-content-crawler",
   "--expected-rollout-helper-sha256", SHA256,
   "--expected-rollout-config-sha256", SHA256,
+  "--expected-activation-helper-sha256", SHA256,
   "--expected-authorization-validator-sha256", SHA256,
   "--expected-acceptance-validator-sha256", SHA256,
 ];
@@ -32,6 +33,7 @@ function writeAuthorization(overrides: Record<string, unknown> = {}): string {
     approved_environment: "production-content-crawler",
     approved_rollout_helper_sha256: SHA256,
     approved_rollout_config_sha256: SHA256,
+    approved_activation_helper_sha256: SHA256,
     approved_authorization_validator_sha256: SHA256,
     approved_acceptance_validator_sha256: SHA256,
     ...overrides,
@@ -56,6 +58,7 @@ describe("rollout authorization", () => {
       "approved_environment",
       "approved_rollout_helper_sha256",
       "approved_rollout_config_sha256",
+      "approved_activation_helper_sha256",
       "approved_authorization_validator_sha256",
       "approved_acceptance_validator_sha256",
     ]) expect(output).toContain(`"${field}"`);
@@ -72,6 +75,7 @@ describe("rollout authorization", () => {
     ["mismatched environment", { approved_environment: "other-environment" }, /environment/i],
     ["mismatched rollout helper", { approved_rollout_helper_sha256: "c".repeat(64) }, /rollout_helper/i],
     ["mismatched rollout config", { approved_rollout_config_sha256: "c".repeat(64) }, /rollout_config/i],
+    ["mismatched activation helper", { approved_activation_helper_sha256: "c".repeat(64) }, /activation_helper/i],
     ["mismatched authorization validator", { approved_authorization_validator_sha256: "c".repeat(64) }, /authorization_validator/i],
     ["mismatched acceptance validator", { approved_acceptance_validator_sha256: "c".repeat(64) }, /acceptance_validator/i],
   ])("rejects %s", (_label, overrides, error) => {
