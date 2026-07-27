@@ -71,7 +71,73 @@ function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expect
   return { currentPointer, releaseDir };
 }
 
+function writeAuthorization(fixture: Fixture, overrides: Record<string, unknown> = {}): string {
+  const path = join(fixture.root, "approval.json");
+  writeFileSync(path, JSON.stringify({
+    principal: "operator@example.invalid",
+    reference: "issue-183-deployment-qualification",
+    approved_target_commit: fixture.expectedCommit,
+    approved_at: "2026-07-26T12:00:00Z",
+    expires_at: "2099-07-26T12:00:00Z",
+    scope: "issue-183-production-activation",
+    approved_artifact_sha256: "b".repeat(64),
+    approved_evidence_sha256: "c".repeat(64),
+    approved_environment: "production-content-crawler",
+    approved_rollout_helper_sha256: sha256(helperPath),
+    approved_rollout_config_sha256: sha256(fixture.configFile),
+    approved_authorization_validator_sha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
+    approved_acceptance_validator_sha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
+    ...overrides,
+  }) + "\n", { mode: 0o600 });
+  chmodSync(path, 0o600);
+  return path;
+}
+
+function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overrides: Record<string, string> = {}) {
+  return spawnSync("bash", [helperPath,
+    "--expected-commit", fixture.expectedCommit,
+    "--artifact-sha256", overrides.artifact ?? "b".repeat(64),
+    "--evidence-sha256", overrides.evidence ?? "c".repeat(64),
+    "--environment", overrides.environment ?? "production-content-crawler",
+    "--authorization-file", authorizationFile,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root, FAKE_CORRUPT_DB: fixture.dbPaths[0] },
+  });
+}
+
 describe("guarded rollout helper", () => {
+  it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const approval = writeAuthorization(fixture);
+
+    const result = runAuthorizedRollout(fixture, approval);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
+    expect(JSON.parse(readFileSync(join(artifacts, "release-evidence.json"), "utf8"))).toEqual(expect.objectContaining({
+      environment: "production-content-crawler",
+      artifactSha256: "b".repeat(64),
+      qualificationEvidenceSha256: "c".repeat(64),
+      rolloutConfigSha256: sha256(fixture.configFile),
+      authorizationValidatorSha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
+      acceptanceValidatorSha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
+    }));
+  }, 15_000);
+
+  it("rejects an identity mismatch before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const approval = writeAuthorization(fixture, { approved_artifact_sha256: "d".repeat(64) });
+
+    const result = runAuthorizedRollout(fixture, approval);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/artifact/i);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
   it("requires a validated immutable current pointer before stopping services", () => {
     const fixture = createFixture();
     const releaseRoot = join(fixture.root, "releases");
