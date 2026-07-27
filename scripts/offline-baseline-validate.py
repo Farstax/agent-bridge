@@ -40,7 +40,7 @@ def safe_extract(archive: Path, destination: Path) -> None:
             if name.is_absolute() or ".." in name.parts:
                 fail(f"archive path escapes extraction root: {member.name}")
             if member.issym() or member.islnk():
-                target = Path(member.linkname)
+                target = Path(os.path.normpath(str(name.parent / member.linkname)))
                 if target.is_absolute() or ".." in target.parts:
                     fail(f"archive link escapes extraction root: {member.name}")
             if not (member.isdir() or member.isfile() or member.issym()):
