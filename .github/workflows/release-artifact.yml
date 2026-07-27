@@ -64,7 +64,9 @@ jobs:
           root="$RUNNER_TEMP/agent-bridge-release"
           archive="$RUNNER_TEMP/agent-bridge-${commit}.tar.gz"
           mkdir -p "$root"
-          cp -a dist src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json node_modules "$root/"
+          cp -a dist src package.json package-lock.json node_modules "$root/"
+          mkdir -p "$root/scripts"
+          cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts "$root/scripts/"
           node scripts/releaseManifest.mjs \
             --root "$root" \
             --output "$root/manifest.json" \
