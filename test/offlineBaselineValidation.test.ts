@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -32,6 +32,39 @@ describe("offline baseline validator", () => {
     expect(validator).not.toContain("current.unlink()");
     expect(validator).toContain('"schema_compatibility"');
     expect(validator).not.toContain('"startup_compatibility"');
+  });
+
+  it("accepts contained relative artifact symlinks but rejects links escaping the archive root", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-symlink-safety-test-"));
+    const containedRoot = join(root, "contained");
+    mkdirSync(join(containedRoot, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(containedRoot, "node_modules", "tool"), "tool\n");
+    symlinkSync("../tool", join(containedRoot, "node_modules", ".bin", "tool"));
+    const containedArchive = join(root, "contained.tar.gz");
+    execFileSync("tar", ["-czf", containedArchive, "-C", containedRoot, "."]);
+    const extracted = join(root, "extracted");
+    mkdirSync(extracted);
+    execFileSync("python3", ["-c", `
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("validator", "scripts/offline-baseline-validate.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+`, containedArchive, extracted], { encoding: "utf8" });
+    expect(readFileSync(join(extracted, "node_modules", ".bin", "tool"), "utf8")).toBe("tool\n");
+
+    const escapeRoot = join(root, "escape");
+    mkdirSync(escapeRoot);
+    symlinkSync("../../outside", join(escapeRoot, "escape"));
+    const escapeArchive = join(root, "escape.tar.gz");
+    execFileSync("tar", ["-czf", escapeArchive, "-C", escapeRoot, "."]);
+    expect(() => execFileSync("python3", ["-c", `
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("validator", "scripts/offline-baseline-validate.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+`, escapeArchive, join(root, "escape-extracted")], { encoding: "utf8" })).toThrow(/escapes extraction root/);
   });
 
   it("rejects unmanifested archive members and never needs production paths", () => {
