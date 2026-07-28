@@ -133,7 +133,8 @@ describe("guarded rollout helper", () => {
   });
 
   it.each([
-    ["drop-in", { FAKE_DROPIN_MODE: "extra" }, /drop-?in/i],
+    ["drop-in path", { FAKE_DROPIN_MODE: "path" }, /drop-?in/i],
+    ["drop-in spaces", { FAKE_DROPIN_MODE: "spaces" }, /drop-?in/i],
     ["fragment path", { FAKE_FRAGMENT_MODE: "unexpected" }, /FragmentPath/i],
   ])("rejects an unexpected systemd %s before stopping services", (_label, environment, error) => {
     const fixture = createFixture();
@@ -142,6 +143,22 @@ describe("guarded rollout helper", () => {
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(error);
     expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  });
+
+  it.each(["empty", "newline", "multiple-newlines"])("accepts %s-only DropInPaths output", (mode) => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: mode, FAKE_FAIL_PHASE: "inspect" });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/unexpected systemd drop-in/i);
+    const inventory = readdirSync(fixture.logDir).find((entry) => entry.startsWith("systemd-inventory-"));
+    expect(inventory).toBeDefined();
+    for (const unit of units) {
+      const stem = unit.replace(/\.service$/, "");
+      expect(readFileSync(join(fixture.logDir, inventory!, `${stem}.drop-in-paths`), "utf8")).toBe(
+        mode === "empty" ? "" : mode === "newline" ? "\n" : "\n\n\n",
+      );
+    }
   });
 
   it("resolves the release environment file for the active pointer", () => {

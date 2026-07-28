@@ -280,7 +280,12 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
           if [ "\${FAKE_FRAGMENT_MODE:-correct}" = unexpected ]; then echo "${fixture.root}/unexpected/\${unit}"; else echo "${fixture.root}/systemd/\${unit}"; fi
           ;;
         DropInPaths)
-          if [ "\${FAKE_DROPIN_MODE:-empty}" = extra ]; then echo "${fixture.root}/systemd/agent-bridge.service.d/override.conf"; fi
+          case "\${FAKE_DROPIN_MODE:-empty}" in
+            extra|path) echo "${fixture.root}/systemd/agent-bridge.service.d/override.conf" ;;
+            newline) printf '\\n' ;;
+            multiple-newlines) printf '\\n\\n\\n' ;;
+            spaces) printf ' \\n' ;;
+          esac
           ;;
         Environment) echo NODE_ENV=production ;;
         ActiveState)
