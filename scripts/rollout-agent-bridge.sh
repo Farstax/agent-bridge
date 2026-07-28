@@ -35,6 +35,7 @@ approved_evidence_sha256=""
 approved_environment=""
 qualification_evidence_file=""
 deployer_mode="${AGENT_BRIDGE_DEPLOYER_MODE:-0}"
+deployer_artifact_sha256="${AGENT_BRIDGE_DEPLOY_ARTIFACT_SHA256:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --expected-commit) [[ -z "$expected_commit" && -n "${2:-}" ]] || die "invalid or duplicate --expected-commit"; expected_commit="$2"; shift 2 ;;
@@ -1034,4 +1035,6 @@ record_phase ACCEPTED
 
 completed=1
 record_phase COMPLETE
+printf '{"status":"complete","targetCommit":"%s","artifactSha256":"%s","artifactDir":"%s","completedAt":"%s"}\n' "$expected_commit" "$deployer_artifact_sha256" "$artifact_dir" "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$artifact_dir/deployment-result.json"
+/usr/bin/sha256sum "$artifact_dir/deployment-result.json" > "$artifact_dir/deployment-result.sha256"
 echo "rollout completed commit=$expected_commit artifacts=$artifact_dir"

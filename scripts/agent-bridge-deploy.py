@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -15,18 +16,23 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-_STAGE_SPEC = importlib.util.spec_from_file_location("agent_bridge_release_stage", Path(__file__).with_name("release-stage.py"))
-if _STAGE_SPEC is None or _STAGE_SPEC.loader is None:
-    raise RuntimeError("private release staging primitive is unavailable")
-_STAGE = importlib.util.module_from_spec(_STAGE_SPEC)
-_STAGE_SPEC.loader.exec_module(_STAGE)
-extract_archive = _STAGE.extract_archive
-load_manifest = _STAGE.load_manifest
-verify_manifest = _STAGE.verify_manifest
-
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
+
+
+def staging_module():
+    override = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_STAGE_HELPER")
+    helper = Path(override) if override else Path("/usr/local/libexec/agent-bridge-release-stage")
+    if not override and os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") == "1":
+        helper = Path(__file__).with_name("release-stage.py")
+    loader = importlib.machinery.SourceFileLoader("agent_bridge_release_stage", str(helper))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None:
+        fail(f"private release staging primitive is unavailable: {helper}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def fail(message: str) -> None:
@@ -52,7 +58,7 @@ def secure_file(path: Path, production: bool) -> bytes:
     return path.read_bytes()
 
 
-def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: datetime, production: bool) -> dict:
+def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: datetime, production: bool, fixed_environment: str | None = None) -> dict:
     try:
         document = json.loads(secure_file(path, production).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -62,6 +68,8 @@ def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: d
         fail("approval requires environment, target_commit, release_sha256, approval_reference and expires_at")
     if not TOKEN.fullmatch(document["environment"]) or not TOKEN.fullmatch(document["approval_reference"]):
         fail("approval contains an invalid environment or reference")
+    if fixed_environment is not None and document["environment"] != fixed_environment:
+        fail("approval environment does not match the fixed deployment environment")
     if not SHA.fullmatch(document["target_commit"]) or document["target_commit"] != expected_commit:
         fail("approval target commit does not match the release manifest")
     if not SHA256.fullmatch(document["release_sha256"]) or document["release_sha256"] != release_sha256:
@@ -75,17 +83,18 @@ def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: d
     return document
 
 
-def validate_archive(archive: Path, approval: Path, now: datetime, production: bool) -> tuple[str, str, dict]:
-    if archive.is_symlink() or not archive.is_file() or archive.resolve() != archive:
-        fail("release archive must be a canonical regular file")
+def validate_archive(archive: Path, approval: Path, now: datetime, production: bool, fixed_environment: str | None = None) -> tuple[str, str, dict]:
+    if archive.is_symlink() or not archive.is_file():
+        fail("release archive must be a regular non-symlink file")
     release_sha256 = digest(archive)
     with tempfile.TemporaryDirectory(prefix="agent-bridge-deploy-validate-") as directory:
         root = Path(directory)
         try:
+            stage = staging_module()
             with archive.open("rb") as stream:
-                extract_archive(stream, root)
-            manifest = load_manifest(root)
-            verify_manifest(root, manifest)
+                stage.extract_archive(stream, root)
+            manifest = stage.load_manifest(root)
+            stage.verify_manifest(root, manifest)
         except Exception as error:
             fail(f"release archive or manifest validation failed: {error}")
         if not SHA.fullmatch(manifest["commit"]):
@@ -100,7 +109,7 @@ def validate_archive(archive: Path, approval: Path, now: datetime, production: b
                 fail(f"embedded qualification evidence is invalid: {error}")
             if qualification_document.get("commit") != manifest["commit"] or qualification_document.get("tree") != manifest["tree"]:
                 fail("embedded qualification evidence does not match the release manifest")
-    approval_document = parse_approval(Path(approval), manifest["commit"], release_sha256, now, production)
+    approval_document = parse_approval(Path(approval), manifest["commit"], release_sha256, now, production, fixed_environment)
     return manifest["commit"], release_sha256, approval_document
 
 
@@ -112,30 +121,45 @@ def configured_value(config: Path, name: str) -> str:
     fail(f"private rollout configuration is missing {name}")
 
 
+def validate_private_helper(path: Path) -> None:
+    if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+        fail(f"private deployer helper is unavailable: {path}")
+    metadata = path.stat()
+    if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        fail(f"private deployer helper must be root-owned and non-writable: {path}")
+
+
 def run_deployment(archive: Path, approval: Path) -> str:
     production = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
-    commit, archive_sha256, _ = validate_archive(archive, approval, datetime.now(timezone.utc), production)
+    config = Path("/etc/agent-bridge/rollout.conf") if production else None
+    fixed_environment = configured_value(config, "environment") if config else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT")
+    commit, archive_sha256, _ = validate_archive(archive, approval, datetime.now(timezone.utc), production, fixed_environment)
     if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") == "1":
         return f"validated {commit} {archive_sha256}"
     if not production:
         release_root_value = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT", "")
         if release_root_value:
             release_root = Path(release_root_value)
-            stage = Path(__file__).with_name("release-stage.py")
+            stage = Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_STAGE_HELPER", Path(__file__).with_name("release-stage.py")))
             environment = {**os.environ, "AGENT_BRIDGE_RELEASE_STAGE_TEST": "1"}
             subprocess.run([
                 sys.executable, str(stage), "--archive", str(archive),
                 "--release-root", str(release_root), "--expected-commit", commit,
                 "--archive-sha256", archive_sha256,
             ], check=True, env=environment)
+            runner = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RUNNER")
+            if runner:
+                subprocess.run([runner, "--expected-commit", commit], check=True, env=os.environ.copy())
             return f"deployed {commit} {archive_sha256}"
         return f"validated {commit} {archive_sha256}"
     if os.geteuid() != 0:
         fail("agent-bridge-deploy must run as root")
-    config = Path("/etc/agent-bridge/rollout.conf")
+    assert config is not None
     release_root = Path(configured_value(config, "release_root"))
     staging_helper = Path("/usr/local/libexec/agent-bridge-release-stage")
     rollout_helper = Path("/usr/local/sbin/rollout-agent-bridge")
+    validate_private_helper(staging_helper)
+    validate_private_helper(rollout_helper)
     subprocess.run([
         "/usr/bin/python3", str(staging_helper), "--archive", str(archive),
         "--release-root", str(release_root), "--expected-commit", commit,
@@ -143,6 +167,7 @@ def run_deployment(archive: Path, approval: Path) -> str:
     ], check=True)
     environment = os.environ.copy()
     environment["AGENT_BRIDGE_DEPLOYER_MODE"] = "1"
+    environment["AGENT_BRIDGE_DEPLOY_ARTIFACT_SHA256"] = archive_sha256
     subprocess.run([str(rollout_helper), "--expected-commit", commit], check=True, env=environment)
     return f"deployed {commit} {archive_sha256}"
 

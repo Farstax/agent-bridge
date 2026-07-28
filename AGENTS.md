@@ -389,4 +389,7 @@ secondary bundles, per-helper approval hashes or a second operator workflow.
 
 `release-stage.py`, `release-activate.py`, `rollout-restore.py`,
 `rollout-authorization.py` and `rollout-acceptance.py` are private deployer
-internals. They must not be documented or invoked as normal operator commands.
+internals. Install them root-owned and non-writable at their fixed
+`/usr/local/libexec/agent-bridge-*` paths, remove any sudoers entries that
+expose them directly, and do not document or invoke them as normal operator
+commands. Only `agent-bridge-deploy` is the production sudoers entry.

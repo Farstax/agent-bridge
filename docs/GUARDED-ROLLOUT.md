@@ -25,14 +25,24 @@ hashes, an external evidence file, a secondary bundle, or legacy identity flags.
 ## Installation
 
 Install the stable deployer and its private implementation primitives as
-root-owned files. Operators invoke only the first command:
+root-owned files. Operators invoke only the first installed command:
 
 ```bash
 sudo install -D -m 0750 -o root -g root scripts/agent-bridge-deploy.py /usr/local/sbin/agent-bridge-deploy
+sudo install -D -m 0750 -o root -g root scripts/rollout-agent-bridge.sh /usr/local/sbin/rollout-agent-bridge
+sudo install -D -m 0750 -o root -g root scripts/release-stage.py /usr/local/libexec/agent-bridge-release-stage
+sudo install -D -m 0750 -o root -g root scripts/release-activate.py /usr/local/libexec/agent-bridge-release-activate
+sudo install -D -m 0750 -o root -g root scripts/rollout-restore.py /usr/local/libexec/agent-bridge-rollout-restore
+sudo install -D -m 0750 -o root -g root scripts/rollout-authorization.py /usr/local/libexec/agent-bridge-rollout-authorization.py
+sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local/libexec/agent-bridge-rollout-acceptance.py
 ```
 
-The installation package provisions the private primitives and root-owned
-configuration alongside the deployer; they are not separate operator inputs.
+Install `/etc/agent-bridge/rollout.conf` root-owned and non-writable by
+group/other. The private primitives are deployed at these fixed paths and are
+not granted sudoers access or treated as operator commands; remove any older
+sudoers entries that exposed stage, activate, restore, authorization or
+acceptance directly. Only `agent-bridge-deploy` is granted the production
+sudoers entry.
 
 The private helpers are not normal operator commands. Their paths, service
 inventory and database inventory remain root-owned and fixed in configuration.
