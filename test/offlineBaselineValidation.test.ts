@@ -22,7 +22,7 @@ describe("offline baseline validator", () => {
     expect(workflow).toContain('test "$run_head" = "${{ inputs.builder_commit }}"');
     expect(workflow).toContain('[[ "$run_name" == "Release Artifact" || "$run_name" == "Historical Release Artifact" ]]');
     expect(releaseWorkflow).toContain('mkdir -p "$root/scripts"');
-    expect(releaseWorkflow).toContain('cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts "$root/scripts/"');
+    expect(releaseWorkflow).toContain('scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/upgrade.sh');
     expect(workflow).toContain('expected_schema="$(tar --extract');
     expect(workflow).not.toContain('tar --extract --gzip --file "$archive" --directory offline-input/runtime');
     expect(workflow).not.toContain("--runtime-root offline-input/runtime");

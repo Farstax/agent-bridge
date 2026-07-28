@@ -59,11 +59,13 @@ if [[ -n "$test_root" ]]; then
   journalctl_cmd="$test_root/bin/journalctl"
   cp_cmd="$test_root/bin/cp"
   restore_cmd="$test_root/bin/rollout-restore"
+  release_stage_cmd="$test_root/bin/release-stage"
   activation_cmd="$test_root/bin/release-activate"
   authorization_validator="$test_root/bin/rollout-authorization-trusted"
   acceptance_validator="$test_root/bin/rollout-acceptance-trusted"
   defaults_dir="$test_root/etc/default"
   cgroup_root="$test_root/sys/fs/cgroup"
+  systemd_unit_dir="$test_root/systemd"
   smoke_delay=0
   test_mode=1
 else
@@ -75,16 +77,18 @@ else
   journalctl_cmd="/usr/bin/journalctl"
   cp_cmd="/usr/bin/cp"
   restore_cmd="/usr/local/libexec/agent-bridge-rollout-restore"
+  release_stage_cmd="/usr/local/libexec/agent-bridge-release-stage"
   activation_cmd="/usr/local/libexec/agent-bridge-release-activate"
   authorization_validator="/usr/local/libexec/agent-bridge-rollout-authorization.py"
   acceptance_validator="/usr/local/libexec/agent-bridge-rollout-acceptance.py"
   defaults_dir="/etc/default"
   cgroup_root="/sys/fs/cgroup"
+  systemd_unit_dir="/etc/systemd/system"
   smoke_delay=5
   test_mode=0
 fi
 
-for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink; do
+for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
   [[ -x "$command_path" ]] || die "required command is unavailable: $command_path"
 done
 [[ -f "$config_file" && ! -L "$config_file" ]] || die "missing fixed rollout config: $config_file"
@@ -101,6 +105,8 @@ rollout_helper_sha256=""
 activation_helper_sha256=""
 authorization_validator_sha256=""
 acceptance_validator_sha256=""
+release_stage_sha256=""
+rollout_restore_sha256=""
 environment_identity=""
 runtime_user=""
 node_bin=""
@@ -119,6 +125,8 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     activation_helper_sha256) [[ -z "$activation_helper_sha256" ]] || die "duplicate activation_helper_sha256"; activation_helper_sha256="$value" ;;
     authorization_validator_sha256) [[ -z "$authorization_validator_sha256" ]] || die "duplicate authorization_validator_sha256"; authorization_validator_sha256="$value" ;;
     acceptance_validator_sha256) [[ -z "$acceptance_validator_sha256" ]] || die "duplicate acceptance_validator_sha256"; acceptance_validator_sha256="$value" ;;
+    release_stage_sha256) [[ -z "$release_stage_sha256" ]] || die "duplicate release_stage_sha256"; release_stage_sha256="$value" ;;
+    rollout_restore_sha256) [[ -z "$rollout_restore_sha256" ]] || die "duplicate rollout_restore_sha256"; rollout_restore_sha256="$value" ;;
     environment) [[ -z "$environment_identity" ]] || die "duplicate environment"; environment_identity="$value" ;;
     runtime_user) [[ -z "$runtime_user" ]] || die "duplicate runtime_user"; runtime_user="$value" ;;
     node_bin) [[ -z "$node_bin" ]] || die "duplicate node_bin"; node_bin="$value" ;;
@@ -151,6 +159,10 @@ if (( release_mode == 1 )); then
     [[ "$(/usr/bin/sha256sum "$activation_cmd" | /usr/bin/cut -d' ' -f1)" == "$activation_helper_sha256" ]] || die "activation helper SHA-256 mismatch"
     [[ "$(/usr/bin/sha256sum "$authorization_validator" | /usr/bin/cut -d' ' -f1)" == "$authorization_validator_sha256" ]] || die "authorization validator SHA-256 mismatch"
     [[ "$(/usr/bin/sha256sum "$acceptance_validator" | /usr/bin/cut -d' ' -f1)" == "$acceptance_validator_sha256" ]] || die "acceptance validator SHA-256 mismatch"
+    [[ "$release_stage_sha256" =~ ^[0-9a-f]{64}$ ]] || die "release-stage SHA-256 pin is missing or malformed"
+    [[ "$rollout_restore_sha256" =~ ^[0-9a-f]{64}$ ]] || die "rollout-restore SHA-256 pin is missing or malformed"
+    [[ "$(/usr/bin/sha256sum "$release_stage_cmd" | /usr/bin/cut -d' ' -f1)" == "$release_stage_sha256" ]] || die "release-stage SHA-256 mismatch"
+    [[ "$(/usr/bin/sha256sum "$restore_cmd" | /usr/bin/cut -d' ' -f1)" == "$rollout_restore_sha256" ]] || die "rollout-restore SHA-256 mismatch"
   fi
 fi
 for value_name in runtime_user node_bin backup_dir log_dir; do
@@ -173,6 +185,8 @@ installed_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d' ' -f1)"
 if (( test_mode == 1 )); then
   [[ -n "$authorization_validator_sha256" ]] || authorization_validator_sha256="$(/usr/bin/sha256sum "$authorization_validator" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$acceptance_validator_sha256" ]] || acceptance_validator_sha256="$(/usr/bin/sha256sum "$acceptance_validator" | /usr/bin/cut -d' ' -f1)"
+  [[ -n "$release_stage_sha256" ]] || release_stage_sha256="$(/usr/bin/sha256sum "$release_stage_cmd" | /usr/bin/cut -d' ' -f1)"
+  [[ -n "$rollout_restore_sha256" ]] || rollout_restore_sha256="$(/usr/bin/sha256sum "$restore_cmd" | /usr/bin/cut -d' ' -f1)"
 fi
 authorization_identity_args=(
   --expected-artifact-sha256 "$approved_artifact_sha256"
@@ -183,6 +197,8 @@ authorization_identity_args=(
   --expected-activation-helper-sha256 "$activation_helper_sha256"
   --expected-authorization-validator-sha256 "$authorization_validator_sha256"
   --expected-acceptance-validator-sha256 "$acceptance_validator_sha256"
+  --expected-release-stage-sha256 "$release_stage_sha256"
+  --expected-rollout-restore-sha256 "$rollout_restore_sha256"
 )
 
 secure_owner_uid="$EUID"
@@ -242,7 +258,8 @@ if (( release_mode == 1 )); then
     validate_secure_path "$staging_provenance" file
     provenance_commit="$(/usr/bin/grep -m1 -oE '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{40})"/\1/')"
     provenance_artifact_sha256="$(/usr/bin/grep -m1 -oE '"archive_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{64})"/\1/')"
-    [[ "$provenance_commit" == "$expected_commit" && "$provenance_artifact_sha256" == "$approved_artifact_sha256" ]] || die "staging provenance does not match the approved artifact identity"
+    provenance_stage_sha256="$(/usr/bin/grep -m1 -oE '"release_stage_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{64})"/\1/')"
+    [[ "$provenance_commit" == "$expected_commit" && "$provenance_artifact_sha256" == "$approved_artifact_sha256" && "$provenance_stage_sha256" == "$release_stage_sha256" ]] || die "staging provenance does not match the approved artifact or release-stage identity"
   fi
   if [[ -n "$authorization_file" ]]; then
     "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" >/dev/null || die "rollout authorization validation failed"
@@ -264,6 +281,27 @@ done
 
 shared_env="$defaults_dir/agent-bridge-shared"
 if [[ -e "$shared_env" ]]; then validate_secure_path "$shared_env" file; fi
+release_env="$defaults_dir/agent-bridge-release"
+validate_secure_path "$release_env" file
+systemd_inventory_dir="$log_dir/systemd-inventory-${expected_commit}-$$"
+/usr/bin/mkdir --mode=0700 -- "$systemd_inventory_dir"
+for inventory_unit in "${ALLOWED_UNITS[@]}"; do
+  safe_unit="${inventory_unit%.service}"
+  "$systemctl_cmd" cat "$inventory_unit" > "$systemd_inventory_dir/${safe_unit}.cat" || die "systemd unit cannot be captured: $inventory_unit"
+  "$systemctl_cmd" show "$inventory_unit" --property=FragmentPath --value > "$systemd_inventory_dir/${safe_unit}.fragment-path" || die "systemd FragmentPath cannot be captured: $inventory_unit"
+  "$systemctl_cmd" show "$inventory_unit" --property=DropInPaths --value > "$systemd_inventory_dir/${safe_unit}.drop-in-paths" || die "systemd DropInPaths cannot be captured: $inventory_unit"
+  "$systemctl_cmd" show "$inventory_unit" --property=EnvironmentFiles --value > "$systemd_inventory_dir/${safe_unit}.environment-files" || die "systemd EnvironmentFiles cannot be captured: $inventory_unit"
+  expected_fragment_path="$systemd_unit_dir/$inventory_unit"
+  actual_fragment_path="$(/usr/bin/cat "$systemd_inventory_dir/${safe_unit}.fragment-path")"
+  [[ "$actual_fragment_path" == "$expected_fragment_path" ]] || die "FragmentPath mismatch for $inventory_unit"
+  [[ ! -s "$systemd_inventory_dir/${safe_unit}.drop-in-paths" ]] || die "unexpected systemd drop-in for $inventory_unit"
+done
+{
+  for inventory_file in "$systemd_inventory_dir"/*; do
+    /usr/bin/sha256sum "$inventory_file"
+  done
+} > "$systemd_inventory_dir/sha256sums"
+/usr/bin/chmod 0600 "$systemd_inventory_dir"/*
 read_env_key() {
   local file="$1" target_key="$2" line value="$3"
   [[ -e "$file" ]] || { resolved_env_value="$value"; return 0; }
@@ -282,7 +320,7 @@ declare -A unit_databases=()
 for unit in "${units[@]}"; do
   unit_env="$defaults_dir/${unit%.service}"
   validate_secure_path "$unit_env" file
-  expected_environment_files="$shared_env (ignore_errors=yes)"$'\n'"$unit_env (ignore_errors=no)"
+  expected_environment_files="$shared_env (ignore_errors=yes)"$'\n'"$release_env (ignore_errors=no)"$'\n'"$unit_env (ignore_errors=no)"
   actual_environment_files="$("$systemctl_cmd" show "$unit" --property=EnvironmentFiles --value)"
   [[ "$actual_environment_files" == "$expected_environment_files" ]] || die "effective EnvironmentFiles mismatch for $unit"
   db_key=DB_PATH
@@ -293,12 +331,14 @@ for unit in "${units[@]}"; do
     [[ " $explicit_environment " != *" BRIDGE_CURRENT_RELEASE_DIR="* ]] || die "explicit systemd BRIDGE_CURRENT_RELEASE_DIR override is unsupported for $unit"
     resolved_env_value=""
     read_env_key "$shared_env" BRIDGE_CURRENT_RELEASE_DIR ""
+    read_env_key "$release_env" BRIDGE_CURRENT_RELEASE_DIR "$resolved_env_value"
     inherited_release_pointer="$resolved_env_value"
     read_env_key "$unit_env" BRIDGE_CURRENT_RELEASE_DIR "$inherited_release_pointer"
     [[ "$resolved_env_value" == "$current_pointer" ]] || die "active release pointer mismatch for $unit"
   fi
   resolved_env_value=""
   read_env_key "$shared_env" "$db_key" ""
+  read_env_key "$release_env" "$db_key" "$resolved_env_value"
   inherited_value="$resolved_env_value"
   read_env_key "$unit_env" "$db_key" "$inherited_value"
   discovered="$resolved_env_value"
@@ -866,6 +906,8 @@ sentinel_identity="$(/usr/bin/stat -c '%d:%i' "$sentinel_path")"
 [[ ! -e "$artifact_dir" ]] || die "rollout artifact directory already exists: $artifact_dir"
 /usr/bin/mkdir --mode=0700 -- "$artifact_dir"
 /usr/bin/chmod 0700 "$artifact_dir"
+/usr/bin/cp -a "$systemd_inventory_dir" "$artifact_dir/systemd-inventory"
+/usr/bin/sha256sum "$artifact_dir/systemd-inventory/sha256sums" > "$artifact_dir/systemd-inventory.sha256"
 touch "$phase_ledger"
 chmod 0600 "$phase_ledger"
 record_phase PRECHECK_STARTED
@@ -897,6 +939,8 @@ if (( release_mode == 1 )); then
   /usr/bin/sha256sum "$artifact_dir/release-evidence.json" > "$artifact_dir/release-evidence.sha256"
   printf '{"activationHelperSha256":"%s"}\n' "$activation_helper_sha256" > "$artifact_dir/activation-helper-evidence.json"
   /usr/bin/sha256sum "$artifact_dir/activation-helper-evidence.json" > "$artifact_dir/activation-helper-evidence.sha256"
+  printf '{"releaseStageSha256":"%s","rolloutRestoreSha256":"%s","systemdInventorySha256":"%s"}\n' "$release_stage_sha256" "$rollout_restore_sha256" "$(/usr/bin/sha256sum "$systemd_inventory_dir/sha256sums" | /usr/bin/cut -d' ' -f1)" > "$artifact_dir/trusted-helper-evidence.json"
+  /usr/bin/sha256sum "$artifact_dir/trusted-helper-evidence.json" > "$artifact_dir/trusted-helper-evidence.sha256"
 fi
 [[ -f "$project_dir/scripts/rollout-db.ts" ]] || die "migration helper is missing from expected commit"
 [[ -f "$project_dir/node_modules/tsx/dist/cli.mjs" ]] || die "tsx runtime is missing"

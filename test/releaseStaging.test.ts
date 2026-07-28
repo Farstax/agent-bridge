@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
+import { listLocalCatalog } from "../src/skills.js";
+import { loadWorkerPrompt } from "../src/workerPrompts.js";
 
 const COMMIT = "1".repeat(40);
 const TREE = "2".repeat(40);
@@ -13,7 +15,7 @@ const TREE = "2".repeat(40);
 // tamper mechanism, not build-strategy semantics, so it just satisfies "compiled" minimally.
 const PACKAGE_JSON_CONTENT = `${JSON.stringify({ name: "stage-test", scripts: { build: "true" } })}\n`;
 
-function makeArchive(withHardlink = false, withExecutable = false, packageContent = PACKAGE_JSON_CONTENT): { archive: string; root: string } {
+function makeArchive(withHardlink = false, withExecutable = false, packageContent = PACKAGE_JSON_CONTENT, withRuntimeAssets = false): { archive: string; root: string } {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-stage-input-"));
   writeFileSync(join(root, "package-lock.json"), "lock\n");
   writeFileSync(join(root, "package.json"), packageContent);
@@ -30,6 +32,16 @@ function makeArchive(withHardlink = false, withExecutable = false, packageConten
     const executable = join(root, "bin", "runtime-entry");
     writeFileSync(executable, "#!/bin/sh\n");
     chmodSync(executable, 0o755);
+  }
+  if (withRuntimeAssets) {
+    for (const file of ["scripts/upgrade.sh", "scripts/skill-manager.ts", "scripts/agent-bridge-context.ts", "scripts/agent-bridge-advisor.ts", "tsconfig.json", "SOUL.md"]) {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      cpSync(file, join(root, file));
+    }
+    cpSync("bin/agent-bridge-context", join(root, "bin", "agent-bridge-context"));
+    cpSync("bin/agent-bridge-advisor", join(root, "bin", "agent-bridge-advisor"));
+    cpSync("prompts/worker", join(root, "prompts", "worker"), { recursive: true });
+    cpSync("skills", join(root, "skills"), { recursive: true });
   }
   const manifest = buildReleaseManifest({
     root,
@@ -72,7 +84,7 @@ describe("immutable release staging", () => {
     expect(statSync(join(release, "package.json")).mode & 0o222).toBe(0);
     expect(statSync(release).mode & 0o222).toBe(0);
     const provenance = JSON.parse(readFileSync(join(releaseRoot, `.${COMMIT}.staging-provenance.json`), "utf8"));
-    expect(provenance).toEqual({ commit: COMMIT, archive_sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"), schema_version: 1 });
+    expect(provenance).toEqual({ commit: COMMIT, archive_sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"), release_stage_sha256: createHash("sha256").update(readFileSync("scripts/release-stage.py")).digest("hex"), schema_version: 1 });
   });
 
   it("passes the real staged release through the real activation validator", () => {
@@ -91,6 +103,38 @@ describe("immutable release staging", () => {
       encoding: "utf8",
       env: { ...process.env, AGENT_BRIDGE_RELEASE_ACTIVATE_TEST: "1" },
     })).not.toThrow();
+  });
+
+  it("stages the release runtime assets and validates the complete payload with real helpers", async () => {
+    const { archive } = makeArchive(false, false, PACKAGE_JSON_CONTENT, true);
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
+    runStage(archive, releaseRoot);
+    expect(() => execFileSync("python3", ["scripts/release-activate.py", "--validate-only", "--release-root", releaseRoot, "--current", join(releaseRoot, "current"), "--expected-commit", COMMIT], { encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_RELEASE_ACTIVATE_TEST: "1" } })).not.toThrow();
+    const release = join(releaseRoot, COMMIT);
+    expect(statSync(join(release, "scripts", "upgrade.sh")).mode & 0o111).toBe(0o111);
+    expect(statSync(join(release, "bin", "agent-bridge-context")).mode & 0o111).toBe(0o111);
+    expect(existsSync(join(release, "prompts", "worker", "README.md"))).toBe(true);
+    const catalog = listLocalCatalog(release);
+    const skillNames = catalog.map((entry) => entry.name);
+    expect(skillNames).toEqual([
+      "git-sandbox",
+      "red-green-refactor-tdd",
+      "release-readiness-review",
+      "requirements-to-acceptance",
+      "risk-based-test-strategy",
+    ]);
+    for (const name of skillNames) {
+      expect(existsSync(join(release, "skills", name, "SKILL.md"))).toBe(true);
+      expect(existsSync(join(release, "skills", name, "skill.json"))).toBe(true);
+    }
+    const stagedReader = { readText: (path: string) => readFileSync(join(release, path), "utf8") };
+    const prompt = await loadWorkerPrompt("feature_plan", { brief: "staged runtime" }, stagedReader, { includeSupplements: false });
+    expect(prompt).toContain("Lifecycle skill: requirements-to-acceptance@1.0.0");
+    expect(prompt).toContain("Lifecycle skill: risk-based-test-strategy@1.0.0");
+    expect(prompt).toContain("Lifecycle skill: red-green-refactor-tdd@1.0.0");
+    expect(existsSync(join(release, "scripts", "skill-manager.ts"))).toBe(true);
+    expect(existsSync(join(release, "tsconfig.json"))).toBe(true);
+    expect(existsSync(join(release, "SOUL.md"))).toBe(true);
   });
 
   it("preserves executable mode bits for runtime entries", () => {

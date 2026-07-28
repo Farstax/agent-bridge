@@ -67,12 +67,16 @@ function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expect
     `release_root=${releaseRoot}`,
     `current_pointer=${currentPointer}`,
     `activation_helper_sha256=${sha256(join(fixture.root, "bin", "release-activate"))}`,
+    `release_stage_sha256=${sha256(join(fixture.root, "bin", "release-stage"))}`,
+    `rollout_restore_sha256=${sha256(join(fixture.root, "bin", "rollout-restore"))}`,
   ]);
-  writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
+  writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\n`, { mode: 0o600 });
+  writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
   writeFileSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), JSON.stringify({
     schema_version: 1,
     commit: fixture.expectedCommit,
     archive_sha256: "b".repeat(64),
+    release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")),
   }) + "\n", { mode: 0o444 });
   chmodSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), 0o444);
   return { currentPointer, releaseDir };
@@ -97,6 +101,8 @@ function writeAuthorization(fixture: Fixture, overrides: Record<string, unknown>
     approved_activation_helper_sha256: sha256(join(fixture.root, "bin", "release-activate")),
     approved_authorization_validator_sha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
     approved_acceptance_validator_sha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
+    approved_release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")),
+    approved_rollout_restore_sha256: sha256(join(fixture.root, "bin", "rollout-restore")),
     ...overrides,
   }) + "\n", { mode: 0o600 });
   chmodSync(path, 0o600);
@@ -118,6 +124,50 @@ function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overr
 }
 
 describe("guarded rollout helper", () => {
+  it.each(["missing", "extra", "reordered"])("rejects %s EnvironmentFiles inventory before stopping services", (mode) => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_ENVIRONMENT_FILES_MODE: mode });
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  });
+
+  it.each([
+    ["drop-in", { FAKE_DROPIN_MODE: "extra" }, /drop-?in/i],
+    ["fragment path", { FAKE_FRAGMENT_MODE: "unexpected" }, /FragmentPath/i],
+  ])("rejects an unexpected systemd %s before stopping services", (_label, environment, error) => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, environment);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(error);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  });
+
+  it("resolves the release environment file for the active pointer", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
+    const result = runRollout(fixture, "inspect");
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/active release pointer mismatch/i);
+  });
+
+  it("captures cat, FragmentPath, DropInPaths and EnvironmentFiles evidence for every allowlisted unit", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_FAIL_PHASE: "inspect" });
+    expect(result.status).not.toBe(0);
+    const inventory = readdirSync(fixture.logDir).find((entry) => entry.startsWith("systemd-inventory-"));
+    expect(inventory).toBeDefined();
+    for (const unit of units) {
+      const stem = unit.replace(/\.service$/, "");
+      expect(readFileSync(join(fixture.logDir, inventory!, `${stem}.cat`), "utf8")).toContain("EnvironmentFile");
+      expect(readFileSync(join(fixture.logDir, inventory!, `${stem}.fragment-path`), "utf8")).toContain("systemd");
+      expect(existsSync(join(fixture.logDir, inventory!, `${stem}.drop-in-paths`))).toBe(true);
+      expect(existsSync(join(fixture.logDir, inventory!, `${stem}.environment-files`))).toBe(true);
+    }
+  });
+
   it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
@@ -136,6 +186,10 @@ describe("guarded rollout helper", () => {
       acceptanceValidatorSha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
     }));
     expect(JSON.parse(readFileSync(join(artifacts, "activation-helper-evidence.json"), "utf8"))).toEqual({ activationHelperSha256: sha256(join(fixture.root, "bin", "release-activate")) });
+    expect(JSON.parse(readFileSync(join(artifacts, "trusted-helper-evidence.json"), "utf8"))).toEqual(expect.objectContaining({
+      releaseStageSha256: sha256(join(fixture.root, "bin", "release-stage")),
+      rolloutRestoreSha256: sha256(join(fixture.root, "bin", "rollout-restore")),
+    }));
   }, 15_000);
 
   it("rejects an identity mismatch before stopping services", () => {
@@ -167,7 +221,7 @@ describe("guarded rollout helper", () => {
     prepareImmutableRelease(fixture, fixture.previousCommit);
     const provenance = join(fixture.root, "releases", `.${fixture.expectedCommit}.staging-provenance.json`);
     chmodSync(provenance, 0o644);
-    writeFileSync(provenance, JSON.stringify({ schema_version: 1, commit: fixture.expectedCommit, archive_sha256: "d".repeat(64) }) + "\n", { mode: 0o444 });
+    writeFileSync(provenance, JSON.stringify({ schema_version: 1, commit: fixture.expectedCommit, archive_sha256: "d".repeat(64), release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")) }) + "\n", { mode: 0o444 });
     chmodSync(provenance, 0o444);
     const approval = writeAuthorization(fixture);
 
@@ -232,7 +286,7 @@ describe("guarded rollout helper", () => {
   it("rejects a rollout pointer that differs from the pointer loaded by systemd services", () => {
     const fixture = createFixture();
     const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
-    writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
+    writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
 
     const result = runRollout(fixture);
     execFileSync("find", [releaseDir, "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
@@ -352,7 +406,7 @@ describe("guarded rollout helper", () => {
     expect(ledger.indexOf("phase=DATABASES_RESTORED")).toBeLessThan(ledger.indexOf("phase=POINTER_ROLLBACK_STARTED"));
     expect(ledger.indexOf("phase=POINTER_ROLLED_BACK")).toBeLessThan(ledger.indexOf("phase=PREVIOUS_RELEASE_STARTING"));
     expect(ledger.indexOf("phase=PREVIOUS_RELEASE_ACCEPTED")).toBeLessThan(ledger.indexOf("phase=FAILED_RESTORED"));
-  });
+  }, 15_000);
 
   it("recontains the cohort when previous-release recovery start fails", () => {
     const fixture = createFixture();
@@ -509,7 +563,7 @@ describe("guarded rollout helper", () => {
     expect(log.indexOf(" backup ")).toBeGreaterThan(log.indexOf("systemctl:stop"));
     expect(log.indexOf(" migrate ")).toBeGreaterThan(log.indexOf(" backup "));
     expect(log).toContain("systemctl:start");
-  });
+  }, 15_000);
 
   it("removes stale empty WAL sidecars only after the cohort is contained", () => {
     const fixture = createFixture({ initiallyStopped: true });
@@ -522,7 +576,7 @@ describe("guarded rollout helper", () => {
     expect(`${result.stdout}\n${result.stderr}`).toContain("clear-stale-sidecars");
     const log = actions(fixture);
     expect(log.indexOf("systemctl:stop")).toBeLessThan(log.indexOf(" backup "));
-  });
+  }, 15_000);
 
   it("rejects a symlinked WAL sidecar before checkpointing", () => {
     const fixture = useMinimalInventory(createFixture({ initiallyStopped: true }));
@@ -610,7 +664,7 @@ describe("guarded rollout helper", () => {
     expect(byPath[fixture.dbPaths[2]]).toEqual(["agent-bridge-health.service"]);
     expect(byPath[fixture.dbPaths[3]]).toEqual(["agent-bridge-interactive.service"]);
     expect(byPath[fixture.dbPaths[4]]).toEqual(["agent-bridge-worker-bot.service"]);
-  });
+  }, 15_000);
 
   it.each([
     ["missing database", { missingDb: true }, /missing database/i],

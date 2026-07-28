@@ -24,6 +24,8 @@ IDENTITY_FIELDS = {
     "approved_activation_helper_sha256": "activation_helper_sha256",
     "approved_authorization_validator_sha256": "authorization_validator_sha256",
     "approved_acceptance_validator_sha256": "acceptance_validator_sha256",
+    "approved_release_stage_sha256": "release_stage_sha256",
+    "approved_rollout_restore_sha256": "rollout_restore_sha256",
 }
 
 
@@ -114,6 +116,8 @@ def main() -> int:
     parser.add_argument("--expected-activation-helper-sha256", required=True)
     parser.add_argument("--expected-authorization-validator-sha256", required=True)
     parser.add_argument("--expected-acceptance-validator-sha256", required=True)
+    parser.add_argument("--expected-release-stage-sha256", required=True)
+    parser.add_argument("--expected-rollout-restore-sha256", required=True)
     parser.add_argument("--now")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -127,6 +131,8 @@ def main() -> int:
         "activation_helper_sha256": args.expected_activation_helper_sha256,
         "authorization_validator_sha256": args.expected_authorization_validator_sha256,
         "acceptance_validator_sha256": args.expected_acceptance_validator_sha256,
+        "release_stage_sha256": args.expected_release_stage_sha256,
+        "rollout_restore_sha256": args.expected_rollout_restore_sha256,
     }, now, os.geteuid() == 0)
     content = json.dumps(result, sort_keys=True, indent=2) + "\n"
     if args.output:

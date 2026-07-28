@@ -261,7 +261,14 @@ describe("release artifact manifest", () => {
 
     expect(workflow).toContain("cp -a dist src package.json package-lock.json node_modules");
     expect(workflow).toContain('mkdir -p "$root/scripts"');
-    expect(workflow).toContain('cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts "$root/scripts/"');
+    expect(workflow).toContain('scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/upgrade.sh');
+    expect(workflow).toContain('scripts/upgrade.sh');
+    expect(workflow).toContain('scripts/skill-manager.ts');
+    expect(workflow).toContain('prompts/worker');
+    expect(workflow).toContain('cp -a skills/. "$root/skills/"');
+    expect(workflow).not.toContain('cp -a skills "$root/skills/"');
+    expect(workflow).toContain('tsconfig.json');
+    expect(workflow).toContain('SOUL.md');
     for (const entrypoint of [...REQUIRED_ENTRYPOINTS, "scripts/rollout-db.ts", "scripts/rollout-db-impl.ts"]) {
       expect(readFileSync(join(process.cwd(), entrypoint), "utf8")).not.toHaveLength(0);
     }

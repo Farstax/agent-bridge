@@ -21,7 +21,8 @@ Before this sequence, production requires a canonical mode-0600 authorization
 file containing `principal`, `reference`, `approved_target_commit`, UTC
 `approved_at`, UTC `expires_at`, bounded `scope`, and the exact approved
 artifact/evidence, environment, rollout-helper, rollout-config,
-authorization-validator, and acceptance-validator SHA-256 identities. The
+authorization-validator, acceptance-validator, release-stage, and
+rollout-restore SHA-256 identities. The
 trusted validator compares every identity against the invocation and the
 root-owned fixed configuration before any mutation; absent, malformed, stale,
 or mismatched approval fails closed. A current pointer already equal to the
@@ -30,7 +31,14 @@ target is a no-op and is rejected: it cannot emit `POINTER_SWITCHED`,
 
 1. Acquire the exclusive OS rollout lock.
 2. Verify the root-owned config, selected units from the compiled seven-unit allowlist, clean `main`, and the exact expected commit. In immutable release mode, every selected service's effective `BRIDGE_CURRENT_RELEASE_DIR` must equal the configured `current_pointer`; explicit systemd overrides are rejected. Units may already be quiesced; any active unit must be stably running, and every unit is still stopped and containment-verified before migration. Every Git command runs as the runtime user.
-3. Resolve each selected unit's effective `DB_PATH` or `HEALTH_DB_PATH` using shared-then-unit environment-file precedence. Reject defaults, unknown units, missing files, non-canonical paths, duplicates, inventory mismatches, unknown schemas, integrity failures, or nonzero legacy queues.
+3. Capture `systemctl cat` plus `FragmentPath`, `DropInPaths`, and effective
+   `EnvironmentFiles` evidence for all seven allowlisted units. The exact
+   environment-file order is shared, release, then unit-specific; missing,
+   extra, reordered, or unexpected drop-in inventory fails closed. Resolve each
+   selected unit's effective `DB_PATH` or `HEALTH_DB_PATH` using that
+   shared-then-unit environment-file precedence. Reject defaults, unknown
+   units, missing files, non-canonical paths, duplicates, inventory
+   mismatches, unknown schemas, integrity failures, or nonzero legacy queues.
 
 The target database schema is not an operator-supplied workflow input. Historical
 artifact builds derive the schema contract from the target source/runtime and
@@ -56,6 +64,7 @@ Review and install the helper and fixed inventory as root:
 ```bash
 sudo install -D -m 0750 -o root -g root scripts/rollout-agent-bridge.sh /usr/local/sbin/rollout-agent-bridge
 sudo install -D -m 0750 -o root -g root scripts/rollout-restore.py /usr/local/libexec/agent-bridge-rollout-restore
+sudo install -D -m 0750 -o root -g root scripts/release-stage.py /usr/local/libexec/agent-bridge-release-stage
 sudo install -D -m 0750 -o root -g root scripts/rollout-authorization.py /usr/local/libexec/agent-bridge-rollout-authorization.py
 sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local/libexec/agent-bridge-rollout-acceptance.py
 sudo install -d -m 0700 -o root -g root /var/backups/agent-bridge /var/log/agent-bridge-rollouts
@@ -74,6 +83,9 @@ Also record the SHA-256 digests of the independently installed validators as
 `authorization_validator_sha256=` and `acceptance_validator_sha256=`. The
 rollout helper verifies both pins before reading the target release or running
 target-owned code; target-release copies of these validators are never trusted.
+Also record `release_stage_sha256=` and `rollout_restore_sha256=` for the
+root-owned staging and recovery helpers; both pins are verified before an
+authorized release can proceed.
 Record a stable `environment=` identity in the same fixed config. The approval
 must repeat that identity exactly. The deployment invocation must also provide
 the independently verified artifact and qualification-evidence SHA-256 values:
@@ -97,6 +109,10 @@ content-crawler ALL=(root) NOPASSWD: /usr/local/sbin/rollout-agent-bridge
 The config must remain `root:root` and must not be group/world writable. Select a fixed subset of the compiled unit allowlist and list the exact canonical, non-symlink database set those units resolve from `/etc/default/agent-bridge-shared` followed by their unit-specific environment file. Multiple units may intentionally share one database; duplicate `database=` entries are forbidden. The helper aborts if discovery and the allowlist differ. `backup_dir` and `log_dir` must already exist as canonical, root-owned directories with no group/world write bits.
 
 ## Authorized invocation
+
+The direct pinned root invocation is the canonical production entrypoint. It
+does not depend on a user systemd bus; a `systemd-run --user` wrapper is
+optional and is not a deployment prerequisite.
 
 Only after separate production approval:
 

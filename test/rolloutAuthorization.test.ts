@@ -16,6 +16,8 @@ const EXPECTED_IDENTITIES = [
   "--expected-activation-helper-sha256", SHA256,
   "--expected-authorization-validator-sha256", SHA256,
   "--expected-acceptance-validator-sha256", SHA256,
+  "--expected-release-stage-sha256", SHA256,
+  "--expected-rollout-restore-sha256", SHA256,
 ];
 
 function writeAuthorization(overrides: Record<string, unknown> = {}): string {
@@ -36,6 +38,8 @@ function writeAuthorization(overrides: Record<string, unknown> = {}): string {
     approved_activation_helper_sha256: SHA256,
     approved_authorization_validator_sha256: SHA256,
     approved_acceptance_validator_sha256: SHA256,
+    approved_release_stage_sha256: SHA256,
+    approved_rollout_restore_sha256: SHA256,
     ...overrides,
   }) + "\n", { mode: 0o600 });
   chmodSync(path, 0o600);
@@ -61,6 +65,8 @@ describe("rollout authorization", () => {
       "approved_activation_helper_sha256",
       "approved_authorization_validator_sha256",
       "approved_acceptance_validator_sha256",
+      "approved_release_stage_sha256",
+      "approved_rollout_restore_sha256",
     ]) expect(output).toContain(`"${field}"`);
   });
 
@@ -78,6 +84,8 @@ describe("rollout authorization", () => {
     ["mismatched activation helper", { approved_activation_helper_sha256: "c".repeat(64) }, /activation_helper/i],
     ["mismatched authorization validator", { approved_authorization_validator_sha256: "c".repeat(64) }, /authorization_validator/i],
     ["mismatched acceptance validator", { approved_acceptance_validator_sha256: "c".repeat(64) }, /acceptance_validator/i],
+    ["mismatched release stage", { approved_release_stage_sha256: "c".repeat(64) }, /release_stage/i],
+    ["mismatched rollout restore", { approved_rollout_restore_sha256: "c".repeat(64) }, /rollout_restore/i],
   ])("rejects %s", (_label, overrides, error) => {
     expect(() => validate(writeAuthorization(overrides))).toThrow(error);
   });

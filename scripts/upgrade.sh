@@ -136,11 +136,13 @@ if [[ "${1:-}" == "--clis-only" ]]; then
   fi
 
   npm_pkg_version() {
-    npm list -g "${1}" --depth=0 2>/dev/null \
+    local listing
+    listing="$(npm list -g "${1}" --depth=0 2>/dev/null || true)"
+    printf '%s\n' "${listing}" \
       | grep "${1}@" \
       | head -1 \
       | sed 's/.*@//' \
-      | tr -d '[:space:]'
+      | tr -d '[:space:]' || true
   }
 
   CLIS=("@anthropic-ai/claude-code" "@openai/codex")
@@ -149,15 +151,23 @@ if [[ "${1:-}" == "--clis-only" ]]; then
     before_versions["${pkg}"]="$(npm_pkg_version "${pkg}")"
   done
 
-  npm install -g "${CLIS[@]}" 2>/dev/null || true
+  if ! npm install -g "${CLIS[@]}"; then
+    echo "npm CLI installation failed" >&2
+    exit 1
+  fi
 
   updated_any=0
   for pkg in "${CLIS[@]}"; do
     after="$(npm_pkg_version "${pkg}")"
     before="${before_versions[${pkg}]:-}"
-    if [[ -n "${after}" && "${after}" != "${before}" ]]; then
+    if [[ -z "${after}" ]]; then
+      echo "unable to verify installed version for ${pkg}" >&2
+      exit 1
+    elif [[ "${after}" != "${before}" ]]; then
       echo "updated: ${pkg} ${before}→${after}"
       updated_any=1
+    else
+      echo "verified: ${pkg} ${after}"
     fi
   done
 
