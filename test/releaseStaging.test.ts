@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
+import { listLocalCatalog } from "../src/skills.js";
+import { loadWorkerPrompt } from "../src/workerPrompts.js";
 
 const COMMIT = "1".repeat(40);
 const TREE = "2".repeat(40);
@@ -103,7 +105,7 @@ describe("immutable release staging", () => {
     })).not.toThrow();
   });
 
-  it("stages the release runtime assets and validates the complete payload with real helpers", () => {
+  it("stages the release runtime assets and validates the complete payload with real helpers", async () => {
     const { archive } = makeArchive(false, false, PACKAGE_JSON_CONTENT, true);
     const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
     runStage(archive, releaseRoot);
@@ -112,7 +114,24 @@ describe("immutable release staging", () => {
     expect(statSync(join(release, "scripts", "upgrade.sh")).mode & 0o111).toBe(0o111);
     expect(statSync(join(release, "bin", "agent-bridge-context")).mode & 0o111).toBe(0o111);
     expect(existsSync(join(release, "prompts", "worker", "README.md"))).toBe(true);
-    expect(existsSync(join(release, "skills"))).toBe(true);
+    const catalog = listLocalCatalog(release);
+    const skillNames = catalog.map((entry) => entry.name);
+    expect(skillNames).toEqual([
+      "git-sandbox",
+      "red-green-refactor-tdd",
+      "release-readiness-review",
+      "requirements-to-acceptance",
+      "risk-based-test-strategy",
+    ]);
+    for (const name of skillNames) {
+      expect(existsSync(join(release, "skills", name, "SKILL.md"))).toBe(true);
+      expect(existsSync(join(release, "skills", name, "skill.json"))).toBe(true);
+    }
+    const stagedReader = { readText: (path: string) => readFileSync(join(release, path), "utf8") };
+    const prompt = await loadWorkerPrompt("feature_plan", { brief: "staged runtime" }, stagedReader, { includeSupplements: false });
+    expect(prompt).toContain("Lifecycle skill: requirements-to-acceptance@1.0.0");
+    expect(prompt).toContain("Lifecycle skill: risk-based-test-strategy@1.0.0");
+    expect(prompt).toContain("Lifecycle skill: red-green-refactor-tdd@1.0.0");
     expect(existsSync(join(release, "scripts", "skill-manager.ts"))).toBe(true);
     expect(existsSync(join(release, "tsconfig.json"))).toBe(true);
     expect(existsSync(join(release, "SOUL.md"))).toBe(true);
