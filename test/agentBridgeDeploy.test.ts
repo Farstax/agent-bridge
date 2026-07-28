@@ -126,6 +126,12 @@ describe("single-input deployer contract", () => {
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/test overrides are forbidden/i);
   });
 
+  it("uses the validated staging helper for the production staging invocation", () => {
+    const source = readFileSync(DEPLOYER, "utf8");
+    expect(source).toContain('"/usr/bin/python3", str(stage_helper)');
+    expect(source).not.toContain('str(staging_helper)');
+  });
+
   it("runs the one-command fixture deployment without an external evidence file", () => {
     const fixture = makeRelease();
     const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-stage-"));
