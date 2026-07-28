@@ -294,7 +294,8 @@ for inventory_unit in "${ALLOWED_UNITS[@]}"; do
   expected_fragment_path="$systemd_unit_dir/$inventory_unit"
   actual_fragment_path="$(/usr/bin/cat "$systemd_inventory_dir/${safe_unit}.fragment-path")"
   [[ "$actual_fragment_path" == "$expected_fragment_path" ]] || die "FragmentPath mismatch for $inventory_unit"
-  [[ ! -s "$systemd_inventory_dir/${safe_unit}.drop-in-paths" ]] || die "unexpected systemd drop-in for $inventory_unit"
+  actual_drop_in_paths="$(/usr/bin/cat "$systemd_inventory_dir/${safe_unit}.drop-in-paths")"
+  [[ -z "$actual_drop_in_paths" ]] || die "unexpected systemd drop-in for $inventory_unit"
 done
 {
   for inventory_file in "$systemd_inventory_dir"/*; do
