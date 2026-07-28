@@ -69,7 +69,7 @@ jobs:
           cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/upgrade.sh scripts/agent-bridge-context.ts scripts/agent-bridge-advisor.ts scripts/skill-manager.ts scripts/release-stage.py scripts/rollout-restore.py "$root/scripts/"
           cp -a bin/agent-bridge-context bin/agent-bridge-advisor "$root/bin/"
           cp -a prompts/worker "$root/prompts/"
-          cp -a skills "$root/skills/"
+          cp -a skills/. "$root/skills/"
           cp -a tsconfig.json SOUL.md "$root/"
           node scripts/releaseManifest.mjs \
             --root "$root" \
