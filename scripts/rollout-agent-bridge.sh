@@ -36,6 +36,8 @@ approved_environment=""
 qualification_evidence_file=""
 deployer_mode="${AGENT_BRIDGE_DEPLOYER_MODE:-0}"
 deployer_artifact_sha256="${AGENT_BRIDGE_DEPLOY_ARTIFACT_SHA256:-}"
+deployer_environment="${AGENT_BRIDGE_DEPLOY_ENVIRONMENT:-}"
+deployer_approval_reference="${AGENT_BRIDGE_DEPLOY_APPROVAL_REFERENCE:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --expected-commit) [[ -z "$expected_commit" && -n "${2:-}" ]] || die "invalid or duplicate --expected-commit"; expected_commit="$2"; shift 2 ;;
@@ -190,6 +192,13 @@ if (( test_mode == 1 )); then
   [[ -n "$release_stage_sha256" ]] || release_stage_sha256="$(/usr/bin/sha256sum "$release_stage_cmd" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$rollout_restore_sha256" ]] || rollout_restore_sha256="$(/usr/bin/sha256sum "$restore_cmd" | /usr/bin/cut -d' ' -f1)"
 fi
+if [[ "$deployer_mode" == 1 ]]; then
+  [[ -n "$deployer_artifact_sha256" && "$deployer_artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || die "deployer artifact SHA-256 is missing or malformed"
+  [[ -n "$deployer_environment" && "$deployer_environment" == "$environment_identity" ]] || die "deployer environment does not match fixed config"
+  [[ -n "$deployer_approval_reference" ]] || die "deployer approval reference is missing"
+  approved_artifact_sha256="$deployer_artifact_sha256"
+  approved_environment="$deployer_environment"
+fi
 authorization_identity_args=(
   --expected-artifact-sha256 "$approved_artifact_sha256"
   --expected-evidence-sha256 "$approved_evidence_sha256"
@@ -260,8 +269,7 @@ if (( release_mode == 1 )); then
     validate_secure_path "$staging_provenance" file
     provenance_commit="$(/usr/bin/grep -m1 -oE '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{40})"/\1/')"
     provenance_artifact_sha256="$(/usr/bin/grep -m1 -oE '"archive_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{64})"/\1/')"
-    provenance_stage_sha256="$(/usr/bin/grep -m1 -oE '"release_stage_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{64})"/\1/')"
-    [[ "$provenance_commit" == "$expected_commit" && "$provenance_artifact_sha256" == "$approved_artifact_sha256" && "$provenance_stage_sha256" == "$release_stage_sha256" ]] || die "staging provenance does not match the approved artifact or release-stage identity"
+    [[ "$provenance_commit" == "$expected_commit" && "$provenance_artifact_sha256" == "$approved_artifact_sha256" ]] || die "staging provenance does not match the approved artifact"
   fi
   if [[ -n "$authorization_file" ]] && [[ "$deployer_mode" != 1 ]]; then
     "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" >/dev/null || die "rollout authorization validation failed"
@@ -1035,6 +1043,6 @@ record_phase ACCEPTED
 
 completed=1
 record_phase COMPLETE
-printf '{"status":"complete","targetCommit":"%s","artifactSha256":"%s","artifactDir":"%s","completedAt":"%s"}\n' "$expected_commit" "$deployer_artifact_sha256" "$artifact_dir" "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$artifact_dir/deployment-result.json"
+printf '{"status":"complete","targetCommit":"%s","artifactSha256":"%s","environment":"%s","approvalReference":"%s","artifactDir":"%s","completedAt":"%s"}\n' "$expected_commit" "$deployer_artifact_sha256" "$deployer_environment" "$deployer_approval_reference" "$artifact_dir" "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$artifact_dir/deployment-result.json"
 /usr/bin/sha256sum "$artifact_dir/deployment-result.json" > "$artifact_dir/deployment-result.sha256"
 echo "rollout completed commit=$expected_commit artifacts=$artifact_dir"

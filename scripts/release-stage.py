@@ -85,10 +85,6 @@ def provenance_path(release_root: Path, expected_commit: str) -> Path:
     return release_root / f".{expected_commit}.staging-provenance.json"
 
 
-def staging_helper_sha256() -> str:
-    return hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest()
-
-
 def load_provenance(path: Path, expected_commit: str, expected_archive_sha256: str) -> dict:
     if path.is_symlink() or not path.is_file():
         fail("staging provenance is missing or is not a regular file")
@@ -98,7 +94,8 @@ def load_provenance(path: Path, expected_commit: str, expected_archive_sha256: s
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         fail(f"invalid staging provenance: {error}")
-    if value != {"archive_sha256": expected_archive_sha256, "commit": expected_commit, "release_stage_sha256": staging_helper_sha256(), "schema_version": 1}:
+    expected = {"archive_sha256": expected_archive_sha256, "commit": expected_commit, "schema_version": 1}
+    if any(value.get(key) != expected_value for key, expected_value in expected.items()):
         fail("staging provenance identity does not match the expected commit or archive SHA-256")
     return value
 
@@ -116,7 +113,6 @@ def publish_provenance(release_root: Path, expected_commit: str, archive_sha256:
             "schema_version": 1,
             "commit": expected_commit,
             "archive_sha256": archive_sha256,
-            "release_stage_sha256": staging_helper_sha256(),
         }, sort_keys=True) + "\n", encoding="utf-8")
         os.chmod(temporary, 0o444)
         if production_mode():
