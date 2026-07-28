@@ -367,7 +367,7 @@ This runbook was executed successfully at deployed head `8c74c3f78f3742297cf4346
 3. Take and independently verify rollback backups (the guarded rollout helper does this as part of its own sequence, but a pre-flight manual backup + off-host copy is a reasonable additional safety margin given this is the first real-world exercise of the new gating model).
 4. Dry-run `rollout-db.ts inspect` against the live five databases (read-only) to confirm current schema state, zero legacy queue count, and expected resolving-units mapping before touching anything.
 5. Obtain explicit, separate human authorization for the actual rollout (per this project's standing rule — no deployment proceeds on implicit approval).
-6. Invoke `sudo -n /usr/local/sbin/rollout-agent-bridge --expected-commit <exact 40-char SHA>`.
+6. Invoke the current sole operator path: `sudo agent-bridge-deploy --release agent-bridge-<commit>.tar.gz --approval production-approval.json`.
 7. On success: verify every service active, `rollout-db.ts validate` reports `current` for all five, queues intact (counts match pre-rollout inspect), logs show no migration/credential/process-lifecycle errors. **Completed:** all seven services were active/running; all five databases were integrity-valid/current with zero legacy and pending queue rows; checkpoint evidence recorded the interactive and worker WAL drains; backup and SHA-256 manifests were present; startup error smoke was clean; and the sentinel was absent.
 8. On any failure: do not attempt manual remediation — follow the evidence path recorded in `log_dir/latest`, and if rollback is warranted, use the state machine in §9. Report the exact failure per this thread's standing reporting convention.
 

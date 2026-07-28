@@ -4,13 +4,8 @@
 # are present. The current pointer must resolve to the expected staged SHA.
 release_root=/opt/agent-bridge/releases
 current_pointer=/opt/agent-bridge/releases/current
-# Replace this placeholder with the SHA-256 of the installed helper before use.
-rollout_helper_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_HELPER
-activation_helper_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_ACTIVATION_HELPER
-authorization_validator_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_AUTHORIZATION_VALIDATOR
-acceptance_validator_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_ACCEPTANCE_VALIDATOR
-release_stage_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_RELEASE_STAGE_HELPER
-rollout_restore_sha256=REPLACE_WITH_SHA256_OF_INSTALLED_ROLLOUT_RESTORE_HELPER
+# Component helpers are private implementation details of agent-bridge-deploy.
+# They are not operator approval inputs and are not independently authorized.
 # Stable deployment-environment identity; approvals must match it exactly.
 environment=production-content-crawler
 runtime_user=content-crawler

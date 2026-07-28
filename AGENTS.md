@@ -372,3 +372,24 @@ User guide: `docs/WORKER-GUIDE.md`. Phase 9 plan:
 - The dedicated health service runs through `src/index-health.ts` with `BridgeEngine` kind `health`, but its suggestion CLI must execute through the configured agent kind (`HEALTH_SUGGEST_BOT` / `HEALTH_CLI_BOT`) so invocation, parsing, timeouts, and Telegram rendering match Codex, Antigravity, or Claude behavior.
 - Manual `/health` should return one combined report only. Persist plugin reports for `/status` context with `HealthBridgeBot.handleReport(..., { force: true, silent: true })`; do not also force-send each plugin report.
 - `HEALTH_SUGGEST_*` is the documented health suggestion config family. `HEALTH_CLI_*` remains a compatibility alias.
+
+# Deployment contract
+
+The sole normal production deployment command is:
+
+```bash
+sudo agent-bridge-deploy --release agent-bridge-<commit>.tar.gz --approval production-approval.json
+```
+
+The release archive is self-contained and carries the exact commit/tree
+manifest, runtime, migration code and embedded CI qualification evidence. The
+minimal approval binds only environment, target commit, release SHA-256,
+approval reference and expiry. Do not introduce external evidence files,
+secondary bundles, per-helper approval hashes or a second operator workflow.
+
+`release-stage.py`, `release-activate.py`, `rollout-restore.py`,
+`rollout-authorization.py` and `rollout-acceptance.py` are private deployer
+internals. Install them root-owned and non-writable at their fixed
+`/usr/local/libexec/agent-bridge-*` paths, remove any sudoers entries that
+expose them directly, and do not document or invoke them as normal operator
+commands. Only `agent-bridge-deploy` is the production sudoers entry.
