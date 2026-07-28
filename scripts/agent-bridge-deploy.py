@@ -181,7 +181,7 @@ def run_deployment(archive: Path, approval: Path) -> str:
     release_root = Path(configured_value(config, "release_root"))
     rollout_helper = Path("/usr/local/sbin/rollout-agent-bridge")
     subprocess.run([
-        "/usr/bin/python3", str(staging_helper), "--archive", str(archive),
+        "/usr/bin/python3", str(stage_helper), "--archive", str(archive),
         "--release-root", str(release_root), "--expected-commit", commit,
         "--archive-sha256", archive_sha256,
     ], check=True)
