@@ -66,6 +66,7 @@ function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expect
     ...lines.filter((line) => !line.startsWith("project_dir=")),
     `release_root=${releaseRoot}`,
     `current_pointer=${currentPointer}`,
+    `activation_helper_sha256=${sha256(join(fixture.root, "bin", "release-activate"))}`,
   ]);
   writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
   writeFileSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), JSON.stringify({
@@ -93,6 +94,7 @@ function writeAuthorization(fixture: Fixture, overrides: Record<string, unknown>
     approved_environment: "production-content-crawler",
     approved_rollout_helper_sha256: sha256(helperPath),
     approved_rollout_config_sha256: sha256(fixture.configFile),
+    approved_activation_helper_sha256: sha256(join(fixture.root, "bin", "release-activate")),
     approved_authorization_validator_sha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
     approved_acceptance_validator_sha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
     ...overrides,
@@ -133,6 +135,7 @@ describe("guarded rollout helper", () => {
       authorizationValidatorSha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
       acceptanceValidatorSha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
     }));
+    expect(JSON.parse(readFileSync(join(artifacts, "activation-helper-evidence.json"), "utf8"))).toEqual({ activationHelperSha256: sha256(join(fixture.root, "bin", "release-activate")) });
   }, 15_000);
 
   it("rejects an identity mismatch before stopping services", () => {
@@ -144,6 +147,18 @@ describe("guarded rollout helper", () => {
 
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/artifact/i);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
+  it("rejects an activation-helper identity mismatch before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const approval = writeAuthorization(fixture, { approved_activation_helper_sha256: "e".repeat(64) });
+
+    const result = runAuthorizedRollout(fixture, approval);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/activation_helper|activation helper/i);
     expect(actions(fixture)).not.toContain("systemctl:stop");
   });
 

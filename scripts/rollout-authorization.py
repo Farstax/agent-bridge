@@ -21,6 +21,7 @@ IDENTITY_FIELDS = {
     "approved_environment": "environment",
     "approved_rollout_helper_sha256": "rollout_helper_sha256",
     "approved_rollout_config_sha256": "rollout_config_sha256",
+    "approved_activation_helper_sha256": "activation_helper_sha256",
     "approved_authorization_validator_sha256": "authorization_validator_sha256",
     "approved_acceptance_validator_sha256": "acceptance_validator_sha256",
 }
@@ -110,6 +111,7 @@ def main() -> int:
     parser.add_argument("--expected-environment", required=True)
     parser.add_argument("--expected-rollout-helper-sha256", required=True)
     parser.add_argument("--expected-rollout-config-sha256", required=True)
+    parser.add_argument("--expected-activation-helper-sha256", required=True)
     parser.add_argument("--expected-authorization-validator-sha256", required=True)
     parser.add_argument("--expected-acceptance-validator-sha256", required=True)
     parser.add_argument("--now")
@@ -122,6 +124,7 @@ def main() -> int:
         "environment": args.expected_environment,
         "rollout_helper_sha256": args.expected_rollout_helper_sha256,
         "rollout_config_sha256": args.expected_rollout_config_sha256,
+        "activation_helper_sha256": args.expected_activation_helper_sha256,
         "authorization_validator_sha256": args.expected_authorization_validator_sha256,
         "acceptance_validator_sha256": args.expected_acceptance_validator_sha256,
     }, now, os.geteuid() == 0)

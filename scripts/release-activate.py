@@ -65,6 +65,8 @@ def _manifest_files(release: Path, manifest: dict) -> None:
     for current, directories, files in os.walk(release, followlinks=False):
         for name in files:
             path = Path(current) / name
+            if path == release / "manifest.json":
+                continue
             actual[str(path.relative_to(release))] = path
         for name in directories:
             path = Path(current) / name
@@ -78,7 +80,7 @@ def _manifest_files(release: Path, manifest: dict) -> None:
     for relative, path in actual.items():
         entry = expected[relative]
         kind = "symlink" if path.is_symlink() else "file" if path.is_file() else "directory" if path.is_dir() else "other"
-        if entry.get("type") != kind:
+        if entry.get("type", "file") != kind:
             fail(f"release manifest type mismatch: {relative}")
         if kind == "file":
             if entry.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest():

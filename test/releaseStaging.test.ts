@@ -19,6 +19,9 @@ function makeArchive(withHardlink = false, withExecutable = false, packageConten
   writeFileSync(join(root, "package.json"), packageContent);
   mkdirSync(join(root, "dist"));
   writeFileSync(join(root, "dist", "placeholder.js"), "// placeholder\n");
+  mkdirSync(join(root, "scripts"));
+  writeFileSync(join(root, "scripts", "rollout-db.ts"), "export {}\n");
+  writeFileSync(join(root, "scripts", "rollout-db-impl.ts"), "export {}\n");
   if (withHardlink) {
     linkSync(join(root, "package.json"), join(root, "package-copy.json"));
   }
@@ -70,6 +73,24 @@ describe("immutable release staging", () => {
     expect(statSync(release).mode & 0o222).toBe(0);
     const provenance = JSON.parse(readFileSync(join(releaseRoot, `.${COMMIT}.staging-provenance.json`), "utf8"));
     expect(provenance).toEqual({ commit: COMMIT, archive_sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"), schema_version: 1 });
+  });
+
+  it("passes the real staged release through the real activation validator", () => {
+    const { archive } = makeArchive();
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
+
+    runStage(archive, releaseRoot);
+
+    expect(() => execFileSync("python3", [
+      "scripts/release-activate.py",
+      "--validate-only",
+      "--release-root", releaseRoot,
+      "--current", join(releaseRoot, "current"),
+      "--expected-commit", COMMIT,
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_RELEASE_ACTIVATE_TEST: "1" },
+    })).not.toThrow();
   });
 
   it("preserves executable mode bits for runtime entries", () => {
