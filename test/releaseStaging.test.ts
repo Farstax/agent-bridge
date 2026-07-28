@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
 
@@ -13,7 +13,7 @@ const TREE = "2".repeat(40);
 // tamper mechanism, not build-strategy semantics, so it just satisfies "compiled" minimally.
 const PACKAGE_JSON_CONTENT = `${JSON.stringify({ name: "stage-test", scripts: { build: "true" } })}\n`;
 
-function makeArchive(withHardlink = false, withExecutable = false, packageContent = PACKAGE_JSON_CONTENT): { archive: string; root: string } {
+function makeArchive(withHardlink = false, withExecutable = false, packageContent = PACKAGE_JSON_CONTENT, withRuntimeAssets = false): { archive: string; root: string } {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-stage-input-"));
   writeFileSync(join(root, "package-lock.json"), "lock\n");
   writeFileSync(join(root, "package.json"), packageContent);
@@ -30,6 +30,16 @@ function makeArchive(withHardlink = false, withExecutable = false, packageConten
     const executable = join(root, "bin", "runtime-entry");
     writeFileSync(executable, "#!/bin/sh\n");
     chmodSync(executable, 0o755);
+  }
+  if (withRuntimeAssets) {
+    for (const file of ["scripts/upgrade.sh", "scripts/skill-manager.ts", "scripts/agent-bridge-context.ts", "scripts/agent-bridge-advisor.ts", "tsconfig.json", "SOUL.md"]) {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      cpSync(file, join(root, file));
+    }
+    cpSync("bin/agent-bridge-context", join(root, "bin", "agent-bridge-context"));
+    cpSync("bin/agent-bridge-advisor", join(root, "bin", "agent-bridge-advisor"));
+    cpSync("prompts/worker", join(root, "prompts", "worker"), { recursive: true });
+    cpSync("skills", join(root, "skills"), { recursive: true });
   }
   const manifest = buildReleaseManifest({
     root,
@@ -91,6 +101,21 @@ describe("immutable release staging", () => {
       encoding: "utf8",
       env: { ...process.env, AGENT_BRIDGE_RELEASE_ACTIVATE_TEST: "1" },
     })).not.toThrow();
+  });
+
+  it("stages the release runtime assets and validates the complete payload with real helpers", () => {
+    const { archive } = makeArchive(false, false, PACKAGE_JSON_CONTENT, true);
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-releases-"));
+    runStage(archive, releaseRoot);
+    expect(() => execFileSync("python3", ["scripts/release-activate.py", "--validate-only", "--release-root", releaseRoot, "--current", join(releaseRoot, "current"), "--expected-commit", COMMIT], { encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_RELEASE_ACTIVATE_TEST: "1" } })).not.toThrow();
+    const release = join(releaseRoot, COMMIT);
+    expect(statSync(join(release, "scripts", "upgrade.sh")).mode & 0o111).toBe(0o111);
+    expect(statSync(join(release, "bin", "agent-bridge-context")).mode & 0o111).toBe(0o111);
+    expect(existsSync(join(release, "prompts", "worker", "README.md"))).toBe(true);
+    expect(existsSync(join(release, "skills"))).toBe(true);
+    expect(existsSync(join(release, "scripts", "skill-manager.ts"))).toBe(true);
+    expect(existsSync(join(release, "tsconfig.json"))).toBe(true);
+    expect(existsSync(join(release, "SOUL.md"))).toBe(true);
   });
 
   it("preserves executable mode bits for runtime entries", () => {
