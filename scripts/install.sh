@@ -257,9 +257,19 @@ mkdir -p "${DEFAULTS_DIR}"
 install_unit() {
   local name="$1"
   sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
+      -e "s#BRIDGE_REPO_DIR#${REPO_DIR}#g" \
       "${REPO_DIR}/systemd/${name}.service" \
     | sudo tee "${SYSTEMD_DIR}/${name}.service" > /dev/null
   sudo chmod 0644 "${SYSTEMD_DIR}/${name}.service"
+}
+
+install_timer() {
+  local name="$1"
+  sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
+      -e "s#BRIDGE_REPO_DIR#${REPO_DIR}#g" \
+      "${REPO_DIR}/systemd/${name}.timer" \
+    | sudo tee "${SYSTEMD_DIR}/${name}.timer" > /dev/null
+  sudo chmod 0644 "${SYSTEMD_DIR}/${name}.timer"
 }
 
 # Returns the path to a binary from PATH only (CLIs are external global installs)
@@ -448,7 +458,11 @@ if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]]; then
   install_unit agent-bridge-health
 fi
 
-UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity"
+# Ops housekeeping — not gated by any bot token, always installed.
+install_unit agent-bridge-tmp-cleanup
+install_timer agent-bridge-tmp-cleanup
+
+UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cleanup.timer"
 if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]]; then
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-health"
 fi

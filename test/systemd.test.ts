@@ -107,4 +107,36 @@ describe("systemd templates", () => {
     expect(install).not.toContain("TELEGRAM_MARKDOWN_IR_ENABLED");
   });
 
+  it("tmp-cleanup service runs the reaper script as a oneshot, outside the release pointer", () => {
+    const service = readFileSync(new URL("../systemd/agent-bridge-tmp-cleanup.service", import.meta.url), "utf8");
+
+    expect(service).toContain("Type=oneshot");
+    expect(service).toContain("User=BRIDGE_USER");
+    expect(service).toContain("ExecStart=/usr/bin/env bash BRIDGE_REPO_DIR/scripts/reap-tmp-artifacts.sh");
+    // Deliberately does not resolve through BRIDGE_CURRENT_RELEASE_DIR: it is
+    // an ops housekeeping script tied to the git checkout, not app code.
+    expect(service).not.toContain("BRIDGE_CURRENT_RELEASE_DIR");
+  });
+
+  it("tmp-cleanup timer runs daily and catches up after downtime", () => {
+    const timer = readFileSync(new URL("../systemd/agent-bridge-tmp-cleanup.timer", import.meta.url), "utf8");
+
+    expect(timer).toContain("OnCalendar=");
+    expect(timer).toContain("Persistent=true");
+    expect(timer).toContain("WantedBy=timers.target");
+  });
+
+  it("install.sh and upgrade.sh install and enable the tmp-cleanup service and timer", () => {
+    const install = readFileSync(new URL("../scripts/install.sh", import.meta.url), "utf8");
+    const upgrade = readFileSync(new URL("../scripts/upgrade.sh", import.meta.url), "utf8");
+
+    for (const [name, content] of [["install.sh", install], ["upgrade.sh", upgrade]] as const) {
+      expect(content, name).toContain("install_unit agent-bridge-tmp-cleanup");
+      expect(content, name).toContain("install_timer agent-bridge-tmp-cleanup");
+      expect(content, name).toContain("agent-bridge-tmp-cleanup.timer");
+      expect(content, name).toMatch(/UNITS_TO_ENABLE=.*agent-bridge-tmp-cleanup\.timer/);
+      expect(content, name).toMatch(/systemctl enable[^\n]*UNITS_TO_ENABLE/);
+    }
+  });
+
 });

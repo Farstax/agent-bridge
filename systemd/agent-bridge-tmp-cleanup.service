@@ -1,0 +1,8 @@
+[Unit]
+Description=Agent-bridge temporary artifact cleanup (bridge-out, uploads, antigravity logs, advisor sockets, test fixtures, merged worktrees)
+
+[Service]
+Type=oneshot
+User=BRIDGE_USER
+EnvironmentFile=-/etc/default/agent-bridge-shared
+ExecStart=/usr/bin/env bash BRIDGE_REPO_DIR/scripts/reap-tmp-artifacts.sh

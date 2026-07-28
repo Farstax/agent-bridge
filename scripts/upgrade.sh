@@ -40,9 +40,19 @@ require_node() {
 install_unit() {
   local name="$1"
   sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
+      -e "s#BRIDGE_REPO_DIR#${REPO_DIR}#g" \
       "${REPO_DIR}/systemd/${name}.service" \
     | sudo tee "${SYSTEMD_DIR}/${name}.service" > /dev/null
   sudo chmod 0644 "${SYSTEMD_DIR}/${name}.service"
+}
+
+install_timer() {
+  local name="$1"
+  sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
+      -e "s#BRIDGE_REPO_DIR#${REPO_DIR}#g" \
+      "${REPO_DIR}/systemd/${name}.timer" \
+    | sudo tee "${SYSTEMD_DIR}/${name}.timer" > /dev/null
+  sudo chmod 0644 "${SYSTEMD_DIR}/${name}.timer"
 }
 
 install_shared_skills() {
@@ -214,6 +224,10 @@ fi
 install_unit agent-bridge-codex
 install_unit agent-bridge-antigravity
 
+# Ops housekeeping — not gated by any bot token, always installed.
+install_unit agent-bridge-tmp-cleanup
+install_timer agent-bridge-tmp-cleanup
+
 ensure_node_default() {
   local file="$1"
   if [[ ! -f "${file}" ]]; then
@@ -229,7 +243,7 @@ ensure_node_default() {
 ensure_node_default /etc/default/agent-bridge-codex
 ensure_node_default /etc/default/agent-bridge-antigravity
 
-UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity"
+UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cleanup.timer"
 
 # Install claude unit only if its defaults file is present (created by install.sh)
 CLAUDE_DEFAULTS="/etc/default/agent-bridge-claude"
