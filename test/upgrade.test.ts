@@ -8,7 +8,7 @@ describe("upgrade CLI verification", () => {
   it("fails when npm installation fails instead of suppressing the error", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-"));
     const npm = join(root, "npm");
-    writeFileSync(npm, `#!/usr/bin/env bash\nfor arg in "$@"; do if [ "$arg" = install ]; then printf install > "${root}/install-called"; exit 42; fi; done\necho '@scope/pkg@1.0.0'\n`, { mode: 0o755 });
+    writeFileSync(npm, `#!/usr/bin/env bash\nif [ "$1" = list ]; then echo '@scope/pkg@1.0.0'; exit 0; fi\nprintf install > "${root}/install-called"\nexit 42\n`, { mode: 0o755 });
     chmodSync(npm, 0o755);
     const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
       encoding: "utf8",
@@ -21,7 +21,7 @@ describe("upgrade CLI verification", () => {
   it("requires a version after installation", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-"));
     const npm = join(root, "npm");
-    writeFileSync(npm, `#!/usr/bin/env bash\nfor arg in "$@"; do if [ "$arg" = install ]; then exit 0; fi; done\nexit 1\n`, { mode: 0o755 });
+    writeFileSync(npm, `#!/usr/bin/env bash\nif [ "$1" = list ]; then exit 1; fi\nexit 0\n`, { mode: 0o755 });
     chmodSync(npm, 0o755);
     const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
       encoding: "utf8",
