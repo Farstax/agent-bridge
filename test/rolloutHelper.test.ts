@@ -70,11 +70,13 @@ function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expect
     `release_stage_sha256=${sha256(join(fixture.root, "bin", "release-stage"))}`,
     `rollout_restore_sha256=${sha256(join(fixture.root, "bin", "rollout-restore"))}`,
   ]);
-  writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
+  writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\n`, { mode: 0o600 });
+  writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
   writeFileSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), JSON.stringify({
     schema_version: 1,
     commit: fixture.expectedCommit,
     archive_sha256: "b".repeat(64),
+    release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")),
   }) + "\n", { mode: 0o444 });
   chmodSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), 0o444);
   return { currentPointer, releaseDir };
@@ -128,6 +130,27 @@ describe("guarded rollout helper", () => {
     const result = runRollout(fixture, undefined, undefined, { FAKE_ENVIRONMENT_FILES_MODE: mode });
     expect(result.status).not.toBe(0);
     expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  });
+
+  it.each([
+    ["drop-in", { FAKE_DROPIN_MODE: "extra" }, /drop-?in/i],
+    ["fragment path", { FAKE_FRAGMENT_MODE: "unexpected" }, /FragmentPath/i],
+  ])("rejects an unexpected systemd %s before stopping services", (_label, environment, error) => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, environment);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(error);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  });
+
+  it("resolves the release environment file for the active pointer", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
+    writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
+    const result = runRollout(fixture, "inspect");
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/active release pointer mismatch/i);
   });
 
   it("captures cat, FragmentPath, DropInPaths and EnvironmentFiles evidence for every allowlisted unit", () => {
@@ -199,7 +222,7 @@ describe("guarded rollout helper", () => {
     prepareImmutableRelease(fixture, fixture.previousCommit);
     const provenance = join(fixture.root, "releases", `.${fixture.expectedCommit}.staging-provenance.json`);
     chmodSync(provenance, 0o644);
-    writeFileSync(provenance, JSON.stringify({ schema_version: 1, commit: fixture.expectedCommit, archive_sha256: "d".repeat(64) }) + "\n", { mode: 0o444 });
+    writeFileSync(provenance, JSON.stringify({ schema_version: 1, commit: fixture.expectedCommit, archive_sha256: "d".repeat(64), release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")) }) + "\n", { mode: 0o444 });
     chmodSync(provenance, 0o444);
     const approval = writeAuthorization(fixture);
 

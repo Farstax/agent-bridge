@@ -276,8 +276,12 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
             *) printf '%s\n%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/agent-bridge-release (ignore_errors=no)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
           esac
           ;;
-        FragmentPath) echo "${fixture.root}/systemd/\${unit}" ;;
-        DropInPaths) : ;;
+        FragmentPath)
+          if [ "\${FAKE_FRAGMENT_MODE:-correct}" = unexpected ]; then echo "${fixture.root}/unexpected/\${unit}"; else echo "${fixture.root}/systemd/\${unit}"; fi
+          ;;
+        DropInPaths)
+          if [ "\${FAKE_DROPIN_MODE:-empty}" = extra ]; then echo "${fixture.root}/systemd/agent-bridge.service.d/override.conf"; fi
+          ;;
         Environment) echo NODE_ENV=production ;;
         ActiveState)
           if grep -Fxq "$unit" "${fixture.stateFile}"; then echo active

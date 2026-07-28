@@ -82,7 +82,7 @@ describe("immutable release staging", () => {
     expect(statSync(join(release, "package.json")).mode & 0o222).toBe(0);
     expect(statSync(release).mode & 0o222).toBe(0);
     const provenance = JSON.parse(readFileSync(join(releaseRoot, `.${COMMIT}.staging-provenance.json`), "utf8"));
-    expect(provenance).toEqual({ commit: COMMIT, archive_sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"), schema_version: 1 });
+    expect(provenance).toEqual({ commit: COMMIT, archive_sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"), release_stage_sha256: createHash("sha256").update(readFileSync("scripts/release-stage.py")).digest("hex"), schema_version: 1 });
   });
 
   it("passes the real staged release through the real activation validator", () => {
