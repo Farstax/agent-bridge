@@ -64,7 +64,7 @@ Review and install the helper and fixed inventory as root:
 ```bash
 sudo install -D -m 0750 -o root -g root scripts/rollout-agent-bridge.sh /usr/local/sbin/rollout-agent-bridge
 sudo install -D -m 0750 -o root -g root scripts/rollout-restore.py /usr/local/libexec/agent-bridge-rollout-restore
-sudo install -D -m 0750 -o root -g root scripts/release-stage.py /usr/local/libexec/agent-bridge-release-stage.py
+sudo install -D -m 0750 -o root -g root scripts/release-stage.py /usr/local/libexec/agent-bridge-release-stage
 sudo install -D -m 0750 -o root -g root scripts/rollout-authorization.py /usr/local/libexec/agent-bridge-rollout-authorization.py
 sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local/libexec/agent-bridge-rollout-acceptance.py
 sudo install -d -m 0700 -o root -g root /var/backups/agent-bridge /var/log/agent-bridge-rollouts

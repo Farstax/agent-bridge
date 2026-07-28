@@ -65,6 +65,7 @@ if [[ -n "$test_root" ]]; then
   acceptance_validator="$test_root/bin/rollout-acceptance-trusted"
   defaults_dir="$test_root/etc/default"
   cgroup_root="$test_root/sys/fs/cgroup"
+  systemd_unit_dir="$test_root/systemd"
   smoke_delay=0
   test_mode=1
 else
@@ -76,17 +77,18 @@ else
   journalctl_cmd="/usr/bin/journalctl"
   cp_cmd="/usr/bin/cp"
   restore_cmd="/usr/local/libexec/agent-bridge-rollout-restore"
-  release_stage_cmd="/usr/local/libexec/agent-bridge-release-stage.py"
+  release_stage_cmd="/usr/local/libexec/agent-bridge-release-stage"
   activation_cmd="/usr/local/libexec/agent-bridge-release-activate"
   authorization_validator="/usr/local/libexec/agent-bridge-rollout-authorization.py"
   acceptance_validator="/usr/local/libexec/agent-bridge-rollout-acceptance.py"
   defaults_dir="/etc/default"
   cgroup_root="/sys/fs/cgroup"
+  systemd_unit_dir="/etc/systemd/system"
   smoke_delay=5
   test_mode=0
 fi
 
-for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink; do
+for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
   [[ -x "$command_path" ]] || die "required command is unavailable: $command_path"
 done
 [[ -f "$config_file" && ! -L "$config_file" ]] || die "missing fixed rollout config: $config_file"
@@ -256,7 +258,8 @@ if (( release_mode == 1 )); then
     validate_secure_path "$staging_provenance" file
     provenance_commit="$(/usr/bin/grep -m1 -oE '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{40})"/\1/')"
     provenance_artifact_sha256="$(/usr/bin/grep -m1 -oE '"archive_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{64})"/\1/')"
-    [[ "$provenance_commit" == "$expected_commit" && "$provenance_artifact_sha256" == "$approved_artifact_sha256" ]] || die "staging provenance does not match the approved artifact identity"
+    provenance_stage_sha256="$(/usr/bin/grep -m1 -oE '"release_stage_sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' "$staging_provenance" | /usr/bin/sed -E 's/.*"([0-9a-f]{64})"/\1/')"
+    [[ "$provenance_commit" == "$expected_commit" && "$provenance_artifact_sha256" == "$approved_artifact_sha256" && "$provenance_stage_sha256" == "$release_stage_sha256" ]] || die "staging provenance does not match the approved artifact or release-stage identity"
   fi
   if [[ -n "$authorization_file" ]]; then
     "$authorization_validator" --file "$authorization_file" --expected-commit "$expected_commit" "${authorization_identity_args[@]}" >/dev/null || die "rollout authorization validation failed"
@@ -288,6 +291,10 @@ for inventory_unit in "${ALLOWED_UNITS[@]}"; do
   "$systemctl_cmd" show "$inventory_unit" --property=FragmentPath --value > "$systemd_inventory_dir/${safe_unit}.fragment-path" || die "systemd FragmentPath cannot be captured: $inventory_unit"
   "$systemctl_cmd" show "$inventory_unit" --property=DropInPaths --value > "$systemd_inventory_dir/${safe_unit}.drop-in-paths" || die "systemd DropInPaths cannot be captured: $inventory_unit"
   "$systemctl_cmd" show "$inventory_unit" --property=EnvironmentFiles --value > "$systemd_inventory_dir/${safe_unit}.environment-files" || die "systemd EnvironmentFiles cannot be captured: $inventory_unit"
+  expected_fragment_path="$systemd_unit_dir/$inventory_unit"
+  actual_fragment_path="$(/usr/bin/cat "$systemd_inventory_dir/${safe_unit}.fragment-path")"
+  [[ "$actual_fragment_path" == "$expected_fragment_path" ]] || die "FragmentPath mismatch for $inventory_unit"
+  [[ ! -s "$systemd_inventory_dir/${safe_unit}.drop-in-paths" ]] || die "unexpected systemd drop-in for $inventory_unit"
 done
 {
   for inventory_file in "$systemd_inventory_dir"/*; do
@@ -324,12 +331,14 @@ for unit in "${units[@]}"; do
     [[ " $explicit_environment " != *" BRIDGE_CURRENT_RELEASE_DIR="* ]] || die "explicit systemd BRIDGE_CURRENT_RELEASE_DIR override is unsupported for $unit"
     resolved_env_value=""
     read_env_key "$shared_env" BRIDGE_CURRENT_RELEASE_DIR ""
+    read_env_key "$release_env" BRIDGE_CURRENT_RELEASE_DIR "$resolved_env_value"
     inherited_release_pointer="$resolved_env_value"
     read_env_key "$unit_env" BRIDGE_CURRENT_RELEASE_DIR "$inherited_release_pointer"
     [[ "$resolved_env_value" == "$current_pointer" ]] || die "active release pointer mismatch for $unit"
   fi
   resolved_env_value=""
   read_env_key "$shared_env" "$db_key" ""
+  read_env_key "$release_env" "$db_key" "$resolved_env_value"
   inherited_value="$resolved_env_value"
   read_env_key "$unit_env" "$db_key" "$inherited_value"
   discovered="$resolved_env_value"

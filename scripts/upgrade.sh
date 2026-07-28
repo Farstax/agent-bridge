@@ -136,11 +136,13 @@ if [[ "${1:-}" == "--clis-only" ]]; then
   fi
 
   npm_pkg_version() {
-    npm list -g "${1}" --depth=0 2>/dev/null \
+    local listing
+    listing="$(npm list -g "${1}" --depth=0 2>/dev/null || true)"
+    printf '%s\n' "${listing}" \
       | grep "${1}@" \
       | head -1 \
       | sed 's/.*@//' \
-      | tr -d '[:space:]'
+      | tr -d '[:space:]' || true
   }
 
   CLIS=("@anthropic-ai/claude-code" "@openai/codex")
