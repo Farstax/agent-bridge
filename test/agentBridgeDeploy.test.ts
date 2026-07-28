@@ -116,6 +116,16 @@ describe("single-input deployer contract", () => {
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/environment/i);
   });
 
+  it("rejects test overrides before production code import when executed as root", () => {
+    const canSudo = spawnSync("sudo", ["-n", "true"], { encoding: "utf8" });
+    if (canSudo.status !== 0) return;
+    const result = spawnSync("sudo", ["-n", "env", "AGENT_BRIDGE_DEPLOY_TEST=1", "python3", DEPLOYER, "--release", "/missing-release", "--approval", "/missing-approval", "--validate-only"], {
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/test overrides are forbidden/i);
+  });
+
   it("runs the one-command fixture deployment without an external evidence file", () => {
     const fixture = makeRelease();
     const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-stage-"));
@@ -157,7 +167,13 @@ describe("single-input deployer contract", () => {
     expect(result.stdout).toContain(`deployed ${fixture.expectedCommit}`);
     expect(existsSync(join(fixture.root, "started"))).toBe(true);
     const artifactDir = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
-    expect(readFileSync(join(artifactDir, "deployment-result.json"), "utf8")).toContain(`"targetCommit":"${fixture.expectedCommit}"`);
+    expect(JSON.parse(readFileSync(join(artifactDir, "deployment-result.json"), "utf8"))).toEqual(expect.objectContaining({
+      status: "complete",
+      targetCommit: fixture.expectedCommit,
+      artifactSha256: release.releaseSha,
+      environment: "production-content-crawler",
+      approvalReference: "issue-183-simplified",
+    }));
   });
 
   it("exposes exactly the two operator inputs and rejects the old multi-file flags", () => {
