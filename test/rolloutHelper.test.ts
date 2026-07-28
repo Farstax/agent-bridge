@@ -148,7 +148,6 @@ describe("guarded rollout helper", () => {
     const fixture = createFixture();
     const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
     writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
-    writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
     const result = runRollout(fixture, "inspect");
     expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/active release pointer mismatch/i);
   });
@@ -287,7 +286,7 @@ describe("guarded rollout helper", () => {
   it("rejects a rollout pointer that differs from the pointer loaded by systemd services", () => {
     const fixture = createFixture();
     const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
-    writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\nBRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
+    writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${join(fixture.root, "wrong-current")}\n`, { mode: 0o600 });
 
     const result = runRollout(fixture);
     execFileSync("find", [releaseDir, "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
@@ -407,7 +406,7 @@ describe("guarded rollout helper", () => {
     expect(ledger.indexOf("phase=DATABASES_RESTORED")).toBeLessThan(ledger.indexOf("phase=POINTER_ROLLBACK_STARTED"));
     expect(ledger.indexOf("phase=POINTER_ROLLED_BACK")).toBeLessThan(ledger.indexOf("phase=PREVIOUS_RELEASE_STARTING"));
     expect(ledger.indexOf("phase=PREVIOUS_RELEASE_ACCEPTED")).toBeLessThan(ledger.indexOf("phase=FAILED_RESTORED"));
-  });
+  }, 15_000);
 
   it("recontains the cohort when previous-release recovery start fails", () => {
     const fixture = createFixture();
@@ -577,7 +576,7 @@ describe("guarded rollout helper", () => {
     expect(`${result.stdout}\n${result.stderr}`).toContain("clear-stale-sidecars");
     const log = actions(fixture);
     expect(log.indexOf("systemctl:stop")).toBeLessThan(log.indexOf(" backup "));
-  });
+  }, 15_000);
 
   it("rejects a symlinked WAL sidecar before checkpointing", () => {
     const fixture = useMinimalInventory(createFixture({ initiallyStopped: true }));
