@@ -71,6 +71,15 @@ jobs:
           cp -a prompts/worker "$root/prompts/"
           cp -a skills/. "$root/skills/"
           cp -a tsconfig.json SOUL.md "$root/"
+          cat > "$root/qualification-evidence.json" <<EOF
+          {
+            "commit": "${commit}",
+            "tree": "${tree}",
+            "workflow_run": "${GITHUB_RUN_ID}",
+            "workflow_head": "${builder_head}",
+            "checks": ["test", "typecheck", "architecture-lint", "compile", "manifest"]
+          }
+          EOF
           node scripts/releaseManifest.mjs \
             --root "$root" \
             --output "$root/manifest.json" \
