@@ -25,6 +25,7 @@ Interactive requests stream responses back to the chat. Background worker jobs r
 | `agent-bridge-worker-bot.service` | `src/index-worker.ts` | Telegram | Autonomous worker queue, GitHub issue/PR lifecycle, merge gate |
 | `agent-bridge-health.service` | `src/index-health.ts` | Telegram | Scheduled health reports and optional CLI suggestions |
 | `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord | Discord bot with switchable CLI routing |
+| `agent-bridge-tmp-cleanup.service` + `.timer` | `scripts/reap-tmp-artifacts.sh` | — | Daily sweep of leftover `/tmp` run artifacts and merged git worktrees (see [Temporary artifact cleanup](#temporary-artifact-cleanup)) |
 
 ## Features
 
@@ -582,12 +583,14 @@ sudo install -D -m 0644 systemd/agent-bridge-interactive.service /etc/systemd/sy
 sudo install -D -m 0644 systemd/agent-bridge-worker-bot.service /etc/systemd/system/agent-bridge-worker-bot.service
 sudo install -D -m 0644 systemd/agent-bridge-health.service /etc/systemd/system/agent-bridge-health.service
 sudo install -D -m 0644 systemd/agent-bridge-discord-interactive.service /etc/systemd/system/agent-bridge-discord-interactive.service
-sudo sed -i 's/User=BRIDGE_USER/User='"$USER"'/g' /etc/systemd/system/agent-bridge-*.service
+sudo install -D -m 0644 systemd/agent-bridge-tmp-cleanup.service /etc/systemd/system/agent-bridge-tmp-cleanup.service
+sudo install -D -m 0644 systemd/agent-bridge-tmp-cleanup.timer /etc/systemd/system/agent-bridge-tmp-cleanup.timer
+sudo sed -i 's/User=BRIDGE_USER/User='"$USER"'/g; s#BRIDGE_REPO_DIR#'"$(pwd)"'#g' /etc/systemd/system/agent-bridge-*.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now agent-bridge-antigravity agent-bridge-codex
+sudo systemctl enable --now agent-bridge-antigravity agent-bridge-codex agent-bridge-tmp-cleanup.timer
 ```
 
-The repo service templates intentionally use `User=BRIDGE_USER` as an install-time placeholder. If you copy units manually, replace that placeholder with the real runtime account before starting the service; otherwise systemd fails with `status=217/USER`.
+The repo service templates intentionally use `User=BRIDGE_USER` as an install-time placeholder. If you copy units manually, replace that placeholder with the real runtime account before starting the service; otherwise systemd fails with `status=217/USER`. `agent-bridge-tmp-cleanup.service` also has a `BRIDGE_REPO_DIR` placeholder, replaced with the path to this checkout.
 
 ### Safe remote restart helper
 
@@ -632,12 +635,49 @@ journalctl -u agent-bridge-claude -f
 journalctl -u agent-bridge-interactive -f
 journalctl -u agent-bridge-worker-bot -f
 journalctl -u agent-bridge-discord-interactive -f
+journalctl -u agent-bridge-tmp-cleanup -f
 ```
 
 To update an existing deployment (updates npm packages, Claude Code CLI, and restarts services):
 
 ```bash
 sudo bash scripts/upgrade.sh
+```
+
+### Temporary artifact cleanup
+
+Bot runs, uploads, and test suites all create disposable files and
+directories that a normal exit cleans up — but a crash, a hard timeout, a
+killed process, or an interrupted `npm test` skips that cleanup and leaves
+the artifact behind for good, since nothing else in the codebase ever
+revisits it. Left unchecked this accumulates into thousands of stale
+directories under `/tmp` and dozens of abandoned `git worktree` checkouts.
+
+`scripts/reap-tmp-artifacts.sh`, run daily by `agent-bridge-tmp-cleanup.timer`,
+reclaims these safely:
+
+- **Age-based sweep** of `/tmp/bridge-out/*`, `/tmp/bridge-uploads-*`,
+  `/tmp/antigravity-*.log`, and `/tmp/agent-bridge-advisor-*.sock` — anything
+  older than `REAP_MAX_AGE_HOURS` (default `24`). Safe because every name
+  embeds a UUID/PID/random suffix, so no in-flight run will ever look for an
+  old name again.
+- **`/tmp/agent-bridge-*` scratch fixtures** (left by `mkdtemp()` calls in the
+  test suite) are age-swept the same way, but only if the entry has no
+  `.git` — anything that looks like a real git worktree clone is left for
+  the worktree pass below instead.
+- **Git worktrees**, across the repos listed in `REAP_WORKTREE_REPOS`
+  (comma-separated; defaults to `$HOME/agent-bridge`), are only removed —
+  along with their local branch — when the branch is already merged into
+  the repo's default branch **and** `git status --porcelain` is empty.
+  Dirty, unmerged, and detached-HEAD worktrees are always left alone; those
+  may be in-progress work that only a human or the
+  `finishing-a-development-branch` skill should remove.
+
+Run it by hand any time:
+
+```bash
+bash scripts/reap-tmp-artifacts.sh --dry-run   # report only, deletes nothing
+bash scripts/reap-tmp-artifacts.sh             # actually reap
 ```
 
 ## Development
