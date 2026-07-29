@@ -22,6 +22,13 @@ payload hash/size/type/symlink, checks the embedded qualification metadata, and
 compares the result with the approval. It does not accept component-helper
 hashes, an external evidence file, a secondary bundle, or legacy identity flags.
 
+For a production run, the public command automatically continues inside a
+root-owned transient systemd service before it validates or stops any Agent
+Bridge unit. This keeps the deployment worker outside the seven service
+cgroups, so stopping the bridge that launched the command cannot terminate the
+rollout itself. Operators still invoke only `agent-bridge-deploy`; do not add a
+manual `systemd-run` wrapper or another deployment path.
+
 ## Installation
 
 Install the stable deployer and its private implementation primitives as
@@ -51,18 +58,19 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 
 ## Safety sequence
 
-1. Validate the archive and minimal approval before mutation.
-2. Stage into an immutable commit-addressed directory and verify the manifest.
-3. Validate effective systemd safety properties: exact units, fragment paths,
+1. Move the production worker into its dedicated transient systemd service.
+2. Validate the archive and minimal approval before mutation.
+3. Stage into an immutable commit-addressed directory and verify the manifest.
+4. Validate effective systemd safety properties: exact units, fragment paths,
    drop-ins, environment files, active states, process containment and cgroups.
-4. Acquire the exclusive rollout lock and capture durable preflight evidence.
-5. Prove containment before touching databases or the current pointer.
-6. Checkpoint WALs, verify integrity/foreign keys/schema/queue/claim/lock state,
+5. Acquire the exclusive rollout lock and capture durable preflight evidence.
+6. Prove containment before touching databases or the current pointer.
+7. Checkpoint WALs, verify integrity/foreign keys/schema/queue/claim/lock state,
    and create byte-exact verified backups.
-7. Migrate and validate the full database cohort.
-8. Atomically switch the `current` pointer, restart services, and run bounded
+8. Migrate and validate the full database cohort.
+9. Atomically switch the `current` pointer, restart services, and run bounded
    acceptance and stability checks.
-9. Write durable `deployment-result.json` and supporting evidence.
+10. Write durable `deployment-result.json` and supporting evidence.
 
 Automatic rollback is permitted only for a proven pre-start failure with
 verified containment and verified backups. Any ambiguity, possible post-start
