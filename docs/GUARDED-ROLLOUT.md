@@ -92,29 +92,41 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 3. Validate the archive and minimal approval before mutation.
 4. Stage into an immutable commit-addressed directory and verify the manifest.
 5. Validate effective systemd safety properties: exact units, fragment paths,
-   drop-ins, environment files, active states, process containment and cgroups.
+   drop-ins, environment files, active states and the fixed database inventory.
 6. Acquire the exclusive rollout lock and capture durable preflight evidence.
-7. Classify running lifecycle state: live-correlated bot runs and stale-unowned
-   runs are expected; only ambiguous process, run, acquisition, lock or claim
-   ownership blocks the rollout.
-8. Prove containment, then transactionally reconcile contained orphaned runs
-   and release only exact stale locks with durable audit events before touching
-   WALs, backups, migrations or the current pointer.
-9. Checkpoint WALs, verify integrity/foreign keys/schema/queue/claim/lock state,
-   and create byte-exact verified backups.
-10. Migrate and validate the full database cohort.
-11. Atomically switch the `current` pointer, restart services, and run bounded
-    acceptance and stability checks.
+7. Stop all seven services and prove `MainPID=0`, `ControlPID=0` and empty
+   service cgroups. No provider-CLI process classification is required after
+   containment.
+8. Only after containment, transactionally mark remaining running runs failed
+   with `interrupted_by_controlled_rollout`, release execution locks, and
+   return claimed pending messages to `queued` while preserving their content
+   and attachments. Append bounded audit evidence.
+9. Checkpoint WALs, verify integrity/foreign keys/schema, and create complete
+   byte-exact verified backups of all five databases. Never delete a non-empty
+   WAL.
+10. Migrate and validate the full offline database cohort.
+11. Atomically switch the `current` pointer, restart services, and verify
+    stable healthy startup.
 12. Write durable `deployment-result.json` and supporting evidence.
 
 Health and worker services perform the same bounded orphan reconciliation at
 startup as interactive services; they may log the result without notifying a
 user. Operators must never manually delete runs, locks, claims, WAL files or
 SHM files. Automatic rollback is permitted only for a proven pre-start failure with
-verified containment and verified backups. Any ambiguity, possible post-start
-write, containment failure, migration failure without a proven restore, or
-acceptance failure is fail-closed and requires manual review. Queues, claims,
-runs, events and locks are never deleted or silently replayed.
+verified containment and verified backups. If any failure occurs before new
+services start, the unchanged previous release is restarted directly, or the
+complete verified backup is restored before the previous pointer and release
+are restarted. If new services have been started, databases are never
+automatically restored: services are contained, the sentinel is retained and
+manual review is required. Queued and claimed Telegram messages are not a
+preflight blocker; contained claims are requeued without changing their
+content or attachments.
+
+Acceptance is intentionally narrow: the target pointer is active, all seven
+services are stable, all five databases pass integrity, foreign-key and
+expected-schema checks, startup has no errors or crash loop, complete result
+evidence exists, and the sentinel is removed. Historical before/after
+comparisons of runs, events, locks and delivery state are not rollout gates.
 
 ## Supersession
 
