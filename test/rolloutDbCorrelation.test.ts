@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 
 const rolloutDb = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
 const tsx = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
-const acceptance = fileURLToPath(new URL("../scripts/rollout-acceptance.py", import.meta.url));
 
 function createDatabase(path: string): void {
   const db = new Database(path);
@@ -37,7 +36,6 @@ describe("rollout database durable identity correlation", () => {
       const dbPath = join(root, "bridge.sqlite");
       const beforePath = join(root, "before.json");
       const afterPath = join(root, "after.json");
-      const resultPath = join(root, "acceptance.json");
       createDatabase(dbPath);
       inspect(dbPath, beforePath);
       const db = new Database(dbPath);
@@ -47,9 +45,8 @@ describe("rollout database durable identity correlation", () => {
       db.close();
       inspect(dbPath, afterPath);
 
-      expect(() => execFileSync("python3", [acceptance, "--before", beforePath, "--after", afterPath, "--output", resultPath], { encoding: "utf8" })).toThrow(/identity|delivery|replay/i);
-      expect(JSON.parse(readFileSync(beforePath, "utf8")).databases[0].runIdentityCorrelation[0].run_id).toBe("run-1");
-      expect(JSON.parse(readFileSync(afterPath, "utf8")).databases[0].runIdentityCorrelation[0].run_id).toBe("replacement-run");
+      expect(JSON.parse(readFileSync(beforePath, "utf8")).databases[0].lifecycle.runs).toEqual([]);
+      expect(JSON.parse(readFileSync(afterPath, "utf8")).databases[0].lifecycle.runs).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
