@@ -40,6 +40,8 @@ def compare(before: dict, after: dict, reconciliation_evidence: dict | None = No
         if any(row.get("classification") == "ambiguous" for row in before_lifecycle.get("runs", []) + before_lifecycle.get("locks", [])):
             fail(f"ambiguous preflight lifecycle ownership: {path}")
         direct_database = next((entry for entry in (reconciliation_evidence or {}).get("databases", []) if entry.get("path") == path), None)
+        if reconciliation_evidence is not None and direct_database is None:
+            fail(f"current rollout reconciliation evidence is missing database: {path}")
         direct_reconciliation = (direct_database or {}).get("lifecycle", {}).get("reconciliation", {})
         authorized_audits = {str(row.get("id")): row for row in direct_reconciliation.get("audits", [])}
         after_audits = {str(row.get("id")): row for row in after_lifecycle.get("reconciliation", {}).get("audits", [])}
