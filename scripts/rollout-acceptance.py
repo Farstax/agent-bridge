@@ -28,6 +28,7 @@ def compare(before: dict, after: dict, reconciliation_evidence: dict | None = No
     right = {entry.get("path"): entry for entry in after["databases"]}
     if set(left) != set(right) or None in left:
         fail("database inventory changed during bounded acceptance")
+    restart_boundary = after.get("restartBoundary")
     results = []
     for path in sorted(left):
         old, new = left[path], right[path]
@@ -81,7 +82,7 @@ def compare(before: dict, after: dict, reconciliation_evidence: dict | None = No
                 fail(f"terminal run identity changed: {path}: {run_id}")
         for run_id, new_run in new_runs.items():
             if run_id not in old_runs:
-                created = new.get("restartBoundary") or old.get("createdAt")
+                created = restart_boundary or old.get("createdAt")
                 if created and new_run.get("started_at", "") < created:
                     fail(f"pre-existing run appeared before restart boundary: {path}: {run_id}")
 
@@ -95,7 +96,7 @@ def compare(before: dict, after: dict, reconciliation_evidence: dict | None = No
         for event_id, event in new_events.items():
             if event_id not in old_events and event.get("run_id") in old_runs and event.get("run_id") not in reconciled_runs:
                 fail(f"unexplained event appended to pre-existing run: {path}: {event_id}")
-            if event_id not in old_events and event.get("run_id") not in old_runs and new.get("restartBoundary") and event.get("timestamp", "") < new["restartBoundary"]:
+            if event_id not in old_events and event.get("run_id") not in old_runs and restart_boundary and event.get("timestamp", "") < restart_boundary:
                 fail(f"post-restart event appeared before restart boundary: {path}: {event_id}")
         for run_id in set(new_runs) - set(old_runs):
             if not any(event.get("run_id") == run_id for event in new_events.values()):
