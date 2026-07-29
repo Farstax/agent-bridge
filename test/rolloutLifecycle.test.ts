@@ -129,7 +129,7 @@ describe("controlled rollout lifecycle reconciliation", () => {
 
   afterEach(() => db?.close());
 
-  it("fails the contained run, appends audit/events, and releases only its exact unclaimed lock", () => {
+  it("fails contained runs, releases locks, and requeues claimed messages without losing attachments", () => {
     const bridge = open();
     bridge.insertRun("contained-run", "chat-1", "codex");
     bridge.raw.prepare("UPDATE bridge_runs SET started_at = ? WHERE run_id = ?")
@@ -137,21 +137,36 @@ describe("controlled rollout lifecycle reconciliation", () => {
     const lane = bridge.acquireLock("telegram:interactive", "chat-1");
     expect(lane).not.toBeNull();
     bridge.raw.prepare("UPDATE execution_locks SET run_id = ?").run("contained-run");
+    bridge.enqueueMsg("telegram:interactive", "chat-1", {
+      prompt: "preserve this message",
+      chatId: 1,
+      chatType: "private",
+      attachments: ["photo:file-id"],
+    });
+    bridge.raw.prepare("UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?")
+      .run("contained-run", lane!.acquisitionId);
 
     const beforeRuns = bridge.raw.prepare("SELECT * FROM bridge_runs").all();
     const beforeEvents = bridge.raw.prepare("SELECT * FROM bridge_events").all();
     expect(bridge.reconcileControlledRollout({
       nowMs: NOW,
       reason: "interrupted_by_controlled_rollout",
-      processState: () => "absent",
-      containmentState: () => "proven",
     })).toMatchObject({ reconciledRunIds: ["contained-run"], releasedLockCount: 1 });
 
     expect(bridge.getRun("contained-run")).toMatchObject({ status: "failed", error: "interrupted_by_controlled_rollout" });
     expect(bridge.raw.prepare("SELECT * FROM execution_locks").all()).toEqual([]);
+    expect(bridge.raw.prepare("SELECT prompt, attachments_json, state, claim_run_id, claim_acquisition_id, claimed_at FROM pending_messages").all()).toEqual([{
+      prompt: "preserve this message",
+      attachments_json: '["photo:file-id"]',
+      state: "queued",
+      claim_run_id: null,
+      claim_acquisition_id: null,
+      claimed_at: null,
+    }]);
     expect(bridge.raw.prepare("SELECT kind, status, reason FROM reconciliation_audit").all()).toEqual([
       { kind: "run", status: "completed", reason: "interrupted_by_controlled_rollout" },
       { kind: "lock", status: "completed", reason: "interrupted_by_controlled_rollout" },
+      { kind: "claim", status: "completed", reason: "interrupted_by_controlled_rollout" },
     ]);
     expect(bridge.raw.prepare("SELECT type FROM bridge_events ORDER BY seq").all()).toEqual([
       { type: "reconciliation.started" },
@@ -165,7 +180,7 @@ describe("controlled rollout lifecycle reconciliation", () => {
       .toBe(beforeEvents.length + 3);
   });
 
-  it("fails closed and preserves claims, queues, runs, locks and events when claim ownership is unresolved", () => {
+  it("reconciles the production-shaped cohort after containment without process inspection", () => {
     const bridge = open();
     bridge.insertRun("claimed-run", "chat-1", "codex");
     const lane = bridge.acquireLock("telegram:interactive", "chat-1");
@@ -173,17 +188,14 @@ describe("controlled rollout lifecycle reconciliation", () => {
     bridge.enqueueMsg("telegram:interactive", "chat-1", { prompt: "preserve", chatId: 1, chatType: "private" });
     bridge.raw.prepare("UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?")
       .run("claimed-run", lane!.acquisitionId);
-    const before = bridge.raw.prepare("SELECT * FROM pending_messages").all();
-
-    expect(() => bridge.reconcileControlledRollout({
+    expect(bridge.reconcileControlledRollout({
       nowMs: NOW,
       reason: "interrupted_by_controlled_rollout",
-      processState: () => "absent",
-      containmentState: () => "proven",
-    })).toThrow(/claim|ambiguous/i);
-    expect(bridge.getRun("claimed-run").status).toBe("running");
-    expect(bridge.raw.prepare("SELECT * FROM pending_messages").all()).toEqual(before);
-    expect(bridge.raw.prepare("SELECT COUNT(*) AS count FROM execution_locks").get()).toEqual({ count: 1 });
-    expect(bridge.raw.prepare("SELECT COUNT(*) AS count FROM reconciliation_audit").get()).toEqual({ count: 0 });
+    })).toMatchObject({ reconciledRunIds: ["claimed-run"], releasedLockCount: 1, requeuedClaimCount: 1 });
+    expect(bridge.getRun("claimed-run").status).toBe("failed");
+    expect(bridge.raw.prepare("SELECT state, claim_run_id, claim_acquisition_id FROM pending_messages").all()).toEqual([{
+      state: "queued", claim_run_id: null, claim_acquisition_id: null,
+    }]);
+    expect(bridge.raw.prepare("SELECT COUNT(*) AS count FROM execution_locks").get()).toEqual({ count: 0 });
   });
 });

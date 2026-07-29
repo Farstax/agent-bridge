@@ -347,6 +347,42 @@ describe("guarded rollout helper", () => {
     expect(ledger.indexOf("phase=SERVICES_STARTING")).toBeLessThan(ledger.indexOf("phase=ACCEPTED"));
   }, 15_000);
 
+  it("backs up and migrates a schema-3 database before reconciliation creates its audit table", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const bridge = openDb(fixture.dbPaths[0], { serviceId: "telegram:interactive", runId: "schema-3-run" });
+    bridge.insertRun("schema-3-run", "chat-1", "codex");
+    const lane = bridge.acquireLock("telegram:interactive", "chat-1");
+    expect(lane).not.toBeNull();
+    bridge.raw.prepare("UPDATE execution_locks SET run_id = ?").run("schema-3-run");
+    bridge.enqueueMsg("telegram:interactive", "chat-1", {
+      prompt: "schema-3 claim",
+      chatId: 1,
+      chatType: "private",
+      attachments: ["document:file-id"],
+    });
+    bridge.raw.prepare("UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?")
+      .run("schema-3-run", lane!.acquisitionId);
+    bridge.raw.exec("DROP TABLE reconciliation_audit; PRAGMA user_version = 3;");
+    bridge.close();
+
+    const result = runRollout(fixture);
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(result.status, output).toBe(0);
+    const log = actions(fixture);
+    expect(log.indexOf(" stop ")).toBeLessThan(log.indexOf(" checkpoint "));
+    expect(log.indexOf(" checkpoint ")).toBeLessThan(log.indexOf(" backup "));
+    expect(log.indexOf(" backup ")).toBeLessThan(log.indexOf(" migrate "));
+    expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf(" reconcile "));
+    const verify = new Database(fixture.dbPaths[0], { readonly: true });
+    try {
+      expect(verify.pragma("user_version", { simple: true })).toBe(4);
+      expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'").get()).toEqual({ name: "reconciliation_audit" });
+      expect(verify.prepare("SELECT state, attachments_json FROM pending_messages").get()).toEqual({ state: "queued", attachments_json: '["document:file-id"]' });
+    } finally {
+      verify.close();
+    }
+  }, 20_000);
+
   it("completes a guarded rollout with a legitimate preflight run and lock", () => {
     const fixture = createFixture();
     const bridge = openDb(fixture.dbPaths[0], {
@@ -1240,7 +1276,7 @@ fi
     const output = `${stdout}\n${stderr}`;
 
     expect(status).not.toBe(0);
-    expect(output).toMatch(/STATE: STOPPED_UNCHANGED/);
+    expect(output).toMatch(/STATE: PRE_BACKUP_RECOVERY_INCOMPLETE/);
     expect(output).toMatch(/services remain stopped/);
     expect(existsSync(join(fixture.logDir, ".rollout-in-progress")), "interrupted rollout must retain its sentinel for review").toBe(true);
     expect(readFileSync(fixture.stateFile, "utf8")).toBe("");
@@ -1306,27 +1342,30 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", () => {
     expect(existsSync(sentinelPath(dirty)), "sentinel must be removed after a precondition failure — nothing was ever touched").toBe(false);
   });
 
-  it("retains the sentinel and reports STOPPED_UNCHANGED when the cohort backup does not complete, even though a partial backup artifact exists", () => {
+  it("restarts the unchanged previous release when the cohort backup does not complete", () => {
     const fixture = useMinimalInventory(createFixture());
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
     const before = fixture.dbPaths.map(sha256);
     const result = runRollout(fixture, "backup");
     const output = `${result.stdout}\n${result.stderr}`;
     expect(result.status).not.toBe(0);
-    expect(output).toMatch(/STATE: STOPPED_UNCHANGED/);
-    expect(output).not.toMatch(/RESTORE_INCOMPLETE|FAILED_RESTORED/);
+    expect(output).toMatch(/STATE: PRE_BACKUP_RECOVERED/);
+    expect(output).not.toMatch(/RESTORE_INCOMPLETE|FAILED_RESTORED|STOPPED_UNCHANGED/);
     expect(fixture.dbPaths.map(sha256)).toEqual(before);
-    expect(existsSync(sentinelPath(fixture)), "sentinel must be retained — services are down and assert_service_active would reject a bare retry").toBe(true);
+    expect(readlinkSync(currentPointer)).toBe(fixture.previousCommit);
+    expect(readFileSync(fixture.stateFile, "utf8").trim().split("\n")).toEqual([units[0]]);
+    expect(existsSync(sentinelPath(fixture)), "sentinel is removable only after previous-release recovery is proven healthy").toBe(false);
 
     // backup_completed=0 means backup_databases() did not finish and verify
     // the whole cohort — it does NOT mean nothing was ever written to disk.
     // The fake `cp` genuinely copies the source before the forced failure,
-    // so a real, unmanifested backup file exists here. STOPPED_UNCHANGED
-    // must not claim otherwise, and must warn it's unsafe to restore from.
+    // so a real, unmanifested backup file exists here. It must never be
+    // treated as a valid restore source.
     const backupSetDirs = readdirSync(fixture.backupDir);
     expect(backupSetDirs.length, "a partial backup set directory is expected even though the cohort backup did not complete").toBe(1);
     const partialBackupFile = join(fixture.backupDir, backupSetDirs[0], `01-${basename(fixture.dbPaths[0])}`);
     expect(existsSync(partialBackupFile), "a partial, unmanifested backup artifact must exist and must never be treated as a valid cohort backup").toBe(true);
-    expect(output).toMatch(/partial backup artifacts may exist.*must not be used for restore/i);
+    expect(output).toMatch(/partial backup artifacts.*not trusted/i);
   });
 
   it("retains the sentinel and reports RESTORE_INCOMPLETE when the automatic restore itself fails", () => {

@@ -7,15 +7,12 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { BridgeDb, openDb, openProductionDb } from "../src/db.js";
-import { getExecutionProcessState } from "../src/cliSupervisor.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "../src/db/roleAssignmentsMigration.js";
-import { claimMatchesRun, classifyLifecycleState, correlateLegacyProcess, type LifecycleProcess } from "../src/rolloutLifecycle.js";
 
 /** The five canonical database roles (policy doc §4) — structural validity only; the actual role/path allowlist lives in the root-owned bootstrap config, outside this script's scope. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "worker"]);
@@ -243,56 +240,7 @@ function digestRows(rows: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
-type ProcessIdentity = LifecycleProcess | { state: "legacy"; run_id: string; pids: number[] };
-
-function processIdentities(): Map<string, ProcessIdentity> {
-  let output: string;
-  try {
-    output = execFileSync("ps", ["eww", "-eo", "pid=,args="], { encoding: "utf8" });
-  } catch {
-    throw new Error("unable to inspect rollout process ownership");
-  }
-  const matches = new Map<string, ProcessIdentity>();
-  for (const line of output.split("\n")) {
-    const pid = Number(line.trim().match(/^([0-9]+)/)?.[1]);
-    const run = line.match(/(?:^|\s)AGENT_BRIDGE_RUN_ID=([^\s]+)/)?.[1];
-    if (!run || !Number.isInteger(pid)) continue;
-    const service = line.match(/(?:^|\s)AGENT_BRIDGE_SERVICE_ID=([^\s]+)/)?.[1];
-    const acquisition = line.match(/(?:^|\s)AGENT_BRIDGE_ACQUISITION_ID=([^\s]+)/)?.[1];
-    const identity: ProcessIdentity = service && acquisition
-      ? { state: "live", run_id: run, service_id: service, acquisition_id: acquisition }
-      : { state: "legacy", run_id: run, pids: [pid] };
-    const existing = matches.get(run);
-    if (!existing) matches.set(run, identity);
-    else if (existing.state === "legacy" && identity.state === "legacy") existing.pids.push(pid);
-    else if (existing.state === "live" && identity.state === "live"
-        && existing.service_id === identity.service_id && existing.acquisition_id === identity.acquisition_id) continue;
-    else matches.set(run, identity);
-  }
-  return matches;
-}
-
-function serviceIdentityForUnit(unit: string): string | null {
-  if (unit === "agent-bridge-discord-interactive.service") return "discord:interactive";
-  if (unit === "agent-bridge-health.service") return "telegram:health";
-  if (unit === "agent-bridge-interactive.service") return "telegram:interactive";
-  if (unit === "agent-bridge-worker-bot.service") return "telegram:worker";
-  if (/^agent-bridge-(?:codex|claude|antigravity)\.service$/.test(unit)) return "telegram:standalone";
-  return null;
-}
-
-function processInServiceCgroup(pids: number[], unit: string): boolean {
-  return pids.length > 0 && pids.every((pid) => {
-    try {
-      const cgroup = readFileSync(`/proc/${pid}/cgroup`, "utf8");
-      return cgroup.split("\n").some((line) => line.split(":", 3)[2]?.split("/").includes(unit));
-    } catch {
-      return false;
-    }
-  });
-}
-
-function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = [], enforceLifecycle = false): DbEvidence {
+function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = []): DbEvidence {
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
     const integrity = String(db.pragma("integrity_check", { simple: true }));
@@ -363,36 +311,8 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
     const deliveryIdentityCorrelation = tables.includes("bridge_events")
       ? db.prepare("SELECT id, run_id, seq, type, timestamp FROM bridge_events ORDER BY run_id, seq, id").all() as Array<Record<string, unknown>>
       : [];
-    const processes = processIdentities();
-    const lifecycleRuns = enforceLifecycle && tables.includes("bridge_runs")
-      ? (db.prepare("SELECT run_id FROM bridge_runs WHERE status = 'running' ORDER BY run_id").all() as Array<{ run_id: string }>).map((run) => {
-        const runLocks = lockRows.filter((lock) => (lock as { run_id: string }).run_id === run.run_id) as Array<{ surface: string; chat_key: string; run_id: string; service_id: string; acquisition_id: string; lease_expires_at: string }>;
-        const claimsForRun = queueRows.filter((row) => claimMatchesRun(run.run_id, runLocks, row));
-        const rawProcess = processes.get(run.run_id);
-        let process: LifecycleProcess;
-        if (!rawProcess) process = { state: "absent", run_id: run.run_id };
-        else if (rawProcess.state !== "legacy") process = rawProcess;
-        else {
-          const matchingUnits = resolvingUnits.filter((unit) => processInServiceCgroup(rawProcess.pids, unit));
-          const expectedServiceId = matchingUnits.length === 1 ? serviceIdentityForUnit(matchingUnits[0]) : null;
-          process = correlateLegacyProcess({
-            processRunId: rawProcess.run_id,
-            runId: run.run_id,
-            lock: runLocks.length === 1 ? runLocks[0] : null,
-            expectedServiceId: expectedServiceId ?? "",
-            processInServiceCgroup: matchingUnits.length === 1,
-          });
-        }
-        const classification = classifyLifecycleState({ nowMs: Date.now(), run, locks: runLocks, claims: claimsForRun, process });
-        if (classification === "ambiguous") throw new Error(`ambiguous lifecycle ownership for ${path}: ${run.run_id}`);
-        return { run_id: run.run_id, classification, process };
-      })
-      : [];
-    const lifecycleLocks = enforceLifecycle ? (lockRows as Array<Record<string, unknown>>).map((lock) => {
-      const run = lifecycleRuns.find((candidate) => candidate.run_id === lock.run_id);
-      if (!run) throw new Error(`ambiguous execution lock ownership for ${path}: ${String(lock.run_id)}`);
-      return { ...lock, classification: run.classification };
-    }) : [];
+    const lifecycleRuns: Array<Record<string, unknown>> = [];
+    const lifecycleLocks: Array<Record<string, unknown>> = [];
     const reconciliationAudits = tables.includes("reconciliation_audit")
       ? (db.prepare("SELECT id, kind, subject_id, reason, completed_at FROM reconciliation_audit WHERE status = 'completed' ORDER BY id").all() as Array<Record<string, unknown>>)
       : [];
@@ -1000,7 +920,7 @@ async function main(): Promise<void> {
   const options = parseArgs(argv);
   const unitsFor = (path: string) => options.resolvingUnits.get(path) ?? [];
   if (options.mode === "inspect") {
-    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path), true));
+    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path)));
     const legacyQueues = evidence.reduce((sum, database) => sum + database.legacyQueueCount, 0);
     if (legacyQueues !== 0) throw new Error(`legacy queue count is nonzero: ${legacyQueues}`);
     writeEvidence(options.evidencePath, options.mode, evidence);
@@ -1009,7 +929,7 @@ async function main(): Promise<void> {
   if (options.mode === "reconcile") {
     const results = [];
     for (const path of options.databases) {
-      const currentEvidence = inspectDatabase(path, false, unitsFor(path), true);
+      const currentEvidence = inspectDatabase(path, false, unitsFor(path));
       if (currentEvidence.schema !== "current") {
         results.push(currentEvidence);
         continue;
@@ -1021,13 +941,11 @@ async function main(): Promise<void> {
       try {
         db.reconcileControlledRollout({
           reason: options.reason!,
-          processState: (run) => getExecutionProcessState(run.run_id),
-          containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
         });
       } finally {
         db.close();
       }
-      const result = inspectDatabase(path, true, unitsFor(path), true);
+      const result = inspectDatabase(path, true, unitsFor(path));
       result.lifecycle.reconciliation.audits = result.lifecycle.reconciliation.audits.filter((audit) => !auditIdsBefore.has(String(audit.id)));
       result.lifecycle.reconciliation.runs = result.lifecycle.reconciliation.audits.filter((audit) => audit.kind === "run").map((audit) => String(audit.subject_id));
       result.lifecycle.reconciliation.locks = result.lifecycle.reconciliation.audits.filter((audit) => audit.kind === "lock").map((audit) => String(audit.subject_id));

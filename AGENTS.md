@@ -99,7 +99,7 @@ Stop and require manual review only when an approved invariant changes or the re
 
 - target commit, artifact, helper, config, host or environment identity differs from the qualification record;
 - production state has materially changed since preflight;
-- active processes, locks, claims, runs or queue ownership cannot be reconciled safely;
+- service containment cannot be proven, or the contained offline reconciliation cannot complete transactionally;
 - integrity, provenance, preservation, containment or rollback checks fail;
 - a failure occurs after services may have accepted writes;
 - rollback safety or final active state cannot be proven;

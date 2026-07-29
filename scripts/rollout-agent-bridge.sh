@@ -817,15 +817,18 @@ on_exit() {
           echo "STATE: RESTORE_INCOMPLETE — automatic restore failed or could not be fully verified for every database; manual restoration required; sentinel retained" >&2
         fi
       else
-        # Services are down and containment is fully proven, but
-        # backup_completed=0 only means backup_databases() did not finish
-        # and verify the whole cohort — it does NOT mean nothing was ever
-        # written to disk. A partial, unmanifested backup artifact may exist
-        # under backup_set from a database copy that started before the
-        # failure; it must never be treated as a valid cohort backup. The
-        # The source databases remain on the OLD schema; the offline WAL phase
-        # may already have incorporated committed pages into the main file.
-        echo "STATE: STOPPED_UNCHANGED — services stopped, source databases remain on the OLD schema (offline WAL checkpointing may have changed file layout but no migration ran), code still checked out at the NEW commit; no complete verified cohort backup exists — partial backup artifacts may exist under $backup_set and must not be used for restore; sentinel retained, see docs/GUARDED-ROLLOUT.md recovery flow" >&2
+        # No database migration has run. A checkpoint may have changed the
+        # SQLite file layout, but the release is still on the old schema and
+        # no complete backup is trusted. Recover directly to the previous
+        # release before any new service can start; partial backup artifacts
+        # are never used as a restore source.
+        if (( release_mode == 1 )) && restore_previous_release_and_start && record_phase PRE_BACKUP_RECOVERED; then
+          echo "STATE: PRE_BACKUP_RECOVERED — unchanged databases retained; previous release restored and healthy; partial backup artifacts under $backup_set are not trusted" >&2
+          sentinel_removable=1
+        else
+          status=1
+          echo "STATE: PRE_BACKUP_RECOVERY_INCOMPLETE — no complete verified cohort backup exists; previous release recovery failed; sentinel retained for manual review" >&2
+        fi
       fi
     fi
   fi
@@ -985,10 +988,6 @@ record_phase CONTAINED
 code_check
 run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
 hash_evidence_file "$artifact_dir/stopped-evidence.json"
-echo "reconciling contained lifecycle ownership"
-run_db_tool reconcile --reason interrupted_by_controlled_rollout --evidence - "${db_args[@]}" > "$artifact_dir/reconciliation-evidence.json"
-hash_evidence_file "$artifact_dir/reconciliation-evidence.json"
-record_phase LIFECYCLE_RECONCILED
 validate_sqlite_sidecars
 echo "draining SQLite WAL sidecars offline"
 run_db_tool checkpoint --evidence - "${db_args[@]}" > "$artifact_dir/checkpoint-evidence.json"
@@ -1005,11 +1004,15 @@ record_phase BACKED_UP
 echo "migrating databases using pre-staged commit $expected_commit"
 code_check
 run_db_tool migrate --evidence - "${db_args[@]}" > "$artifact_dir/migration-evidence.json"
+hash_evidence_file "$artifact_dir/migration-evidence.json"
+record_phase MIGRATED
+echo "reconciling contained lifecycle ownership after schema migration"
+run_db_tool reconcile --reason interrupted_by_controlled_rollout --evidence - "${db_args[@]}" > "$artifact_dir/reconciliation-evidence.json"
+hash_evidence_file "$artifact_dir/reconciliation-evidence.json"
+record_phase LIFECYCLE_RECONCILED
 echo "validating migrated databases"
 run_db_tool validate --evidence - "${db_args[@]}" > "$artifact_dir/validation-evidence.json"
-hash_evidence_file "$artifact_dir/migration-evidence.json"
 hash_evidence_file "$artifact_dir/validation-evidence.json"
-record_phase MIGRATED
 
 if (( release_mode == 1 )); then
   echo "activating immutable release commit=$expected_commit previous=$previous_pointer_target"
