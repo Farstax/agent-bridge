@@ -260,7 +260,7 @@ with tempfile.TemporaryDirectory() as directory:
     const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
-      command: ["/usr/sbin/runuser", "--user", "content-crawler", "--", "/usr/bin/sudo", "-n", "true"],
+      command: ["/usr/sbin/runuser", "--user", "content-crawler", "--", "/usr/bin/sudo", "-k", "-n", "true"],
       timeout: 5,
     });
   });
