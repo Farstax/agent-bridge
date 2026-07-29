@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { openDb, type BridgeDb } from "../src/db.js";
-import { classifyLifecycleState } from "../src/rolloutLifecycle.js";
+import { claimMatchesRun, classifyLifecycleState, correlateLegacyProcess } from "../src/rolloutLifecycle.js";
 
 const NOW = Date.parse("2026-07-29T12:00:00.000Z");
 
@@ -21,6 +21,24 @@ function lock(run_id: string, acquisition_id: string, lease_expires_at = "2026-0
 }
 
 describe("rollout lifecycle classification", () => {
+  it("accepts the legacy run marker only with exact lock, service, and cgroup correlation", () => {
+    expect(correlateLegacyProcess({
+      processRunId: "bot-run", runId: "bot-run", lock: lock("bot-run", "acq-1"),
+      expectedServiceId: "telegram:interactive", processInServiceCgroup: true,
+    })).toMatchObject({ state: "live", acquisition_id: "acq-1" });
+    expect(correlateLegacyProcess({
+      processRunId: "bot-run", runId: "bot-run", lock: lock("bot-run", "acq-1"),
+      expectedServiceId: "telegram:interactive", processInServiceCgroup: false,
+    }).state).toBe("ambiguous");
+  });
+
+  it("matches claims only by exact run, acquisition, or owned lane", () => {
+    const owned = [lock("run-1", "acq-1")];
+    expect(claimMatchesRun("run-1", owned, { state: "claimed", run_id: "run-1" })).toBe(true);
+    expect(claimMatchesRun("run-1", owned, { state: "claimed", acquisition_id: "acq-1" })).toBe(true);
+    expect(claimMatchesRun("run-1", owned, { state: "claimed", run_id: "other-run", acquisition_id: "other-acq", surface: "other", chat_key: "other" })).toBe(false);
+    expect(claimMatchesRun("run-1", owned, { state: "pending", acquisition_id: null })).toBe(false);
+  });
   it("classifies the interactive deployment-originating run as live-correlated", () => {
     expect(classifyLifecycleState({
       nowMs: NOW,
