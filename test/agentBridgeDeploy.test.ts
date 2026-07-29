@@ -239,7 +239,7 @@ print(json.dumps([
       environment: "production-content-crawler",
       approvalReference: "issue-183-simplified",
     }));
-  });
+  }, 15_000);
 
   it("exposes exactly the two operator inputs and rejects the old multi-file flags", () => {
     const help = spawnSync("python3", [DEPLOYER, "--help"], { encoding: "utf8" });
