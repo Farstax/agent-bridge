@@ -347,6 +347,42 @@ describe("guarded rollout helper", () => {
     expect(ledger.indexOf("phase=SERVICES_STARTING")).toBeLessThan(ledger.indexOf("phase=ACCEPTED"));
   }, 15_000);
 
+  it("backs up and migrates a schema-3 database before reconciliation creates its audit table", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const bridge = openDb(fixture.dbPaths[0], { serviceId: "telegram:interactive", runId: "schema-3-run" });
+    bridge.insertRun("schema-3-run", "chat-1", "codex");
+    const lane = bridge.acquireLock("telegram:interactive", "chat-1");
+    expect(lane).not.toBeNull();
+    bridge.raw.prepare("UPDATE execution_locks SET run_id = ?").run("schema-3-run");
+    bridge.enqueueMsg("telegram:interactive", "chat-1", {
+      prompt: "schema-3 claim",
+      chatId: 1,
+      chatType: "private",
+      attachments: ["document:file-id"],
+    });
+    bridge.raw.prepare("UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?")
+      .run("schema-3-run", lane!.acquisitionId);
+    bridge.raw.exec("DROP TABLE reconciliation_audit; PRAGMA user_version = 3;");
+    bridge.close();
+
+    const result = runRollout(fixture);
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(result.status, output).toBe(0);
+    const log = actions(fixture);
+    expect(log.indexOf(" stop ")).toBeLessThan(log.indexOf(" checkpoint "));
+    expect(log.indexOf(" checkpoint ")).toBeLessThan(log.indexOf(" backup "));
+    expect(log.indexOf(" backup ")).toBeLessThan(log.indexOf(" migrate "));
+    expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf(" reconcile "));
+    const verify = new Database(fixture.dbPaths[0], { readonly: true });
+    try {
+      expect(verify.pragma("user_version", { simple: true })).toBe(4);
+      expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'").get()).toEqual({ name: "reconciliation_audit" });
+      expect(verify.prepare("SELECT state, attachments_json FROM pending_messages").get()).toEqual({ state: "queued", attachments_json: '["document:file-id"]' });
+    } finally {
+      verify.close();
+    }
+  }, 20_000);
+
   it("completes a guarded rollout with a legitimate preflight run and lock", () => {
     const fixture = createFixture();
     const bridge = openDb(fixture.dbPaths[0], {
