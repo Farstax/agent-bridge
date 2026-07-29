@@ -19,9 +19,13 @@ from pathlib import Path
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
+USERNAME = re.compile(r"^[a-z_][a-z0-9_-]*[$]?$")
 DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
 DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
+RUNUSER = "/usr/sbin/runuser"
+SUDO = "/usr/bin/sudo"
+SUDO_CHECK_TIMEOUT_SECONDS = 5
 
 
 def staging_module(helper: Path):
@@ -120,6 +124,28 @@ def configured_value(config: Path, name: str) -> str:
     fail(f"private rollout configuration is missing {name}")
 
 
+def verify_runtime_sudo(config: Path) -> None:
+    runtime_user = configured_value(config, "runtime_user")
+    if not USERNAME.fullmatch(runtime_user):
+        fail("invalid runtime user in private rollout configuration")
+    try:
+        result = subprocess.run(
+            [RUNUSER, "--user", runtime_user, "--", SUDO, "-n", "true"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=SUDO_CHECK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail("passwordless sudo verification timed out for the runtime account")
+    except OSError as error:
+        fail(f"passwordless sudo verification could not run: {error}")
+    if result.returncode != 0:
+        diagnostic = (result.stderr or "").strip()
+        suffix = f": {diagnostic}" if diagnostic else ""
+        fail(f"passwordless sudo check failed for the runtime account{suffix}")
+
+
 def validate_private_file(path: Path, executable: bool) -> None:
     if path.is_symlink() or not path.is_file():
         fail(f"private deployer file is unavailable: {path}")
@@ -205,6 +231,7 @@ def run_deployment(archive: Path, approval: Path) -> str:
             Path("/usr/local/libexec/agent-bridge-rollout-acceptance.py"),
         ):
             validate_private_helper(private_file)
+        verify_runtime_sudo(config)
     fixed_environment = configured_value(config, "environment") if config else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT")
     commit, archive_sha256, approval_document = validate_archive(archive, approval, datetime.now(timezone.utc), production, fixed_environment, stage_helper)
     if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") == "1":

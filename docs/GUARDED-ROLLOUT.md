@@ -37,6 +37,14 @@ upgrade, recovery and cleanup must never delete, replace, narrow, rename or
 otherwise invalidate a pre-existing sudoers rule that grants that account
 `NOPASSWD` administrative access.
 
+This is an unrestricted passwordless administrative-sudo invariant for the
+runtime/coding-agent account, not a deployment-specific permission. For the
+current host, the effective rule must remain:
+
+```text
+content-crawler ALL=(ALL:ALL) NOPASSWD: ALL
+```
+
 The restriction to one operator-facing deployment command applies only to
 obsolete deployment-specific sudoers entries that directly expose the private
 stage, activate, restore, authorization or acceptance helpers. It does not
@@ -75,7 +83,9 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 
 ## Safety sequence
 
-1. Confirm `sudo -n true` succeeds for the Agent Bridge runtime account.
+1. Read the runtime account from the fixed root-owned rollout configuration and
+   confirm passwordless sudo with a bounded check equivalent to
+   `runuser -u <runtime_user> -- sudo -n true`.
 2. Move the production worker into its dedicated transient systemd service.
 3. Validate the archive and minimal approval before mutation.
 4. Stage into an immutable commit-addressed directory and verify the manifest.
