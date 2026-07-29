@@ -988,10 +988,6 @@ record_phase CONTAINED
 code_check
 run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
 hash_evidence_file "$artifact_dir/stopped-evidence.json"
-echo "reconciling contained lifecycle ownership"
-run_db_tool reconcile --reason interrupted_by_controlled_rollout --evidence - "${db_args[@]}" > "$artifact_dir/reconciliation-evidence.json"
-hash_evidence_file "$artifact_dir/reconciliation-evidence.json"
-record_phase LIFECYCLE_RECONCILED
 validate_sqlite_sidecars
 echo "draining SQLite WAL sidecars offline"
 run_db_tool checkpoint --evidence - "${db_args[@]}" > "$artifact_dir/checkpoint-evidence.json"
@@ -1008,11 +1004,15 @@ record_phase BACKED_UP
 echo "migrating databases using pre-staged commit $expected_commit"
 code_check
 run_db_tool migrate --evidence - "${db_args[@]}" > "$artifact_dir/migration-evidence.json"
+hash_evidence_file "$artifact_dir/migration-evidence.json"
+record_phase MIGRATED
+echo "reconciling contained lifecycle ownership after schema migration"
+run_db_tool reconcile --reason interrupted_by_controlled_rollout --evidence - "${db_args[@]}" > "$artifact_dir/reconciliation-evidence.json"
+hash_evidence_file "$artifact_dir/reconciliation-evidence.json"
+record_phase LIFECYCLE_RECONCILED
 echo "validating migrated databases"
 run_db_tool validate --evidence - "${db_args[@]}" > "$artifact_dir/validation-evidence.json"
-hash_evidence_file "$artifact_dir/migration-evidence.json"
 hash_evidence_file "$artifact_dir/validation-evidence.json"
-record_phase MIGRATED
 
 if (( release_mode == 1 )); then
   echo "activating immutable release commit=$expected_commit previous=$previous_pointer_target"
