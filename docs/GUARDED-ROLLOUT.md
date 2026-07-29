@@ -29,6 +29,23 @@ cgroups, so stopping the bridge that launched the command cannot terminate the
 rollout itself. Operators still invoke only `agent-bridge-deploy`; do not add a
 manual `systemd-run` wrapper or another deployment path.
 
+## Privileged agent access
+
+The Agent Bridge runtime account's existing passwordless sudo access is an
+infrastructure requirement and must be preserved. Deployment installation,
+upgrade, recovery and cleanup must never delete, replace, narrow, rename or
+otherwise invalidate a pre-existing sudoers rule that grants that account
+`NOPASSWD` administrative access.
+
+The restriction to one operator-facing deployment command applies only to
+obsolete deployment-specific sudoers entries that directly expose the private
+stage, activate, restore, authorization or acceptance helpers. It does not
+restrict the agent's broader server-administration authority. Before changing
+any sudoers file, identify the exact file and effective rule with `sudo -l`,
+back it up, validate the proposed result with `visudo -cf`, and prove that
+`sudo -n true` still succeeds for the Agent Bridge runtime account. Failure of
+that postcondition aborts the installation before any service or rollout action.
+
 ## Installation
 
 Install the stable deployer and its private implementation primitives as
@@ -46,10 +63,10 @@ sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local
 
 Install `/etc/agent-bridge/rollout.conf` root-owned and non-writable by
 group/other. The private primitives are deployed at these fixed paths and are
-not granted sudoers access or treated as operator commands; remove any older
-sudoers entries that exposed stage, activate, restore, authorization or
-acceptance directly. Only `agent-bridge-deploy` is granted the production
-sudoers entry.
+not treated as separate operator commands. Remove only deployment-specific
+sudoers entries that directly expose those private helpers, and only after
+confirming that the independent passwordless administrative sudo rule for the
+Agent Bridge runtime account remains present and effective.
 
 The private helpers are not normal operator commands. Their paths, service
 inventory and database inventory remain root-owned and fixed in configuration.
@@ -58,19 +75,20 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 
 ## Safety sequence
 
-1. Move the production worker into its dedicated transient systemd service.
-2. Validate the archive and minimal approval before mutation.
-3. Stage into an immutable commit-addressed directory and verify the manifest.
-4. Validate effective systemd safety properties: exact units, fragment paths,
+1. Confirm `sudo -n true` succeeds for the Agent Bridge runtime account.
+2. Move the production worker into its dedicated transient systemd service.
+3. Validate the archive and minimal approval before mutation.
+4. Stage into an immutable commit-addressed directory and verify the manifest.
+5. Validate effective systemd safety properties: exact units, fragment paths,
    drop-ins, environment files, active states, process containment and cgroups.
-5. Acquire the exclusive rollout lock and capture durable preflight evidence.
-6. Prove containment before touching databases or the current pointer.
-7. Checkpoint WALs, verify integrity/foreign keys/schema/queue/claim/lock state,
+6. Acquire the exclusive rollout lock and capture durable preflight evidence.
+7. Prove containment before touching databases or the current pointer.
+8. Checkpoint WALs, verify integrity/foreign keys/schema/queue/claim/lock state,
    and create byte-exact verified backups.
-8. Migrate and validate the full database cohort.
-9. Atomically switch the `current` pointer, restart services, and run bounded
-   acceptance and stability checks.
-10. Write durable `deployment-result.json` and supporting evidence.
+9. Migrate and validate the full database cohort.
+10. Atomically switch the `current` pointer, restart services, and run bounded
+    acceptance and stability checks.
+11. Write durable `deployment-result.json` and supporting evidence.
 
 Automatic rollback is permitted only for a proven pre-start failure with
 verified containment and verified backups. Any ambiguity, possible post-start
