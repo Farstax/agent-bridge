@@ -102,19 +102,22 @@ describe("rollout acceptance evidence", () => {
   });
 
   it("rejects a new run created before the recorded restart boundary", () => {
+    const after = evidence() as {
+      restartBoundary?: string;
+      databases: Array<Record<string, unknown>>;
+    };
+    after.restartBoundary = "2026-07-29T12:00:00.000Z";
+    after.databases[0].runIdentityCorrelation = [
+      { run_id: "run-1", status: "running", started_at: "2026-07-26T12:00:00Z" },
+      { run_id: "replayed", status: "done", started_at: "2026-07-29T11:59:59.000Z" },
+    ];
+    after.databases[0].deliveryIdentityCorrelation = [
+      { id: "run-1:1", run_id: "run-1", seq: 1, type: "run.started" },
+      { id: "replayed:1", run_id: "replayed", seq: 1, type: "run.started" },
+    ];
     expect(() => run(
       evidence(),
-      evidence({
-        restartBoundary: "2026-07-29T12:00:00.000Z",
-        runIdentityCorrelation: [
-          { run_id: "run-1", status: "running", started_at: "2026-07-26T12:00:00Z" },
-          { run_id: "replayed", status: "done", started_at: "2026-07-29T11:59:59.000Z" },
-        ],
-        deliveryIdentityCorrelation: [
-          { id: "run-1:1", run_id: "run-1", seq: 1, type: "run.started" },
-          { id: "replayed:1", run_id: "replayed", seq: 1, type: "run.started" },
-        ],
-      }),
+      after,
     )).toThrow(/restart boundary|pre-existing run/i);
   });
 
