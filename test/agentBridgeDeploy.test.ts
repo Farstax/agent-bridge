@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { afterEach } from "vitest";
@@ -126,6 +126,65 @@ describe("single-input deployer contract", () => {
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/test overrides are forbidden/i);
   });
 
+  it("moves root production work into a transient systemd service before validation", () => {
+    const probe = String.raw`
+import contextlib
+import importlib.util
+import io
+import json
+import sys
+import types
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.os.geteuid = lambda: 0
+calls = []
+def fake_run(command, check=False):
+    calls.append(command)
+    return types.SimpleNamespace(returncode=0)
+module.subprocess.run = fake_run
+sys.argv = ["agent-bridge-deploy", "--release", "relative-release.tar.gz", "--approval", "relative-approval.json"]
+with contextlib.redirect_stdout(io.StringIO()):
+    status = module.main()
+print(json.dumps({"status": status, "command": calls[0]}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const observed = JSON.parse(result.stdout);
+    expect(observed.status).toBe(0);
+    expect(observed.command[0]).toBe("/usr/bin/systemd-run");
+    expect(observed.command).toEqual(expect.arrayContaining([
+      "--system",
+      "--collect",
+      "--wait",
+      "--quiet",
+      "--service-type=exec",
+      "--property=KillMode=control-group",
+      "--internal-worker",
+    ]));
+    expect(observed.command[observed.command.indexOf("--release") + 1]).toBe(resolve("relative-release.tar.gz"));
+    expect(observed.command[observed.command.indexOf("--approval") + 1]).toBe(resolve("relative-approval.json"));
+  });
+
+  it("accepts the internal worker only in its assigned transient service cgroup", () => {
+    const probe = String.raw`
+import importlib.util
+import json
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+unit = "agent-bridge-deploy-42.service"
+print(json.dumps([
+    module.current_cgroup_has_unit(unit, "0::/system.slice/agent-bridge-deploy-42.service\n"),
+    module.current_cgroup_has_unit(unit, "0::/system.slice/agent-bridge-interactive.service\n"),
+    module.current_cgroup_has_unit("other.service", "0::/system.slice/other.service\n"),
+]))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([true, false, false]);
+  });
+
   it("uses the validated staging helper for the production staging invocation", () => {
     const source = readFileSync(DEPLOYER, "utf8");
     expect(source).toContain('"/usr/bin/python3", str(stage_helper)');
@@ -189,5 +248,6 @@ describe("single-input deployer contract", () => {
     expect(help.stdout).toContain("--approval");
     expect(help.stdout).not.toContain("--evidence-file");
     expect(help.stdout).not.toContain("--artifact-sha256");
+    expect(help.stdout).not.toContain("--internal-worker");
   });
 });
