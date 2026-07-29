@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { afterEach } from "vitest";
@@ -126,6 +126,195 @@ describe("single-input deployer contract", () => {
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/test overrides are forbidden/i);
   });
 
+  it("moves root production work into a transient systemd service before validation", () => {
+    const probe = String.raw`
+import contextlib
+import importlib.util
+import io
+import json
+import sys
+import types
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.os.geteuid = lambda: 0
+calls = []
+def fake_run(command, check=False):
+    calls.append(command)
+    return types.SimpleNamespace(returncode=0)
+module.subprocess.run = fake_run
+sys.argv = ["agent-bridge-deploy", "--release", "relative-release.tar.gz", "--approval", "relative-approval.json"]
+with contextlib.redirect_stdout(io.StringIO()):
+    status = module.main()
+print(json.dumps({"status": status, "command": calls[0]}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const observed = JSON.parse(result.stdout);
+    expect(observed.status).toBe(0);
+    expect(observed.command[0]).toBe("/usr/bin/systemd-run");
+    expect(observed.command).toEqual(expect.arrayContaining([
+      "--system",
+      "--collect",
+      "--wait",
+      "--quiet",
+      "--service-type=exec",
+      "--property=KillMode=control-group",
+      "--internal-worker",
+    ]));
+    expect(observed.command[observed.command.indexOf("--release") + 1]).toBe(resolve("relative-release.tar.gz"));
+    expect(observed.command[observed.command.indexOf("--approval") + 1]).toBe(resolve("relative-approval.json"));
+  });
+
+  it("accepts the internal worker only in its assigned transient service cgroup", () => {
+    const probe = String.raw`
+import importlib.util
+import json
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+unit = "agent-bridge-deploy-42.service"
+print(json.dumps([
+    module.current_cgroup_has_unit(unit, "0::/system.slice/agent-bridge-deploy-42.service\n"),
+    module.current_cgroup_has_unit(unit, "0::/system.slice/agent-bridge-interactive.service\n"),
+    module.current_cgroup_has_unit("other.service", "0::/system.slice/other.service\n"),
+]))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([true, false, false]);
+  });
+
+  it("fails the configured runtime account sudo gate closed", () => {
+    const probe = String.raw`
+import importlib.util
+from pathlib import Path
+import tempfile
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as directory:
+    config = Path(directory) / "rollout.conf"
+    config.write_text("runtime_user=content-crawler\n", encoding="utf-8")
+    module.subprocess.run = lambda *args, **kwargs: type("Result", (), {"returncode": 1, "stderr": "sudo: a password is required"})()
+    try:
+        module.verify_runtime_sudo(config)
+    except RuntimeError as error:
+        print(error)
+    else:
+        raise AssertionError("sudo gate unexpectedly passed")
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/passwordless sudo check failed/i);
+  });
+
+  it("fails the configured runtime account sudo gate closed on timeout", () => {
+    const probe = String.raw`
+import importlib.util
+from pathlib import Path
+import subprocess
+import tempfile
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as directory:
+    config = Path(directory) / "rollout.conf"
+    config.write_text("runtime_user=content-crawler\n", encoding="utf-8")
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+    module.subprocess.run = timeout
+    try:
+        module.verify_runtime_sudo(config)
+    except RuntimeError as error:
+        print(error)
+    else:
+        raise AssertionError("sudo gate unexpectedly passed")
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/timed out/i);
+  });
+
+  it("checks passwordless sudo as the configured runtime user", () => {
+    const probe = String.raw`
+import importlib.util
+import json
+from pathlib import Path
+import tempfile
+import types
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as directory:
+    config = Path(directory) / "rollout.conf"
+    config.write_text("runtime_user=content-crawler\n", encoding="utf-8")
+    calls = []
+    def success(command, **kwargs):
+        calls.append((command, kwargs))
+        return types.SimpleNamespace(returncode=0, stderr="")
+    module.subprocess.run = success
+    module.verify_runtime_sudo(config)
+    print(json.dumps({"command": calls[0][0], "timeout": calls[0][1]["timeout"]}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      command: ["/usr/sbin/runuser", "--user", "content-crawler", "--", "/usr/bin/sudo", "-k", "-n", "true"],
+      timeout: 5,
+    });
+  });
+
+  it("rejects unsafe configured runtime usernames before invoking sudo", () => {
+    const probe = String.raw`
+import importlib.util
+from pathlib import Path
+import tempfile
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as directory:
+    config = Path(directory) / "rollout.conf"
+    config.write_text("runtime_user=content-crawler;id\n", encoding="utf-8")
+    module.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sudo invoked"))
+    try:
+        module.verify_runtime_sudo(config)
+    except RuntimeError as error:
+        print(error)
+    else:
+        raise AssertionError("unsafe username unexpectedly passed")
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/invalid runtime user/i);
+  });
+
+  it("stops production before archive staging when the sudo gate fails", () => {
+    const probe = String.raw`
+import importlib.util
+from pathlib import Path
+import tempfile
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.os.geteuid = lambda: 0
+module.validate_private_file = lambda *args: None
+module.validate_private_helper = lambda *args: None
+module.configured_value = lambda config, name: "production-content-crawler" if name == "environment" else "/tmp/release-root"
+module.verify_runtime_sudo = lambda config: (_ for _ in ()).throw(RuntimeError("passwordless sudo check failed"))
+module.validate_archive = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("archive staging reached"))
+try:
+    module.run_deployment(Path("release.tar.gz"), Path("approval.json"))
+except RuntimeError as error:
+    print(error)
+else:
+    raise AssertionError("deployment unexpectedly passed")
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toMatch(/passwordless sudo check failed/i);
+  });
+
   it("uses the validated staging helper for the production staging invocation", () => {
     const source = readFileSync(DEPLOYER, "utf8");
     expect(source).toContain('"/usr/bin/python3", str(stage_helper)');
@@ -180,7 +369,7 @@ describe("single-input deployer contract", () => {
       environment: "production-content-crawler",
       approvalReference: "issue-183-simplified",
     }));
-  });
+  }, 15_000);
 
   it("exposes exactly the two operator inputs and rejects the old multi-file flags", () => {
     const help = spawnSync("python3", [DEPLOYER, "--help"], { encoding: "utf8" });
@@ -189,5 +378,6 @@ describe("single-input deployer contract", () => {
     expect(help.stdout).toContain("--approval");
     expect(help.stdout).not.toContain("--evidence-file");
     expect(help.stdout).not.toContain("--artifact-sha256");
+    expect(help.stdout).not.toContain("--internal-worker");
   });
 });

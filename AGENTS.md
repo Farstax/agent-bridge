@@ -375,6 +375,23 @@ User guide: `docs/WORKER-GUIDE.md`. Phase 9 plan:
 
 # Deployment contract
 
+The Agent Bridge runtime/coding-agent account retains unrestricted passwordless
+administrative sudo. This is a production invariant: deployment installation,
+upgrade, recovery and cleanup must never replace, narrow, disable, remove or
+otherwise invalidate that broader sudo rule. Deployment-specific helper entries
+may be removed only when redundant; doing so must not alter unrelated sudoers
+files or the account's broader access. For the current host, the effective rule
+must remain:
+
+```text
+content-crawler ALL=(ALL:ALL) NOPASSWD: ALL
+```
+
+Before any sudoers change, identify the effective rule with `sudo -l`, back up
+the affected file, validate the proposed result with `visudo -cf`, and prove
+`sudo -k -n true` still succeeds for the runtime account, ensuring the probe
+does not rely on a cached credential.
+
 The sole normal production deployment command is:
 
 ```bash
