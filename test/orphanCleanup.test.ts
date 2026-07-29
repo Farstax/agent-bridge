@@ -14,6 +14,8 @@ describe("startup orphan reconciliation", () => {
       "src/index.ts",
       "src/index-interactive.ts",
       "src/index-discord-interactive.ts",
+      "src/index-health.ts",
+      "src/index-worker.ts",
     ];
 
     for (const entrypoint of entrypoints) {
