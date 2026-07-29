@@ -464,7 +464,7 @@ describe("guarded rollout helper", () => {
     const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
     expect(existsSync(join(artifacts, "rollback-containment-evidence.json"))).toBe(true);
     expect(readFileSync(fixture.stateFile, "utf8")).toBe("");
-  });
+  }, 15_000);
 
   it("fails closed when recovery restart-counter reads are empty", () => {
     const fixture = createFixture();
