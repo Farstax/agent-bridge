@@ -51,8 +51,9 @@ stage, activate, restore, authorization or acceptance helpers. It does not
 restrict the agent's broader server-administration authority. Before changing
 any sudoers file, identify the exact file and effective rule with `sudo -l`,
 back it up, validate the proposed result with `visudo -cf`, and prove that
-`sudo -n true` still succeeds for the Agent Bridge runtime account. Failure of
-that postcondition aborts the installation before any service or rollout action.
+`sudo -k -n true` still succeeds for the Agent Bridge runtime account, ensuring
+the probe does not rely on a cached credential. Failure of that postcondition
+aborts the installation before any service or rollout action.
 
 ## Installation
 
@@ -85,7 +86,8 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 
 1. Read the runtime account from the fixed root-owned rollout configuration and
    confirm passwordless sudo with a bounded check equivalent to
-   `runuser -u <runtime_user> -- sudo -n true`.
+   `runuser -u <runtime_user> -- sudo -k -n true` (the `-k` forces the check to
+   ignore any cached credential).
 2. Move the production worker into its dedicated transient systemd service.
 3. Validate the archive and minimal approval before mutation.
 4. Stage into an immutable commit-addressed directory and verify the manifest.

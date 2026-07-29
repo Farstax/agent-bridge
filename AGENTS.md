@@ -389,7 +389,8 @@ content-crawler ALL=(ALL:ALL) NOPASSWD: ALL
 
 Before any sudoers change, identify the effective rule with `sudo -l`, back up
 the affected file, validate the proposed result with `visudo -cf`, and prove
-`sudo -n true` still succeeds for the runtime account.
+`sudo -k -n true` still succeeds for the runtime account, ensuring the probe
+does not rely on a cached credential.
 
 The sole normal production deployment command is:
 

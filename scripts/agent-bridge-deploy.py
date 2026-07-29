@@ -130,7 +130,7 @@ def verify_runtime_sudo(config: Path) -> None:
         fail("invalid runtime user in private rollout configuration")
     try:
         result = subprocess.run(
-            [RUNUSER, "--user", runtime_user, "--", SUDO, "-n", "true"],
+            [RUNUSER, "--user", runtime_user, "--", SUDO, "-k", "-n", "true"],
             check=False,
             capture_output=True,
             text=True,
