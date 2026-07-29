@@ -59,6 +59,7 @@ import { parseAdvisorConfig } from "./advisorConfig.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { AdvisorService } from "./advisorService.js";
 import { logCompatibilityDiagnostics } from "./compatibilityDiagnostics.js";
+import { getExecutionProcessState } from "./cliSupervisor.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.worker",
@@ -104,6 +105,12 @@ const db = openProductionDb(dbPath, {
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "worker",
+});
+await db.reconcileOrphanedRuns({
+  minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 60_000),
+  processState: (run) => getExecutionProcessState(run.run_id),
+  containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
+  onReconciled: (run) => console.warn(`[worker-bot] reconciled orphaned run ${run.run_id}`),
 });
 const roleAssignmentRevision = roleAssignmentConfig
   ? db.createRoleAssignmentRevision(roleAssignmentConfig)

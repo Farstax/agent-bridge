@@ -21,6 +21,7 @@ import { openProductionDb } from "./db.js";
 import { BridgeEngine } from "./engine.js";
 import { sendTelegramMessage } from "./messageDelivery.js";
 import { shutdownCliProcesses } from "./cliSupervisor.js";
+import { getExecutionProcessState } from "./cliSupervisor.js";
 import { autoUpdateClis } from "./health/autoRemediate.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
@@ -83,6 +84,12 @@ const bridgeDb = openProductionDb(dbPath, {
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "health",
+});
+await bridgeDb.reconcileOrphanedRuns({
+  minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 60_000),
+  processState: (run) => getExecutionProcessState(run.run_id),
+  containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
+  onReconciled: (run) => console.warn(`[health-bot] reconciled orphaned run ${run.run_id}`),
 });
 const rawDb = bridgeDb.raw;
 const client = new TelegramClient(token, fetch, resolveTimeoutsForKind(cliBot).fetchTimeoutMs);

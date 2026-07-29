@@ -118,6 +118,7 @@ describe("controlled rollout lifecycle reconciliation", () => {
       .run("2026-07-29T11:00:00.000Z", "contained-run");
     const lane = bridge.acquireLock("telegram:interactive", "chat-1");
     expect(lane).not.toBeNull();
+    bridge.raw.prepare("UPDATE execution_locks SET run_id = ?").run("contained-run");
 
     const beforeRuns = bridge.raw.prepare("SELECT * FROM bridge_runs").all();
     const beforeEvents = bridge.raw.prepare("SELECT * FROM bridge_events").all();
@@ -150,6 +151,7 @@ describe("controlled rollout lifecycle reconciliation", () => {
     const bridge = open();
     bridge.insertRun("claimed-run", "chat-1", "codex");
     const lane = bridge.acquireLock("telegram:interactive", "chat-1");
+    bridge.raw.prepare("UPDATE execution_locks SET run_id = ?").run("claimed-run");
     bridge.enqueueMsg("telegram:interactive", "chat-1", { prompt: "preserve", chatId: 1, chatType: "private" });
     bridge.raw.prepare("UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?")
       .run("claimed-run", lane!.acquisitionId);

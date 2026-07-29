@@ -94,15 +94,23 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 5. Validate effective systemd safety properties: exact units, fragment paths,
    drop-ins, environment files, active states, process containment and cgroups.
 6. Acquire the exclusive rollout lock and capture durable preflight evidence.
-7. Prove containment before touching databases or the current pointer.
-8. Checkpoint WALs, verify integrity/foreign keys/schema/queue/claim/lock state,
+7. Classify running lifecycle state: live-correlated bot runs and stale-unowned
+   runs are expected; only ambiguous process, run, acquisition, lock or claim
+   ownership blocks the rollout.
+8. Prove containment, then transactionally reconcile contained orphaned runs
+   and release only exact stale locks with durable audit events before touching
+   WALs, backups, migrations or the current pointer.
+9. Checkpoint WALs, verify integrity/foreign keys/schema/queue/claim/lock state,
    and create byte-exact verified backups.
-9. Migrate and validate the full database cohort.
-10. Atomically switch the `current` pointer, restart services, and run bounded
+10. Migrate and validate the full database cohort.
+11. Atomically switch the `current` pointer, restart services, and run bounded
     acceptance and stability checks.
-11. Write durable `deployment-result.json` and supporting evidence.
+12. Write durable `deployment-result.json` and supporting evidence.
 
-Automatic rollback is permitted only for a proven pre-start failure with
+Health and worker services perform the same bounded orphan reconciliation at
+startup as interactive services; they may log the result without notifying a
+user. Operators must never manually delete runs, locks, claims, WAL files or
+SHM files. Automatic rollback is permitted only for a proven pre-start failure with
 verified containment and verified backups. Any ambiguity, possible post-start
 write, containment failure, migration failure without a proven restore, or
 acceptance failure is fail-closed and requires manual review. Queues, claims,

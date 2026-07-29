@@ -985,6 +985,10 @@ record_phase CONTAINED
 code_check
 run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
 hash_evidence_file "$artifact_dir/stopped-evidence.json"
+echo "reconciling contained lifecycle ownership"
+run_db_tool reconcile --reason interrupted_by_controlled_rollout --evidence - "${db_args[@]}" > "$artifact_dir/reconciliation-evidence.json"
+hash_evidence_file "$artifact_dir/reconciliation-evidence.json"
+record_phase LIFECYCLE_RECONCILED
 validate_sqlite_sidecars
 echo "draining SQLite WAL sidecars offline"
 run_db_tool checkpoint --evidence - "${db_args[@]}" > "$artifact_dir/checkpoint-evidence.json"

@@ -850,7 +850,7 @@ export class BridgeEngine {
 
     try {
       if (useAsync) {
-        const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, threadId);
+        const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, threadId, laneHandle!);
         let stagedResult: StagedCliResult | null = null;
         let finalDeliveryPhase: FinalDeliveryPhase | null = null;
         try {
@@ -882,7 +882,7 @@ export class BridgeEngine {
           this._releaseFinalDeliveryPhase(laneHandle!, finalDeliveryPhase);
         }
       } else {
-        const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, threadId);
+        const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, threadId, laneHandle!);
         const result = await this.executePrompt(prompt, sessionId, chatId, { message_thread_id: threadId }, attachments, eventContext, runId, collect, chatKey, laneHandle!);
         // For the sync path the final message is sent below; build a view from the
         // collected events so the new event-driven path drives the output text.
@@ -950,7 +950,7 @@ export class BridgeEngine {
    * array on the returned record so callers can also read the buffered
    * events if they need to inspect them.
    */
-  private _createEventContext(chatId: number, threadId?: number): {
+  private _createEventContext(chatId: number, threadId: number | undefined, laneHandle: ExecutionLaneHandle): {
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (e: BridgeEvent) => void;
@@ -963,6 +963,8 @@ export class BridgeEngine {
       bot: (isAgentKind(this.kind) ? this.kind : "claude") as BotKind,
       chatId: String(chatId),
       threadId: threadId != null ? String(threadId) : undefined,
+      serviceId: laneHandle.serviceId,
+      acquisitionId: laneHandle.acquisitionId,
     };
     const events: BridgeEvent[] = [];
     const store = new EventStore(this.db);

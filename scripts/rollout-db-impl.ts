@@ -7,23 +7,27 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { openDb, openProductionDb } from "../src/db.js";
+import { BridgeDb, openDb, openProductionDb } from "../src/db.js";
+import { getExecutionProcessState } from "../src/cliSupervisor.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "../src/db/roleAssignmentsMigration.js";
+import { classifyLifecycleState, type LifecycleProcess } from "../src/rolloutLifecycle.js";
 
 /** The five canonical database roles (policy doc §4) — structural validity only; the actual role/path allowlist lives in the root-owned bootstrap config, outside this script's scope. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "worker"]);
 
-type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "bootstrap";
+type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "bootstrap";
 
 interface Options {
   mode: Mode;
   databases: string[];
   evidencePath: string | null;
   resolvingUnits: Map<string, string[]>;
+  reason: string | null;
 }
 
 interface DbEvidence {
@@ -45,6 +49,11 @@ interface DbEvidence {
   runLockCorrelation: { queue: Array<Record<string, unknown>>; locks: Array<Record<string, unknown>> };
   runIdentityCorrelation: Array<Record<string, unknown>>;
   deliveryIdentityCorrelation: Array<Record<string, unknown>>;
+  lifecycle: {
+    runs: Array<Record<string, unknown>>;
+    locks: Array<Record<string, unknown>>;
+    reconciliation: { runs: string[]; locks: Array<Record<string, unknown>> };
+  };
   deliveryState: Record<string, number>;
   role?: string;
 }
@@ -74,12 +83,13 @@ const CURRENT_LOCK_COLUMNS = new Set([
 
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
-  if (!mode || !["inspect", "checkpoint", "migrate", "validate"].includes(mode)) {
-    throw new Error("usage: rollout-db.ts <inspect|checkpoint|migrate|validate> --db PATH [--db PATH ...]");
+  if (!mode || !["inspect", "checkpoint", "migrate", "validate", "reconcile"].includes(mode)) {
+    throw new Error("usage: rollout-db.ts <inspect|checkpoint|migrate|validate|reconcile> --db PATH [--db PATH ...]");
   }
   const databases: string[] = [];
   let evidencePath: string | null = null;
   const resolvingUnits = new Map<string, string[]>();
+  let reason: string | null = null;
   while (argv.length > 0) {
     const flag = argv.shift();
     const value = argv.shift();
@@ -97,10 +107,12 @@ function parseArgs(argv: string[]): Options {
       existing.push(unit);
       resolvingUnits.set(path, existing);
     }
+    else if (flag === "--reason") reason = value;
     else throw new Error(`unknown argument: ${flag}`);
   }
   if (databases.length === 0) throw new Error("at least one --db path is required");
-  return { mode, databases, evidencePath, resolvingUnits };
+  if (mode === "reconcile" && !reason?.trim()) throw new Error("reconcile requires --reason");
+  return { mode, databases, evidencePath, resolvingUnits, reason };
 }
 
 interface BootstrapOptions {
@@ -222,7 +234,29 @@ function digestRows(rows: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
-function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = []): DbEvidence {
+function processIdentities(): Map<string, LifecycleProcess> {
+  let output: string;
+  try {
+    output = execFileSync("ps", ["eww", "-eo", "args="], { encoding: "utf8" });
+  } catch {
+    throw new Error("unable to inspect rollout process ownership");
+  }
+  const matches = new Map<string, LifecycleProcess>();
+  for (const line of output.split("\n")) {
+    const run = line.match(/(?:^|\s)AGENT_BRIDGE_RUN_ID=([^\s]+)/)?.[1];
+    if (!run) continue;
+    const service = line.match(/(?:^|\s)AGENT_BRIDGE_SERVICE_ID=([^\s]+)/)?.[1];
+    const acquisition = line.match(/(?:^|\s)AGENT_BRIDGE_ACQUISITION_ID=([^\s]+)/)?.[1];
+    const identity: LifecycleProcess = service && acquisition
+      ? { state: "live", run_id: run, service_id: service, acquisition_id: acquisition }
+      : { state: "ambiguous", run_id: run };
+    if (matches.has(run)) matches.set(run, { state: "ambiguous", run_id: run });
+    else matches.set(run, identity);
+  }
+  return matches;
+}
+
+function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = [], enforceLifecycle = false): DbEvidence {
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
     const integrity = String(db.pragma("integrity_check", { simple: true }));
@@ -281,17 +315,41 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       ? countBy((queueRows as Array<{ state: string }>).filter((row) => row.state === "claimed").map((row) => row.state))
       : {};
     const lockRows = currentLocks
-      ? db.prepare("SELECT surface, service_id, run_id, acquisition_id, acquired_at, lease_expires_at FROM execution_locks ORDER BY surface, service_id, run_id, acquisition_id").all()
+      ? db.prepare("SELECT surface, chat_key, service_id, run_id, acquisition_id, acquired_at, lease_expires_at FROM execution_locks ORDER BY surface, chat_key, service_id, run_id, acquisition_id").all()
       : [];
     const executionLockState = { total: lockRows.length, active: lockRows.filter((row) => new Date(String((row as { lease_expires_at: string }).lease_expires_at)).getTime() > Date.now()).length };
     const deliveryState = tables.includes("bridge_runs")
       ? countBy((db.prepare("SELECT status FROM bridge_runs ORDER BY run_id").all() as Array<{ status: string }>).map((row) => row.status))
       : {};
     const runIdentityCorrelation = tables.includes("bridge_runs")
-      ? db.prepare("SELECT run_id, chat_id, bot, status, started_at, ended_at, session_id FROM bridge_runs ORDER BY run_id").all() as Array<Record<string, unknown>>
+      ? db.prepare("SELECT run_id, chat_id, bot, status, started_at, ended_at, session_id, error FROM bridge_runs ORDER BY run_id").all() as Array<Record<string, unknown>>
       : [];
     const deliveryIdentityCorrelation = tables.includes("bridge_events")
       ? db.prepare("SELECT id, run_id, seq, type, timestamp FROM bridge_events ORDER BY run_id, seq, id").all() as Array<Record<string, unknown>>
+      : [];
+    const processes = processIdentities();
+    const lifecycleRuns = enforceLifecycle && tables.includes("bridge_runs")
+      ? (db.prepare("SELECT run_id FROM bridge_runs WHERE status = 'running' ORDER BY run_id").all() as Array<{ run_id: string }>).map((run) => {
+        const runLocks = lockRows.filter((lock) => (lock as { run_id: string }).run_id === run.run_id) as Array<{ run_id: string; service_id: string; acquisition_id: string; lease_expires_at: string }>;
+        const claimsForRun = queueRows.filter((row) => row.claim_run_id === run.run_id || row.claim_acquisition_id != null);
+        const process = processes.get(run.run_id) ?? { state: "absent", run_id: run.run_id } as LifecycleProcess;
+        const classification = classifyLifecycleState({ nowMs: Date.now(), run, locks: runLocks, claims: claimsForRun, process });
+        if (classification === "ambiguous") throw new Error(`ambiguous lifecycle ownership for ${path}: ${run.run_id}`);
+        return { run_id: run.run_id, classification, process };
+      })
+      : [];
+    const lifecycleLocks = enforceLifecycle ? (lockRows as Array<Record<string, unknown>>).map((lock) => {
+      const run = lifecycleRuns.find((candidate) => candidate.run_id === lock.run_id);
+      if (!run) throw new Error(`ambiguous execution lock ownership for ${path}: ${String(lock.run_id)}`);
+      return { ...lock, classification: run.classification };
+    }) : [];
+    const reconciliationRuns = tables.includes("reconciliation_audit")
+      ? (db.prepare("SELECT subject_id FROM reconciliation_audit WHERE kind = 'run' AND status = 'completed' ORDER BY subject_id").all() as Array<{ subject_id: string }>).map((row) => row.subject_id)
+      : [];
+    const reconciliationLocks = tables.includes("reconciliation_audit")
+      ? (db.prepare("SELECT before_json FROM reconciliation_audit WHERE kind = 'lock' AND status = 'completed' ORDER BY subject_id").all() as Array<{ before_json: string }>).map((row) => {
+        try { return JSON.parse(row.before_json) as Record<string, unknown>; } catch { throw new Error(`invalid reconciliation lock audit for ${path}`); }
+      })
       : [];
     return {
       path, sha256: hashFile(path), integrity, schemaVersion: userVersion, schema, legacyQueueCount, pendingQueueCount,
@@ -299,6 +357,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       claimRunAcquisitionCorrelation: digestRows({ queueRows, lockRows }),
       runLockCorrelation: { queue: queueRows, locks: lockRows as Array<Record<string, unknown>> }, deliveryState,
       runIdentityCorrelation, deliveryIdentityCorrelation,
+      lifecycle: { runs: lifecycleRuns, locks: lifecycleLocks, reconciliation: { runs: reconciliationRuns, locks: reconciliationLocks } },
     };
   } finally {
     db.close();
@@ -879,10 +938,35 @@ async function main(): Promise<void> {
   const options = parseArgs(argv);
   const unitsFor = (path: string) => options.resolvingUnits.get(path) ?? [];
   if (options.mode === "inspect") {
-    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path)));
+    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path), true));
     const legacyQueues = evidence.reduce((sum, database) => sum + database.legacyQueueCount, 0);
     if (legacyQueues !== 0) throw new Error(`legacy queue count is nonzero: ${legacyQueues}`);
     writeEvidence(options.evidencePath, options.mode, evidence);
+    return;
+  }
+  if (options.mode === "reconcile") {
+    const results = [];
+    for (const path of options.databases) {
+      const currentEvidence = inspectDatabase(path, false, unitsFor(path), true);
+      if (currentEvidence.schema !== "current") {
+        results.push(currentEvidence);
+        continue;
+      }
+      const raw = new Database(path, { fileMustExist: true });
+      raw.pragma("foreign_keys = ON");
+      const db = new BridgeDb(raw, { serviceId: "rollout:controlled-reconciliation", runId: "rollout:controlled-reconciliation", leaseMs: 90_000 });
+      try {
+        db.reconcileControlledRollout({
+          reason: options.reason!,
+          processState: (run) => getExecutionProcessState(run.run_id),
+          containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
+        });
+      } finally {
+        db.close();
+      }
+      results.push(inspectDatabase(path, true, unitsFor(path), true));
+    }
+    writeEvidence(options.evidencePath, options.mode, results);
     return;
   }
   if (options.mode === "checkpoint") {

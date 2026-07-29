@@ -19,6 +19,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { openDb } from "../src/db.js";
 import {
   acquireRealSystemdLock,
   actions,
@@ -344,6 +345,31 @@ describe("guarded rollout helper", () => {
     expect(ledger).toMatch(/phase=COMPLETE/);
     expect(ledger.indexOf("phase=SERVICES_STARTING")).toBeLessThan(ledger.indexOf("phase=ACCEPTED"));
   }, 15_000);
+
+  it("completes a guarded rollout with a legitimate preflight run and lock", () => {
+    const fixture = createFixture();
+    const bridge = openDb(fixture.dbPaths[0], {
+      serviceId: "telegram:interactive",
+      runId: "bot-run",
+    });
+    bridge.insertRun("bot-run", "chat-1", "codex");
+    expect(bridge.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
+    bridge.close();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+
+    const result = runRollout(fixture);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const db = new Database(fixture.dbPaths[0], { readonly: true });
+    try {
+      expect(db.prepare("SELECT status, error FROM bridge_runs WHERE run_id = 'bot-run'").get()).toMatchObject({
+        status: "failed",
+        error: "interrupted_by_controlled_rollout",
+      });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM execution_locks").get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  }, 20_000);
 
   it("atomically activates the staged release after migration and before service start", () => {
     const fixture = createFixture();
