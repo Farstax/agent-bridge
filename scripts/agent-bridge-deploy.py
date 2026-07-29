@@ -19,6 +19,9 @@ from pathlib import Path
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
+DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
+DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
+SYSTEMD_RUN = "/usr/bin/systemd-run"
 
 
 def staging_module(helper: Path):
@@ -131,10 +134,62 @@ def validate_private_helper(path: Path) -> None:
     validate_private_file(path, True)
 
 
-def run_deployment(archive: Path, approval: Path) -> str:
+def reject_root_test_overrides() -> None:
     test_override_keys = sorted(key for key in os.environ if key.startswith("AGENT_BRIDGE_DEPLOY_TEST"))
     if os.geteuid() == 0 and test_override_keys:
         fail(f"test overrides are forbidden for root deployment: {', '.join(test_override_keys)}")
+
+
+def absolute_input(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def current_cgroup_has_unit(unit: str, cgroup_text: str | None = None) -> bool:
+    if not DEPLOY_UNIT.fullmatch(unit):
+        return False
+    try:
+        text = cgroup_text if cgroup_text is not None else Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        cgroup_path = line.split(":", 2)[-1]
+        if unit in cgroup_path.split("/"):
+            return True
+    return False
+
+
+def detached_command(release: Path, approval: Path, unit: str, script: Path | None = None) -> list[str]:
+    if not DEPLOY_UNIT.fullmatch(unit):
+        fail("invalid transient deployment unit")
+    return [
+        SYSTEMD_RUN,
+        "--system",
+        f"--unit={unit}",
+        "--collect",
+        "--wait",
+        "--quiet",
+        "--service-type=exec",
+        "--property=KillMode=control-group",
+        f"--setenv={DEPLOY_UNIT_ENV}={unit}",
+        "/usr/bin/python3",
+        str(script or Path(__file__).resolve()),
+        "--internal-worker",
+        "--release",
+        str(absolute_input(release)),
+        "--approval",
+        str(absolute_input(approval)),
+    ]
+
+
+def launch_detached(release: Path, approval: Path) -> int:
+    unit = f"agent-bridge-deploy-{os.getpid()}.service"
+    print(f"deployment continuing in transient unit {unit}", flush=True)
+    result = subprocess.run(detached_command(release, approval, unit), check=False)
+    return result.returncode
+
+
+def run_deployment(archive: Path, approval: Path) -> str:
+    reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     config = Path("/etc/agent-bridge/rollout.conf") if production else None
     stage_helper = Path("/usr/local/libexec/agent-bridge-release-stage") if production else Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_STAGE_HELPER", Path(__file__).with_name("release-stage.py")))
@@ -199,9 +254,20 @@ def main() -> int:
     parser.add_argument("--release", type=Path, required=True)
     parser.add_argument("--approval", type=Path, required=True)
     parser.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--internal-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    reject_root_test_overrides()
     if args.validate_only:
         os.environ["AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY"] = "1"
+    if os.geteuid() == 0 and not args.validate_only:
+        unit = os.environ.get(DEPLOY_UNIT_ENV, "")
+        if args.internal_worker:
+            if not current_cgroup_has_unit(unit):
+                fail("internal deployment worker is not running in its assigned transient systemd unit")
+        else:
+            return launch_detached(args.release, args.approval)
+    elif args.internal_worker:
+        fail("internal deployment worker requires a root transient systemd unit")
     print(run_deployment(args.release, args.approval))
     return 0
 
