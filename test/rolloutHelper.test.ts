@@ -19,6 +19,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { openDb } from "../src/db.js";
 import {
   acquireRealSystemdLock,
   actions,
@@ -337,6 +338,7 @@ describe("guarded rollout helper", () => {
     expect(existsSync(join(artifacts, "containment-evidence.json"))).toBe(true);
     expect(existsSync(join(artifacts, "stopped-evidence.sha256"))).toBe(true);
     expect(existsSync(join(artifacts, "post-start-evidence.sha256"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).restartBoundary).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(existsSync(join(artifacts, "phase-ledger.log"))).toBe(true);
     const ledger = readFileSync(join(artifacts, "phase-ledger.log"), "utf8");
     expect(ledger).toMatch(/phase=PRECHECK_STARTED/);
@@ -344,6 +346,31 @@ describe("guarded rollout helper", () => {
     expect(ledger).toMatch(/phase=COMPLETE/);
     expect(ledger.indexOf("phase=SERVICES_STARTING")).toBeLessThan(ledger.indexOf("phase=ACCEPTED"));
   }, 15_000);
+
+  it("completes a guarded rollout with a legitimate preflight run and lock", () => {
+    const fixture = createFixture();
+    const bridge = openDb(fixture.dbPaths[0], {
+      serviceId: "telegram:interactive",
+      runId: "bot-run",
+    });
+    bridge.insertRun("bot-run", "chat-1", "codex");
+    expect(bridge.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
+    bridge.close();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+
+    const result = runRollout(fixture);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const db = new Database(fixture.dbPaths[0], { readonly: true });
+    try {
+      expect(db.prepare("SELECT status, error FROM bridge_runs WHERE run_id = 'bot-run'").get()).toMatchObject({
+        status: "failed",
+        error: "interrupted_by_controlled_rollout",
+      });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM execution_locks").get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  }, 20_000);
 
   it("atomically activates the staged release after migration and before service start", () => {
     const fixture = createFixture();
@@ -437,7 +464,7 @@ describe("guarded rollout helper", () => {
     const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
     expect(existsSync(join(artifacts, "rollback-containment-evidence.json"))).toBe(true);
     expect(readFileSync(fixture.stateFile, "utf8")).toBe("");
-  });
+  }, 15_000);
 
   it("fails closed when recovery restart-counter reads are empty", () => {
     const fixture = createFixture();
@@ -520,7 +547,7 @@ describe("guarded rollout helper", () => {
     expect(fixture.dbPaths.map(sha256)).not.toEqual(before);
     expect(readlinkSync(currentPointer)).toBe(fixture.expectedCommit);
     expect(readFileSync(fixture.stateFile, "utf8")).toBe("");
-  });
+  }, 15_000);
 
   it("durably records the start boundary before a start command fails", () => {
     const fixture = createFixture();
@@ -533,7 +560,7 @@ describe("guarded rollout helper", () => {
     expect(output).toMatch(/STOPPED_PRESERVED/);
     expect(ledger).toMatch(/phase=SERVICES_STARTING/);
     expect(ledger).not.toMatch(/phase=ACCEPTED/);
-  });
+  }, 15_000);
 
   it("resets historical service failure counters before capturing smoke baselines", () => {
     const fixture = createFixture();

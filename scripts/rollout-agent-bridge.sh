@@ -985,6 +985,10 @@ record_phase CONTAINED
 code_check
 run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
 hash_evidence_file "$artifact_dir/stopped-evidence.json"
+echo "reconciling contained lifecycle ownership"
+run_db_tool reconcile --reason interrupted_by_controlled_rollout --evidence - "${db_args[@]}" > "$artifact_dir/reconciliation-evidence.json"
+hash_evidence_file "$artifact_dir/reconciliation-evidence.json"
+record_phase LIFECYCLE_RECONCILED
 validate_sqlite_sidecars
 echo "draining SQLite WAL sidecars offline"
 run_db_tool checkpoint --evidence - "${db_args[@]}" > "$artifact_dir/checkpoint-evidence.json"
@@ -1022,6 +1026,7 @@ echo "starting all services"
 journal_since="$(/usr/bin/date -u '+%Y-%m-%d %H:%M:%S UTC')"
 start_attempted=1
 record_phase SERVICES_STARTING
+restart_boundary="$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')"
 "$systemctl_cmd" start "${units[@]}"
 for unit in "${units[@]}"; do assert_service_active "$unit"; done
 services_started=1
@@ -1035,9 +1040,9 @@ for unit in "${units[@]}"; do
   current_restarts="$("$systemctl_cmd" show "$unit" --property=NRestarts --value)"
   [[ "$current_restarts" =~ ^[0-9]+$ && "$current_restarts" == "${restart_baseline[$unit]}" ]] || die "service restarted or crash-looped during smoke: $unit"
 done
-run_db_tool validate --evidence - "${db_args[@]}" > "$artifact_dir/post-start-evidence.json"
+run_db_tool validate --restart-boundary "$restart_boundary" --evidence - "${db_args[@]}" > "$artifact_dir/post-start-evidence.json"
 hash_evidence_file "$artifact_dir/post-start-evidence.json"
-"$acceptance_validator" --before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --output "$artifact_dir/acceptance-evidence.json" || die "bounded queue/claim/lock acceptance failed"
+"$acceptance_validator" --before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --reconciliation-evidence "$artifact_dir/reconciliation-evidence.json" --output "$artifact_dir/acceptance-evidence.json" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
 record_phase ACCEPTED
 

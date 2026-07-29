@@ -126,7 +126,7 @@ export interface CliOptions {
   /** Strip advisor authority from nested provider children. */
   advisorChild?: boolean;
   /** Context for BridgeEvent emission. When provided, runCliAsync emits lifecycle events. */
-  eventContext?: { runId: string; bot: "codex" | "antigravity" | "claude" | "kimchi"; chatId: string; threadId?: string };
+  eventContext?: { runId: string; bot: "codex" | "antigravity" | "claude" | "kimchi"; chatId: string; threadId?: string; serviceId?: string; acquisitionId?: string };
   /** Called with each emitted BridgeEvent. Requires eventContext to be set. */
   onEvent?: (event: import("./events/types.js").BridgeEvent) => void;
   /** Optional provider-supplied failure watch; supervisor only owns lifecycle/settlement. */

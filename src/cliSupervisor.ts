@@ -67,6 +67,8 @@ const KILL_GRACE_MS = 5_000;
 const GROUP_EXIT_POLL_INTERVAL_MS = 25;
 const GROUP_EXIT_POLL_BOUND_MS = 1_000;
 const RUN_MARKER_ENV = "AGENT_BRIDGE_RUN_ID";
+const SERVICE_MARKER_ENV = "AGENT_BRIDGE_SERVICE_ID";
+const ACQUISITION_MARKER_ENV = "AGENT_BRIDGE_ACQUISITION_ID";
 
 export type ExecutionProcessState = "live" | "absent" | "ambiguous";
 
@@ -341,6 +343,8 @@ export async function runSupervisedProcess(
     // grandchildren.
     const childEnv = buildChildEnv(options.contextEnv, options.advisorChild);
     if (options.eventContext?.runId) childEnv[RUN_MARKER_ENV] = options.eventContext.runId;
+    if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;
+    if (options.eventContext?.acquisitionId) childEnv[ACQUISITION_MARKER_ENV] = options.eventContext.acquisitionId;
     const child = spawn(spawnInvocation.command, spawnInvocation.args, { cwd, shell: false, detached: true, env: childEnv });
     if (options.stdin) {
       child.stdin?.write(options.stdin);

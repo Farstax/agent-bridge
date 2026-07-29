@@ -9,6 +9,7 @@ export interface RunningRun {
 
 export interface ReconciliationEvidence {
   reason: string;
+  errorMessage?: string;
   reconciledAt: string;
   processState: "absent";
   lockState: "absent";
@@ -103,7 +104,7 @@ export class RunRepository {
       `UPDATE bridge_runs
        SET status = 'failed', ended_at = ?, error = ?
        WHERE run_id = ? AND status = 'running'`
-    ).run(endedAt, "Process interrupted by bridge restart", runId);
+    ).run(endedAt, evidence.errorMessage ?? evidence.reason, runId);
     if (result.changes !== 1) return false;
     insert.run(`${runId}:${nextSeq}`, runId, nextSeq, "reconciliation.started", timestamp, JSON.stringify(evidence));
 

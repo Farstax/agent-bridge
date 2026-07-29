@@ -53,10 +53,18 @@ export interface StaleLockReconciliationOptions {
   containmentState: (lock: ExecutionLockRecord) => ReconciliationContainment;
   lockState: (lock: ExecutionLockRecord) => Exclude<ReconciliationLockState, "absent">;
 }
+
+export interface ControlledRolloutReconciliationOptions {
+  nowMs?: number;
+  reason: string;
+  processState: (run: RunningRun) => OrphanProcessState;
+  containmentState: (run: RunningRun, processState: OrphanProcessState) => ReconciliationContainment;
+}
 import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS } from "./repositories/conversationRepository.js";
 export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./repositories/conversationRepository.js";
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "./db/roleAssignmentsMigration.js";
+import { classifyLifecycleState } from "./rolloutLifecycle.js";
 
 // Sentinel row keys stored in bridge_state for non-chat state
 const pollingKey = (bot: string) => `$polling:${bot}`;
@@ -699,6 +707,7 @@ export class BridgeDb {
       const endedAt = new Date(nowMs).toISOString();
       const evidence = {
         reason: "stale_after_cutoff",
+        errorMessage: "Process interrupted by bridge restart",
         reconciledAt: endedAt,
         processState,
         containmentState,
@@ -764,6 +773,76 @@ export class BridgeDb {
       if (changed) released.push(lock);
     }
     return released;
+  }
+
+  reconcileControlledRollout(options: ControlledRolloutReconciliationOptions): {
+    reconciledRunIds: string[];
+    releasedLockCount: number;
+  } {
+    if (!options.reason.trim()) throw new Error("reconciliation reason is required");
+    const nowMs = options.nowMs ?? Date.now();
+    const now = new Date(nowMs).toISOString();
+    const runs = this.runs.listRunningRuns();
+    const locks = this.locks.listLocks();
+    const claims = this.raw.prepare(`
+      SELECT id, surface, chat_key, state, claim_run_id, claim_acquisition_id
+      FROM pending_messages
+      WHERE state = 'claimed' OR claim_run_id IS NOT NULL OR claim_acquisition_id IS NOT NULL
+      ORDER BY id
+    `).all() as Array<Record<string, unknown>>;
+    const runIds = new Set(runs.map((run) => run.run_id));
+    if (claims.length > 0 || locks.some((lock) => !runIds.has(lock.run_id))) {
+      throw new Error("ambiguous claimed or execution-lock ownership during controlled rollout");
+    }
+    for (const run of runs) {
+      const processState = options.processState(run);
+      if (processState !== "absent" || options.containmentState(run, processState) !== "proven") {
+        throw new Error(`ambiguous contained process ownership for run ${run.run_id}`);
+      }
+      const runLocks = locks.filter((lock) => lock.run_id === run.run_id);
+      const classification = classifyLifecycleState({
+        nowMs,
+        run,
+        locks: runLocks,
+        claims: [],
+        process: { state: "absent", run_id: run.run_id },
+      });
+      if (classification === "ambiguous") throw new Error(`ambiguous lifecycle ownership for run ${run.run_id}`);
+    }
+    const auditIds: string[] = [];
+    const reconciledRunIds = this.runInTransaction(() => {
+      for (const run of runs) {
+        const auditId = randomUUID();
+        auditIds.push(auditId);
+        this.raw.prepare(`INSERT INTO reconciliation_audit
+          (id, kind, subject_id, status, reason, before_json, created_at)
+          VALUES (?, 'run', ?, 'started', ?, ?, ?)`)
+          .run(auditId, run.run_id, options.reason, JSON.stringify({ status: "running", processState: "absent", containmentState: "proven" }), now);
+      }
+      for (const lock of locks) {
+        const auditId = randomUUID();
+        auditIds.push(auditId);
+        this.raw.prepare(`INSERT INTO reconciliation_audit
+          (id, kind, subject_id, status, reason, before_json, created_at)
+          VALUES (?, 'lock', ?, 'started', ?, ?, ?)`)
+          .run(auditId, `${lock.surface}:${lock.chat_key}`, options.reason, JSON.stringify(lock), now);
+      }
+      for (const run of runs) {
+        if (!this.runs.reconcileOrphanedRun(run.run_id, now, {
+          reason: options.reason, reconciledAt: now, processState: "absent", lockState: "absent", cutoffMs: 0,
+        })) throw new ReconciliationLostRace();
+      }
+      for (const lock of locks) {
+        if (!this.locks.releaseExact(lock)) throw new ReconciliationLostRace();
+      }
+      for (const auditId of auditIds) {
+        this.raw.prepare(`UPDATE reconciliation_audit
+          SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
+          .run(JSON.stringify({ reason: options.reason, reconciled: true }), now, auditId);
+      }
+      return runs.map((run) => run.run_id);
+    });
+    return { reconciledRunIds, releasedLockCount: locks.length };
   }
 
   // ── Conversation turns ──────────────────────────────────────────────────
