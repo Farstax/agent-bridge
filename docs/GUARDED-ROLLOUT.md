@@ -4,7 +4,7 @@ The only operator-facing deployment path is the root-owned `agent-bridge-deploy`
 deployer. The old stage/activate/restore/authorization/acceptance commands are
 private implementation details and are not an alternative runbook.
 
-## Three inputs
+## Two inputs
 
 ```bash
 sudo agent-bridge-deploy \
@@ -97,14 +97,14 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 7. Stop all seven services and prove `MainPID=0`, `ControlPID=0` and empty
    service cgroups. No provider-CLI process classification is required after
    containment.
-8. Only after containment, transactionally mark remaining running runs failed
-   with `interrupted_by_controlled_rollout`, release execution locks, and
-   return claimed pending messages to `queued` while preserving their content
-   and attachments. Append bounded audit evidence.
-9. Checkpoint WALs, verify integrity/foreign keys/schema, and create complete
+8. Checkpoint WALs, verify integrity/foreign keys/schema, and create complete
    byte-exact verified backups of all five databases. Never delete a non-empty
    WAL.
-10. Migrate and validate the full offline database cohort.
+9. Migrate the full offline database cohort to the target schema.
+10. After migration, transactionally mark remaining running runs failed with
+    `interrupted_by_controlled_rollout`, release execution locks, and return
+    claimed pending messages to `queued` while preserving their content and
+    attachments. Append bounded audit evidence and validate the full cohort.
 11. Atomically switch the `current` pointer, restart services, and verify
     stable healthy startup.
 12. Write durable `deployment-result.json` and supporting evidence.
@@ -112,15 +112,14 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 Health and worker services perform the same bounded orphan reconciliation at
 startup as interactive services; they may log the result without notifying a
 user. Operators must never manually delete runs, locks, claims, WAL files or
-SHM files. Automatic rollback is permitted only for a proven pre-start failure with
-verified containment and verified backups. If any failure occurs before new
-services start, the unchanged previous release is restarted directly, or the
-complete verified backup is restored before the previous pointer and release
-are restarted. If new services have been started, databases are never
-automatically restored: services are contained, the sentinel is retained and
-manual review is required. Queued and claimed Telegram messages are not a
-preflight blocker; contained claims are requeued without changing their
-content or attachments.
+SHM files. Automatic recovery is permitted only for a proven pre-start failure
+with verified containment. If no complete backup exists and migration has not
+run, the unchanged previous release is restarted directly. Once a complete
+backup exists, it is restored before the previous pointer and release are
+restarted. If new services have been started, databases are never automatically
+restored: services are contained, the sentinel is retained and manual review is
+required. Queued and claimed Telegram messages are not a preflight blocker;
+contained claims are requeued without changing their content or attachments.
 
 Acceptance is intentionally narrow: the target pointer is active, all seven
 services are stable, all five databases pass integrity, foreign-key and
