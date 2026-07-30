@@ -6,6 +6,14 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 describe("guarded health database relocation", () => {
+  it("backs up the complete cohort before attempting relocation", () => {
+    const rollout = readFileSync(new URL("../scripts/rollout-agent-bridge.sh", import.meta.url), "utf8");
+    const backup = rollout.indexOf("backup_databases\nbackup_completed=1");
+    const relocation = rollout.indexOf('run_db_tool relocate --from "$health_relocation_source"');
+    expect(backup).toBeGreaterThan(-1);
+    expect(relocation).toBeGreaterThan(backup);
+  });
+
   it("copies an existing legacy database only when the target is absent", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-health-relocation-"));
     try {
@@ -33,6 +41,11 @@ describe("guarded health database relocation", () => {
         env: { ...process.env, AGENT_BRIDGE_ROLLOUT_TEST_ROOT: root },
         stdio: "pipe",
       })).toThrow();
+      expect(existsSync(source)).toBe(true);
+      const sourceAfterFailure = new Database(source, { readonly: true });
+      expect(sourceAfterFailure.prepare("SELECT value FROM marker").get()).toEqual({ value: "preserved" });
+      sourceAfterFailure.close();
+      expect(existsSync(target)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

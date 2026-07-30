@@ -1016,6 +1016,12 @@ hash_evidence_file "$artifact_dir/checkpoint-evidence.json"
 clear_stale_sqlite_sidecars
 record_phase WAL_DRAINED
 
+echo "backing up all databases"
+backup_databases
+backup_completed=1
+/usr/bin/sha256sum "$manifest" > "$artifact_dir/backup-manifest.sha256"
+record_phase BACKED_UP
+
 if [[ -n "$health_relocation_source" ]]; then
   echo "relocating legacy health database source=$health_relocation_source target=$health_relocation_target"
   run_db_tool relocate --from "$health_relocation_source" --to "$health_relocation_target"
@@ -1024,12 +1030,6 @@ if [[ -n "$health_relocation_source" ]]; then
   done
   build_db_args
 fi
-
-echo "backing up all databases"
-backup_databases
-backup_completed=1
-/usr/bin/sha256sum "$manifest" > "$artifact_dir/backup-manifest.sha256"
-record_phase BACKED_UP
 
 echo "migrating databases using pre-staged commit $expected_commit"
 code_check
