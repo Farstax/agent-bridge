@@ -89,7 +89,7 @@ jobs:
             if (run.name !== "Release Artifact" || run.path !== ".github/workflows/release-artifact.yml") {
               failures.push("workflow identity mismatch");
             }
-            if (!new Set(["push", "workflow_dispatch"]).has(run.event)) {
+            if (!["push", "workflow_dispatch"].includes(run.event)) {
               failures.push("source run was not a main push or manual qualification");
             }
             if (run.head_branch !== "main") failures.push("source run was not on main");
@@ -124,7 +124,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 scripts/verify-release-promotion.py \
+          bash scripts/verify-release-promotion.sh \
             --artifact-dir "$RUNNER_TEMP/release-artifact" \
             --commit "$COMMIT_SHA" \
             --workflow-run "$WORKFLOW_RUN_ID" \
