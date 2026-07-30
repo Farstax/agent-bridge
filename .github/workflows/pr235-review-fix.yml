@@ -1,9 +1,6 @@
 name: Apply PR 235 review fix
 
 on:
-  push:
-    branches: [feat/issue-217-augment-default]
-    paths: [.github/workflows/pr235-review-fix.yml]
   pull_request:
     paths: [.github/workflows/pr235-review-fix.yml]
 
@@ -12,7 +9,6 @@ permissions:
 
 jobs:
   apply:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the feature branch
