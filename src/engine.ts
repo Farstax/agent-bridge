@@ -672,8 +672,9 @@ export class BridgeEngine {
     }
     let executionOutcome: ExecutionOutcome = "failed";
     const finalDeliveryActive = this.finalDeliveryPhases.has(executionLane);
-    const ownsAugmentedTask = !this.activeAugmentedTasks.has(executionLane);
-    if (!finalDeliveryActive && ownsAugmentedTask) this.activeAugmentedTasks.set(executionLane, { prompt: executionPrompt, attachments: [...attachments] });
+    const augmentMode = (this.opts.busyMessageMode ?? "augment") === "augment";
+    const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.activeAugmentedTasks.has(executionLane);
+    if (ownsAugmentedTask) this.activeAugmentedTasks.set(executionLane, { prompt: executionPrompt, attachments: [...attachments] });
     try {
       executionOutcome = await this._executeAndSend(
         executionPrompt, chatId, chatKey, primaryMessage.chat.type, threadId, userId, hookCtx, attachments, attachmentLocalPath,
@@ -1088,7 +1089,16 @@ export class BridgeEngine {
         }
         if (handle && !this.cancellationOperations.has(executionLane) && this.db.ownsLock(handle)) this.db.unlock(handle);
       }
-    })();
+    })().finally(() => {
+      // The augment/final-delivery race returns before the inner cleanup
+      // boundary. Every cancellation exit must still release its lane record
+      // so later messages can acquire and drain normally.
+      if (this.cancellationOperations.get(executionLane) === record) {
+        this.abortedChats.delete(executionLane);
+        this.resettingChats.delete(executionLane);
+        this.cancellationOperations.delete(executionLane);
+      }
+    });
 
     record.promise = operation;
     this.cancellationOperations.set(executionLane, record);
