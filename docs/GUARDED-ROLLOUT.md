@@ -22,6 +22,26 @@ payload hash/size/type/symlink, checks the embedded qualification metadata, and
 compares the result with the approval. It does not accept component-helper
 hashes, an external evidence file, a secondary bundle, or legacy identity flags.
 
+## Approval boundary
+
+Normal delivery has one exact-head merge approval and, only when production
+deployment is requested, one exact-release deployment approval. The release
+archive and its embedded qualification evidence must be generated and verified
+before deployment, but those checks are verification rather than separate human
+approval gates.
+
+One deployment approval authorises the complete guarded command: validation,
+immutable staging, preflight, containment, backup, migration, reconciliation,
+pointer activation, restart and acceptance. Do not request fresh approval
+between successful phases, and do not require a separate manual preflight
+backup, database inspection, helper invocation or acceptance sign-off.
+
+Read-only inspection, artifact generation/download/validation, offline fixture
+work and publication of evidence do not require separate deployment approval.
+Stop for manual review only when an approved identity changes, the approval is
+expired or ambiguous, an invariant fails, containment or restoration cannot be
+proven, or services may have accepted writes after a failed start.
+
 For a production run, the public command automatically continues inside a
 root-owned transient systemd service before it validates or stops any Agent
 Bridge unit. This keeps the deployment worker outside the seven service
@@ -133,3 +153,7 @@ The former multi-file workflow requiring separate artifact/evidence inputs,
 component-helper pins, `release-stage`, `release-activate`, `rollout-restore`,
 authorization and acceptance invocations is superseded. Do not use those
 commands directly or maintain them as a second operational path.
+
+Roadmap and issue closeout documents are historical records, not alternative
+operator runbooks. Where they differ, this document and the executable deployer
+are authoritative.
