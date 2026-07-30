@@ -12,12 +12,12 @@ Run the `Publish GitHub Release` workflow from the repository Actions page on `m
 
 The workflow requires the source run to be a successful `push` or `workflow_dispatch` qualification on `main`. It downloads the exact artifact named `agent-bridge-release-<commit-sha>`, without rebuilding it, and verifies:
 
-- archive and checksum filenames;
-- archive SHA-256;
-- safe and unambiguous archive members;
+- the source repository, workflow, branch, result and commit;
+- the exact archive and checksum filenames;
+- the archive SHA-256;
+- safe archive member paths;
 - manifest commit, tree, runtime and builder provenance;
-- qualification evidence and required checks;
-- every manifest-declared file hash, size and symlink target.
+- qualification evidence and required checks.
 
 The requested release tag and GitHub Release must not already exist. Publication creates a draft release, uploads the unchanged `.tar.gz` and `.sha256` files, and publishes it only after both uploads succeed. A failed publication attempts to remove the draft and its newly created tag.
 
