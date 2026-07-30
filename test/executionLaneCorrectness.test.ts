@@ -21,7 +21,7 @@ function client() {
 }
 
 function options(kind: "codex" | "claude", hooks: any = {}) {
-  return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, asyncEnabled: false, pollIntervalMs: 1000, hooks };
+  return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, busyMessageMode: "interrupt" as const, asyncEnabled: false, pollIntervalMs: 1000, hooks };
 }
 
 async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
@@ -534,6 +534,101 @@ describe("execution lane correctness", () => {
     db.close(); rmSync(path, { force: true });
   });
 
+  it("claims an ordered augmented batch with every attachment under one lane fence", () => {
+    const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: "augment-batch" });
+    const handle = db.acquireLock("telegram:interactive", "100:7")!;
+    db.enqueueMsg("telegram:interactive", "100:7", { prompt: "original request", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/original"] });
+    db.enqueueMsg("telegram:interactive", "100:7", { prompt: "first addition", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/first"] });
+    db.enqueueMsg("telegram:interactive", "100:7", { prompt: "second addition", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/second"] });
+
+    const claimed = db.claimPendingMsgs(handle);
+    expect(claimed.map((row) => row.prompt)).toEqual(["original request", "first addition", "second addition"]);
+    expect(claimed.flatMap((row) => row.attachments)).toEqual(["/tmp/original", "/tmp/first", "/tmp/second"]);
+    expect(db.completePendingMsgs(handle, claimed.map((row) => row.id))).toBe(true);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    db.close();
+  });
+
+  it("augments the active task by default and coalesces additions in arrival order", async () => {
+    const path = join(tmpdir(), `augment-mode-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(path);
+    const c = client();
+    const prompts: string[] = [];
+    const mockRunCli = vi.fn().mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
+      process.execPath,
+      ["-e", "setTimeout(()=>{},10000)"],
+      cwd,
+      cliOptions,
+    )).mockResolvedValueOnce('{"result":"augmented result","session_id":"augmented-session"}');
+    const engine = new BridgeEngine({
+      ...options("claude", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }), busyMessageMode: "augment",
+    }, db, c, { runCli: mockRunCli });
+    const first = engine.handleMessages([message("original request", 7)]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(db.dequeueMsgs("telegram:interactive", "100:7").map((row) => row.prompt)).toContain("original request");
+    const second = engine.handleMessages([message("first addition", 7)]);
+    const third = engine.handleMessages([message("second addition", 7)]);
+    await Promise.all([first, second, third]);
+    expect(prompts[0]).toBe("original request");
+    expect(prompts.at(-1)).toBe("original request\n\nfirst addition\n\nsecond addition");
+    expect(mockRunCli).toHaveBeenCalledTimes(2);
+    expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === "augmented result")).toHaveLength(1);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    db.close(); rmSync(path, { force: true });
+  }, 8_000);
+
+  it("recovers the complete augmented task after a service restart", async () => {
+    const path = join(tmpdir(), `augment-restart-${Date.now()}-${Math.random()}.sqlite`);
+    let now = Date.parse("2026-07-30T16:30:00.000Z");
+    writeFileSync("/tmp/original-after-restart", "original attachment");
+    writeFileSync("/tmp/addition-after-restart", "addition attachment");
+    const oldDb = openDb(path, { serviceId: "telegram:interactive", runId: "before-restart", lockLeaseMs: 100, clock: () => now });
+    const oldHandle = oldDb.acquireLock("telegram:interactive", "100:7")!;
+    oldDb.enqueueMsg("telegram:interactive", "100:7", { prompt: "original after restart", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/original-after-restart"] });
+    oldDb.enqueueMsg("telegram:interactive", "100:7", { prompt: "addition after restart", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/addition-after-restart"] });
+    expect(oldDb.claimNextPendingMsg(oldHandle)?.prompt).toBe("original after restart");
+    oldDb.close();
+    now += 101;
+
+    const db = openDb(path, { serviceId: "telegram:interactive", runId: "after-restart", lockLeaseMs: 100, clock: () => now });
+    const prompts: string[] = [];
+    const engine = new BridgeEngine({
+      ...options("claude"), busyMessageMode: "augment",
+      hooks: { onAfterExecute: async (prompt: string) => { prompts.push(prompt); } },
+    }, db, client(), { runCli: vi.fn().mockResolvedValue('{"result":"recovered","session_id":"recovered-session"}') });
+    await engine.recoverPendingQueues();
+    expect(prompts).toEqual(["original after restart\n\naddition after restart"]);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    db.close(); rmSync(path, { force: true }); rmSync("/tmp/original-after-restart", { force: true }); rmSync("/tmp/addition-after-restart", { force: true });
+  });
+
+  it("cancels an augmented successor and reruns the complete batch when a later addition arrives", async () => {
+    const path = join(tmpdir(), `augment-successor-${Date.now()}-${Math.random()}.sqlite`);
+    const firstReady = join(tmpdir(), `augment-successor-first-${Date.now()}-${Math.random()}`);
+    const successorReady = join(tmpdir(), `augment-successor-next-${Date.now()}-${Math.random()}`);
+    const db = openDb(path);
+    const c = client();
+    const finalRun = vi.fn().mockResolvedValue('{"result":"augmented final","session_id":"augmented-final"}');
+    const engine = new BridgeEngine({ ...options("claude"), busyMessageMode: "augment" }, db, c, {
+      runCli: vi.fn()
+        .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(process.execPath, ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", firstReady], cwd, cliOptions))
+        .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(process.execPath, ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", successorReady], cwd, cliOptions))
+        .mockImplementationOnce(finalRun),
+    });
+
+    const first = engine.handleMessages([message("original successor", 7)]);
+    await waitForFile(firstReady);
+    const successor = engine.handleMessages([message("first successor addition", 7)]);
+    await waitForFile(successorReady);
+    const newest = engine.handleMessages([message("latest successor addition", 7)]);
+    await Promise.all([first, successor, newest]);
+
+    expect(finalRun).toHaveBeenCalledOnce();
+    expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === "augmented final")).toHaveLength(1);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    db.close(); rmSync(path, { force: true }); rmSync(firstReady, { force: true }); rmSync(successorReady, { force: true });
+  }, 12_000);
+
   it("keeps /reset fenced through delayed finalisation before allowing a new acquisition", async () => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: "same-process" });
     const c = client();
@@ -601,7 +696,7 @@ describe("execution lane correctness", () => {
         }
       },
     };
-    const engine = new BridgeEngine({ ...options("claude", hooks), asyncEnabled }, db, c, {
+    const engine = new BridgeEngine({ ...options("claude", hooks), busyMessageMode: "interrupt", asyncEnabled }, db, c, {
       runCli: vi.fn().mockResolvedValueOnce(cancelledResult).mockImplementationOnce(nextRun),
       runCliAsync: vi.fn().mockResolvedValueOnce({ text: cancelledResult }).mockImplementationOnce(async () => ({ text: await nextRun() })),
     });
@@ -661,6 +756,43 @@ describe("execution lane correctness", () => {
 
     expect(db.getSession("100:7", "claude")).toBe("delivered-session");
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === `delivery winner ${mode}`)).toBe(true);
+    db.close();
+  });
+
+  it.each([
+    { mode: "synchronous", asyncEnabled: false },
+    { mode: "asynchronous", asyncEnabled: true },
+  ])("starts a separate turn for a message admitted after $mode final delivery begins", async ({ mode, asyncEnabled }) => {
+    const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: `augment-final-fence-${mode}` });
+    const c = client();
+    let releaseDelivery!: () => void;
+    let deliveryEntered!: () => void;
+    const delivery = new Promise<void>((resolve) => { releaseDelivery = resolve; });
+    const entered = new Promise<void>((resolve) => { deliveryEntered = resolve; });
+    c.sendMessage.mockImplementation(async (body: any) => {
+      if (body.text === `first final ${mode}`) { deliveryEntered(); await delivery; }
+      return { ok: true, result: { message_id: 1 } };
+    });
+    const executed: string[] = [];
+    const firstResult = JSON.stringify({ result: `first final ${mode}`, session_id: "first-final" });
+    const secondResult = JSON.stringify({ result: `second turn ${mode}`, session_id: "second-turn" });
+    const engine = new BridgeEngine({
+      ...options("claude"), busyMessageMode: "augment", asyncEnabled,
+      hooks: { onAfterExecute: async (prompt: string) => { executed.push(prompt); } },
+    }, db, c, {
+      runCli: vi.fn().mockResolvedValueOnce(firstResult).mockResolvedValueOnce(secondResult),
+      runCliAsync: vi.fn().mockResolvedValueOnce({ text: firstResult }).mockResolvedValueOnce({ text: secondResult }),
+    });
+
+    const execution = engine.handleMessages([message(`first request ${mode}`, 7)]);
+    await entered;
+    const separate = engine.handleMessages([message(`new turn ${mode}`, 7)]);
+    releaseDelivery();
+    await Promise.all([execution, separate]);
+
+    expect(executed).toEqual([`first request ${mode}`, `new turn ${mode}`]);
+    expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === `first final ${mode}`)).toHaveLength(1);
+    expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === `second turn ${mode}`)).toHaveLength(1);
     db.close();
   });
 

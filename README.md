@@ -217,7 +217,7 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 | `WORKER_SCRIBE_CLI_COMMAND` | Worker | `DEFECT_SCAN_CLI_COMMAND` or first `WORKER_SCRIBE_CLI_CHAIN` entry | Primary CLI command for read-only/prose jobs |
 | `BRIDGE_ASYNC_ENABLED` | All | `true` | Enable streaming (disable for sync/plain mode) |
 | `BRIDGE_EXECUTION_MODE` | All | `safe` | `safe` or `trusted` (bypasses CLI approval prompts) |
-| `BRIDGE_BUSY_MESSAGE_MODE` | All | `interrupt` | `interrupt` aborts the active turn for a new ordinary message; `queue` retains durable FIFO behavior |
+| `BRIDGE_BUSY_MESSAGE_MODE` | All | `augment` | `augment` folds ordinary busy messages into one logical task; `interrupt` aborts and runs only the latest; `queue` retains durable FIFO turns |
 | `BRIDGE_WORKSPACE_LOCK_MODE` | All | `on` | `on` protects Git worktree CLI execution; companion/provider services use `off` when intentionally sharing the canonical checkout |
 | `BRIDGE_ADVISOR_ENABLED` | Companion/Worker | `false` | Enable frontier advisor calls; kill switch for the capability |
 | `BRIDGE_ADVISOR_MODE` | Companion/Worker | `manual` | `manual`, `suggest`, or `auto` consultation policy |
