@@ -1,4 +1,4 @@
-name: Restore unrelated generated files
+name: Remove unrelated generated files
 
 on:
   pull_request:
@@ -21,15 +21,15 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
-      - name: Restore unrelated files and verify scope
+      - name: Remove generated files and verify scope
         shell: bash
         run: |
           set -Eeuo pipefail
-          git checkout "${{ github.event.pull_request.base.sha }}" -- \
+          rm -f \
             scripts/__pycache__/agent-bridge-deploy.cpython-312.pyc \
             scripts/__pycache__/offline-baseline-validate.cpython-312.pyc \
-            scripts/__pycache__/release-stage.cpython-312.pyc
-          rm -f .github/workflows/restore-unrelated-generated-files.yml
+            scripts/__pycache__/release-stage.cpython-312.pyc \
+            .github/workflows/restore-unrelated-generated-files.yml
 
           python - <<'PY'
           import subprocess
@@ -64,5 +64,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Restore unrelated generated files"
+          git commit -m "Remove unrelated generated files"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
