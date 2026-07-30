@@ -150,6 +150,12 @@ Trace every changed behaviour through its required path:
 
 A helper, parser, repository method, DTO, endpoint, UI component, or unit test alone is not a completed feature. Each externally exposed slice must be vertically complete. Incomplete infrastructure may merge only when existing public behaviour is preserved or the new path is explicitly disabled behind a safe flag.
 
+## Assess rollout impact
+
+Every PR must include either `Rollout impact: none` or `Rollout impact: required — included in this PR`.
+
+Mark it required only when the change affects release contents, systemd units, database migrations, filesystem paths or permissions, runtime configuration, startup, acceptance, or rollback.
+
 ## Use authoritative state and verify postconditions
 
 Identify the authoritative source for every status or decision. Do not infer authentication from files when the provider can report it, Git state from model output, service state from an attempted command, or deployment success from intended actions.
