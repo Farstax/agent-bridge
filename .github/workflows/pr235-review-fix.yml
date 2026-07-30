@@ -52,4 +52,4 @@ jobs:
           git commit -m "fix: resolve augment lifecycle review"
           git push origin HEAD:feat/issue-217-augment-default
 
-# Retriggered after correcting the engine-only patch.
+# Retriggered after correcting the focused test oracle.
