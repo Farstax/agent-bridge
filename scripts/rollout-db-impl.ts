@@ -7,7 +7,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { BridgeDb, openDb, openProductionDb } from "../src/db.js";
@@ -17,7 +17,7 @@ import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } fr
 /** The five canonical database roles (policy doc §4) — structural validity only; the actual role/path allowlist lives in the root-owned bootstrap config, outside this script's scope. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "worker"]);
 
-type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "bootstrap";
+type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "relocate" | "bootstrap";
 
 interface Options {
   mode: Mode;
@@ -86,7 +86,7 @@ const CURRENT_LOCK_COLUMNS = new Set([
 
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
-  if (!mode || !["inspect", "checkpoint", "migrate", "validate", "reconcile"].includes(mode)) {
+  if (!mode || !["inspect", "checkpoint", "migrate", "validate", "reconcile", "relocate"].includes(mode)) {
     throw new Error("usage: rollout-db.ts <inspect|checkpoint|migrate|validate|reconcile> --db PATH [--db PATH ...]");
   }
   const databases: string[] = [];
@@ -119,6 +119,40 @@ function parseArgs(argv: string[]): Options {
   if (mode === "reconcile" && !reason?.trim()) throw new Error("reconcile requires --reason");
   if (restartBoundary && !/^[0-9T:.Z-]+$/.test(restartBoundary)) throw new Error("invalid --restart-boundary");
   return { mode, databases, evidencePath, resolvingUnits, reason, restartBoundary };
+}
+
+function parseRelocationArgs(argv: string[]): { source: string; target: string } {
+  let source: string | null = null;
+  let target: string | null = null;
+  while (argv.length > 0) {
+    const flag = argv.shift();
+    const value = argv.shift();
+    if (!value) throw new Error(`missing value for ${flag}`);
+    if (flag === "--from" && !source) source = value;
+    else if (flag === "--to" && !target) target = value;
+    else throw new Error(`unknown or duplicate relocation argument: ${flag}`);
+  }
+  if (!source || !target) throw new Error("relocate requires --from and --to");
+  return { source, target };
+}
+
+function relocateDatabase(source: string, target: string): void {
+  if (!source.startsWith("/") || !target.startsWith("/")) throw new Error("relocation paths must be absolute");
+  if (source === target) throw new Error("relocation source and target must differ");
+  const sourceStat = lstatSync(source);
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw new Error(`relocation source is not a regular file: ${source}`);
+  if (pathOccupied(target)) throw new Error(`relocation target is already occupied: ${target}`);
+  mkdirSync(dirname(target), { recursive: true, mode: 0o750 });
+  copyFileSync(source, target);
+  const fd = openSync(target, "r");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  for (const suffix of ["-wal", "-shm"]) {
+    const sidecar = `${source}${suffix}`;
+    if (!existsSync(sidecar)) continue;
+    const sidecarStat = lstatSync(sidecar);
+    if (!sidecarStat.isFile() || sidecarStat.isSymbolicLink()) throw new Error(`relocation sidecar is not a regular file: ${sidecar}`);
+    copyFileSync(sidecar, `${target}${suffix}`);
+  }
 }
 
 interface BootstrapOptions {
@@ -915,6 +949,11 @@ async function main(): Promise<void> {
       databaseRole: options.role,
     });
     db.close();
+    return;
+  }
+  if (argv[0] === "relocate") {
+    const { source, target } = parseRelocationArgs(argv.slice(1));
+    relocateDatabase(source, target);
     return;
   }
   const options = parseArgs(argv);

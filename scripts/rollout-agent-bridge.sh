@@ -118,6 +118,7 @@ backup_dir=""
 log_dir=""
 declare -a databases=()
 declare -a units=()
+legacy_health_database=""
 while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
   [[ -z "$key" || "$key" == \#* ]] && continue
   [[ -n "$value" ]] || die "empty rollout config value for $key"
@@ -138,9 +139,13 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     log_dir) [[ -z "$log_dir" ]] || die "duplicate log_dir"; log_dir="$value" ;;
     unit) units+=("$value") ;;
     database) databases+=("$value") ;;
+    legacy_database) [[ -z "$legacy_health_database" ]] || die "duplicate legacy_database"; legacy_health_database="$value" ;;
     *) die "unknown rollout config key: $key" ;;
   esac
 done < "$config_file"
+
+health_relocation_source=""
+health_relocation_target=""
 
 release_mode=0
 if [[ -n "$release_root" || -n "$current_pointer" ]]; then
@@ -354,6 +359,13 @@ for unit in "${units[@]}"; do
   read_env_key "$unit_env" "$db_key" "$inherited_value"
   discovered="$resolved_env_value"
   [[ "$discovered" == /* ]] || die "$unit would use a missing, relative, or defaulted $db_key"
+  if [[ "$unit" == "agent-bridge-health.service" && ! -f "$discovered" && -n "$legacy_health_database" ]]; then
+    [[ ! -e "$discovered" && ! -L "$discovered" ]] || die "health database target is occupied by a non-regular path: $discovered"
+    [[ "$legacy_health_database" == /* && -f "$legacy_health_database" && ! -L "$legacy_health_database" ]] || die "legacy health database is missing or symlinked: $legacy_health_database"
+    health_relocation_source="$legacy_health_database"
+    health_relocation_target="$discovered"
+    discovered="$legacy_health_database"
+  fi
   [[ -f "$discovered" && ! -L "$discovered" ]] || die "missing database or symlinked database for $unit: $discovered"
   canonical="$(/usr/bin/realpath -e "$discovered")"
   [[ "$canonical" == "$discovered" ]] || die "database path for $unit is not canonical: $discovered"
@@ -362,8 +374,14 @@ for unit in "${units[@]}"; do
 done
 
 declare -A canonical_databases=()
-for database in "${databases[@]}"; do
+for database_index in "${!databases[@]}"; do
+  database="${databases[$database_index]}"
   [[ "$database" == /* && "$database" != *[[:space:]]* ]] || die "database allowlist entries must be canonical absolute paths without whitespace"
+  if [[ -n "$health_relocation_target" && "$database" == "$health_relocation_target" ]]; then
+    [[ -n "$health_relocation_source" ]] || die "health relocation source is unavailable"
+    databases[$database_index]="$health_relocation_source"
+    database="$health_relocation_source"
+  fi
   [[ -f "$database" && ! -L "$database" ]] || die "missing database or symlinked database: $database"
   canonical="$(/usr/bin/realpath -e "$database")"
   [[ "$canonical" == "$database" ]] || die "database path is not canonical: $database"
@@ -960,11 +978,14 @@ fi
 [[ -f "$project_dir/node_modules/tsx/dist/cli.mjs" ]] || die "tsx runtime is missing"
 
 db_args=()
-for database in "${databases[@]}"; do db_args+=(--db "$database"); done
-# Per-database resolving-units evidence field (Phase 4C.3, issue #135):
-# reuses the unit->canonical-path resolution already proven above rather
-# than having rollout-db.ts re-derive it independently.
-for unit in "${!unit_databases[@]}"; do db_args+=(--resolving-unit "${unit_databases[$unit]}=$unit"); done
+build_db_args() {
+  db_args=()
+  for database in "${databases[@]}"; do db_args+=(--db "$database"); done
+  # Per-database resolving-units evidence reuses the unit->canonical-path
+  # resolution already proven above rather than re-deriving it in TypeScript.
+  for unit in "${!unit_databases[@]}"; do db_args+=(--resolving-unit "${unit_databases[$unit]}=$unit"); done
+}
+build_db_args
 run_db_tool() {
   run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
 }
@@ -994,6 +1015,15 @@ run_db_tool checkpoint --evidence - "${db_args[@]}" > "$artifact_dir/checkpoint-
 hash_evidence_file "$artifact_dir/checkpoint-evidence.json"
 clear_stale_sqlite_sidecars
 record_phase WAL_DRAINED
+
+if [[ -n "$health_relocation_source" ]]; then
+  echo "relocating legacy health database source=$health_relocation_source target=$health_relocation_target"
+  run_db_tool relocate --from "$health_relocation_source" --to "$health_relocation_target"
+  for database_index in "${!databases[@]}"; do
+    [[ "${databases[$database_index]}" == "$health_relocation_source" ]] && databases[$database_index]="$health_relocation_target"
+  done
+  build_db_args
+fi
 
 echo "backing up all databases"
 backup_databases
@@ -1045,8 +1075,18 @@ for unit in "${units[@]}"; do
 done
 run_db_tool validate --restart-boundary "$restart_boundary" --evidence - "${db_args[@]}" > "$artifact_dir/post-start-evidence.json"
 hash_evidence_file "$artifact_dir/post-start-evidence.json"
-"$acceptance_validator" --before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --reconciliation-evidence "$artifact_dir/reconciliation-evidence.json" --output "$artifact_dir/acceptance-evidence.json" || die "bounded queue/claim/lock acceptance failed"
+acceptance_args=(--before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --reconciliation-evidence "$artifact_dir/reconciliation-evidence.json" --output "$artifact_dir/acceptance-evidence.json")
+if [[ -n "$health_relocation_source" ]]; then
+  acceptance_args+=(--relocated-from "$health_relocation_source" --relocated-to "$health_relocation_target")
+fi
+"$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
+if [[ -n "$health_relocation_source" ]]; then
+  echo "retiring legacy health database path=$health_relocation_source"
+  /usr/bin/rm -f -- "$health_relocation_source" "${health_relocation_source}-wal" "${health_relocation_source}-shm"
+  [[ ! -e "$health_relocation_source" && ! -L "$health_relocation_source" ]] || die "legacy health database could not be retired"
+  record_phase HEALTH_DB_RELOCATED
+fi
 record_phase ACCEPTED
 
 completed=1

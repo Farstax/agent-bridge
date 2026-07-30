@@ -23,9 +23,13 @@ def load(path: Path) -> dict:
     return value
 
 
-def compare(before: dict, after: dict, reconciliation_evidence: dict | None = None) -> dict:
+def compare(before: dict, after: dict, reconciliation_evidence: dict | None = None, relocated_from: str | None = None, relocated_to: str | None = None) -> dict:
     left = {entry.get("path"): entry for entry in before["databases"]}
     right = {entry.get("path"): entry for entry in after["databases"]}
+    if relocated_from or relocated_to:
+        if not relocated_from or not relocated_to or relocated_from not in left or relocated_to in left:
+            fail("invalid database relocation evidence")
+        left[relocated_to] = {**left.pop(relocated_from), "path": relocated_to}
     if set(left) != set(right) or None in left:
         fail("database inventory changed during bounded acceptance")
     results = []
@@ -54,9 +58,17 @@ def main() -> int:
     parser.add_argument("--before", type=Path, required=True)
     parser.add_argument("--after", type=Path, required=True)
     parser.add_argument("--reconciliation-evidence", type=Path)
+    parser.add_argument("--relocated-from")
+    parser.add_argument("--relocated-to")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    result = compare(load(args.before), load(args.after), load(args.reconciliation_evidence) if args.reconciliation_evidence else None)
+    result = compare(
+        load(args.before),
+        load(args.after),
+        load(args.reconciliation_evidence) if args.reconciliation_evidence else None,
+        args.relocated_from,
+        args.relocated_to,
+    )
     args.output.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     args.output.chmod(0o600)
     print("accepted")
