@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -106,6 +106,107 @@ describe("unified advisor service", () => {
     const call = db.raw.prepare("SELECT scope_key, turn_key, task_key FROM advisor_calls").get() as any;
     expect(call).toMatchObject({ scope_key: "chat:7", turn_key: "turn-1", task_key: "task-1" });
     await broker.close();
+    db.close();
+  });
+
+  it("uses bounded repository evidence for a manual request", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "advisor-service-read-tools-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "README.md"), "Current repository evidence: bounded reads are enabled.\n");
+    const db = openDb(":memory:");
+    const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
+      if (runCli.mock.calls.length === 1) {
+        return JSON.stringify({
+          hypothesis: "Inspect the current repository documentation",
+          tool_requests: [{ tool: "repo.read_file", path: "README.md" }],
+          missing_evidence: [],
+        });
+      }
+      expect(args.join(" ")).toContain("Current repository evidence: bounded reads are enabled.");
+      return JSON.stringify({
+        advice_md: "The repository confirms bounded advisor reads are enabled.",
+        risks: [],
+        suggested_next_steps: [],
+        confidence: "high",
+      });
+    });
+    const service = new AdvisorService({
+      db,
+      config: parseAdvisorConfig({
+        BRIDGE_ADVISOR_ENABLED: "true",
+        BRIDGE_ADVISOR_CHAIN: "claude:claude-fable-5",
+      }),
+      bots: { claude: { command: "/trusted/claude", modelPreference: [] } },
+      runCli,
+    });
+
+    const result = await service.requestTrusted({
+      origin: "manual",
+      scopeKey: "chat:read-tools",
+      turnKey: "turn-read-tools",
+      mode: "review",
+      task: "Review the repository read-tool state",
+      activeProvider: "codex",
+      activeModel: null,
+      cwd: dir,
+    });
+
+    expect(result.adviceMd).toContain("bounded advisor reads");
+    expect(runCli).toHaveBeenCalledTimes(2);
+    for (const [, args] of runCli.mock.calls) {
+      expect(args).toEqual(expect.arrayContaining(["--tools", ""]));
+    }
+    db.close();
+  });
+
+  it("keeps manual debug requests on the ordinary advisor result contract", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "advisor-service-manual-debug-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "README.md"), "Manual debug evidence.\n");
+    const db = openDb(":memory:");
+    const runCli = vi.fn().mockImplementation(async () => {
+      if (runCli.mock.calls.length === 1) {
+        return JSON.stringify({
+          hypothesis: "Inspect the current repository documentation",
+          tool_requests: [{ tool: "repo.read_file", path: "README.md" }],
+          missing_evidence: [],
+        });
+      }
+      return JSON.stringify({
+        advice_md: "Manual debugging guidance.",
+        risks: [],
+        suggested_next_steps: ["Inspect the reported behavior"],
+        confidence: "medium",
+      });
+    });
+    const service = new AdvisorService({
+      db,
+      config: parseAdvisorConfig({
+        BRIDGE_ADVISOR_ENABLED: "true",
+        BRIDGE_ADVISOR_CHAIN: "claude:claude-fable-5",
+      }),
+      bots: { claude: { command: "/trusted/claude", modelPreference: [] } },
+      runCli,
+    });
+
+    const result = await service.requestTrusted({
+      origin: "manual",
+      scopeKey: "chat:manual-debug",
+      turnKey: "turn-manual-debug",
+      mode: "debug",
+      task: "Debug the reported behavior",
+      activeProvider: "codex",
+      activeModel: null,
+      cwd: dir,
+    });
+
+    expect(result).toMatchObject({
+      adviceMd: "Manual debugging guidance.",
+      suggestedNextSteps: ["Inspect the reported behavior"],
+      confidence: "medium",
+    });
+    expect(result.verdict).toBeUndefined();
+    expect(runCli).toHaveBeenCalledTimes(2);
     db.close();
   });
 });

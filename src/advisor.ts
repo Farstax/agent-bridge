@@ -8,6 +8,7 @@ import { assertChainSupportsProfile, shouldAllowAdvisorCall, type AdvisorExecuti
 import {
   buildAdvisorContext,
   buildAdvisorDebugFinalPrompt,
+  buildAdvisorEvidenceFinalPrompt,
   buildAdvisorPrompt,
   buildAdvisorToolSelectionPrompt,
   parseAdvisorDebugOutput,
@@ -193,16 +194,15 @@ export async function executeAdvisorRequest(deps: AdvisorExecutionDeps): Promise
 }
 
 /**
- * Tool-assisted debugging still invokes every provider with toolMode:none. The
- * model selects typed read-only evidence requests; Agent Bridge validates and
- * executes them through the supplied broker. Both model turns consume one
- * logical advisor budget row and share one request/attempt audit sequence.
+ * Bounded evidence-assisted advisor requests still invoke every provider with
+ * toolMode:none. The model selects typed read-only evidence requests; Agent
+ * Bridge validates and executes them through the supplied broker. Both model
+ * turns consume one logical advisor budget row and share one attempt sequence.
  */
 export async function executeAdvisorInvestigation(
   deps: AdvisorExecutionDeps & { evidenceTools: AdvisorEvidenceToolBroker },
 ): Promise<AdvisorResult> {
   validateAdvisorRequest(deps);
-  if (deps.request.mode !== "debug") throw new Error("Advisor evidence investigation is available only in debug mode");
   const { db, config, request } = deps;
   const context = buildAdvisorContext(db, {
     scopeKey: request.scopeKey,
@@ -214,6 +214,7 @@ export async function executeAdvisorInvestigation(
 
   try {
     const selectionPrompt = buildAdvisorToolSelectionPrompt({
+      mode: request.mode,
       activeProvider: request.activeProvider,
       activeModel: request.activeModel,
       context,
@@ -233,6 +234,33 @@ export async function executeAdvisorInvestigation(
       1,
     );
     const toolResults = await deps.evidenceTools.execute(selection.value.toolRequests);
+
+    if (request.mode !== "debug" || request.origin !== "worker") {
+      const finalPrompt = buildAdvisorEvidenceFinalPrompt({
+        mode: request.mode,
+        activeProvider: request.activeProvider,
+        activeModel: request.activeModel,
+        context,
+        hypothesis: selection.value.hypothesis,
+        missingEvidence: selection.value.missingEvidence,
+        results: toolResults,
+      });
+      const completed = await executeAdvisorPrompt(deps, finalPrompt, parseAdvisorOutput, selection.nextOrdinal);
+      const hasLimitedEvidence = selection.value.missingEvidence.length > 0
+        || toolResults.some((result) => result.status !== "ok" || result.truncated);
+      const confidence = hasLimitedEvidence && completed.value.confidence === "high"
+        ? "medium"
+        : completed.value.confidence;
+      db.completeAdvisorCall(request.requestId, completed.provider, completed.model, confidence);
+      return {
+        ...completed.value,
+        confidence,
+        provider: completed.provider,
+        model: completed.model,
+        requestId: request.requestId,
+      };
+    }
+
     const finalPrompt = buildAdvisorDebugFinalPrompt({
       activeProvider: request.activeProvider,
       activeModel: request.activeModel,

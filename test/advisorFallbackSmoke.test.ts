@@ -14,6 +14,11 @@ function fakeCodex(): string {
   const dir = mkdtempSync(join(tmpdir(), "advisor-smoke-fake-codex-"));
   dirs.push(dir);
   const command = join(dir, "codex");
+  const selection = JSON.stringify({
+    hypothesis: "Inspect the isolated repository status.",
+    tool_requests: [{ tool: "git.status" }],
+    missing_evidence: [],
+  });
   const advice = JSON.stringify({
     advice_md: "Fallback is isolated.",
     risks: [],
@@ -22,7 +27,10 @@ function fakeCodex(): string {
   });
   writeFileSync(command, [
     "#!/usr/bin/env node",
-    `process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:${JSON.stringify(advice)}}})+"\\n");`,
+    'const { readFileSync } = require("node:fs");',
+    'const prompt = `${process.argv.slice(2).join(" ")}\n${readFileSync(0, "utf8")}`;',
+    `const text = prompt.includes("Select only the minimum read-only evidence") ? ${JSON.stringify(selection)} : ${JSON.stringify(advice)};`,
+    'process.stdout.write(JSON.stringify({type:"item.completed",item:{type:"agent_message",text}})+"\\n");',
   ].join("\n"));
   chmodSync(command, 0o700);
   return command;
@@ -51,6 +59,8 @@ describe("isolated advisor fallback smoke", () => {
     expect(result.attempts).toEqual([
       expect.objectContaining({ ordinal: 1, provider: "claude", model: "claude-fable-5", status: "failed", error_kind: "capacity_exhausted" }),
       expect.objectContaining({ ordinal: 2, provider: "codex", model: "gpt-5.6-sol", status: "succeeded" }),
+      expect.objectContaining({ ordinal: 3, provider: "claude", model: "claude-fable-5", status: "failed", error_kind: "capacity_exhausted" }),
+      expect.objectContaining({ ordinal: 4, provider: "codex", model: "gpt-5.6-sol", status: "succeeded" }),
     ]);
     expect(result.selectedProvider).toBe("codex");
     expect(result.selectedModel).toBe("gpt-5.6-sol");
@@ -75,6 +85,6 @@ describe("isolated advisor fallback smoke", () => {
     });
 
     expect(result.selectedProvider).toBe("codex");
-    expect(result.attempts).toHaveLength(2);
+    expect(result.attempts).toHaveLength(4);
   });
 });
