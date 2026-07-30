@@ -585,12 +585,12 @@ sudo install -D -m 0644 systemd/agent-bridge-health.service /etc/systemd/system/
 sudo install -D -m 0644 systemd/agent-bridge-discord-interactive.service /etc/systemd/system/agent-bridge-discord-interactive.service
 sudo install -D -m 0644 systemd/agent-bridge-tmp-cleanup.service /etc/systemd/system/agent-bridge-tmp-cleanup.service
 sudo install -D -m 0644 systemd/agent-bridge-tmp-cleanup.timer /etc/systemd/system/agent-bridge-tmp-cleanup.timer
-sudo sed -i 's/User=BRIDGE_USER/User='"$USER"'/g; s#BRIDGE_REPO_DIR#'"$(pwd)"'#g' /etc/systemd/system/agent-bridge-*.service
+sudo sed -i 's/User=BRIDGE_USER/User='"$USER"'/g' /etc/systemd/system/agent-bridge-*.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now agent-bridge-antigravity agent-bridge-codex agent-bridge-tmp-cleanup.timer
 ```
 
-The repo service templates intentionally use `User=BRIDGE_USER` as an install-time placeholder. If you copy units manually, replace that placeholder with the real runtime account before starting the service; otherwise systemd fails with `status=217/USER`. `agent-bridge-tmp-cleanup.service` also has a `BRIDGE_REPO_DIR` placeholder, replaced with the path to this checkout.
+The repo service templates intentionally use `User=BRIDGE_USER` as an install-time placeholder. If you copy units manually, replace that placeholder with the real runtime account before starting the service; otherwise systemd fails with `status=217/USER`. The cleanup service resolves its executable through `/etc/default/agent-bridge-release` and the immutable `current` release pointer.
 
 ### Safe remote restart helper
 

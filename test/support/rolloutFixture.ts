@@ -161,6 +161,10 @@ export function rewriteConfig(fixture: Fixture, transform: (lines: string[]) => 
 export function writeFakeCommands(fixture: Fixture): void {
   const bin = join(fixture.root, "bin");
   mkdirSync(bin, { recursive: true });
+  executable(join(bin, "release-stage"), `#!/usr/bin/env bash
+set -euo pipefail
+echo "release-stage:$*" >> "${fixture.actionLog}"
+`);
   executable(join(bin, "rollout-restore"), `#!/usr/bin/env bash
 set -euo pipefail
 echo "rollout-restore:$*" >> "${fixture.actionLog}"
@@ -201,8 +205,12 @@ fi
   executable(join(bin, "systemctl"), `#!/usr/bin/env bash
 set -euo pipefail
 echo "systemctl:$*" >> "${fixture.actionLog}"
-cmd="$1"; shift
-case "$cmd" in
+  cmd="$1"; shift
+  case "$cmd" in
+  cat)
+    unit="$1"
+    printf '[Unit]\nDescription=%s\n[Service]\nEnvironmentFile=-%s\nEnvironmentFile=%s\nEnvironmentFile=%s\n' "$unit" "${fixture.envDir}/agent-bridge-shared" "${fixture.envDir}/agent-bridge-release" "${fixture.envDir}/\${unit%.service}"
+    ;;
   daemon-reload)
     : > "${fixture.root}/daemon-reloaded"
     ;;
@@ -287,7 +295,25 @@ case "$cmd" in
     for arg in "$@"; do case "$arg" in --property=*) properties+=("\${arg#--property=}");; esac; done
     for property in "\${properties[@]}"; do
       case "$property" in
-        EnvironmentFiles) printf '%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
+        EnvironmentFiles)
+          case "\${FAKE_ENVIRONMENT_FILES_MODE:-correct}" in
+            missing) printf '%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
+            extra) printf '%s\n%s\n%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/agent-bridge-release (ignore_errors=no)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" "${fixture.envDir}/unexpected (ignore_errors=no)" ;;
+            reordered) printf '%s\n%s\n%s\n' "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" "${fixture.envDir}/agent-bridge-release (ignore_errors=no)" "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" ;;
+            *) printf '%s\n%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/agent-bridge-release (ignore_errors=no)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
+          esac
+          ;;
+        FragmentPath)
+          if [ "\${FAKE_FRAGMENT_MODE:-correct}" = unexpected ]; then echo "${fixture.root}/unexpected/\${unit}"; else echo "${fixture.root}/systemd/\${unit}"; fi
+          ;;
+        DropInPaths)
+          case "\${FAKE_DROPIN_MODE:-empty}" in
+            extra|path) echo "${fixture.root}/systemd/agent-bridge.service.d/override.conf" ;;
+            newline) printf '\\n' ;;
+            multiple-newlines) printf '\\n\\n\\n' ;;
+            spaces) printf ' \\n' ;;
+          esac
+          ;;
         Environment) echo NODE_ENV=production ;;
         ActiveState)
           if [ "$unit" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-active" ]; then echo active
@@ -443,6 +469,7 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   }
 
   writeFileSync(join(envDir, "agent-bridge-shared"), `DB_PATH=${dbPaths[0]}\n`, { mode: 0o600 });
+  writeFileSync(join(envDir, "agent-bridge-release"), "# fixture release environment\n", { mode: 0o600 });
   for (const unit of units) {
     const name = unit.replace(/\.service$/, "");
     let content = "";

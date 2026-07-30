@@ -92,8 +92,10 @@ jobs:
         run: |
           set -Eeuo pipefail
           test "$(git rev-parse HEAD)" = "$TARGET_COMMIT"
-          git diff --quiet HEAD -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json
+          git diff --quiet HEAD -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json
+          git diff --quiet HEAD -- scripts/reap-tmp-artifacts.sh systemd/agent-bridge-tmp-cleanup.service systemd/agent-bridge-tmp-cleanup.timer tsconfig.json
            test -z "$(git status --porcelain -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json)"
+           test -z "$(git status --porcelain -- scripts/reap-tmp-artifacts.sh systemd/agent-bridge-tmp-cleanup.service systemd/agent-bridge-tmp-cleanup.timer tsconfig.json)"
 
       - name: Derive target schema contract
         working-directory: target-source
@@ -113,7 +115,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           materials="$RUNNER_TEMP/target-materials.tar.gz"
-           paths="src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json tsconfig.json node_modules target-schema.json"
+           paths="src scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/reap-tmp-artifacts.sh systemd/agent-bridge-tmp-cleanup.service systemd/agent-bridge-tmp-cleanup.timer package.json package-lock.json tsconfig.json node_modules target-schema.json"
           if [ -d target-source/dist ]; then paths="dist $paths"; fi
           tar --create --gzip --file "$materials" \
             --directory target-source --sort=name --owner=0 --group=0 --numeric-owner \
