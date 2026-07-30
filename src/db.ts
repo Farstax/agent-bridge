@@ -918,7 +918,7 @@ export class BridgeDb {
       if (active) return null;
       const row = this.raw.prepare(`
         SELECT id, chat_key AS chatKey, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
-               attachments_json AS attachmentsJson
+               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson
         FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' ORDER BY id ASC LIMIT 1
       `).get(surface, chatKey) as any;
       if (!row) return null;
@@ -927,7 +927,7 @@ export class BridgeDb {
         WHERE id = ? AND state = 'queued'
       `).run(handle.runId, handle.acquisitionId, new Date().toISOString(), row.id).changes;
       if (changed !== 1) return null;
-      const { attachmentsJson, ...claimed } = row;
+      const { attachmentsJson, state: _state, claimRunId: _claimRunId, claimAcquisitionId: _claimAcquisitionId, ...claimed } = row;
       return { ...claimed, attachments: JSON.parse(attachmentsJson || "[]") };
     });
   }
@@ -945,9 +945,12 @@ export class BridgeDb {
       `).run(surface, chatKey, handle.runId, handle.acquisitionId);
       const rows = this.raw.prepare(`
         SELECT id, chat_key AS chatKey, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
-               attachments_json AS attachmentsJson
-        FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' ORDER BY id ASC
-      `).all(surface, chatKey) as any[];
+               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson
+        FROM pending_messages
+        WHERE surface = ? AND chat_key = ?
+          AND (state = 'queued' OR (state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?))
+        ORDER BY id ASC
+      `).all(surface, chatKey, handle.runId, handle.acquisitionId) as any[];
       if (rows.length === 0) return [];
       const claimedAt = new Date().toISOString();
       const claim = this.raw.prepare(`
@@ -955,11 +958,12 @@ export class BridgeDb {
         WHERE id = ? AND state = 'queued'
       `);
       for (const row of rows) {
+        if (row.state === "claimed" && row.claimRunId === handle.runId && row.claimAcquisitionId === handle.acquisitionId) continue;
         if (claim.run(handle.runId, handle.acquisitionId, claimedAt, row.id).changes !== 1) {
           throw new Error("pending message claim lost race");
         }
       }
-      return rows.map(({ attachmentsJson, ...row }) => ({ ...row, attachments: JSON.parse(attachmentsJson || "[]") }));
+      return rows.map(({ attachmentsJson, state: _state, claimRunId: _claimRunId, claimAcquisitionId: _claimAcquisitionId, ...row }) => ({ ...row, attachments: JSON.parse(attachmentsJson || "[]") }));
     });
   }
 
