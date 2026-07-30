@@ -235,7 +235,7 @@ export async function executeAdvisorInvestigation(
     );
     const toolResults = await deps.evidenceTools.execute(selection.value.toolRequests);
 
-    if (request.mode !== "debug") {
+    if (request.mode !== "debug" || request.origin !== "worker") {
       const finalPrompt = buildAdvisorEvidenceFinalPrompt({
         mode: request.mode,
         activeProvider: request.activeProvider,
