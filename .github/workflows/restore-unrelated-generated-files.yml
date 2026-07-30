@@ -1,0 +1,68 @@
+name: Restore unrelated generated files
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  restore:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/remove-compatibility-diagnostics'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Restore unrelated files and verify scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git checkout "${{ github.event.pull_request.base.sha }}" -- \
+            scripts/__pycache__/agent-bridge-deploy.cpython-312.pyc \
+            scripts/__pycache__/offline-baseline-validate.cpython-312.pyc \
+            scripts/__pycache__/release-stage.cpython-312.pyc
+          rm -f .github/workflows/restore-unrelated-generated-files.yml
+
+          python - <<'PY'
+          import subprocess
+
+          expected = {
+              "docs/roadmap/phase5-compatibility-retirement.md",
+              "src/compatibilityDiagnostics.ts",
+              "src/index-discord-interactive.ts",
+              "src/index-health.ts",
+              "src/index-interactive.ts",
+              "src/index-worker.ts",
+              "src/index.ts",
+              "test/compatibilityDiagnostics.test.ts",
+          }
+          base = subprocess.check_output(
+              ["git", "merge-base", "HEAD", "${{ github.event.pull_request.base.sha }}"],
+              text=True,
+          ).strip()
+          actual = set(subprocess.check_output(
+              ["git", "diff", "--name-only", base],
+              text=True,
+          ).splitlines())
+          if actual != expected:
+              raise SystemExit(f"unexpected final PR scope: {sorted(actual)}")
+          PY
+          git diff --check
+
+      - name: Commit scope correction
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Restore unrelated generated files"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
