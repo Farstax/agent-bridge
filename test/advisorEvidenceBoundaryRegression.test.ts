@@ -34,12 +34,22 @@ describe("advisor evidence boundary regressions", () => {
   it("scrubs task and supplied worker context before the first advisor turn", async () => {
     const dir = tempDir("advisor-context-redaction-");
     const db = openDb(join(dir, "bridge.sqlite"));
-    const runCli = vi.fn().mockResolvedValue(JSON.stringify({
-      advice_md: "Use the existing boundary.",
-      risks: [],
-      suggested_next_steps: [],
-      confidence: "low",
-    }));
+    const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
+      const prompt = String(args.at(-1));
+      if (prompt.includes('"tool_requests"')) {
+        return JSON.stringify({
+          hypothesis: "The supplied context is sufficient.",
+          tool_requests: [],
+          missing_evidence: [],
+        });
+      }
+      return JSON.stringify({
+        advice_md: "Use the existing boundary.",
+        risks: [],
+        suggested_next_steps: [],
+        confidence: "low",
+      });
+    });
     const service = new AdvisorService({
       db,
       config: config(),
