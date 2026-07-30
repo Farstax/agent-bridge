@@ -6,9 +6,10 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import { executeAdvisorInvestigation, executeAdvisorRequest } from "./advisor.js";
 import { redactAdvisorEvidenceText } from "./advisorEvidenceRedaction.js";
-import type { AdvisorEvidenceToolBroker } from "./advisorEvidenceTools.js";
+import { AdvisorEvidenceToolBroker, type AdvisorWorkerEvidence } from "./advisorEvidenceTools.js";
 import type { AdvisorExecutionProfile } from "./advisorPolicy.js";
 import type { AdvisorConfig, AdvisorOrigin, AdvisorRequest, AdvisorRequestMode, AdvisorResult } from "./advisorTypes.js";
 import type { BridgeDb } from "./db.js";
@@ -28,7 +29,9 @@ export interface TrustedAdvisorRequest {
   cwd: string;
   approved?: boolean;
   evidence?: AdvisorRequest["evidence"];
-  /** Optional Bridge-owned read-only evidence broker. Valid only for debug mode. */
+  /** Disable automatic bounded repository evidence for this trusted request. */
+  readTools?: boolean;
+  /** Optional caller-supplied read-only broker, including worker-specific evidence. */
   evidenceTools?: AdvisorEvidenceToolBroker;
 }
 
@@ -43,6 +46,29 @@ function scrubEvidence(evidence: AdvisorRequest["evidence"]): AdvisorRequest["ev
     ...(evidence.plan != null ? { plan: redactAdvisorEvidenceText(evidence.plan) } : {}),
     ...(evidence.attemptSummary != null ? { attemptSummary: redactAdvisorEvidenceText(evidence.attemptSummary) } : {}),
   };
+}
+
+function createRepositoryEvidenceTools(
+  request: TrustedAdvisorRequest,
+  evidence: AdvisorRequest["evidence"],
+): AdvisorEvidenceToolBroker | undefined {
+  if (request.readTools === false) return undefined;
+  try {
+    if (!statSync(request.cwd).isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  const workerEvidence: AdvisorWorkerEvidence = {
+    ...(evidence?.acceptanceCriteria ? { acceptance: evidence.acceptanceCriteria } : {}),
+    ...(evidence?.plan ? { plan: evidence.plan } : {}),
+    ...(evidence?.testOutput ? { testFailures: evidence.testOutput } : {}),
+    ...(evidence?.attemptSummary ? { attemptSummary: evidence.attemptSummary } : {}),
+  };
+  return new AdvisorEvidenceToolBroker({
+    repoPath: request.cwd,
+    ...(Object.keys(workerEvidence).length > 0 ? { evidence: workerEvidence } : {}),
+  });
 }
 
 export class AdvisorService {
@@ -82,8 +108,9 @@ export class AdvisorService {
       executionProfile: this.executionProfile,
       request: trustedRequest,
     };
-    return request.evidenceTools
-      ? executeAdvisorInvestigation({ ...deps, evidenceTools: request.evidenceTools })
+    const evidenceTools = request.evidenceTools ?? createRepositoryEvidenceTools(request, trustedRequest.evidence);
+    return evidenceTools
+      ? executeAdvisorInvestigation({ ...deps, evidenceTools })
       : executeAdvisorRequest(deps);
   }
 }
