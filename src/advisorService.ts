@@ -29,8 +29,6 @@ export interface TrustedAdvisorRequest {
   cwd: string;
   approved?: boolean;
   evidence?: AdvisorRequest["evidence"];
-  /** Disable automatic bounded repository evidence for this trusted request. */
-  readTools?: boolean;
   /** Optional caller-supplied read-only broker, including worker-specific evidence. */
   evidenceTools?: AdvisorEvidenceToolBroker;
 }
@@ -52,7 +50,6 @@ function createRepositoryEvidenceTools(
   request: TrustedAdvisorRequest,
   evidence: AdvisorRequest["evidence"],
 ): AdvisorEvidenceToolBroker | undefined {
-  if (request.readTools === false) return undefined;
   try {
     if (!statSync(request.cwd).isDirectory()) return undefined;
   } catch {
@@ -72,8 +69,8 @@ function createRepositoryEvidenceTools(
 }
 
 export class AdvisorService {
-  // Provider-native tools stay disabled. Any evidence access is performed by
-  // Agent Bridge through an explicitly supplied read-only broker.
+  // Provider-native tools stay disabled. Agent Bridge mediates any evidence
+  // access through its bounded read-only broker.
   readonly executionProfile: AdvisorExecutionProfile = "tool_free";
 
   constructor(private readonly deps: {
