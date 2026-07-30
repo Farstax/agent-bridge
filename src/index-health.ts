@@ -76,7 +76,7 @@ const cliBotConfig = {
   modelPreference: _healthCliParsed.modelPreference,
 };
 
-const dbPath = process.env.HEALTH_DB_PATH || ".data-health/health.sqlite";
+const dbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 
 // ── Infrastructure ───────────────────────────────────────────────────────────
 const bridgeDb = openProductionDb(dbPath, {
