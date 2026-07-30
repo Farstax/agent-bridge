@@ -82,22 +82,22 @@ export function resolveExecutionMode(kind: BotKind, env: Env): "safe" | "trusted
 }
 
 /**
- * Resolve the busy-message admission policy (Issue #177). Unlike
+ * Resolve the busy-message admission policy (Issue #217). Unlike
  * resolveExecutionMode, this is intentionally a single flat setting — no
  * per-CLI override — because the interactive surface must use one policy
  * regardless of which CLI is currently selected.
  */
-export function resolveBusyMessageMode(env: Env): "interrupt" | "queue" {
+export function resolveBusyMessageMode(env: Env): "augment" | "interrupt" | "queue" {
   const raw = env.BRIDGE_BUSY_MESSAGE_MODE;
-  return raw === "queue" ? "queue" : "interrupt";
+  return raw === "interrupt" || raw === "queue" || raw === "augment" ? raw : "augment";
 }
 
-/** Fail startup when BRIDGE_BUSY_MESSAGE_MODE is set to anything other than interrupt|queue. */
+/** Fail startup when BRIDGE_BUSY_MESSAGE_MODE is set to anything other than augment|interrupt|queue. */
 export function validateBusyMessageModeEnv(env: Env): void {
   const raw = env.BRIDGE_BUSY_MESSAGE_MODE;
-  if (raw !== undefined && raw !== "interrupt" && raw !== "queue") {
+  if (raw !== undefined && raw !== "augment" && raw !== "interrupt" && raw !== "queue") {
     throw new Error(
-      `Invalid BRIDGE_BUSY_MESSAGE_MODE: "${raw}". Must be "interrupt" or "queue".`
+      `Invalid BRIDGE_BUSY_MESSAGE_MODE: "${raw}". Must be "augment", "interrupt" or "queue".`
     );
   }
 }
