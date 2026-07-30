@@ -13,6 +13,11 @@ MAX_AGE_MIN=$(( MAX_AGE_HOURS * 60 ))
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
+if [[ ! "$MAX_AGE_HOURS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[reap-tmp-artifacts] REAP_MAX_AGE_HOURS must be a positive integer" >&2
+  exit 2
+fi
+
 log() { echo "[reap-tmp-artifacts] $*"; }
 
 remove_entry() {
@@ -25,6 +30,32 @@ remove_entry() {
   fi
 }
 
+has_live_pid_marker() {
+  local entry="$1" marker pid
+  while IFS= read -r -d '' marker; do
+    pid="$(tr -cd '0-9' < "$marker" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    if kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  done < <(find "$entry" -maxdepth 2 -type f \( -name .pid -o -name '*.pid' -o -name .lease -o -name '*.lease' \) -print0 2>/dev/null)
+  return 1
+}
+
+has_open_file_owner() {
+  local entry="$1"
+  command -v fuser >/dev/null 2>&1 && fuser -s -- "$entry" 2>/dev/null
+}
+
+has_ownership_signal() {
+  local entry="$1"
+  if has_live_pid_marker "$entry" || has_open_file_owner "$entry"; then
+    log "preserving (ownership signal): $entry"
+    return 0
+  fi
+  return 1
+}
+
 # Age-sweep every direct child of $dir matching an optional -name glob.
 # Safe because every name here embeds a UUID/PID/random suffix — nothing
 # still running will ever look for an old name again.
@@ -34,6 +65,7 @@ sweep_by_age() {
   local find_args=("$dir" -maxdepth 1 -mindepth 1 -mmin "+${MAX_AGE_MIN}")
   [[ -n "$name_glob" ]] && find_args+=(-name "$name_glob")
   while IFS= read -r -d '' entry; do
+    has_ownership_signal "$entry" && continue
     remove_entry "$entry" "age > ${MAX_AGE_HOURS}h"
   done < <(find "${find_args[@]}" -print0 2>/dev/null)
 }
@@ -56,6 +88,7 @@ sweep_agent_bridge_scratch() {
     now=$(date +%s)
     age=$(( (now - mtime) / 60 ))
     if (( age > MAX_AGE_MIN )); then
+      has_ownership_signal "$entry" && continue
       remove_entry "$entry" "age > ${MAX_AGE_HOURS}h"
     fi
   done
@@ -90,12 +123,14 @@ reap_worktree_repo() {
         if [[ -n "$wt" && -n "$branch" && "$wt" != "$repo" ]]; then
           if [[ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
             if git -C "$repo" merge-base --is-ancestor "$branch" "$default_branch" 2>/dev/null; then
-              if (( DRY_RUN )); then
-                log "would remove worktree (merged+clean): $wt [$branch]"
-              else
-                log "removing worktree (merged+clean): $wt [$branch]"
-                git -C "$repo" worktree remove --force "$wt" 2>/dev/null \
-                  && git -C "$repo" branch -D "$branch" 2>/dev/null
+          if has_ownership_signal "$wt"; then
+            :
+          elif (( DRY_RUN )); then
+            log "would remove worktree (merged+clean): $wt [$branch]"
+          else
+            log "removing worktree (merged+clean): $wt [$branch]"
+            git -C "$repo" worktree remove "$wt" 2>/dev/null \
+              && git -C "$repo" branch -d "$branch" 2>/dev/null
               fi
             fi
           fi

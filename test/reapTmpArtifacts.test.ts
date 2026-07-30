@@ -58,6 +58,20 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(existsSync(freshRun)).toBe(true);
   });
 
+  it("preserves an old artifact while a live PID ownership marker exists", () => {
+    const tmpRoot = makeRoot();
+    const activeRun = join(tmpRoot, "bridge-out", "claude-live-owned");
+    mkdirSync(activeRun, { recursive: true });
+    writeFileSync(join(activeRun, ".pid"), String(process.pid));
+    ageEntry(activeRun, 48);
+
+    const result = run({ REAP_TMP_ROOT: tmpRoot, REAP_MAX_AGE_HOURS: "24" });
+
+    expect(result.status).toBe(0);
+    expect(existsSync(activeRun)).toBe(true);
+    expect(result.stdout).toContain("ownership signal");
+  });
+
   it("removes stale bridge-uploads dirs, antigravity logs, and advisor sockets by age", () => {
     const tmpRoot = makeRoot();
     const staleUpload = join(tmpRoot, "bridge-uploads-claude-1-run1");
