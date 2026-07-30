@@ -72,8 +72,8 @@ describe("resolveExecutionMode", () => {
 });
 
 describe("resolveBusyMessageMode", () => {
-  it("defaults to interrupt when unset", () => {
-    expect(resolveBusyMessageMode({})).toBe("interrupt");
+  it("defaults to augment when unset", () => {
+    expect(resolveBusyMessageMode({})).toBe("augment");
   });
 
   it("honours an explicit queue setting", () => {
@@ -91,6 +91,7 @@ describe("resolveBusyMessageMode", () => {
     expect(fn).not.toMatch(/\$\{.*\}_BUSY_MESSAGE_MODE/); // no per-kind prefix template
     expect(fn).not.toMatch(/toUpperCase/);
   });
+
 });
 
 describe("validateBusyMessageModeEnv", () => {
@@ -98,7 +99,8 @@ describe("validateBusyMessageModeEnv", () => {
     expect(() => validateBusyMessageModeEnv({})).not.toThrow();
   });
 
-  it("accepts interrupt and queue", () => {
+  it("accepts augment, interrupt and queue", () => {
+    expect(() => validateBusyMessageModeEnv({ BRIDGE_BUSY_MESSAGE_MODE: "augment" })).not.toThrow();
     expect(() => validateBusyMessageModeEnv({ BRIDGE_BUSY_MESSAGE_MODE: "interrupt" })).not.toThrow();
     expect(() => validateBusyMessageModeEnv({ BRIDGE_BUSY_MESSAGE_MODE: "queue" })).not.toThrow();
   });

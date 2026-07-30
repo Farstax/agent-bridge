@@ -89,6 +89,7 @@ export interface BridgeEngineHooks {
 
 export interface PendingMessage {
   id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
+  pendingIds?: number[];
   laneHandle?: ExecutionLaneHandle;
   laneLifecycleManaged?: boolean;
 }
@@ -110,8 +111,8 @@ export interface BridgeEngineOptions {
   botConfig: { command: string; modelPreference: string[]; token?: string };
   allowedUserIds: ReadonlySet<string>;
   executionMode: "safe" | "trusted";
-  /** Busy-lane admission policy (Issue #177). Defaults to "interrupt" when unset. */
-  busyMessageMode?: "interrupt" | "queue";
+  /** Busy-lane admission policy (Issue #217). Defaults to "augment" when unset. */
+  busyMessageMode?: "augment" | "interrupt" | "queue";
   asyncEnabled: boolean;
   pollIntervalMs: number;
   soulContext?: string | null;
@@ -125,8 +126,13 @@ export interface BridgeEngineOptions {
 }
 
 interface LaneCancellation {
-  mode: "interrupt" | "stop";
+  mode: "augment" | "interrupt" | "stop";
   promise: Promise<void>;
+}
+
+interface AugmentedTask {
+  prompt: string;
+  attachments: string[];
 }
 
 interface LaneDrainer {
@@ -262,6 +268,8 @@ export class BridgeEngine {
   private readonly cancellationOperations = new Map<string, LaneCancellation>();
   private readonly laneDrainers = new Map<string, LaneDrainer>();
   private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
+  private readonly activeAugmentedTasks = new Map<string, AugmentedTask>();
+  private readonly transferredAugmentedLanes = new Set<string>();
   private readonly seenTelegramMessageKeys = new Set<string>();
   private readonly abortedChats = new Set<string>();
   private readonly resettingChats = new Set<string>();
@@ -353,7 +361,7 @@ export class BridgeEngine {
   async recoverPendingQueues(): Promise<void> {
     await Promise.all(this.db.getPendingLaneKeys(this.surfaceIdentity).map(async (chatKey) => {
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
-      if (handle) await this._drainQueueAndUnlock(handle);
+      if (handle) await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
     }));
   }
 
@@ -663,15 +671,23 @@ export class BridgeEngine {
       }
     }
     let executionOutcome: ExecutionOutcome = "failed";
+    const finalDeliveryActive = this.finalDeliveryPhases.has(executionLane);
+    const ownsAugmentedTask = !this.activeAugmentedTasks.has(executionLane);
+    if (!finalDeliveryActive && ownsAugmentedTask) this.activeAugmentedTasks.set(executionLane, { prompt: executionPrompt, attachments: [...attachments] });
     try {
       executionOutcome = await this._executeAndSend(
         executionPrompt, chatId, chatKey, primaryMessage.chat.type, threadId, userId, hookCtx, attachments, attachmentLocalPath,
-        null, true, true, true,
+        null, true, true, !finalDeliveryActive,
+        ownsAugmentedTask,
       );
     } finally {
-      if (executionOutcome !== "queued") {
+      const transferred = this.transferredAugmentedLanes.has(executionLane);
+      const retainedByCancellation = this.cancellationOperations.has(executionLane);
+      if (executionOutcome !== "queued" && !transferred && !retainedByCancellation) {
         try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
       }
+      if (transferred) this.transferredAugmentedLanes.delete(executionLane);
+      if (ownsAugmentedTask && !retainedByCancellation && !transferred) this.activeAugmentedTasks.delete(executionLane);
     }
   }
 
@@ -772,6 +788,7 @@ export class BridgeEngine {
     drainOnCompletion = true,
     manageLifecycle = true,
     honorBusyMode = false,
+    ownsActiveTask = false,
   ): Promise<ExecutionOutcome> {
     // Apply onBeforeExecute hook
     let prompt = rawPrompt;
@@ -783,11 +800,13 @@ export class BridgeEngine {
       ? this.db.getSession(chatKey, this.kind)
       : null;
     const useAsync = this.opts.asyncEnabled === true;
+    const activePendingIds: number[] = [];
+    let activeTaskCommitted = false;
 
     if (!laneHandle) {
       const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
         prompt, chatId, threadId, chatType, userId, attachments,
-      }, MAX_QUEUE_DEPTH);
+      }, MAX_QUEUE_DEPTH, honorBusyMode && !ownsActiveTask && this.activeAugmentedTasks.has(this._executionLane(chatKey)));
       if (admission.kind === "full") {
         await this.sendText(chatId, {
           text: `⏳ Queue is full (max ${MAX_QUEUE_DEPTH}). Please wait.`,
@@ -797,12 +816,12 @@ export class BridgeEngine {
       }
       if (admission.kind === "queued") {
         // Commands and internal call sites keep durable FIFO regardless of
-        // BRIDGE_BUSY_MESSAGE_MODE (Issue #177); only the ordinary-prompt
+        // BRIDGE_BUSY_MESSAGE_MODE (Issue #217); only the ordinary-prompt
         // path opts in via honorBusyMode.
-        const busyMode = honorBusyMode ? (this.opts.busyMessageMode ?? "interrupt") : "queue";
-        if (busyMode === "interrupt") {
+        const busyMode = honorBusyMode ? (this.opts.busyMessageMode ?? "augment") : "queue";
+        if (busyMode === "interrupt" || busyMode === "augment") {
           await this.sendText(chatId, {
-            text: `⏹️ Interrupting current work...`,
+            text: busyMode === "augment" ? `🔄 Updating the active task...` : `⏹️ Interrupting current work...`,
             message_thread_id: threadId,
           }).catch((error) => console.warn(`[${this.kind}] interrupt notice failed`, error));
           const executionLane = this._executionLane(chatKey);
@@ -812,7 +831,7 @@ export class BridgeEngine {
           // still fenced by abortedChats — that would leave the row claimed
           // and the lane locked forever. Once the abort fully settles and the
           // fence is cleared, drain the lane ourselves under a clean check.
-          await this._cancelLane(chatKey, "interrupt");
+          await this._cancelLane(chatKey, busyMode);
           return "queued";
         }
         await this.sendText(chatId, {
@@ -832,7 +851,14 @@ export class BridgeEngine {
       laneHandle = admission.handle;
     }
     this._assertLaneOwned(laneHandle);
-
+    if (ownsActiveTask && honorBusyMode) {
+      this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
+        prompt, chatId, threadId, chatType, userId, attachments,
+      });
+      const persisted = this.db.claimNextPendingMsg(laneHandle);
+      if (!persisted) throw new Error("failed to persist and claim active augmented task");
+      activePendingIds.push(persisted.id);
+    }
     const executionLane = this._executionLane(chatKey);
     const lifecycleToken = manageLifecycle ? beginExecutionLifecycle(executionLane, laneHandle) : null;
     const lockHeartbeat = manageLifecycle ? setInterval(() => {
@@ -898,6 +924,10 @@ export class BridgeEngine {
           this._releaseFinalDeliveryPhase(laneHandle!, finalDeliveryPhase);
         }
       }
+      if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
+        throw new LostExecutionLeaseError();
+      }
+      activeTaskCommitted = true;
       return "committed";
     } catch (error) {
       if (error instanceof LostExecutionLeaseError) {
@@ -934,8 +964,16 @@ export class BridgeEngine {
       return "failed";
     } finally {
       if (lockHeartbeat) clearInterval(lockHeartbeat);
+      if (!activeTaskCommitted) {
+        for (const id of activePendingIds) this.db.releasePendingClaim(laneHandle!, id);
+      }
       try {
-        if (drainOnCompletion && !this.resettingChats.has(executionLane)) await this._drainQueueAndUnlock(laneHandle!, undefined, 0, true);
+        if (drainOnCompletion && !this.resettingChats.has(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
+          await this._drainQueueAndUnlock(laneHandle!, undefined, 0, true);
+        }
+        if (!activeTaskCommitted && activePendingIds.length && !this.cancellationOperations.has(executionLane) && this.db.ownsLock(laneHandle!)) {
+          this.db.unlock(laneHandle!);
+        }
       } finally {
         if (lifecycleToken) completeExecutionLifecycle(executionLane, lifecycleToken);
       }
@@ -995,7 +1033,7 @@ export class BridgeEngine {
    * Messages received after /stop begins remain queued for the single
    * continuation; messages already pending at /stop admission are discarded.
    */
-  private _cancelLane(chatKey: string, mode: "interrupt" | "stop"): Promise<void> {
+  private _cancelLane(chatKey: string, mode: "augment" | "interrupt" | "stop"): Promise<void> {
     const executionLane = this._executionLane(chatKey);
     const existing = this.cancellationOperations.get(executionLane);
     if (existing) {
@@ -1010,6 +1048,10 @@ export class BridgeEngine {
 
     const operation = (async () => {
       const finalDelivery = this.finalDeliveryPhases.get(executionLane);
+      if (finalDelivery && record.mode === "augment") {
+        await finalDelivery.promise;
+        return;
+      }
       if (finalDelivery) await finalDelivery.promise;
       this.resettingChats.add(executionLane);
       this.abortedChats.add(executionLane);
@@ -1023,12 +1065,21 @@ export class BridgeEngine {
         this.abortedChats.delete(executionLane);
         this.resettingChats.delete(executionLane);
         const activeDrainer = this.laneDrainers.get(executionLane);
+        // A fresh augment must abort a running successor before waiting for
+        // its drainer; otherwise the existing cancellation promise hides the
+        // new arrival until the successor has already delivered.
+        if (activeDrainer && record.mode !== "augment") await activeDrainer.promise;
+        // Give messages already admitted during the cancellation boundary one
+        // turn to reach durable FIFO before the augmented batch is claimed.
+        if (record.mode === "augment") await new Promise<void>((resolve) => setImmediate(resolve));
         if (activeDrainer) await activeDrainer.promise;
         // Keep cancellation coalescing active until the old drainer has
         // released its claimed row. Only then may a successor become the
         // target of a fresh interrupt.
-        this.cancellationOperations.delete(executionLane);
-        if (handle) await this._drainQueueAndUnlock(handle);
+        if (record.mode === "augment") this.transferredAugmentedLanes.add(executionLane);
+        if (this.cancellationOperations.get(executionLane) === record) this.cancellationOperations.delete(executionLane);
+        if (handle) await this._drainQueueAndUnlock(handle, undefined, 0, false, record.mode === "augment");
+        if (!this.cancellationOperations.has(executionLane)) this.activeAugmentedTasks.delete(executionLane);
       } finally {
         if (this.cancellationOperations.get(executionLane) === record) {
           this.abortedChats.delete(executionLane);
@@ -1044,13 +1095,13 @@ export class BridgeEngine {
     return record.promise;
   }
 
-  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false): Promise<void> {
+  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask): Promise<void> {
     const executionLane = this._executionLane(handle.chatKey);
     const existing = this.laneDrainers.get(executionLane);
     if (existing) return existing.promise;
 
     const record = { promise: Promise.resolve() } as LaneDrainer;
-    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged);
+    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation);
     record.promise = operation.finally(() => {
       if (this.laneDrainers.get(executionLane) === record) this.laneDrainers.delete(executionLane);
     });
@@ -1088,6 +1139,8 @@ export class BridgeEngine {
     initial: PendingMessage | undefined,
     recoveryAttempt: number,
     lifecycleAlreadyManaged: boolean,
+    coalesce: boolean,
+    augmentation?: AugmentedTask,
   ): Promise<void> {
     const chatKey = handle.chatKey;
     const executionLane = this._executionLane(chatKey);
@@ -1098,11 +1151,23 @@ export class BridgeEngine {
     }
     let nextPending = initial;
     for (;;) {
-      const next = nextPending ?? this.db.claimNextPendingMsg(handle);
+      const claimed: PendingMessage[] = nextPending ? [nextPending] : (coalesce ? this.db.claimPendingMsgs(handle) : (() => {
+        const one = this.db.claimNextPendingMsg(handle);
+        return one ? [one] : [];
+      })());
+      const next = claimed.length === 0 ? null : claimed.length === 1 && !augmentation ? claimed[0] : {
+        ...claimed[0],
+        prompt: [...(augmentation ? [augmentation.prompt] : []), ...claimed.map((row) => row.prompt)].join("\n\n"),
+        attachments: [...(augmentation?.attachments ?? []), ...claimed.flatMap((row) => row.attachments)],
+        pendingIds: claimed.map((row) => row.id),
+      };
       nextPending = undefined;
       if (!next) {
         if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) > 0) return;
-        if (this.db.unlockIfQueueEmpty(handle)) return;
+        if (this.db.unlockIfQueueEmpty(handle)) {
+          if (!this.cancellationOperations.has(executionLane)) this.activeAugmentedTasks.delete(executionLane);
+          return;
+        }
         if (!this.db.ownsLock(handle)) return;
         continue;
       }
@@ -1112,20 +1177,20 @@ export class BridgeEngine {
           ? await this.queuedMessageHandler({ ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged })
           : await this.executeClaimedMessage({ ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged });
         if (outcome === "fenced") {
-          this.db.releasePendingClaim(handle, next.id);
+          for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           return;
         }
         if (outcome !== "committed") {
-          this.db.releasePendingClaim(handle, next.id);
+          for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           this.db.unlock(handle);
           if (this.abortedChats.has(executionLane) || this.cancellationOperations.has(executionLane)) return;
           this._scheduleQueueRecovery(chatKey, recoveryAttempt + 1);
           return;
         }
-        if (!this.db.completePendingMsg(handle, next.id)) return;
+        if (!(next.pendingIds ? this.db.completePendingMsgs(handle, next.pendingIds) : this.db.completePendingMsg(handle, next.id))) return;
         this._deleteQueuedAttachments(next.attachments);
       } catch (error) {
-        this.db.releasePendingClaim(handle, next.id);
+        for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
         this.db.unlock(handle);
         console.error(`[${this.kind}] queued handoff failed`, error);
         this._scheduleQueueRecovery(chatKey, recoveryAttempt + 1);
@@ -1155,6 +1220,9 @@ export class BridgeEngine {
   async executeClaimedMessage(next: PendingMessage): Promise<ExecutionOutcome> {
     if (!next.laneHandle) throw new Error("claimed message requires its acquisition handle");
     const chatKey = next.chatKey;
+    if (this.opts.busyMessageMode === "augment") {
+      this.activeAugmentedTasks.set(this._executionLane(chatKey), { prompt: next.prompt, attachments: [...next.attachments] });
+    }
     const hookCtx: HookContext = { chatId: next.chatId, chatKey, threadId: next.threadId ?? undefined, userId: next.userId ?? undefined };
     return this._executeAndSend(
       next.prompt, next.chatId, chatKey, next.chatType, next.threadId ?? undefined,

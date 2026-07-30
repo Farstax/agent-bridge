@@ -918,7 +918,7 @@ export class BridgeDb {
       if (active) return null;
       const row = this.raw.prepare(`
         SELECT id, chat_key AS chatKey, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
-               attachments_json AS attachmentsJson
+               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson
         FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' ORDER BY id ASC LIMIT 1
       `).get(surface, chatKey) as any;
       if (!row) return null;
@@ -927,8 +927,43 @@ export class BridgeDb {
         WHERE id = ? AND state = 'queued'
       `).run(handle.runId, handle.acquisitionId, new Date().toISOString(), row.id).changes;
       if (changed !== 1) return null;
-      const { attachmentsJson, ...claimed } = row;
+      const { attachmentsJson, state: _state, claimRunId: _claimRunId, claimAcquisitionId: _claimAcquisitionId, ...claimed } = row;
       return { ...claimed, attachments: JSON.parse(attachmentsJson || "[]") };
+    });
+  }
+
+  claimPendingMsgs(handle: ExecutionLaneHandle): Array<{
+    id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
+  }> {
+    const { surface, chatKey } = handle;
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      if (!this.ownsLock(handle)) return [];
+      this.raw.prepare(`
+        UPDATE pending_messages SET state = 'queued', claim_run_id = NULL, claim_acquisition_id = NULL, claimed_at = NULL
+        WHERE surface = ? AND chat_key = ? AND state = 'claimed' AND (claim_run_id IS NOT ? OR claim_acquisition_id IS NOT ?)
+      `).run(surface, chatKey, handle.runId, handle.acquisitionId);
+      const rows = this.raw.prepare(`
+        SELECT id, chat_key AS chatKey, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
+               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson
+        FROM pending_messages
+        WHERE surface = ? AND chat_key = ?
+          AND (state = 'queued' OR (state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?))
+        ORDER BY id ASC
+      `).all(surface, chatKey, handle.runId, handle.acquisitionId) as any[];
+      if (rows.length === 0) return [];
+      const claimedAt = new Date().toISOString();
+      const claim = this.raw.prepare(`
+        UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?, claimed_at = ?
+        WHERE id = ? AND state = 'queued'
+      `);
+      for (const row of rows) {
+        if (row.state === "claimed" && row.claimRunId === handle.runId && row.claimAcquisitionId === handle.acquisitionId) continue;
+        if (claim.run(handle.runId, handle.acquisitionId, claimedAt, row.id).changes !== 1) {
+          throw new Error("pending message claim lost race");
+        }
+      }
+      return rows.map(({ attachmentsJson, state: _state, claimRunId: _claimRunId, claimAcquisitionId: _claimAcquisitionId, ...row }) => ({ ...row, attachments: JSON.parse(attachmentsJson || "[]") }));
     });
   }
 
@@ -944,22 +979,47 @@ export class BridgeDb {
     });
   }
 
+  completePendingMsgs(handle: ExecutionLaneHandle, ids: number[]): boolean {
+    if (ids.length === 0) return true;
+    const { surface, chatKey } = handle;
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      if (!this.locks.owns(handle)) return false;
+      const statement = this.raw.prepare(`
+        DELETE FROM pending_messages
+        WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?
+      `);
+      for (const id of ids) {
+        const owned = this.raw.prepare(`
+          SELECT 1 FROM pending_messages
+          WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?
+        `).get(id, surface, chatKey, handle.runId, handle.acquisitionId);
+        if (!owned) return false;
+      }
+      for (const id of ids) {
+        statement.run(id, surface, chatKey, handle.runId, handle.acquisitionId);
+      }
+      return true;
+    });
+  }
+
   admitMessage(
     surface: string,
     chatKey: string,
     msg: { prompt: string; chatId: number; threadId?: number; chatType: string; userId?: number; attachments?: string[] },
     maxDepth: number,
+    forceQueue = false,
   ): { kind: "execute_current"; handle: ExecutionLaneHandle } | { kind: "queued"; position: number } | { kind: "full" } |
      { kind: "execute_claimed"; position: number; handle: ExecutionLaneHandle; claimed: ReturnType<BridgeDb["claimNextPendingMsg"]> & {} } {
     assertExecutionScope(surface, chatKey);
     return this.runInTransaction(() => {
       const pending = this.pendingMsgCount(surface, chatKey);
-      const directHandle = pending === 0 ? this.locks.acquire(surface, chatKey) : null;
+      const directHandle = pending === 0 && !forceQueue ? this.locks.acquire(surface, chatKey) : null;
       if (directHandle) return { kind: "execute_current" as const, handle: directHandle };
       if (pending >= maxDepth) return { kind: "full" as const };
       this.enqueueMsg(surface, chatKey, msg);
       const position = pending + 1;
-      const queueHandle = this.locks.acquire(surface, chatKey);
+      const queueHandle = forceQueue ? null : this.locks.acquire(surface, chatKey);
       if (queueHandle) {
         const claimed = this.claimNextPendingMsg(queueHandle);
         if (claimed) return { kind: "execute_claimed" as const, position, handle: queueHandle, claimed };
