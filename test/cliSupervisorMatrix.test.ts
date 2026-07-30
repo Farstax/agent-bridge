@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   abortCliProcess,
   abortCliProcessAndWait,
@@ -11,6 +11,12 @@ import {
   runCliAsync,
   resolveSupervisorTimeouts,
   shutdownCliProcessesAndWait,
+  abortExecutionAndWait,
+  beginExecutionLifecycle,
+  completeExecutionLifecycle,
+  buildCliInvocation,
+  buildExecutionOptions,
+  isChildRunning,
 } from "../src/cli.js";
 import type { BridgeEvent } from "../src/events/types.js";
 import type { CliOptions } from "../src/types.js";
@@ -67,7 +73,16 @@ async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
 }
 
 const roots: string[] = [];
+const previousLockMode = process.env.BRIDGE_WORKSPACE_LOCK_MODE;
+
+beforeEach(() => {
+  // Enable workspace locking by default for tests in this file
+  delete process.env.BRIDGE_WORKSPACE_LOCK_MODE;
+});
+
 afterEach(async () => {
+  if (previousLockMode === undefined) delete process.env.BRIDGE_WORKSPACE_LOCK_MODE;
+  else process.env.BRIDGE_WORKSPACE_LOCK_MODE = previousLockMode;
   await shutdownCliProcessesAndWait();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -493,4 +508,295 @@ describe("12. abort and shutdown wait for the full process tree, not just the le
     expect(alive, "descendant should already be confirmed dead when shutdownCliProcessesAndWait resolves").toBe(false);
     await p.catch(() => "rejected");
   }, 8_000);
+});
+
+describe("13. Antigravity DNS retry and cancellation behavior", () => {
+  it("retries up to 3 times on transient DNS lookup failures for antigravity, emitting single outer started and failed events", async () => {
+    const countFile = join(cliTestCwd, ".dns-retry-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const events: BridgeEvent[] = [];
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-retry-test-1",
+      bot: "antigravity",
+      eventContext: { runId: "test-run-1", bot: "antigravity", chatId: "dns-retry-test-1" },
+      onEvent: (e) => events.push(e),
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(3);
+
+    // Verify exactly one started and one failed event
+    const startEvents = events.filter((e) => e.type === "run.started");
+    const failEvents = events.filter((e) => e.type === "run.failed");
+    expect(startEvents.length).toBe(1);
+    expect(failEvents.length).toBe(1);
+  }, 10_000);
+
+  it("recovers and succeeds on subsequent retry attempt, emitting one started and one completed event", async () => {
+    const stateFile = join(cliTestCwd, ".retry-state");
+    if (existsSync(stateFile)) rmSync(stateFile);
+
+    const script = `
+      const fs = require('node:fs');
+      if (fs.existsSync('${stateFile}')) {
+        console.log('{"response": "success output"}');
+        process.exit(0);
+      } else {
+        fs.writeFileSync('${stateFile}', 'failed-once');
+        console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+        process.exit(1);
+      }
+    `;
+
+    const events: BridgeEvent[] = [];
+    const res = await runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-success-retry-test",
+      bot: "antigravity",
+      eventContext: { runId: "test-run-2", bot: "antigravity", chatId: "dns-success-retry-test" },
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(res).toContain("success output");
+
+    // Verify exactly one started and one completed event, with no attempt terminal events (no failures)
+    const startEvents = events.filter((e) => e.type === "run.started");
+    const completedEvents = events.filter((e) => e.type === "run.completed");
+    const failEvents = events.filter((e) => e.type === "run.failed");
+    expect(startEvents.length).toBe(1);
+    expect(completedEvents.length).toBe(1);
+    expect(failEvents.length).toBe(0);
+  }, 10_000);
+
+  it("stops retrying and cancels backoff immediately when aborted via abortExecutionAndWait (production /stop), emitting exactly one started and one cancelled event", async () => {
+    const cancelCountFile = join(cliTestCwd, ".dns-cancel-count");
+    if (existsSync(cancelCountFile)) rmSync(cancelCountFile);
+
+    const cancelScript = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${cancelCountFile}')) {
+        count = parseInt(fs.readFileSync('${cancelCountFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${cancelCountFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    // We must call beginExecutionLifecycle because abortExecutionAndWait awaits active.lifecycleDone
+    const token = beginExecutionLifecycle("dns-cancel-test", { runId: "test-cancel-run" } as any);
+
+    const events: BridgeEvent[] = [];
+    const p = runCli(process.execPath, ["-e", cancelScript, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-cancel-test",
+      bot: "antigravity",
+      eventContext: { runId: "test-cancel-run", bot: "antigravity", chatId: "dns-cancel-test" },
+      onEvent: (e) => events.push(e),
+    });
+
+    // Wait deterministically for first attempt to execute and enter first backoff delay
+    await waitForFile(cancelCountFile);
+    while (isChildRunning("dns-cancel-test")) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const abortPromise = abortExecutionAndWait("dns-cancel-test");
+
+    await expect(p).rejects.toThrow(/CLI execution aborted by user/i);
+    completeExecutionLifecycle("dns-cancel-test", token);
+    await abortPromise;
+
+    // Wait to ensure no subsequent retries are executed
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(parseInt(readFileSync(cancelCountFile, "utf8"), 10)).toBe(1);
+
+    // Verify exactly one started and one cancelled event (no failures!)
+    const startEvents = events.filter((e) => e.type === "run.started");
+    const cancelEvents = events.filter((e) => e.type === "run.cancelled");
+    const failEvents = events.filter((e) => e.type === "run.failed");
+    expect(startEvents.length).toBe(1);
+    expect(cancelEvents.length).toBe(1);
+    expect(failEvents.length).toBe(0);
+  }, 10_000);
+
+  it("does not retry for non-antigravity providers (e.g. claude)", async () => {
+    const countFile = join(cliTestCwd, ".dns-non-agy-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-claude-test",
+      bot: "claude",
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(1);
+  }, 10_000);
+
+  it("does not retry if execution side-effect occurred (non-empty stdout)", async () => {
+    const countFile = join(cliTestCwd, ".dns-side-effect-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.log('some side effect started...');
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-side-effect-test",
+      bot: "antigravity",
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(1);
+  }, 10_000);
+
+  it("does not retry if the Agy run is not sandboxed/read-only (missing --sandbox)", async () => {
+    const countFile = join(cliTestCwd, ".dns-writable-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const p = runCli(process.execPath, ["-e", script], cliTestCwd, {
+      chatId: "dns-writable-test",
+      bot: "antigravity",
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(1);
+  }, 10_000);
+
+  it("does not let observer event callback throwing break CLI execution", async () => {
+    const script = `
+      console.log('{"response": "success output"}');
+      process.exit(0);
+    `;
+
+    const res = await runCli(process.execPath, ["-e", script], cliTestCwd, {
+      chatId: "event-callback-fail-test",
+      bot: "antigravity",
+      eventContext: { runId: "test-cb-fail", bot: "antigravity", chatId: "event-callback-fail-test" },
+      onEvent: () => {
+        throw new Error("Observer callback failed fatally!");
+      },
+    });
+
+    expect(res).toContain("success output");
+  }, 10_000);
+
+  it("integrates with production buildCliInvocation and retries when toolMode is none", async () => {
+    const countFile = join(cliTestCwd, ".dns-prod-integration-count");
+    if (existsSync(countFile)) rmSync(countFile);
+
+    const script = `
+      const fs = require('node:fs');
+      let count = 0;
+      if (fs.existsSync('${countFile}')) {
+        count = parseInt(fs.readFileSync('${countFile}', 'utf8'), 10);
+      }
+      fs.writeFileSync('${countFile}', String(count + 1));
+      console.error('Error: Eligibility check failed: Post \\"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com: i/o timeout');
+      process.exit(1);
+    `;
+
+    const invocation = buildCliInvocation({
+      bot: "antigravity",
+      command: process.execPath,
+      model: "gemini-3.5-flash-high",
+      prompt: "test prompt",
+      sessionId: null,
+      toolMode: "none",
+      executionMode: "safe",
+    });
+
+    const args = ["-e", script, "--", ...invocation.args];
+
+    const p = runCli(invocation.command, args, cliTestCwd, {
+      chatId: "dns-prod-integration-test",
+      ...buildExecutionOptions("antigravity"),
+      bypassWorkspaceLock: true,
+    });
+
+    await expect(p).rejects.toThrow(/CLI exited with code 1/);
+    expect(parseInt(readFileSync(countFile, "utf8"), 10)).toBe(3);
+  }, 10_000);
+
+  it("Agy hard timeout emits exactly one outer run.failed with category timeout", async () => {
+    const script = `
+      setTimeout(() => {}, 10000);
+    `;
+
+    const events: BridgeEvent[] = [];
+    const p = runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-timeout-category-test",
+      bot: "antigravity",
+      timeoutMs: 200,
+      eventContext: { runId: "test-timeout-run", bot: "antigravity", chatId: "dns-timeout-category-test" },
+      onEvent: (e) => events.push(e),
+    });
+
+    await expect(p).rejects.toThrow(/timeout/i);
+
+    const startEvents = events.filter((e) => e.type === "run.started");
+    const failEvents = events.filter((e) => e.type === "run.failed");
+    expect(startEvents.length).toBe(1);
+    expect(failEvents.length).toBe(1);
+    expect((failEvents[0] as any).category).toBe("timeout");
+  }, 10_000);
+
+  it("Agy stdout -> text.delta still reaches the collector", async () => {
+    const script = `
+      console.log("hello stdout delta");
+      process.exit(0);
+    `;
+
+    const events: BridgeEvent[] = [];
+    await runCli(process.execPath, ["-e", script, "--", "--sandbox"], cliTestCwd, {
+      chatId: "dns-stdout-delta-test",
+      bot: "antigravity",
+      eventContext: { runId: "test-delta-run", bot: "antigravity", chatId: "dns-stdout-delta-test" },
+      onEvent: (e) => events.push(e),
+    });
+
+    const deltaEvents = events.filter((e) => e.type === "text.delta");
+    expect(deltaEvents.length).toBeGreaterThan(0);
+    expect((deltaEvents[0] as any).text).toContain("hello stdout delta");
+  }, 10_000);
 });

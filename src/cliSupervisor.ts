@@ -23,6 +23,7 @@ import { normalizeCliArgs } from "./cliArgNormalization.js";
 
 interface ActiveExecution {
   child: ChildProcess | null;
+  abortRequested: boolean;
   lifecycleToken: string | null;
   lifecycleHandle: ExecutionLaneHandle | null;
   lifecycleDone: Promise<void> | null;
@@ -140,6 +141,7 @@ function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Pr
  * #177) — callers must branch on `timeoutKind`, not on Error#message text.
  */
 export class CliTimeoutError extends Error {
+  public readonly category = "timeout";
   constructor(message: string, public readonly timeoutKind: "hard" | "idle") {
     super(message);
     this.name = "CliTimeoutError";
@@ -160,14 +162,14 @@ function deregisterProcess(chatId: number | string, child: ChildProcess): void {
   const active = activeExecutions.get(chatId);
   if (active?.child === child) {
     active.child = null;
-    if (!active.lifecycleToken) activeExecutions.delete(chatId);
+    if (!active.lifecycleToken && !active.abortRequested) activeExecutions.delete(chatId);
   }
 }
 
 function registerProcess(chatId: number | string, child: ChildProcess): void {
   const active = activeExecutions.get(chatId);
   if (active) active.child = child;
-  else activeExecutions.set(chatId, { child, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null });
+  else activeExecutions.set(chatId, { child, abortRequested: false, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null });
 }
 
 export function beginExecutionLifecycle(chatId: number | string, handle: ExecutionLaneHandle): string {
@@ -177,6 +179,7 @@ export function beginExecutionLifecycle(chatId: number | string, handle: Executi
   const active = activeExecutions.get(chatId);
   activeExecutions.set(chatId, {
     child: active?.child ?? null,
+    abortRequested: active?.abortRequested ?? false,
     lifecycleToken: token,
     lifecycleHandle: handle,
     lifecycleDone,
@@ -218,32 +221,61 @@ export function isExecutionActive(runId: string): boolean {
 }
 
 export function abortCliProcess(chatId: number | string): boolean {
-  const child = activeExecutions.get(chatId)?.child;
-  if (!child) return false;
-  killChild(child);
-  return true;
+  const active = activeExecutions.get(chatId);
+  if (!active) return false;
+  active.abortRequested = true;
+  let abortedSomething = true;
+  if (active?.child) {
+    killChild(active.child);
+    abortedSomething = true;
+  }
+  return abortedSomething;
 }
 
 export async function abortCliProcessAndWait(chatId: number | string): Promise<boolean> {
-  const child = activeExecutions.get(chatId)?.child;
-  if (!child) return false;
-  const closed = new Promise<void>((resolve) => {
-    const done = () => resolve();
-    child.once("close", done);
-    child.once("error", done);
-  });
-  // Resolves only once BOTH the direct child has closed AND the full
-  // process-group kill (including any TERM-resistant descendant) is
-  // confirmed complete — not merely once the group leader has exited.
-  await Promise.all([closed, killChild(child)]);
-  return true;
+  const active = activeExecutions.get(chatId);
+  if (!active) return false;
+  active.abortRequested = true;
+  let abortedSomething = true;
+  const closedPromises: Promise<void>[] = [];
+
+  if (active?.child) {
+    const child = active.child;
+    const closed = new Promise<void>((resolve) => {
+      const done = () => resolve();
+      child.once("close", done);
+      child.once("error", done);
+    });
+    closedPromises.push(closed);
+    closedPromises.push(killChild(child));
+    abortedSomething = true;
+  }
+
+  if (closedPromises.length > 0) {
+    await Promise.all(closedPromises);
+  }
+  return abortedSomething;
+}
+
+export function isAbortRequested(chatId: string | number): boolean {
+  const active = activeExecutions.get(chatId);
+  return active?.abortRequested ?? false;
+}
+
+export function isChildRunning(chatId: string | number): boolean {
+  const active = activeExecutions.get(chatId);
+  return !!active?.child;
 }
 
 export async function abortExecutionAndWait(chatId: number | string): Promise<ExecutionLaneHandle | null> {
   const active = activeExecutions.get(chatId);
   if (!active) return null;
   const handle = active.lifecycleHandle;
-  if (active.child) await abortCliProcessAndWait(chatId);
+  if (active.child) {
+    await abortCliProcessAndWait(chatId);
+  } else {
+    active.abortRequested = true;
+  }
   await active.lifecycleDone;
   return handle;
 }
@@ -388,6 +420,7 @@ export async function runSupervisedProcess(
         if (settled || pendingError) return;
         console.error(`[PROCESS WATCH] ${error.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: error.message, category }));
+        (error as any).category = category;
         pendingError = error;
         pendingKill = killChildTree(child, killGraceMs);
       },
@@ -447,11 +480,17 @@ export async function runSupervisedProcess(
       } else if (signal) {
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI killed by signal ${signal}`, category: "cli" }));
         const combined = [stderr.trim(), stdout.slice(-2000).trim()].filter(Boolean).join("\n");
-        doReject(new Error(`CLI killed by signal ${signal}: ${combined}`));
+        const err = new Error(`CLI killed by signal ${signal}: ${combined}`);
+        (err as any).stdout = stdout;
+        (err as any).stderr = stderr;
+        doReject(err);
       } else if (code !== 0 && code !== null) {
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI exited with code ${code}`, category: "cli" }));
         const combined = [stderr.trim(), stdout.slice(-2000).trim()].filter(Boolean).join("\n");
-        doReject(new Error(`CLI exited with code ${code}: ${combined}`));
+        const err = new Error(`CLI exited with code ${code}: ${combined}`);
+        (err as any).stdout = stdout;
+        (err as any).stderr = stderr;
+        doReject(err);
       } else {
         if (evtCtx) emit(evtType.runCompleted({ ...evtCtx, text: stdout, sessionId: null }));
         doResolve({ stdout });

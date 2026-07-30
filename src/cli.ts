@@ -54,6 +54,8 @@ import {
   redactArgs,
   CliTimeoutError,
   resolveSupervisorTimeouts,
+  isAbortRequested,
+  isChildRunning,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 
@@ -72,6 +74,8 @@ export {
   normalizeCliArgs,
   CliTimeoutError,
   resolveSupervisorTimeouts,
+  isAbortRequested,
+  isChildRunning,
 };
 
 export function scrubOutputDir(text: string, outDir: string | null | undefined): string {
@@ -160,6 +164,7 @@ export function buildExecutionOptions(kind: BotKind): CliOptions {
   return {
     timeoutMs: t.cliTimeoutMs,
     idleTimeoutMs: t.cliIdleTimeoutMs,
+    bot: kind,
   };
 }
 
@@ -231,7 +236,10 @@ export function getNextFallbackModel(currentModel: string | null, modelPreferenc
  * supervised process core in src/cliSupervisor.ts.
  */
 export async function runCli(command: string, args: string[], cwd: string, options: CliOptions = {}): Promise<string> {
-  const { stdout } = await runSupervisedProcess(command, args, cwd, {
+  const runner = options.bot === "antigravity" || options.eventContext?.bot === "antigravity"
+    ? antigravityRuntime.runWithTransientDnsRetry
+    : runSupervisedProcess;
+  const { stdout } = await runner(command, args, cwd, {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   });
@@ -248,7 +256,10 @@ export async function runCliAsync(
   cwd: string,
   options: CliOptions = {}
 ): Promise<{ text: string }> {
-  const { stdout } = await runSupervisedProcess(command, args, cwd, {
+  const runner = options.bot === "antigravity" || options.eventContext?.bot === "antigravity"
+    ? antigravityRuntime.runWithTransientDnsRetry
+    : runSupervisedProcess;
+  const { stdout } = await runner(command, args, cwd, {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   }, options.onProgress);
