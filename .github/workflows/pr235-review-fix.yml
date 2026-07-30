@@ -4,12 +4,15 @@ on:
   push:
     branches: [feat/issue-217-augment-default]
     paths: [.github/workflows/pr235-review-fix.yml]
+  pull_request:
+    paths: [.github/workflows/pr235-review-fix.yml]
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the feature branch
@@ -24,13 +27,11 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Merge current main and apply the reviewed correction
+      - name: Apply the reviewed correction
         run: |
           set -Eeuo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git fetch origin main
-          git merge --no-edit origin/main
           git apply --index .github/patches/pr235-review-fix.patch
           git rm .github/patches/pr235-review-fix.patch .github/workflows/pr235-review-fix.yml
 
@@ -54,5 +55,3 @@ jobs:
           set -Eeuo pipefail
           git commit -m "fix: resolve augment lifecycle review"
           git push origin HEAD:feat/issue-217-augment-default
-
-# Retrigger after the workflow exists on the branch.
