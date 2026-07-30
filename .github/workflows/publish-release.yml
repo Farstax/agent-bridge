@@ -1,0 +1,207 @@
+name: Publish GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow_run_id:
+        description: Successful Release Artifact workflow run ID on main
+        required: true
+        type: string
+      commit_sha:
+        description: Exact qualified 40-character commit SHA
+        required: true
+        type: string
+      release_tag:
+        description: New release tag, for example release-2026.07.30-1
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Promote qualified artifact
+    runs-on: ubuntu-latest
+    env:
+      COMMIT_SHA: ${{ inputs.commit_sha }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      WORKFLOW_RUN_ID: ${{ inputs.workflow_run_id }}
+
+    steps:
+      - name: Validate promotion inputs and trusted workflow ref
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "Release promotion must be dispatched from main" >&2
+            exit 1
+          }
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "commit_sha must be a full lowercase 40-character Git SHA" >&2
+            exit 1
+          }
+          [[ "$WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "workflow_run_id must be a positive numeric ID" >&2
+            exit 1
+          }
+          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
+            echo "release_tag must use 1-128 letters, digits, dots, underscores or hyphens" >&2
+            exit 1
+          }
+
+      - name: Checkout trusted promotion verifier
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify checkout identity
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Verify source workflow run and artifact
+        id: source
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runId = Number(process.env.WORKFLOW_RUN_ID);
+            if (!Number.isSafeInteger(runId) || runId <= 0) {
+              core.setFailed("workflow_run_id is outside the supported integer range");
+              return;
+            }
+
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+            });
+            const expectedArtifact = `agent-bridge-release-${process.env.COMMIT_SHA}`;
+            const failures = [];
+            if (run.repository?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              failures.push("repository mismatch");
+            }
+            if (run.name !== "Release Artifact" || run.path !== ".github/workflows/release-artifact.yml") {
+              failures.push("workflow identity mismatch");
+            }
+            if (!["push", "workflow_dispatch"].includes(run.event)) {
+              failures.push("source run was not a main push or manual qualification");
+            }
+            if (run.head_branch !== "main") failures.push("source run was not on main");
+            if (run.head_sha !== process.env.COMMIT_SHA) failures.push("source commit mismatch");
+            if (run.status !== "completed" || run.conclusion !== "success") {
+              failures.push("source run is not successfully completed");
+            }
+
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner: context.repo.owner, repo: context.repo.repo, run_id: runId, per_page: 100 },
+            );
+            const matching = artifacts.filter((artifact) => artifact.name === expectedArtifact);
+            if (matching.length !== 1) failures.push("expected exactly one matching release artifact");
+            if (matching[0]?.expired) failures.push("release artifact has expired");
+
+            if (failures.length > 0) {
+              core.setFailed(`Release promotion refused: ${failures.join("; ")}`);
+              return;
+            }
+            core.setOutput("artifact_name", expectedArtifact);
+
+      - name: Download exact qualified artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.source.outputs.artifact_name }}
+          path: ${{ runner.temp }}/release-artifact
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.workflow_run_id }}
+
+      - name: Verify archive, checksum and embedded qualification
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash scripts/verify-release-promotion.sh \
+            --artifact-dir "$RUNNER_TEMP/release-artifact" \
+            --commit "$COMMIT_SHA" \
+            --workflow-run "$WORKFLOW_RUN_ID" \
+            | tee "$RUNNER_TEMP/release-promotion-verification.json"
+
+      - name: Require a new tag and release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            let tagExists = false;
+            let releaseExists = false;
+            try {
+              await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`,
+              });
+              tagExists = true;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            try {
+              await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              });
+              releaseExists = true;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (tagExists || releaseExists) {
+              core.setFailed("Release promotion refused: the requested tag or release already exists");
+            }
+
+      - name: Publish unchanged release assets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          archive="$RUNNER_TEMP/release-artifact/agent-bridge-${COMMIT_SHA}.tar.gz"
+          checksum="${archive}.sha256"
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<EOF
+          Qualified Agent Bridge runtime artifact.
+
+          - Commit: \`${COMMIT_SHA}\`
+          - Source workflow run: \`${WORKFLOW_RUN_ID}\`
+          - Archive SHA-256: \`$(cut -d' ' -f1 "$checksum")\`
+
+          Publication does not deploy this release.
+          EOF
+
+          created=0
+          cleanup_failed_release() {
+            status=$?
+            if [[ "$created" == "1" ]]; then
+              gh release delete "$RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --yes \
+                --cleanup-tag || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_release ERR
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$COMMIT_SHA" \
+            --title "$RELEASE_TAG" \
+            --draft \
+            --notes-file "$notes"
+          created=1
+          gh release upload "$RELEASE_TAG" "$archive" "$checksum" \
+            --repo "$GITHUB_REPOSITORY"
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
+
+          trap - ERR
