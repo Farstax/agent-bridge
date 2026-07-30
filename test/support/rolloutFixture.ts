@@ -27,6 +27,9 @@ export const sentinelClearPath = fileURLToPath(new URL("../../scripts/rollout-se
 export const restoreHelperPath = fileURLToPath(new URL("../../scripts/rollout-restore.py", import.meta.url));
 export const migrationScript = fileURLToPath(new URL("../../scripts/rollout-db.ts", import.meta.url));
 export const migrationImplScript = fileURLToPath(new URL("../../scripts/rollout-db-impl.ts", import.meta.url));
+export const cleanupScript = fileURLToPath(new URL("../../scripts/reap-tmp-artifacts.sh", import.meta.url));
+export const cleanupServiceTemplate = fileURLToPath(new URL("../../systemd/agent-bridge-tmp-cleanup.service", import.meta.url));
+export const cleanupTimerTemplate = fileURLToPath(new URL("../../systemd/agent-bridge-tmp-cleanup.timer", import.meta.url));
 export const authorizationScript = fileURLToPath(new URL("../../scripts/rollout-authorization.py", import.meta.url));
 export const acceptanceScript = fileURLToPath(new URL("../../scripts/rollout-acceptance.py", import.meta.url));
 export const tsconfigFile = fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
@@ -158,10 +161,6 @@ export function rewriteConfig(fixture: Fixture, transform: (lines: string[]) => 
 export function writeFakeCommands(fixture: Fixture): void {
   const bin = join(fixture.root, "bin");
   mkdirSync(bin, { recursive: true });
-  executable(join(bin, "release-stage"), `#!/usr/bin/env bash
-set -euo pipefail
-echo "release-stage:$*" >> "${fixture.actionLog}"
-`);
   executable(join(bin, "rollout-restore"), `#!/usr/bin/env bash
 set -euo pipefail
 echo "rollout-restore:$*" >> "${fixture.actionLog}"
@@ -202,13 +201,19 @@ fi
   executable(join(bin, "systemctl"), `#!/usr/bin/env bash
 set -euo pipefail
 echo "systemctl:$*" >> "${fixture.actionLog}"
-  cmd="$1"; shift
-  case "$cmd" in
-  cat)
-    unit="$1"
-    printf '[Unit]\nDescription=%s\n[Service]\nEnvironmentFile=-%s\nEnvironmentFile=%s\nEnvironmentFile=%s\n' "$unit" "${fixture.envDir}/agent-bridge-shared" "${fixture.envDir}/agent-bridge-release" "${fixture.envDir}/\${unit%.service}"
+cmd="$1"; shift
+case "$cmd" in
+  daemon-reload)
+    : > "${fixture.root}/daemon-reloaded"
+    ;;
+  enable)
+    [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && : > "${fixture.root}/cleanup-timer-enabled"
+    ;;
+  disable)
+    [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && rm -f "${fixture.root}/cleanup-timer-enabled"
     ;;
   stop)
+    if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then rm -f "${fixture.root}/cleanup-timer-active"; exit 0; fi
     count=0
     [ ! -f "${fixture.root}/stop-count" ] || count="$(cat "${fixture.root}/stop-count")"
     count=$((count + 1))
@@ -235,6 +240,14 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     }; then exit 1; fi
     ;;
   start)
+    if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then
+      if [ "\${FAKE_FAIL_PHASE:-}" = cleanup-timer ] && [ ! -e "${fixture.root}/cleanup-timer-failed" ]; then
+        : > "${fixture.root}/cleanup-timer-failed"
+        exit 1
+      fi
+      : > "${fixture.root}/cleanup-timer-active"
+      exit 0
+    fi
     if [ "\${FAKE_FAIL_RECOVERY_START:-}" = 1 ] && [ ! -e "${fixture.root}/recovery-start-failed" ]; then
       : > "${fixture.root}/recovery-start-failed"
       exit 1
@@ -249,6 +262,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     ;;
   is-active)
     if [ "\${1:-}" = --quiet ]; then shift; fi
+    if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then [ -f "${fixture.root}/cleanup-timer-active" ]; exit $?; fi
     if [ "\${FAKE_RECOVERY_EXIT_DURING_SMOKE:-}" = 1 ] && [ -e "${fixture.root}/recovery-started" ]; then
       checks=0
       [ ! -f "${fixture.root}/recovery-active-checks" ] || checks="$(cat "${fixture.root}/recovery-active-checks")"
@@ -257,6 +271,11 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
       if [ "$checks" -gt 7 ]; then exit 1; fi
     fi
     grep -Fxq "\${1:-}" "${fixture.stateFile}"
+    ;;
+  is-enabled)
+    if [ "\${1:-}" = --quiet ]; then shift; fi
+    [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-enabled" ]
+    exit $?
     ;;
   is-failed) exit 1 ;;
   reset-failed)
@@ -268,33 +287,16 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     for arg in "$@"; do case "$arg" in --property=*) properties+=("\${arg#--property=}");; esac; done
     for property in "\${properties[@]}"; do
       case "$property" in
-        EnvironmentFiles)
-          case "\${FAKE_ENVIRONMENT_FILES_MODE:-correct}" in
-            missing) printf '%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
-            extra) printf '%s\n%s\n%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/agent-bridge-release (ignore_errors=no)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" "${fixture.envDir}/unexpected (ignore_errors=no)" ;;
-            reordered) printf '%s\n%s\n%s\n' "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" "${fixture.envDir}/agent-bridge-release (ignore_errors=no)" "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" ;;
-            *) printf '%s\n%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/agent-bridge-release (ignore_errors=no)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
-          esac
-          ;;
-        FragmentPath)
-          if [ "\${FAKE_FRAGMENT_MODE:-correct}" = unexpected ]; then echo "${fixture.root}/unexpected/\${unit}"; else echo "${fixture.root}/systemd/\${unit}"; fi
-          ;;
-        DropInPaths)
-          case "\${FAKE_DROPIN_MODE:-empty}" in
-            extra|path) echo "${fixture.root}/systemd/agent-bridge.service.d/override.conf" ;;
-            newline) printf '\\n' ;;
-            multiple-newlines) printf '\\n\\n\\n' ;;
-            spaces) printf ' \\n' ;;
-          esac
-          ;;
+        EnvironmentFiles) printf '%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
         Environment) echo NODE_ENV=production ;;
         ActiveState)
-          if grep -Fxq "$unit" "${fixture.stateFile}"; then echo active
+          if [ "$unit" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-active" ]; then echo active
+          elif grep -Fxq "$unit" "${fixture.stateFile}"; then echo active
           elif [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]]; then echo failed
           else echo inactive
           fi
           ;;
-        SubState) grep -Fxq "$unit" "${fixture.stateFile}" && echo running || echo dead ;;
+        SubState) [ "$unit" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-active" ] && echo waiting || { grep -Fxq "$unit" "${fixture.stateFile}" && echo running || echo dead; } ;;
         Result) [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]] && echo exit-code || echo success ;;
         ExecMainCode) [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]] && echo exited || echo 0 ;;
         ExecMainStatus) [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]] && echo 143 || echo 0 ;;
@@ -312,6 +314,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
           elif [ "\${FAKE_RESTART_COUNTER_HISTORY:-}" ] && [ ! -f "${fixture.root}/restart-counters-reset" ]; then echo "\${FAKE_RESTART_COUNTER_HISTORY}";
           elif [ "\${FAKE_FAIL_PHASE:-}" = delayed ] && [ -f "${fixture.root}/started" ]; then echo 1; else echo 0; fi
           ;;
+        TimersCalendar) [ "$unit" = agent-bridge-tmp-cleanup.timer ] && echo '*-*-* 03:30:00' || exit 2 ;;
         *) exit 2 ;;
       esac
     done
@@ -387,10 +390,13 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   const lockFile = join(root, "run", "lock", "agent-bridge-rollout.lock");
   const configFile = join(root, "etc", "agent-bridge", "rollout.conf");
   const envDir = join(root, "etc", "default");
+  const systemdDir = join(root, "etc", "systemd", "system");
   const cgroupRoot = join(root, "sys", "fs", "cgroup");
   mkdirSync(join(project, "scripts"), { recursive: true });
+  mkdirSync(join(project, "systemd"), { recursive: true });
   mkdirSync(join(root, "etc", "agent-bridge"), { recursive: true });
   mkdirSync(envDir, { recursive: true });
+  mkdirSync(systemdDir, { recursive: true });
   mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   mkdirSync(logDir, { recursive: true, mode: 0o700 });
   for (const unit of units) {
@@ -402,6 +408,9 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   symlinkSync(nodeModules, join(project, "node_modules"));
   if (existsSync(migrationScript)) copyFileSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
   if (existsSync(migrationImplScript)) copyFileSync(migrationImplScript, join(project, "scripts", "rollout-db-impl.ts"));
+  copyFileSync(cleanupScript, join(project, "scripts", "reap-tmp-artifacts.sh"));
+  copyFileSync(cleanupServiceTemplate, join(project, "systemd", "agent-bridge-tmp-cleanup.service"));
+  copyFileSync(cleanupTimerTemplate, join(project, "systemd", "agent-bridge-tmp-cleanup.timer"));
   if (existsSync(authorizationScript)) copyFileSync(authorizationScript, join(project, "scripts", "rollout-authorization.py"));
   if (existsSync(acceptanceScript)) copyFileSync(acceptanceScript, join(project, "scripts", "rollout-acceptance.py"));
   if (existsSync(tsconfigFile)) copyFileSync(tsconfigFile, join(project, "tsconfig.json"));
@@ -434,7 +443,6 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   }
 
   writeFileSync(join(envDir, "agent-bridge-shared"), `DB_PATH=${dbPaths[0]}\n`, { mode: 0o600 });
-  writeFileSync(join(envDir, "agent-bridge-release"), "# fixture release environment\n", { mode: 0o600 });
   for (const unit of units) {
     const name = unit.replace(/\.service$/, "");
     let content = "";
