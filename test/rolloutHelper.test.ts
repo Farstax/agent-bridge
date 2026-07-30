@@ -57,7 +57,16 @@ function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expect
   for (const commit of new Set([fixture.previousCommit, fixture.expectedCommit])) {
     const directory = join(releaseRoot, commit);
     execFileSync("cp", ["-a", `${fixture.project}/.`, directory]);
-    writeFileSync(join(directory, "manifest.json"), JSON.stringify({ schema_version: 1, commit }));
+    const cleanupManifestPaths = [
+      "scripts/reap-tmp-artifacts.sh",
+      "systemd/agent-bridge-tmp-cleanup.service",
+      "systemd/agent-bridge-tmp-cleanup.timer",
+    ];
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify({
+      schema_version: 1,
+      commit,
+      files: cleanupManifestPaths.map((path) => ({ path, sha256: sha256(join(directory, path)) })),
+    }));
     execFileSync("find", [directory, "-type", "f", "-exec", "chmod", "a-w", "{}", "+"]);
     execFileSync("find", [directory, "-type", "d", "-exec", "chmod", "a-w", "{}", "+"]);
   }
@@ -444,6 +453,66 @@ describe("guarded rollout helper", () => {
     }));
     expect(JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).databases[0].claimRunAcquisitionCorrelation)
       .toBe(beforeEvidence.databases[0].claimRunAcquisitionCorrelation);
+  }, 15_000);
+
+  it("installs and verifies the cleanup timer separately after release activation", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+
+    const result = runRollout(fixture);
+
+    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const systemdDir = join(fixture.root, "etc", "systemd", "system");
+    expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8")).toContain("BRIDGE_CURRENT_RELEASE_DIR");
+    expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), "utf8")).toContain("OnCalendar=");
+    expect(existsSync(join(fixture.root, "daemon-reloaded"))).toBe(true);
+    expect(existsSync(join(fixture.root, "cleanup-timer-enabled"))).toBe(true);
+    expect(existsSync(join(fixture.root, "cleanup-timer-active"))).toBe(true);
+    const log = actions(fixture);
+    expect(log).toContain("systemctl:daemon-reload");
+    expect(log).toContain("systemctl:enable agent-bridge-tmp-cleanup.timer");
+    expect(log).toContain("systemctl:show agent-bridge-tmp-cleanup.timer --property=TimersCalendar --value");
+  }, 15_000);
+
+  it("replaces an existing cleanup timer installation idempotently", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const systemdDir = join(fixture.root, "etc", "systemd", "system");
+    writeFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "old service\n");
+    writeFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), "old timer\n");
+    writeFileSync(join(fixture.root, "cleanup-timer-enabled"), "\n");
+    writeFileSync(join(fixture.root, "cleanup-timer-active"), "\n");
+
+    const result = runRollout(fixture);
+
+    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8")).not.toBe("old service\n");
+    expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), "utf8")).not.toBe("old timer\n");
+    expect(readlinkSync(currentPointer)).toBe(fixture.expectedCommit);
+  }, 15_000);
+
+  it("restores prior cleanup unit files and timer state when installation fails", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const systemdDir = join(fixture.root, "etc", "systemd", "system");
+    const priorService = "prior service\n";
+    const priorTimer = "prior timer\n";
+    writeFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), priorService);
+    writeFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), priorTimer);
+    writeFileSync(join(fixture.root, "cleanup-timer-enabled"), "\n");
+    writeFileSync(join(fixture.root, "cleanup-timer-active"), "\n");
+
+    const result = runRollout(fixture, "cleanup-timer");
+
+    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8")).toBe(priorService);
+    expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), "utf8")).toBe(priorTimer);
+    expect(existsSync(join(fixture.root, "cleanup-timer-enabled"))).toBe(true);
+    expect(existsSync(join(fixture.root, "cleanup-timer-active"))).toBe(true);
+    expect(readlinkSync(currentPointer)).toBe(fixture.previousCommit);
   }, 15_000);
 
   it("does not execute an acceptance validator supplied by the target release", () => {

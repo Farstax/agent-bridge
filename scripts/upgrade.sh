@@ -40,7 +40,6 @@ require_node() {
 install_unit() {
   local name="$1"
   sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
-      -e "s#BRIDGE_REPO_DIR#${REPO_DIR}#g" \
       "${REPO_DIR}/systemd/${name}.service" \
     | sudo tee "${SYSTEMD_DIR}/${name}.service" > /dev/null
   sudo chmod 0644 "${SYSTEMD_DIR}/${name}.service"
@@ -49,7 +48,6 @@ install_unit() {
 install_timer() {
   local name="$1"
   sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
-      -e "s#BRIDGE_REPO_DIR#${REPO_DIR}#g" \
       "${REPO_DIR}/systemd/${name}.timer" \
     | sudo tee "${SYSTEMD_DIR}/${name}.timer" > /dev/null
   sudo chmod 0644 "${SYSTEMD_DIR}/${name}.timer"

@@ -16,6 +16,8 @@ readonly -a ALLOWED_UNITS=(
   agent-bridge-interactive.service
   agent-bridge-worker-bot.service
 )
+readonly CLEANUP_SERVICE_UNIT="agent-bridge-tmp-cleanup.service"
+readonly CLEANUP_TIMER_UNIT="agent-bridge-tmp-cleanup.timer"
 
 is_allowed_unit() {
   local candidate="$1" allowed
@@ -68,6 +70,7 @@ if [[ -n "$test_root" ]]; then
   authorization_validator="$test_root/bin/rollout-authorization-trusted"
   acceptance_validator="$test_root/bin/rollout-acceptance-trusted"
   defaults_dir="$test_root/etc/default"
+  systemd_dir="$test_root/etc/systemd/system"
   cgroup_root="$test_root/sys/fs/cgroup"
   systemd_unit_dir="$test_root/systemd"
   smoke_delay=0
@@ -86,13 +89,14 @@ else
   authorization_validator="/usr/local/libexec/agent-bridge-rollout-authorization.py"
   acceptance_validator="/usr/local/libexec/agent-bridge-rollout-acceptance.py"
   defaults_dir="/etc/default"
+  systemd_dir="/etc/systemd/system"
   cgroup_root="/sys/fs/cgroup"
   systemd_unit_dir="/etc/systemd/system"
   smoke_delay=5
   test_mode=0
 fi
 
-for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
+for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
   [[ -x "$command_path" ]] || die "required command is unavailable: $command_path"
 done
 [[ -f "$config_file" && ! -L "$config_file" ]] || die "missing fixed rollout config: $config_file"
@@ -152,6 +156,13 @@ if [[ -n "$release_root" || -n "$current_pointer" ]]; then
   [[ -n "$release_root" && -n "$current_pointer" ]] || die "release_root and current_pointer must be configured together"
   release_mode=1
 fi
+
+cleanup_timer_attempted=0
+cleanup_timer_completed=0
+cleanup_timer_backup_dir=""
+declare -A cleanup_timer_was_present=()
+declare -A cleanup_timer_was_enabled=()
+declare -A cleanup_timer_was_active=()
 if (( release_mode == 1 )); then
   [[ -x "$activation_cmd" ]] || die "release activation helper is unavailable: $activation_cmd"
   if (( test_mode == 0 )) && [[ "$deployer_mode" != 1 ]]; then
@@ -411,6 +422,115 @@ code_check() {
     git_check
   fi
 }
+
+cleanup_manifest_hash() {
+  local manifest="$1" wanted="$2"
+  /usr/bin/python3 - "$manifest" "$wanted" <<'PY'
+import json
+import sys
+
+manifest_path, wanted_path = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+for entry in manifest.get("files", []):
+    if entry.get("path") == wanted_path:
+        print(entry.get("sha256", ""))
+        break
+PY
+}
+
+validate_cleanup_artifact() {
+  (( release_mode == 1 )) || die "cleanup timer installation requires immutable release mode"
+  local manifest="$project_dir/manifest.json" path expected actual
+  [[ -f "$manifest" && ! -L "$manifest" ]] || die "cleanup artifact manifest is missing"
+  for path in \
+    scripts/reap-tmp-artifacts.sh \
+    systemd/$CLEANUP_SERVICE_UNIT \
+    systemd/$CLEANUP_TIMER_UNIT; do
+    [[ -f "$project_dir/$path" && ! -L "$project_dir/$path" ]] || die "cleanup artifact is missing: $path"
+    expected="$(cleanup_manifest_hash "$manifest" "$path")"
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "cleanup artifact is not listed in the release manifest: $path"
+    actual="$(/usr/bin/sha256sum "$project_dir/$path" | /usr/bin/cut -d' ' -f1)"
+    [[ "$actual" == "$expected" ]] || die "cleanup artifact manifest hash mismatch: $path expected=$expected actual=$actual"
+  done
+  /usr/bin/grep -Fq 'BRIDGE_CURRENT_RELEASE_DIR' "$project_dir/systemd/$CLEANUP_SERVICE_UNIT" || die "cleanup service is not release-pointer bound"
+  /usr/bin/grep -Fq 'scripts/reap-tmp-artifacts.sh' "$project_dir/systemd/$CLEANUP_SERVICE_UNIT" || die "cleanup service does not invoke the packaged reaper"
+}
+
+rollback_cleanup_timer() {
+  (( cleanup_timer_attempted == 1 && cleanup_timer_completed == 0 )) || return 0
+  local unit source destination marker
+  echo "rollback cleanup timer: restoring prior unit files and state"
+  "$systemctl_cmd" stop "$CLEANUP_TIMER_UNIT" >/dev/null 2>&1 || true
+  "$systemctl_cmd" disable "$CLEANUP_TIMER_UNIT" >/dev/null 2>&1 || true
+  for unit in "$CLEANUP_SERVICE_UNIT" "$CLEANUP_TIMER_UNIT"; do
+    destination="$systemd_dir/$unit"
+    marker="$cleanup_timer_backup_dir/$unit.absent"
+    if [[ -f "$cleanup_timer_backup_dir/$unit" ]]; then
+      /usr/bin/cp -f -- "$cleanup_timer_backup_dir/$unit" "$destination"
+      /usr/bin/chmod 0644 "$destination"
+    elif [[ -f "$marker" ]]; then
+      /usr/bin/rm -f -- "$destination"
+    else
+      echo "rollback cleanup timer: missing backup state for $unit" >&2
+      return 1
+    fi
+  done
+  "$systemctl_cmd" daemon-reload >/dev/null 2>&1 || return 1
+  if [[ "${cleanup_timer_was_enabled[$CLEANUP_TIMER_UNIT]:-0}" == 1 ]]; then
+    "$systemctl_cmd" enable "$CLEANUP_TIMER_UNIT" >/dev/null 2>&1 || return 1
+  else
+    "$systemctl_cmd" disable "$CLEANUP_TIMER_UNIT" >/dev/null 2>&1 || return 1
+  fi
+  if [[ "${cleanup_timer_was_active[$CLEANUP_TIMER_UNIT]:-0}" == 1 ]]; then
+    "$systemctl_cmd" start "$CLEANUP_TIMER_UNIT" >/dev/null 2>&1 || return 1
+  else
+    "$systemctl_cmd" stop "$CLEANUP_TIMER_UNIT" >/dev/null 2>&1 || true
+  fi
+  echo "rollback cleanup timer: restored"
+  return 0
+}
+
+install_cleanup_timer() {
+  validate_cleanup_artifact
+  cleanup_timer_attempted=1
+  cleanup_timer_backup_dir="$artifact_dir/cleanup-unit-backup"
+  /usr/bin/mkdir --mode=0700 -- "$cleanup_timer_backup_dir"
+  local unit source destination temporary
+  for unit in "$CLEANUP_SERVICE_UNIT" "$CLEANUP_TIMER_UNIT"; do
+    source="$project_dir/systemd/$unit"
+    destination="$systemd_dir/$unit"
+    if [[ -e "$destination" || -L "$destination" ]]; then
+      [[ -f "$destination" && ! -L "$destination" ]] || die "existing cleanup unit is not a regular file: $destination"
+      /usr/bin/cp -f -- "$destination" "$cleanup_timer_backup_dir/$unit"
+      cleanup_timer_was_present[$unit]=1
+    else
+      : > "$cleanup_timer_backup_dir/$unit.absent"
+      cleanup_timer_was_present[$unit]=0
+    fi
+    if "$systemctl_cmd" is-enabled --quiet "$unit"; then cleanup_timer_was_enabled[$unit]=1; else cleanup_timer_was_enabled[$unit]=0; fi
+    if "$systemctl_cmd" is-active --quiet "$unit"; then cleanup_timer_was_active[$unit]=1; else cleanup_timer_was_active[$unit]=0; fi
+    temporary="$(/usr/bin/mktemp --tmpdir="$systemd_dir" ".${unit}.XXXXXX")"
+    /usr/bin/cp -f -- "$source" "$temporary"
+    /usr/bin/chmod 0644 "$temporary"
+    /usr/bin/mv -f -- "$temporary" "$destination"
+  done
+  "$systemctl_cmd" daemon-reload || die "cleanup timer daemon-reload failed"
+  "$systemctl_cmd" enable "$CLEANUP_TIMER_UNIT" || die "cleanup timer enable failed"
+  "$systemctl_cmd" start "$CLEANUP_TIMER_UNIT" || die "cleanup timer start failed"
+  "$systemctl_cmd" is-enabled --quiet "$CLEANUP_TIMER_UNIT" || die "cleanup timer is not enabled"
+  local active_state schedule
+  active_state="$($systemctl_cmd show "$CLEANUP_TIMER_UNIT" --property=ActiveState --value)"
+  [[ "$active_state" == active ]] || die "cleanup timer is not active: $active_state"
+  schedule="$($systemctl_cmd show "$CLEANUP_TIMER_UNIT" --property=TimersCalendar --value)"
+  [[ -n "$schedule" && "$schedule" != "n/a" ]] || die "cleanup timer schedule is missing"
+  for unit in "$CLEANUP_SERVICE_UNIT" "$CLEANUP_TIMER_UNIT"; do
+    [[ "$(/usr/bin/sha256sum "$project_dir/systemd/$unit" | /usr/bin/cut -d' ' -f1)" == "$(/usr/bin/sha256sum "$systemd_dir/$unit" | /usr/bin/cut -d' ' -f1)" ]] || die "installed cleanup unit hash mismatch: $unit"
+  done
+  cleanup_timer_completed=1
+  echo "cleanup timer installed and verified schedule=$schedule"
+}
+
 assert_service_active() {
   local unit="$1" active_state sub_state
   if ! "$systemctl_cmd" is-active --quiet "$unit"; then
@@ -769,6 +889,10 @@ remove_sentinel_if_removable() {
 on_exit() {
   status=$?
   set +e
+  if ! rollback_cleanup_timer; then
+    status=1
+    echo "rollback cleanup timer failed; manual review required" >&2
+  fi
   if (( status == 0 && completed == 1 )); then
     sentinel_removable=1
     if remove_sentinel_if_removable; then
@@ -1053,6 +1177,7 @@ if (( release_mode == 1 )); then
     "$previous_pointer_target" "$expected_commit" "$current_pointer" "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$artifact_dir/pointer-switch-evidence.json"
   hash_evidence_file "$artifact_dir/pointer-switch-evidence.json"
   record_phase POINTER_SWITCHED
+  install_cleanup_timer
 fi
 
 echo "starting all services"

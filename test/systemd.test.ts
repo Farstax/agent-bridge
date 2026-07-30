@@ -107,15 +107,15 @@ describe("systemd templates", () => {
     expect(install).not.toContain("TELEGRAM_MARKDOWN_IR_ENABLED");
   });
 
-  it("tmp-cleanup service runs the reaper script as a oneshot, outside the release pointer", () => {
+  it("tmp-cleanup service runs the reaper script from the immutable current release", () => {
     const service = readFileSync(new URL("../systemd/agent-bridge-tmp-cleanup.service", import.meta.url), "utf8");
 
     expect(service).toContain("Type=oneshot");
     expect(service).toContain("User=BRIDGE_USER");
-    expect(service).toContain("ExecStart=/usr/bin/env bash BRIDGE_REPO_DIR/scripts/reap-tmp-artifacts.sh");
-    // Deliberately does not resolve through BRIDGE_CURRENT_RELEASE_DIR: it is
-    // an ops housekeeping script tied to the git checkout, not app code.
-    expect(service).not.toContain("BRIDGE_CURRENT_RELEASE_DIR");
+    expect(service).toContain("EnvironmentFile=/etc/default/agent-bridge-release");
+    expect(service).toContain("BRIDGE_CURRENT_RELEASE_DIR");
+    expect(service).toContain("scripts/reap-tmp-artifacts.sh");
+    expect(service).not.toContain("BRIDGE_REPO_DIR/scripts");
   });
 
   it("tmp-cleanup timer runs daily and catches up after downtime", () => {
