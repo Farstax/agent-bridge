@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily agent-bridge temporary artifact cleanup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
