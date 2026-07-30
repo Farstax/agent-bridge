@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const cleanup: string[] = [];
-const verifier = fileURLToPath(new URL("../scripts/verify-release-promotion.py", import.meta.url));
+const verifier = fileURLToPath(new URL("../scripts/verify-release-promotion.sh", import.meta.url));
 
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -24,7 +24,7 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function buildArtifact(options: { manifestWorkflowRun?: string; addUndeclaredFile?: boolean } = {}) {
+function buildArtifact(options: { manifestWorkflowRun?: string; corruptChecksum?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-release-promotion-"));
   cleanup.push(root);
   const payload = join(root, "payload");
@@ -40,7 +40,6 @@ function buildArtifact(options: { manifestWorkflowRun?: string; addUndeclaredFil
   writeFileSync(join(payload, "dist", "index.js"), "export const ready = true;\n");
   writeFileSync(join(payload, "package.json"), '{"name":"release-promotion-fixture","type":"module"}\n');
   writeFileSync(join(payload, "package-lock.json"), '{"name":"release-promotion-fixture","lockfileVersion":3}\n');
-
   writeJson(join(payload, "qualification-evidence.json"), {
     commit,
     tree,
@@ -68,28 +67,21 @@ function buildArtifact(options: { manifestWorkflowRun?: string; addUndeclaredFil
     package_lock_sha256: files.find((file) => file.path === "package-lock.json")?.sha256,
     runtime: { node: "v24.15.0", platform: "linux", arch: "x64" },
     files,
-    builder: {
-      commit,
-      workflow_run: manifestWorkflowRun,
-      workflow_head: commit,
-    },
+    builder: { commit, workflow_run: manifestWorkflowRun, workflow_head: commit },
     database_schema_version: 4,
   });
 
-  if (options.addUndeclaredFile) {
-    writeFileSync(join(payload, "unexpected.txt"), "not declared\n");
-  }
-
   const archive = join(artifactDir, `agent-bridge-${commit}.tar.gz`);
   execFileSync("tar", ["--create", "--gzip", "--file", archive, "--directory", payload, "."]);
-  writeFileSync(`${archive}.sha256`, `${sha256(archive)}  ${basename(archive)}\n`);
+  const checksum = options.corruptChecksum ? "0".repeat(64) : sha256(archive);
+  writeFileSync(`${archive}.sha256`, `${checksum}  ${basename(archive)}\n`);
 
   return { artifactDir, commit, workflowRun };
 }
 
 function runVerifier(artifactDir: string, commit: string, workflowRun: string) {
   return spawnSync(
-    "python3",
+    "bash",
     [verifier, "--artifact-dir", artifactDir, "--commit", commit, "--workflow-run", workflowRun],
     { encoding: "utf8" },
   );
@@ -113,7 +105,7 @@ describe("GitHub release promotion", () => {
     expect(workflow).toMatch(/actions:\s*read/);
     expect(workflow).toMatch(/contents:\s*write/);
     expect(workflow).toContain("actions/download-artifact@v4");
-    expect(workflow).toContain("scripts/verify-release-promotion.py");
+    expect(workflow).toContain("scripts/verify-release-promotion.sh");
     expect(workflow).not.toMatch(/\bnpm\s+(?:ci|test)\b/);
     expect(workflow).not.toMatch(/\bnpm\s+run\s+build\b/);
   });
@@ -138,11 +130,11 @@ describe("GitHub release promotion", () => {
     expect(result.stderr).toContain("manifest builder workflow run does not match");
   });
 
-  it("rejects archive members omitted from the manifest", () => {
-    const fixture = buildArtifact({ addUndeclaredFile: true });
+  it("rejects an archive whose checksum does not match", () => {
+    const fixture = buildArtifact({ corruptChecksum: true });
     const result = runVerifier(fixture.artifactDir, fixture.commit, fixture.workflowRun);
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("archive contains undeclared member");
+    expect(result.stderr).toContain("archive checksum does not match");
   });
 });
