@@ -44,14 +44,12 @@ import { getExecutionProcessState } from "./cliSupervisor.js";
 import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
-import { logCompatibilityDiagnostics } from "./compatibilityDiagnostics.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
   override: false,
 });
 
-logCompatibilityDiagnostics("telegram-interactive");
 
 const token = process.env.TELEGRAM_BOT_TOKEN_INTERACTIVE;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN_INTERACTIVE is required");

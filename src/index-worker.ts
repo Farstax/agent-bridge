@@ -58,7 +58,6 @@ import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { parseAdvisorConfig } from "./advisorConfig.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { AdvisorService } from "./advisorService.js";
-import { logCompatibilityDiagnostics } from "./compatibilityDiagnostics.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 
 dotenv.config({
@@ -66,7 +65,6 @@ dotenv.config({
   override: false,
 });
 
-logCompatibilityDiagnostics("telegram-worker");
 
 const token = process.env.TELEGRAM_BOT_TOKEN_WORKER;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN_WORKER is required");
