@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -106,6 +106,58 @@ describe("unified advisor service", () => {
     const call = db.raw.prepare("SELECT scope_key, turn_key, task_key FROM advisor_calls").get() as any;
     expect(call).toMatchObject({ scope_key: "chat:7", turn_key: "turn-1", task_key: "task-1" });
     await broker.close();
+    db.close();
+  });
+
+  it("uses bounded repository evidence for an opted-in manual request", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "advisor-service-read-tools-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "README.md"), "Current repository evidence: bounded reads are enabled.\n");
+    const db = openDb(":memory:");
+    const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
+      if (runCli.mock.calls.length === 1) {
+        return JSON.stringify({
+          hypothesis: "Inspect the current repository documentation",
+          tool_requests: [{ tool: "repo.read_file", path: "README.md" }],
+          missing_evidence: [],
+        });
+      }
+      expect(args.join(" ")).toContain("Current repository evidence: bounded reads are enabled.");
+      return JSON.stringify({
+        advice_md: "The repository confirms bounded advisor reads are enabled.",
+        risks: [],
+        suggested_next_steps: [],
+        confidence: "high",
+      });
+    });
+    const service = new AdvisorService({
+      db,
+      config: parseAdvisorConfig({
+        BRIDGE_ADVISOR_ENABLED: "true",
+        BRIDGE_ADVISOR_CHAIN: "claude:claude-fable-5",
+      }),
+      bots: { claude: { command: "/trusted/claude", modelPreference: [] } },
+      runCli,
+    });
+    const request = {
+      origin: "manual" as const,
+      scopeKey: "chat:read-tools",
+      turnKey: "turn-read-tools",
+      mode: "review" as const,
+      task: "Review the repository read-tool state",
+      activeProvider: "codex",
+      activeModel: null,
+      cwd: dir,
+      readTools: true,
+    } as Parameters<AdvisorService["requestTrusted"]>[0] & { readTools: true };
+
+    const result = await service.requestTrusted(request);
+
+    expect(result.adviceMd).toContain("bounded advisor reads");
+    expect(runCli).toHaveBeenCalledTimes(2);
+    for (const [, args] of runCli.mock.calls) {
+      expect(args).toEqual(expect.arrayContaining(["--tools", ""]));
+    }
     db.close();
   });
 });
