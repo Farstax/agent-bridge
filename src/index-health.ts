@@ -27,12 +27,10 @@ import { resolveTimeoutsForKind } from "./timeouts.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
 import type { HealthPlugin } from "./health/types.js";
-import { logCompatibilityDiagnostics } from "./compatibilityDiagnostics.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 dotenv.config({ path: process.env.BRIDGE_ENV_FILE || ".env", override: false });
 
-logCompatibilityDiagnostics("telegram-health");
 
 const token = process.env.TELEGRAM_BOT_TOKEN_HEALTH;
 if (!token) {

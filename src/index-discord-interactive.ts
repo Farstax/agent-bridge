@@ -42,14 +42,12 @@ import { runCli } from "./cli.js";
 import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
-import { logCompatibilityDiagnostics } from "./compatibilityDiagnostics.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
   override: false,
 });
 
-logCompatibilityDiagnostics("discord-interactive");
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
