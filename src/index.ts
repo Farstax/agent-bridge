@@ -25,7 +25,6 @@ dotenv.config({
   override: false,
 });
 
-
 function getServiceKindFromEnvFile(envPath: string): "codex" | "antigravity" | "claude" | "kimchi" | null {
   if (!envPath) return null;
   const name = basename(envPath);
