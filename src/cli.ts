@@ -58,7 +58,6 @@ import {
   isChildRunning,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
-import { type as evtType, type BridgeEvent } from "./events/types.js";
 
 export {
   getExecutionProcessState,
@@ -232,154 +231,15 @@ export function getNextFallbackModel(currentModel: string | null, modelPreferenc
 }
 
 
-function emitSafe(onEvent: ((e: BridgeEvent) => void) | undefined, e: BridgeEvent): void {
-  try {
-    onEvent?.(e);
-  } catch {
-    /* never let event emission break execution */
-  }
-}
-
-function isPreExecutionDnsFailure(
-  bot: string | undefined,
-  args: string[],
-  stdout: string,
-  stderr: string
-): boolean {
-  return antigravityRuntime.isPreExecutionDnsFailure(bot, args, stdout, stderr);
-}
-
-async function runSupervisedProcessWithRetry(
-  command: string,
-  args: string[],
-  cwd: string,
-  options: CliOptions,
-  onProgress?: (text: string) => void
-): Promise<{ stdout: string }> {
-  const isAntigravity =
-    options.bot === "antigravity" ||
-    options.eventContext?.bot === "antigravity";
-
-  if (!isAntigravity) {
-    return await runSupervisedProcess(command, args, cwd, options, onProgress);
-  }
-
-  const { eventContext, onEvent } = options;
-
-  // Emit the single, outer run.started event
-  if (eventContext) {
-    emitSafe(onEvent, evtType.runStarted({
-      ...eventContext,
-      command,
-      cwd,
-      model: null,
-    }));
-  }
-
-  const maxAttempts = 3;
-  let lastError: Error | null = null;
-  let isCancelled = false;
-
-  try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        if (isCancelled || (options.chatId != null && isAbortRequested(options.chatId))) {
-          isCancelled = true;
-          throw new Error("CLI execution aborted by user");
-        }
-
-        // Suppress attempt-level terminal/started events by intercepting onEvent
-        const innerOptions: CliOptions = {
-          ...options,
-          onEvent: (event: BridgeEvent) => {
-            if (
-              event.type === "run.started" ||
-              event.type === "run.completed" ||
-              event.type === "run.failed" ||
-              event.type === "run.cancelled"
-            ) {
-              return;
-            }
-            if (onEvent) {
-              try {
-                onEvent(event);
-              } catch {
-                /* ignore */
-              }
-            }
-          },
-        };
-        const runPromise = runSupervisedProcess(command, args, cwd, innerOptions, onProgress);
-        const result = await runPromise;
-        if (options.chatId != null && isAbortRequested(options.chatId)) {
-          isCancelled = true;
-          throw new Error("CLI execution aborted by user");
-        }
-
-        // Successful attempt! Emit the single, outer run.completed event
-        if (eventContext) {
-          emitSafe(onEvent, evtType.runCompleted({
-            ...eventContext,
-            sessionId: null,
-            text: result.stdout,
-          }));
-        }
-        return result;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-
-        if (isCancelled || lastError.message.includes("aborted by user")) {
-          throw lastError;
-        }
-
-        // Pre-execution transport failure retry logic check
-        const stdout = (lastError as any).stdout || "";
-        const stderr = (lastError as any).stderr || "";
-
-        const isRetryable = isPreExecutionDnsFailure(options.bot || eventContext?.bot, args, stdout, stderr);
-
-        if (isRetryable && attempt < maxAttempts) {
-          const delay = 1000 * attempt;
-          console.warn(`[cli] Transient DNS lookup failure detected for antigravity (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`, lastError.message);
-
-          const deadline = Date.now() + delay;
-          while (Date.now() < deadline) {
-            if (options.chatId != null && isAbortRequested(options.chatId)) {
-              isCancelled = true;
-              throw new Error("CLI execution aborted by user");
-            }
-            await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
-          }
-
-          continue;
-        }
-
-        throw lastError;
-      }
-    }
-    throw lastError ?? new Error("CLI execution failed");
-  } catch (error: any) {
-    if (eventContext) {
-      if (isCancelled || error.message.includes("aborted by user")) {
-        emitSafe(onEvent, evtType.runCancelled({ ...eventContext, reason: "user" }));
-      } else {
-        emitSafe(onEvent, evtType.runFailed({
-          ...eventContext,
-          error: error.message,
-          category: error.category || "cli",
-        }));
-      }
-    }
-    throw error;
-  }
-}
-
 /**
  * Runs a CLI command and returns stdout. Thin adapter over the shared
  * supervised process core in src/cliSupervisor.ts.
  */
 export async function runCli(command: string, args: string[], cwd: string, options: CliOptions = {}): Promise<string> {
-  const { stdout } = await runSupervisedProcessWithRetry(command, args, cwd, {
+  const runner = options.bot === "antigravity" || options.eventContext?.bot === "antigravity"
+    ? antigravityRuntime.runWithTransientDnsRetry
+    : runSupervisedProcess;
+  const { stdout } = await runner(command, args, cwd, {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   });
@@ -396,7 +256,10 @@ export async function runCliAsync(
   cwd: string,
   options: CliOptions = {}
 ): Promise<{ text: string }> {
-  const { stdout } = await runSupervisedProcessWithRetry(command, args, cwd, {
+  const runner = options.bot === "antigravity" || options.eventContext?.bot === "antigravity"
+    ? antigravityRuntime.runWithTransientDnsRetry
+    : runSupervisedProcess;
+  const { stdout } = await runner(command, args, cwd, {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   }, options.onProgress);

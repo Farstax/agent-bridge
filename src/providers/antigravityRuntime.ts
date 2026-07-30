@@ -15,7 +15,9 @@
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import type { CliProcessWatchContext, CliResult } from "../types.js";
+import type { CliOptions, CliProcessWatchContext, CliResult } from "../types.js";
+import { isAbortRequested, runSupervisedProcess } from "../cliSupervisor.js";
+import { type as evtType, type BridgeEvent } from "../events/types.js";
 import { appendEffortArgs } from "../effort.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
 import { appendAttachmentAnnotations, appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
@@ -470,4 +472,67 @@ export function isPreExecutionDnsFailure(
   if (!isSandboxed) return false;
 
   return true;
+}
+
+function emitSafe(onEvent: ((event: BridgeEvent) => void) | undefined, event: BridgeEvent): void {
+  try { onEvent?.(event); } catch { /* observer failures never alter execution */ }
+}
+
+/** Provider-owned bounded retry. The supervisor remains the sole process/lifecycle owner. */
+export async function runWithTransientDnsRetry(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: CliOptions,
+  onProgress?: (text: string) => void,
+): Promise<{ stdout: string }> {
+  const { eventContext, onEvent } = options;
+  if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: null }));
+  let cancelled = false;
+  let lastError: Error | null = null;
+  try {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        if (options.chatId != null && isAbortRequested(options.chatId)) {
+          cancelled = true;
+          throw new Error("CLI execution aborted by user");
+        }
+        const result = await runSupervisedProcess(command, args, cwd, {
+          ...options,
+          onEvent: (event) => {
+            if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
+            try { onEvent?.(event); } catch { /* observer failures are isolated */ }
+          },
+        }, onProgress);
+        if (options.chatId != null && isAbortRequested(options.chatId)) {
+          cancelled = true;
+          throw new Error("CLI execution aborted by user");
+        }
+        if (eventContext) emitSafe(onEvent, evtType.runCompleted({ ...eventContext, sessionId: null, text: result.stdout }));
+        return result;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (cancelled || lastError.message.includes("aborted by user")) throw lastError;
+        const stdout = (lastError as Error & { stdout?: string }).stdout ?? "";
+        const stderr = (lastError as Error & { stderr?: string }).stderr ?? "";
+        if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, args, stdout, stderr) || attempt === 3) throw lastError;
+        const deadline = Date.now() + 1_000 * attempt;
+        while (Date.now() < deadline) {
+          if (options.chatId != null && isAbortRequested(options.chatId)) {
+            cancelled = true;
+            throw new Error("CLI execution aborted by user");
+          }
+          await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+        }
+      }
+    }
+    throw lastError ?? new Error("CLI execution failed");
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    if (eventContext) {
+      if (cancelled || failure.message.includes("aborted by user")) emitSafe(onEvent, evtType.runCancelled({ ...eventContext, reason: "user" }));
+      else emitSafe(onEvent, evtType.runFailed({ ...eventContext, error: failure.message, category: ((failure as Error & { category?: "cli" | "timeout" | "transport" | "render" | "unknown" }).category ?? "cli") }));
+    }
+    throw failure;
+  }
 }
