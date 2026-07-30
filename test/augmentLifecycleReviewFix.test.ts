@@ -97,7 +97,8 @@ describe("augment lifecycle review regressions", () => {
     const interrupt = engine.handleMessages([message("latest instruction")]);
     await Promise.all([original, interrupt]);
 
-    expect(prompts).toEqual(["cancelled original", "latest instruction"]);
+    // Queued successors pass through the hook at admission and again at claim.
+    expect(prompts).toEqual(["cancelled original", "latest instruction", "latest instruction"]);
     expect(mockRunCli).toHaveBeenCalledTimes(2);
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === "latest result")).toHaveLength(1);
@@ -155,12 +156,12 @@ describe("augment lifecycle review regressions", () => {
     finalGate.release();
     await Promise.all([first, second]);
 
-    expect(prompts).toEqual(["first request", "second request"]);
+    expect(prompts).toEqual(["first request", "second request", "second request"]);
     expect((engine as any).cancellationOperations.size).toBe(0);
     expect((engine as any).activeAugmentedTasks.size).toBe(0);
 
     await engine.handleMessages([message("third request")]);
-    expect(prompts).toEqual(["first request", "second request", "third request"]);
+    expect(prompts).toEqual(["first request", "second request", "second request", "third request"]);
     expect(mockRunCli).toHaveBeenCalledTimes(3);
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     db.close();
