@@ -158,4 +158,55 @@ describe("unified advisor service", () => {
     }
     db.close();
   });
+
+  it("keeps manual debug requests on the ordinary advisor result contract", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "advisor-service-manual-debug-"));
+    dirs.push(dir);
+    writeFileSync(join(dir, "README.md"), "Manual debug evidence.\n");
+    const db = openDb(":memory:");
+    const runCli = vi.fn().mockImplementation(async () => {
+      if (runCli.mock.calls.length === 1) {
+        return JSON.stringify({
+          hypothesis: "Inspect the current repository documentation",
+          tool_requests: [{ tool: "repo.read_file", path: "README.md" }],
+          missing_evidence: [],
+        });
+      }
+      return JSON.stringify({
+        advice_md: "Manual debugging guidance.",
+        risks: [],
+        suggested_next_steps: ["Inspect the reported behavior"],
+        confidence: "medium",
+      });
+    });
+    const service = new AdvisorService({
+      db,
+      config: parseAdvisorConfig({
+        BRIDGE_ADVISOR_ENABLED: "true",
+        BRIDGE_ADVISOR_CHAIN: "claude:claude-fable-5",
+      }),
+      bots: { claude: { command: "/trusted/claude", modelPreference: [] } },
+      runCli,
+    });
+
+    const result = await service.requestTrusted({
+      origin: "manual",
+      scopeKey: "chat:manual-debug",
+      turnKey: "turn-manual-debug",
+      mode: "debug",
+      task: "Debug the reported behavior",
+      activeProvider: "codex",
+      activeModel: null,
+      cwd: dir,
+    });
+
+    expect(result).toMatchObject({
+      adviceMd: "Manual debugging guidance.",
+      suggestedNextSteps: ["Inspect the reported behavior"],
+      confidence: "medium",
+    });
+    expect(result.verdict).toBeUndefined();
+    expect(runCli).toHaveBeenCalledTimes(2);
+    db.close();
+  });
 });
