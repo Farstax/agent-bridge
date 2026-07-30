@@ -14,7 +14,6 @@ import {
   abortExecutionAndWait,
   beginExecutionLifecycle,
   completeExecutionLifecycle,
-  hasAbortCallback,
   buildCliInvocation,
   buildExecutionOptions,
   isChildRunning,

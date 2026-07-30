@@ -54,8 +54,7 @@ import {
   redactArgs,
   CliTimeoutError,
   resolveSupervisorTimeouts,
-  registerAbortCallback,
-  hasAbortCallback,
+  isAbortRequested,
   isChildRunning,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
@@ -76,7 +75,7 @@ export {
   normalizeCliArgs,
   CliTimeoutError,
   resolveSupervisorTimeouts,
-  hasAbortCallback,
+  isAbortRequested,
   isChildRunning,
 };
 
@@ -283,19 +282,9 @@ async function runSupervisedProcessWithRetry(
 
   try {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const holder = { cancel: undefined as (() => void) | undefined };
-
-      const abortPromise = new Promise<never>((_, reject) => {
-        if (options.chatId != null) {
-          holder.cancel = registerAbortCallback(options.chatId, () => {
-            isCancelled = true;
-            reject(new Error("CLI execution aborted by user"));
-          });
-        }
-      });
-
       try {
-        if (isCancelled) {
+        if (isCancelled || (options.chatId != null && isAbortRequested(options.chatId))) {
+          isCancelled = true;
           throw new Error("CLI execution aborted by user");
         }
 
@@ -321,9 +310,11 @@ async function runSupervisedProcessWithRetry(
           },
         };
         const runPromise = runSupervisedProcess(command, args, cwd, innerOptions, onProgress);
-        const result = await Promise.race([runPromise, abortPromise]);
-
-        holder.cancel?.();
+        const result = await runPromise;
+        if (options.chatId != null && isAbortRequested(options.chatId)) {
+          isCancelled = true;
+          throw new Error("CLI execution aborted by user");
+        }
 
         // Successful attempt! Emit the single, outer run.completed event
         if (eventContext) {
@@ -335,8 +326,6 @@ async function runSupervisedProcessWithRetry(
         }
         return result;
       } catch (err) {
-        holder.cancel?.();
-
         lastError = err instanceof Error ? err : new Error(String(err));
 
         if (isCancelled || lastError.message.includes("aborted by user")) {
@@ -353,23 +342,14 @@ async function runSupervisedProcessWithRetry(
           const delay = 1000 * attempt;
           console.warn(`[cli] Transient DNS lookup failure detected for antigravity (attempt ${attempt}/${maxAttempts}). Retrying in ${delay}ms...`, lastError.message);
 
-          await new Promise<void>((resolve, reject) => {
-            let timeout: NodeJS.Timeout | null = null;
-            let cancelBackoff: (() => void) | null = null;
-
-            if (options.chatId != null) {
-              cancelBackoff = registerAbortCallback(options.chatId, () => {
-                isCancelled = true;
-                if (timeout) clearTimeout(timeout);
-                reject(new Error("CLI execution aborted by user"));
-              });
+          const deadline = Date.now() + delay;
+          while (Date.now() < deadline) {
+            if (options.chatId != null && isAbortRequested(options.chatId)) {
+              isCancelled = true;
+              throw new Error("CLI execution aborted by user");
             }
-
-            timeout = setTimeout(() => {
-              if (cancelBackoff) cancelBackoff();
-              resolve();
-            }, delay);
-          });
+            await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+          }
 
           continue;
         }

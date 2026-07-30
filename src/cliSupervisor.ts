@@ -23,11 +23,11 @@ import { normalizeCliArgs } from "./cliArgNormalization.js";
 
 interface ActiveExecution {
   child: ChildProcess | null;
+  abortRequested: boolean;
   lifecycleToken: string | null;
   lifecycleHandle: ExecutionLaneHandle | null;
   lifecycleDone: Promise<void> | null;
   finishLifecycle: (() => void) | null;
-  abortCallbacks?: (() => void)[];
 }
 
 // The single process registry. Both runCli() and runCliAsync() route through
@@ -160,14 +160,14 @@ function deregisterProcess(chatId: number | string, child: ChildProcess): void {
   const active = activeExecutions.get(chatId);
   if (active?.child === child) {
     active.child = null;
-    if (!active.lifecycleToken) activeExecutions.delete(chatId);
+    if (!active.lifecycleToken && !active.abortRequested) activeExecutions.delete(chatId);
   }
 }
 
 function registerProcess(chatId: number | string, child: ChildProcess): void {
   const active = activeExecutions.get(chatId);
   if (active) active.child = child;
-  else activeExecutions.set(chatId, { child, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null });
+  else activeExecutions.set(chatId, { child, abortRequested: false, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null });
 }
 
 export function beginExecutionLifecycle(chatId: number | string, handle: ExecutionLaneHandle): string {
@@ -177,6 +177,7 @@ export function beginExecutionLifecycle(chatId: number | string, handle: Executi
   const active = activeExecutions.get(chatId);
   activeExecutions.set(chatId, {
     child: active?.child ?? null,
+    abortRequested: active?.abortRequested ?? false,
     lifecycleToken: token,
     lifecycleHandle: handle,
     lifecycleDone,
@@ -219,14 +220,11 @@ export function isExecutionActive(runId: string): boolean {
 
 export function abortCliProcess(chatId: number | string): boolean {
   const active = activeExecutions.get(chatId);
-  let abortedSomething = false;
+  if (!active) return false;
+  active.abortRequested = true;
+  let abortedSomething = true;
   if (active?.child) {
     killChild(active.child);
-    abortedSomething = true;
-  }
-  if (active?.abortCallbacks) {
-    for (const cb of active.abortCallbacks) cb();
-    active.abortCallbacks = [];
     abortedSomething = true;
   }
   return abortedSomething;
@@ -234,7 +232,9 @@ export function abortCliProcess(chatId: number | string): boolean {
 
 export async function abortCliProcessAndWait(chatId: number | string): Promise<boolean> {
   const active = activeExecutions.get(chatId);
-  let abortedSomething = false;
+  if (!active) return false;
+  active.abortRequested = true;
+  let abortedSomething = true;
   const closedPromises: Promise<void>[] = [];
 
   if (active?.child) {
@@ -249,38 +249,15 @@ export async function abortCliProcessAndWait(chatId: number | string): Promise<b
     abortedSomething = true;
   }
 
-  if (active?.abortCallbacks) {
-    for (const cb of active.abortCallbacks) cb();
-    active.abortCallbacks = [];
-    abortedSomething = true;
-  }
-
   if (closedPromises.length > 0) {
     await Promise.all(closedPromises);
   }
   return abortedSomething;
 }
 
-export function registerAbortCallback(chatId: number | string, cb: () => void): () => void {
-  let active = activeExecutions.get(chatId);
-  if (!active) {
-    active = { child: null, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null };
-    activeExecutions.set(chatId, active);
-  }
-  if (!active.abortCallbacks) active.abortCallbacks = [];
-  active.abortCallbacks.push(cb);
-
-  return () => {
-    const act = activeExecutions.get(chatId);
-    if (act?.abortCallbacks) {
-      act.abortCallbacks = act.abortCallbacks.filter(c => c !== cb);
-    }
-  };
-}
-
-export function hasAbortCallback(chatId: string | number): boolean {
+export function isAbortRequested(chatId: string | number): boolean {
   const active = activeExecutions.get(chatId);
-  return !!(active?.abortCallbacks && active.abortCallbacks.length > 0);
+  return active?.abortRequested ?? false;
 }
 
 export function isChildRunning(chatId: string | number): boolean {
@@ -294,9 +271,8 @@ export async function abortExecutionAndWait(chatId: number | string): Promise<Ex
   const handle = active.lifecycleHandle;
   if (active.child) {
     await abortCliProcessAndWait(chatId);
-  } else if (active.abortCallbacks) {
-    for (const cb of active.abortCallbacks) cb();
-    active.abortCallbacks = [];
+  } else {
+    active.abortRequested = true;
   }
   await active.lifecycleDone;
   return handle;
