@@ -21,7 +21,7 @@ function client() {
 }
 
 function options(kind: "codex" | "claude", hooks: any = {}) {
-  return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, asyncEnabled: false, pollIntervalMs: 1000, hooks };
+  return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, busyMessageMode: "interrupt" as const, asyncEnabled: false, pollIntervalMs: 1000, hooks };
 }
 
 async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
@@ -534,6 +534,48 @@ describe("execution lane correctness", () => {
     db.close(); rmSync(path, { force: true });
   });
 
+  it("claims an ordered augmented batch with every attachment under one lane fence", () => {
+    const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: "augment-batch" });
+    const handle = db.acquireLock("telegram:interactive", "100:7")!;
+    db.enqueueMsg("telegram:interactive", "100:7", { prompt: "original request", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/original"] });
+    db.enqueueMsg("telegram:interactive", "100:7", { prompt: "first addition", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/first"] });
+    db.enqueueMsg("telegram:interactive", "100:7", { prompt: "second addition", chatId: 100, threadId: 7, chatType: "private", attachments: ["/tmp/second"] });
+
+    const claimed = db.claimPendingMsgs(handle);
+    expect(claimed.map((row) => row.prompt)).toEqual(["original request", "first addition", "second addition"]);
+    expect(claimed.flatMap((row) => row.attachments)).toEqual(["/tmp/original", "/tmp/first", "/tmp/second"]);
+    expect(db.completePendingMsgs(handle, claimed.map((row) => row.id))).toBe(true);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    db.close();
+  });
+
+  it("augments the active task by default and coalesces additions in arrival order", async () => {
+    const path = join(tmpdir(), `augment-mode-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(path);
+    const c = client();
+    const prompts: string[] = [];
+    const mockRunCli = vi.fn().mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
+      process.execPath,
+      ["-e", "setTimeout(()=>{},10000)"],
+      cwd,
+      cliOptions,
+    )).mockResolvedValueOnce('{"result":"augmented result","session_id":"augmented-session"}');
+    const engine = new BridgeEngine({
+      ...options("claude", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }), busyMessageMode: "augment",
+    }, db, c, { runCli: mockRunCli });
+    const first = engine.handleMessages([message("original request", 7)]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const second = engine.handleMessages([message("first addition", 7)]);
+    const third = engine.handleMessages([message("second addition", 7)]);
+    await Promise.all([first, second, third]);
+    expect(prompts[0]).toBe("original request");
+    expect(prompts.at(-1)).toBe("original request\n\nfirst addition\n\nsecond addition");
+    expect(mockRunCli).toHaveBeenCalledTimes(2);
+    expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === "augmented result")).toHaveLength(1);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    db.close(); rmSync(path, { force: true });
+  }, 8_000);
+
   it("keeps /reset fenced through delayed finalisation before allowing a new acquisition", async () => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: "same-process" });
     const c = client();
@@ -601,7 +643,7 @@ describe("execution lane correctness", () => {
         }
       },
     };
-    const engine = new BridgeEngine({ ...options("claude", hooks), asyncEnabled }, db, c, {
+    const engine = new BridgeEngine({ ...options("claude", hooks), busyMessageMode: "interrupt", asyncEnabled }, db, c, {
       runCli: vi.fn().mockResolvedValueOnce(cancelledResult).mockImplementationOnce(nextRun),
       runCliAsync: vi.fn().mockResolvedValueOnce({ text: cancelledResult }).mockImplementationOnce(async () => ({ text: await nextRun() })),
     });
