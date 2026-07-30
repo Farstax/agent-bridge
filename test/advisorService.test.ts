@@ -109,7 +109,7 @@ describe("unified advisor service", () => {
     db.close();
   });
 
-  it("uses bounded repository evidence for an opted-in manual request", async () => {
+  it("uses bounded repository evidence for a manual request", async () => {
     const dir = mkdtempSync(join(tmpdir(), "advisor-service-read-tools-"));
     dirs.push(dir);
     writeFileSync(join(dir, "README.md"), "Current repository evidence: bounded reads are enabled.\n");
@@ -139,19 +139,17 @@ describe("unified advisor service", () => {
       bots: { claude: { command: "/trusted/claude", modelPreference: [] } },
       runCli,
     });
-    const request = {
-      origin: "manual" as const,
+
+    const result = await service.requestTrusted({
+      origin: "manual",
       scopeKey: "chat:read-tools",
       turnKey: "turn-read-tools",
-      mode: "review" as const,
+      mode: "review",
       task: "Review the repository read-tool state",
       activeProvider: "codex",
       activeModel: null,
       cwd: dir,
-      readTools: true,
-    } as Parameters<AdvisorService["requestTrusted"]>[0] & { readTools: true };
-
-    const result = await service.requestTrusted(request);
+    });
 
     expect(result.adviceMd).toContain("bounded advisor reads");
     expect(runCli).toHaveBeenCalledTimes(2);
