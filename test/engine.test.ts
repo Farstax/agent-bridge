@@ -1216,7 +1216,7 @@ describe("BridgeEngine", () => {
   });
 
   describe("concurrency lock", () => {
-    it("queues a second message when first is still holding the lock", async () => {
+    it("queues a second message silently when first is still holding the lock", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
@@ -1231,7 +1231,7 @@ describe("BridgeEngine", () => {
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           // Pinned explicitly: this test validates durable-FIFO queue
-          // notification text, not busy-mode admission (Issue #177).
+          // accounting, not busy-mode admission (Issue #177).
           busyMessageMode: "queue",
           asyncEnabled: false,
           pollIntervalMs: 1000,
@@ -1243,9 +1243,10 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makeMessage("queued message")]);
 
-      expect(client.sendMessage).toHaveBeenCalledOnce();
-      const sentBody = client.sendMessage.mock.calls[0][0];
-      expect(sentBody.text).toContain("Queued");
+      // Issue #229: plain FIFO queueing is silent — no status message —
+      // but the row must still be durably queued.
+      expect(client.sendMessage).not.toHaveBeenCalled();
+      expect(db.pendingMsgCount("test", "100")).toBe(1);
     });
 
     it("pending queue survives engine re-instantiation", () => {
@@ -1362,7 +1363,10 @@ describe("BridgeEngine", () => {
       await second.handleMessages([makePrivateTopicMessage("second", 7)]);
 
       expect(secondRun).not.toHaveBeenCalled();
-      expect(secondClient.sendMessage.mock.calls.some((call: any[]) => call[0]?.text?.includes("Queued"))).toBe(true);
+      // Issue #229: plain FIFO queueing is silent — no status message —
+      // but the row must still be durably queued.
+      expect(secondClient.sendMessage.mock.calls.some((call: any[]) => call[0]?.text?.includes("Queued"))).toBe(false);
+      expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(1);
       db.raw.exec("DELETE FROM pending_messages");
       releaseFirst();
       await firstTask;
@@ -1772,23 +1776,23 @@ describe("BridgeEngine", () => {
         {},
       );
 
-      // Queue first message → position 1
+      // Queue first message → position 1. Issue #229: queueing is silent —
+      // assert the durable position via the db, not a status message.
       await engine.handleMessages([makeGroupMessage("first message")]);
-      const firstQ = client.sendMessage.mock.calls.find((c: any[]) => c[0]?.text?.includes("position 1"));
-      expect(firstQ).toBeDefined();
+      expect(db.pendingMsgCount("test", threadKey)).toBe(1);
 
       client.sendMessage.mockClear();
 
       // /stop should clear the topic-aware queue
       await engine.handleUpdate({ update_id: 2, message: makeGroupMessage("/stop") });
+      expect(db.pendingMsgCount("test", threadKey)).toBe(0);
 
       client.sendMessage.mockClear();
 
-      // Next queued message must show position 1 again — not 2 — proving queue was cleared
+      // Next queued message must land at position 1 again — not 2 — proving queue was cleared
       await engine.handleMessages([makeGroupMessage("second message")]);
-      const secondQ = client.sendMessage.mock.calls.find((c: any[]) => c[0]?.text?.includes("Queued"));
-      expect(secondQ).toBeDefined();
-      expect(secondQ![0].text).toContain("position 1");
+      expect(db.pendingMsgCount("test", threadKey)).toBe(1);
+      expect(client.sendMessage.mock.calls.some((c: any[]) => c[0]?.text?.includes("Queued"))).toBe(false);
     });
 
     it("sends the abort confirmation into the correct thread", async () => {
@@ -1895,23 +1899,23 @@ describe("BridgeEngine", () => {
         {},
       );
 
-      // Queue a private-chat message — should sit at position 1
+      // Queue a private-chat message — should sit at position 1. Issue #229:
+      // queueing is silent — assert the durable position via the db.
       await engine.handleMessages([makeMessage("first message")]);
-      const firstQ = client.sendMessage.mock.calls.find((c: any[]) => c[0]?.text?.includes("position 1"));
-      expect(firstQ).toBeDefined();
+      expect(db.pendingMsgCount("test", flatKey)).toBe(1);
 
       client.sendMessage.mockClear();
 
       // /stop in the same private chat clears the queue
       await engine.handleUpdate({ update_id: 2, message: makeMessage("/stop") });
+      expect(db.pendingMsgCount("test", flatKey)).toBe(0);
 
       client.sendMessage.mockClear();
 
-      // Next message after stop must show position 1, not 2
+      // Next message after stop must land at position 1, not 2
       await engine.handleMessages([makeMessage("second message")]);
-      const secondQ = client.sendMessage.mock.calls.find((c: any[]) => c[0]?.text?.includes("Queued"));
-      expect(secondQ).toBeDefined();
-      expect(secondQ![0].text).toContain("position 1");
+      expect(db.pendingMsgCount("test", flatKey)).toBe(1);
+      expect(client.sendMessage.mock.calls.some((c: any[]) => c[0]?.text?.includes("Queued"))).toBe(false);
     });
 
     it("two messages in the same thread queue behind each other", async () => {
@@ -1940,15 +1944,15 @@ describe("BridgeEngine", () => {
         {},
       );
 
-      // First message in thread 7 → queued at position 1
+      // First message in thread 7 → queued at position 1. Issue #229:
+      // queueing is silent — assert the durable position via the db.
       await engine.handleMessages([makeGroupMessage("msg one", 42, 100, 7)]);
-      const firstQ = client.sendMessage.mock.calls.find((c: any[]) => c[0]?.text?.includes("position 1"));
-      expect(firstQ).toBeDefined();
+      expect(db.pendingMsgCount("test", threadKey)).toBe(1);
 
       // Second message in the same thread 7 → queued at position 2
       await engine.handleMessages([makeGroupMessage("msg two", 42, 100, 7)]);
-      const secondQ = client.sendMessage.mock.calls.find((c: any[]) => c[0]?.text?.includes("position 2"));
-      expect(secondQ).toBeDefined();
+      expect(db.pendingMsgCount("test", threadKey)).toBe(2);
+      expect(client.sendMessage.mock.calls.some((c: any[]) => c[0]?.text?.includes("Queued"))).toBe(false);
     });
 
     it("a message in a different thread is not blocked by a lock held in thread 7", async () => {

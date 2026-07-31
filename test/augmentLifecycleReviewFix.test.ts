@@ -119,10 +119,6 @@ describe("augment lifecycle review regressions", () => {
     const firstCli = new Promise<string>((resolve) => { resolveFirstCli = resolve; });
 
     c.sendMessage.mockImplementation(async (body: any) => {
-      if (body.text === "🔄 Updating the active task...") {
-        noticeEntered.release();
-        await noticeGate.promise;
-      }
       if (body.text === "first final") {
         finalEntered.release();
         await finalGate.promise;
@@ -145,6 +141,19 @@ describe("augment lifecycle review regressions", () => {
       { runCli: mockRunCli },
     );
 
+    // The augment notice message is gone (Issue #229 — silent augment), but the
+    // race this test proves still needs a synchronization point at the same
+    // spot: the moment admission decides to fold into the active task and
+    // calls _cancelLane, before the active turn's own final delivery lands.
+    const originalCancelLane = (engine as any)._cancelLane.bind(engine);
+    vi.spyOn(engine as any, "_cancelLane").mockImplementation(async (...args: any[]) => {
+      if (args[1] === "augment") {
+        noticeEntered.release();
+        await noticeGate.promise;
+      }
+      return originalCancelLane(...args);
+    });
+
     const first = engine.handleMessages([message("first request")]);
     await firstCliStarted.promise;
     const second = engine.handleMessages([message("second request")]);
@@ -159,6 +168,7 @@ describe("augment lifecycle review regressions", () => {
     expect(prompts).toEqual(["first request", "second request", "second request"]);
     expect((engine as any).cancellationOperations.size).toBe(0);
     expect((engine as any).activeAugmentedTasks.size).toBe(0);
+    expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "🔄 Updating the active task...")).toBe(false);
 
     await engine.handleMessages([message("third request")]);
     expect(prompts).toEqual(["first request", "second request", "second request", "third request"]);

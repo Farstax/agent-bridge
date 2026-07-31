@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
+import { open, readdir, realpath, stat } from "node:fs/promises";
+import { isAbsolute, normalize, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { redactAdvisorEvidenceText } from "./advisorEvidenceRedaction.js";
 
@@ -23,10 +23,10 @@ export type AdvisorEvidenceToolRequest =
   | { tool: "repo.list_files"; path?: string; depth?: number }
   | { tool: "repo.read_file"; path: string }
   | { tool: "repo.search_text"; query: string; path?: string }
-  | { tool: "git.status" }
-  | { tool: "git.diff"; scope?: "working" | "staged" | "base_to_head"; base?: string; head?: string }
-  | { tool: "git.show"; object: string; path?: string }
-  | { tool: "git.log"; count?: number }
+  | { tool: "git.status"; repoPath?: string }
+  | { tool: "git.diff"; scope?: "working" | "staged" | "base_to_head"; base?: string; head?: string; repoPath?: string }
+  | { tool: "git.show"; object: string; path?: string; repoPath?: string }
+  | { tool: "git.log"; count?: number; repoPath?: string }
   | { tool: "evidence.acceptance" }
   | { tool: "evidence.plan" }
   | { tool: "evidence.test_failures" }
@@ -52,6 +52,10 @@ export interface AdvisorEvidenceAuditEvent {
   bytes: number;
   truncated: boolean;
   arguments: Record<string, string | number | boolean>;
+  /** Invoking CLI working directory relative paths resolve against (Issue #229 Part 2). */
+  cwd: string;
+  /** Filesystem scope root — "/", bounded only by OS read permissions for the service user. */
+  scopeRoot: string;
 }
 
 export interface AdvisorEvidenceToolLimits {
@@ -91,6 +95,11 @@ interface FileCollection {
 }
 
 const execFileAsync = promisify(execFile);
+
+// Issue #229 Part 2: the advisor has the same read visibility as the
+// invoking CLI process under the same Unix account — bounded only by
+// normal OS file permissions, not by repo containment or an allowlist.
+const ADVISOR_FILESYSTEM_SCOPE_ROOT = "/";
 
 const DEFAULT_LIMITS: AdvisorEvidenceToolLimits = {
   maxCalls: 6,
@@ -137,16 +146,25 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
     : fallback;
 }
 
-function safeRelativePath(value: unknown, field: string, optional = false): string {
+// Issue #229 Part 2: the advisor's filesystem scope root is "/" — any path
+// readable by the service Unix account, not just the invoking repo. Relative
+// paths still resolve against the invoking CLI cwd; absolute paths are
+// accepted as-is. The only remaining boundary is the operating system's own
+// read permission, checked at access time by resolveExisting/resolveRepoRoot.
+function safePathInput(value: unknown, field: string, optional = false): string {
   if (value == null && optional) return ".";
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty relative path`);
-  if (value.includes("\0") || isAbsolute(value)) throw new Error(`${field} must stay inside the worktree`);
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty path`);
+  if (value.includes("\0")) throw new Error(`${field} must not contain null bytes`);
   const normalized = normalize(value).replaceAll("\\", "/");
-  if (normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) {
-    throw new Error(`${field} escapes the worktree`);
-  }
   if (hasSensitivePath(normalized)) throw new Error(`${field} targets a sensitive path`);
   return normalized === "" ? "." : normalized;
+}
+
+function safeAbsoluteRepoPath(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty absolute path`);
+  if (value.includes("\0")) throw new Error(`${field} must not contain null bytes`);
+  if (!isAbsolute(value)) throw new Error(`${field} must be an absolute path`);
+  return normalize(value);
 }
 
 function safeGitRef(value: unknown, field: string): string {
@@ -269,38 +287,47 @@ export function parseAdvisorEvidenceToolRequest(value: unknown): AdvisorEvidence
     case "repo.list_files":
       return {
         tool: "repo.list_files",
-        path: safeRelativePath(input.path, "path", true),
+        path: safePathInput(input.path, "path", true),
         depth: boundedInteger(input.depth, 3, 0, 8),
       };
     case "repo.read_file":
-      return { tool: "repo.read_file", path: safeRelativePath(input.path, "path") };
+      return { tool: "repo.read_file", path: safePathInput(input.path, "path") };
     case "repo.search_text": {
       if (typeof input.query !== "string" || !input.query.trim() || input.query.length > 200) {
         throw new Error("query must be a non-empty literal of at most 200 characters");
       }
-      return { tool: "repo.search_text", query: input.query, path: safeRelativePath(input.path, "path", true) };
+      return { tool: "repo.search_text", query: input.query, path: safePathInput(input.path, "path", true) };
     }
     case "git.status":
-      return { tool: "git.status" };
+      return { tool: "git.status", ...(input.repoPath == null ? {} : { repoPath: safeAbsoluteRepoPath(input.repoPath, "repoPath") }) };
     case "git.diff": {
       const scope = input.scope == null ? "working" : input.scope;
       if (!(["working", "staged", "base_to_head"] as unknown[]).includes(scope)) throw new Error("Unsupported git.diff scope");
+      const repoPath = input.repoPath == null ? undefined : safeAbsoluteRepoPath(input.repoPath, "repoPath");
       if (scope === "base_to_head") {
-        return { tool: "git.diff", scope, base: safeGitRef(input.base, "base"), head: safeGitRef(input.head, "head") };
+        return {
+          tool: "git.diff", scope, base: safeGitRef(input.base, "base"), head: safeGitRef(input.head, "head"),
+          ...(repoPath == null ? {} : { repoPath }),
+        };
       }
-      return { tool: "git.diff", scope: scope as "working" | "staged" };
+      return { tool: "git.diff", scope: scope as "working" | "staged", ...(repoPath == null ? {} : { repoPath }) };
     }
     case "git.show": {
-      const path = input.path == null ? undefined : safeRelativePath(input.path, "path");
+      const path = input.path == null ? undefined : safePathInput(input.path, "path");
       if (path?.includes(":")) throw new Error("path is not supported for git.show");
+      const repoPath = input.repoPath == null ? undefined : safeAbsoluteRepoPath(input.repoPath, "repoPath");
       return {
         tool: "git.show",
         object: safeGitRef(input.object, "object"),
         ...(path == null ? {} : { path }),
+        ...(repoPath == null ? {} : { repoPath }),
       };
     }
     case "git.log":
-      return { tool: "git.log", count: boundedInteger(input.count, 10, 1, 20) };
+      return {
+        tool: "git.log", count: boundedInteger(input.count, 10, 1, 20),
+        ...(input.repoPath == null ? {} : { repoPath: safeAbsoluteRepoPath(input.repoPath, "repoPath") }),
+      };
     case "evidence.acceptance":
     case "evidence.plan":
     case "evidence.test_failures":
@@ -376,6 +403,23 @@ export class AdvisorEvidenceToolBroker {
     }
   }
 
+  // Issue #229 Part 2: any filesystem operation that fails because the OS
+  // denies or can't find the target must surface as a clear "unavailable"
+  // result, never a silent fallback or an opaque generic failure.
+  private async beforeDeadlineUnavailable<T>(
+    label: string,
+    operation: () => Promise<T>,
+    deadline: number,
+  ): Promise<T> {
+    try {
+      return await this.beforeDeadline(operation, deadline);
+    } catch (caught) {
+      if (caught instanceof Error && /timeout|deadline/i.test(caught.message)) throw caught;
+      const message = caught instanceof Error ? caught.message : String(caught);
+      throw new Error(`${label} is unavailable: ${message}`);
+    }
+  }
+
   private result(
     request: AdvisorEvidenceToolRequest,
     status: AdvisorEvidenceToolResult["status"],
@@ -421,6 +465,8 @@ export class AdvisorEvidenceToolBroker {
       bytes,
       truncated,
       arguments: auditArguments,
+      cwd: this.options.repoPath,
+      scopeRoot: ADVISOR_FILESYSTEM_SCOPE_ROOT,
     });
     return result;
   }
@@ -436,13 +482,21 @@ export class AdvisorEvidenceToolBroker {
         hasHead: Boolean(request.head),
         ...(request.base ? { baseSha256: descriptorHash(request.base) } : {}),
         ...(request.head ? { headSha256: descriptorHash(request.head) } : {}),
+        ...(request.repoPath ? { repoPathSha256: descriptorHash(request.repoPath) } : {}),
       };
       case "git.show": return {
         objectSha256: descriptorHash(request.object),
         hasPath: Boolean(request.path),
         ...(request.path ? { pathSha256: descriptorHash(request.path) } : {}),
+        ...(request.repoPath ? { repoPathSha256: descriptorHash(request.repoPath) } : {}),
       };
-      case "git.log": return { count: request.count ?? 10 };
+      case "git.log": return {
+        count: request.count ?? 10,
+        ...(request.repoPath ? { repoPathSha256: descriptorHash(request.repoPath) } : {}),
+      };
+      case "git.status": return {
+        ...(request.repoPath ? { repoPathSha256: descriptorHash(request.repoPath) } : {}),
+      };
       default: return {};
     }
   }
@@ -466,17 +520,17 @@ export class AdvisorEvidenceToolBroker {
       case "repo.search_text":
         return this.searchText(request.path ?? ".", request.query, deadline);
       case "git.status":
-        return this.runGit(this.gitArgs(["status", "--short", "--branch", "--untracked-files=normal"]), deadline, true);
+        return this.runGit(this.gitArgs(["status", "--short", "--branch", "--untracked-files=normal"]), deadline, true, request.repoPath);
       case "git.diff":
-        if (request.scope === "staged") return this.runGit(this.gitArgs(["diff", "--cached", "--no-ext-diff", "--no-textconv", "--unified=3"]), deadline, true);
-        if (request.scope === "base_to_head") return this.runGit(this.gitArgs(["diff", "--no-ext-diff", "--no-textconv", "--unified=3", `${request.base}...${request.head}`]), deadline, true);
-        return this.runGit(this.gitArgs(["diff", "--no-ext-diff", "--no-textconv", "--unified=3"]), deadline, true);
+        if (request.scope === "staged") return this.runGit(this.gitArgs(["diff", "--cached", "--no-ext-diff", "--no-textconv", "--unified=3"]), deadline, true, request.repoPath);
+        if (request.scope === "base_to_head") return this.runGit(this.gitArgs(["diff", "--no-ext-diff", "--no-textconv", "--unified=3", `${request.base}...${request.head}`]), deadline, true, request.repoPath);
+        return this.runGit(this.gitArgs(["diff", "--no-ext-diff", "--no-textconv", "--unified=3"]), deadline, true, request.repoPath);
       case "git.show":
         return request.path
-          ? this.runGit(this.gitArgs(["show", "--no-ext-diff", "--no-textconv", `${request.object}:${request.path}`]), deadline, false)
-          : this.runGit(this.gitArgs(["show", "--no-patch", "--format=medium", "--stat", request.object]), deadline, true);
+          ? this.runGit(this.gitArgs(["show", "--no-ext-diff", "--no-textconv", `${request.object}:${request.path}`]), deadline, false, request.repoPath)
+          : this.runGit(this.gitArgs(["show", "--no-patch", "--format=medium", "--stat", request.object]), deadline, true, request.repoPath);
       case "git.log":
-        return this.runGit(this.gitArgs(["log", `-${request.count ?? 10}`, "--date=iso-strict", "--pretty=format:%H%x09%ad%x09%s"]), deadline, false);
+        return this.runGit(this.gitArgs(["log", `-${request.count ?? 10}`, "--date=iso-strict", "--pretty=format:%H%x09%ad%x09%s"]), deadline, false, request.repoPath);
       case "evidence.acceptance":
         return this.workerEvidence("acceptance");
       case "evidence.plan":
@@ -498,8 +552,14 @@ export class AdvisorEvidenceToolBroker {
     return this.beforeDeadline(() => this.rootPromise, deadline);
   }
 
-  private async runGit(args: string[], deadline: number, filterSensitivePaths: boolean): Promise<EvidencePayload> {
-    const root = await this.root(deadline);
+  /** Resolves an explicit absolute repoPath (Issue #229 Part 2), or falls back to the invoking cwd. */
+  private async resolveRepoRoot(explicitRepoPath: string | undefined, deadline: number): Promise<string> {
+    const candidate = explicitRepoPath ?? await this.root(deadline);
+    return this.beforeDeadlineUnavailable("repoPath", () => realpath(candidate), deadline);
+  }
+
+  private async runGit(args: string[], deadline: number, filterSensitivePaths: boolean, explicitRepoPath?: string): Promise<EvidencePayload> {
+    const root = await this.resolveRepoRoot(explicitRepoPath, deadline);
     const timeoutMs = Math.max(1, deadline - Date.now());
     let raw: string;
     if (this.options.runGit) {
@@ -526,28 +586,25 @@ export class AdvisorEvidenceToolBroker {
       : { content: raw.trim(), complete: true };
   }
 
-  private async resolveExisting(relativePath: string, deadline: number): Promise<string> {
-    const root = await this.root(deadline);
-    const normalizedPath = safeRelativePath(relativePath, "path", true);
-    const candidate = resolve(root, normalizedPath);
-    const rel = relative(root, candidate);
-    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Path escapes the worktree");
-
-    let current = root;
-    for (const part of rel.split(sep).filter(Boolean)) {
-      current = resolve(current, part);
-      const details = await this.beforeDeadline(() => lstat(current), deadline);
-      if (details.isSymbolicLink()) throw new Error("Symlink paths are denied for advisor evidence");
-    }
-    const canonical = await this.beforeDeadline(() => realpath(candidate), deadline);
-    const canonicalRel = relative(root, canonical);
-    if (canonicalRel === ".." || canonicalRel.startsWith(`..${sep}`) || isAbsolute(canonicalRel)) throw new Error("Resolved path escapes the worktree");
+  // Issue #229 Part 2: filesystem scope is "/" — no repo-containment check.
+  // Relative paths resolve against the invoking cwd; absolute paths are used
+  // as-is. realpath() canonicalises the result and resolves symlinks in one
+  // step; the sensitive-path filter is re-applied to the canonical target so
+  // a symlink can't smuggle a secret file in under an innocuous name. Any
+  // failure (missing, unreadable, symlink loop) is surfaced as a clear
+  // "unavailable" result rather than silently falling back.
+  private async resolveExisting(pathInput: string, deadline: number): Promise<string> {
+    const cwd = await this.root(deadline);
+    const normalizedPath = safePathInput(pathInput, "path", true);
+    const candidate = isAbsolute(normalizedPath) ? normalizedPath : resolve(cwd, normalizedPath);
+    const canonical = await this.beforeDeadlineUnavailable("path", () => realpath(candidate), deadline);
+    if (hasSensitivePath(canonical)) throw new Error("path targets a sensitive path");
     return canonical;
   }
 
   private async readText(relativePath: string, deadline: number): Promise<EvidencePayload> {
     const path = await this.resolveExisting(relativePath, deadline);
-    const handle = await this.beforeDeadline(() => open(path, constants.O_RDONLY | constants.O_NOFOLLOW), deadline);
+    const handle = await this.beforeDeadlineUnavailable("path", () => open(path, constants.O_RDONLY | constants.O_NOFOLLOW), deadline);
     try {
       const details = await this.beforeDeadline(() => handle.stat(), deadline);
       if (!details.isFile()) throw new Error("Advisor evidence path is not a file");
@@ -571,7 +628,7 @@ export class AdvisorEvidenceToolBroker {
   private async collectFiles(relativePath: string, requestedDepth: number, deadline: number): Promise<FileCollection> {
     const root = await this.root(deadline);
     const base = await this.resolveExisting(relativePath, deadline);
-    const details = await this.beforeDeadline(() => stat(base), deadline);
+    const details = await this.beforeDeadlineUnavailable("path", () => stat(base), deadline);
     if (!details.isDirectory()) throw new Error("Advisor evidence path is not a directory");
     const maxDepth = Math.min(requestedDepth, this.limits.maxDepth);
     const files: string[] = [];
@@ -595,8 +652,29 @@ export class AdvisorEvidenceToolBroker {
         entriesVisited += 1;
         const absolute = resolve(dir, entry.name);
         const rel = relative(root, absolute).replaceAll("\\", "/");
-        if (entry.isSymbolicLink() || hasSensitivePath(rel)) continue;
-        if (entry.isDirectory()) {
+        if (hasSensitivePath(rel)) continue;
+
+        // Issue #229 Part 2: symlinks are resolved (not denied outright);
+        // bounded depth/entry/file limits keep traversal safe through any
+        // symlink cycle. A dirent's own isDirectory()/isFile() reflect the
+        // link itself, not its target, so resolve the target's real type.
+        let isDirectory = entry.isDirectory();
+        let isFile = entry.isFile();
+        if (entry.isSymbolicLink()) {
+          let resolved: string;
+          try {
+            resolved = await this.beforeDeadline(() => realpath(absolute), deadline);
+          } catch {
+            continue; // broken or unreadable symlink target — skip silently
+          }
+          if (hasSensitivePath(resolved)) continue;
+          const targetStat = await this.beforeDeadline(() => stat(resolved), deadline).catch(() => null);
+          if (!targetStat) continue;
+          isDirectory = targetStat.isDirectory();
+          isFile = targetStat.isFile();
+        }
+
+        if (isDirectory) {
           if (depth >= maxDepth) {
             complete = false;
             limitations.add(`depth limit ${maxDepth} reached`);
@@ -605,7 +683,7 @@ export class AdvisorEvidenceToolBroker {
           const verifiedDirectory = await this.resolveExisting(rel, deadline);
           await visit(verifiedDirectory, depth + 1);
           if (files.length >= this.limits.maxFiles || entriesVisited >= this.limits.maxEntries) return;
-        } else if (entry.isFile()) {
+        } else if (isFile) {
           if (files.length >= this.limits.maxFiles) {
             complete = false;
             limitations.add(`file limit ${this.limits.maxFiles} reached`);
