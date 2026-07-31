@@ -15,7 +15,7 @@ import { HealthBridgeBot } from "./health/bot.js";
 import { SelfPlugin } from "./health/plugins/self.js";
 import { ExternalPlugin } from "./health/plugins/external.js";
 import { ServerPlugin } from "./health/plugins/server.js";
-import { parseHealthEnabled, parseCadenceSeconds, parseHealthCliConfig } from "./health/config.js";
+import { parseHealthEnabled, parseCadenceSeconds, parseHealthCliConfig, resolveHealthEngineExecutionMode } from "./health/config.js";
 import { formatReport } from "./health/reporter.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine } from "./engine.js";
@@ -165,7 +165,7 @@ const engine = new BridgeEngine(
     executionKind: cliBot,
     botConfig: { command: cliBotConfig.command, modelPreference: cliBotConfig.modelPreference },
     allowedUserIds,
-    executionMode: "safe",
+    executionMode: resolveHealthEngineExecutionMode(process.env, cliBot),
     asyncEnabled: false,
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 1000),
     soulContext,
