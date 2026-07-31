@@ -86,6 +86,7 @@ interface OrchestratedPhaseData {
   verifyOutput?: string;
   advisorPlan?: string;
   reviewRepairAttempted?: boolean;
+  reviewRepairPending?: boolean;
   advisorPrReady?: string;
   advisorDebug?: AdvisorDebugCheckpointResult;
   blockedResult?: WorkerBlockedResult;
@@ -404,6 +405,35 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
       if (!phaseData.repoPath || !phaseData.plan || !phaseData.branchName) {
         throw new Error("orchestrated_task review repair is missing state or has already been attempted");
       }
+      const repairCommitSubject = `repair: ${item.title}`;
+      const latestCommitSubject = String(await runGit(["log", "-1", "--format=%s"], phaseData.repoPath)).trim();
+      if (latestCommitSubject === repairCommitSubject) {
+        return {
+          status: "continue",
+          phase: "verifying",
+          phaseData: { ...phaseData, reviewRepairAttempted: true, reviewRepairPending: false, advisorPrReady: undefined },
+          summary: `Reconciled the existing Technical Lead repair for work item #${workItemId}; verifying again.`,
+        };
+      }
+      if (phaseData.reviewRepairAttempted) {
+        return {
+          summary: `Technical Lead repair state for work item #${workItemId} could not be reconciled safely; human input is required.`,
+          needsHuman: true,
+        };
+      }
+      if (phaseData.reviewRepairPending !== true) {
+        return {
+          summary: `Technical Lead repair for work item #${workItemId} has no durable pending marker; human input is required.`,
+          needsHuman: true,
+        };
+      }
+      const currentStatus = String(await runGit(["status", "--porcelain"], phaseData.repoPath)).trim();
+      if (currentStatus) {
+        return {
+          summary: `Technical Lead repair for work item #${workItemId} left an unreconciled working tree; human input is required.`,
+          needsHuman: true,
+        };
+      }
       const repairPrompt = [
         await buildExecutePrompt(item.title, phaseData.plan, phaseData.advisorPlan),
         "",
@@ -420,7 +450,7 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
       return {
         status: "continue",
         phase: "verifying",
-        phaseData: { ...phaseData, reviewRepairAttempted: true, advisorPrReady: undefined },
+        phaseData: { ...phaseData, reviewRepairAttempted: true, reviewRepairPending: false, advisorPrReady: undefined },
         summary: `Technical Lead repair committed for work item #${workItemId}; verifying again.`,
       };
     }
@@ -450,7 +480,7 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
         return {
           status: "continue",
           phase: "review_repair",
-          phaseData: { ...phaseData, reviewRepairAttempted: true, advisorPrReady: advisorPrReady.advice, verifyOutput: verify.output },
+          phaseData: { ...phaseData, reviewRepairAttempted: false, reviewRepairPending: true, advisorPrReady: advisorPrReady.advice, verifyOutput: verify.output },
           summary: `Technical Lead rejected the verified result for work item #${workItemId}; one bounded repair queued.`,
         };
       }

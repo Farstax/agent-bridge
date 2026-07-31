@@ -59,7 +59,7 @@ import { parseAdvisorConfig } from "./advisorConfig.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { AdvisorService } from "./advisorService.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
-import { resolveTechnicalLeadAdvisorConfig } from "./technicalLeadRouting.js";
+import { isTechnicalLeadApproval, resolveTechnicalLeadAdvisorConfig } from "./technicalLeadRouting.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.worker",
@@ -276,7 +276,7 @@ const technicalLeadCheckpoint = technicalLeadAdvisorConfig ? async (input: {
     cwd: input.repoPath,
   });
   return {
-    approved: result.decision !== "reject",
+    approved: isTechnicalLeadApproval(result.decision),
     advice: [result.adviceMd, ...result.risks.map((risk) => `Risk: ${risk}`), ...result.suggestedNextSteps.map((step) => `Next: ${step}`)].join("\n"),
   };
 } : undefined;

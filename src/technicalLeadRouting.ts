@@ -2,6 +2,10 @@ import { assertChainSupportsProfile } from "./advisorPolicy.js";
 import type { AdvisorConfig, AdvisorTarget } from "./advisorTypes.js";
 import type { RoleAssignmentConfig } from "./agentRoles.js";
 
+export function isTechnicalLeadApproval(decision: "approve" | "reject" | undefined): boolean {
+  return decision === "approve";
+}
+
 /** Build the read-only advisor configuration from the persisted Technical Lead assignment. */
 export function resolveTechnicalLeadAdvisorConfig(
   base: AdvisorConfig,
