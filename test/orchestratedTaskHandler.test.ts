@@ -122,6 +122,54 @@ describe("createOrchestratedTaskHandler", () => {
     }));
   });
 
+  it("holds before execution when the Technical Lead rejects the plan", async () => {
+    const stubs = makeStubs();
+    const advisorCheckpoint = vi.fn().mockResolvedValue({ approved: false, advice: "Plan is underspecified." });
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    const result = await createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint })(
+      { work_item_id: item.id, repository_path: "/tmp/repo", role_routing_enabled: true },
+      { db, workerId: "w", phase: "initial", phaseData: {} },
+    );
+
+    expect(result).toMatchObject({ needsHuman: true });
+    expect(result.summary).toMatch(/underspecified/i);
+    expect(stubs.runCli).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows one final-review repair, then requires fresh verification", async () => {
+    const stubs = makeStubs();
+    const advisorCheckpoint = vi.fn()
+      .mockResolvedValueOnce({ approved: false, advice: "Fix the missing guard." })
+      .mockResolvedValueOnce({ approved: true, advice: "Ready." });
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    const review = await createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint })(
+      { work_item_id: item.id, role_routing_enabled: true },
+      { db, workerId: "w", phase: "verifying", phaseData: {
+        workItemId: item.id, repoPath: "/tmp/repo", branchName: `agent/work-${item.id}`, plan: "Plan",
+      } },
+    );
+
+    expect(review).toMatchObject({ status: "continue", phase: "review_repair" });
+    expect(review.phaseData).toMatchObject({ reviewRepairAttempted: true });
+
+    const repaired = await createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint })(
+      { work_item_id: item.id, role_routing_enabled: true },
+      { db, workerId: "w", phase: "review_repair", phaseData: review.phaseData as object },
+    );
+
+    expect(repaired).toMatchObject({ status: "continue", phase: "verifying" });
+    expect(stubs.runTests).toHaveBeenCalledTimes(1);
+    expect(advisorCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed when a job requires an unavailable advisor", async () => {
     const stubs = makeStubs();
     const item = db.createWorkItem({
