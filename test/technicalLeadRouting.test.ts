@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseAdvisorConfig } from "../src/advisorConfig.js";
-import { resolveTechnicalLeadAdvisorConfig } from "../src/technicalLeadRouting.js";
+import { isTechnicalLeadApproval, resolveTechnicalLeadAdvisorConfig } from "../src/technicalLeadRouting.js";
 import type { RoleAssignmentConfig } from "../src/agentRoles.js";
 
 const roleConfig: RoleAssignmentConfig = {
@@ -38,5 +38,11 @@ describe("Technical Lead routing", () => {
     const base = parseAdvisorConfig({});
 
     expect(() => resolveTechnicalLeadAdvisorConfig(base, null, true)).toThrow(/technical lead/i);
+  });
+
+  it("requires an explicit approval decision", () => {
+    expect(isTechnicalLeadApproval("approve")).toBe(true);
+    expect(isTechnicalLeadApproval(undefined)).toBe(false);
+    expect(isTechnicalLeadApproval("reject")).toBe(false);
   });
 });
