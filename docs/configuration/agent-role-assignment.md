@@ -16,6 +16,7 @@ The remainder of this document distinguishes the current Slice 1 contract from t
 The worker accepts one optional JSON environment variable and one optional scope variable:
 
 - `WORKER_ROLE_ASSIGNMENTS_JSON` — an array containing exactly one assignment for each public role;
+- `WORKER_ROLE_ROUTING_ENABLED` — default-off activation for the existing orchestrated workflow's read-only Technical Lead plan and final-review checkpoints. When enabled, the persisted `technical_lead` primary/fallback chain is authoritative and invalid configuration fails closed.
 - `WORKER_ROLE_ASSIGNMENT_SCOPE` — a bounded workspace/scope identifier; defaults to `worker:default`. Secret-, prompt-, and repository-content-shaped scope values fail closed before database opening.
 
 Example:

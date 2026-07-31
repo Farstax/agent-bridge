@@ -2,6 +2,7 @@ import type { BridgeDb } from "./db.js";
 import type { AdvisorEvidenceToolResult } from "./advisorEvidenceTools.js";
 import type {
   AdvisorConfidence,
+  AdvisorCheckpointDecision,
   AdvisorDebugVerdict,
   AdvisorEvidenceBasis,
   AdvisorRequest,
@@ -49,6 +50,9 @@ export function buildAdvisorContext(db: BridgeDb, input: {
 }
 
 export function buildAdvisorPrompt(input: { mode: AdvisorRequestMode; activeProvider: string; activeModel: string | null; context: string }): string {
+  const checkpointSchema = input.mode === "plan" || input.mode === "pr_ready"
+    ? ',"decision":"approve|reject"'
+    : "";
   return [
     "You are Agent Bridge's frontier advisor. Give the executor a concise, rigorous second opinion.",
     "You may inspect supplied evidence, but do not execute commands, edit files, approve, merge, deploy, delete, or send user messages.",
@@ -56,7 +60,7 @@ export function buildAdvisorPrompt(input: { mode: AdvisorRequestMode; activeProv
     `Active executor: ${input.activeProvider}:${input.activeModel ?? "default"}`,
     input.context,
     "Return only JSON:",
-    '{"advice_md":"...","risks":["..."],"suggested_next_steps":["..."],"confidence":"low|medium|high"}',
+    `{"advice_md":"...","risks":["..."],"suggested_next_steps":["..."],"confidence":"low|medium|high"${checkpointSchema}}`,
   ].join("\n\n");
 }
 
@@ -200,7 +204,7 @@ function boundedEvidenceBasis(value: unknown): AdvisorEvidenceBasis[] | null {
 }
 
 export function parseAdvisorOutput(raw: string): {
-  adviceMd: string; risks: string[]; suggestedNextSteps: string[]; confidence: AdvisorConfidence;
+  adviceMd: string; risks: string[]; suggestedNextSteps: string[]; confidence: AdvisorConfidence; decision?: AdvisorCheckpointDecision;
 } {
   try {
     const value = extractJson(raw) as Record<string, unknown>;
@@ -208,8 +212,10 @@ export function parseAdvisorOutput(raw: string): {
     const risks = boundedList(value.risks);
     const suggestedNextSteps = boundedList(value.suggested_next_steps);
     const confidence = value.confidence;
-    if (!adviceMd || !risks || !suggestedNextSteps || !["low", "medium", "high"].includes(String(confidence))) throw new Error("schema");
-    return { adviceMd, risks, suggestedNextSteps, confidence: confidence as AdvisorConfidence };
+    const decision = value.decision === undefined ? undefined : value.decision;
+    if (!adviceMd || !risks || !suggestedNextSteps || !["low", "medium", "high"].includes(String(confidence))
+      || (decision !== undefined && decision !== "approve" && decision !== "reject")) throw new Error("schema");
+    return { adviceMd, risks, suggestedNextSteps, confidence: confidence as AdvisorConfidence, ...(decision ? { decision: decision as AdvisorCheckpointDecision } : {}) };
   } catch {
     throw new Error("Invalid advisor output: expected structured JSON");
   }
