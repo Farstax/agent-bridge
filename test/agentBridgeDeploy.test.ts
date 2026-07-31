@@ -52,7 +52,63 @@ function makeRelease(commit = COMMIT): { archive: string; approval: string; root
   return { archive, approval, root, releaseSha };
 }
 
+function makeOwnerRequest(root: string, commit = COMMIT): string {
+  const request = join(root, "owner-deployment-request.json");
+  writeFileSync(request, `${JSON.stringify({
+    repository: "nickconstantinou/agent-bridge",
+    owner: "nickconstantinou",
+    authenticated: true,
+    reference: "owner-deploy-239",
+    requested_at: "2026-07-30T12:00:00Z",
+    expires_at: "2099-07-28T13:00:00Z",
+    target_commit: commit,
+  })}\n`);
+  chmodSync(request, 0o600);
+  return request;
+}
+
 describe("single-input deployer contract", () => {
+  it("materializes owner authorization and continues without a manual approval file", () => {
+    const fixture = createFixture();
+    const release = makeRelease(fixture.expectedCommit);
+    const request = makeOwnerRequest(release.root, fixture.expectedCommit);
+    const authorizationRoot = mkdtempSync(join(tmpdir(), "agent-bridge-owner-authorization-"));
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-owner-release-"));
+    const result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", request], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_DEPLOY_TEST: "1",
+        AGENT_BRIDGE_DEPLOY_TEST_AUTHORIZATION_DIR: authorizationRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_RUNNER: helperPath,
+        AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root,
+      },
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`deployed ${fixture.expectedCommit}`);
+    const authorization = JSON.parse(readFileSync(join(authorizationRoot, `deployment-authorization-${fixture.expectedCommit}.json`), "utf8"));
+    expect(authorization).toEqual(expect.objectContaining({
+      environment: "production-content-crawler",
+      target_commit: fixture.expectedCommit,
+      release_sha256: release.releaseSha,
+      approval_reference: "owner-deploy-239",
+    }));
+  }, 15_000);
+
+  it("rejects an owner request for a different repository or target", () => {
+    const release = makeRelease();
+    const request = JSON.parse(readFileSync(makeOwnerRequest(release.root), "utf8"));
+    request.repository = "someone-else/agent-bridge";
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    const result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/different repository owner/i);
+  });
+
   it("validates one archive and minimal approval without an evidence file", () => {
     const fixture = makeRelease();
     const result = spawnSync("python3", [DEPLOYER, "--release", fixture.archive, "--approval", fixture.approval, "--validate-only"], {
