@@ -42,7 +42,7 @@ describe("Technical Lead routing", () => {
 
   it("requires an explicit approval decision", () => {
     expect(isTechnicalLeadApproval("approve")).toBe(true);
-    expect(isTechnicalLeadApproval(undefined)).toBe(false);
     expect(isTechnicalLeadApproval("reject")).toBe(false);
+    expect(() => isTechnicalLeadApproval(undefined)).toThrow(/decision.*required/i);
   });
 });

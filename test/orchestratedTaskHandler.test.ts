@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { createOrchestratedTaskHandler } from "../src/handlers/orchestratedTask.js";
+import { isTechnicalLeadApproval } from "../src/technicalLeadRouting.js";
 import { WORKER_BLOCKED_RESULT_MARKER } from "../src/workerBlockedResult.js";
 
 function makeDb() {
@@ -138,6 +139,27 @@ describe("createOrchestratedTaskHandler", () => {
     expect(result).toMatchObject({ needsHuman: true });
     expect(result.summary).toMatch(/underspecified/i);
     expect(stubs.runCli).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not invoke the Code Worker when final review has no decision", async () => {
+    const stubs = makeStubs();
+    const advisorCheckpoint = vi.fn().mockImplementation(({ mode }: { mode: string }) => {
+      if (mode === "pr_ready") return { approved: isTechnicalLeadApproval(undefined), advice: "" };
+      return "Plan is ready.";
+    });
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    await expect(createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint, advisorRequired: true })(
+      { work_item_id: item.id, role_routing_enabled: true },
+      { db, workerId: "w", phase: "verifying", phaseData: {
+        workItemId: item.id, repoPath: "/tmp/repo", branchName: `agent/work-${item.id}`, plan: "Plan",
+      } },
+    )).rejects.toThrow(/decision.*required/i);
+
+    expect(stubs.runCli).not.toHaveBeenCalled();
   });
 
   it("allows one final-review repair, then requires fresh verification", async () => {

@@ -3,6 +3,7 @@ import type { AdvisorConfig, AdvisorTarget } from "./advisorTypes.js";
 import type { RoleAssignmentConfig } from "./agentRoles.js";
 
 export function isTechnicalLeadApproval(decision: "approve" | "reject" | undefined): boolean {
+  if (decision === undefined) throw new Error("Technical Lead decision is required: expected approve or reject");
   return decision === "approve";
 }
 
