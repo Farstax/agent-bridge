@@ -78,7 +78,7 @@ Before merge approval, agents may perform without additional approval:
 
 A head change invalidates the approval. Merge still requires an explicit merge instruction unless an already-authorised merge automation is operating within its exact-head contract.
 
-## Approval 2 — exact-release deployment approval
+## Owner-authorized exact-release deployment
 
 After merge, automation must produce one release qualification record bound to the exact environment and containing at least:
 
@@ -91,7 +91,9 @@ After merge, automation must produce one release qualification record bound to t
 - rollback simulation and byte-exact restoration results;
 - current production preflight identity and state.
 
-One explicit deployment approval authorises the complete guarded operation described by that record: immutable staging, containment, verified backup, migration, atomic pointer switch, restart and post-start verification. Do not request routine approval again between successful phases.
+An explicit deployment instruction from the repository owner authorizes deployment of the resolved exact target. Do not add a second approval boundary. The owner-request path automatically materializes the target-bound authorization record, then authorizes the complete guarded operation described by that record: immutable staging, containment, verified backup, migration, atomic pointer switch, restart and post-start verification. Do not request routine approval again between successful phases.
+
+The legacy exact-release approval file remains accepted while callers transition to the owner-request input. It is a compatibility input, not an additional approval step after an authenticated owner request.
 
 ## Exception-only stops
 
@@ -107,7 +109,7 @@ Stop and require manual review only when an approved invariant changes or the re
 
 Do not create new approval gates merely because a verification step exists. Verification should be automatic and reusable. A successful normal path is:
 
-`BUILD → QUALIFIED → DEPLOYMENT APPROVED → GUARDED ROLLOUT → VERIFIED`
+`BUILD → QUALIFIED → OWNER REQUEST AUTHORIZED → GUARDED ROLLOUT → VERIFIED`
 
 Any failed invariant moves to:
 
@@ -403,6 +405,21 @@ The sole normal production deployment command is:
 ```bash
 sudo agent-bridge-deploy --release agent-bridge-<commit>.tar.gz --approval production-approval.json
 ```
+
+For an authenticated repository-owner deployment request, use the automatic
+authorization path instead:
+
+```bash
+sudo agent-bridge-deploy \
+  --release agent-bridge-<commit>.tar.gz \
+  --owner-request owner-deployment-request.json
+```
+
+The protected request file must be root-owned and mode `0600`, and must bind
+the exact repository, repository owner, authenticated principal, request
+reference, validity window and target commit. The deployer writes the
+mode-`0600` target-bound approval record itself and continues through the
+existing staging, guarded rollout and acceptance path.
 
 The release archive is self-contained and carries the exact commit/tree
 manifest, runtime, migration code and embedded CI qualification evidence. The

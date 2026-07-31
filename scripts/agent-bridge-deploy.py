@@ -20,6 +20,8 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_-]*[$]?$")
+REPOSITORY = "nickconstantinou/agent-bridge"
+REPOSITORY_OWNER = "nickconstantinou"
 DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
 DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
@@ -40,6 +42,18 @@ def staging_module(helper: Path):
 
 def fail(message: str) -> None:
     raise RuntimeError(message)
+
+
+def parse_utc_timestamp(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        fail(f"owner deployment request {field} must be an ISO-8601 UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as error:
+        fail(f"owner deployment request {field} is invalid: {error}")
+    if parsed.tzinfo != timezone.utc:
+        fail(f"owner deployment request {field} must use UTC")
+    return parsed
 
 
 def digest(path: Path) -> str:
@@ -86,7 +100,7 @@ def parse_approval(path: Path, expected_commit: str, release_sha256: str, now: d
     return document
 
 
-def validate_archive(archive: Path, approval: Path, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict]:
+def validate_archive(archive: Path, approval: Path | None, now: datetime, production: bool, fixed_environment: str | None = None, stage_helper: Path | None = None) -> tuple[str, str, dict | None]:
     if archive.is_symlink() or not archive.is_file():
         fail("release archive must be a regular non-symlink file")
     release_sha256 = digest(archive)
@@ -112,8 +126,55 @@ def validate_archive(archive: Path, approval: Path, now: datetime, production: b
                 fail(f"embedded qualification evidence is invalid: {error}")
             if qualification_document.get("commit") != manifest["commit"] or qualification_document.get("tree") != manifest["tree"]:
                 fail("embedded qualification evidence does not match the release manifest")
-    approval_document = parse_approval(Path(approval), manifest["commit"], release_sha256, now, production, fixed_environment)
+    approval_document = parse_approval(Path(approval), manifest["commit"], release_sha256, now, production, fixed_environment) if approval else None
     return manifest["commit"], release_sha256, approval_document
+
+
+def parse_owner_request(path: Path, expected_commit: str, now: datetime, production: bool) -> dict:
+    try:
+        document = json.loads(secure_file(path, production).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"invalid owner deployment request: {error}")
+    required = ("repository", "owner", "authenticated", "reference", "requested_at", "expires_at", "target_commit")
+    if not isinstance(document, dict) or set(document) != set(required):
+        fail("owner deployment request has an invalid shape")
+    if document["repository"] != REPOSITORY or document["owner"] != REPOSITORY_OWNER:
+        fail("owner deployment request is for a different repository owner")
+    if document["authenticated"] is not True:
+        fail("owner deployment request is not authenticated")
+    if not TOKEN.fullmatch(document["reference"]):
+        fail("owner deployment request reference is invalid")
+    if not SHA.fullmatch(document["target_commit"]) or document["target_commit"] != expected_commit:
+        fail("owner deployment request target commit does not match the release manifest")
+    requested_at = parse_utc_timestamp(document["requested_at"], "requested_at")
+    expires_at = parse_utc_timestamp(document["expires_at"], "expires_at")
+    if expires_at <= requested_at or requested_at > now or expires_at <= now:
+        fail("owner deployment request is expired or not yet valid")
+    return document
+
+
+def materialize_owner_approval(owner_request: dict, commit: str, release_sha256: str, environment: str, directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    output = directory / f"deployment-authorization-{commit}.json"
+    document = {
+        "environment": environment,
+        "target_commit": commit,
+        "release_sha256": release_sha256,
+        "approval_reference": owner_request["reference"],
+        "expires_at": owner_request["expires_at"],
+    }
+    content = (json.dumps(document, sort_keys=True) + "\n").encode("utf-8")
+    if output.exists():
+        if output.is_symlink() or output.read_bytes() != content:
+            fail(f"owner authorization already exists with different content: {output}")
+        return output
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(output, flags, 0o600)
+    try:
+        os.write(descriptor, content)
+    finally:
+        os.close(descriptor)
+    return output
 
 
 def configured_value(config: Path, name: str) -> str:
@@ -184,10 +245,10 @@ def current_cgroup_has_unit(unit: str, cgroup_text: str | None = None) -> bool:
     return False
 
 
-def detached_command(release: Path, approval: Path, unit: str, script: Path | None = None) -> list[str]:
+def detached_command(release: Path, approval: Path | None, owner_request: Path | None, unit: str, script: Path | None = None) -> list[str]:
     if not DEPLOY_UNIT.fullmatch(unit):
         fail("invalid transient deployment unit")
-    return [
+    command = [
         SYSTEMD_RUN,
         "--system",
         f"--unit={unit}",
@@ -202,19 +263,22 @@ def detached_command(release: Path, approval: Path, unit: str, script: Path | No
         "--internal-worker",
         "--release",
         str(absolute_input(release)),
-        "--approval",
-        str(absolute_input(approval)),
     ]
+    if approval:
+        command.extend(["--approval", str(absolute_input(approval))])
+    if owner_request:
+        command.extend(["--owner-request", str(absolute_input(owner_request))])
+    return command
 
 
-def launch_detached(release: Path, approval: Path) -> int:
+def launch_detached(release: Path, approval: Path | None, owner_request: Path | None) -> int:
     unit = f"agent-bridge-deploy-{os.getpid()}.service"
     print(f"deployment continuing in transient unit {unit}", flush=True)
-    result = subprocess.run(detached_command(release, approval, unit), check=False)
+    result = subprocess.run(detached_command(release, approval, owner_request, unit), check=False)
     return result.returncode
 
 
-def run_deployment(archive: Path, approval: Path) -> str:
+def run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
     reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     config = Path("/etc/agent-bridge/rollout.conf") if production else None
@@ -233,6 +297,11 @@ def run_deployment(archive: Path, approval: Path) -> str:
             validate_private_helper(private_file)
         verify_runtime_sudo(config)
     fixed_environment = configured_value(config, "environment") if config else os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT")
+    if owner_request:
+        commit, archive_sha256, _ = validate_archive(archive, None, datetime.now(timezone.utc), production, fixed_environment, stage_helper)
+        request = parse_owner_request(Path(owner_request), commit, datetime.now(timezone.utc), production)
+        authorization_dir = Path("/etc/agent-bridge") if production else Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AUTHORIZATION_DIR", Path(owner_request).parent))
+        approval = materialize_owner_approval(request, commit, archive_sha256, fixed_environment or "production-content-crawler", authorization_dir)
     commit, archive_sha256, approval_document = validate_archive(archive, approval, datetime.now(timezone.utc), production, fixed_environment, stage_helper)
     if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") == "1":
         return f"validated {commit} {archive_sha256}"
@@ -279,10 +348,13 @@ def run_deployment(archive: Path, approval: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="agent-bridge-deploy")
     parser.add_argument("--release", type=Path, required=True)
-    parser.add_argument("--approval", type=Path, required=True)
+    parser.add_argument("--approval", type=Path)
+    parser.add_argument("--owner-request", type=Path)
     parser.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--internal-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if (args.approval is None) == (args.owner_request is None):
+        parser.error("provide exactly one of --approval or --owner-request")
     reject_root_test_overrides()
     if args.validate_only:
         os.environ["AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY"] = "1"
@@ -292,10 +364,10 @@ def main() -> int:
             if not current_cgroup_has_unit(unit):
                 fail("internal deployment worker is not running in its assigned transient systemd unit")
         else:
-            return launch_detached(args.release, args.approval)
+            return launch_detached(args.release, args.approval, args.owner_request)
     elif args.internal_worker:
         fail("internal deployment worker requires a root transient systemd unit")
-    print(run_deployment(args.release, args.approval))
+    print(run_deployment(args.release, args.approval, args.owner_request))
     return 0
 
 

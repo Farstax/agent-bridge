@@ -4,13 +4,32 @@ The only operator-facing deployment path is the root-owned `agent-bridge-deploy`
 deployer. The old stage/activate/restore/authorization/acceptance commands are
 private implementation details and are not an alternative runbook.
 
-## Two inputs
+## Deployment inputs
 
 ```bash
 sudo agent-bridge-deploy \
   --release agent-bridge-<commit>.tar.gz \
   --approval production-approval.json
 ```
+
+An authenticated repository-owner request can authorize the same operation
+without a manually prepared approval file:
+
+```bash
+sudo agent-bridge-deploy \
+  --release agent-bridge-<commit>.tar.gz \
+  --owner-request owner-deployment-request.json
+```
+
+An explicit deployment instruction from the repository owner authorizes
+deployment of the resolved exact target. Do not add a second approval boundary.
+The protected request file is root-owned, mode `0600`, and binds the exact
+repository, owner, authenticated principal, request reference, validity window
+and target commit. The deployer automatically creates the mode-`0600`
+target-bound approval record before handing off to the existing guarded flow.
+
+The `--approval` form remains supported during transition for older automation;
+it is an alternative input, not a second gate after an owner request.
 
 The release archive is the single release identity. It contains the runtime,
 dependencies, migration code, exact commit/tree manifest, and embedded
@@ -24,13 +43,14 @@ hashes, an external evidence file, a secondary bundle, or legacy identity flags.
 
 ## Approval boundary
 
-Normal delivery has one exact-head merge approval and, only when production
-deployment is requested, one exact-release deployment approval. The release
-archive and its embedded qualification evidence must be generated and verified
-before deployment, but those checks are verification rather than separate human
-approval gates.
+Normal delivery has one exact-head merge approval. An explicit deployment
+instruction from the repository owner authorizes the resolved exact target; the
+release archive and its embedded qualification evidence must still be generated
+and verified before deployment, but those checks are verification rather than a
+second human approval gate. The legacy approval-file input remains available
+for transition.
 
-One deployment approval authorises the complete guarded command: validation,
+The owner-generated authorization authorises the complete guarded command: validation,
 immutable staging, preflight, containment, backup, migration, reconciliation,
 pointer activation, restart and acceptance. Do not request fresh approval
 between successful phases, and do not require a separate manual preflight
