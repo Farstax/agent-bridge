@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AdvisorEvidenceToolBroker,
@@ -74,7 +74,7 @@ describe("AdvisorEvidenceToolBroker", () => {
     expect(runGit.mock.calls.every(([, , options]) => options.timeoutMs > 0 && options.timeoutMs <= 5_000)).toBe(true);
   });
 
-  it("fails closed on traversal, sensitive files, Git internals, symlinks, and binary content", async () => {
+  it("fails closed on sensitive files, Git internals, and binary content, but not on traversal or symlinks (Issue #229 Part 2)", async () => {
     const repo = tempDir("advisor-deny-");
     const outside = tempDir("advisor-outside-");
     mkdirSync(join(repo, ".git"));
@@ -86,15 +86,38 @@ describe("AdvisorEvidenceToolBroker", () => {
     const broker = new AdvisorEvidenceToolBroker({ repoPath: repo });
 
     const results = await broker.execute([
-      { tool: "repo.read_file", path: "../outside.ts" } as never,
+      // repo and outside are both direct children of the same tmpdir, so
+      // this is a genuine "../<sibling>/outside.ts" traversal path.
+      { tool: "repo.read_file", path: join("..", basename(outside), "outside.ts") } as never,
       { tool: "repo.read_file", path: ".env.shared" },
       { tool: "repo.read_file", path: ".git/config" },
       { tool: "repo.read_file", path: "escape.ts" },
       { tool: "repo.read_file", path: "binary.bin" },
     ]);
 
-    expect(results.map((result) => result.status)).toEqual(["denied", "denied", "denied", "denied", "denied"]);
-    expect(results.every((result) => result.content === "")).toBe(true);
+    // The advisor's filesystem scope is "/", not the repo: a real traversal
+    // path and a symlink resolving outside the repo both succeed now — only
+    // sensitive-named files and binary content remain denied.
+    expect(results.map((result) => result.status)).toEqual(["ok", "denied", "denied", "ok", "denied"]);
+    expect(results[0].content).toContain("escaped");
+    expect(results[3].content).toContain("escaped");
+    expect(results[1].content).toBe("");
+    expect(results[2].content).toBe("");
+    expect(results[4].content).toBe("");
+  });
+
+  it("reads an absolute path outside the invoking repo directly (Issue #229 Part 2)", async () => {
+    const repo = tempDir("advisor-abs-repo-");
+    const outside = tempDir("advisor-abs-outside-");
+    writeFileSync(join(outside, "server-log.txt"), "server-wide evidence\n");
+    const broker = new AdvisorEvidenceToolBroker({ repoPath: repo });
+
+    const [result] = await broker.execute([
+      { tool: "repo.read_file", path: join(outside, "server-log.txt") },
+    ]);
+
+    expect(result.status).toBe("ok");
+    expect(result.content).toBe("server-wide evidence\n");
   });
 
   it("scrubs common credentials from ordinary files and Git evidence", async () => {
@@ -197,7 +220,11 @@ describe("AdvisorEvidenceToolBroker", () => {
 
   it("validates model-selected tool requests before execution", () => {
     expect(parseAdvisorEvidenceToolRequest({ tool: "git.log", count: 999 })).toEqual({ tool: "git.log", count: 20 });
-    expect(() => parseAdvisorEvidenceToolRequest({ tool: "repo.read_file", path: "../../etc/passwd" })).toThrow(/escapes/i);
+    // Issue #229 Part 2: traversal is no longer rejected at parse time — the
+    // filesystem scope is "/", so a "../" path is only ever denied later, at
+    // access time, if the OS can't read it.
+    expect(parseAdvisorEvidenceToolRequest({ tool: "repo.read_file", path: "../../etc/passwd" }))
+      .toEqual({ tool: "repo.read_file", path: "../../etc/passwd" });
     expect(() => parseAdvisorEvidenceToolRequest({ tool: "repo.read_file", path: ".git/HEAD" })).toThrow(/sensitive/i);
     expect(() => parseAdvisorEvidenceToolRequest({ tool: "git.show", object: "--exec=bad" })).toThrow(/supported Git object/i);
     expect(() => parseAdvisorEvidenceToolRequest({ tool: "git.show", object: "HEAD", path: "src:a.ts" })).toThrow(/not supported/i);

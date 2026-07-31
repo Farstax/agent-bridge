@@ -821,10 +821,16 @@ export class BridgeEngine {
         // path opts in via honorBusyMode.
         const busyMode = honorBusyMode ? (this.opts.busyMessageMode ?? "augment") : "queue";
         if (busyMode === "interrupt" || busyMode === "augment") {
-          await this.sendText(chatId, {
-            text: busyMode === "augment" ? `🔄 Updating the active task...` : `⏹️ Interrupting current work...`,
-            message_thread_id: threadId,
-          }).catch((error) => console.warn(`[${this.kind}] interrupt notice failed`, error));
+          // Only "interrupt" mode gets user-facing feedback here; "augment"
+          // folds silently into the active task (Issue #229) and must not
+          // wait on a network round-trip before cancelling — start the
+          // cancel immediately.
+          if (busyMode === "interrupt") {
+            await this.sendText(chatId, {
+              text: `⏹️ Interrupting current work...`,
+              message_thread_id: threadId,
+            }).catch((error) => console.warn(`[${this.kind}] interrupt notice failed`, error));
+          }
           const executionLane = this._executionLane(chatKey);
           // The message is already durably enqueued above. Suppress the
           // active turn's own completion-drain (same mechanism /reset uses)
@@ -835,17 +841,9 @@ export class BridgeEngine {
           await this._cancelLane(chatKey, busyMode);
           return "queued";
         }
-        await this.sendText(chatId, {
-          text: `⏳ Queued (position ${admission.position} of ${MAX_QUEUE_DEPTH}). Will process shortly.`,
-          message_thread_id: threadId,
-        }).catch((error) => console.warn(`[${this.kind}] queue notice failed`, error));
         return "queued";
       }
       if (admission.kind === "execute_claimed") {
-        await this.sendText(chatId, {
-          text: `⏳ Queued (position ${admission.position} of ${MAX_QUEUE_DEPTH}). Processing older queued work first.`,
-          message_thread_id: threadId,
-        }).catch((error) => console.warn(`[${this.kind}] queue recovery notice failed`, error));
         await this._drainQueueAndUnlock(admission.handle, admission.claimed);
         return "queued";
       }
@@ -1182,7 +1180,6 @@ export class BridgeEngine {
         continue;
       }
       try {
-        await this.sendText(next.chatId, { text: "▶️ Processing your queued message...", message_thread_id: next.threadId ?? undefined });
         const outcome = this.queuedMessageHandler
           ? await this.queuedMessageHandler({ ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged })
           : await this.executeClaimedMessage({ ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged });
