@@ -1757,3 +1757,49 @@ describe("ServerPlugin — heavy lane CPU suppression", () => {
     }
   });
 });
+
+// ── resolveHealthEngineExecutionMode — engine chat path honors env ────────────
+
+describe("resolveHealthEngineExecutionMode", () => {
+  it("defaults to safe when env sets no execution mode", async () => {
+    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+    expect(resolveHealthEngineExecutionMode({}, "codex")).toBe("safe");
+  });
+
+  it("returns trusted when BRIDGE_EXECUTION_MODE=trusted", async () => {
+    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+    expect(resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "trusted" }, "codex")).toBe("trusted");
+  });
+
+  it("per-bot execution mode overrides the global setting", async () => {
+    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+    expect(
+      resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "trusted", CODEX_EXECUTION_MODE: "safe" }, "codex"),
+    ).toBe("safe");
+  });
+
+  it("ignores invalid values and stays safe", async () => {
+    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+    expect(resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "yolo" }, "codex")).toBe("safe");
+  });
+
+  it("index-health wires the engine through resolveHealthEngineExecutionMode, not a hardcoded mode", async () => {
+    const { readFileSync } = await import("node:fs");
+    const text = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+    expect(text).not.toMatch(/executionMode:\s*"safe"/);
+    expect(text).toMatch(/resolveHealthEngineExecutionMode/);
+  });
+
+  it("autonomous suggestion invocations stay safe regardless of env", async () => {
+    const oldEnv = process.env.BRIDGE_EXECUTION_MODE;
+    process.env.BRIDGE_EXECUTION_MODE = "trusted";
+    try {
+      const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
+      const inv = buildSuggestionInvocation("codex", { command: "codex", modelPreference: [] }, "analyze");
+      expect(inv.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    } finally {
+      if (oldEnv === undefined) delete process.env.BRIDGE_EXECUTION_MODE;
+      else process.env.BRIDGE_EXECUTION_MODE = oldEnv;
+    }
+  });
+});
