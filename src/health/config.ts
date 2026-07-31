@@ -15,6 +15,23 @@ function parseBot(value: string | undefined): BotKind {
 }
 
 /**
+ * Execution mode for the health bot's interactive engine (user-prompted chat
+ * turns only). Mirrors resolveExecutionMode semantics: per-bot env var wins
+ * over BRIDGE_EXECUTION_MODE, default safe. The autonomous suggestion path in
+ * suggest.ts is intentionally pinned to safe and does not consult this.
+ */
+export function resolveHealthEngineExecutionMode(
+  env: Record<string, string | undefined>,
+  bot: BotKind,
+): "safe" | "trusted" {
+  const perBotRaw = env[`${bot.toUpperCase()}_EXECUTION_MODE`];
+  if (perBotRaw === "safe" || perBotRaw === "trusted") return perBotRaw;
+  const globalRaw = env.BRIDGE_EXECUTION_MODE;
+  if (globalRaw === "safe" || globalRaw === "trusted") return globalRaw;
+  return "safe";
+}
+
+/**
  * Parses health CLI config from env vars. HEALTH_SUGGEST_* is canonical;
  * HEALTH_CLI_* is a compatibility alias and only wins when the SUGGEST variant is absent.
  */
