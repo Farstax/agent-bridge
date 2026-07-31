@@ -5,6 +5,7 @@ export type AdvisorRequestMode = "plan" | "review" | "debug" | "risk" | "decisio
 export type AdvisorOrigin = "manual" | "worker" | "suggest" | "auto";
 export type AdvisorConfidence = "low" | "medium" | "high";
 export type AdvisorDebugVerdict = "retry" | "needs_human" | "insufficient_evidence";
+export type AdvisorCheckpointDecision = "approve" | "reject";
 
 export interface AdvisorTarget { provider: ProviderId; model: string }
 export interface AdvisorConfig {
@@ -32,6 +33,7 @@ export interface AdvisorEvidenceBasis {
 }
 export interface AdvisorResult {
   adviceMd: string; risks: string[]; suggestedNextSteps: string[]; confidence: AdvisorConfidence;
+  decision?: AdvisorCheckpointDecision;
   provider: ProviderId; model: string; requestId: string;
   verdict?: AdvisorDebugVerdict;
   evidenceIds?: string[];

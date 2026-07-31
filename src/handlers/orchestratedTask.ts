@@ -34,6 +34,11 @@ export interface AdvisorDebugCheckpointResult {
   unresolvedConflicts?: string[];
 }
 
+interface TechnicalLeadCheckpointResult {
+  approved: boolean;
+  advice: string;
+}
+
 interface OrchestratedTaskDeps {
   runCli: RunCli;
   runGit: RunGit;
@@ -50,7 +55,8 @@ interface OrchestratedTaskDeps {
     repoPath: string;
     diffSummary?: string;
     testOutput?: string;
-  }) => Promise<string>;
+  }) => Promise<string | TechnicalLeadCheckpointResult>;
+  advisorRequired?: boolean;
   advisorDebugCheckpoint?: (input: {
     taskKey: string;
     task: string;
@@ -79,6 +85,8 @@ interface OrchestratedPhaseData {
   preferredCli?: CliKind;
   verifyOutput?: string;
   advisorPlan?: string;
+  reviewRepairAttempted?: boolean;
+  reviewRepairPending?: boolean;
   advisorPrReady?: string;
   advisorDebug?: AdvisorDebugCheckpointResult;
   blockedResult?: WorkerBlockedResult;
@@ -120,6 +128,11 @@ async function buildExecutePrompt( title: string, plan: string, advisorPlan?: st
     },
     promptReader,
   );
+}
+
+function normalizeCheckpoint(value: string | TechnicalLeadCheckpointResult): TechnicalLeadCheckpointResult {
+  if (typeof value === "string") return { approved: true, advice: value };
+  return { approved: value.approved === true, advice: value.advice.trim() };
 }
 
 function evidenceBasisText(debug: AdvisorDebugCheckpointResult): string[] {
@@ -210,15 +223,15 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
   const consultAdvisor = async (
     input: JobHandlerInput,
     checkpoint: Parameters<NonNullable<OrchestratedTaskDeps["advisorCheckpoint"]>>[0],
-  ): Promise<string | undefined> => {
+  ): Promise<TechnicalLeadCheckpointResult | undefined> => {
     if (!advisorCheckpoint) {
-      if (input.advisor_required === true) throw new Error("Advisor required but disabled or unavailable");
+      if (deps.advisorRequired || input.advisor_required === true) throw new Error("Advisor required but disabled or unavailable");
       return undefined;
     }
     try {
-      return await advisorCheckpoint(checkpoint);
+      return normalizeCheckpoint(await advisorCheckpoint(checkpoint));
     } catch (error) {
-      if (input.advisor_required === true) throw error;
+      if (deps.advisorRequired || input.advisor_required === true) throw error;
       console.warn(`[advisor] optional worker checkpoint failed mode=${checkpoint.mode}:`, error);
       return undefined;
     }
@@ -321,10 +334,17 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
         repoPath,
         diffSummary: plan,
       });
+      if (advisorPlan && !advisorPlan.approved) {
+        return {
+          summary: `Technical Lead rejected the implementation plan for work item #${workItemId}; human input is required.\n\n${advisorPlan.advice}`,
+          needsHuman: true,
+          advisorPlan,
+        };
+      }
       return {
         status: "continue",
         phase: "executing",
-        phaseData: { workItemId, repoPath, workspaceDir, branchName, plan, advisorPlan, preferredCli: selectedCli ?? undefined },
+        phaseData: { workItemId, repoPath, workspaceDir, branchName, plan, advisorPlan: advisorPlan?.advice, preferredCli: selectedCli ?? undefined },
         summary: `Plan complete for work item #${workItemId}; executing next.`,
       };
     }
@@ -381,6 +401,60 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
       }
     }
 
+    if (ctx.phase === "review_repair") {
+      if (!phaseData.repoPath || !phaseData.plan || !phaseData.branchName) {
+        throw new Error("orchestrated_task review repair is missing state or has already been attempted");
+      }
+      const repairCommitSubject = `repair: ${item.title}`;
+      const latestCommitSubject = String(await runGit(["log", "-1", "--format=%s"], phaseData.repoPath)).trim();
+      if (latestCommitSubject === repairCommitSubject) {
+        return {
+          status: "continue",
+          phase: "verifying",
+          phaseData: { ...phaseData, reviewRepairAttempted: true, reviewRepairPending: false, advisorPrReady: undefined },
+          summary: `Reconciled the existing Technical Lead repair for work item #${workItemId}; verifying again.`,
+        };
+      }
+      if (phaseData.reviewRepairAttempted) {
+        return {
+          summary: `Technical Lead repair state for work item #${workItemId} could not be reconciled safely; human input is required.`,
+          needsHuman: true,
+        };
+      }
+      if (phaseData.reviewRepairPending !== true) {
+        return {
+          summary: `Technical Lead repair for work item #${workItemId} has no durable pending marker; human input is required.`,
+          needsHuman: true,
+        };
+      }
+      const currentStatus = String(await runGit(["status", "--porcelain"], phaseData.repoPath)).trim();
+      if (currentStatus) {
+        return {
+          summary: `Technical Lead repair for work item #${workItemId} left an unreconciled working tree; human input is required.`,
+          needsHuman: true,
+        };
+      }
+      const repairPrompt = [
+        await buildExecutePrompt(item.title, phaseData.plan, phaseData.advisorPlan),
+        "",
+        "A Technical Lead rejected the verified result. Apply exactly one bounded repair for this finding, then stop.",
+        phaseData.advisorPrReady ? `Technical Lead finding:\n${phaseData.advisorPrReady}` : "",
+        "Do not broaden scope, invoke an advisor, or perform GitHub, deployment, service, or merge actions.",
+      ].filter(Boolean).join("\n\n");
+      await runCli(command, ["--print", "--output-format", "text", ...cliExtraArgs, repairPrompt], phaseData.repoPath);
+      await runGit(["add", "-A"], phaseData.repoPath);
+      const staged = String(await runGit(["diff", "--cached", "--name-only"], phaseData.repoPath)).trim();
+      if (!staged) throw new Error("Technical Lead repair staged no changes");
+      await runGit(["commit", "-m", `repair: ${item.title}`], phaseData.repoPath);
+      ctx.db.updateWorkItemStatus(workItemId, "in_progress");
+      return {
+        status: "continue",
+        phase: "verifying",
+        phaseData: { ...phaseData, reviewRepairAttempted: true, reviewRepairPending: false, advisorPrReady: undefined },
+        summary: `Technical Lead repair committed for work item #${workItemId}; verifying again.`,
+      };
+    }
+
     if (ctx.phase === "verifying") {
       if (!phaseData.repoPath || !phaseData.branchName) throw new Error("orchestrated_task missing verification phase data");
       const verify = await runTests(phaseData.repoPath);
@@ -393,6 +467,23 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
         testOutput: verify.output,
         diffSummary: phaseData.plan,
       });
+
+      if (advisorPrReady && !advisorPrReady.approved) {
+        if (phaseData.reviewRepairAttempted) {
+          return {
+            summary: `Technical Lead rejected the repaired result for work item #${workItemId}; human input is required.\n\n${advisorPrReady.advice}`,
+            needsHuman: true,
+            advisorPrReady,
+            verifyOutput: verify.output,
+          };
+        }
+        return {
+          status: "continue",
+          phase: "review_repair",
+          phaseData: { ...phaseData, reviewRepairAttempted: false, reviewRepairPending: true, advisorPrReady: advisorPrReady.advice, verifyOutput: verify.output },
+          summary: `Technical Lead rejected the verified result for work item #${workItemId}; one bounded repair queued.`,
+        };
+      }
 
       if (item.repository) {
         ctx.db.createWorkJob({
@@ -414,7 +505,7 @@ export function createOrchestratedTaskHandler(deps: OrchestratedTaskDeps): JobHa
       }
 
       return {
-        summary: `Orchestrated task complete for **${phaseData.branchName}**\n\n${verify.output}${advisorPrReady ? `\n\nAdvisor: ${advisorPrReady}` : ""}`,
+        summary: `Orchestrated task complete for **${phaseData.branchName}**\n\n${verify.output}${advisorPrReady ? `\n\nAdvisor: ${advisorPrReady.advice}` : ""}`,
         branchName: phaseData.branchName,
         verifyOutput: verify.output,
         advisorPrReady,

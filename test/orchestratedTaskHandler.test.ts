@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { createOrchestratedTaskHandler } from "../src/handlers/orchestratedTask.js";
+import { isTechnicalLeadApproval } from "../src/technicalLeadRouting.js";
 import { WORKER_BLOCKED_RESULT_MARKER } from "../src/workerBlockedResult.js";
 
 function makeDb() {
@@ -120,6 +121,119 @@ describe("createOrchestratedTaskHandler", () => {
     expect(advisorCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
       mode: "pr_ready", taskKey: `work-item:${item.id}`, testOutput: "Tests passed.",
     }));
+  });
+
+  it("holds before execution when the Technical Lead rejects the plan", async () => {
+    const stubs = makeStubs();
+    const advisorCheckpoint = vi.fn().mockResolvedValue({ approved: false, advice: "Plan is underspecified." });
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    const result = await createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint })(
+      { work_item_id: item.id, repository_path: "/tmp/repo", role_routing_enabled: true },
+      { db, workerId: "w", phase: "initial", phaseData: {} },
+    );
+
+    expect(result).toMatchObject({ needsHuman: true });
+    expect(result.summary).toMatch(/underspecified/i);
+    expect(stubs.runCli).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not invoke the Code Worker when final review has no decision", async () => {
+    const stubs = makeStubs();
+    const advisorCheckpoint = vi.fn().mockImplementation(({ mode }: { mode: string }) => {
+      if (mode === "pr_ready") return { approved: isTechnicalLeadApproval(undefined), advice: "" };
+      return "Plan is ready.";
+    });
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    await expect(createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint, advisorRequired: true })(
+      { work_item_id: item.id, role_routing_enabled: true },
+      { db, workerId: "w", phase: "verifying", phaseData: {
+        workItemId: item.id, repoPath: "/tmp/repo", branchName: `agent/work-${item.id}`, plan: "Plan",
+      } },
+    )).rejects.toThrow(/decision.*required/i);
+
+    expect(stubs.runCli).not.toHaveBeenCalled();
+  });
+
+  it("allows one final-review repair, then requires fresh verification", async () => {
+    const stubs = makeStubs();
+    const advisorCheckpoint = vi.fn()
+      .mockResolvedValueOnce({ approved: false, advice: "Fix the missing guard." })
+      .mockResolvedValueOnce({ approved: true, advice: "Ready." });
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    const review = await createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint })(
+      { work_item_id: item.id, role_routing_enabled: true },
+      { db, workerId: "w", phase: "verifying", phaseData: {
+        workItemId: item.id, repoPath: "/tmp/repo", branchName: `agent/work-${item.id}`, plan: "Plan",
+      } },
+    );
+
+    expect(review).toMatchObject({ status: "continue", phase: "review_repair" });
+    expect(review.phaseData).toMatchObject({ reviewRepairAttempted: false, reviewRepairPending: true });
+
+    const repaired = await createOrchestratedTaskHandler({ ...stubs, advisorCheckpoint })(
+      { work_item_id: item.id, role_routing_enabled: true },
+      { db, workerId: "w", phase: "review_repair", phaseData: review.phaseData as object },
+    );
+
+    expect(repaired).toMatchObject({ status: "continue", phase: "verifying" });
+    expect(stubs.runTests).toHaveBeenCalledTimes(1);
+    expect(advisorCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconciles a committed repair after review_repair phase re-entry without rerunning the worker", async () => {
+    const stubs = makeStubs();
+    stubs.runGit.mockImplementation((args: string[]) => {
+      if (args[0] === "log") return "repair: Add orchestration\n";
+      return "";
+    });
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    const result = await createOrchestratedTaskHandler(stubs)(
+      { work_item_id: item.id },
+      { db, workerId: "w", phase: "review_repair", phaseData: {
+        workItemId: item.id, repoPath: "/tmp/repo", branchName: `agent/work-${item.id}`, plan: "Plan",
+        reviewRepairAttempted: false, reviewRepairPending: true, advisorPrReady: "Fix the guard.",
+      } },
+    );
+
+    expect(result).toMatchObject({ status: "continue", phase: "verifying" });
+    expect(result.phaseData).toMatchObject({ reviewRepairAttempted: true, reviewRepairPending: false });
+    expect(stubs.runCli).not.toHaveBeenCalled();
+    expect(stubs.runGit).toHaveBeenCalledWith(["log", "-1", "--format=%s"], "/tmp/repo");
+  });
+
+  it("holds instead of retrying when a repair was attempted but cannot be reconciled", async () => {
+    const stubs = makeStubs();
+    const item = db.createWorkItem({
+      kind: "feature", source: "telegram", repository: "owner/repo",
+      title: "Add orchestration", created_by: "worker",
+    });
+
+    const result = await createOrchestratedTaskHandler(stubs)(
+      { work_item_id: item.id },
+      { db, workerId: "w", phase: "review_repair", phaseData: {
+        workItemId: item.id, repoPath: "/tmp/repo", branchName: `agent/work-${item.id}`, plan: "Plan",
+        reviewRepairAttempted: true, reviewRepairPending: true, advisorPrReady: "Fix the guard.",
+      } },
+    );
+
+    expect(result).toMatchObject({ needsHuman: true });
+    expect(stubs.runCli).not.toHaveBeenCalled();
   });
 
   it("fails closed when a job requires an unavailable advisor", async () => {

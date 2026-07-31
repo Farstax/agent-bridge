@@ -59,6 +59,7 @@ import { parseAdvisorConfig } from "./advisorConfig.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { AdvisorService } from "./advisorService.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
+import { isTechnicalLeadApproval, resolveTechnicalLeadAdvisorConfig } from "./technicalLeadRouting.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.worker",
@@ -94,6 +95,8 @@ const advisorConfig = parseAdvisorConfig(process.env);
 // Parse fail-closed before opening the database so malformed or secret-bearing
 // desired policy cannot cause startup maintenance or persistence side effects.
 const roleAssignmentConfig = loadRoleAssignmentConfig(process.env);
+const roleRoutingEnabled = /^(?:1|true|yes|on)$/i.test(process.env.WORKER_ROLE_ROUTING_ENABLED ?? "");
+const technicalLeadAdvisorConfig = resolveTechnicalLeadAdvisorConfig(advisorConfig, roleAssignmentConfig, roleRoutingEnabled);
 const roleScopeKey = roleAssignmentConfig?.scopeKey
   ?? process.env.WORKER_ROLE_ASSIGNMENT_SCOPE?.trim()
   ?? "worker:default";
@@ -252,6 +255,32 @@ const advisorCheckpoint = advisorConfig.enabled ? async (input: {
   return [result.adviceMd, ...result.risks.map((risk) => `Risk: ${risk}`), ...result.suggestedNextSteps.map((step) => `Next: ${step}`)].join("\n");
 } : undefined;
 
+const technicalLeadCheckpoint = technicalLeadAdvisorConfig ? async (input: {
+  mode: "plan" | "pr_ready";
+  taskKey: string;
+  task: string;
+  repoPath: string;
+  diffSummary?: string;
+  testOutput?: string;
+}): Promise<{ approved: boolean; advice: string }> => {
+  const advisorService = new AdvisorService({ db, config: technicalLeadAdvisorConfig, bots: config.bots, runCli });
+  const result = await advisorService.requestTrusted({
+    origin: "worker",
+    scopeKey: `worker:${input.taskKey}`,
+    taskKey: input.taskKey,
+    mode: input.mode,
+    task: `${input.task}\nReturn decision=approve only when the checkpoint is satisfied; otherwise decision=reject.`,
+    activeProvider: technicalLeadAdvisorConfig.chain[0].provider,
+    activeModel: technicalLeadAdvisorConfig.chain[0].model,
+    evidence: { diffSummary: input.diffSummary, testOutput: input.testOutput },
+    cwd: input.repoPath,
+  });
+  return {
+    approved: isTechnicalLeadApproval(result.decision),
+    advice: [result.adviceMd, ...result.risks.map((risk) => `Risk: ${risk}`), ...result.suggestedNextSteps.map((step) => `Next: ${step}`)].join("\n"),
+  };
+} : undefined;
+
 const jobExecutor = startJobExecutorLoop({
   db,
   workerId: `worker-bot-${process.pid}`,
@@ -319,7 +348,8 @@ const jobExecutor = startJobExecutorLoop({
         installDeps: (dir) => runWorkerCommand("npm", ["ci", "--no-audit", "--no-fund", "--include=dev"], { cwd: dir }).then(() => undefined),
       }),
       cleanupWorkspace,
-      advisorCheckpoint,
+      advisorCheckpoint: technicalLeadCheckpoint ?? advisorCheckpoint,
+      advisorRequired: roleRoutingEnabled,
     }),
     open_github_issue: createGithubIssueHandler({
       runCommand: (binary, args) => runWorkerCommand(binary, args),
