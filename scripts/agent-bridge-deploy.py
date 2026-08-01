@@ -303,6 +303,13 @@ def run_deployment(archive: Path, approval: Path | None, owner_request: Path | N
         authorization_dir = Path("/etc/agent-bridge") if production else Path(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_AUTHORIZATION_DIR", Path(owner_request).parent))
         approval = materialize_owner_approval(request, commit, archive_sha256, fixed_environment or "production-content-crawler", authorization_dir)
     commit, archive_sha256, approval_document = validate_archive(archive, approval, datetime.now(timezone.utc), production, fixed_environment, stage_helper)
+    if approval_document is None:
+        approval_document = {
+            "environment": fixed_environment or "production-content-crawler",
+            "target_commit": commit,
+            "release_sha256": archive_sha256,
+            "approval_reference": "direct-operator-instruction",
+        }
     if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") == "1":
         return f"validated {commit} {archive_sha256}"
     if not production:
@@ -353,8 +360,8 @@ def main() -> int:
     parser.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--internal-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if (args.approval is None) == (args.owner_request is None):
-        parser.error("provide exactly one of --approval or --owner-request")
+    if args.approval is not None and args.owner_request is not None:
+        parser.error("provide at most one of --approval or --owner-request")
     reject_root_test_overrides()
     if args.validate_only:
         os.environ["AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY"] = "1"

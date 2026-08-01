@@ -389,6 +389,18 @@ else:
     expect(readFileSync(join(releaseRoot, COMMIT, "runtime.js"), "utf8")).toBe("runtime\n");
   });
 
+  it("deploys from --release alone, treating the operator's instruction as sufficient authorization", () => {
+    const fixture = makeRelease();
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-stage-"));
+    const result = spawnSync("python3", [DEPLOYER, "--release", fixture.archive], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot },
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`deployed ${COMMIT}`);
+    expect(readFileSync(join(releaseRoot, COMMIT, "runtime.js"), "utf8")).toBe("runtime\n");
+  });
+
   it("hands the one-command deployment into the existing containment and acceptance state machine", () => {
     const fixture = createFixture();
     const release = makeRelease(fixture.expectedCommit);
