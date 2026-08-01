@@ -65,6 +65,21 @@ describe("interactive CLI availability filtering", () => {
     expect(available).toEqual(new Set<CliKind>(["codex", "claude", "kimchi"]));
     expect(paths.codex).toBe("/home/tester/.codex/auth.json");
     expect(paths.claude).toBe("/home/tester/.claude/.credentials.json");
-    expect(paths.antigravity).toBe("/home/tester/.gemini/oauth_creds.json");
+    expect(paths.antigravity).toEqual([
+      "/home/tester/.gemini/antigravity-cli/antigravity-oauth-token",
+      "/home/tester/.gemini/oauth_creds.json",
+    ]);
+  });
+
+  it("detects the current Antigravity OAuth token path", () => {
+    const homeDir = "/home/tester";
+    const paths = resolveInteractiveCliAuthPaths(homeDir);
+    const available = getAvailableCliKinds({
+      homeDir,
+      exists: (path) => path === paths.antigravity[0],
+      commandExists: () => false,
+    });
+
+    expect(available).toEqual(new Set<CliKind>(["antigravity"]));
   });
 });
