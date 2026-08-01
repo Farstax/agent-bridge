@@ -7,7 +7,7 @@ import type { CliKind } from "./interactiveBot.js";
 export interface InteractiveCliAuthPaths {
   codex: string;
   claude: string;
-  antigravity: string;
+  antigravity: string[];
 }
 
 export interface AvailableCliOptions {
@@ -20,7 +20,10 @@ export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): Int
   return {
     codex: join(homeDir, ".codex", "auth.json"),
     claude: join(homeDir, ".claude", ".credentials.json"),
-    antigravity: join(homeDir, ".gemini", "oauth_creds.json"),
+    antigravity: [
+      join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
+      join(homeDir, ".gemini", "oauth_creds.json"),
+    ],
   };
 }
 
@@ -42,7 +45,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
 
   if (exists(paths.codex)) available.add("codex");
   if (exists(paths.claude)) available.add("claude");
-  if (exists(paths.antigravity)) available.add("antigravity");
+  if (paths.antigravity.some(exists)) available.add("antigravity");
   if (commandExists("kimchi")) available.add("kimchi");
 
   return available;
