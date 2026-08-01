@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 import { loadBotsConfig, validateTokenUniqueness, resolveExecutionMode, resolveBusyMessageMode, validateBusyMessageModeEnv } from "../src/config.js";
 
 describe("loadBotsConfig", () => {
+  it("documents Claude's stable model aliases in the example environment", () => {
+    const example = readFileSync(new URL("../.env.claude.example", import.meta.url), "utf8");
+    expect(example).toContain("CLAUDE_MODEL_PREFERENCE=sonnet,opus,haiku,fable");
+  });
+
   it("builds all four bot configs with defaults from an empty env", () => {
     const bots = loadBotsConfig({});
     expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex", "kimchi"]);
