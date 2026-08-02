@@ -9,8 +9,9 @@ export async function prepareOutputDir(chatId: number | string, kind: string, ru
   const dir = join(BRIDGE_OUT_BASE, `${kind}-${String(chatId)}${runId ? `-${runId}` : ""}`);
   // Wipe any files left by a previous partial run before handing the dir to the CLI.
   await rm(dir, { recursive: true, force: true });
-  await mkdir(BRIDGE_OUT_BASE, { recursive: true, mode: PRIVATE_DIR_MODE });
-  await chmod(BRIDGE_OUT_BASE, PRIVATE_DIR_MODE);
+  // The shared parent may be used by more than one service account. Restrict
+  // only the uniquely owned run directory, not the common /tmp container.
+  await mkdir(BRIDGE_OUT_BASE, { recursive: true });
   await mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
   await chmod(dir, PRIVATE_DIR_MODE);
   return dir;
