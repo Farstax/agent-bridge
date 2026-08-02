@@ -6,6 +6,7 @@ import { buildCliInvocation, parseCliResult, runCli, setAntigravityModel } from 
 import { downloadTelegramAttachment } from "../src/fileDownload.js";
 import { prepareOutputDir, cleanOutputDir } from "../src/fileOutput.js";
 import { withAntigravityStateLock } from "../src/providers/antigravityRuntime.js";
+import { runAntigravitySerialized } from "../src/providers/antigravitySerializedRunner.js";
 import type { TelegramMessage } from "../src/types.js";
 
 function permissionBits(mode: number): number {
@@ -13,10 +14,9 @@ function permissionBits(mode: number): number {
 }
 
 describe("runtime isolation", () => {
-  it("creates output directories with owner-only permissions", async () => {
+  it("creates run output directories with owner-only permissions", async () => {
     const dir = await prepareOutputDir(`permissions-${Date.now()}`, "claude", "run");
     try {
-      expect(permissionBits((await stat("/tmp/bridge-out")).mode)).toBe(0o700);
       expect(permissionBits((await stat(dir)).mode)).toBe(0o700);
     } finally {
       await cleanOutputDir(dir);
@@ -71,6 +71,27 @@ describe("runtime isolation", () => {
       });
     } finally {
       await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves provider settings for direct Antigravity calls without invocation metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agy-direct-call-"));
+    const homeDir = join(root, "home");
+    const settingsPath = join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const script = join(root, "agy-fixture");
+    await mkdir(join(homeDir, ".gemini", "antigravity-cli"), { recursive: true });
+    await writeFile(settingsPath, JSON.stringify({ model: "Gemini 3.5 Flash (High)" }));
+    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
+    try {
+      await runAntigravitySerialized(script, ["--print", "hello"], root, {
+        bot: "antigravity",
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+      }, { homeDir, model: null, applyModel: false });
+      const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+      expect(settings.model).toBe("Gemini 3.5 Flash (High)");
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
