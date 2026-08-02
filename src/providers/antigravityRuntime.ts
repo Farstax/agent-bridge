@@ -12,7 +12,16 @@
  * change; locked by test/providerInvocationFixtures.test.ts (Phase 3A/3B).
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import type { CliOptions, CliProcessWatchContext, CliResult } from "../types.js";
@@ -25,6 +34,24 @@ import type { AntigravityInvocationRequest, ProviderInvocation } from "./types.j
 
 const ANTIGRAVITY_FINAL_RESPONSE_DELIMITER = "***";
 const ANTIGRAVITY_STALLED_PLANNER_MARKER = "PlannerResponse without ModifiedResponse encountered";
+const ANTIGRAVITY_CONVERSATION_MARKER = "AGENT_BRIDGE_ANTIGRAVITY_CONVERSATION=";
+const ANTIGRAVITY_LOCK_DIR = "agent-bridge-execution.lock";
+const ANTIGRAVITY_LOCK_OWNER = "owner.json";
+const OWNERLESS_LOCK_STALE_MS = 5_000;
+const LOCK_POLL_MS = 50;
+
+const invocationMetadata = new WeakMap<string[], { model: string | null; homeDir: string }>();
+
+interface AntigravityLockOwner {
+  token: string;
+  pid: number;
+  processStartTicks: string | null;
+  createdAt: string;
+}
+
+interface AntigravityStateLock {
+  release: () => void;
+}
 
 function getAntigravityStalledPlannerTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS || 300_000);
@@ -36,6 +63,138 @@ function extractLogFileArg(args: string[]): string | null {
     if (args[i] === "--log-file") return args[i + 1] || null;
   }
   return null;
+}
+
+function readProcessStartTicks(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(")");
+    if (commandEnd === -1) return null;
+    const fieldsAfterCommand = stat.slice(commandEnd + 2).trim().split(/\s+/);
+    return fieldsAfterCommand[19] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function processMatchesOwner(owner: AntigravityLockOwner): boolean {
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+  if (!owner.processStartTicks) return true;
+  const currentStartTicks = readProcessStartTicks(owner.pid);
+  return currentStartTicks === null || currentStartTicks === owner.processStartTicks;
+}
+
+function antigravityLockPath(homeDir: string): string {
+  return join(homeDir, ".gemini", "antigravity-cli", ANTIGRAVITY_LOCK_DIR);
+}
+
+function readLockOwner(lockPath: string): AntigravityLockOwner | null {
+  try {
+    const parsed = JSON.parse(readFileSync(join(lockPath, ANTIGRAVITY_LOCK_OWNER), "utf8")) as Partial<AntigravityLockOwner>;
+    if (typeof parsed.token !== "string" || typeof parsed.pid !== "number") return null;
+    return {
+      token: parsed.token,
+      pid: parsed.pid,
+      processStartTicks: typeof parsed.processStartTicks === "string" ? parsed.processStartTicks : null,
+      createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function removeStaleAntigravityLock(lockPath: string): boolean {
+  const owner = readLockOwner(lockPath);
+  if (owner) {
+    if (processMatchesOwner(owner)) return false;
+  } else {
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs < OWNERLESS_LOCK_STALE_MS) return false;
+    } catch {
+      return true;
+    }
+  }
+  try {
+    rmSync(lockPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryAcquireAntigravityStateLock(homeDir: string): AntigravityStateLock | null {
+  ensureAntigravityStateDirs(homeDir);
+  const lockPath = antigravityLockPath(homeDir);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = randomUUID();
+    try {
+      mkdirSync(lockPath, { mode: 0o700 });
+      const owner: AntigravityLockOwner = {
+        token,
+        pid: process.pid,
+        processStartTicks: readProcessStartTicks(process.pid),
+        createdAt: new Date().toISOString(),
+      };
+      writeFileSync(
+        join(lockPath, ANTIGRAVITY_LOCK_OWNER),
+        JSON.stringify(owner) + "\n",
+        { encoding: "utf8", mode: 0o600 },
+      );
+      let released = false;
+      return {
+        release: () => {
+          if (released) return;
+          released = true;
+          const currentOwner = readLockOwner(lockPath);
+          if (currentOwner && currentOwner.token !== token) return;
+          rmSync(lockPath, { recursive: true, force: true });
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!removeStaleAntigravityLock(lockPath)) return null;
+    }
+  }
+  return null;
+}
+
+export async function withAntigravityStateLock<T>(
+  homeDir: string,
+  operation: () => Promise<T>,
+  chatId?: number | string,
+): Promise<T> {
+  let lock: AntigravityStateLock | null = null;
+  while (!lock) {
+    if (chatId != null && isAbortRequested(chatId)) {
+      throw new Error("CLI execution aborted by user");
+    }
+    lock = tryAcquireAntigravityStateLock(homeDir);
+    if (!lock) await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+  }
+  try {
+    return await operation();
+  } finally {
+    lock.release();
+  }
+}
+
+function appendConversationMarker(stdout: string, sessionId: string | null): string {
+  if (!sessionId) return stdout;
+  const suffix = `${ANTIGRAVITY_CONVERSATION_MARKER}${sessionId}`;
+  return stdout.endsWith("\n") ? `${stdout}${suffix}\n` : `${stdout}\n${suffix}\n`;
+}
+
+function stripConversationMarker(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith(ANTIGRAVITY_CONVERSATION_MARKER))
+    .join("\n");
 }
 
 /** Provider-owned output-failure watch; the supervisor only settles and kills. */
@@ -75,6 +234,7 @@ export function buildInvocation({
   prompt,
   sessionId,
   command,
+  model,
   executionMode,
   soulContext,
   includeResponseContract,
@@ -86,12 +246,13 @@ export function buildInvocation({
   homeDir,
 }: AntigravityInvocationRequest): ProviderInvocation {
   const args: string[] = [];
+  const resolvedHomeDir = homeDir || homedir();
   // Agy fatally aborts a cascade if it lists its own worktrees state dir before
   // ever creating it, so guarantee the dir exists ahead of every invocation.
-  ensureAntigravityStateDirs(homeDir);
-  // Agy's --print flag takes the prompt as its value, so all other flags must come first.
-  // Agy does not expose a --model CLI flag; model selection is applied by writing to
-  // ~/.gemini/antigravity-cli/settings.json before spawning (see setAntigravityModel).
+  ensureAntigravityStateDirs(resolvedHomeDir);
+  // Agy's --print flag takes the prompt as its value, so all provider flags must come first.
+  // Agent Bridge retains model/home metadata alongside the exact args array so
+  // the runner can apply model selection while the shared-state lock is held.
   if (sessionId) args.push("--conversation", sessionId);
   if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
   if (logFile) args.push("--log-file", logFile);
@@ -111,12 +272,15 @@ export function buildInvocation({
   const finalPrompt = appendOutputDirInstruction(annotatedPrompt, outputDir);
   args.push("--print", finalPrompt);
 
-  return { command, args: appendEffortArgs(command, args, effort) };
+  const providerArgs = appendEffortArgs(command, args, effort);
+  invocationMetadata.set(providerArgs, { model: model ?? null, homeDir: resolvedHomeDir });
+  return { command, args: providerArgs };
 }
 
 export function extractAntigravityConversationId(text: string | null | undefined): string | null {
   if (!text) return null;
-  const match = text.match(/Created conversation ([a-f0-9-]{36})/) ||
+  const match = text.match(new RegExp(`${ANTIGRAVITY_CONVERSATION_MARKER}([a-f0-9-]{36})`)) ||
+    text.match(/Created conversation ([a-f0-9-]{36})/) ||
     text.match(/Print mode: conversation=([a-f0-9-]{36})/) ||
     text.match(/conversation=([a-f0-9-]{36})/);
   return match?.[1] ?? null;
@@ -181,18 +345,10 @@ export function toAntigravityModelLabel(model: string): string {
  * ~/.gemini/antigravity-cli/worktrees), which aborts the whole run.
  */
 export function ensureAntigravityStateDirs(homeDir: string = homedir()): void {
-  mkdirSync(join(homeDir, ".gemini", "antigravity-cli", "worktrees"), { recursive: true });
+  mkdirSync(join(homeDir, ".gemini", "antigravity-cli", "worktrees"), { recursive: true, mode: 0o700 });
 }
 
-/**
- * Writes the selected model into ~/.gemini/antigravity-cli/settings.json so that
- * the next Agy invocation picks it up. Pass null to remove the override and let
- * Agy fall back to its own default.
- */
-export function setAntigravityModel(
-  model: string | null,
-  homeDir: string = homedir(),
-): void {
+function writeAntigravityModelSettings(model: string | null, homeDir: string): void {
   const settingsPath = join(homeDir, ".gemini", "antigravity-cli", "settings.json");
   let settings: Record<string, unknown> = {};
   if (existsSync(settingsPath)) {
@@ -207,8 +363,26 @@ export function setAntigravityModel(
   } else {
     settings["model"] = toAntigravityModelLabel(model);
   }
-  mkdirSync(dirname(settingsPath), { recursive: true });
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+  mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+}
+
+/**
+ * Applies an idle-time model preference without disturbing an active Agy run.
+ * Every execution reapplies its own model while holding the same shared-state
+ * lock, so this compatibility helper is intentionally non-blocking.
+ */
+export function setAntigravityModel(
+  model: string | null,
+  homeDir: string = homedir(),
+): void {
+  const lock = tryAcquireAntigravityStateLock(homeDir);
+  if (!lock) return;
+  try {
+    writeAntigravityModelSettings(model, homeDir);
+  } finally {
+    lock.release();
+  }
 }
 
 export function readAntigravityLastConversation({
@@ -383,12 +557,11 @@ export function parseResult(stdout: string, logContent?: string | null): CliResu
     throw logErr;
   }
 
-  let text = stdout.trim();
+  const sessionId = extractAntigravityConversationId(logContent) ?? extractAntigravityConversationId(stdout);
+  let text = stripConversationMarker(stdout).trim();
   if (text.toLowerCase().includes("timed out waiting for response") || text.toLowerCase().includes("error: timed out")) {
     throw new Error(JSON.stringify({ type: "error", message: "Agy execution timed out waiting for response" }));
   }
-
-  const sessionId = extractAntigravityConversationId(logContent);
 
   // Primary: JSON output approach — extract the `response` field
   const jsonResponse = tryParseAntigravityJson(text);
@@ -486,47 +659,64 @@ export async function runWithTransientDnsRetry(
   options: CliOptions,
   onProgress?: (text: string) => void,
 ): Promise<{ stdout: string }> {
+  const metadata = invocationMetadata.get(args) ?? { model: null, homeDir: homedir() };
   const { eventContext, onEvent } = options;
-  if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: null }));
+  if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: metadata.model }));
   let cancelled = false;
   let lastError: Error | null = null;
   try {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        if (options.chatId != null && isAbortRequested(options.chatId)) {
-          cancelled = true;
-          throw new Error("CLI execution aborted by user");
-        }
-        const result = await runSupervisedProcess(command, args, cwd, {
-          ...options,
-          onEvent: (event) => {
-            if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
-            try { onEvent?.(event); } catch { /* observer failures are isolated */ }
-          },
-        }, onProgress);
-        if (options.chatId != null && isAbortRequested(options.chatId)) {
-          cancelled = true;
-          throw new Error("CLI execution aborted by user");
-        }
-        if (eventContext) emitSafe(onEvent, evtType.runCompleted({ ...eventContext, sessionId: null, text: result.stdout }));
-        return result;
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-        if (cancelled || lastError.message.includes("aborted by user")) throw lastError;
-        const stdout = (lastError as Error & { stdout?: string }).stdout ?? "";
-        const stderr = (lastError as Error & { stderr?: string }).stderr ?? "";
-        if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, args, stdout, stderr) || attempt === 3) throw lastError;
-        const deadline = Date.now() + 1_000 * attempt;
-        while (Date.now() < deadline) {
+    return await withAntigravityStateLock(metadata.homeDir, async () => {
+      writeAntigravityModelSettings(metadata.model, metadata.homeDir);
+      const startedAtMs = Date.now();
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
           if (options.chatId != null && isAbortRequested(options.chatId)) {
             cancelled = true;
             throw new Error("CLI execution aborted by user");
           }
-          await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+          const result = await runSupervisedProcess(command, args, cwd, {
+            ...options,
+            onEvent: (event) => {
+              if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
+              try { onEvent?.(event); } catch { /* observer failures are isolated */ }
+            },
+          }, onProgress);
+          if (options.chatId != null && isAbortRequested(options.chatId)) {
+            cancelled = true;
+            throw new Error("CLI execution aborted by user");
+          }
+          const logFile = extractLogFileArg(args);
+          let explicitLogContent: string | null = null;
+          if (logFile) {
+            try { explicitLogContent = readFileSync(logFile, "utf8"); } catch {}
+          }
+          const sessionId = resolveAntigravityConversationId({
+            cwd,
+            sinceMs: startedAtMs,
+            explicitLogContent,
+            homeDir: metadata.homeDir,
+          });
+          const stdout = appendConversationMarker(result.stdout, sessionId);
+          if (eventContext) emitSafe(onEvent, evtType.runCompleted({ ...eventContext, sessionId, text: stdout }));
+          return { stdout };
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          if (cancelled || lastError.message.includes("aborted by user")) throw lastError;
+          const stdout = (lastError as Error & { stdout?: string }).stdout ?? "";
+          const stderr = (lastError as Error & { stderr?: string }).stderr ?? "";
+          if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, args, stdout, stderr) || attempt === 3) throw lastError;
+          const deadline = Date.now() + 1_000 * attempt;
+          while (Date.now() < deadline) {
+            if (options.chatId != null && isAbortRequested(options.chatId)) {
+              cancelled = true;
+              throw new Error("CLI execution aborted by user");
+            }
+            await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+          }
         }
       }
-    }
-    throw lastError ?? new Error("CLI execution failed");
+      throw lastError ?? new Error("CLI execution failed");
+    }, options.chatId);
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
     if (eventContext) {
