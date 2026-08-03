@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -107,6 +108,17 @@ with tempfile.TemporaryDirectory() as directory:
 
     expect(result.error).toContain("persistent database targets already exist");
     expect(result.contents).toBe("existing-state");
+  });
+
+  it("bootstraps from the staged immutable release, not the root-only extraction directory", () => {
+    const source = readFileSync(installer, "utf8");
+    const stage = source.indexOf("stage.stage(args.release, release_root, activated_commit, archive_sha256)");
+    const bootstrap = source.indexOf("bootstrap_databases(release_root / activated_commit");
+    const activate = source.indexOf("activate.activate(release_root, current, activated_commit)");
+
+    expect(stage).toBeGreaterThan(-1);
+    expect(bootstrap).toBeGreaterThan(stage);
+    expect(activate).toBeGreaterThan(bootstrap);
   });
 
   it("renders the fixed rollout inventory with helper identities", () => {
