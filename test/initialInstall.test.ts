@@ -45,6 +45,46 @@ print(json.dumps({
     expect(result.inside).toEqual([false, false]);
   });
 
+  it("bootstraps every selected fresh database with its fixed database role", () => {
+    const result = probe(`
+calls = []
+def fake_run(command, **kwargs):
+  calls.append(command)
+  return None
+module.subprocess.run = fake_run
+account = type("Account", (), {"pw_name": "agentbridge"})()
+services = module.selected_services({
+  "TELEGRAM_BOT_TOKEN_CODEX": "codex-token",
+  "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
+  "TELEGRAM_BOT_TOKEN_HEALTH": "health-token",
+})
+paths = [module.database_path(pathlib.Path("/var/lib/agent-bridge"), service) for service in services]
+module.bootstrap_databases(pathlib.Path("/release"), pathlib.Path("/usr/bin/node"), account, services, paths)
+print(json.dumps({"calls": calls}))
+`) as { calls: string[][] };
+
+    expect(result.calls).toEqual([
+      [
+        "/usr/sbin/runuser", "--user", "agentbridge", "--", "/usr/bin/node",
+        "/release/node_modules/tsx/dist/cli.mjs", "/release/scripts/rollout-db.ts", "bootstrap",
+        "--db", "/var/lib/agent-bridge/codex/bridge.sqlite", "--role", "shared",
+        "--confirm-new-role", "/var/lib/agent-bridge/codex/bridge.sqlite",
+      ],
+      [
+        "/usr/sbin/runuser", "--user", "agentbridge", "--", "/usr/bin/node",
+        "/release/node_modules/tsx/dist/cli.mjs", "/release/scripts/rollout-db.ts", "bootstrap",
+        "--db", "/var/lib/agent-bridge/interactive/bridge.sqlite", "--role", "interactive",
+        "--confirm-new-role", "/var/lib/agent-bridge/interactive/bridge.sqlite",
+      ],
+      [
+        "/usr/sbin/runuser", "--user", "agentbridge", "--", "/usr/bin/node",
+        "/release/node_modules/tsx/dist/cli.mjs", "/release/scripts/rollout-db.ts", "bootstrap",
+        "--db", "/var/lib/agent-bridge/health/bridge.sqlite", "--role", "health",
+        "--confirm-new-role", "/var/lib/agent-bridge/health/bridge.sqlite",
+      ],
+    ]);
+  });
+
   it("renders the fixed rollout inventory with helper identities", () => {
     const result = probe(`
 with tempfile.TemporaryDirectory() as directory:
