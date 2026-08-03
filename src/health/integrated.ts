@@ -31,9 +31,12 @@ export async function handleIntegratedHealthCommand(options: IntegratedHealthCom
   if (argument !== "") return false;
 
   await options.sendText("Checking health...");
-  void options.runCheck()
-    .then((text) => options.sendText(text))
-    .catch((error: unknown) => options.sendText(`Health check failed: ${error instanceof Error ? error.message : String(error)}`))
-    .catch((error: unknown) => console.error("[interactive] failed to send health result", error));
+  setTimeout(() => {
+    void Promise.resolve()
+      .then(() => options.runCheck())
+      .then((text) => options.sendText(text))
+      .catch((error: unknown) => options.sendText(`Health check failed: ${error instanceof Error ? error.message : String(error)}`))
+      .catch((error: unknown) => console.error("[interactive] failed to send health result", error));
+  }, 0);
   return true;
 }
