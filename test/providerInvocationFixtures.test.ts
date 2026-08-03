@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCliInvocation, parseCliResult, isCapacityExhaustedError, setAntigravityModel } from "../src/cli.js";
+import { prependWorkspaceContext } from "../src/workspaceContext.js";
 
 function withTempImage(fn: (path: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), "agent-bridge-fixture-attachment-"));
@@ -35,7 +36,21 @@ function withTempImage(fn: (path: string) => void): void {
 // unrelated prompt-wrapping copy changes.
 const anyPrompt = () => expect.stringContaining("hi") as unknown as string;
 
+function managedPrompt(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agent-bridge-workspace-context-"));
+  const file = join(dir, "workspace-context.md");
+  writeFileSync(file, "Repository: selected-owner/selected-repo\nDefault branch: main\n");
+  const prompt = prependWorkspaceContext("hi", { AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: file });
+  rmSync(dir, { recursive: true, force: true });
+  return prompt;
+}
+
 describe("provider invocation fixtures — codex", () => {
+  it("delivers managed repository context to the provider prompt", () => {
+    const prompt = managedPrompt();
+    const inv = buildCliInvocation({ bot: "codex", prompt, sessionId: null, command: "codex" });
+    expect(inv.args.join("\n")).toContain("selected-owner/selected-repo");
+  });
   it("fresh session, safe mode, no model — exact arg order", () => {
     const inv = buildCliInvocation({ bot: "codex", prompt: "hi", sessionId: null, command: "codex" });
     expect(inv.command).toBe("codex");
@@ -84,6 +99,11 @@ describe("provider invocation fixtures — codex", () => {
 });
 
 describe("provider invocation fixtures — claude", () => {
+  it("delivers managed repository context to the provider prompt", () => {
+    const prompt = managedPrompt();
+    const inv = buildCliInvocation({ bot: "claude", prompt, sessionId: null, command: "claude" });
+    expect(inv.args.join("\n")).toContain("selected-owner/selected-repo");
+  });
   it("fresh session, safe mode — exact arg order: --print, settings, prompt last", () => {
     const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: null, command: "claude" });
     expect(inv.args[0]).toBe("--print");
@@ -134,6 +154,11 @@ describe("provider invocation fixtures — claude", () => {
 });
 
 describe("provider invocation fixtures — antigravity", () => {
+  it("delivers managed repository context to the provider prompt", () => {
+    const prompt = managedPrompt();
+    const inv = buildCliInvocation({ bot: "antigravity", prompt, sessionId: null, command: "agy" });
+    expect(inv.args.join("\n")).toContain("selected-owner/selected-repo");
+  });
   it("fresh session — exact arg order, no --conversation or disabled timeout flags", () => {
     const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: null, command: "agy" });
     expect(inv.args[0]).toBe("--print");

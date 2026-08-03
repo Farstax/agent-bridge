@@ -46,6 +46,7 @@ import { compactConversation } from "./compactConversation.js";
 import { parseCompactionProviderChain, resolveCompactionRecoveryTargets } from "./fallbackCompaction.js";
 import { consumeHandoffRequired, isHandoffRequired } from "./handoffState.js";
 import { contextInjectionPolicy, preseedCompactMode, preseedCompactCharThreshold, type ContextInjectionPolicy } from "./contextPolicy.js";
+import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, BotConfig, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
@@ -735,11 +736,11 @@ export class BridgeEngine {
       command: this.opts.botConfig.command,
       model,
       effort: resolveEffort(executionKind, this.db),
-      prompt: [
+      prompt: prependWorkspaceContext([
         "This is a fresh, read-only side question.",
         "Do not modify files, run write-capable operations, or persist session state.",
         prompt,
-      ].join("\n\n"),
+      ].join("\n\n")),
       sessionId: null,
       executionMode: "safe",
       outputFormat: "json",
@@ -1446,7 +1447,8 @@ export class BridgeEngine {
     const shouldInject = this._shouldInjectContext(chatKey, sessionId);
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, sessionId);
     const access = this._buildContextAccess(chatKey);
-    const handoffPrompt = shouldInject ? prependHandoffModel(contextPrompt, model) : contextPrompt;
+    const workspacePrompt = prependWorkspaceContext(contextPrompt);
+    const handoffPrompt = shouldInject ? prependHandoffModel(workspacePrompt, model) : workspacePrompt;
     const soulContext = shouldInject ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: shouldInject };
     // Context env (AGENT_BRIDGE_CONTEXT_COMMAND, etc.) stays available regardless of
