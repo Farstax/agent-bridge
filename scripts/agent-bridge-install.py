@@ -13,7 +13,6 @@ import re
 import shutil
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -22,15 +21,18 @@ from typing import Mapping, Sequence
 SHA = re.compile(r"^[0-9a-f]{40}$")
 TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_-]*[$]?$")
-RELEASE_ROOT = Path("/opt/agent-bridge/releases")
-STATE_ROOT = Path("/var/lib/agent-bridge")
-BACKUP_DIR = Path("/var/backups/agent-bridge")
-LOG_DIR = Path("/var/log/agent-bridge/rollouts")
+
+DEFAULT_RELEASE_ROOT = Path("/opt/agent-bridge/releases")
+DEFAULT_STATE_ROOT = Path("/var/lib/agent-bridge")
+DEFAULT_BACKUP_DIR = Path("/var/backups/agent-bridge")
+DEFAULT_LOG_DIR = Path("/var/log/agent-bridge/rollouts")
 DEFAULTS_DIR = Path("/etc/default")
 SYSTEMD_DIR = Path("/etc/systemd/system")
 ROLLOUT_CONFIG = Path("/etc/agent-bridge/rollout.conf")
+CLEANUP_SERVICE = "agent-bridge-tmp-cleanup.service"
+CLEANUP_TIMER = "agent-bridge-tmp-cleanup.timer"
 
-# unit, defaults file, enabling key(s), persistent DB directory
+# unit, defaults file, enabling token(s), persistent database directory
 SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ("agent-bridge-codex.service", "agent-bridge-codex", ("TELEGRAM_BOT_TOKEN_CODEX",), "codex"),
     ("agent-bridge-antigravity.service", "agent-bridge-antigravity", ("TELEGRAM_BOT_TOKEN_ANTIGRAVITY", "TELEGRAM_BOT_TOKEN_GEMINI"), "antigravity"),
@@ -41,6 +43,7 @@ SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ("agent-bridge-discord-interactive.service", "agent-bridge-discord-interactive", ("DISCORD_BOT_TOKEN",), "discord-interactive"),
 )
 
+# release path, installed path, rollout identity key
 HELPERS: tuple[tuple[str, Path, str], ...] = (
     ("scripts/agent-bridge-deploy.py", Path("/usr/local/sbin/agent-bridge-deploy"), "deployer"),
     ("scripts/rollout-agent-bridge.sh", Path("/usr/local/sbin/rollout-agent-bridge"), "rollout"),
@@ -139,19 +142,23 @@ def render_rollout_config(
     units: Sequence[str],
     databases: Sequence[Path],
     helpers: Mapping[str, Path],
-    backup_dir: Path = BACKUP_DIR,
-    log_dir: Path = LOG_DIR,
+    backup_dir: Path = DEFAULT_BACKUP_DIR,
+    log_dir: Path = DEFAULT_LOG_DIR,
 ) -> str:
     lines = [
-        f"release_root={release_root}", f"current_pointer={release_root / 'current'}",
+        f"release_root={release_root}",
+        f"current_pointer={release_root / 'current'}",
         f"rollout_helper_sha256={digest(helpers['rollout'])}",
         f"activation_helper_sha256={digest(helpers['activate'])}",
         f"authorization_validator_sha256={digest(helpers['authorization'])}",
         f"acceptance_validator_sha256={digest(helpers['acceptance'])}",
         f"release_stage_sha256={digest(helpers['stage'])}",
         f"rollout_restore_sha256={digest(helpers['restore'])}",
-        f"environment={environment}", f"runtime_user={runtime_user}",
-        f"node_bin={node_bin}", f"backup_dir={backup_dir}", f"log_dir={log_dir}",
+        f"environment={environment}",
+        f"runtime_user={runtime_user}",
+        f"node_bin={node_bin}",
+        f"backup_dir={backup_dir}",
+        f"log_dir={log_dir}",
     ]
     lines += [f"unit={unit}" for unit in units]
     lines += [f"database={database}" for database in databases]
@@ -195,12 +202,15 @@ def validate_host(runtime_user: str, node_bin: Path) -> pwd.struct_passwd:
         account = pwd.getpwnam(runtime_user)
     except KeyError:
         fail(f"runtime user does not exist: {runtime_user}")
-    if node_bin.is_symlink() or not node_bin.is_file() or not os.access(node_bin, os.X_OK):
-        fail("node binary must be an executable regular non-symlink file")
-    major = int(subprocess.run(
-        [str(node_bin), "-p", "process.versions.node.split('.')[0]"],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip())
+    if not node_bin.is_absolute() or node_bin.is_symlink() or not node_bin.is_file() or not os.access(node_bin, os.X_OK):
+        fail("node binary must be an absolute executable regular non-symlink file")
+    try:
+        major = int(subprocess.run(
+            [str(node_bin), "-p", "process.versions.node.split('.')[0]"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip())
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        fail(f"unable to validate Node.js: {error}")
     if major < 24:
         fail(f"Node.js 24+ is required; found major {major}")
     sudo_check = subprocess.run(
@@ -223,18 +233,21 @@ def inspect_archive(archive: Path, stage_module, destination: Path) -> tuple[dic
     evidence_path = destination / "qualification-evidence.json"
     if evidence_path.is_symlink() or not evidence_path.is_file():
         fail("release archive must contain qualification-evidence.json")
-    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    try:
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"invalid qualification evidence: {error}")
     if evidence.get("commit") != manifest.get("commit") or evidence.get("tree") != manifest.get("tree"):
         fail("qualification evidence does not match the release manifest")
     return manifest, archive_sha256
 
 
-def service_values(env: Mapping[str, str], defaults_path: Path, db_path: Path, token_keys: Sequence[str]) -> dict[str, str]:
+def service_values(
+    env: Mapping[str, str], defaults_path: Path, db_path: Path, token_keys: Sequence[str],
+) -> dict[str, str]:
     values = {"BRIDGE_ENV_FILE": str(defaults_path), "DB_PATH": str(db_path)}
-    relevant = set(SERVICE_KEYS)
-    # Keep polling tokens isolated: a dedicated unit must never inherit another unit's token.
-    relevant -= {key for service in SERVICES for key in service[2] if key not in token_keys}
-    for key in relevant:
+    other_tokens = {key for service in SERVICES for key in service[2] if key not in token_keys}
+    for key in set(SERVICE_KEYS) - other_tokens:
         if env.get(key, "") != "":
             values[key] = env[key]
     return values
@@ -248,12 +261,16 @@ def configure_host(
     env: Mapping[str, str],
     release_root: Path,
     state_root: Path,
+    backup_dir: Path,
+    log_dir: Path,
     environment: str,
 ) -> tuple[list[str], list[Path]]:
     current = release_root / "current"
     shared = {
-        "BRIDGE_ROOT_DIR": account.pw_dir, "BRIDGE_PROJECT_DIR": str(current),
-        "NODE_BIN": str(node_bin), "BRIDGE_EXECUTION_MODE": env.get("BRIDGE_EXECUTION_MODE", "trusted"),
+        "BRIDGE_ROOT_DIR": account.pw_dir,
+        "BRIDGE_PROJECT_DIR": str(current),
+        "NODE_BIN": str(node_bin),
+        "BRIDGE_EXECUTION_MODE": env.get("BRIDGE_EXECUTION_MODE", "trusted"),
         "BRIDGE_BUSY_MESSAGE_MODE": env.get("BRIDGE_BUSY_MESSAGE_MODE", "augment"),
         "BRIDGE_ASYNC_ENABLED": env.get("BRIDGE_ASYNC_ENABLED", "true"),
         "POLL_INTERVAL_MS": env.get("POLL_INTERVAL_MS", "1000"),
@@ -265,9 +282,9 @@ def configure_host(
     safe_write(DEFAULTS_DIR / "agent-bridge-shared", render_env(shared), 0o600)
     safe_write(DEFAULTS_DIR / "agent-bridge-release", render_env({"BRIDGE_CURRENT_RELEASE_DIR": str(current)}), 0o600)
 
+    state_root.mkdir(parents=True, exist_ok=True)
     units: list[str] = []
     databases: list[Path] = []
-    state_root.mkdir(parents=True, exist_ok=True)
     for unit, defaults_name, token_keys, db_name in selected:
         service = (unit, defaults_name, token_keys, db_name)
         db_path = database_path(state_root, service)
@@ -283,7 +300,7 @@ def configure_host(
         units.append(unit)
         databases.append(db_path)
 
-    for name in ("agent-bridge-tmp-cleanup.service", "agent-bridge-tmp-cleanup.timer"):
+    for name in (CLEANUP_SERVICE, CLEANUP_TIMER):
         source = release / "systemd" / name
         if source.is_symlink() or not source.is_file():
             fail(f"release is missing systemd unit: {source}")
@@ -293,12 +310,13 @@ def configure_host(
     for source_name, destination, identity in HELPERS:
         install_file(release / source_name, destination, 0o750)
         installed[identity] = destination
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(BACKUP_DIR, 0o700)
-    os.chmod(LOG_DIR, 0o700)
+
+    for directory in (backup_dir, log_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
     safe_write(ROLLOUT_CONFIG, render_rollout_config(
-        release_root, environment, account.pw_name, node_bin, units, databases, installed,
+        release_root, environment, account.pw_name, node_bin, units, databases,
+        installed, backup_dir, log_dir,
     ), 0o600)
     return units, databases
 
@@ -311,7 +329,10 @@ def accept(units: Sequence[str], databases: Sequence[Path], timeout: int) -> Non
     deadline = time.monotonic() + timeout
     pending = set(units)
     while pending and time.monotonic() < deadline:
-        pending = {unit for unit in pending if systemctl("is-active", "--quiet", unit, check=False).returncode != 0}
+        pending = {
+            unit for unit in pending
+            if systemctl("is-active", "--quiet", unit, check=False).returncode != 0
+        }
         if pending:
             time.sleep(1)
     if pending:
@@ -337,8 +358,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--runtime-user", required=True)
     parser.add_argument("--node-bin", required=True, type=Path)
     parser.add_argument("--environment", default="production-agent-bridge")
-    parser.add_argument("--release-root", type=Path, default=RELEASE_ROOT)
-    parser.add_argument("--state-root", type=Path, default=STATE_ROOT)
+    parser.add_argument("--release-root", type=Path, default=DEFAULT_RELEASE_ROOT)
+    parser.add_argument("--state-root", type=Path, default=DEFAULT_STATE_ROOT)
+    parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
+    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     parser.add_argument("--acceptance-timeout", type=int, default=30)
     return parser.parse_args(argv)
 
@@ -352,17 +375,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         fail(f"test overrides are forbidden during root installation: {', '.join(test_keys)}")
     if not TOKEN.fullmatch(args.environment) or args.acceptance_timeout <= 0:
         fail("invalid environment identity or acceptance timeout")
-    account = validate_host(args.runtime_user, args.node_bin.resolve())
+
+    node_bin = args.node_bin.absolute()
+    account = validate_host(args.runtime_user, node_bin)
     selected = selected_services(os.environ)
-    release_root, state_root = args.release_root.resolve(), args.state_root.resolve()
-    if state_root == release_root or release_root in state_root.parents:
-        fail("state root must be outside the immutable release root")
+    release_root = args.release_root.absolute()
+    state_root = args.state_root.absolute()
+    backup_dir = args.backup_dir.absolute()
+    log_dir = args.log_dir.absolute()
+    for path, label in ((state_root, "state"), (backup_dir, "backup"), (log_dir, "log")):
+        if path == release_root or release_root in path.parents:
+            fail(f"{label} directory must be outside the immutable release root")
     current = release_root / "current"
     if current.exists() or current.is_symlink():
         fail("an active release already exists; use agent-bridge-deploy for upgrades")
 
     bootstrap_stage = load_module("agent_bridge_bootstrap_stage", Path(__file__).with_name("release-stage.py"))
-    started: list[str] = []
+    managed_units: list[str] = []
     activated_commit = ""
     archive_sha256 = ""
     try:
@@ -373,38 +402,47 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not SHA.fullmatch(activated_commit):
                 fail("release manifest commit is invalid")
             units, databases = configure_host(
-                extracted, account, args.node_bin.resolve(), selected, os.environ,
-                release_root, state_root, args.environment,
+                extracted, account, node_bin, selected, os.environ, release_root,
+                state_root, backup_dir, log_dir, args.environment,
             )
+            managed_units = [*units, CLEANUP_TIMER]
             systemctl("daemon-reload")
-            systemctl("enable", *units, "agent-bridge-tmp-cleanup.timer")
+            systemctl("enable", *managed_units)
+
             stage = load_module("agent_bridge_release_stage", extracted / "scripts/release-stage.py")
             print(stage.stage(args.release, release_root, activated_commit, archive_sha256), flush=True)
             activate = load_module("agent_bridge_release_activate", extracted / "scripts/release-activate.py")
             activate.validate_release(release_root / activated_commit, activated_commit, strict=True)
             print(activate.activate(release_root, current, activated_commit), flush=True)
-            started = [*units, "agent-bridge-tmp-cleanup.timer"]
-            systemctl("start", *started)
+
+            systemctl("start", *managed_units)
             accept(units, databases, args.acceptance_timeout)
             result = {
-                "schema_version": 1, "status": "installed", "commit": activated_commit,
-                "archive_sha256": archive_sha256, "runtime_user": args.runtime_user,
-                "environment": args.environment, "units": units,
+                "schema_version": 1,
+                "status": "installed",
+                "commit": activated_commit,
+                "archive_sha256": archive_sha256,
+                "runtime_user": args.runtime_user,
+                "environment": args.environment,
+                "units": units,
                 "databases": [str(path) for path in databases],
             }
             safe_write(state_root / "installation-result.json", json.dumps(result, sort_keys=True, indent=2) + "\n", 0o600)
             print(f"installed {activated_commit} {archive_sha256}")
             return 0
     except Exception as error:
-        if started:
-            systemctl("stop", *reversed(started), check=False)
+        if managed_units:
+            systemctl("disable", "--now", *reversed(managed_units), check=False)
         if current.is_symlink() and os.readlink(current) == activated_commit:
             current.unlink()
         if activated_commit:
             try:
                 safe_write(state_root / "installation-result.json", json.dumps({
-                    "schema_version": 1, "status": "failed", "commit": activated_commit,
-                    "archive_sha256": archive_sha256, "error": str(error),
+                    "schema_version": 1,
+                    "status": "failed",
+                    "commit": activated_commit,
+                    "archive_sha256": archive_sha256,
+                    "error": str(error),
                 }, sort_keys=True, indent=2) + "\n", 0o600)
             except Exception:
                 pass
