@@ -12,7 +12,14 @@ describe("initial installation release contract", () => {
       "scripts/release-activate.py",
       "scripts/rollout-authorization.py",
       "scripts/rollout-acceptance.py",
-      "systemd/agent-bridge-*.service",
+      "systemd/agent-bridge-antigravity.service",
+      "systemd/agent-bridge-claude.service",
+      "systemd/agent-bridge-codex.service",
+      "systemd/agent-bridge-discord-interactive.service",
+      "systemd/agent-bridge-health.service",
+      "systemd/agent-bridge-interactive.service",
+      "systemd/agent-bridge-worker-bot.service",
+      "systemd/agent-bridge-tmp-cleanup.service",
       "systemd/agent-bridge-tmp-cleanup.timer",
     ]) {
       expect(workflow).toContain(requiredPath);
