@@ -80,6 +80,27 @@ print(json.dumps({
     expect(result.service).toBe("User=agentbridge\n");
   });
 
+  it("reports a clean failure message on stderr when run as non-root", () => {
+    let stderr = "";
+    let status = 0;
+    try {
+      execFileSync("python3", [
+        installer,
+        "--release", "/nonexistent/release.tar.gz",
+        "--runtime-user", "agentbridge",
+        "--node-bin", "/usr/bin/node",
+      ], { encoding: "utf8" });
+    } catch (error) {
+      const failure = error as { status?: number; stderr?: string };
+      status = failure.status ?? 0;
+      stderr = failure.stderr ?? "";
+    }
+
+    expect(status).toBe(1);
+    expect(stderr).toContain("agent-bridge-install: agent-bridge-install must run as root");
+    expect(stderr).not.toContain("NameError");
+  });
+
   it("requires a Discord application id", () => {
     const result = probe(`
 try:
