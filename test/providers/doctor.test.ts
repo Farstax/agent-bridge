@@ -13,11 +13,49 @@ describe("doctor diagnostics", () => {
   });
 
   it("reports provider commands as missing when the executable does not resolve", () => {
-    const report = runDoctor({ env: {}, commandExists: noneFound });
+    const report = runDoctor({
+      env: { WORKER_CLI_CHAIN: "codex,claude,antigravity,kimchi" },
+      commandExists: noneFound,
+    });
     expect(report.providers.length).toBeGreaterThan(0);
     for (const p of report.providers) {
       expect(p.status).toBe("missing");
     }
+    expect(report.ok).toBe(false);
+  });
+
+  it("fails when providers referenced by unset runtime defaults are missing", () => {
+    const report = runDoctor({ env: {}, commandExists: noneFound });
+
+    expect(report.chains.find((chain) => chain.name === "INTERACTIVE_CLI_CHAIN")?.entries)
+      .toEqual(["codex", "claude", "antigravity", "kimchi"]);
+    expect(report.chains.find((chain) => chain.name === "WORKER_CLI_CHAIN")?.entries)
+      .toEqual(["codex", "claude", "antigravity"]);
+    expect(report.ok).toBe(false);
+  });
+
+  it("does not fail for a missing provider that no configured chain uses", () => {
+    const report = runDoctor({
+      env: {
+        INTERACTIVE_CLI_CHAIN: "codex",
+        WORKER_CLI_CHAIN: "codex",
+        WORKER_CODE_CLI_CHAIN: "codex",
+        WORKER_SCRIBE_CLI_CHAIN: "codex",
+      },
+      commandExists: (executable) => executable === "codex",
+    });
+
+    expect(report.providers.find((p) => p.id === "kimchi")?.status).toBe("missing");
+    expect(report.ok).toBe(true);
+  });
+
+  it("fails when a configured provider executable is missing", () => {
+    const report = runDoctor({
+      env: { INTERACTIVE_CLI_CHAIN: "antigravity" },
+      commandExists: (executable) => executable !== "agy",
+    });
+
+    expect(report.providers.find((p) => p.id === "agy")?.status).toBe("missing");
     expect(report.ok).toBe(false);
   });
 
