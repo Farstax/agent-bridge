@@ -1,19 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 
 describe("integrated health command routing", () => {
-  it("claims /health, acknowledges it first, and completes checks outside the poll path", async () => {
+  it("returns before invoking synchronous health checks", async () => {
     const { handleIntegratedHealthCommand } = await import("../src/health/integrated.js");
-    let resolveCheck: ((text: string) => void) | undefined;
-    const runCheck = vi.fn(() => new Promise<string>((resolve) => { resolveCheck = resolve; }));
+    let synchronousWorkStarted = false;
+    const runCheck = vi.fn(async () => {
+      synchronousWorkStarted = true;
+      return "Health report";
+    });
     const sendText = vi.fn(async () => {});
 
     await expect(handleIntegratedHealthCommand({
       rawText: "/health", chatId: 42, runCheck, getStatus: () => "unused", sendText,
     })).resolves.toBe(true);
 
-    expect(runCheck).toHaveBeenCalledOnce();
+    expect(synchronousWorkStarted).toBe(false);
+    expect(runCheck).not.toHaveBeenCalled();
     expect(sendText).toHaveBeenCalledWith("Checking health...");
-    resolveCheck!("Health report");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runCheck).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(sendText).toHaveBeenLastCalledWith("Health report"));
   });
 
