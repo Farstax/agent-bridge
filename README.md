@@ -392,7 +392,7 @@ npm run skills -- verify --fix
 
 ## Health monitoring
 
-The dedicated health service runs a `HealthScheduler` that polls plugins at a configurable cadence and sends formatted status reports to a Telegram chat.
+The dedicated health service runs a `HealthScheduler` that polls plugins at a configurable cadence and sends formatted status reports to a Telegram chat. By default it owns a separate Telegram bot. Set `HEALTH_BOT_MODE=integrated` to share the interactive bot instead: the health service remains a separate, send-only scheduler while the interactive service is the only Telegram poller and registers `/health`. `/health` acknowledges immediately and reports after checks finish; `/health status` returns the latest stored health report.
 
 ### Built-in plugins
 
@@ -409,6 +409,7 @@ The dedicated health service runs a `HealthScheduler` that polls plugins at a co
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HEALTH_MONITOR_ENABLED` | `false` | Set to `true` in the health service defaults to enable scheduled checks |
+| `HEALTH_BOT_MODE` | `standalone` | `standalone` requires `TELEGRAM_BOT_TOKEN_HEALTH` and owns polling; `integrated` uses `TELEGRAM_BOT_TOKEN_INTERACTIVE` and makes health send-only |
 | `HEALTH_MONITOR_CADENCE_SECONDS` | `3600` | How often to run each plugin (seconds) |
 | `HEALTH_MONITOR_AUTONOMY` | `report` | `report` — formatted report only; `suggest` — also spawns a CLI to diagnose and propose fixes |
 | `HEALTH_MONITOR_CHAT_ID` | — | Telegram chat ID to receive reports; if unset, reports are logged to stdout only |

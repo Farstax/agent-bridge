@@ -15,7 +15,7 @@ import { HealthBridgeBot } from "./health/bot.js";
 import { SelfPlugin } from "./health/plugins/self.js";
 import { ExternalPlugin } from "./health/plugins/external.js";
 import { ServerPlugin } from "./health/plugins/server.js";
-import { parseHealthEnabled, parseCadenceSeconds, parseHealthCliConfig, resolveHealthEngineExecutionMode } from "./health/config.js";
+import { parseHealthEnabled, parseCadenceSeconds, parseHealthCliConfig, resolveHealthEngineExecutionMode, parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } from "./health/config.js";
 import { formatReport } from "./health/reporter.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine } from "./engine.js";
@@ -32,9 +32,10 @@ import type { HealthPlugin } from "./health/types.js";
 dotenv.config({ path: process.env.BRIDGE_ENV_FILE || ".env", override: false });
 
 
-const token = process.env.TELEGRAM_BOT_TOKEN_HEALTH;
+const healthBotMode = parseHealthBotMode(process.env);
+const token = resolveHealthTelegramToken(process.env);
 if (!token) {
-  throw new Error("TELEGRAM_BOT_TOKEN_HEALTH is required for the health bot service");
+  throw new Error(`${healthBotMode === "integrated" ? "TELEGRAM_BOT_TOKEN_INTERACTIVE" : "TELEGRAM_BOT_TOKEN_HEALTH"} is required for the health bot service`);
 }
 
 const allowedUserIds = new Set(
@@ -208,16 +209,23 @@ const engine = new BridgeEngine(
 
 // ── Start ────────────────────────────────────────────────────────────────────
 console.log("[health-bot] starting...");
+// A scheduler-only integrated service must stay resident even when scheduling
+// is disabled (the default); an unsettled promise alone does not keep Node up.
+const schedulerOnlyKeepalive = shouldHealthServicePoll(process.env)
+  ? null
+  : setInterval(() => {}, 60_000);
 
-await client.setMyCommands({
-  commands: [
-    { command: "health", description: "Run health checks immediately" },
-    { command: "status", description: "Show last health report and suggestions" },
-    { command: "models", description: "Switch model for CLI suggestions" },
-    { command: "reset", description: "Clear current session" },
-    { command: "stop", description: "Abort running execution" },
-  ],
-}).catch((err) => console.warn(`[health-bot] setMyCommands failed`, err));
+if (shouldHealthServicePoll(process.env)) {
+  await client.setMyCommands({
+    commands: [
+      { command: "health", description: "Run health checks immediately" },
+      { command: "status", description: "Show last health report and suggestions" },
+      { command: "models", description: "Switch model for CLI suggestions" },
+      { command: "reset", description: "Clear current session" },
+      { command: "stop", description: "Abort running execution" },
+    ],
+  }).catch((err) => console.warn(`[health-bot] setMyCommands failed`, err));
+}
 
 if (healthEnabled) {
   scheduler.start();
@@ -231,6 +239,7 @@ if (healthEnabled) {
 
 const shutdown = (signal: string) => {
   console.log(`[health-bot] ${signal} received, shutting down...`);
+  if (schedulerOnlyKeepalive) clearInterval(schedulerOnlyKeepalive);
   scheduler.stop();
   shutdownCliProcesses();
   rawDb.close();
@@ -240,4 +249,8 @@ const shutdown = (signal: string) => {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-await engine.run();
+if (shouldHealthServicePoll(process.env)) {
+  await engine.run();
+} else {
+  console.log("[health-bot] integrated mode: scheduler is send-only; interactive bot owns Telegram polling");
+}

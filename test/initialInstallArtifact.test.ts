@@ -2,6 +2,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("initial installation release contract", () => {
+  it("makes the legacy installer install the interactive poller for integrated health", () => {
+    const installer = readFileSync("scripts/install.sh", "utf8");
+    expect(installer).toContain('prompt TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token (leave blank to skip)"');
+    expect(installer).toContain("_write_interactive_defaults");
+    expect(installer).toContain("install_unit agent-bridge-interactive");
+  });
+
   it("packages the initial installer, guarded deployer and service units", () => {
     const workflow = readFileSync(".github/workflows/release-artifact.yml", "utf8");
 
