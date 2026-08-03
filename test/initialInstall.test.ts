@@ -59,30 +59,54 @@ services = module.selected_services({
   "TELEGRAM_BOT_TOKEN_HEALTH": "health-token",
 })
 paths = [module.database_path(pathlib.Path("/var/lib/agent-bridge"), service) for service in services]
-module.bootstrap_databases(pathlib.Path("/release"), pathlib.Path("/usr/bin/node"), account, services, paths)
+with tempfile.TemporaryDirectory() as directory:
+  release = pathlib.Path(directory) / "release"
+  (release / "node_modules/tsx/dist").mkdir(parents=True)
+  (release / "scripts").mkdir()
+  (release / "node_modules/tsx/dist/cli.mjs").write_text("runtime")
+  (release / "scripts/rollout-db.ts").write_text("bootstrap")
+  module.bootstrap_databases(release, pathlib.Path("/usr/bin/node"), account, services, paths)
 print(json.dumps({"calls": calls}))
 `) as { calls: string[][] };
 
     expect(result.calls).toEqual([
       [
         "/usr/sbin/runuser", "--user", "agentbridge", "--", "/usr/bin/node",
-        "/release/node_modules/tsx/dist/cli.mjs", "/release/scripts/rollout-db.ts", "bootstrap",
+        expect.stringMatching(/\/release\/node_modules\/tsx\/dist\/cli\.mjs$/), expect.stringMatching(/\/release\/scripts\/rollout-db\.ts$/), "bootstrap",
         "--db", "/var/lib/agent-bridge/codex/bridge.sqlite", "--role", "shared",
         "--confirm-new-role", "/var/lib/agent-bridge/codex/bridge.sqlite",
       ],
       [
         "/usr/sbin/runuser", "--user", "agentbridge", "--", "/usr/bin/node",
-        "/release/node_modules/tsx/dist/cli.mjs", "/release/scripts/rollout-db.ts", "bootstrap",
+        expect.stringMatching(/\/release\/node_modules\/tsx\/dist\/cli\.mjs$/), expect.stringMatching(/\/release\/scripts\/rollout-db\.ts$/), "bootstrap",
         "--db", "/var/lib/agent-bridge/interactive/bridge.sqlite", "--role", "interactive",
         "--confirm-new-role", "/var/lib/agent-bridge/interactive/bridge.sqlite",
       ],
       [
         "/usr/sbin/runuser", "--user", "agentbridge", "--", "/usr/bin/node",
-        "/release/node_modules/tsx/dist/cli.mjs", "/release/scripts/rollout-db.ts", "bootstrap",
+        expect.stringMatching(/\/release\/node_modules\/tsx\/dist\/cli\.mjs$/), expect.stringMatching(/\/release\/scripts\/rollout-db\.ts$/), "bootstrap",
         "--db", "/var/lib/agent-bridge/health/bridge.sqlite", "--role", "health",
         "--confirm-new-role", "/var/lib/agent-bridge/health/bridge.sqlite",
       ],
     ]);
+  });
+
+  it("refuses an initial install over an existing persistent database", () => {
+    const result = probe(`
+with tempfile.TemporaryDirectory() as directory:
+  state = pathlib.Path(directory)
+  service = module.selected_services({"TELEGRAM_BOT_TOKEN_INTERACTIVE": "token"})[0]
+  target = module.database_path(state, service)
+  target.parent.mkdir(parents=True)
+  target.write_text("existing-state", encoding="utf-8")
+  try:
+    module.require_fresh_database_targets(state, [service])
+  except Exception as error:
+    print(json.dumps({"error": str(error), "contents": target.read_text(encoding="utf-8")}))
+`) as { error: string; contents: string };
+
+    expect(result.error).toContain("persistent database targets already exist");
+    expect(result.contents).toBe("existing-state");
   });
 
   it("renders the fixed rollout inventory with helper identities", () => {

@@ -44,6 +44,19 @@ SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ("agent-bridge-discord-interactive.service", "agent-bridge-discord-interactive", ("DISCORD_BOT_TOKEN",), "discord-interactive"),
 )
 
+# Provenance roles are intentionally independent of service database paths:
+# the three single-CLI bridges share the same database shape but retain
+# separate persistent state.
+DATABASE_ROLES = {
+    "codex": "shared",
+    "antigravity": "shared",
+    "claude": "shared",
+    "interactive": "interactive",
+    "worker": "worker",
+    "health": "health",
+    "discord-interactive": "discord",
+}
+
 # release path, installed path, rollout identity key
 HELPERS: tuple[tuple[str, Path, str], ...] = (
     ("scripts/agent-bridge-deploy.py", Path("/usr/local/sbin/agent-bridge-deploy"), "deployer"),
@@ -118,6 +131,47 @@ def selected_services(env: Mapping[str, str]) -> list[tuple[str, str, tuple[str,
 
 def database_path(state_root: Path, service: tuple[str, str, tuple[str, ...], str]) -> Path:
     return state_root / service[3] / "bridge.sqlite"
+
+
+def require_fresh_database_targets(
+    state_root: Path, services: Sequence[tuple[str, str, tuple[str, ...], str]],
+) -> None:
+    occupied = [str(path) for service in services if (path := database_path(state_root, service)).exists() or path.is_symlink()]
+    if occupied:
+        fail(f"persistent database targets already exist; refusing initial installation: {', '.join(occupied)}")
+
+
+def bootstrap_databases(
+    release: Path,
+    node_bin: Path,
+    account: pwd.struct_passwd,
+    services: Sequence[tuple[str, str, tuple[str, ...], str]],
+    databases: Sequence[Path],
+) -> None:
+    """Create schema-valid, provenance-bound databases before services start."""
+    if len(services) != len(databases):
+        fail("selected service and database inventories do not match")
+    tsx = release / "node_modules/tsx/dist/cli.mjs"
+    bootstrap = release / "scripts/rollout-db.ts"
+    if any(path.is_symlink() or not path.is_file() for path in (tsx, bootstrap)):
+        fail("release is missing database bootstrap runtime")
+    for service, database in zip(services, databases):
+        role = DATABASE_ROLES.get(service[3])
+        if role is None:
+            fail(f"unknown database role for service state: {service[3]}")
+        subprocess.run([
+            "/usr/sbin/runuser", "--user", account.pw_name, "--", str(node_bin),
+            str(tsx), str(bootstrap), "bootstrap", "--db", str(database), "--role", role,
+            "--confirm-new-role", str(database),
+        ], check=True, capture_output=True, text=True)
+
+
+def remove_bootstrapped_databases(databases: Sequence[Path]) -> None:
+    """Restore a retryable fresh-state boundary after bootstrap/start failure."""
+    for database in databases:
+        for path in (database, Path(f"{database}-wal"), Path(f"{database}-shm"), Path(f"{database}.provenance.json")):
+            if path.is_symlink() or path.is_file():
+                path.unlink()
 
 
 def render_env(values: Mapping[str, str]) -> str:
@@ -390,9 +444,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     current = release_root / "current"
     if current.exists() or current.is_symlink():
         fail("an active release already exists; use agent-bridge-deploy for upgrades")
+    require_fresh_database_targets(state_root, selected)
 
     bootstrap_stage = load_module("agent_bridge_bootstrap_stage", Path(__file__).with_name("release-stage.py"))
     managed_units: list[str] = []
+    bootstrapped_databases: list[Path] = []
     activated_commit = ""
     archive_sha256 = ""
     try:
@@ -407,6 +463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 state_root, backup_dir, log_dir, args.environment,
             )
             managed_units = [*units, CLEANUP_TIMER]
+            bootstrapped_databases = list(databases)
+            bootstrap_databases(extracted, node_bin, account, selected, databases)
             systemctl("daemon-reload")
             systemctl("enable", *managed_units)
 
@@ -434,6 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as error:
         if managed_units:
             systemctl("disable", "--now", *reversed(managed_units), check=False)
+        remove_bootstrapped_databases(bootstrapped_databases)
         if current.is_symlink() and os.readlink(current) == activated_commit:
             current.unlink()
         if activated_commit:
