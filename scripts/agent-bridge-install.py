@@ -463,8 +463,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 state_root, backup_dir, log_dir, args.environment,
             )
             managed_units = [*units, CLEANUP_TIMER]
-            bootstrapped_databases = list(databases)
-            bootstrap_databases(extracted, node_bin, account, selected, databases)
             systemctl("daemon-reload")
             systemctl("enable", *managed_units)
 
@@ -472,6 +470,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(stage.stage(args.release, release_root, activated_commit, archive_sha256), flush=True)
             activate = load_module("agent_bridge_release_activate", extracted / "scripts/release-activate.py")
             activate.validate_release(release_root / activated_commit, activated_commit, strict=True)
+            bootstrapped_databases = list(databases)
+            bootstrap_databases(release_root / activated_commit, node_bin, account, selected, databases)
             print(activate.activate(release_root, current, activated_commit), flush=True)
 
             systemctl("start", *managed_units)
