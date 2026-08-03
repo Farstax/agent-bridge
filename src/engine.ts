@@ -46,6 +46,7 @@ import { compactConversation } from "./compactConversation.js";
 import { parseCompactionProviderChain, resolveCompactionRecoveryTargets } from "./fallbackCompaction.js";
 import { consumeHandoffRequired, isHandoffRequired } from "./handoffState.js";
 import { contextInjectionPolicy, preseedCompactMode, preseedCompactCharThreshold, type ContextInjectionPolicy } from "./contextPolicy.js";
+import { loadWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, BotConfig, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
@@ -1446,7 +1447,9 @@ export class BridgeEngine {
     const shouldInject = this._shouldInjectContext(chatKey, sessionId);
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, sessionId);
     const access = this._buildContextAccess(chatKey);
-    const handoffPrompt = shouldInject ? prependHandoffModel(contextPrompt, model) : contextPrompt;
+    const workspaceContext = loadWorkspaceContext();
+    const workspacePrompt = workspaceContext ? `[Selected workspace repository]\n${workspaceContext}\n\n${contextPrompt}` : contextPrompt;
+    const handoffPrompt = shouldInject ? prependHandoffModel(workspacePrompt, model) : workspacePrompt;
     const soulContext = shouldInject ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: shouldInject };
     // Context env (AGENT_BRIDGE_CONTEXT_COMMAND, etc.) stays available regardless of
