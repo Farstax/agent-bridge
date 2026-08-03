@@ -14,9 +14,14 @@ function makeClient(overrides: Partial<{ getFilePath: any; downloadFile: any }> 
 
 describe("downloadTelegramAttachment", () => {
   it("returns null for text-only message", async () => {
-    const msg: TelegramMessage = { message_id: 1, chat: { id: 1, type: "private" }, text: "hello" };
-    const result = await downloadTelegramAttachment(makeClient(), msg, "/tmp");
-    expect(result).toBeNull();
+    const dir = await mkdtemp(join(tmpdir(), "bridge-test-"));
+    try {
+      const msg: TelegramMessage = { message_id: 1, chat: { id: 1, type: "private" }, text: "hello" };
+      const result = await downloadTelegramAttachment(makeClient(), msg, dir);
+      expect(result).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("picks largest photo (last entry), calls getFilePath + downloadFile, returns localPath + mimeType", async () => {
@@ -78,20 +83,25 @@ describe("downloadTelegramAttachment", () => {
   });
 
   it("returns null if photo file_size exceeds 20 MB without calling the API", async () => {
-    const getFilePath = vi.fn();
-    const client = makeClient({ getFilePath });
+    const dir = await mkdtemp(join(tmpdir(), "bridge-test-"));
+    try {
+      const getFilePath = vi.fn();
+      const client = makeClient({ getFilePath });
 
-    const msg: TelegramMessage = {
-      message_id: 3,
-      chat: { id: 1, type: "private" },
-      photo: [
-        { file_id: "huge_id", file_unique_id: "h", width: 4000, height: 3000, file_size: 21 * 1024 * 1024 },
-      ],
-    };
+      const msg: TelegramMessage = {
+        message_id: 3,
+        chat: { id: 1, type: "private" },
+        photo: [
+          { file_id: "huge_id", file_unique_id: "h", width: 4000, height: 3000, file_size: 21 * 1024 * 1024 },
+        ],
+      };
 
-    const result = await downloadTelegramAttachment(client, msg, "/tmp");
-    expect(result).toBeNull();
-    expect(getFilePath).not.toHaveBeenCalled();
+      const result = await downloadTelegramAttachment(client, msg, dir);
+      expect(result).toBeNull();
+      expect(getFilePath).not.toHaveBeenCalled();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("returns null (does not throw) if downloadFile rejects", async () => {
