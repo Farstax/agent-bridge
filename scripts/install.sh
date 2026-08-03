@@ -88,7 +88,7 @@ seed_from_env_file() {
   local key value
   for key in BRIDGE_ROOT_DIR BRIDGE_PROJECT_DIR BRIDGE_CURRENT_RELEASE_DIR \
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
-              TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_HEALTH \
+               TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
               CODEX_COMMAND ANTIGRAVITY_COMMAND CLAUDE_COMMAND \
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
@@ -97,7 +97,7 @@ seed_from_env_file() {
               BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK \
               BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS \
               AGENT_BRIDGE_SOUL_PATH AGENT_BRIDGE_SOUL_MODE \
-              HEALTH_MONITOR_ENABLED HEALTH_MONITOR_CADENCE_SECONDS HEALTH_MONITOR_AUTONOMY \
+               HEALTH_BOT_MODE HEALTH_MONITOR_ENABLED HEALTH_MONITOR_CADENCE_SECONDS HEALTH_MONITOR_AUTONOMY \
               HEALTH_MONITOR_CHAT_ID HEALTH_SUGGEST_BOT \
               HEALTH_CONTENT_CRAWLER_ENABLED HEALTH_CONTENT_CRAWLER_SCRIPT \
               DISCORD_BOT_TOKEN DISCORD_APPLICATION_ID DISCORD_GUILD_ID DISCORD_ALLOWED_USER_IDS \
@@ -194,6 +194,7 @@ prompt TELEGRAM_ALLOWED_USER_IDS  "Telegram allowed user IDs (comma-separated)"
 prompt TELEGRAM_BOT_TOKEN_CODEX       "Codex bot token"
 prompt TELEGRAM_BOT_TOKEN_ANTIGRAVITY "Antigravity bot token"
 prompt TELEGRAM_BOT_TOKEN_CLAUDE      "Claude bot token (leave blank to skip)"
+prompt TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token (leave blank to skip)"
 prompt TELEGRAM_BOT_TOKEN_HEALTH      "Health bot token (leave blank to skip)"
 prompt HEALTH_BOT_MODE                 "Health bot mode (standalone|integrated)" "standalone"
 prompt TELEGRAM_BOT_TOKEN_WORKER      "Worker bot token (leave blank to skip)"
@@ -411,6 +412,22 @@ if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" ==
   fi
 fi
 
+_write_interactive_defaults() {
+  local dest="${DEFAULTS_DIR}/agent-bridge-interactive"
+  {
+    echo "BRIDGE_ENV_FILE=${dest}"
+    echo "TELEGRAM_BOT_TOKEN_INTERACTIVE=${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}"
+    echo "INTERACTIVE_DEFAULT_CLI=${INTERACTIVE_DEFAULT_CLI:-codex}"
+    echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,antigravity}"
+    echo "CODEX_COMMAND=${CODEX_COMMAND:-codex}"
+    echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
+    echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
+    echo "DB_PATH=${DB_PATH:-${BRIDGE_ROOT_DIR}/runtime/agent-bridge/interactive/bridge.sqlite}"
+    true
+  } | sudo tee "${dest}" > /dev/null
+  echo "  wrote ${dest}"
+}
+
 _write_worker_defaults() {
   local dest="${DEFAULTS_DIR}/agent-bridge-worker-bot"
 
@@ -459,6 +476,10 @@ _write_discord_defaults() {
 
 install_unit agent-bridge-codex
 install_unit agent-bridge-antigravity
+if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
+  _write_interactive_defaults
+  install_unit agent-bridge-interactive
+fi
 if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
   install_unit agent-bridge-health
 fi
@@ -468,6 +489,9 @@ install_unit agent-bridge-tmp-cleanup
 install_timer agent-bridge-tmp-cleanup
 
 UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cleanup.timer"
+if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
+  UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-interactive"
+fi
 if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-health"
 fi
