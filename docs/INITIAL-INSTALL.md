@@ -47,12 +47,13 @@ A successful installation:
 4. installs the configured systemd units and cleanup timer;
 5. installs `agent-bridge-deploy` and its private helpers as root-owned commands;
 6. writes the fixed root-owned `/etc/agent-bridge/rollout.conf` inventory and helper hashes;
-7. stages the exact immutable release and atomically creates the first `current` pointer;
-8. starts only the configured services;
-9. verifies active services and SQLite integrity;
-10. writes `/var/lib/agent-bridge/installation-result.json`.
+7. bootstraps each selected, previously absent service database as the runtime user, with its fixed provenance role;
+8. stages the exact immutable release and atomically creates the first `current` pointer;
+9. starts only the configured services;
+10. verifies active services and SQLite integrity;
+11. writes `/var/lib/agent-bridge/installation-result.json`.
 
-If startup or acceptance fails, the installer stops the selected units and removes the newly created pointer. The staged release and failure result remain for diagnosis or a safe retry.
+If bootstrap, startup, or acceptance fails, the installer stops the selected units, removes the newly created pointer, and removes only the database targets it proved absent before installation. The staged release and failure result remain for diagnosis or a safe retry.
 
 ## Subsequent releases
 

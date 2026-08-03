@@ -7,6 +7,8 @@ describe("initial installation release contract", () => {
 
     for (const requiredPath of [
       "scripts/agent-bridge-install.py",
+      "scripts/rollout-db.ts",
+      "scripts/rollout-db-impl.ts",
       "scripts/agent-bridge-deploy.py",
       "scripts/rollout-agent-bridge.sh",
       "scripts/release-activate.py",
