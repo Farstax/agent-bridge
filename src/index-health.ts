@@ -209,6 +209,11 @@ const engine = new BridgeEngine(
 
 // ── Start ────────────────────────────────────────────────────────────────────
 console.log("[health-bot] starting...");
+// A scheduler-only integrated service must stay resident even when scheduling
+// is disabled (the default); an unsettled promise alone does not keep Node up.
+const schedulerOnlyKeepalive = shouldHealthServicePoll(process.env)
+  ? null
+  : setInterval(() => {}, 60_000);
 
 if (shouldHealthServicePoll(process.env)) {
   await client.setMyCommands({
@@ -234,6 +239,7 @@ if (healthEnabled) {
 
 const shutdown = (signal: string) => {
   console.log(`[health-bot] ${signal} received, shutting down...`);
+  if (schedulerOnlyKeepalive) clearInterval(schedulerOnlyKeepalive);
   scheduler.stop();
   shutdownCliProcesses();
   rawDb.close();
@@ -247,5 +253,4 @@ if (shouldHealthServicePoll(process.env)) {
   await engine.run();
 } else {
   console.log("[health-bot] integrated mode: scheduler is send-only; interactive bot owns Telegram polling");
-  await new Promise<void>(() => {});
 }
