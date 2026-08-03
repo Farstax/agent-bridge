@@ -134,9 +134,10 @@ export function buildCliKeyboard(
 // ── Telegram command registration ─────────────────────────────────────────────
 
 /** Returns the merged command list for setMyCommands: interactive commands + active CLI commands. */
-export function buildInteractiveCommands(pref: CliKind): Array<{ command: string; description: string }> {
+export function buildInteractiveCommands(pref: CliKind, options: { integratedHealth?: boolean } = {}): Array<{ command: string; description: string }> {
   const interactiveOnly = [
     { command: "cli", description: "Show active CLI and switch with one tap" },
+    ...(options.integratedHealth ? [{ command: "health", description: "Run health checks or show the latest report" }] : []),
   ];
   const cliKind = pref === "antigravity" ? "antigravity" : pref === "claude" ? "claude" : pref === "kimchi" ? "kimchi" : "codex";
   const cliCmds = buildTelegramCommands(cliKind);
@@ -151,8 +152,8 @@ export function buildInteractiveCommands(pref: CliKind): Array<{ command: string
   return merged;
 }
 
-export function buildGlobalInteractiveCommandRegistrations(pref: CliKind): InteractiveCommandRegistration[] {
-  const commands = buildInteractiveCommands(pref);
+export function buildGlobalInteractiveCommandRegistrations(pref: CliKind, options: { integratedHealth?: boolean } = {}): InteractiveCommandRegistration[] {
+  const commands = buildInteractiveCommands(pref, options);
   return [
     { commands },
     { commands, scope: { type: "all_group_chats" } },
@@ -160,8 +161,8 @@ export function buildGlobalInteractiveCommandRegistrations(pref: CliKind): Inter
   ];
 }
 
-export function buildChatInteractiveCommandRegistrations(pref: CliKind, chatId: number): InteractiveCommandRegistration[] {
-  const commands = buildInteractiveCommands(pref);
+export function buildChatInteractiveCommandRegistrations(pref: CliKind, chatId: number, options: { integratedHealth?: boolean } = {}): InteractiveCommandRegistration[] {
+  const commands = buildInteractiveCommands(pref, options);
   return [
     { commands, scope: { type: "chat", chat_id: chatId } },
     { commands, scope: { type: "chat_administrators", chat_id: chatId } },

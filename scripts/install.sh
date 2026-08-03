@@ -195,6 +195,7 @@ prompt TELEGRAM_BOT_TOKEN_CODEX       "Codex bot token"
 prompt TELEGRAM_BOT_TOKEN_ANTIGRAVITY "Antigravity bot token"
 prompt TELEGRAM_BOT_TOKEN_CLAUDE      "Claude bot token (leave blank to skip)"
 prompt TELEGRAM_BOT_TOKEN_HEALTH      "Health bot token (leave blank to skip)"
+prompt HEALTH_BOT_MODE                 "Health bot mode (standalone|integrated)" "standalone"
 prompt TELEGRAM_BOT_TOKEN_WORKER      "Worker bot token (leave blank to skip)"
 prompt GITHUB_USERNAME                "GitHub username for worker repo picker"
 prompt WORKER_DEFAULT_REPO            "Default worker repo (blank = ask with repo picker)" ""
@@ -357,6 +358,7 @@ _write_shared_defaults() {
     [[ -n "${AGENT_BRIDGE_SOUL_PATH:-}" ]]  && echo "AGENT_BRIDGE_SOUL_PATH=${AGENT_BRIDGE_SOUL_PATH}"
     [[ -n "${AGENT_BRIDGE_SOUL_MODE:-}" ]]  && echo "AGENT_BRIDGE_SOUL_MODE=${AGENT_BRIDGE_SOUL_MODE}"
     echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
+    echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
     echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
     echo "HEALTH_MONITOR_AUTONOMY=${HEALTH_MONITOR_AUTONOMY:-report}"
     [[ -n "${HEALTH_MONITOR_CHAT_ID:-}" ]]          && echo "HEALTH_MONITOR_CHAT_ID=${HEALTH_MONITOR_CHAT_ID}"
@@ -400,8 +402,13 @@ _write_release_defaults
 _write_shared_defaults
 _write_systemd_defaults codex       TELEGRAM_BOT_TOKEN_CODEX       CODEX_COMMAND       CODEX_PROJECT_DIR
 _write_systemd_defaults antigravity TELEGRAM_BOT_TOKEN_ANTIGRAVITY ANTIGRAVITY_COMMAND ANTIGRAVITY_PROJECT_DIR
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]]; then
-  _write_systemd_defaults health TELEGRAM_BOT_TOKEN_HEALTH HEALTH_CLI_COMMAND HEALTH_CLI_BOT
+if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
+  if [[ "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
+    ensure_var TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token required for integrated health"
+    _write_systemd_defaults health TELEGRAM_BOT_TOKEN_INTERACTIVE HEALTH_CLI_COMMAND HEALTH_CLI_BOT
+  else
+    _write_systemd_defaults health TELEGRAM_BOT_TOKEN_HEALTH HEALTH_CLI_COMMAND HEALTH_CLI_BOT
+  fi
 fi
 
 _write_worker_defaults() {
@@ -452,7 +459,7 @@ _write_discord_defaults() {
 
 install_unit agent-bridge-codex
 install_unit agent-bridge-antigravity
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]]; then
+if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
   install_unit agent-bridge-health
 fi
 
@@ -461,7 +468,7 @@ install_unit agent-bridge-tmp-cleanup
 install_timer agent-bridge-tmp-cleanup
 
 UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cleanup.timer"
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]]; then
+if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-health"
 fi
 

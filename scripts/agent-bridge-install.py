@@ -78,6 +78,7 @@ SHARED_KEYS = (
     "BRIDGE_ADVISOR_TIMEOUT_MS", "BRIDGE_ADVISOR_CONTEXT_MAX_CHARS",
     "HEALTH_MONITOR_ENABLED", "HEALTH_MONITOR_CADENCE_SECONDS",
     "HEALTH_MONITOR_AUTONOMY", "HEALTH_MONITOR_CHAT_ID", "HEALTH_SUGGEST_BOT",
+    "HEALTH_BOT_MODE",
     "HEALTH_CONTENT_CRAWLER_ENABLED", "HEALTH_CONTENT_CRAWLER_SCRIPT",
 )
 
@@ -121,7 +122,16 @@ def load_module(name: str, path: Path):
 
 
 def selected_services(env: Mapping[str, str]) -> list[tuple[str, str, tuple[str, ...], str]]:
+    health_mode = env.get("HEALTH_BOT_MODE", "standalone")
+    if health_mode not in ("standalone", "integrated"):
+        fail("HEALTH_BOT_MODE must be standalone or integrated")
+    if health_mode == "integrated" and not env.get("TELEGRAM_BOT_TOKEN_INTERACTIVE", "").strip():
+        fail("TELEGRAM_BOT_TOKEN_INTERACTIVE is required when HEALTH_BOT_MODE=integrated")
     selected = [service for service in SERVICES if any(env.get(key, "").strip() for key in service[2])]
+    if health_mode == "integrated":
+        health_service = next(service for service in SERVICES if service[3] == "health")
+        if health_service not in selected:
+            selected.append(health_service)
     if not selected:
         fail("at least one Agent Bridge service token must be configured")
     if env.get("DISCORD_BOT_TOKEN", "").strip() and not env.get("DISCORD_APPLICATION_ID", "").strip():
@@ -305,6 +315,8 @@ def service_values(
     for key in set(SERVICE_KEYS) - other_tokens:
         if env.get(key, "") != "":
             values[key] = env[key]
+    if defaults_path.name == "agent-bridge-health" and env.get("HEALTH_BOT_MODE", "standalone") == "integrated":
+        values["TELEGRAM_BOT_TOKEN_INTERACTIVE"] = env["TELEGRAM_BOT_TOKEN_INTERACTIVE"]
     return values
 
 
