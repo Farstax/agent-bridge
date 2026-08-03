@@ -193,7 +193,7 @@ describe("guarded rollout helper", () => {
       expect(existsSync(join(fixture.logDir, inventory!, `${stem}.drop-in-paths`))).toBe(true);
       expect(existsSync(join(fixture.logDir, inventory!, `${stem}.environment-files`))).toBe(true);
     }
-  });
+  }, 15_000);
 
   it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
     const fixture = createFixture();

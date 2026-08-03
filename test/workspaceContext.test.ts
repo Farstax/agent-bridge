@@ -51,6 +51,18 @@ describe("workspace context", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it("fails open with an empty string when no context file is configured", () => {
+    expect(loadWorkspaceContext({})).toBe("");
+    expect(prependWorkspaceContext("Please inspect the repository", {})).toBe("Please inspect the repository");
+  });
+
+  it("fails open with an empty string when the configured context file is unreadable", () => {
+    const missingFile = join(mkdtempSync(join(tmpdir(), "workspace-context-")), "does-not-exist.md");
+    expect(loadWorkspaceContext({ AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: missingFile })).toBe("");
+    expect(prependWorkspaceContext("Please inspect the repository", { AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: missingFile }))
+      .toBe("Please inspect the repository");
+  });
+
   it("prepends managed context without copying environment secrets", () => {
     const dir = mkdtempSync(join(tmpdir(), "workspace-context-"));
     const file = join(dir, "workspace-context.md");
