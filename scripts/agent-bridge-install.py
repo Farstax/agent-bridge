@@ -78,6 +78,7 @@ SHARED_KEYS = (
     "BRIDGE_ADVISOR_TIMEOUT_MS", "BRIDGE_ADVISOR_CONTEXT_MAX_CHARS",
     "HEALTH_MONITOR_ENABLED", "HEALTH_MONITOR_CADENCE_SECONDS",
     "HEALTH_MONITOR_AUTONOMY", "HEALTH_MONITOR_CHAT_ID", "HEALTH_SUGGEST_BOT",
+    "HEALTH_BOT_MODE",
     "HEALTH_CONTENT_CRAWLER_ENABLED", "HEALTH_CONTENT_CRAWLER_SCRIPT",
 )
 
@@ -121,7 +122,16 @@ def load_module(name: str, path: Path):
 
 
 def selected_services(env: Mapping[str, str]) -> list[tuple[str, str, tuple[str, ...], str]]:
+    health_mode = env.get("HEALTH_BOT_MODE", "standalone")
+    if health_mode not in ("standalone", "integrated"):
+        fail("HEALTH_BOT_MODE must be standalone or integrated")
+    if health_mode == "integrated" and not env.get("TELEGRAM_BOT_TOKEN_INTERACTIVE", "").strip():
+        fail("TELEGRAM_BOT_TOKEN_INTERACTIVE is required when HEALTH_BOT_MODE=integrated")
     selected = [service for service in SERVICES if any(env.get(key, "").strip() for key in service[2])]
+    if health_mode == "integrated":
+        health_service = next(service for service in SERVICES if service[3] == "health")
+        if health_service not in selected:
+            selected.append(health_service)
     if not selected:
         fail("at least one Agent Bridge service token must be configured")
     if env.get("DISCORD_BOT_TOKEN", "").strip() and not env.get("DISCORD_APPLICATION_ID", "").strip():
@@ -298,13 +308,19 @@ def inspect_archive(archive: Path, stage_module, destination: Path) -> tuple[dic
 
 
 def service_values(
-    env: Mapping[str, str], defaults_path: Path, db_path: Path, token_keys: Sequence[str],
+    env: Mapping[str, str], defaults_path: Path, db_path: Path, token_keys: Sequence[str], health_db_path: Path | None = None,
 ) -> dict[str, str]:
     values = {"BRIDGE_ENV_FILE": str(defaults_path), "DB_PATH": str(db_path)}
     other_tokens = {key for service in SERVICES for key in service[2] if key not in token_keys}
     for key in set(SERVICE_KEYS) - other_tokens:
         if env.get(key, "") != "":
             values[key] = env[key]
+    if defaults_path.name == "agent-bridge-health" and env.get("HEALTH_BOT_MODE", "standalone") == "integrated":
+        values["TELEGRAM_BOT_TOKEN_INTERACTIVE"] = env["TELEGRAM_BOT_TOKEN_INTERACTIVE"]
+    if env.get("HEALTH_BOT_MODE", "standalone") == "integrated" and defaults_path.name in {"agent-bridge-health", "agent-bridge-interactive"}:
+        if health_db_path is None:
+            fail("integrated health defaults require the generated health database path")
+        values["HEALTH_DB_PATH"] = str(health_db_path)
     return values
 
 
@@ -340,6 +356,7 @@ def configure_host(
     state_root.mkdir(parents=True, exist_ok=True)
     units: list[str] = []
     databases: list[Path] = []
+    health_db_path = next((database_path(state_root, service) for service in selected if service[3] == "health"), None)
     for unit, defaults_name, token_keys, db_name in selected:
         service = (unit, defaults_name, token_keys, db_name)
         db_path = database_path(state_root, service)
@@ -347,7 +364,7 @@ def configure_host(
         os.chown(db_path.parent, account.pw_uid, account.pw_gid)
         os.chmod(db_path.parent, 0o750)
         defaults_path = DEFAULTS_DIR / defaults_name
-        safe_write(defaults_path, render_env(service_values(env, defaults_path, db_path, token_keys)), 0o600)
+        safe_write(defaults_path, render_env(service_values(env, defaults_path, db_path, token_keys, health_db_path)), 0o600)
         unit_source = release / "systemd" / unit
         if unit_source.is_symlink() or not unit_source.is_file():
             fail(f"release is missing systemd unit: {unit_source}")

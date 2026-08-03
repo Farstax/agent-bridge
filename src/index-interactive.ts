@@ -44,6 +44,9 @@ import { getExecutionProcessState } from "./cliSupervisor.js";
 import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
+import { parseHealthBotMode } from "./health/config.js";
+import { createHealthRuntime } from "./health/runtime.js";
+import { handleIntegratedHealthCommand } from "./health/integrated.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
@@ -65,6 +68,7 @@ const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
 const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
+const integratedHealth = parseHealthBotMode(process.env) === "integrated";
 
 const config: BridgeConfig = {
   allowedUserIds,
@@ -92,6 +96,20 @@ const db = openProductionDb(dbPath, {
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const client = new TelegramClient(token, fetch, 45_000);
+const healthDbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
+const healthDb = integratedHealth ? openProductionDb(healthDbPath, {
+  serviceId: "telegram:interactive-health",
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+  databaseRole: "health",
+}) : null;
+const integratedHealthRuntime = healthDb ? createHealthRuntime({
+  bridgeDb: healthDb,
+  dbPath: healthDbPath,
+  env: process.env,
+  chatId: 0,
+  sendText: async () => {},
+}) : null;
 
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
@@ -181,7 +199,7 @@ const engines = Object.fromEntries(
 
 const defaultPref = resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds()) ?? "codex";
 async function registerGlobalCommands(pref: CliKind, label: string): Promise<void> {
-  for (const body of buildGlobalInteractiveCommandRegistrations(pref)) {
+  for (const body of buildGlobalInteractiveCommandRegistrations(pref, { integratedHealth })) {
     const scopeName = body.scope?.type ?? "default";
     await client.setMyCommands(body)
       .catch((err: unknown) => console.warn(`[interactive] setMyCommands (${scopeName}) failed${label}`, err));
@@ -189,7 +207,7 @@ async function registerGlobalCommands(pref: CliKind, label: string): Promise<voi
 }
 
 async function registerGroupChatCommands(pref: CliKind, chatId: number): Promise<void> {
-  for (const body of buildChatInteractiveCommandRegistrations(pref, chatId)) {
+  for (const body of buildChatInteractiveCommandRegistrations(pref, chatId, { integratedHealth })) {
     const scopeName = body.scope?.type ?? "chat";
     await client.setMyCommands(body)
       .catch((err: unknown) => console.warn(`[interactive] setMyCommands (${scopeName} ${chatId}) failed`, err));
@@ -276,6 +294,23 @@ for (;;) {
               reply_markup: buildCliKeyboard(pref ?? stored, available),
               message_thread_id: message.message_thread_id,
             } });
+            continue;
+          }
+          if (integratedHealthRuntime && await handleIntegratedHealthCommand({
+            rawText,
+            botUsername,
+            chatId,
+            runCheck: () => integratedHealthRuntime.runChecks(),
+            getStatus: () => integratedHealthRuntime.statusText(),
+            sendText: async (text) => {
+              await sendTelegramMessage({
+                client,
+                kind: "interactive",
+                chatId,
+                body: { text, message_thread_id: message.message_thread_id },
+              });
+            },
+          })) {
             continue;
           }
         }

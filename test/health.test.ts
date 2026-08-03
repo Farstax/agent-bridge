@@ -851,6 +851,30 @@ describe("parseHealthEnabled", () => {
   });
 });
 
+// ── integrated Telegram health mode ─────────────────────────────────────────
+
+describe("integrated health bot mode", () => {
+  it("defaults to the standalone health token and polling owner", async () => {
+    const { parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } = await import("../src/health/config.js");
+    expect(parseHealthBotMode({})).toBe("standalone");
+    expect(resolveHealthTelegramToken({ TELEGRAM_BOT_TOKEN_HEALTH: "health-token" })).toBe("health-token");
+    expect(shouldHealthServicePoll({})).toBe(true);
+  });
+
+  it("uses the interactive token and leaves polling to interactive in integrated mode", async () => {
+    const { parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } = await import("../src/health/config.js");
+    const env = { HEALTH_BOT_MODE: "integrated", TELEGRAM_BOT_TOKEN_INTERACTIVE: "interactive-token" };
+    expect(parseHealthBotMode(env)).toBe("integrated");
+    expect(resolveHealthTelegramToken(env)).toBe("interactive-token");
+    expect(shouldHealthServicePoll(env)).toBe(false);
+  });
+
+  it("rejects an unknown health bot mode", async () => {
+    const { parseHealthBotMode } = await import("../src/health/config.js");
+    expect(() => parseHealthBotMode({ HEALTH_BOT_MODE: "shared" })).toThrow(/HEALTH_BOT_MODE/);
+  });
+});
+
 // ── buildSuggestionInvocation ─────────────────────────────────────────────────
 
 describe("buildSuggestionInvocation", () => {
