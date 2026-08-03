@@ -23,6 +23,10 @@ import {
   readLatestAntigravityConversationFromLogs,
   resolveAntigravityConversationId,
 } from "./providers/antigravityRuntime.js";
+import {
+  runAntigravitySerialized,
+  type AntigravityExecutionContext,
+} from "./providers/antigravitySerializedRunner.js";
 import { resolveKimchiSessionId } from "./providers/kimchiRuntime.js";
 
 export { buildClaudeExcludedPluginSettings };
@@ -59,6 +63,8 @@ import {
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 
+const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
+
 export {
   getExecutionProcessState,
   buildSafeChildEnv,
@@ -86,10 +92,7 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-
-/**
- * Builds the CLI invocation for a bot.
- */
+/** Builds the CLI invocation for a bot. */
 export function buildCliInvocation({
   bot,
   prompt,
@@ -125,6 +128,7 @@ export function buildCliInvocation({
   homeDir?: string;
   toolMode?: "default" | "none";
 }): { command: string; args: string[]; stdin?: string } {
+  void sessionMode;
   if (toolMode === "none" && !supportsToolFreeMode(bot)) {
     throw new Error(`Tool-free mode is not supported for ${bot}`);
   }
@@ -140,9 +144,15 @@ export function buildCliInvocation({
     });
   }
   if (bot === "antigravity") {
-    return antigravityRuntime.buildInvocation({
+    const invocation = antigravityRuntime.buildInvocation({
       prompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, logFile, homeDir,
     });
+    antigravityInvocationMetadata.set(invocation.args, {
+      homeDir,
+      model: model ?? null,
+      applyModel: true,
+    });
+    return invocation;
   }
   if (bot === "kimchi") {
     return kimchiRuntime.buildInvocation({
@@ -155,10 +165,7 @@ export function buildCliInvocation({
 
 export { validateBridgeConfig } from "./config.js";
 
-/**
- * Resolve CLI execution options for a specific bot kind.
- * Reads env vars at call time so tests can stub them.
- */
+/** Resolve CLI execution options for a specific bot kind. */
 export function buildExecutionOptions(kind: BotKind): CliOptions {
   const t = resolveTimeoutsForKind(kind);
   return {
@@ -168,9 +175,7 @@ export function buildExecutionOptions(kind: BotKind): CliOptions {
   };
 }
 
-/**
- * Parses the CLI result.
- */
+/** Parses the CLI result. */
 export function parseCliResult({
   bot,
   stdout,
@@ -230,38 +235,47 @@ export function getNextFallbackModel(currentModel: string | null, modelPreferenc
   return modelPreference[idx + 1];
 }
 
+function isAntigravityExecution(options: CliOptions): boolean {
+  return options.bot === "antigravity" || options.eventContext?.bot === "antigravity";
+}
 
-/**
- * Runs a CLI command and returns stdout. Thin adapter over the shared
- * supervised process core in src/cliSupervisor.ts.
- */
-export async function runCli(command: string, args: string[], cwd: string, options: CliOptions = {}): Promise<string> {
-  const runner = options.bot === "antigravity" || options.eventContext?.bot === "antigravity"
-    ? antigravityRuntime.runWithTransientDnsRetry
-    : runSupervisedProcess;
-  const { stdout } = await runner(command, args, cwd, {
+async function runConfiguredCli(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: CliOptions,
+  onProgress?: (text: string) => void,
+): Promise<{ stdout: string }> {
+  const executionOptions: CliOptions = {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
-  });
+  };
+  if (isAntigravityExecution(options)) {
+    return runAntigravitySerialized(
+      command,
+      args,
+      cwd,
+      executionOptions,
+      antigravityInvocationMetadata.get(args),
+      onProgress,
+    );
+  }
+  return runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
+}
+
+/** Runs a CLI command and returns stdout. */
+export async function runCli(command: string, args: string[], cwd: string, options: CliOptions = {}): Promise<string> {
+  const { stdout } = await runConfiguredCli(command, args, cwd, options);
   return stdout;
 }
 
-/**
- * Runs a CLI command asynchronously with progress support. Thin adapter over
- * the shared supervised process core in src/cliSupervisor.ts.
- */
+/** Runs a CLI command asynchronously with progress support. */
 export async function runCliAsync(
   command: string,
   args: string[],
   cwd: string,
-  options: CliOptions = {}
+  options: CliOptions = {},
 ): Promise<{ text: string }> {
-  const runner = options.bot === "antigravity" || options.eventContext?.bot === "antigravity"
-    ? antigravityRuntime.runWithTransientDnsRetry
-    : runSupervisedProcess;
-  const { stdout } = await runner(command, args, cwd, {
-    ...options,
-    processWatch: options.processWatch ?? getProcessWatchForCommand(command),
-  }, options.onProgress);
+  const { stdout } = await runConfiguredCli(command, args, cwd, options, options.onProgress);
   return { text: stdout };
 }

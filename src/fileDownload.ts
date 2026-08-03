@@ -1,9 +1,10 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, chmod } from "node:fs/promises";
 import { join, extname } from "node:path";
 import type { TelegramMessage } from "./types.js";
 import type { MessagingPlatform } from "./platform.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB — Telegram bot API limit
+const PRIVATE_DIR_MODE = 0o700;
 
 const MIME_MAP: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -36,7 +37,8 @@ export async function downloadTelegramAttachment(
   message: TelegramMessage,
   destDir: string,
 ): Promise<AttachmentInfo | null> {
-  await mkdir(destDir, { recursive: true });
+  await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmod(destDir, PRIVATE_DIR_MODE);
 
   if (message.photo && message.photo.length > 0) {
     const largest = message.photo[message.photo.length - 1];
