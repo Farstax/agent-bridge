@@ -11,6 +11,14 @@ import { getProviderAdapters } from "./registry.js";
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
 const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity", "kimchi"]);
 
+/** Chain vocabulary differs from registry ids only for Antigravity (`agy`). */
+const CHAIN_KIND_TO_PROVIDER_ID: Readonly<Record<string, string>> = {
+  codex: "codex",
+  claude: "claude",
+  antigravity: "agy",
+  kimchi: "kimchi",
+};
+
 const CHAIN_ENV_VARS = [
   "INTERACTIVE_CLI_CHAIN",
   "WORKER_CLI_CHAIN",
@@ -78,13 +86,19 @@ export function runDoctor({
     return { name, set: true, ok: entries.length > 0 && unknown.length === 0, entries, unknown };
   });
 
+  const configuredProviderIds = new Set(
+    chains.flatMap((chain) => chain.entries)
+      .map((entry) => CHAIN_KIND_TO_PROVIDER_ID[entry])
+      .filter((id): id is string => Boolean(id)),
+  );
+
   const envChecks: EnvCheck[] = requiredEnv.map((name) => ({
     name,
     present: Boolean(env[name] && env[name] !== ""),
   }));
 
   const ok =
-    providers.every((p) => p.status === "available") &&
+    providers.every((p) => p.status === "available" || !configuredProviderIds.has(p.id)) &&
     chains.every((c) => c.ok) &&
     envChecks.every((e) => e.present);
 
