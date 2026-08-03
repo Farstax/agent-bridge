@@ -53,19 +53,27 @@ services = module.selected_services({
   "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
 })
 health = next(service for service in services if service[0] == "agent-bridge-health.service")
-values = module.service_values(
+interactive = next(service for service in services if service[0] == "agent-bridge-interactive.service")
+health_path = pathlib.Path("/custom-state/health/bridge.sqlite")
+health_values = module.service_values(
   {"HEALTH_BOT_MODE": "integrated", "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token"},
-  pathlib.Path("/etc/default/agent-bridge-health"), pathlib.Path("/var/lib/agent-bridge/health/bridge.sqlite"), health[2],
+  pathlib.Path("/etc/default/agent-bridge-health"), health_path, health[2], health_path,
 )
-print(json.dumps({"units": [service[0] for service in services], "values": values}))
-`) as { units: string[]; values: Record<string, string> };
+interactive_values = module.service_values(
+  {"HEALTH_BOT_MODE": "integrated", "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token"},
+  pathlib.Path("/etc/default/agent-bridge-interactive"), pathlib.Path("/custom-state/interactive/bridge.sqlite"), interactive[2], health_path,
+)
+print(json.dumps({"units": [service[0] for service in services], "health_values": health_values, "interactive_values": interactive_values}))
+`) as { units: string[]; health_values: Record<string, string>; interactive_values: Record<string, string> };
 
     expect(result.units).toEqual([
       "agent-bridge-interactive.service",
       "agent-bridge-health.service",
     ]);
-    expect(result.values.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBe("interactive-token");
-    expect(result.values.TELEGRAM_BOT_TOKEN_HEALTH).toBeUndefined();
+    expect(result.health_values.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBe("interactive-token");
+    expect(result.health_values.TELEGRAM_BOT_TOKEN_HEALTH).toBeUndefined();
+    expect(result.health_values.HEALTH_DB_PATH).toBe("/custom-state/health/bridge.sqlite");
+    expect(result.interactive_values.HEALTH_DB_PATH).toBe("/custom-state/health/bridge.sqlite");
   });
 
   it("rejects integrated health without its interactive polling token", () => {
