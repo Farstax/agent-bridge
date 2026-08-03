@@ -24,6 +24,16 @@ describe("doctor diagnostics", () => {
     expect(report.ok).toBe(false);
   });
 
+  it("fails when providers referenced by unset runtime defaults are missing", () => {
+    const report = runDoctor({ env: {}, commandExists: noneFound });
+
+    expect(report.chains.find((chain) => chain.name === "INTERACTIVE_CLI_CHAIN")?.entries)
+      .toEqual(["codex", "claude", "antigravity", "kimchi"]);
+    expect(report.chains.find((chain) => chain.name === "WORKER_CLI_CHAIN")?.entries)
+      .toEqual(["codex", "claude", "antigravity"]);
+    expect(report.ok).toBe(false);
+  });
+
   it("does not fail for a missing provider that no configured chain uses", () => {
     const report = runDoctor({
       env: { WORKER_CLI_CHAIN: "codex" },
