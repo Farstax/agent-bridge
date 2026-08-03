@@ -36,7 +36,12 @@ describe("doctor diagnostics", () => {
 
   it("does not fail for a missing provider that no configured chain uses", () => {
     const report = runDoctor({
-      env: { WORKER_CLI_CHAIN: "codex" },
+      env: {
+        INTERACTIVE_CLI_CHAIN: "codex",
+        WORKER_CLI_CHAIN: "codex",
+        WORKER_CODE_CLI_CHAIN: "codex",
+        WORKER_SCRIBE_CLI_CHAIN: "codex",
+      },
       commandExists: (executable) => executable === "codex",
     });
 
