@@ -46,6 +46,38 @@ print(json.dumps({
     expect(result.inside).toEqual([false, false]);
   });
 
+  it("installs health as a send-only scheduler with the interactive token in integrated mode", () => {
+    const result = probe(`
+services = module.selected_services({
+  "HEALTH_BOT_MODE": "integrated",
+  "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
+})
+health = next(service for service in services if service[0] == "agent-bridge-health.service")
+values = module.service_values(
+  {"HEALTH_BOT_MODE": "integrated", "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token"},
+  pathlib.Path("/etc/default/agent-bridge-health"), pathlib.Path("/var/lib/agent-bridge/health/bridge.sqlite"), health[2],
+)
+print(json.dumps({"units": [service[0] for service in services], "values": values}))
+`) as { units: string[]; values: Record<string, string> };
+
+    expect(result.units).toEqual([
+      "agent-bridge-interactive.service",
+      "agent-bridge-health.service",
+    ]);
+    expect(result.values.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBe("interactive-token");
+    expect(result.values.TELEGRAM_BOT_TOKEN_HEALTH).toBeUndefined();
+  });
+
+  it("rejects integrated health without its interactive polling token", () => {
+    const result = probe(`
+try:
+  module.selected_services({"HEALTH_BOT_MODE": "integrated"})
+except Exception as error:
+  print(json.dumps({"error": str(error)}))
+`) as { error: string };
+    expect(result.error).toContain("TELEGRAM_BOT_TOKEN_INTERACTIVE is required");
+  });
+
   it("bootstraps every selected fresh database with its fixed database role", () => {
     const result = probe(`
 calls = []
