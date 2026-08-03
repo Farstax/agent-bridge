@@ -7,6 +7,8 @@
 
 import { execFileSync } from "node:child_process";
 import { getProviderAdapters } from "./registry.js";
+import { interactiveChainKinds, parseCliChain } from "./selection.js";
+import { resolveWorkerCliPolicy } from "../workerCliPolicy.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
 const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity", "kimchi"]);
@@ -76,10 +78,21 @@ export function runDoctor({
     status: commandExists(adapter.executable) ? "available" : "missing",
   }));
 
+  const workerPolicy = resolveWorkerCliPolicy(env);
+  const effectiveEntries: Record<(typeof CHAIN_ENV_VARS)[number], string[]> = {
+    INTERACTIVE_CLI_CHAIN: parseCliChain(
+      env.INTERACTIVE_CLI_CHAIN || env.WORKER_CLI_CHAIN,
+      { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "kimchi"] },
+    ),
+    WORKER_CLI_CHAIN: workerPolicy.interactiveChain,
+    WORKER_CODE_CLI_CHAIN: workerPolicy.codeChain,
+    WORKER_SCRIBE_CLI_CHAIN: workerPolicy.scribeChain,
+  };
+
   const chains: ChainCheck[] = CHAIN_ENV_VARS.map((name) => {
     const raw = env[name];
     if (raw == null || raw.trim() === "") {
-      return { name, set: false, ok: true, entries: [], unknown: [] };
+      return { name, set: false, ok: true, entries: effectiveEntries[name], unknown: [] };
     }
     const entries = raw.split(",").map((s) => s.trim()).filter(Boolean);
     const unknown = entries.filter((e) => !KNOWN_CHAIN_KINDS.has(e));
@@ -112,7 +125,7 @@ export function formatDoctorReport(report: DoctorReport): string {
   }
   for (const c of report.chains) {
     if (!c.set) {
-      lines.push(`chain ${c.name}: not set (defaults apply)`);
+      lines.push(`chain ${c.name}: not set (effective: ${c.entries.join(", ")})`);
     } else if (c.ok) {
       lines.push(`chain ${c.name}: ok [${c.entries.join(", ")}]`);
     } else {
