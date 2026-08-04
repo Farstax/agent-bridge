@@ -43,6 +43,7 @@ import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./f
 import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
+import { discordLaneKey } from "./discordLaneKey.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -411,8 +412,9 @@ async function handleInteraction(d: any): Promise<void> {
     if (customId.startsWith("queue_mode:")) {
       const value = customId.slice("queue_mode:".length);
       if (!["augment", "interrupt", "queue", "reset"].includes(value)) return;
-      db.setSetting(busyMessageModeSettingKey("discord:interactive", channelId), value === "reset" ? null : value);
-      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", channelId, busyMessageMode);
+      const laneKey = discordLaneKey(channelId);
+      db.setSetting(busyMessageModeSettingKey("discord:interactive", laneKey), value === "reset" ? null : value);
+      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", laneKey, busyMessageMode);
       await client.answerCallbackQuery({ interaction_id: d.id, interaction_token: d.token, type: 7,
         data: { content: queueModeText(effective), components: buildQueueModeComponents(effective) } });
       return;
@@ -445,7 +447,7 @@ async function handleInteraction(d: any): Promise<void> {
     const channelId = String(d.channel_id ?? "");
 
     if (commandName === "queue_mode") {
-      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", channelId, busyMessageMode);
+      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", discordLaneKey(channelId), busyMessageMode);
       await client.answerCallbackQuery({ interaction_id: d.id, interaction_token: d.token, type: 4,
         data: { content: queueModeText(effective), components: buildQueueModeComponents(effective) } });
       return;
@@ -530,6 +532,5 @@ function rememberSnowflakeAlias(snowflake: string): number {
 }
 
 function numericId(snowflake: string): number {
-  const n = BigInt(snowflake || "0");
-  return Number(n % BigInt(Number.MAX_SAFE_INTEGER));
+  return Number(discordLaneKey(snowflake));
 }
