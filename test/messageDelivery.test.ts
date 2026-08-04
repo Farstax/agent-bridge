@@ -537,6 +537,28 @@ describe("isAborted suppression", () => {
 });
 
 describe("typingInterval cleanup on isAborted early return", () => {
+  it("does not refresh typing after the abort predicate flips while execution is pending", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = createMockClient();
+      let abort = false;
+      let finish!: (value: CliResult) => void;
+      const execution = new Promise<CliResult>((resolve) => { finish = resolve; });
+      const pending = sendMessageWithProgress({ client, kind: "codex", chatId: 123, execution, isAborted: () => abort });
+      await vi.advanceTimersByTimeAsync(0);
+      abort = true;
+      const callsBeforeRefresh = (client.sendChatAction as any).mock.calls.length;
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((client.sendChatAction as any).mock.calls.length).toBe(callsBeforeRefresh);
+
+      finish({ text: "cancelled", sessionId: null });
+      await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears typingInterval when isAborted() returns true, preventing further sendChatAction calls", async () => {
     vi.useFakeTimers();
     try {

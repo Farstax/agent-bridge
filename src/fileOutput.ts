@@ -37,12 +37,14 @@ export async function uploadOutputFiles(
   chatId: number,
   client: Pick<MessagingPlatform, "sendPhoto" | "sendDocument">,
   options?: FileSendOptions,
+  canPublish: () => boolean = () => true,
 ): Promise<void> {
   const files = await collectOutputFiles(outDir);
   if (files.length > 0) {
     console.log(`[fileOutput] uploading ${files.length} file(s) for chatId=${chatId}: ${files.map((f) => basename(f)).join(", ")}`);
   }
   for (const filePath of files) {
+    if (!canPublish()) break;
     const ext = extname(filePath).toLowerCase();
     try {
       if (IMAGE_EXTENSIONS.has(ext)) {

@@ -205,7 +205,7 @@ describe("execution lane correctness", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(db.acquireLock("telegram:interactive", "100:7")).toBeNull();
     await stopping; await active;
-    expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
+    await waitForCondition(() => db.acquireLock("telegram:interactive", "100:7") !== null, 8_000);
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
   }, 8_000);
 
@@ -722,7 +722,7 @@ describe("execution lane correctness", () => {
   it.each([
     { mode: "synchronous", asyncEnabled: false },
     { mode: "asynchronous", asyncEnabled: true },
-  ])("linearizes /stop behind a claimed $mode final-delivery phase", async ({ mode, asyncEnabled }) => {
+  ])("fences /stop before a claimed $mode final-delivery phase settles", async ({ mode, asyncEnabled }) => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: `delivery-phase-${mode}` });
     let releaseDelivery!: () => void;
     let deliveryEntered!: () => void;
@@ -745,17 +745,40 @@ describe("execution lane correctness", () => {
 
     const execution = engine.handleMessages([message(`delivery ${mode}`, 7)]);
     await entered;
-    let stopFinished = false;
-    const stopping = engine.handleUpdate({ update_id: 701, message: message("/stop", 7) }).then(() => { stopFinished = true; });
-    await waitForCondition(() => (engine as any).cancellationOperations.has(JSON.stringify(["telegram:interactive", "100:7"])));
-    expect(stopFinished).toBe(false);
-    expect((engine as any).abortedChats.has(JSON.stringify(["telegram:interactive", "100:7"]))).toBe(false);
+    const stopping = engine.handleUpdate({ update_id: 701, message: message("/stop", 7) });
+    const executionLane = JSON.stringify(["telegram:interactive", "100:7"]);
+    expect((engine as any).abortedChats.has(executionLane)).toBe(true);
+    await stopping;
+    expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "🛑 Execution aborted by user.")).toBe(true);
 
     releaseDelivery();
-    await Promise.all([execution, stopping]);
+    await execution;
+    await waitForCondition(() => !(engine as any).cancellationOperations.has(executionLane));
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(db.getSession("100:7", "claude")).toBe("delivered-session");
+    expect(db.getSession("100:7", "claude")).toBe("previous-session");
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === `delivery winner ${mode}`)).toBe(true);
+    db.close();
+  });
+
+  it.each(["augment", "interrupt"] as const)("installs the stop fence when upgrading a $mode cancellation behind final delivery", async (mode) => {
+    const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: `upgrade-${mode}` });
+    const engine = new BridgeEngine(options("claude"), db, client());
+    const chatKey = "100:7";
+    const executionLane = JSON.stringify(["telegram:interactive", chatKey]);
+    let release!: () => void;
+    const delivery = new Promise<void>((resolve) => { release = resolve; });
+    (engine as any).finalDeliveryPhases.set(executionLane, { promise: delivery, release });
+    db.enqueueMsg("telegram:interactive", chatKey, { prompt: "discard me", chatId: 100, threadId: 7, chatType: "private" });
+
+    const firstCancellation = (engine as any)._cancelLane(chatKey, mode);
+    const stopCancellation = (engine as any)._cancelLane(chatKey, "stop");
+
+    expect((engine as any).abortedChats.has(executionLane)).toBe(true);
+    expect(db.pendingMsgCount("telegram:interactive", chatKey)).toBe(0);
+
+    release();
+    await Promise.all([firstCancellation, stopCancellation]);
     db.close();
   });
 
