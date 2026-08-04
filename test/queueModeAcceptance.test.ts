@@ -11,8 +11,8 @@ function client() {
   return { sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }), sendChatAction: vi.fn(), sendPhoto: vi.fn(), sendDocument: vi.fn(), getUpdates: vi.fn(), setMyCommands: vi.fn(), answerCallbackQuery: vi.fn(), editMessageText: vi.fn() } as any;
 }
 
-function engine(db: any, c: any, runCli = vi.fn()) {
-  return new BridgeEngine({ surfaceIdentity: "telegram:interactive", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode: "augment", asyncEnabled: false, pollIntervalMs: 1, fullConfig: { bots: { codex: { command: "codex", modelPreference: [] } } } as any }, db, c, { runCli });
+function engine(db: any, c: any, runCli = vi.fn(), busyMessageMode: "augment" | "interrupt" | "queue" = "augment") {
+  return new BridgeEngine({ surfaceIdentity: "telegram:interactive", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode, asyncEnabled: false, pollIntervalMs: 1, fullConfig: { bots: { codex: { command: "codex", modelPreference: [] } } } as any }, db, c, { runCli });
 }
 
 function callback(data: string, from = 42, threadId = 7) {
@@ -91,7 +91,9 @@ describe("queue mode callback acceptance", () => {
     const successor = vi.fn().mockResolvedValue("combined complete");
     const run = vi.fn().mockImplementationOnce((_command, _args, cwd, options) => runCli(process.execPath,
       ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", ready], cwd, options)).mockImplementationOnce(successor);
-    const subject = engine(db, c, run);
+    const subject = engine(db, c, run, "queue");
+    await subject.handleCallback(callback("queue_mode:queue"));
+    expect(db.getSetting(busyMessageModeSettingKey("telegram:interactive", "100:7"))).toBe("queue");
     const first = subject.handleMessages([{ message_id: 1, chat: { id: 100, type: "private" }, from: { id: 42 }, message_thread_id: 7, text: "first" } as any]);
     await waitForFile(ready);
     await subject.handleCallback(callback("queue_mode:augment"));
