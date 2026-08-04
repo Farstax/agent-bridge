@@ -233,6 +233,15 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 
 Effort levels are standardized as `low`, `medium`, `high`, `xhigh`, and `max`;
 default is `medium`. Manual `/effort` overrides are persisted in SQLite. Worker
+
+### Busy-message mode
+
+Use `/queue_mode` from an interactive bot menu to see and change how ordinary
+messages arriving during active work are handled. The menu offers `augment`,
+`interrupt`, `queue`, and **Use configured default**. A selection is persisted
+per conversation lane (surface and chat/topic), survives service restarts, and
+only affects messages accepted after the selection. Clearing it returns that
+lane to the installation-wide `BRIDGE_BUSY_MESSAGE_MODE` value.
 jobs select effort by task: scribe/read-only jobs use `medium`; code-writing
 jobs (`tdd_implementation`, `orchestrated_task`) use `high`. Agy effort is an
 explicit no-op because the current CLI exposes low/high variants through model

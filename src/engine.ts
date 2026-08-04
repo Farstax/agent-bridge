@@ -39,6 +39,7 @@ import { createPollErrorState, planPollError, notePollSuccess } from "./polling.
 import { sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
 import { handleCommand, isBridgeCommand, buildTelegramCommands, isAntigravityNarrationVisible, compactInProgressSettingKey } from "./commands.js";
+import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel } from "./effort.js";
 import { getCodexUsageText } from "./codexUsage.js";
 import { chunkCompactTurns, type CompactProfile } from "./compactSummary.js";
@@ -476,6 +477,7 @@ export class BridgeEngine {
           chatId: chatKey,
           config: this._effectiveConfig(),
           surfaceIdentity: this.surfaceIdentity,
+          defaultBusyMessageMode: this.opts.busyMessageMode ?? "augment",
         });
         if (commandResponse) {
           if (commandResponse.kind === "message") {
@@ -820,7 +822,7 @@ export class BridgeEngine {
         // Commands and internal call sites keep durable FIFO regardless of
         // BRIDGE_BUSY_MESSAGE_MODE (Issue #217); only the ordinary-prompt
         // path opts in via honorBusyMode.
-        const busyMode = honorBusyMode ? (this.opts.busyMessageMode ?? "augment") : "queue";
+        const busyMode = honorBusyMode ? this._busyMessageMode(chatKey) : "queue";
         if (busyMode === "interrupt" || busyMode === "augment") {
           // Only "interrupt" mode gets user-facing feedback here; "augment"
           // folds silently into the active task (Issue #229) and must not
@@ -2025,6 +2027,26 @@ export class BridgeEngine {
       );
       return;
     }
+    if (action === "queue_mode" && targetKind === this.kind) {
+      const value = rest.join(":").trim();
+      const chatId = callbackQuery.message?.chat?.id;
+      const messageId = callbackQuery.message?.message_id;
+      const chatType = callbackQuery.message?.chat?.type ?? "private";
+      const threadId = callbackQuery.message?.message_thread_id;
+      if (!chatId || !messageId || !["augment", "interrupt", "queue", "reset"].includes(value)) return;
+      const chatKey = topicChatKey(chatId, chatType, threadId);
+      this.db.setSetting(busyMessageModeSettingKey(this.surfaceIdentity, chatKey), value === "reset" ? null : value);
+      const effective = this._busyMessageMode(chatKey);
+      await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id, text: `Busy-message mode: ${effective}` });
+      await this.client.editMessageText({
+        chat_id: chatId,
+        message_id: messageId,
+        text: `Busy-message mode: ${effective}. This applies to new messages while this lane is busy.`,
+        reply_markup: buildBusyMessageModeKeyboard(this.kind, effective),
+      });
+      await this.sendText(chatId, { text: `✓ Busy-message mode set to ${effective}`, message_thread_id: threadId });
+      return;
+    }
     if (!["model", "effort"].includes(action) || targetKind !== this.kind) return;
 
     const value = rest.join(":").trim();
@@ -2081,6 +2103,10 @@ export class BridgeEngine {
 
   async sendText(chatId: number, body: any): Promise<number | null> {
     return sendTelegramMessage({ client: this.client, kind: this._deliveryKind(), chatId, body });
+  }
+
+  private _busyMessageMode(chatKey: string): BusyMessageMode {
+    return resolveLaneBusyMessageMode(this.db, this.surfaceIdentity, chatKey, this.opts.busyMessageMode ?? "augment");
   }
 
   private _executionKind(): BotKind {
