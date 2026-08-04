@@ -1,9 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const installer = resolve(process.cwd(), "scripts/agent-bridge-install.py");
+const skillManager = resolve(process.cwd(), "scripts/skill-manager.ts");
+const tsx = resolve(process.cwd(), "node_modules/tsx/dist/cli.mjs");
+
+function runSkillManager(home: string, ...args: string[]): string {
+  return execFileSync(process.execPath, [tsx, skillManager, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home, SHARED_MEMORY_HOME: home },
+  });
+}
 
 function probe(body: string): unknown {
   const source = `
@@ -201,6 +211,87 @@ print(json.dumps({"calls": calls}))
         "verify", skill,
       ]));
     }
+  });
+
+  it("materializes and verifies the real shared-skill contract despite a bundled UX catalogue", () => {
+    const home = mkdtempSync(join(tmpdir(), "agent-bridge-initial-skills-"));
+    try {
+      // This represents the immutable /opt/agent-bridge-ux/skills catalogue. It
+      // must not be mistaken for an installation in the runtime user's home.
+      mkdirSync(join(home, "opt/agent-bridge-ux/skills"), { recursive: true });
+      const defaults = probe(`print(json.dumps(list(module.DEFAULT_AGENT_BRIDGE_SKILLS)))`) as string[];
+
+      for (const skill of defaults) runSkillManager(home, "install", skill, "--force", "--link-mode", "symlink");
+
+      const lockfile = JSON.parse(readFileSync(join(home, ".agents/.skill-lock.json"), "utf8"));
+      for (const skill of defaults) {
+        const shared = join(home, ".agents/skills", skill);
+        expect(existsSync(join(shared, "SKILL.md"))).toBe(true);
+        expect(lockfile.skills[skill]).toMatchObject({ linkMode: "symlink" });
+        for (const native of [".codex/skills", ".gemini/antigravity/skills", ".claude/skills"]) {
+          const projection = join(home, native, skill);
+          expect(lstatSync(projection).isSymbolicLink()).toBe(true);
+          expect(resolve(dirname(projection), readlinkSync(projection))).toBe(shared);
+        }
+        expect(runSkillManager(home, "verify", skill)).toContain("Skill verification passed");
+      }
+      expect(existsSync(join(home, ".agents/skills"))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps exact-release and legacy installer default skill lists in parity", () => {
+    const defaults = probe(`print(json.dumps(list(module.DEFAULT_AGENT_BRIDGE_SKILLS)))`) as string[];
+    const legacyDefaults = readFileSync("scripts/install.sh", "utf8")
+      .match(/^DEFAULT_AGENT_BRIDGE_SKILLS="([^"]+)"$/m)?.[1]
+      .split(",");
+
+    expect(legacyDefaults).toEqual(defaults);
+  });
+
+  it("propagates a shared-skill manager failure so exact-release installation fails", () => {
+    const result = probe(`
+def fail_run(command, **kwargs):
+  raise module.subprocess.CalledProcessError(1, command)
+module.subprocess.run = fail_run
+account = type("Account", (), {"pw_name": "agentbridge", "pw_dir": "/home/agentbridge"})()
+with tempfile.TemporaryDirectory() as directory:
+  release = pathlib.Path(directory) / "release"
+  (release / "node_modules/tsx/dist").mkdir(parents=True)
+  (release / "scripts").mkdir()
+  (release / "node_modules/tsx/dist/cli.mjs").write_text("runtime")
+  (release / "scripts/skill-manager.ts").write_text("manager")
+  try:
+    module.install_shared_skills(release, pathlib.Path("/usr/bin/node"), account, {})
+  except Exception as error:
+    print(json.dumps({"error": type(error).__name__}))
+
+`) as { error: string };
+
+    expect(result.error).toBe("CalledProcessError");
+  });
+
+  it("propagates a shared-skill verification failure so exact-release installation fails", () => {
+    const result = probe(`
+def fail_verify(command, **kwargs):
+  if "verify" in command:
+    raise module.subprocess.CalledProcessError(1, command)
+module.subprocess.run = fail_verify
+account = type("Account", (), {"pw_name": "agentbridge", "pw_dir": "/home/agentbridge"})()
+with tempfile.TemporaryDirectory() as directory:
+  release = pathlib.Path(directory) / "release"
+  (release / "node_modules/tsx/dist").mkdir(parents=True)
+  (release / "scripts").mkdir()
+  (release / "node_modules/tsx/dist/cli.mjs").write_text("runtime")
+  (release / "scripts/skill-manager.ts").write_text("manager")
+  try:
+    module.install_shared_skills(release, pathlib.Path("/usr/bin/node"), account, {})
+  except Exception as error:
+    print(json.dumps({"error": type(error).__name__}))
+`) as { error: string };
+
+    expect(result.error).toBe("CalledProcessError");
   });
 
   it("renders the fixed rollout inventory with helper identities", () => {
