@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,7 +17,7 @@ function runSkillManager(home: string, ...args: string[]): string {
 
 function probe(body: string): unknown {
   const source = `
-import importlib.util, json, pathlib, sys, tempfile
+import importlib.util, json, os, pathlib, sys, tempfile
 path = pathlib.Path(${JSON.stringify(installer)})
 spec = importlib.util.spec_from_file_location("agent_bridge_install_test", path)
 module = importlib.util.module_from_spec(spec)
@@ -213,16 +213,42 @@ print(json.dumps({"calls": calls}))
     }
   });
 
-  it("materializes and verifies the real shared-skill contract despite a bundled UX catalogue", () => {
+  it("does not mistake the bundled UX catalogue for a completed exact-release skill installation", () => {
     const home = mkdtempSync(join(tmpdir(), "agent-bridge-initial-skills-"));
     try {
-      // This represents the immutable /opt/agent-bridge-ux/skills catalogue. It
-      // must not be mistaken for an installation in the runtime user's home.
-      mkdirSync(join(home, "opt/agent-bridge-ux/skills"), { recursive: true });
       const defaults = probe(`print(json.dumps(list(module.DEFAULT_AGENT_BRIDGE_SKILLS)))`) as string[];
+      expect(existsSync(join(home, ".agents/skills"))).toBe(false);
+      const result = probe(`
+runtime_home = pathlib.Path(${JSON.stringify(home)})
+node_bin = pathlib.Path(${JSON.stringify(process.execPath)})
+catalogue = pathlib.Path("/opt/agent-bridge-ux/skills")
+real_run = module.subprocess.run
+real_exists = pathlib.Path.exists
+commands = []
+def catalogue_exists(path):
+  if path == catalogue:
+    return True
+  return real_exists(path)
+def run_as_runtime_user(command, **kwargs):
+  commands.append(command)
+  node_index = command.index(str(node_bin))
+  child_env = os.environ.copy()
+  for entry in command[5:node_index]:
+    key, value = entry.split("=", 1)
+    child_env[key] = value
+  return real_run(command[node_index:], check=True, capture_output=True, text=True, env=child_env)
+pathlib.Path.exists = catalogue_exists
+module.subprocess.run = run_as_runtime_user
+account = type("Account", (), {"pw_name": "agentbridge", "pw_dir": str(runtime_home)})()
+try:
+  module.install_shared_skills(pathlib.Path.cwd(), node_bin, account, {})
+finally:
+  pathlib.Path.exists = real_exists
+  module.subprocess.run = real_run
+print(json.dumps({"commands": len(commands)}))
+`) as { commands: number };
 
-      for (const skill of defaults) runSkillManager(home, "install", skill, "--force", "--link-mode", "symlink");
-
+      expect(result.commands).toBe(defaults.length * 2);
       const lockfile = JSON.parse(readFileSync(join(home, ".agents/.skill-lock.json"), "utf8"));
       for (const skill of defaults) {
         const shared = join(home, ".agents/skills", skill);
