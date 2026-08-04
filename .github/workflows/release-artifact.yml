@@ -76,6 +76,7 @@ jobs:
           cp -a prompts/worker "$root/prompts/"
           cp -a skills/. "$root/skills/"
           cp -a tsconfig.json SOUL.md "$root/"
+          cp -a soul-templates "$root/"
           cat > "$root/qualification-evidence.json" <<EOF
           {
             "commit": "${commit}",
