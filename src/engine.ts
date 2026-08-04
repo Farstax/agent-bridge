@@ -382,7 +382,12 @@ export class BridgeEngine {
       const chatId = message.chat.id;
       const threadId = message.message_thread_id;
       const chatKey = topicChatKey(chatId, message.chat.type, threadId);
-      await this._cancelLane(chatKey, "stop");
+      // Stop admission establishes its abort fence before this handler makes
+      // any asynchronous call. Cleanup retains the execution lane until all
+      // writable work is gone, but must not delay the user-visible stop.
+      void this._cancelLane(chatKey, "stop").catch((error) =>
+        console.error(`[${this.kind}] stop cleanup failed`, error)
+      );
       await this.sendText(chatId, { text: "🛑 Execution aborted by user.", message_thread_id: threadId });
       return;
     }
@@ -1046,15 +1051,27 @@ export class BridgeEngine {
 
     const record = { mode, promise: Promise.resolve() } as LaneCancellation;
 
+    // /stop is a publication and persistence fence, not merely process
+    // cleanup. Install it synchronously so a final delivery already in
+    // flight cannot commit once its send resolves.
+    if (mode === "stop") {
+      this.resettingChats.add(executionLane);
+      this.abortedChats.add(executionLane);
+      this._discardPendingMessages(chatKey);
+    }
+    this.cancellationOperations.set(executionLane, record);
+
     const operation = (async () => {
       const finalDelivery = this.finalDeliveryPhases.get(executionLane);
       if (finalDelivery && record.mode === "augment") {
         await finalDelivery.promise;
         return;
       }
-      if (finalDelivery) await finalDelivery.promise;
-      this.resettingChats.add(executionLane);
-      this.abortedChats.add(executionLane);
+      if (finalDelivery && record.mode !== "stop") await finalDelivery.promise;
+      if (record.mode !== "stop") {
+        this.resettingChats.add(executionLane);
+        this.abortedChats.add(executionLane);
+      }
       let handle: ExecutionLaneHandle | null = null;
       try {
         if (record.mode === "stop") this._discardPendingMessages(chatKey);
@@ -1100,7 +1117,6 @@ export class BridgeEngine {
     });
 
     record.promise = operation;
-    this.cancellationOperations.set(executionLane, record);
     return record.promise;
   }
 
@@ -1285,6 +1301,7 @@ export class BridgeEngine {
   }
 
   private _runWithFence<T>(handle: ExecutionLaneHandle, operation: () => T): T {
+    this._assertLaneOwned(handle);
     try {
       return this.db.runWithLockFence(handle, operation);
     } catch (error) {
