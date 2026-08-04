@@ -14,6 +14,7 @@ import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js
 import { contextInjectionPolicy, preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
 import { parseAdvisorConfig } from "./advisorConfig.js";
 import { inspectAdvisorConfigSources } from "./advisorConfigSource.js";
+import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 
 const CONTEXT_COMPACT_NUDGE_TURNS = 100;
 
@@ -26,7 +27,7 @@ export type CommandResult =
   | { kind: "advisor"; action: "ask" | "review" | "plan" | "debug"; task: string; chatKey: string }
   | { kind: "btw"; prompt: string };
 
-const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/skills", "/usage", "/narration", "/compact", "/context", "/advisor", "/btw"]);
+const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/queue_mode", "/skills", "/usage", "/narration", "/compact", "/context", "/advisor", "/btw"]);
 
 function normalizeCommand(text: string): string {
   const [command] = String(text || "").trim().toLowerCase().split(/\s+/, 1);
@@ -101,11 +102,13 @@ export function handleCommand(
     chatId,
     config,
     surfaceIdentity = "diagnostic",
+    defaultBusyMessageMode = "augment",
   }: {
     db: BridgeDb;
     chatId: string;
     config: BridgeConfig;
     surfaceIdentity?: string;
+    defaultBusyMessageMode?: BusyMessageMode;
   }
 ): CommandResult | null {
   const text = normalizeCommand(prompt);
@@ -137,6 +140,15 @@ export function handleCommand(
       kind: "keyboard_message",
       text: buildEffortText(kind, current),
       reply_markup: buildEffortKeyboard(kind, current),
+    };
+  }
+
+  if (text === "/queue_mode") {
+    const effective = resolveLaneBusyMessageMode(db, surfaceIdentity, chatId, defaultBusyMessageMode);
+    return {
+      kind: "keyboard_message",
+      text: `Busy-message mode: ${effective}. This applies to new messages while this lane is busy.`,
+      reply_markup: buildBusyMessageModeKeyboard(effective),
     };
   }
 
@@ -273,6 +285,7 @@ export function buildTelegramCommands(kind: "codex" | "antigravity" | "claude" |
   const commands = [
     { command: "models",   description: "Switch model" },
     { command: "effort",   description: "Switch reasoning effort" },
+    { command: "queue_mode", description: "Set busy-message handling" },
     { command: "reset",    description: "Clear current session" },
     { command: "stop",     description: "Abort running execution" },
     { command: "compact",  description: "Compact conversation context" },

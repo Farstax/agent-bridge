@@ -25,6 +25,7 @@ import {
 import { openDb, BridgeDb } from "../src/db.js";
 import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
 import type { TelegramMessage, BridgeConfig } from "../src/types.js";
+import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
 
 describe("agent bridge MVP", () => {
   it("authorizes only the configured telegram user id", () => {
@@ -56,6 +57,7 @@ describe("agent bridge MVP", () => {
     expect(isBridgeCommand("/skills")).toBe(true);
     expect(isBridgeCommand("/memory")).toBe(false);
     expect(isBridgeCommand("/usage")).toBe(true);
+    expect(isBridgeCommand("/queue_mode")).toBe(true);
     expect(isBridgeCommand("hello")).toBe(false);
   });
 
@@ -820,6 +822,28 @@ describe("/effort command returns keyboard_message", () => {
   });
 });
 
+describe("/queue_mode command", () => {
+  const config = {
+    allowedUserIds: new Set(["1"]), serviceEnvFile: null, serviceKind: "codex", pollIntervalMs: 1000,
+    executionMode: "safe", asyncEnabled: true, dbPath: ":memory:",
+    bots: { codex: { token: "t", command: "codex", modelPreference: [] }, antigravity: { token: "t", command: "agy", modelPreference: [] }, claude: { token: "t", command: "claude", modelPreference: [] } },
+  } as any;
+
+  it("shows the lane's effective default and offers all modes plus reset", () => {
+    const db = openDb(":memory:");
+    const result = handleCommand("codex", "/queue_mode", {
+      db, chatId: "100:7", config, surfaceIdentity: "telegram:interactive", defaultBusyMessageMode: "queue",
+    }) as any;
+    expect(result.kind).toBe("keyboard_message");
+    expect(result.text).toContain("queue");
+    expect(result.reply_markup.inline_keyboard.flat().map((button: any) => button.callback_data)).toEqual(expect.arrayContaining([
+      "queue_mode:augment", "queue_mode:interrupt", "queue_mode:queue", "queue_mode:reset",
+    ]));
+    expect(db.getSetting(busyMessageModeSettingKey("telegram:interactive", "100:7"))).toBeNull();
+    db.close();
+  });
+});
+
 describe("handleMessages sends reply_markup for /models", () => {
   it("handleMessages passes reply_markup to sendText for keyboard_message commands", () => {
     const src = readFileSync("src/engine.ts", "utf-8");
@@ -829,6 +853,15 @@ describe("handleMessages sends reply_markup for /models", () => {
 });
 
 describe("Telegram command menu", () => {
+  it("adds /queue_mode to every agent menu", () => {
+    for (const kind of ["codex", "antigravity", "claude"] as const) {
+      expect(buildTelegramCommands(kind)).toContainEqual({
+        command: "queue_mode",
+        description: "Set busy-message handling",
+      });
+    }
+  });
+
   it("adds /effort to every agent menu", () => {
     for (const kind of ["codex", "antigravity", "claude"] as const) {
       expect(buildTelegramCommands(kind)).toContainEqual({
