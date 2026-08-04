@@ -25,6 +25,7 @@ import {
 import { openDb, BridgeDb } from "../src/db.js";
 import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
 import type { TelegramMessage, BridgeConfig } from "../src/types.js";
+import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
 
 describe("agent bridge MVP", () => {
   it("authorizes only the configured telegram user id", () => {
@@ -56,6 +57,7 @@ describe("agent bridge MVP", () => {
     expect(isBridgeCommand("/skills")).toBe(true);
     expect(isBridgeCommand("/memory")).toBe(false);
     expect(isBridgeCommand("/usage")).toBe(true);
+    expect(isBridgeCommand("/queue_mode")).toBe(true);
     expect(isBridgeCommand("hello")).toBe(false);
   });
 
@@ -829,6 +831,15 @@ describe("handleMessages sends reply_markup for /models", () => {
 });
 
 describe("Telegram command menu", () => {
+  it("adds /queue_mode to every agent menu", () => {
+    for (const kind of ["codex", "antigravity", "claude"] as const) {
+      expect(buildTelegramCommands(kind)).toContainEqual({
+        command: "queue_mode",
+        description: "Set busy-message handling",
+      });
+    }
+  });
+
   it("adds /effort to every agent menu", () => {
     for (const kind of ["codex", "antigravity", "claude"] as const) {
       expect(buildTelegramCommands(kind)).toContainEqual({
