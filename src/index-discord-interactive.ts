@@ -277,6 +277,7 @@ function buildDiscordInteractiveCommands() {
     { name: "reset",  description: "Reset the current CLI session",   type: 1 },
     { name: "models", description: "Show available models",            type: 1 },
     { name: "stop",   description: "Abort the running CLI execution",  type: 1 },
+    { name: "queue_mode", description: "Set busy-message handling", type: 1 },
   ];
 }
 

@@ -2027,8 +2027,8 @@ export class BridgeEngine {
       );
       return;
     }
-    if (action === "queue_mode" && targetKind === this.kind) {
-      const value = rest.join(":").trim();
+    if (action === "queue_mode") {
+      const value = targetKind.trim();
       const chatId = callbackQuery.message?.chat?.id;
       const messageId = callbackQuery.message?.message_id;
       const chatType = callbackQuery.message?.chat?.type ?? "private";
@@ -2042,7 +2042,7 @@ export class BridgeEngine {
         chat_id: chatId,
         message_id: messageId,
         text: `Busy-message mode: ${effective}. This applies to new messages while this lane is busy.`,
-        reply_markup: buildBusyMessageModeKeyboard(this.kind, effective),
+        reply_markup: buildBusyMessageModeKeyboard(effective),
       });
       await this.sendText(chatId, { text: `✓ Busy-message mode set to ${effective}`, message_thread_id: threadId });
       return;

@@ -233,6 +233,10 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 
 Effort levels are standardized as `low`, `medium`, `high`, `xhigh`, and `max`;
 default is `medium`. Manual `/effort` overrides are persisted in SQLite. Worker
+jobs select effort by task: scribe/read-only jobs use `medium`; code-writing
+jobs (`tdd_implementation`, `orchestrated_task`) use `high`. Agy effort is an
+explicit no-op because the current CLI exposes low/high variants through model
+labels, not a standalone effort parameter.
 
 ### Busy-message mode
 
@@ -242,10 +246,6 @@ messages arriving during active work are handled. The menu offers `augment`,
 per conversation lane (surface and chat/topic), survives service restarts, and
 only affects messages accepted after the selection. Clearing it returns that
 lane to the installation-wide `BRIDGE_BUSY_MESSAGE_MODE` value.
-jobs select effort by task: scribe/read-only jobs use `medium`; code-writing
-jobs (`tdd_implementation`, `orchestrated_task`) use `high`. Agy effort is an
-explicit no-op because the current CLI exposes low/high variants through model
-labels, not a standalone effort parameter.
 
 `GEMINI_*` env names remain as deprecated compatibility aliases for
 Antigravity/Agy deployments (`TELEGRAM_BOT_TOKEN_GEMINI`, `GEMINI_COMMAND`,

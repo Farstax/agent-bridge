@@ -837,7 +837,7 @@ describe("/queue_mode command", () => {
     expect(result.kind).toBe("keyboard_message");
     expect(result.text).toContain("queue");
     expect(result.reply_markup.inline_keyboard.flat().map((button: any) => button.callback_data)).toEqual(expect.arrayContaining([
-      "queue_mode:codex:augment", "queue_mode:codex:interrupt", "queue_mode:codex:queue", "queue_mode:codex:reset",
+      "queue_mode:augment", "queue_mode:interrupt", "queue_mode:queue", "queue_mode:reset",
     ]));
     expect(db.getSetting(busyMessageModeSettingKey("telegram:interactive", "100:7"))).toBeNull();
     db.close();

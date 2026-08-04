@@ -148,7 +148,7 @@ export function handleCommand(
     return {
       kind: "keyboard_message",
       text: `Busy-message mode: ${effective}. This applies to new messages while this lane is busy.`,
-      reply_markup: buildBusyMessageModeKeyboard(kind, effective),
+      reply_markup: buildBusyMessageModeKeyboard(effective),
     };
   }
 
