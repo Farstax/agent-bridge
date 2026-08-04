@@ -161,6 +161,48 @@ with tempfile.TemporaryDirectory() as directory:
     expect(activate).toBeGreaterThan(bootstrap);
   });
 
+  it("installs and verifies default shared skills from the immutable release in the runtime user's real home", () => {
+    const result = probe(`
+calls = []
+def fake_run(command, **kwargs):
+  calls.append(command)
+  return None
+module.subprocess.run = fake_run
+account = type("Account", (), {"pw_name": "agentbridge", "pw_dir": "/home/agentbridge"})()
+with tempfile.TemporaryDirectory() as directory:
+  release = pathlib.Path(directory) / "release"
+  (release / "node_modules/tsx/dist").mkdir(parents=True)
+  (release / "scripts").mkdir()
+  (release / "node_modules/tsx/dist/cli.mjs").write_text("runtime")
+  (release / "scripts/skill-manager.ts").write_text("manager")
+  module.install_shared_skills(release, pathlib.Path("/usr/bin/node"), account, {})
+print(json.dumps({"calls": calls}))
+`) as { calls: string[][] };
+
+    const defaults = [
+      "red-green-refactor-tdd",
+      "requirements-to-acceptance",
+      "risk-based-test-strategy",
+      "release-readiness-review",
+      "git-sandbox",
+    ];
+    expect(result.calls).toHaveLength(defaults.length * 2);
+    for (const [index, skill] of defaults.entries()) {
+      const install = result.calls[index];
+      const verify = result.calls[index + defaults.length];
+      expect(install).toEqual(expect.arrayContaining([
+        "/usr/sbin/runuser", "--user", "agentbridge", "--", "env",
+        "HOME=/home/agentbridge", "SHARED_MEMORY_HOME=/home/agentbridge",
+        "/usr/bin/node", expect.stringMatching(/\/release\/node_modules\/tsx\/dist\/cli\.mjs$/),
+        expect.stringMatching(/\/release\/scripts\/skill-manager\.ts$/),
+        "install", skill, "--force", "--link-mode", "symlink",
+      ]));
+      expect(verify).toEqual(expect.arrayContaining([
+        "verify", skill,
+      ]));
+    }
+  });
+
   it("renders the fixed rollout inventory with helper identities", () => {
     const result = probe(`
 with tempfile.TemporaryDirectory() as directory:
