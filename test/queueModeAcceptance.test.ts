@@ -39,4 +39,26 @@ describe("queue mode callback acceptance", () => {
     expect(db.getSetting(busyMessageModeSettingKey("telegram:interactive", "100:7"))).toBeNull();
     db.close();
   });
+
+  it("keeps an active run untouched and queues the next ordinary message after switching to queue", async () => {
+    const db = openDb(":memory:"); const c = client();
+    let release!: (value: string) => void;
+    const runCli = vi.fn()
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { release = resolve; }))
+      .mockResolvedValue("second complete");
+    const subject = engine(db, c, runCli);
+    const first = subject.handleMessages([{ message_id: 1, chat: { id: 100, type: "private" }, from: { id: 42 }, message_thread_id: 7, text: "first" } as any]);
+    await vi.waitFor(() => expect(runCli).toHaveBeenCalledOnce());
+
+    await subject.handleCallback(callback("queue_mode:queue"));
+    await subject.handleMessages([{ message_id: 2, chat: { id: 100, type: "private" }, from: { id: 42 }, message_thread_id: 7, text: "second" } as any]);
+
+    expect(runCli).toHaveBeenCalledOnce();
+    // The first accepted turn remains claimed; the new turn is appended rather
+    // than being merged, cancelled, or reclassified.
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(2);
+    release("first complete");
+    await first;
+    db.close();
+  });
 });
