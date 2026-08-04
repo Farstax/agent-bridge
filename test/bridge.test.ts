@@ -822,6 +822,28 @@ describe("/effort command returns keyboard_message", () => {
   });
 });
 
+describe("/queue_mode command", () => {
+  const config = {
+    allowedUserIds: new Set(["1"]), serviceEnvFile: null, serviceKind: "codex", pollIntervalMs: 1000,
+    executionMode: "safe", asyncEnabled: true, dbPath: ":memory:",
+    bots: { codex: { token: "t", command: "codex", modelPreference: [] }, antigravity: { token: "t", command: "agy", modelPreference: [] }, claude: { token: "t", command: "claude", modelPreference: [] } },
+  } as any;
+
+  it("shows the lane's effective default and offers all modes plus reset", () => {
+    const db = openDb(":memory:");
+    const result = handleCommand("codex", "/queue_mode", {
+      db, chatId: "100:7", config, surfaceIdentity: "telegram:interactive", defaultBusyMessageMode: "queue",
+    }) as any;
+    expect(result.kind).toBe("keyboard_message");
+    expect(result.text).toContain("queue");
+    expect(result.reply_markup.inline_keyboard.flat().map((button: any) => button.callback_data)).toEqual(expect.arrayContaining([
+      "queue_mode:codex:augment", "queue_mode:codex:interrupt", "queue_mode:codex:queue", "queue_mode:codex:reset",
+    ]));
+    expect(db.getSetting(busyMessageModeSettingKey("telegram:interactive", "100:7"))).toBeNull();
+    db.close();
+  });
+});
+
 describe("handleMessages sends reply_markup for /models", () => {
   it("handleMessages passes reply_markup to sendText for keyboard_message commands", () => {
     const src = readFileSync("src/engine.ts", "utf-8");
