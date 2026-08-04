@@ -42,6 +42,7 @@ import { runCli } from "./cli.js";
 import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
+import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -296,6 +297,21 @@ function buildCliComponents(activeCli: CliKind) {
   }];
 }
 
+function queueModeText(mode: BusyMessageMode): string {
+  return `Busy-message mode: ${mode}. This applies to new messages while this lane is busy.`;
+}
+
+function buildQueueModeComponents(active: BusyMessageMode) {
+  const modes: BusyMessageMode[] = ["augment", "interrupt", "queue"];
+  return [{
+    type: 1,
+    components: modes.map((mode) => ({ type: 2, style: 2, label: mode === active ? `✓ ${mode}` : mode, custom_id: `queue_mode:${mode}` })),
+  }, {
+    type: 1,
+    components: [{ type: 2, style: 2, label: "Use configured default", custom_id: "queue_mode:reset" }],
+  }];
+}
+
 // ── Update router ─────────────────────────────────────────────────────────────
 
 async function handleDiscordUpdate(update: DiscordUpdate): Promise<void> {
@@ -389,13 +405,20 @@ async function handleInteraction(d: any): Promise<void> {
   // ── Button click (CLI switch) ─────────────────────────────────────────────
   if (interactionType === 3) {
     const customId = String(d.data?.custom_id ?? "");
-    const newCli = handleCliSwitchCallback(customId);
-    if (!newCli) return;
-
     const userId = String(d.member?.user?.id ?? d.user?.id ?? "");
     if (!allowedUserIds.has(userId)) return;
-
     const channelId = String(d.channel_id ?? "");
+    if (customId.startsWith("queue_mode:")) {
+      const value = customId.slice("queue_mode:".length);
+      if (!["augment", "interrupt", "queue", "reset"].includes(value)) return;
+      db.setSetting(busyMessageModeSettingKey("discord:interactive", channelId), value === "reset" ? null : value);
+      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", channelId, busyMessageMode);
+      await client.answerCallbackQuery({ interaction_id: d.id, interaction_token: d.token, type: 7,
+        data: { content: queueModeText(effective), components: buildQueueModeComponents(effective) } });
+      return;
+    }
+    const newCli = handleCliSwitchCallback(customId);
+    if (!newCli) return;
     setUserCliPreference(db, channelId, newCli);
     fallbackChain.setActiveCli(channelId, newCli);
     applyManualCliSwitchHandoff(db, channelId, newCli);
@@ -420,6 +443,13 @@ async function handleInteraction(d: any): Promise<void> {
     if (!allowedUserIds.has(userId)) return;
 
     const channelId = String(d.channel_id ?? "");
+
+    if (commandName === "queue_mode") {
+      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", channelId, busyMessageMode);
+      await client.answerCallbackQuery({ interaction_id: d.id, interaction_token: d.token, type: 4,
+        data: { content: queueModeText(effective), components: buildQueueModeComponents(effective) } });
+      return;
+    }
 
     if (commandName === "cli") {
       const toOption = d.data?.options?.find((o: any) => o.name === "to")?.value as string | undefined;
