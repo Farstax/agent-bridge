@@ -205,6 +205,7 @@ export async function sendMessageWithProgress({
   const { text: _ignored, ...rest } = body;
 
   const sendTyping = async () => {
+    if (isAborted?.()) return;
     try {
       await client.sendChatAction({ chat_id: chatId, ...rest, action: "typing" });
     } catch {

@@ -223,13 +223,13 @@ function promptForMemory(prompt: string): string {
     : prompt;
 }
 
-function createTypingTracker(client: MessagingPlatform, chatId: number, kind: string, body: any = {}) {
+function createTypingTracker(client: MessagingPlatform, chatId: number, kind: string, body: any = {}, isAborted: () => boolean = () => false) {
   let timer: NodeJS.Timeout | null = null;
   let active = false;
   const { message_thread_id: threadId } = body;
 
   const sendTyping = async () => {
-    if (!active) return;
+    if (!active || isAborted()) return;
     try {
       await client.sendChatAction({ chat_id: chatId, message_thread_id: threadId, action: "typing" });
     } catch (error: any) {
@@ -1044,7 +1044,7 @@ export class BridgeEngine {
     if (existing) {
       if (mode === "stop" && existing.mode !== "stop") {
         existing.mode = "stop";
-        this._discardPendingMessages(chatKey);
+        this._installStopFence(chatKey, executionLane);
       }
       return existing.promise;
     }
@@ -1054,18 +1054,14 @@ export class BridgeEngine {
     // /stop is a publication and persistence fence, not merely process
     // cleanup. Install it synchronously so a final delivery already in
     // flight cannot commit once its send resolves.
-    if (mode === "stop") {
-      this.resettingChats.add(executionLane);
-      this.abortedChats.add(executionLane);
-      this._discardPendingMessages(chatKey);
-    }
+    if (mode === "stop") this._installStopFence(chatKey, executionLane);
     this.cancellationOperations.set(executionLane, record);
 
     const operation = (async () => {
       const finalDelivery = this.finalDeliveryPhases.get(executionLane);
       if (finalDelivery && record.mode === "augment") {
         await finalDelivery.promise;
-        return;
+        if (record.mode === "augment") return;
       }
       if (finalDelivery && record.mode !== "stop") await finalDelivery.promise;
       if (record.mode !== "stop") {
@@ -1118,6 +1114,16 @@ export class BridgeEngine {
 
     record.promise = operation;
     return record.promise;
+  }
+
+  private _installStopFence(chatKey: string, executionLane: string): void {
+    this.resettingChats.add(executionLane);
+    this.abortedChats.add(executionLane);
+    this._discardPendingMessages(chatKey);
+  }
+
+  private _canPublish(handle: ExecutionLaneHandle): boolean {
+    return !this.abortedChats.has(this._executionLane(handle.chatKey)) && this.db.ownsLock(handle);
   }
 
   private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask): Promise<void> {
@@ -1562,9 +1568,11 @@ export class BridgeEngine {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
       }
       this._renewLaneOrThrow(laneHandle);
-      await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions).catch((err) =>
-        console.error(`[${this.kind}] output file upload failed`, err)
-      );
+      if (this._canPublish(laneHandle)) {
+        await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch((err) =>
+          console.error(`[${this.kind}] output file upload failed`, err)
+        );
+      }
       // Emit a richer run.completed with the real sessionId for downstream
       // collectors (e.g. sendMessageWithProgress's onEvent branch). The
       // runCliAsync already emitted a run.completed with sessionId: null;
@@ -1587,7 +1595,7 @@ export class BridgeEngine {
     } catch (error) {
       if (logFile) { try { rmSync(logFile); } catch {} }
       if (error instanceof LostExecutionLeaseError) throw error;
-      await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions).catch(() => {});
+      if (this._canPublish(laneHandle)) await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
@@ -1655,7 +1663,7 @@ export class BridgeEngine {
       outputDir: outDir,
     });
     const isClaudeStreamJson = executionKind === "claude" && !!invocation.stdin;
-    const typingTracker = createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId });
+    const typingTracker = createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId }, () => !this._canPublish(laneHandle));
 
     try {
       await typingTracker.start();
@@ -1691,9 +1699,11 @@ export class BridgeEngine {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
       }
       this._renewLaneOrThrow(laneHandle);
-      await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions).catch((err) =>
-        console.error(`[${this.kind}] output file upload failed`, err)
-      );
+      if (this._canPublish(laneHandle)) {
+        await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch((err) =>
+          console.error(`[${this.kind}] output file upload failed`, err)
+        );
+      }
       if (collect && runId && eventContext) {
         collect({
           type: "run.completed",
@@ -1712,7 +1722,7 @@ export class BridgeEngine {
     } catch (error) {
       if (logFile) { try { rmSync(logFile); } catch {} }
       if (error instanceof LostExecutionLeaseError) throw error;
-      await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions).catch(() => {});
+      if (this._canPublish(laneHandle)) await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
