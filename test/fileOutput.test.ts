@@ -151,6 +151,20 @@ describe("uploadOutputFiles", () => {
     expect(await dirExists(dir)).toBe(false);
   });
 
+  it("does not start another upload once publication is fenced", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bridge-upload-fenced-"));
+    await writeFile(join(dir, "a.png"), "x");
+    await writeFile(join(dir, "b.png"), "y");
+    let canPublish = true;
+    const sendPhoto = vi.fn().mockImplementation(async () => { canPublish = false; });
+    const client = { sendPhoto, sendDocument: vi.fn() } as any;
+
+    await uploadOutputFiles(dir, 1, client, undefined, () => canPublish);
+
+    expect(sendPhoto).toHaveBeenCalledOnce();
+    expect(await dirExists(dir)).toBe(false);
+  });
+
   it("calls cleanOutputDir after all uploads even on empty dir", async () => {
     const dir = await prepareOutputDir(77777, "claude");
     const client = { sendPhoto: vi.fn(), sendDocument: vi.fn() } as any;

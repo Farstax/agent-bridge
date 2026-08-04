@@ -761,6 +761,27 @@ describe("execution lane correctness", () => {
     db.close();
   });
 
+  it.each(["augment", "interrupt"] as const)("installs the stop fence when upgrading a $mode cancellation behind final delivery", async (mode) => {
+    const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: `upgrade-${mode}` });
+    const engine = new BridgeEngine(options("claude"), db, client());
+    const chatKey = "100:7";
+    const executionLane = JSON.stringify(["telegram:interactive", chatKey]);
+    let release!: () => void;
+    const delivery = new Promise<void>((resolve) => { release = resolve; });
+    (engine as any).finalDeliveryPhases.set(executionLane, { promise: delivery, release });
+    db.enqueueMsg("telegram:interactive", chatKey, { prompt: "discard me", chatId: 100, threadId: 7, chatType: "private" });
+
+    const firstCancellation = (engine as any)._cancelLane(chatKey, mode);
+    const stopCancellation = (engine as any)._cancelLane(chatKey, "stop");
+
+    expect((engine as any).abortedChats.has(executionLane)).toBe(true);
+    expect(db.pendingMsgCount("telegram:interactive", chatKey)).toBe(0);
+
+    release();
+    await Promise.all([firstCancellation, stopCancellation]);
+    db.close();
+  });
+
   it.each([
     { mode: "synchronous", asyncEnabled: false },
     { mode: "asynchronous", asyncEnabled: true },
