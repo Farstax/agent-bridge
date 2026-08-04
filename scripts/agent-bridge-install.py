@@ -32,6 +32,13 @@ SYSTEMD_DIR = Path("/etc/systemd/system")
 ROLLOUT_CONFIG = Path("/etc/agent-bridge/rollout.conf")
 CLEANUP_SERVICE = "agent-bridge-tmp-cleanup.service"
 CLEANUP_TIMER = "agent-bridge-tmp-cleanup.timer"
+DEFAULT_AGENT_BRIDGE_SKILLS = (
+    "red-green-refactor-tdd",
+    "requirements-to-acceptance",
+    "risk-based-test-strategy",
+    "release-readiness-review",
+    "git-sandbox",
+)
 
 # unit, defaults file, enabling token(s), persistent database directory
 SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
@@ -173,6 +180,42 @@ def bootstrap_databases(
             "/usr/sbin/runuser", "--user", account.pw_name, "--", str(node_bin),
             str(tsx), str(bootstrap), "bootstrap", "--db", str(database), "--role", role,
             "--confirm-new-role", str(database),
+        ], check=True, capture_output=True, text=True)
+
+
+def install_shared_skills(
+    release: Path,
+    node_bin: Path,
+    account: pwd.struct_passwd,
+    env: Mapping[str, str],
+) -> None:
+    """Install and verify bundled skills in the runtime user's shared home."""
+    configured = env.get("AGENT_BRIDGE_SKILLS", ",".join(DEFAULT_AGENT_BRIDGE_SKILLS)).strip()
+    if configured.lower() in {"none", "skip"}:
+        return
+    skills = [name.strip() for name in configured.split(",") if name.strip()]
+    if not skills:
+        fail("AGENT_BRIDGE_SKILLS must name at least one skill, none, or skip")
+    link_mode = env.get("AGENT_BRIDGE_SKILL_LINK_MODE", "symlink")
+    if link_mode not in {"symlink", "copy"}:
+        fail("AGENT_BRIDGE_SKILL_LINK_MODE must be symlink or copy")
+
+    tsx = release / "node_modules/tsx/dist/cli.mjs"
+    manager = release / "scripts/skill-manager.ts"
+    if any(path.is_symlink() or not path.is_file() for path in (tsx, manager)):
+        fail("release is missing shared skill manager runtime")
+    command_prefix = [
+        "/usr/sbin/runuser", "--user", account.pw_name, "--", "env",
+        f"HOME={account.pw_dir}", f"SHARED_MEMORY_HOME={account.pw_dir}",
+        str(node_bin), str(tsx), str(manager),
+    ]
+    for skill in skills:
+        subprocess.run([
+            *command_prefix, "install", skill, "--force", "--link-mode", link_mode,
+        ], check=True, capture_output=True, text=True)
+    for skill in skills:
+        subprocess.run([
+            *command_prefix, "verify", skill,
         ], check=True, capture_output=True, text=True)
 
 
@@ -487,6 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(stage.stage(args.release, release_root, activated_commit, archive_sha256), flush=True)
             activate = load_module("agent_bridge_release_activate", extracted / "scripts/release-activate.py")
             activate.validate_release(release_root / activated_commit, activated_commit, strict=True)
+            install_shared_skills(release_root / activated_commit, node_bin, account, os.environ)
             bootstrapped_databases = list(databases)
             bootstrap_databases(release_root / activated_commit, node_bin, account, selected, databases)
             print(activate.activate(release_root, current, activated_commit), flush=True)
