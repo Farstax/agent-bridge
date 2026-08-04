@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "defaultTemplateId": "operations-engineer",
+  "templates": [
+    {
+      "id": "operations-engineer",
+      "label": "Operations Engineer",
+      "description": "Operate, diagnose, maintain, develop, release and deploy a live software system with evidence-led, safety-conscious execution.",
+      "useCases": [
+        "Live service operations and incident response",
+        "Repository and infrastructure maintenance",
+        "Implementation, testing, release and deployment work"
+      ],
+      "file": "operations-engineer.md"
+    },
+    {
+      "id": "companion",
+      "label": "Companion",
+      "description": "A general-purpose companion for practical questions, planning, communication, research and tool-backed tasks.",
+      "useCases": [
+        "Everyday assistance and planning",
+        "General research and decision support",
+        "Mixed personal, administrative and technical tasks"
+      ],
+      "file": "companion.md"
+    },
+    {
+      "id": "minimal",
+      "label": "Minimal",
+      "description": "A provider-neutral baseline with direct answers, verification and minimal persona or workflow constraints.",
+      "useCases": [
+        "Neutral provider evaluation",
+        "Custom persona starting point",
+        "Low-steering deployments"
+      ],
+      "file": "minimal.md"
+    }
+  ]
+}
