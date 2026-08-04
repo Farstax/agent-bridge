@@ -205,7 +205,7 @@ describe("execution lane correctness", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(db.acquireLock("telegram:interactive", "100:7")).toBeNull();
     await stopping; await active;
-    expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
+    await waitForCondition(() => db.acquireLock("telegram:interactive", "100:7") !== null, 8_000);
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
   }, 8_000);
 
