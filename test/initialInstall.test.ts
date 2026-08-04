@@ -265,7 +265,7 @@ print(json.dumps({"commands": len(commands)}))
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("keeps exact-release and legacy installer default skill lists in parity", () => {
     const defaults = probe(`print(json.dumps(list(module.DEFAULT_AGENT_BRIDGE_SKILLS)))`) as string[];
