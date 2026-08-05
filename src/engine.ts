@@ -92,6 +92,7 @@ export interface BridgeEngineHooks {
 export interface PendingMessage {
   id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
   pendingIds?: number[];
+  queueRecoveryAttempt?: number;
   laneHandle?: ExecutionLaneHandle;
   laneLifecycleManaged?: boolean;
 }
@@ -99,6 +100,8 @@ export interface PendingMessage {
 export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
 
 type StagedCliResult = CliResult & { memoryCandidates: ProjectMemoryCandidate[] };
+
+const MAX_QUEUE_RECOVERY_ATTEMPTS = 3;
 
 class LostExecutionLeaseError extends Error {
   constructor() { super("execution lane ownership lost"); }
@@ -798,6 +801,7 @@ export class BridgeEngine {
     manageLifecycle = true,
     honorBusyMode = false,
     ownsActiveTask = false,
+    notifyCapacityFailure = true,
   ): Promise<ExecutionOutcome> {
     // Apply onBeforeExecute hook
     let prompt = rawPrompt;
@@ -954,11 +958,12 @@ export class BridgeEngine {
           this.db.deletePendingMsg(queued.id);
         }
       }
-      if (isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error))) && this.hooks.onCapacityExhausted) {
+      const capacityExhausted = isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)));
+      if (capacityExhausted && this.hooks.onCapacityExhausted) {
         await this.hooks.onCapacityExhausted(chatKey);
-      } else {
+      } else if (!capacityExhausted || notifyCapacityFailure) {
         let userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
-        if (isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)))) {
+        if (capacityExhausted) {
           userText += `\n\n💡 All models for ${this.kind} are currently exhausted. Please try again later.`;
         }
         await sendTelegramMessage({
@@ -1188,11 +1193,15 @@ export class BridgeEngine {
         const one = this.db.claimNextPendingMsg(handle);
         return one ? [one] : [];
       })());
-      const next = claimed.length === 0 ? null : claimed.length === 1 && !augmentation ? claimed[0] : {
+      const next = claimed.length === 0 ? null : claimed.length === 1 && !augmentation ? {
+        ...claimed[0],
+        queueRecoveryAttempt: recoveryAttempt,
+      } : {
         ...claimed[0],
         prompt: [...(augmentation ? [augmentation.prompt] : []), ...claimed.map((row) => row.prompt)].join("\n\n"),
         attachments: [...(augmentation?.attachments ?? []), ...claimed.flatMap((row) => row.attachments)],
         pendingIds: claimed.map((row) => row.id),
+        queueRecoveryAttempt: recoveryAttempt,
       };
       nextPending = undefined;
       if (!next) {
@@ -1259,7 +1268,8 @@ export class BridgeEngine {
     return this._executeAndSend(
       next.prompt, next.chatId, chatKey, next.chatType, next.threadId ?? undefined,
       next.userId ?? undefined, hookCtx, next.attachments, null, next.laneHandle,
-      false, !next.laneLifecycleManaged,
+      false, !next.laneLifecycleManaged, false, false,
+      next.queueRecoveryAttempt == null || next.queueRecoveryAttempt >= MAX_QUEUE_RECOVERY_ATTEMPTS,
     );
   }
 
