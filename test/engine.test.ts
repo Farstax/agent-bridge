@@ -1450,6 +1450,60 @@ describe("BridgeEngine", () => {
   });
 
   describe("onCapacityExhausted hook", () => {
+    it("defers the queued capacity message until the final recovery attempt", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const runCli = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "claude",
+          botConfig: { command: "claude", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          asyncEnabled: false,
+          pollIntervalMs: 1000,
+        },
+        db,
+        client,
+        { runCli },
+      );
+      const laneHandle = db.acquireLock("test", "100");
+      expect(laneHandle).not.toBeNull();
+
+      await engine.executeClaimedMessage({
+        id: 1,
+        chatKey: "100",
+        prompt: "hello",
+        chatId: 100,
+        threadId: null,
+        chatType: "private",
+        userId: 42,
+        attachments: [],
+        laneHandle,
+        laneLifecycleManaged: true,
+        queueRecoveryAttempt: 2,
+      } as any);
+
+      expect(client.sendMessage).not.toHaveBeenCalled();
+
+      await engine.executeClaimedMessage({
+        id: 1,
+        chatKey: "100",
+        prompt: "hello",
+        chatId: 100,
+        threadId: null,
+        chatType: "private",
+        userId: 42,
+        attachments: [],
+        laneHandle,
+        laneLifecycleManaged: true,
+        queueRecoveryAttempt: 3,
+      } as any);
+
+      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
     it("calls onCapacityExhausted when CLI throws a capacity error", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
 
