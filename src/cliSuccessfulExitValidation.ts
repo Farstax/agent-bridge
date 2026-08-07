@@ -7,7 +7,7 @@
  */
 
 import type { CliOptions } from "./types.js";
-import { parseResult as parseCodexResult } from "./providers/codexRuntime.js";
+import { hasUsableFinalResponse } from "./providers/codexRuntime.js";
 
 const CODEX_MISSING_CUSTOM_TOOL_OUTPUT = "Custom tool call output is missing for call id:";
 
@@ -24,6 +24,6 @@ export function validateSuccessfulCliExit(
 ): Error | null {
   if (bot !== "codex") return null;
   if (!output.stderr.includes(CODEX_MISSING_CUSTOM_TOOL_OUTPUT)) return null;
-  if (parseCodexResult(output.stdout).text.trim()) return null;
+  if (hasUsableFinalResponse(output.stdout)) return null;
   return new CodexMissingToolOutputError();
 }
