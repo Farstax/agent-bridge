@@ -110,3 +110,31 @@ export function parseResult(stdout: string): CliResult {
     sessionId,
   };
 }
+
+export function hasUsableFinalResponse(stdout: string): boolean {
+  const lines = stdout.split("\n").map((v) => v.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const e = JSON.parse(line);
+      if (
+        e.type === "item.completed" &&
+        e.item?.type === "agent_message" &&
+        typeof e.item.text === "string" &&
+        e.item.text.trim()
+      ) {
+        return true;
+      }
+      if (
+        e.type === "response.completed" &&
+        typeof e.output_text === "string" &&
+        e.output_text.trim()
+      ) {
+        return true;
+      }
+    } catch {
+      // not JSON, skip
+    }
+  }
+  return false;
+}
