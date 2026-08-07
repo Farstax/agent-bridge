@@ -51,6 +51,9 @@ export function buildInvocation({
   if (sessionId) args.push("--resume", sessionId);
   if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
   if (outputFormat === "json") args.push("--output-format", "json");
+  // Preserve the established argv contract for normal prompts, but terminate
+  // option parsing when a raw prompt itself starts with a hyphen.
+  if (finalPrompt.startsWith("-")) args.push("--");
   args.push(finalPrompt);
 
   return { command, args: appendEffortArgs(command, args, effort) };
