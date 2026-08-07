@@ -39,7 +39,7 @@ Interactive requests stream responses back to the chat. Background worker jobs r
 - **Circuit breaker** — auto-clears a corrupt or stale session after 2 consecutive timeout/signal failures
 - **Agy stall detection** — monitors Antigravity log files for planner loops (`PlannerResponse without ModifiedResponse encountered`) and aborts execution early to prevent infinite churn
 - **Session TTL** — sessions older than 7 days are automatically cleared on startup to prevent stale resume loops
-- **Orphan and restart recovery** — kills leftover CLI subprocesses from previous runs on boot, transitions interrupted SQLite runs to `failed`, and notifies active Telegram/Discord chats to resume using `provide update` or `continue`
+- **Orphan and restart recovery** — kills leftover CLI subprocesses from previous runs on boot, transitions interrupted SQLite runs to `failed`, retries pending interactive lanes blocked by a surviving lease until that lease expires, and notifies active Telegram/Discord chats to resume using `provide update` or `continue`
 - **Bridge-owned project memory** — conversation-aware memory retrieval and guarded agent writes through `AGENT_BRIDGE_CONTEXT_COMMAND`
 - **Shared skills installer** — optional SDLC skills can be installed across Codex, Antigravity, and Claude Code
 - **SOUL.md design** — proposed bridge-level persona contract for consistent voice, values, boundaries, and workflow across agents

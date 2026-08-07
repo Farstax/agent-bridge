@@ -96,6 +96,16 @@ describe("startup queue recovery", () => {
     expect(handled).toEqual([]);
     expect(current.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(2);
 
+    now = START + current.lockHeartbeatMs + 1;
+    await vi.advanceTimersByTimeAsync(current.lockHeartbeatMs + 1);
+    expect(handled).toEqual([]);
+    expect(current.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(2);
+
+    now = START + (current.lockHeartbeatMs * 2) + 1;
+    await vi.advanceTimersByTimeAsync(current.lockHeartbeatMs + 1);
+    expect(handled).toEqual([]);
+    expect(current.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(2);
+
     now = START + 90_001;
     await vi.advanceTimersByTimeAsync(current.lockHeartbeatMs + 1);
 
