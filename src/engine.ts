@@ -270,6 +270,7 @@ export class BridgeEngine {
   private readonly exec: ExecFns;
   private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly cancellationOperations = new Map<string, LaneCancellation>();
   private readonly laneDrainers = new Map<string, LaneDrainer>();
   private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
@@ -366,7 +367,11 @@ export class BridgeEngine {
   async recoverPendingQueues(): Promise<void> {
     await Promise.all(this.db.getPendingLaneKeys(this.surfaceIdentity).map(async (chatKey) => {
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
-      if (handle) await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
+      if (handle) {
+        await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
+        return;
+      }
+      this._scheduleStartupQueueRecovery(chatKey);
     }));
   }
 
@@ -1256,6 +1261,30 @@ export class BridgeEngine {
     }, Math.min(1_000, 100 * (2 ** (attempt - 1))));
     timer.unref();
     this.queueRecoveryTimers.set(chatKey, timer);
+  }
+
+  private _scheduleStartupQueueRecovery(chatKey: string): void {
+    if (this.startupQueueRecoveryTimers.has(chatKey)) return;
+    const timer = setTimeout(() => {
+      this.startupQueueRecoveryTimers.delete(chatKey);
+      if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return;
+      const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
+      if (!handle) {
+        this._scheduleStartupQueueRecovery(chatKey);
+        return;
+      }
+      void this._drainQueueAndUnlock(
+        handle,
+        undefined,
+        0,
+        false,
+        this.opts.busyMessageMode === "augment",
+      ).catch((error) => {
+        console.error(`[${this.kind}] startup queue recovery failed chatKey=${chatKey}`, error);
+      });
+    }, this.db.lockHeartbeatMs);
+    timer.unref();
+    this.startupQueueRecoveryTimers.set(chatKey, timer);
   }
 
   async executeClaimedMessage(next: PendingMessage): Promise<ExecutionOutcome> {
