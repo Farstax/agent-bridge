@@ -51,7 +51,9 @@ export function buildInvocation({
   if (sessionId) args.push("--resume", sessionId);
   if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
   if (outputFormat === "json") args.push("--output-format", "json");
-  args.push(finalPrompt);
+  // Terminate option parsing before the positional prompt so leading hyphens
+  // are always treated as prompt text rather than Claude CLI flags.
+  args.push("--", finalPrompt);
 
   return { command, args: appendEffortArgs(command, args, effort) };
 }
