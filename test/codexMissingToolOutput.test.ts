@@ -12,6 +12,10 @@ const NON_FINAL_OUTPUT = `${JSON.stringify({
   type: "thread.started",
   thread_id: "019fce12-b227-7563-b9a8-41dfc5ba1b15",
 })}\n`;
+const DELTA_ONLY_OUTPUT = `${JSON.stringify({
+  type: "response.output_text.delta",
+  delta: "partial output",
+})}\n`;
 
 type Runner = (script: string, events: BridgeEvent[], runId: string) => Promise<string>;
 
@@ -69,6 +73,18 @@ describe.each(runners)("Codex missing custom-tool output classification via $nam
       childScript(MISSING_TOOL_OUTPUT, NON_FINAL_OUTPUT),
       events,
       `codex-warning-empty-${Math.random()}`,
+    );
+
+    await expect(execution).rejects.toThrow(/custom tool call output is missing/i);
+    expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.failed"]);
+  });
+
+  it("does not treat a text delta as a completed final response", async () => {
+    const events: BridgeEvent[] = [];
+    const execution = run(
+      childScript(MISSING_TOOL_OUTPUT, DELTA_ONLY_OUTPUT),
+      events,
+      `codex-warning-delta-only-${Math.random()}`,
     );
 
     await expect(execution).rejects.toThrow(/custom tool call output is missing/i);
