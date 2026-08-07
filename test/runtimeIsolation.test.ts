@@ -95,6 +95,34 @@ describe("runtime isolation", () => {
     }
   });
 
+  it("does not adopt the cwd-global Antigravity cache session for a chat-scoped run", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agy-chat-session-fence-"));
+    const homeDir = join(root, "home");
+    const cacheDir = join(homeDir, ".gemini", "antigravity-cli", "cache");
+    const script = join(root, "agy-fixture");
+    const otherChatConversationId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      join(cacheDir, "last_conversations.json"),
+      JSON.stringify({ [root]: otherChatConversationId }),
+    );
+    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
+
+    try {
+      const stdout = await runAntigravitySerialized(script, ["--print", "hello"], root, {
+        bot: "antigravity",
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        chatId: "telegram:interactive:dm",
+      }, { homeDir, model: null, applyModel: false });
+      const result = parseCliResult({ bot: "antigravity", stdout });
+
+      expect(result).toEqual({ text: "ok", sessionId: null });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("applies the invocation model and reconciles the conversation before releasing the Antigravity lock", async () => {
     const root = await mkdtemp(join(tmpdir(), "agy-run-lock-"));
     const homeDir = join(root, "home");
