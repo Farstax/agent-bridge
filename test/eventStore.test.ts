@@ -41,6 +41,41 @@ describe("EventStore", () => {
     expect(events[0].type).toBe("run.started");
   });
 
+  it("persists a topic-qualified chat key for run.started recovery", async () => {
+    const { EventStore } = await import("../src/events/store.js");
+    const store = new EventStore(db);
+    const { type } = await import("../src/events/types.js");
+
+    store.collect(type.runStarted({
+      runId: "r-topic-start",
+      bot: "claude",
+      chatId: "-1004366290625",
+      threadId: "1458",
+      command: "claude",
+      cwd: "/",
+      model: null,
+    }));
+
+    expect(db.getRun("r-topic-start").chat_id).toBe("-1004366290625:1458");
+  });
+
+  it("persists a topic-qualified chat key when a terminal event creates the run", async () => {
+    const { EventStore } = await import("../src/events/store.js");
+    const store = new EventStore(db);
+    const { type } = await import("../src/events/types.js");
+
+    store.collect(type.runFailed({
+      runId: "r-topic-terminal",
+      bot: "claude",
+      chatId: "-1004366290625",
+      threadId: "3",
+      error: "interrupted",
+      category: "cli",
+    }));
+
+    expect(db.getRun("r-topic-terminal").chat_id).toBe("-1004366290625:3");
+  });
+
   it("collect(run.failed) persists the run and failed event, updates status", async () => {
     const { EventStore } = await import("../src/events/store.js");
     const store = new EventStore(db);
