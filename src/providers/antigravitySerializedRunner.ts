@@ -15,7 +15,9 @@ import type { CliOptions } from "../types.js";
 import { isAbortRequested, runSupervisedProcess } from "../cliSupervisor.js";
 import { type as evtType, type BridgeEvent } from "../events/types.js";
 import {
+  extractAntigravityConversationId,
   isPreExecutionDnsFailure,
+  readLatestAntigravityConversationFromLogs,
   resolveAntigravityConversationId,
   toAntigravityModelLabel,
   withAntigravityStateLock,
@@ -128,12 +130,18 @@ export async function runAntigravitySerialized(
           if (logFile) {
             try { explicitLogContent = readFileSync(logFile, "utf8"); } catch {}
           }
-          const sessionId = resolveAntigravityConversationId({
-            cwd,
-            sinceMs: startedAtMs,
-            explicitLogContent,
-            homeDir: executionContext.homeDir,
-          });
+          const sessionId = options.chatId != null
+            ? extractAntigravityConversationId(explicitLogContent) ??
+              readLatestAntigravityConversationFromLogs({
+                sinceMs: startedAtMs,
+                homeDir: executionContext.homeDir,
+              })
+            : resolveAntigravityConversationId({
+                cwd,
+                sinceMs: startedAtMs,
+                explicitLogContent,
+                homeDir: executionContext.homeDir,
+              });
           if (eventContext) {
             emitSafe(onEvent, evtType.runCompleted({
               ...eventContext,
