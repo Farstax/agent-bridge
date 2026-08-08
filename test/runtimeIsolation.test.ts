@@ -109,7 +109,7 @@ describe("runtime isolation", () => {
     await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
 
     try {
-      const stdout = await runAntigravitySerialized(script, ["--print", "hello"], root, {
+      const { stdout } = await runAntigravitySerialized(script, ["--print", "hello"], root, {
         bot: "antigravity",
         timeoutMs: 5_000,
         idleTimeoutMs: 5_000,
@@ -137,7 +137,7 @@ describe("runtime isolation", () => {
     await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
 
     try {
-      const stdout = await runAntigravitySerialized(script, ["--print", "hello"], root, {
+      const { stdout } = await runAntigravitySerialized(script, ["--print", "hello"], root, {
         bot: "antigravity",
         timeoutMs: 5_000,
         idleTimeoutMs: 5_000,
