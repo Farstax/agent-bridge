@@ -22,6 +22,13 @@ function makeHome(): string {
   return home;
 }
 
+function writeSkill(repoRoot: string, name: string, description: string): string {
+  const skillDir = join(repoRoot, "skills", name);
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`);
+  return skillDir;
+}
+
 afterEach(() => {
   for (const home of tempHomes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
@@ -33,6 +40,44 @@ describe("shared skills catalog", () => {
     expect(names).toContain("risk-based-test-strategy");
     expect(names).toContain("red-green-refactor-tdd");
     expect(names).toContain("release-readiness-review");
+  });
+
+  it("accepts a standards-compatible SKILL.md without skill.json", () => {
+    const repoRoot = makeHome();
+    const skillDir = writeSkill(repoRoot, "portable-skill", "Portable skill used for compatibility testing.");
+
+    expect(listLocalCatalog(repoRoot)).toEqual([{
+      name: "portable-skill",
+      version: "unversioned",
+      description: "Portable skill used for compatibility testing.",
+      path: skillDir,
+    }]);
+  });
+
+  it("treats SKILL.md as authoritative while retaining optional legacy version metadata", () => {
+    const repoRoot = makeHome();
+    const skillDir = writeSkill(repoRoot, "portable-skill", "Description from the portable skill.");
+    writeFileSync(join(skillDir, "skill.json"), `${JSON.stringify({
+      name: "portable-skill",
+      version: "2.3.4",
+      description: "Legacy sidecar description.",
+    }, null, 2)}\n`);
+
+    expect(listLocalCatalog(repoRoot)).toEqual([{
+      name: "portable-skill",
+      version: "2.3.4",
+      description: "Description from the portable skill.",
+      path: skillDir,
+    }]);
+  });
+
+  it("rejects a SKILL.md whose name does not match its directory", () => {
+    const repoRoot = makeHome();
+    const skillDir = join(repoRoot, "skills", "portable-skill");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "---\nname: another-skill\ndescription: Valid description.\n---\n");
+
+    expect(() => listLocalCatalog(repoRoot)).toThrow(/name does not match folder/i);
   });
 
   it("keeps the bundled skills list in install.sh as the default", () => {
@@ -49,6 +94,23 @@ describe("shared skills catalog", () => {
 });
 
 describe("shared skills install", () => {
+  it("installs a standards-compatible skill without skill.json and preserves projection verification", () => {
+    const repoRoot = makeHome();
+    const home = makeHome();
+    writeSkill(repoRoot, "portable-skill", "Portable skill used for compatibility testing.");
+
+    installSkillGlobal("portable-skill", { repoRoot, homeDir: home, now: new Date("2026-08-08T20:00:00.000Z") });
+
+    const paths = resolveSkillPaths(home);
+    const sharedSkill = join(paths.agentsSkillsDir, "portable-skill");
+    expect(existsSync(join(sharedSkill, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(sharedSkill, "skill.json"))).toBe(false);
+    expect(readlinkSync(join(paths.codexSkillsDir, "portable-skill"))).toBe("../../.agents/skills/portable-skill");
+    expect(readlinkSync(join(paths.geminiSkillsDir, "portable-skill"))).toBe("../../../.agents/skills/portable-skill");
+    expect(readlinkSync(join(paths.claudeSkillsDir, "portable-skill"))).toBe("../../.agents/skills/portable-skill");
+    expect(verifySkillGlobal("portable-skill", { homeDir: home }).ok).toBe(true);
+  });
+
   it("installs a skill into shared storage and native CLI symlinks", () => {
     const home = makeHome();
     installSkillGlobal("requirements-to-acceptance", { homeDir: home, now: new Date("2026-05-21T08:30:00.000Z") });
