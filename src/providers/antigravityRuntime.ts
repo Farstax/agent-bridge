@@ -430,14 +430,17 @@ export function resolveAntigravityConversationId({
   sinceMs,
   explicitLogContent,
   homeDir = homedir(),
+  allowSharedStateFallback = false,
 }: {
   cwd: string;
   sinceMs: number;
   explicitLogContent?: string | null;
   homeDir?: string;
+  allowSharedStateFallback?: boolean;
 }): string | null {
-  return extractAntigravityConversationId(explicitLogContent) ??
-    readLatestAntigravityConversationFromLogs({ sinceMs, homeDir }) ??
+  const explicitSessionId = extractAntigravityConversationId(explicitLogContent);
+  if (explicitSessionId || !allowSharedStateFallback) return explicitSessionId;
+  return readLatestAntigravityConversationFromLogs({ sinceMs, homeDir }) ??
     readAntigravityLastConversation({ cwd, homeDir });
 }
 
@@ -636,4 +639,3 @@ export function isPreExecutionDnsFailure(
 
   return true;
 }
-

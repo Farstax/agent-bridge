@@ -599,7 +599,12 @@ describe("agent bridge MVP", () => {
       mkdirSync(logDir, { recursive: true });
       writeFileSync(join(logDir, "cli-test.log"), "Print mode: conversation=b3ba6842-e571-4fd3-9dac-ce613b2f35c6, sending message");
       expect(readLatestAntigravityConversationFromLogs({ sinceMs: Date.now() - 1000, homeDir: home })).toBe("b3ba6842-e571-4fd3-9dac-ce613b2f35c6");
-      expect(resolveAntigravityConversationId({ cwd: "/missing", sinceMs: Date.now() - 1000, homeDir: home })).toBe("b3ba6842-e571-4fd3-9dac-ce613b2f35c6");
+      expect(resolveAntigravityConversationId({
+        cwd: "/missing",
+        sinceMs: Date.now() - 1000,
+        homeDir: home,
+        allowSharedStateFallback: true,
+      })).toBe("b3ba6842-e571-4fd3-9dac-ce613b2f35c6");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

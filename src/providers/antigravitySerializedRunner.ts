@@ -133,6 +133,7 @@ export async function runAntigravitySerialized(
             sinceMs: startedAtMs,
             explicitLogContent,
             homeDir: executionContext.homeDir,
+            allowSharedStateFallback: options.chatId == null && eventContext == null,
           });
           if (eventContext) {
             emitSafe(onEvent, evtType.runCompleted({
