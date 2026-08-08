@@ -123,6 +123,38 @@ describe("runtime isolation", () => {
     }
   });
 
+  it("does not adopt shared Antigravity session state for an event-tracked run without a supervisor chat id", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agy-event-session-fence-"));
+    const homeDir = join(root, "home");
+    const cacheDir = join(homeDir, ".gemini", "antigravity-cli", "cache");
+    const script = join(root, "agy-fixture");
+    const otherChatConversationId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      join(cacheDir, "last_conversations.json"),
+      JSON.stringify({ [root]: otherChatConversationId }),
+    );
+    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
+
+    try {
+      const stdout = await runAntigravitySerialized(script, ["--print", "hello"], root, {
+        bot: "antigravity",
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        eventContext: {
+          runId: "tracked-run",
+          bot: "antigravity",
+          chatId: "telegram:interactive:topic",
+        },
+      }, { homeDir, model: null, applyModel: false });
+      const result = parseCliResult({ bot: "antigravity", stdout });
+
+      expect(result).toEqual({ text: "ok", sessionId: null });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("applies the invocation model and reconciles the conversation before releasing the Antigravity lock", async () => {
     const root = await mkdtemp(join(tmpdir(), "agy-run-lock-"));
     const homeDir = join(root, "home");
