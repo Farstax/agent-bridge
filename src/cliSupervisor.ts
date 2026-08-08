@@ -20,6 +20,7 @@ import type { BridgeEvent } from "./events/types.js";
 import type { ExecutionLaneHandle } from "./db.js";
 import { buildWorkspaceLockedInvocation } from "./workspaceLock.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
+import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
 
 interface ActiveExecution {
   child: ChildProcess | null;
@@ -492,6 +493,14 @@ export async function runSupervisedProcess(
         (err as any).stderr = stderr;
         doReject(err);
       } else {
+        const validationError = validateSuccessfulCliExit(options.bot, { stdout, stderr });
+        if (validationError) {
+          if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: validationError.message, category: "cli" }));
+          (validationError as any).stdout = stdout;
+          (validationError as any).stderr = stderr;
+          doReject(validationError);
+          return;
+        }
         if (evtCtx) emit(evtType.runCompleted({ ...evtCtx, text: stdout, sessionId: null }));
         doResolve({ stdout });
       }
