@@ -31,6 +31,14 @@ import { supportsToolFreeMode } from "./providers/registry.js";
 const DEFAULT_COMPACTION_MAX_ATTEMPTS = 3;
 const MAX_COMPACTION_MAX_ATTEMPTS = 8;
 const DEFAULT_COMPACTION_REPAIR_ATTEMPTS = 1;
+const COMPANION_MEMORY_SCOPE_GUIDANCE = [
+  "Companion memory scope policy:",
+  "Use project scope only for durable project knowledge that should remain available across Agent Bridge chats: architecture/design decisions, product requirements or owner decisions, durable implementation or operational conventions, and named project facts that will matter later.",
+  "Use chat scope for temporary task/progress detail, conversation-specific context, participant context, and personal/social context that is only relevant to this conversation.",
+  "Use global only for facts deliberately intended to be broader than this project.",
+  "When scope is uncertain, use chat.",
+].join("\n");
+
 function boundedEnvInt(name: string, fallback: number, maximum: number, allowZero = false): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -83,6 +91,15 @@ export interface CompactConversationResult {
   promotedMemoryIds?: string[];
   rejectedCandidateCount?: number;
   error?: string;
+}
+
+function companionScopedCandidate(
+  candidate: Record<string, unknown>,
+  compactProfile: CompactProfile,
+): Record<string, unknown> {
+  if (compactProfile !== "companion") return candidate;
+  if (candidate.scope === "project" || candidate.scope === "chat" || candidate.scope === "global") return candidate;
+  return { ...candidate, scope: "chat" };
 }
 
 export async function compactConversation(
@@ -172,9 +189,12 @@ export async function compactConversation(
       throw new CompactionFailure("provider_unavailable", true);
     }
     if (target.provider === "antigravity") setAntigravityModel(target.model);
+    const scopedPrompt = compactProfile === "companion"
+      ? `${COMPANION_MEMORY_SCOPE_GUIDANCE}\n\n${prompt}`
+      : prompt;
     const invocation = buildCliInvocation({
       bot: target.provider,
-      prompt,
+      prompt: scopedPrompt,
       sessionId: null,
       command: target.command,
       model: target.model,
@@ -274,7 +294,8 @@ export async function compactConversation(
       deps.assertCanCommit?.();
       db.addConvSummary(chatKey, startId, endId, finalOutput.summaryMd);
 
-      for (const candidate of finalOutput.memoryCandidates) {
+      for (const rawCandidate of finalOutput.memoryCandidates) {
+        const candidate = companionScopedCandidate(rawCandidate, compactProfile);
         const result = storeProjectMemoryCandidate(db, candidate, {
           chatKey,
           cliKind: finalProvider,
