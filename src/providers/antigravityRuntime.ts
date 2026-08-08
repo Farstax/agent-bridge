@@ -540,6 +540,7 @@ function tryParseAntigravityJson(text: string): string | null {
       }
     } catch {}
   }
+
   return null;
 }
 
