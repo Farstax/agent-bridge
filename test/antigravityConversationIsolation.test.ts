@@ -49,6 +49,7 @@ describe("Antigravity conversation isolation", () => {
         sinceMs: Date.now(),
         explicitLogContent: null,
         homeDir,
+        allowSharedStateFallback: true,
       })).toBe(conversationId);
     } finally {
       await rm(root, { recursive: true, force: true });
