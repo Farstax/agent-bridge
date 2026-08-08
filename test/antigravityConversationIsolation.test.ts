@@ -25,7 +25,31 @@ describe("Antigravity conversation isolation", () => {
         sinceMs: Date.now(),
         explicitLogContent: null,
         homeDir,
+        allowSharedStateFallback: false,
       })).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves provider-global session discovery for untracked callers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agy-untracked-session-"));
+    const homeDir = join(root, "home");
+    const cacheDir = join(homeDir, ".gemini", "antigravity-cli", "cache");
+    const conversationId = "11111111-2222-3333-4444-555555555555";
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      join(cacheDir, "last_conversations.json"),
+      JSON.stringify({ [root]: conversationId }),
+    );
+
+    try {
+      expect(resolveAntigravityConversationId({
+        cwd: root,
+        sinceMs: Date.now(),
+        explicitLogContent: null,
+        homeDir,
+      })).toBe(conversationId);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
