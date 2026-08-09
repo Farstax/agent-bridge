@@ -331,6 +331,21 @@ Include the retrospective result in final evidence: `no new systemic pattern`, `
 
 For substantial changes or complex features, use the `git-sandbox` skill to isolate execution environments. Do not modify the main workspace directly if worktree isolation is requested.
 
+## Post-merge cleanup — mandatory
+
+A PR is not operationally complete merely because GitHub reports it merged. The agent that performs or confirms the merge owns cleanup before reporting the work complete.
+
+After merge:
+
+1. Verify the PR is actually merged and identify its head branch and any local worktree created for it.
+2. Inspect the PR worktree for uncommitted or otherwise unpreserved work. If anything must be retained, stop cleanup and report the blocker; never force-delete unknown work.
+3. From a different checkout, remove the merged PR worktree with `git worktree remove <path>`.
+4. Delete the merged local feature branch with `git branch -d <branch>`. Use `-D` only after proving the branch is merged and no work needs preservation.
+5. Delete the remote feature branch with `git push origin --delete <branch>` when it still exists. If repository automation already removed it, treat that as successful cleanup.
+6. Run `git worktree prune`, then verify `git worktree list` and branch listings no longer contain the stale PR worktree or feature branch.
+
+Never delete the default branch, protected/release branches, a branch explicitly requested to be retained, or a branch/worktree known to be in use by another active task. If cleanup cannot be completed safely, report the result as **merged, cleanup blocked** with the exact remaining branch/worktree and reason rather than calling the work complete.
+
 ---
 
 # Persistent memory
