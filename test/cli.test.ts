@@ -868,15 +868,15 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--skip-git-repo-check", "hello"]);
   });
 
-  it("translates --output-format json to --json for Codex and ignores it for Antigravity", async () => {
+  it("translates --output-format json for Codex and preserves it for Antigravity", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     const args1 = ["--print", "--output-format", "json", "hello"];
     expect(normalizeCliArgs("codex", args1)).toEqual(["exec", "--skip-git-repo-check", "--json", "hello"]);
-    expect(normalizeCliArgs("agy", args1)).toEqual(["--print", "hello"]);
+    expect(normalizeCliArgs("agy", args1)).toEqual(["--output-format", "json", "--print", "hello"]);
 
     const args2 = ["--print", "--output-format=json", "hello"];
     expect(normalizeCliArgs("codex", args2)).toEqual(["exec", "--skip-git-repo-check", "--json", "hello"]);
-    expect(normalizeCliArgs("agy", args2)).toEqual(["--print", "hello"]);
+    expect(normalizeCliArgs("agy", args2)).toEqual(["--output-format", "json", "--print", "hello"]);
   });
 
   it("preserves conversation, log-file, and print-timeout for Antigravity", async () => {
