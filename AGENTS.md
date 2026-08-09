@@ -20,15 +20,25 @@ The full TDD rules are in `CLAUDE.md`. The critical agent-specific requirements 
 
 ## Verification — mandatory each cycle
 
-```bash
-# Step 1: write tests, then confirm they fail
-npm test   # new test(s) must appear as FAILING
+Use focused red/green locally; exact-head GitHub CI owns the required full-suite regression gate.
 
-# Step 2: write implementation, then confirm everything passes
-npm test   # all tests must PASS
+```bash
+# Step 1: write the regression/acceptance test, then confirm focused red
+npm test -- <focused-test-file-or-pattern>
+
+# Step 2: write the minimum implementation, then confirm focused green
+npm test -- <focused-test-file-or-pattern>
 ```
 
-Do not skip the red verification. If you cannot see the test failing before writing implementation, the test is not testing anything useful.
+The red command must exercise the smallest deterministic test set that proves the requested behaviour and show the new test failing for the expected reason before implementation. The green command must rerun that same focused set plus directly affected boundary tests. Widen local verification only when the touched boundary or risk warrants it.
+
+Do not rerun the full suite locally by default. Run local `npm test` only when the change is intentionally broad/global, exact-head GitHub CI is unavailable, or a CI/review failure requires full-suite reproduction.
+
+Before merge, the current PR head must have a successful full `npm test` run in GitHub `CI` plus the repository's other required exact-head checks. CI evidence belongs to the exact head SHA; any code change invalidates it and requires fresh CI.
+
+Independent review must not duplicate a current green full-suite run without a concrete investigation reason. Reviewers should inspect the exact current head, run focused tests needed to investigate findings, and rely on exact-head GitHub CI for the full regression proof. If review repairs change the head, wait for fresh exact-head CI rather than reproducing the full suite locally first.
+
+Do not skip the red verification. If you cannot see the focused test failing before writing implementation, the test is not testing the intended change.
 
 ## Commit discipline — required
 
@@ -43,7 +53,7 @@ Never bundle test files and production code in the same commit. This is the most
 
 ## Planning requirement
 
-When executing or reviewing a plan, every phase that adds new behaviour must include an explicit red→green step. If a plan does not call out "commit tests first, confirm red, then implement", raise it before starting that phase.
+When executing or reviewing a plan, every phase that adds new behaviour must include an explicit red→green step: write the focused test, confirm red, commit the test-only state; implement the minimum change, confirm focused green, commit implementation; then push the final head and require exact-head GitHub CI and the other required checks before merge. If a plan instead mandates repeated local full-suite runs without a concrete risk reason, correct the plan before starting that phase.
 
 ---
 
@@ -64,19 +74,19 @@ Use a two-approval model for normal delivery. Safety is enforced by machine-veri
 
 ## Approval 1 — exact-head merge approval
 
-One independent review approves one exact PR head SHA after required tests and checks pass.
+One independent review approves one exact PR head SHA after required exact-head tests and checks pass. GitHub `CI` is the authoritative full-suite regression proof for that head; independent review adds code/contract scrutiny and focused investigation rather than another routine full-suite execution.
 
 Before merge approval, agents may perform without additional approval:
 
 - implementation and review repairs in an isolated branch or worktree;
-- tests, typecheck, build, lint, syntax and diff checks;
+- focused tests and risk-justified typecheck, build, lint, syntax and diff checks;
 - CI reruns and exact-head artifact generation;
 - read-only inspection and evidence collection;
 - offline fixture validation, copied-database migration and rollback simulation;
 - artifact, manifest, provenance and helper-identity verification;
 - publication of evidence and review findings.
 
-A head change invalidates the approval. Merge still requires an explicit merge instruction unless an already-authorised merge automation is operating within its exact-head contract.
+A head change invalidates the approval and prior exact-head CI evidence. Fresh required checks must complete for the new head. Merge still requires an explicit merge instruction unless an already-authorised merge automation is operating within its exact-head contract.
 
 ## Owner-authorized exact-release deployment
 
@@ -194,7 +204,7 @@ A useful PR body normally contains:
 2. **Why / Root cause** — for fixes, identify the reproduced cause; for features, identify the current gap. Do not present a hypothesis as a confirmed root cause.
 3. **Scope and non-goals** — call out important sibling behavior that remains unchanged and any tempting adjacent work intentionally excluded.
 4. **Implementation / contract** — only where needed, explain the important ownership boundary, flow, migration, lifecycle, or invariant. Prefer what a reviewer needs to reason about the diff over a file-by-file narration.
-5. **TDD / validation evidence** — report the red evidence and green verification required by this repository, plus the checks actually run and their outcomes. Distinguish local results from exact-head CI and never claim checks that have not completed.
+5. **TDD / validation evidence** — report the red evidence and green verification required by this repository, plus the checks actually run and their outcomes. Distinguish focused local results from exact-head CI; use exact-head GitHub `CI` as the authoritative full-suite proof and never claim checks that have not completed.
 6. **Rollout impact** — include the repository-required `Rollout impact: none` or `Rollout impact: required — included in this PR`, with activation/rollback detail where the changed boundary requires it.
 7. **Issue relationship** — use `Closes #N` only when this PR fully satisfies that issue. Use `Related to #N` when it is partial, exploratory, or prerequisite work.
 
@@ -288,9 +298,9 @@ Before declaring work complete:
 - inspect the final diff for unrelated scope
 - search callers, aliases, entry points, and sibling implementations
 - compare defaults, compatibility, security, and rollback behaviour
-- run focused tests, the relevant broader suite, typecheck, architecture or static checks, and `git diff --check`
-- verify the exact final commit SHA and account for all review threads and deferred items
-- state what was tested, what was not tested, and the residual risk
+- run focused tests and risk-justified broader local tests/checks such as typecheck, architecture/static checks, build/manifest checks, and `git diff --check`; do not rerun the full suite locally by default
+- verify successful required checks for the exact final commit SHA, using exact-head GitHub `CI` as the authoritative full-suite regression evidence, and account for all review threads and deferred items
+- state what was tested locally, what exact-head CI proved, what was not tested, and the residual risk
 
 ## Continuous improvement and agent retrospectives
 
@@ -427,7 +437,9 @@ When working on the worker lane (`src/index-worker.ts`, `src/jobExecutor*.ts`,
   restricted to `$WORKER_WORKSPACE_DIR`.
 - The TDD handler enforces the red/green split mechanically: red commits stage
   test files only and the red run must fail; green commits must not touch test
-  files and verification must pass. Do not weaken these guards.
+  files and verification must pass. Do not weaken these guards. Configure local
+  red/green verification around the focused affected tests; the merge gate and
+  exact-head GitHub CI own the mandatory full-suite proof.
 - The merge gate verifies head SHA and CI checks via `gh pr view` before any
   merge. Never add a merge path that skips it. Approvals stay pending on every
   blocked path, and every Telegram callback must be answered.
