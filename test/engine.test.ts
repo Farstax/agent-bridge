@@ -90,6 +90,7 @@ describe("BridgeEngine", () => {
     delete process.env.BRIDGE_COMPACTION_CHAIN;
     delete process.env.BRIDGE_ADVISOR_ENABLED;
     delete process.env.BRIDGE_ADVISOR_CHAIN;
+    delete process.env.ANTIGRAVITY_OUTPUT_MODE;
     db.close();
     try { rmSync(dbPath); } catch {}
   });
@@ -1884,6 +1885,52 @@ describe("BridgeEngine", () => {
   // ── Thread vs non-thread parity ──────────────────────────────────────────────
 
   describe("thread vs non-thread parity", () => {
+    it("replaces a stale Agy conversation only under the originating topic key", async () => {
+      process.env.ANTIGRAVITY_OUTPUT_MODE = "json";
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const staleId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+      const replacementId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+      const topicKey = "100:7";
+      db.setSession(topicKey, "antigravity", staleId);
+      const capturedArgs: string[][] = [];
+      const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
+        capturedArgs.push(args);
+        return JSON.stringify({
+          conversation_id: replacementId,
+          status: "SUCCESS",
+          response: "native topic response",
+        });
+      });
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "antigravity",
+          botConfig: { command: "agy", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          asyncEnabled: false,
+          pollIntervalMs: 1000,
+        },
+        db,
+        client,
+        { runCli },
+      );
+
+      await engine.handleMessages([makePrivateTopicMessage("resume topic", 7)]);
+
+      expect(capturedArgs[0]).toContain(staleId);
+      expect(db.getSession(topicKey, "antigravity")).toBe(replacementId);
+      expect(db.getSession("100", "antigravity")).toBeNull();
+      expect(client.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chat_id: 100,
+          message_thread_id: 7,
+          text: expect.stringContaining("native topic response"),
+        }),
+      );
+    });
+
     it("stores session under flat chatId for private chat messages", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
