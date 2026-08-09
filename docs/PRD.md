@@ -144,7 +144,7 @@ gemini-3.5-flash-high → gemini-3.5-flash-medium → gemini-3.1-pro-high → ge
 
 **Claude**:
 ```
-claude-sonnet-4-6 → claude-opus-4-7 → (give up)
+claude-sonnet-5 → claude-opus-5 → claude-opus-4-8 → claude-haiku-4-5 → claude-fable-5 → (give up)
 ```
 
 The response is prepended with a warning notice when a fallback is used.
