@@ -292,8 +292,8 @@ function prepareCliHandoff(db: BridgeDb, chatKey: string, targetCli: CliKind, re
 
 /** Manual /cli switch: starts the target CLI fresh with shared handoff context, even after an earlier /reset. */
 export function applyManualCliSwitchHandoff(db: BridgeDb, chatKey: string, newCli: CliKind): void {
-  db.setSetting(`ctx_suppress:${chatKey}`, null);
   prepareCliHandoff(db, chatKey, newCli, "manual_switch");
+  db.setSetting(`ctx_suppress:${chatKey}`, null);
 }
 
 export async function dispatchInteractiveWithFallback(
@@ -317,7 +317,6 @@ export async function dispatchInteractiveWithFallback(
   let outcome: ExecutionOutcome = "committed";
   if (claimedMessage) outcome = await engines[activeCli].executeClaimedMessage(claimedMessage);
   else await engines[activeCli].handleUpdate(update);
-
   if (exhaustedChats.has(chatKey)) {
     exhaustedChats.delete(chatKey);
     let next: CliKind | null = null;
