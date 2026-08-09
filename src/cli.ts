@@ -151,6 +151,7 @@ export function buildCliInvocation({
       homeDir,
       model: model ?? null,
       applyModel: true,
+      outputMode: invocation.args.includes("--output-format") ? "json" : "text",
     });
     return invocation;
   }
