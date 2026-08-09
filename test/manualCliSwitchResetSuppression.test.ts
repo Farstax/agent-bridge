@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { applyManualCliSwitchHandoff } from "../src/interactiveBot.js";
 import { isHandoffRequired } from "../src/handoffState.js";
@@ -17,6 +17,26 @@ describe("manual CLI switch after reset suppression", () => {
       expect(db.getSetting("ctx_suppress:chat:2")).toBe("1");
       expect(db.getSession("chat:1", "claude")).toBeNull();
       expect(isHandoffRequired(db, "chat:1", "claude")).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps reset suppression if preparing the destination handoff fails", () => {
+    const db = openDb(":memory:");
+    try {
+      db.setSetting("ctx_suppress:chat:1", "1");
+      db.setSession("chat:1", "claude", "stale-session");
+      vi.spyOn(db, "setSession").mockImplementation(() => {
+        throw new Error("simulated session write failure");
+      });
+
+      expect(() => applyManualCliSwitchHandoff(db, "chat:1", "claude"))
+        .toThrow("simulated session write failure");
+
+      expect(db.getSetting("ctx_suppress:chat:1")).toBe("1");
+      expect(db.getSession("chat:1", "claude")).toBe("stale-session");
+      expect(isHandoffRequired(db, "chat:1", "claude")).toBe(false);
     } finally {
       db.close();
     }
