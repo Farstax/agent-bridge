@@ -25,5 +25,5 @@ Do not make production behavior changes before the red step unless the codebase 
 
 ## Verification
 
-Run the focused test first, then the relevant broader suite. In the final note, report the red test, the green change, and any tests that could not be run.
+Run the focused test first. Add broader local tests only when the blast radius warrants them. Where repository policy makes exact-head GitHub CI the authoritative full-suite gate, do not duplicate that full-suite run locally without a concrete investigation reason. In the final note, report the red test, the focused green verification, the exact-head CI evidence when applicable, and any checks that could not be run.
 <!-- END AGENT_BRIDGE_RUNTIME_GUIDANCE -->
