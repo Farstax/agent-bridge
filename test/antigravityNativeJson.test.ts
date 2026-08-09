@@ -7,6 +7,7 @@ import {
   buildCliInvocation,
   normalizeCliArgs,
   parseCliResult,
+  isCapacityExhaustedError,
 } from "../src/cli.js";
 import type { BridgeEvent } from "../src/events/types.js";
 import { runAntigravitySerialized } from "../src/providers/antigravitySerializedRunner.js";
@@ -89,12 +90,37 @@ describe("Agy native JSON parsing contract", () => {
     });
   });
 
+  it("uses a replacement conversation id instead of the requested stale id", () => {
+    useOutputMode("json");
+    const staleId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const replacementId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+    const invocation = buildCliInvocation({
+      bot: "antigravity",
+      prompt: "resume",
+      sessionId: staleId,
+      command: "agy",
+      model: null,
+    });
+
+    expect(invocation.args).toContain(staleId);
+    expect(parseCliResult({
+      bot: "antigravity",
+      stdout: JSON.stringify({
+        conversation_id: replacementId,
+        status: "SUCCESS",
+        response: "replacement accepted",
+      }),
+    }).sessionId).toBe(replacementId);
+  });
+
   it.each([
     ["malformed JSON", "not json"],
     ["missing conversation", JSON.stringify({ status: "SUCCESS", response: "ok" })],
     ["invalid conversation", JSON.stringify({ conversation_id: "not-a-uuid", status: "SUCCESS", response: "ok" })],
     ["empty response", JSON.stringify({ conversation_id: "11111111-2222-3333-4444-555555555555", status: "SUCCESS", response: "   " })],
     ["unknown status", JSON.stringify({ conversation_id: "11111111-2222-3333-4444-555555555555", status: "DONE", response: "ok" })],
+    ["SUCCESS with an error", JSON.stringify({ conversation_id: "11111111-2222-3333-4444-555555555555", status: "SUCCESS", response: "ok", error: "contradiction" })],
+    ["ERROR with a response", JSON.stringify({ conversation_id: "11111111-2222-3333-4444-555555555555", status: "ERROR", response: "contradiction", error: "failed" })],
   ])("fails closed for %s", (_label, stdout) => {
     useOutputMode("json");
     expect(() => parseCliResult({ bot: "antigravity", stdout })).toThrow(/Agy native JSON/);
@@ -109,7 +135,43 @@ describe("Agy native JSON parsing contract", () => {
       error: "No capacity available for selected model",
     });
 
-    expect(() => parseCliResult({ bot: "antigravity", stdout })).toThrow("No capacity available for selected model");
+    let error: Error | null = null;
+    try {
+      parseCliResult({ bot: "antigravity", stdout });
+    } catch (caught) {
+      error = caught as Error;
+    }
+    expect(error?.message).toBe("No capacity available for selected model");
+    expect(isCapacityExhaustedError(error!)).toBe(true);
+  });
+
+  it("classifies a native timeout through the existing timeout contract", () => {
+    useOutputMode("json");
+    const stdout = JSON.stringify({
+      conversation_id: "11111111-2222-3333-4444-555555555555",
+      status: "ERROR",
+      response: "",
+      error: "timeout waiting for response",
+    });
+
+    let error: (Error & { category?: string }) | null = null;
+    try {
+      parseCliResult({ bot: "antigravity", stdout });
+    } catch (caught) {
+      error = caught as Error & { category?: string };
+    }
+    expect(error?.message).toBe("Agy execution timed out waiting for response");
+    expect(error?.category).toBe("timeout");
+  });
+
+  it("preserves the legacy text parser as the rollback path", () => {
+    useOutputMode("text");
+    const conversationId = "cccccccc-dddd-eeee-ffff-000000000000";
+    expect(parseCliResult({
+      bot: "antigravity",
+      stdout: JSON.stringify({ response: "legacy response" }),
+      logContent: `Created conversation ${conversationId}`,
+    })).toEqual({ text: "legacy response", sessionId: conversationId });
   });
 });
 
