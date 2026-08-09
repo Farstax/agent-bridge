@@ -186,7 +186,7 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 | `CLAUDE_COMMAND` | Claude | `claude` | CLI binary path |
 | `CODEX_MODEL_PREFERENCE` | Codex | — | Comma-separated model list; first = default, rest = fallbacks |
 | `ANTIGRAVITY_MODEL_PREFERENCE` | Antigravity | — | Comma-separated model list; first = default, rest = fallbacks |
-| `CLAUDE_MODEL_PREFERENCE` | Claude | — | Comma-separated model list; first = default, rest = fallbacks |
+| `CLAUDE_MODEL_PREFERENCE` | Claude | — | Comma-separated model list; first = default, rest = fallbacks. Example: `claude-sonnet-5,claude-opus-5,claude-opus-4-8,claude-haiku-4-5,claude-fable-5` |
 | `CODEX_EFFORT` | Codex | `medium` | Reasoning effort; mapped to `model_reasoning_effort` |
 | `ANTIGRAVITY_EFFORT` | Antigravity | `medium` | Recorded/displayed for parity only; Agy has no separate effort CLI flag |
 | `CLAUDE_EFFORT` | Claude | `medium` | Reasoning effort; mapped to `--effort` |
