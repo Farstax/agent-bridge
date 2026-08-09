@@ -290,8 +290,9 @@ function prepareCliHandoff(db: BridgeDb, chatKey: string, targetCli: CliKind, re
   markHandoffRequired(db, chatKey, targetCli, reason);
 }
 
-/** Manual /cli switch: starts the target CLI fresh instead of resuming a possibly stale, long-abandoned session. */
+/** Manual /cli switch: starts the target CLI fresh with shared handoff context, even after an earlier /reset. */
 export function applyManualCliSwitchHandoff(db: BridgeDb, chatKey: string, newCli: CliKind): void {
+  db.setSetting(`ctx_suppress:${chatKey}`, null);
   prepareCliHandoff(db, chatKey, newCli, "manual_switch");
 }
 
