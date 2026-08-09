@@ -459,9 +459,8 @@ for (;;) {
               const cbqChatId = callbackQuery.message?.chat?.id;
               const cbqChatKey = resolveUpdateChatKey(update as TelegramUpdate);
               if (cbqChatKey) {
-                setUserCliPreference(db, cbqChatKey, cliSwitch);
-                fallbackChain.setActiveCli(cbqChatKey, cliSwitch);
                 applyManualCliSwitchHandoff(db, cbqChatKey, cliSwitch);
+                fallbackChain.setActiveCli(cbqChatKey, cliSwitch);
                 await client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
                 if (callbackQuery.message?.message_id && cbqChatId) {
                   await client.editMessageText({
