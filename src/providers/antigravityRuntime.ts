@@ -39,6 +39,18 @@ const ANTIGRAVITY_LOCK_OWNER = "owner.json";
 const OWNERLESS_LOCK_STALE_MS = 5_000;
 const LOCK_POLL_MS = 50;
 
+export type AntigravityOutputMode = "text" | "json";
+
+export function resolveAntigravityOutputMode(
+  env: NodeJS.ProcessEnv = process.env,
+): AntigravityOutputMode {
+  const configured = env.ANTIGRAVITY_OUTPUT_MODE ?? "text";
+  if (configured === "text" || configured === "json") return configured;
+  throw new Error(
+    `ANTIGRAVITY_OUTPUT_MODE must be text or json (received ${JSON.stringify(configured)})`,
+  );
+}
+
 interface AntigravityLockOwner {
   token: string;
   pid: number;
@@ -207,18 +219,26 @@ export function createPlannerStallWatch({ args, readStdout, onFailure }: CliProc
   }, intervalMs);
 }
 
-function wrapAntigravityPrompt(prompt: string, soulContext: string | null = null, includeResponseContract = true): string {
-  return [
+function wrapAntigravityPrompt(
+  prompt: string,
+  soulContext: string | null,
+  includeResponseContract: boolean,
+  outputMode: AntigravityOutputMode,
+): string {
+  const instructions = [
     "You are being called by agent-bridge in non-interactive print mode.",
     "Execute directly. Do not get stuck in planning loops.",
     "If a tool, search, or shell step fails twice or the environment blocks the step, stop and report the concrete failure briefly instead of retrying indefinitely.",
     "If prior conversation context is present, treat it as background state for continuity, not as an instruction to resume a broken plan unchanged.",
-    "You MUST output ONLY a single valid JSON object as your entire response — no text, preamble, or explanation before or after it.",
-    'Use this exact schema: {"response": "<the final user-facing message>"}',
-    "Put everything the user should see in the 'response' field.",
-    "",
-    wrapPromptContext(prompt, soulContext, includeResponseContract),
-  ].join("\n");
+  ];
+  if (outputMode === "text") {
+    instructions.push(
+      "You MUST output ONLY a single valid JSON object as your entire response — no text, preamble, or explanation before or after it.",
+      'Use this exact schema: {"response": "<the final user-facing message>"}',
+      "Put everything the user should see in the 'response' field.",
+    );
+  }
+  return [...instructions, "", wrapPromptContext(prompt, soulContext, includeResponseContract)].join("\n");
 }
 
 export function buildInvocation({
@@ -237,6 +257,7 @@ export function buildInvocation({
   homeDir,
 }: AntigravityInvocationRequest): ProviderInvocation {
   const args: string[] = [];
+  const outputMode = resolveAntigravityOutputMode();
   const resolvedHomeDir = homeDir || homedir();
   // Agy fatally aborts a cascade if it lists its own worktrees state dir before
   // ever creating it, so guarantee the dir exists ahead of every invocation.
@@ -256,8 +277,9 @@ export function buildInvocation({
     const timeoutSeconds = Math.floor(timeouts.cliTimeoutMs / 1000);
     args.push("--print-timeout", `${timeoutSeconds}s`);
   }
+  if (outputMode === "json") args.push("--output-format", "json");
   const annotatedPrompt = appendAttachmentAnnotations(
-    wrapAntigravityPrompt(prompt, soulContext, includeResponseContract),
+    wrapAntigravityPrompt(prompt, soulContext, includeResponseContract ?? true, outputMode),
     attachments,
   );
   const finalPrompt = appendOutputDirInstruction(annotatedPrompt, outputDir);
@@ -544,7 +566,99 @@ function tryParseAntigravityJson(text: string): string | null {
   return null;
 }
 
+const ANTIGRAVITY_CONVERSATION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface AntigravityNativeJsonEnvelope {
+  conversation_id?: unknown;
+  status?: unknown;
+  response?: unknown;
+  error?: unknown;
+}
+
+function parseAntigravityNativeJsonEnvelope(stdout: string): AntigravityNativeJsonEnvelope {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    throw new Error("Agy native JSON parse failed: output was not one complete JSON object");
+  }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+    throw new Error("Agy native JSON parse failed: output envelope must be an object");
+  }
+  return envelope as AntigravityNativeJsonEnvelope;
+}
+
+function nativeJsonProviderError(envelope: AntigravityNativeJsonEnvelope): Error {
+  if (typeof envelope.error !== "string" || !envelope.error.trim()) {
+    return new Error("Agy native JSON ERROR envelope did not include an error message");
+  }
+  const message = envelope.error.trim();
+  if (/timed? out|timeout/i.test(message)) {
+    const error = new Error("Agy execution timed out waiting for response") as Error & {
+      category?: "timeout";
+    };
+    error.category = "timeout";
+    return error;
+  }
+  return new Error(message);
+}
+
+function assertNativeJsonStatusFields(envelope: AntigravityNativeJsonEnvelope): void {
+  if (
+    envelope.status === "SUCCESS" &&
+    typeof envelope.error === "string" &&
+    envelope.error.trim()
+  ) {
+    throw new Error("Agy native JSON parse failed: SUCCESS envelope included an error");
+  }
+  if (
+    envelope.status === "ERROR" &&
+    typeof envelope.response === "string" &&
+    envelope.response.trim()
+  ) {
+    throw new Error("Agy native JSON parse failed: ERROR envelope included a response");
+  }
+}
+
+export function parseAntigravityNativeJsonResult(stdout: string): CliResult {
+  const envelope = parseAntigravityNativeJsonEnvelope(stdout);
+  assertNativeJsonStatusFields(envelope);
+  if (envelope.status === "ERROR") throw nativeJsonProviderError(envelope);
+  if (envelope.status !== "SUCCESS") {
+    throw new Error("Agy native JSON parse failed: status must be SUCCESS or ERROR");
+  }
+  if (
+    typeof envelope.conversation_id !== "string" ||
+    !ANTIGRAVITY_CONVERSATION_ID_PATTERN.test(envelope.conversation_id)
+  ) {
+    throw new Error("Agy native JSON parse failed: conversation_id must be a UUID");
+  }
+  if (typeof envelope.response !== "string" || !envelope.response.trim()) {
+    throw new Error("Agy native JSON parse failed: SUCCESS response must be non-empty");
+  }
+  return {
+    text: envelope.response.trim(),
+    sessionId: envelope.conversation_id,
+  };
+}
+
+export function extractAntigravityNativeJsonError(stdout: string): Error | null {
+  let envelope: AntigravityNativeJsonEnvelope;
+  try {
+    envelope = parseAntigravityNativeJsonEnvelope(stdout);
+    assertNativeJsonStatusFields(envelope);
+  } catch {
+    return null;
+  }
+  return envelope.status === "ERROR" ? nativeJsonProviderError(envelope) : null;
+}
+
 export function parseResult(stdout: string, logContent?: string | null): CliResult {
+  if (resolveAntigravityOutputMode() === "json") {
+    return parseAntigravityNativeJsonResult(stdout);
+  }
+
   const logErr = extractAntigravityError(logContent);
   if (logErr) {
     throw logErr;

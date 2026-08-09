@@ -182,6 +182,7 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 | `TELEGRAM_ALLOWED_USER_IDS` | All | — | Comma-separated Telegram user IDs. Also accepts legacy `TELEGRAM_ALLOWED_USER_ID`. |
 | `CODEX_COMMAND` | Codex | `codex` | CLI binary path |
 | `ANTIGRAVITY_COMMAND` | Antigravity | `agy` | CLI binary path |
+| `ANTIGRAVITY_OUTPUT_MODE` | Antigravity | `text` | `text` keeps legacy prompt/log parsing; `json` uses Agy 1.1.8+ native JSON envelopes |
 | `CLAUDE_COMMAND` | Claude | `claude` | CLI binary path |
 | `CODEX_MODEL_PREFERENCE` | Codex | — | Comma-separated model list; first = default, rest = fallbacks |
 | `ANTIGRAVITY_MODEL_PREFERENCE` | Antigravity | — | Comma-separated model list; first = default, rest = fallbacks |
@@ -756,7 +757,10 @@ snowflakes. These aliases are stable across restarts; runtime delivery maps the
 alias back to the original channel snowflake before calling the Discord REST
 API.
 
-Antigravity session capture follows the same durable pattern as Codex, but Agy exposes the ID differently:
+Antigravity session capture follows the same durable pattern as Codex. Its source depends on `ANTIGRAVITY_OUTPUT_MODE`:
+
+- `json` adds `--output-format json`. A successful envelope must contain `status: "SUCCESS"`, a non-empty `response`, and a valid `conversation_id`. That ID is authoritative for the invocation. The bridge does not use shared logs or the working-directory cache as a JSON-mode fallback.
+- `text` preserves the legacy prompt-wrapped response and log-based session recovery described below. Set `ANTIGRAVITY_OUTPUT_MODE=text` for immediate rollback.
 
 1. First turn runs `agy [flags] --print <prompt>` with no `--conversation` flag. Agy requires `--print` immediately before the prompt because it consumes the prompt as its flag value.
 2. The bridge extracts the conversation UUID from Agy's explicit log output when available.

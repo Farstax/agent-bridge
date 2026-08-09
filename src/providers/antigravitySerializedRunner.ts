@@ -3,8 +3,8 @@
  * keeping provider-owned model and conversation state inside one host-wide lock.
  * INPUTS: An Agy command, invocation args, execution options, and optional
  * bridge-owned model/home metadata attached when the invocation was built.
- * OUTPUTS: Supervised stdout with an internal conversation marker for the
- * outer parser; lifecycle events expose the resolved session without the marker.
+ * OUTPUTS: Native JSON stdout or legacy text with an internal conversation
+ * marker; lifecycle events expose the parsed response and resolved session.
  * NEIGHBORS: src/cli.ts, src/providers/antigravityRuntime.ts, src/cliSupervisor.ts
  */
 
@@ -15,8 +15,11 @@ import type { CliOptions } from "../types.js";
 import { isAbortRequested, runSupervisedProcess } from "../cliSupervisor.js";
 import { type as evtType, type BridgeEvent } from "../events/types.js";
 import {
+  extractAntigravityNativeJsonError,
   isPreExecutionDnsFailure,
+  parseAntigravityNativeJsonResult,
   resolveAntigravityConversationId,
+  type AntigravityOutputMode,
   toAntigravityModelLabel,
   withAntigravityStateLock,
 } from "./antigravityRuntime.js";
@@ -28,6 +31,15 @@ export interface AntigravityExecutionContext {
   model: string | null;
   /** False for direct/untracked calls, which must preserve existing provider settings. */
   applyModel: boolean;
+  outputMode?: AntigravityOutputMode;
+}
+
+function outputModeFromArgs(args: string[]): AntigravityOutputMode {
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--output-format" && args[index + 1] === "json") return "json";
+    if (args[index] === "--output-format=json") return "json";
+  }
+  return "text";
 }
 
 function extractLogFileArg(args: string[]): string | null {
@@ -89,8 +101,10 @@ export async function runAntigravitySerialized(
     homeDir: homedir(),
     model: null,
     applyModel: false,
+    outputMode: outputModeFromArgs(args),
   };
   const { eventContext, onEvent } = options;
+  const outputMode = executionContext.outputMode ?? outputModeFromArgs(args);
   const eventModel = executionContext.applyModel ? executionContext.model : null;
   if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: eventModel }));
 
@@ -114,41 +128,66 @@ export async function runAntigravitySerialized(
             ...options,
             onEvent: (event) => {
               if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
+              if (
+                outputMode === "json" &&
+                event.type === "text.delta" &&
+                event.source === "stdout"
+              ) return;
               try { onEvent?.(event); } catch { /* observer failures are isolated */ }
             },
-          }, onProgress);
+          }, outputMode === "json" ? undefined : onProgress);
 
           if (options.chatId != null && isAbortRequested(options.chatId)) {
             cancelled = true;
             throw new Error("CLI execution aborted by user");
           }
 
-          const logFile = extractLogFileArg(args);
-          let explicitLogContent: string | null = null;
-          if (logFile) {
-            try { explicitLogContent = readFileSync(logFile, "utf8"); } catch {}
+          let sessionId: string | null;
+          let completionText: string;
+          if (outputMode === "json") {
+            const parsed = parseAntigravityNativeJsonResult(result.stdout);
+            sessionId = parsed.sessionId;
+            completionText = parsed.text;
+          } else {
+            const logFile = extractLogFileArg(args);
+            let explicitLogContent: string | null = null;
+            if (logFile) {
+              try { explicitLogContent = readFileSync(logFile, "utf8"); } catch {}
+            }
+            sessionId = resolveAntigravityConversationId({
+              cwd,
+              sinceMs: startedAtMs,
+              explicitLogContent,
+              homeDir: executionContext.homeDir,
+              allowSharedStateFallback: options.chatId == null && eventContext == null,
+            });
+            completionText = result.stdout;
           }
-          const sessionId = resolveAntigravityConversationId({
-            cwd,
-            sinceMs: startedAtMs,
-            explicitLogContent,
-            homeDir: executionContext.homeDir,
-            allowSharedStateFallback: options.chatId == null && eventContext == null,
-          });
           if (eventContext) {
             emitSafe(onEvent, evtType.runCompleted({
               ...eventContext,
               sessionId,
-              text: result.stdout,
+              text: completionText,
             }));
           }
-          return { stdout: appendConversationMarker(result.stdout, sessionId) };
+          return {
+            stdout: outputMode === "json"
+              ? result.stdout
+              : appendConversationMarker(result.stdout, sessionId),
+          };
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
           if (cancelled || lastError.message.includes("aborted by user")) throw lastError;
 
           const stdout = (lastError as Error & { stdout?: string }).stdout ?? "";
           const stderr = (lastError as Error & { stderr?: string }).stderr ?? "";
+          if (outputMode === "json") {
+            const nativeError = extractAntigravityNativeJsonError(stdout);
+            if (nativeError) {
+              lastError = nativeError;
+              throw lastError;
+            }
+          }
           if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, args, stdout, stderr) || attempt === 3) {
             throw lastError;
           }
