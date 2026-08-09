@@ -144,6 +144,74 @@ Before implementation:
 
 Ask for clarification only when a missing answer makes a reasonable implementation unsafe. Otherwise, state the assumption and continue.
 
+## Write implementation-ready issues
+
+An issue should let another capable agent understand **what outcome is wanted, why it matters, what currently owns the behavior, what must remain unchanged, and how completion will be proven** without reconstructing the originating conversation.
+
+Write the issue for the size and risk of the change. A small defect may need only `Outcome`, `Current behavior / root cause`, `Smallest implementation`, `Acceptance`, and `Validation`. A larger feature, operational change, or spike should use the fuller structure below when those sections add real implementation value. Do not inflate a narrow fix into a design document merely to fill headings.
+
+Prefer this order:
+
+1. **Executive summary / Outcome** — state the user-visible, developer-visible, or operator-visible result first. Say what changes and, when useful, what deliberately does not change.
+2. **Why this matters** — explain the concrete friction, defect, risk, cost, or capability gap. Avoid generic trend language unless it directly supports the decision.
+3. **Current state / ownership** — identify the existing implementation, owner, paths, commands, state, or contract an implementer must inspect. Distinguish verified current facts from proposed design.
+4. **Desired behavior / contract** — describe important flows and invariants concretely. Use examples or small diagrams when they remove ambiguity.
+5. **Smallest implementation** — point to the existing owner to extend and explicitly discourage unnecessary parallel abstractions. Keep implementation guidance high-level enough to allow better code-local choices after inspection.
+6. **Failure behavior / edge cases** — include only cases that materially affect correctness, idempotency, isolation, recovery, security, or user/operator experience. State the intended outcome for each important failure rather than merely listing risks.
+7. **Non-goals** — name tempting adjacent work that is explicitly outside scope. Use this to prevent scope creep, not to list every conceivable future feature.
+8. **Acceptance criteria** — make completion observable and testable. Cover the main outcome, compatibility/invariants, meaningful failures, and required repository checks. Avoid restating implementation steps as acceptance criteria.
+9. **Regression / validation guidance** — specify the authoritative boundaries that need evidence. Prefer deterministic tests and existing repository qualification paths; do not require live infrastructure unless the change actually crosses that boundary.
+10. **Rollout / operational impact** — include only when deployment, migration, systemd, infrastructure, credentials, persistent data, or production behavior changes. State activation and rollback expectations proportionally.
+11. **Prerequisites / related work / successors** — link only dependencies or follow-ups that materially affect sequencing or scope. Do not manufacture child issues to make the issue look complete.
+12. **Agent pickup note** — finish complex issues with the one or two architectural/product constraints most likely to be lost during implementation, especially the simplification boundary.
+
+For a **spike**, additionally state the hypothesis/question, evidence to collect, decision criteria, deliverables, and explicit stop/go outcomes. A spike should end in a decision or evidence package, not quietly become a production migration.
+
+Issue-writing rules:
+
+- Lead with the intended outcome, not a chronology of prior discussion.
+- Prefer one vertically useful issue over a chain of phase issues unless independently valuable boundaries genuinely require splitting.
+- Reuse the current owner wherever possible; identify concrete evidence before proposing a new service, queue, schema, framework, or abstraction.
+- Include exact issue/PR/commit/path identifiers only when verified. Treat changing external facts, versions, prices, provider behavior, and release state as facts to revalidate at implementation time.
+- Keep alternatives only when they explain a material decision. Do not preserve abandoned designs as parallel requirements.
+- Make non-goals and acceptance criteria consistent with the smallest implementation. If acceptance implicitly requires a broader architecture than the stated outcome, simplify before filing.
+- State security, isolation, idempotency, restart, rollback, or data-preservation requirements only where the change touches those boundaries; do not copy a generic checklist into every issue.
+- Do not prescribe low-level code structure that has not been verified against the current repository. Point agents to the likely owner and require them to inspect the exact current implementation first.
+- When current behavior is already correct in sibling paths, explicitly say those paths must remain unchanged rather than asking the implementation to redesign them.
+- Use references to give an agent primary evidence or nearby repository context, not to create a bibliography.
+
+A good issue is **complete enough to implement without the originating conversation, but no larger than the decision being made**.
+
+## Write review-ready pull requests
+
+A pull request should let a reviewer — including an independent contributor or reviewer with no access to the originating agent conversation — understand **why the change exists, what the exact diff is intended to do, what it deliberately leaves alone, and what evidence makes the current head reviewable**.
+
+Keep the body proportional. A small documentation or one-line defect fix can be brief; a lifecycle, persistence, security, provider-contract, release, or deployment change needs enough context to review the changed boundary safely. Do not paste the whole issue into the PR.
+
+A useful PR body normally contains:
+
+1. **Summary / Outcome** — the behavior delivered by this diff, in concrete terms.
+2. **Why / Root cause** — for fixes, identify the reproduced cause; for features, identify the current gap. Do not present a hypothesis as a confirmed root cause.
+3. **Scope and non-goals** — call out important sibling behavior that remains unchanged and any tempting adjacent work intentionally excluded.
+4. **Implementation / contract** — only where needed, explain the important ownership boundary, flow, migration, lifecycle, or invariant. Prefer what a reviewer needs to reason about the diff over a file-by-file narration.
+5. **TDD / validation evidence** — report the red evidence and green verification required by this repository, plus the checks actually run and their outcomes. Distinguish local results from exact-head CI and never claim checks that have not completed.
+6. **Rollout impact** — include the repository-required `Rollout impact: none` or `Rollout impact: required — included in this PR`, with activation/rollback detail where the changed boundary requires it.
+7. **Issue relationship** — use `Closes #N` only when this PR fully satisfies that issue. Use `Related to #N` when it is partial, exploratory, or prerequisite work.
+
+PR-writing rules:
+
+- Write the title as the outcome, not an internal implementation detail.
+- Describe the **current head**, not the chronology of how the branch evolved. After review repairs or scope changes, update stale claims, test counts, non-goals, rollout notes, and issue-closing language.
+- Preserve meaningful red/green commit evidence where required, but do not make the PR body brittle by enumerating every intermediate commit.
+- State what was tested and, when material, what was not tested or remains a residual risk. Do not hide missing live/infrastructure verification behind generic wording such as “all checks pass.”
+- Do not attach credentials, tokens, private host details, OAuth URLs, copied production data, or other secrets to a PR. Independent agent contributions must be reviewable from repository/public evidence without private conversational context.
+- Do not include speculative successors unless they clarify why something is intentionally out of scope. Prefer the linked issue as the canonical design record for larger work.
+- Avoid file-by-file summaries that merely restate the diff. Explain decisions, contracts, and evidence a reviewer cannot infer cheaply from code.
+- A PR that changes behavior must include corresponding regression evidence at the affected boundary; a passing unrelated suite is not a substitute.
+- Before requesting review or merge, inspect the final diff for unrelated changes and make the PR description agree with the final scope.
+
+For independent or agent-authored contributions, assume the reviewer has **no access to the agent's prior prompts, hidden reasoning, local scratch notes, private memory, or private environment**. Everything required to evaluate intent and evidence must be either in the repository, linked issue, PR body, or reproducible checks.
+
 ## Complete the production path
 
 Trace every changed behaviour through its required path:
