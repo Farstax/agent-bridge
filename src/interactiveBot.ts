@@ -317,6 +317,7 @@ export async function dispatchInteractiveWithFallback(
   let outcome: ExecutionOutcome = "committed";
   if (claimedMessage) outcome = await engines[activeCli].executeClaimedMessage(claimedMessage);
   else await engines[activeCli].handleUpdate(update);
+
   if (exhaustedChats.has(chatKey)) {
     exhaustedChats.delete(chatKey);
     let next: CliKind | null = null;
