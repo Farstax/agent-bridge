@@ -329,9 +329,8 @@ for (;;) {
             const messageId = cbq.message?.message_id;
             const chatKey = resolveUpdateChatKey(typedUpdate);
             if (chatKey) {
-              setUserCliPreference(db, chatKey, newCli);
-              fallbackChain.setActiveCli(chatKey, newCli);
               applyManualCliSwitchHandoff(db, chatKey, newCli);
+              fallbackChain.setActiveCli(chatKey, newCli);
             }
             await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `Switched to ${newCli}` });
             if (chatId && messageId) {
