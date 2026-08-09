@@ -13,15 +13,23 @@ By work type:
 
 ## Verification protocol — do this every cycle
 
+Use focused red/green locally; exact-head GitHub CI owns the required full-suite regression gate.
+
 ```bash
 # After writing tests, before writing implementation:
-npm test   # must show the new test(s) FAILING — confirm red
+npm test -- <focused-test-file-or-pattern>   # new test(s) must FAIL — confirm red
 
 # After writing implementation:
-npm test   # must show all tests PASSING — confirm green
+npm test -- <focused-test-file-or-pattern>   # focused affected set must PASS — confirm green
 ```
 
 If you cannot confirm the red state, stop. The test is either wrong, already covered, or testing nothing.
+
+For green verification, rerun the same focused test plus directly affected boundary tests. Add broader local tests, typecheck, architecture/static checks, or build checks when the touched boundary and risk justify them.
+
+Do not rerun the full suite locally by default. Run local `npm test` only when the change is intentionally broad/global, exact-head GitHub CI is unavailable, or a CI/review failure needs full-suite reproduction. Before merge, the current PR head must have a successful full `npm test` in GitHub `CI` plus the repository's other required exact-head checks. A head SHA change invalidates that evidence and requires fresh CI.
+
+Independent review should use current exact-head GitHub CI as the full-regression evidence and run only focused tests needed to investigate findings. If a review repair changes code, require fresh exact-head CI rather than reproducing the whole suite locally first.
 
 ## Commit discipline
 
@@ -35,8 +43,9 @@ commit 2: feat/fix: implement <feature>            ← green state
 The commit history must prove that the test existed before the implementation. A single commit containing both test and production code is not TDD — it is tests-alongside-code with no proof of the red state.
 
 Planning note: when writing or reviewing an implementation plan, ensure every phase explicitly requires:
-1. Write tests → run `npm test` → confirm red → commit
-2. Write implementation → run `npm test` → confirm green → commit
+1. Write focused test → run focused test → confirm red → commit
+2. Write implementation → rerun focused affected tests → confirm green → commit
+3. Push the final head → require exact-head GitHub CI and other required checks before merge
 
 ---
 

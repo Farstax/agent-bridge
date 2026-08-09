@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: release-artifact-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -38,12 +38,15 @@ jobs:
         run: npm ci
 
       - name: Run tests
+        if: github.event_name != 'pull_request'
         run: npm test
 
       - name: Typecheck
+        if: github.event_name != 'pull_request'
         run: npm run typecheck
 
       - name: Architecture lint
+        if: github.event_name != 'pull_request'
         run: bash scripts/arch-lint.sh src
 
       - name: Compile runtime
@@ -63,6 +66,11 @@ jobs:
           database_schema_version="$(node --input-type=module -e 'import("./dist/db/schema.js").then((m) => console.log(m.CURRENT_SCHEMA_VERSION))')"
           root="$RUNNER_TEMP/agent-bridge-release"
           archive="$RUNNER_TEMP/agent-bridge-${commit}.tar.gz"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            checks_json='["compile","manifest"]'
+          else
+            checks_json='["test","typecheck","architecture-lint","compile","manifest"]'
+          fi
           mkdir -p "$root"
           cp -a dist src package.json package-lock.json node_modules "$root/"
           mkdir -p "$root/scripts" "$root/bin" "$root/prompts" "$root/skills"
@@ -83,7 +91,7 @@ jobs:
             "tree": "${tree}",
             "workflow_run": "${GITHUB_RUN_ID}",
             "workflow_head": "${builder_head}",
-            "checks": ["test", "typecheck", "architecture-lint", "compile", "manifest"]
+            "checks": ${checks_json}
           }
           EOF
           node scripts/releaseManifest.mjs \
