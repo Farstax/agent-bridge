@@ -279,7 +279,7 @@ export function buildInvocation({
   }
   if (outputMode === "json") args.push("--output-format", "json");
   const annotatedPrompt = appendAttachmentAnnotations(
-    wrapAntigravityPrompt(prompt, soulContext, includeResponseContract, outputMode),
+    wrapAntigravityPrompt(prompt, soulContext, includeResponseContract ?? true, outputMode),
     attachments,
   );
   const finalPrompt = appendOutputDirInstruction(annotatedPrompt, outputDir);
