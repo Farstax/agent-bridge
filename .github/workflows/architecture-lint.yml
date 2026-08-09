@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: architecture-lint-${{ github.event.pull_request.number || github.ref }}
+  group: architecture-lint-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
