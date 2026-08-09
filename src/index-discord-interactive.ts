@@ -421,9 +421,8 @@ async function handleInteraction(d: any): Promise<void> {
     }
     const newCli = handleCliSwitchCallback(customId);
     if (!newCli) return;
-    setUserCliPreference(db, channelId, newCli);
-    fallbackChain.setActiveCli(channelId, newCli);
     applyManualCliSwitchHandoff(db, channelId, newCli);
+    fallbackChain.setActiveCli(channelId, newCli);
 
     // UPDATE_MESSAGE (type 7) — edit the /cli message in-place
     await client.answerCallbackQuery({
@@ -458,9 +457,8 @@ async function handleInteraction(d: any): Promise<void> {
       if (toOption) {
         const newCli = handleCliSwitchCallback(`cli:${toOption}`);
         if (newCli) {
-          setUserCliPreference(db, channelId, newCli);
-          fallbackChain.setActiveCli(channelId, newCli);
           applyManualCliSwitchHandoff(db, channelId, newCli);
+          fallbackChain.setActiveCli(channelId, newCli);
         }
       }
       const pref = getUserCliPreference(db, channelId);
