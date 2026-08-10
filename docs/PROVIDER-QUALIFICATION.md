@@ -58,7 +58,7 @@ Managed upgrade output is consumed by the health auto-remediation path. A newly 
 
 On-demand `/health` and `/status` include the persistent qualification summary without adding the qualification record as a scheduled health plugin, avoiding repeated Telegram reports for the same known degraded version. `npm run doctor` prints the same concise qualification summary. Detailed per-check diagnostics remain in the evidence file.
 
-The first slice does not automatically downgrade a failed CLI. The installed provider remains available for diagnosis; its failed/degraded qualification is surfaced for routing/fallback policy and operator action.
+The first slice does not automatically downgrade a failed CLI. A provider with deterministic `overall: fail` evidence is excluded from interactive CLI selection and fallback chains so known-bad contracts are avoided while the binary remains installed for diagnosis. `degraded` prerequisite/transient states are surfaced but are not routing-blocked.
 
 ## Regression policy
 
