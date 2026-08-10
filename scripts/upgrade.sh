@@ -110,9 +110,11 @@ qualify_provider_if_needed() {
   if [[ "${status}" == "0" ]]; then
     return 0
   fi
-  if [[ "${status}" == "1" ]]; then
-    # Exit 1 means the qualifier persisted a deterministic contract failure.
-    # Keep the installed CLI for diagnosis; health/fallback routing consumes it.
+  if [[ "${status}" == "1"
+        && "${output}" == *"\"provider\":\"${provider}\""*
+        && "${output}" == *"\"overall\":\"fail\""* ]]; then
+    # Exit 1 plus the qualifier's fail JSON means the failed evidence was
+    # produced successfully. Keep the installed CLI for diagnosis.
     echo "[qualification] ${provider} ${after}: FAILED — provider marked degraded; no automatic rollback" >&2
     return 0
   fi
