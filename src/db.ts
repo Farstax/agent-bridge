@@ -1134,6 +1134,10 @@ export class BridgeDb {
     return this.memories.getMemoryCount();
   }
 
+  resolveMemory(id: string, resolvedBy: string): void {
+    this.memories.resolveMemory(id, resolvedBy);
+  }
+
   close(): void {
     this.raw.close();
   }

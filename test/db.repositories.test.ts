@@ -589,6 +589,16 @@ describe("MemoryRepository", () => {
     repo.addMemory({ id: "mem_4", type: "decision", scope: "project", text: "bridge is stable" });
     expect(repo.getMemoryCount()).toBe(1);
   });
+
+  it("resolveMemory marks an entry resolved and excludes it from default search results", () => {
+    const repo = new MemoryRepository(raw);
+    repo.addMemory({ id: "mem_blocker", type: "decision", scope: "project", text: "blocked pending independent verification of the Aruba SSH host key" });
+    expect(repo.searchMemories("Aruba SSH host key").some((m: any) => m.id === "mem_blocker")).toBe(true);
+
+    repo.resolveMemory("mem_blocker", "mem_resolution");
+
+    expect(repo.searchMemories("Aruba SSH host key").some((m: any) => m.id === "mem_blocker")).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

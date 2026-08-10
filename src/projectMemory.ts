@@ -14,6 +14,7 @@ export type ProjectMemoryCandidate = {
   scope?: unknown;
   text?: unknown;
   confidence?: unknown;
+  resolves?: unknown;
 };
 
 export type ProjectMemoryProvenance = {
@@ -27,7 +28,7 @@ export type ProjectMemoryStoreResult =
   | { status: "duplicate"; id: string }
   | { status: "rejected"; reason: string };
 
-type ProjectMemoryDb = Pick<BridgeDb, "findMemoryByText" | "getLatestConvTurnId" | "addMemory">;
+type ProjectMemoryDb = Pick<BridgeDb, "raw" | "findMemoryByText" | "getLatestConvTurnId" | "addMemory" | "resolveMemory">;
 
 const ALLOWED_MEMORY_TYPES = new Set(["decision", "bug", "bugfix", "bug_fix", "convention", "todo", "note"]);
 const ALLOWED_MEMORY_SCOPES = new Set(["project", "chat", "global"]);
@@ -76,19 +77,31 @@ export function storeProjectMemoryCandidate(
   const duplicate = db.findMemoryByText(text);
   if (duplicate) return { status: "duplicate", id: duplicate.id };
 
+  const resolves = Array.isArray(rawCandidate.resolves)
+    ? rawCandidate.resolves.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+
   const latestTurnId = db.getLatestConvTurnId(provenance.chatKey);
   const id = memoryId(type, scope, text);
-  db.addMemory({
-    id,
-    type,
-    scope,
-    text,
-    source_chat_key: provenance.chatKey,
-    source_cli: provenance.cliKind?.trim() || undefined,
-    source_turn_id: latestTurnId ?? undefined,
-    source_repo_path: provenance.repoPath?.trim() || cwd(),
-    confidence,
-  });
+  const write = () => {
+    db.addMemory({
+      id,
+      type,
+      scope,
+      text,
+      source_chat_key: provenance.chatKey,
+      source_cli: provenance.cliKind?.trim() || undefined,
+      source_turn_id: latestTurnId ?? undefined,
+      source_repo_path: provenance.repoPath?.trim() || cwd(),
+      confidence,
+    });
+    for (const resolvedId of resolves) {
+      db.resolveMemory(resolvedId.trim(), id);
+    }
+  };
+
+  if (resolves.length > 0) db.raw.transaction(write)();
+  else write();
   return { status: "stored", id };
 }
 
