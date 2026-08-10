@@ -133,7 +133,7 @@ describe("role assignment repository migration", () => {
 
     const migrated = openDb(path, { serviceId: "role-assignment-migration-test" });
     expect(migrated.raw.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
-    expect(CURRENT_SCHEMA_VERSION).toBe(4);
+    expect(CURRENT_SCHEMA_VERSION).toBe(5);
     assertFixturePreserved(migrated, snapshot);
 
     const first = migrated.createRoleAssignmentRevision(config);

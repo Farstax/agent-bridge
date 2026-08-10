@@ -285,11 +285,12 @@ it("rolls back prompt-table retirement when an unexpected row exists", () => {
   it("rejects a production migration plan that does not end exactly at CURRENT_SCHEMA_VERSION", () => {
     const fixture = tempDbPath("overshoot");
     const overshootMigrations: readonly Migration[] = [
-      { version: 1, name: "legacy-compatible-baseline", up: () => undefined },
-      { version: 2, name: "drop-empty-legacy-prompt-overrides", up: () => undefined },
-      { version: 3, name: "add-dormant-role-assignments", up: () => undefined },
-      { version: 4, name: "add-reconciliation-audit", up: () => undefined },
-      { version: 5, name: "unexpected-extra-step", up: () => undefined },
+      ...Array.from({ length: CURRENT_SCHEMA_VERSION }, (_, i) => ({
+        version: i + 1,
+        name: `step-${i + 1}`,
+        up: () => undefined,
+      })),
+      { version: CURRENT_SCHEMA_VERSION + 1, name: "unexpected-extra-step", up: () => undefined },
     ];
     try {
       const raw = new Database(fixture.path);

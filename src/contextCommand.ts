@@ -71,6 +71,7 @@ function searchMemories(db: Database.Database, query: string, chatKey: string): 
       FROM project_memories_fts fts
       JOIN project_memories pm ON pm.rowid = fts.rowid
       WHERE project_memories_fts MATCH ?
+        AND pm.resolved_by IS NULL
         AND (pm.scope IN ('project', 'global') OR (pm.scope = 'chat' AND pm.source_chat_key = ?))
       ORDER BY rank
       LIMIT 5

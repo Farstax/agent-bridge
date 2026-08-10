@@ -193,4 +193,43 @@ describe("agent-bridge-context helper", () => {
       rmSync(path, { force: true });
     }
   });
+
+  it("stops surfacing a blocker once a later entry resolves it (issue #304)", () => {
+    const { db, path } = makeDb();
+    try {
+      const env = {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        AGENT_BRIDGE_CLI_KIND: "codex",
+      };
+
+      db.addMemory({
+        id: "mem_bridge_arubablocker",
+        type: "decision",
+        scope: "project",
+        text: "blocked pending independent verification of the Aruba SSH host key",
+      });
+
+      const beforeResolution = renderAgentBridgeContext(["--memory-query", "Aruba SSH host key"], env);
+      expect(beforeResolution).toContain("blocked pending independent verification");
+
+      const resolveOutput = renderAgentBridgeContext([
+        "--memory-add-json",
+        JSON.stringify({
+          type: "decision",
+          scope: "project",
+          text: "Aruba SSH host key trust anchor committed; guard script merged and a guarded production deployment succeeded.",
+          resolves: ["mem_bridge_arubablocker"],
+        }),
+      ], env);
+      expect(resolveOutput).toContain("Memory stored");
+
+      const afterResolution = renderAgentBridgeContext(["--memory-query", "Aruba SSH host key"], env);
+      expect(afterResolution).not.toContain("blocked pending independent verification");
+      expect(afterResolution).toContain("trust anchor committed");
+    } finally {
+      db.close();
+      rmSync(path, { force: true });
+    }
+  });
 });

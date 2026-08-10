@@ -50,6 +50,7 @@ export class MemoryRepository {
         FROM project_memories_fts fts
         JOIN project_memories pm ON pm.rowid = fts.rowid
         WHERE project_memories_fts MATCH ?
+          AND pm.resolved_by IS NULL
           ${scopeFilter}
         ORDER BY rank
         LIMIT ?
@@ -57,6 +58,13 @@ export class MemoryRepository {
     } catch {
       return [];
     }
+  }
+
+  // Marks an existing memory row resolved/superseded without deleting it,
+  // so it stops surfacing in default search results but stays available
+  // for audit/history (issue #304).
+  resolveMemory(id: string, resolvedBy: string): void {
+    this.db.prepare(`UPDATE project_memories SET resolved_by = ? WHERE id = ?`).run(resolvedBy, id);
   }
 
   getMemoryCount(): number {

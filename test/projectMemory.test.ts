@@ -59,4 +59,37 @@ describe("project memory storage", () => {
       confidence: 0.72,
     }));
   });
+
+  it("resolves referenced memory ids atomically when a candidate carries a resolves list", () => {
+    const transaction = vi.fn((write: () => void) => write);
+    const db = {
+      raw: { transaction },
+      findMemoryByText: vi.fn().mockReturnValue(null),
+      getLatestConvTurnId: vi.fn().mockReturnValue(12),
+      addMemory: vi.fn(),
+      resolveMemory: vi.fn(),
+    };
+
+    const result = storeProjectMemoryCandidate(
+      db as any,
+      {
+        type: "decision",
+        scope: "project",
+        text: "Aruba trust anchor committed; SSH host key blocker resolved.",
+        resolves: ["mem_bridge_blocker123"],
+      } as any,
+      {
+        chatKey: "chat:1",
+        cliKind: "codex",
+        repoPath: "/repo",
+      },
+    );
+
+    expect(result.status).toBe("stored");
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(db.resolveMemory).toHaveBeenCalledWith(
+      "mem_bridge_blocker123",
+      result.status === "stored" ? result.id : undefined,
+    );
+  });
 });

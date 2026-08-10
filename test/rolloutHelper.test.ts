@@ -384,7 +384,7 @@ describe("guarded rollout helper", () => {
     expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf(" reconcile "));
     const verify = new Database(fixture.dbPaths[0], { readonly: true });
     try {
-      expect(verify.pragma("user_version", { simple: true })).toBe(4);
+      expect(verify.pragma("user_version", { simple: true })).toBe(5);
       expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'").get()).toEqual({ name: "reconciliation_audit" });
       expect(verify.prepare("SELECT state, attachments_json FROM pending_messages").get()).toEqual({ state: "queued", attachments_json: '["document:file-id"]' });
     } finally {
