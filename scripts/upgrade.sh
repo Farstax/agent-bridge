@@ -37,6 +37,91 @@ require_node() {
   fi
 }
 
+run_as_target_user() {
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    "$@"
+  else
+    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" PATH="${PATH}" "$@"
+  fi
+}
+
+npm_pkg_version() {
+  local listing
+  listing="$(npm list -g "${1}" --depth=0 2>/dev/null || true)"
+  printf '%s\n' "${listing}" \
+    | grep "${1}@" \
+    | head -1 \
+    | sed 's/.*@//' \
+    | tr -d '[:space:]' || true
+}
+
+cli_command_version() {
+  local command="$1" raw
+  if ! command -v "${command}" >/dev/null 2>&1; then
+    return 0
+  fi
+  raw="$(run_as_target_user "${command}" --version 2>/dev/null || true)"
+  printf '%s\n' "${raw}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?' | head -1 || true
+}
+
+qualification_bridge_commit() {
+  local configured="${AGENT_BRIDGE_COMMIT:-${BRIDGE_COMMIT:-${BRIDGE_RELEASE_COMMIT:-}}}"
+  if [[ -n "${configured}" ]]; then
+    printf '%s\n' "${configured}"
+    return
+  fi
+  if [[ "$(basename "${REPO_DIR}")" =~ ^[0-9a-f]{40}$ ]]; then
+    basename "${REPO_DIR}"
+    return
+  fi
+  git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || printf '%s\n' unknown
+}
+
+qualify_provider_if_needed() {
+  local provider="$1" before="$2" after="$3"
+  local qualifier="${REPO_DIR}/scripts/provider-qualification.ts"
+  local tsx="${REPO_DIR}/node_modules/tsx/dist/cli.mjs"
+  if [[ ! -f "${qualifier}" || ! -f "${tsx}" ]]; then
+    echo "provider qualification unavailable for ${provider}; runtime payload is incomplete" >&2
+    return 2
+  fi
+
+  local args=(
+    "${NODE_BIN}" "${tsx}" "${qualifier}"
+    --provider "${provider}"
+    --expected-version "${after}"
+    --bridge-commit "$(qualification_bridge_commit)"
+    --if-needed
+  )
+  if [[ -n "${before}" ]]; then
+    args+=(--previous-version "${before}")
+  fi
+
+  echo "[qualification] ${provider} ${after}"
+  local output status
+  if output="$(run_as_target_user "${args[@]}")"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ -n "${output}" ]]; then
+    printf '%s\n' "${output}"
+  fi
+  if [[ "${status}" == "0" ]]; then
+    return 0
+  fi
+  if [[ "${status}" == "1"
+        && "${output}" == *"\"provider\":\"${provider}\""*
+        && "${output}" == *"\"overall\":\"fail\""* ]]; then
+    # Exit 1 plus the qualifier's fail JSON means the failed evidence was
+    # produced successfully. Keep the installed CLI for diagnosis.
+    echo "[qualification] ${provider} ${after}: FAILED — provider marked degraded; no automatic rollback" >&2
+    return 0
+  fi
+  echo "[qualification] ${provider} ${after}: qualification runner failed (exit ${status})" >&2
+  return "${status}"
+}
+
 install_unit() {
   local name="$1"
   sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
@@ -84,9 +169,17 @@ install_shared_skills() {
 
 require_node
 
-# ── --update mode: update CLIs + build + test + safe service restart ──────────
+# ── --update mode: update CLIs + qualify + build + test + safe restart ────────
 # Does NOT reinstall systemd units.
 if [[ "${1:-}" == "--update" ]]; then
+  before_claude=""
+  before_codex=""
+  if command -v npm >/dev/null 2>&1; then
+    before_claude="$(npm_pkg_version @anthropic-ai/claude-code)"
+    before_codex="$(npm_pkg_version @openai/codex)"
+  fi
+  before_agy="$(cli_command_version agy)"
+
   echo "[update] Updating CLI packages..."
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
@@ -95,6 +188,15 @@ if [[ "${1:-}" == "--update" ]]; then
 
   echo "[update] Updating agy (antigravity)..."
   bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
+
+  if command -v npm >/dev/null 2>&1; then
+    after_claude="$(npm_pkg_version @anthropic-ai/claude-code)"
+    after_codex="$(npm_pkg_version @openai/codex)"
+    [[ -z "${after_claude}" ]] || qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
+    [[ -z "${after_codex}" ]] || qualify_provider_if_needed codex "${before_codex}" "${after_codex}"
+  fi
+  after_agy="$(cli_command_version agy)"
+  [[ -z "${after_agy}" ]] || qualify_provider_if_needed agy "${before_agy}" "${after_agy}"
 
   if (cd "${REPO_DIR}" && npm run | grep -q '^  build$'); then
     echo "[update] Building bridge..."
@@ -136,22 +238,12 @@ if [[ "${1:-}" == "--update" ]]; then
   exit 0
 fi
 
-# ── --clis-only mode: upgrade npm CLIs only, print what changed ───────────────
+# ── --clis-only mode: upgrade npm CLIs, qualify installed contracts ───────────
 if [[ "${1:-}" == "--clis-only" ]]; then
   if ! command -v npm >/dev/null 2>&1; then
     echo "npm not found" >&2
     exit 1
   fi
-
-  npm_pkg_version() {
-    local listing
-    listing="$(npm list -g "${1}" --depth=0 2>/dev/null || true)"
-    printf '%s\n' "${listing}" \
-      | grep "${1}@" \
-      | head -1 \
-      | sed 's/.*@//' \
-      | tr -d '[:space:]' || true
-  }
 
   CLIS=("@anthropic-ai/claude-code" "@openai/codex")
   declare -A before_versions
@@ -177,21 +269,18 @@ if [[ "${1:-}" == "--clis-only" ]]; then
     else
       echo "verified: ${pkg} ${after}"
     fi
+
+    case "${pkg}" in
+      @anthropic-ai/claude-code) qualify_provider_if_needed claude "${before}" "${after}" ;;
+      @openai/codex) qualify_provider_if_needed codex "${before}" "${after}" ;;
+    esac
   done
 
   if [[ "${updated_any}" == "0" ]]; then
-    echo "no-op: CLIs already up to date"
+    echo "no-op: CLIs already up to date; qualification cache verified"
   fi
   exit 0
 fi
-
-run_as_target_user() {
-  if [[ "${USER}" == "${TARGET_USER}" ]]; then
-    "$@"
-  else
-    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" PATH="${PATH}" "$@"
-  fi
-}
 
 if [[ "${1:-}" != "--skip-cli-install" ]]; then
   if command -v npm >/dev/null 2>&1; then
