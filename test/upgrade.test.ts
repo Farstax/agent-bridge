@@ -54,7 +54,13 @@ set -euo pipefail
 if [ "$1" = list ]; then
   version=1.0.0
   [ ! -f "${state}" ] || version=1.1.0
-  case "$2" in
+  pkg=""
+  for arg in "$@"; do
+    case "$arg" in
+      @anthropic-ai/claude-code|@openai/codex) pkg="$arg" ;;
+    esac
+  done
+  case "$pkg" in
     @anthropic-ai/claude-code) echo "@anthropic-ai/claude-code@$version" ;;
     @openai/codex) echo "@openai/codex@$version" ;;
   esac
@@ -95,7 +101,13 @@ set -euo pipefail
 if [ "$1" = list ]; then
   version=1.0.0
   [ ! -f "${state}" ] || version=1.1.0
-  case "$2" in
+  pkg=""
+  for arg in "$@"; do
+    case "$arg" in
+      @anthropic-ai/claude-code|@openai/codex) pkg="$arg" ;;
+    esac
+  done
+  case "$pkg" in
     @anthropic-ai/claude-code) echo "@anthropic-ai/claude-code@$version" ;;
     @openai/codex) echo "@openai/codex@$version" ;;
   esac
