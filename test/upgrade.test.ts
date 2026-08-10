@@ -126,4 +126,46 @@ exit 0
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("provider marked degraded; no automatic rollback");
   });
+
+  it("fails the upgrade when the qualification runner itself fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-qualification-runner-fail-"));
+    const npm = join(root, "npm");
+    const node = join(root, "node");
+    const state = join(root, "installed");
+
+    writeFileSync(node, `#!/usr/bin/env bash
+if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+exit 2
+`, { mode: 0o755 });
+    chmodSync(node, 0o755);
+    writeFileSync(npm, `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = list ]; then
+  version=1.0.0
+  [ ! -f "${state}" ] || version=1.1.0
+  pkg=""
+  for arg in "$@"; do
+    case "$arg" in
+      @anthropic-ai/claude-code|@openai/codex) pkg="$arg" ;;
+    esac
+  done
+  case "$pkg" in
+    @anthropic-ai/claude-code) echo "@anthropic-ai/claude-code@$version" ;;
+    @openai/codex) echo "@openai/codex@$version" ;;
+  esac
+  exit 0
+fi
+if [ "$1" = install ]; then touch "${state}"; exit 0; fi
+exit 0
+`, { mode: 0o755 });
+    chmodSync(npm, 0o755);
+
+    const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
+      encoding: "utf8",
+      env: { ...process.env, NODE_BIN: node, PATH: `${root}:${process.env.PATH}` },
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("qualification runner failed");
+  });
 });
