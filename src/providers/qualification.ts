@@ -429,12 +429,17 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         } catch (caught) {
           const error = caught instanceof Error ? caught : new Error(String(caught));
           const classification = classifyProviderError(options.providerId, error);
-          checks.push({ name: "session_resume", status: "fail", diagnostic: error.message.slice(0, 500) });
-          overall = classification.kind === "capacity_exhausted"
-            || classification.kind === "model_unavailable"
-            || classification.kind === "transient"
-            ? "degraded"
-            : "fail";
+          if (classification.kind === "auth_required") {
+            checks.push({ name: "session_resume", status: "not_authenticated", diagnostic: error.message.slice(0, 500) });
+            overall = "degraded";
+          } else {
+            checks.push({ name: "session_resume", status: "fail", diagnostic: error.message.slice(0, 500) });
+            overall = classification.kind === "capacity_exhausted"
+              || classification.kind === "model_unavailable"
+              || classification.kind === "transient"
+              ? "degraded"
+              : "fail";
+          }
         }
       }
     }
