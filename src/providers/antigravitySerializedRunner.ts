@@ -83,6 +83,24 @@ function emitSafe(onEvent: ((event: BridgeEvent) => void) | undefined, event: Br
   try { onEvent?.(event); } catch { /* observer failures never alter execution */ }
 }
 
+function extractNativeJsonProviderError(stdout: string): Error | null {
+  const strictError = extractAntigravityNativeJsonError(stdout);
+  if (strictError) return strictError;
+
+  try {
+    const envelope = JSON.parse(stdout) as Record<string, unknown>;
+    if (
+      envelope.status !== "ERROR" ||
+      typeof envelope.response !== "string" ||
+      !envelope.response.trim()
+    ) return null;
+
+    return extractAntigravityNativeJsonError(JSON.stringify({ ...envelope, response: "" }));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Runs one complete Agy operation under the provider-state lock. The lock
  * covers model application, all bounded DNS attempts, and conversation-ID
@@ -182,7 +200,7 @@ export async function runAntigravitySerialized(
           const stdout = (lastError as Error & { stdout?: string }).stdout ?? "";
           const stderr = (lastError as Error & { stderr?: string }).stderr ?? "";
           if (outputMode === "json") {
-            const nativeError = extractAntigravityNativeJsonError(stdout);
+            const nativeError = extractNativeJsonProviderError(stdout);
             if (nativeError) {
               lastError = nativeError;
               throw lastError;
