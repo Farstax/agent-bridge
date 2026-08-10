@@ -154,4 +154,6 @@ export type CliProcessWatch = (context: CliProcessWatchContext) => NodeJS.Timeou
 export interface CliResult {
   text: string;
   sessionId: string | null;
+  /** Provider evidence that the logical turn may need a bounded automatic resume. */
+  continuationHint?: "background-process";
 }
