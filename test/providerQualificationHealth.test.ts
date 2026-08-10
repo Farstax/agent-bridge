@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -51,6 +51,31 @@ describe("provider qualification health integration", () => {
     expect(notifications[1]).toContain("CLI qualification fail");
     expect(notifications[1]).toContain("codex 0.141.0");
     expect(notifications[1]).toContain("fresh_prompt");
+  });
+
+  it("alerts once when qualification evidence is unreadable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "qualification-health-unreadable-"));
+    const evidencePath = join(root, "qualification.json");
+    writeFileSync(evidencePath, "{not-json\n", "utf8");
+    const { autoUpdateClis } = await import("../src/health/autoRemediate.js");
+    const notifications: string[] = [];
+    const healthyReport: HealthReport = {
+      ...report,
+      status: "green",
+      checks: [],
+      summary: "healthy",
+    };
+    const options = {
+      upgradeScript: "/fake/upgrade.sh",
+      sendNotification: async (text: string) => { notifications.push(text); },
+      qualificationEvidencePath: evidencePath,
+    };
+
+    await autoUpdateClis(healthyReport, options);
+    await autoUpdateClis(healthyReport, options);
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toContain("CLI qualification evidence unreadable");
   });
 
   it("formats persistent current and stale qualification states for on-demand health", () => {
