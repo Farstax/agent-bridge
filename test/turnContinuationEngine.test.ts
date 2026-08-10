@@ -61,6 +61,14 @@ async function nextTurn(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await nextTurn();
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 describe("sync turn continuation", () => {
   let dbPath: string;
   let db: ReturnType<typeof openDb>;
@@ -204,14 +212,14 @@ describe("sync turn continuation", () => {
     }, db, client, { runCli }, continuation);
 
     const first = engine.handleMessages([makeMessage("first", 1)]);
-    while (!(continuation.sleep as any).mock.calls.length) await nextTurn();
+    await waitUntil(() => (continuation.sleep as any).mock.calls.length > 0, "continuation wait");
     await engine.handleMessages([makeMessage("second", 2)]);
     expect(db.pendingMsgCount("test", "100")).toBe(1);
     expect(runCli).toHaveBeenCalledOnce();
 
     wait.resolve();
     await first;
-    while (runCli.mock.calls.length < 3) await nextTurn();
+    await waitUntil(() => runCli.mock.calls.length >= 3, "queued successor");
 
     expect(prompts[1]).toContain("background work");
     expect(prompts[2]).toContain("second");
@@ -240,12 +248,12 @@ describe("sync turn continuation", () => {
     }, db, client, { runCli }, continuation);
 
     const first = engine.handleMessages([makeMessage("old task", 1)]);
-    while (!(continuation.sleep as any).mock.calls.length) await nextTurn();
+    await waitUntil(() => (continuation.sleep as any).mock.calls.length > 0, "continuation wait");
     const successor = engine.handleMessages([makeMessage("new instruction", 2)]);
     await nextTurn();
     wait.resolve();
     await Promise.all([first, successor]);
-    while (runCli.mock.calls.length < 2) await nextTurn();
+    await waitUntil(() => runCli.mock.calls.length >= 2, "interrupt successor");
 
     expect(continuation.killRunOwnedDescendants).toHaveBeenCalledOnce();
     expect(runCli).toHaveBeenCalledTimes(2);
@@ -272,7 +280,7 @@ describe("sync turn continuation", () => {
     }, db, client, { runCli }, continuation);
 
     const first = engine.handleMessages([makeMessage("long task", 1)]);
-    while (!(continuation.sleep as any).mock.calls.length) await nextTurn();
+    await waitUntil(() => (continuation.sleep as any).mock.calls.length > 0, "continuation wait");
     const stopped = engine.handleUpdate({ update_id: 2, message: makeMessage("/stop", 2) });
     await nextTurn();
     wait.resolve();
