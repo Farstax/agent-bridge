@@ -93,6 +93,9 @@ exit 0
 
     writeFileSync(node, `#!/usr/bin/env bash
 if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+provider=claude
+if [[ " $* " == *" --provider codex "* ]]; then provider=codex; fi
+printf '{"ran":true,"provider":"%s","providerVersion":"1.1.0","overall":"fail","checks":[]}\\n' "$provider"
 exit 1
 `, { mode: 0o755 });
     chmodSync(node, 0o755);
@@ -135,7 +138,7 @@ exit 0
 
     writeFileSync(node, `#!/usr/bin/env bash
 if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
-exit 2
+exit 1
 `, { mode: 0o755 });
     chmodSync(node, 0o755);
     writeFileSync(npm, `#!/usr/bin/env bash
