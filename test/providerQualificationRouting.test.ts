@@ -71,7 +71,7 @@ describe("provider qualification routing", () => {
     expect(chain.isChainExhausted("chat:1")).toBe(true);
   });
 
-  it("moves the effective active provider past an unavailable chain head", () => {
+  it("moves the effective active provider past an unavailable chain head without retrying it", () => {
     const db = openDb(":memory:");
     const chain = new WorkerFallbackChain(
       ["codex", "claude", "antigravity"],
@@ -81,5 +81,6 @@ describe("provider qualification routing", () => {
 
     expect(chain.getActiveCli("chat:1")).toBe("claude");
     expect(chain.getChain()).toEqual(["claude", "antigravity"]);
+    expect(chain.advance("chat:1")).toBe("antigravity");
   });
 });
