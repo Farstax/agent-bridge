@@ -154,6 +154,7 @@ interface LaneRuntimeState {
   cancellationOperations: Map<string, LaneCancellation>;
   laneDrainers: Map<string, LaneDrainer>;
   finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
+  activeContinuations: Set<string>;
   activeAugmentedTasks: Map<string, AugmentedTask>;
   transferredAugmentedLanes: Set<string>;
   abortedChats: Set<string>;
@@ -174,6 +175,7 @@ function laneRuntimeState(db: BridgeDb, surfaceIdentity: string): LaneRuntimeSta
       cancellationOperations: new Map(),
       laneDrainers: new Map(),
       finalDeliveryPhases: new Map(),
+      activeContinuations: new Set(),
       activeAugmentedTasks: new Map(),
       transferredAugmentedLanes: new Set(),
       abortedChats: new Set(),
@@ -334,12 +336,12 @@ export class BridgeEngine {
   private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
-  private readonly cancellationOperations = new Map<string, LaneCancellation>();
-  private readonly laneDrainers = new Map<string, LaneDrainer>();
-  private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
-  private readonly activeContinuations = new Set<string>();
-  private readonly activeAugmentedTasks = new Map<string, AugmentedTask>();
-  private readonly transferredAugmentedLanes = new Set<string>();
+  private readonly cancellationOperations: Map<string, LaneCancellation>;
+  private readonly laneDrainers: Map<string, LaneDrainer>;
+  private readonly finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
+  private readonly activeContinuations: Set<string>;
+  private readonly activeAugmentedTasks: Map<string, AugmentedTask>;
+  private readonly transferredAugmentedLanes: Set<string>;
   private readonly seenTelegramMessageKeys = new Set<string>();
   private readonly abortedChats: Set<string>;
   private readonly resettingChats: Set<string>;
@@ -364,6 +366,7 @@ export class BridgeEngine {
     this.cancellationOperations = laneRuntime.cancellationOperations;
     this.laneDrainers = laneRuntime.laneDrainers;
     this.finalDeliveryPhases = laneRuntime.finalDeliveryPhases;
+    this.activeContinuations = laneRuntime.activeContinuations;
     this.activeAugmentedTasks = laneRuntime.activeAugmentedTasks;
     this.transferredAugmentedLanes = laneRuntime.transferredAugmentedLanes;
     this.abortedChats = laneRuntime.abortedChats;
