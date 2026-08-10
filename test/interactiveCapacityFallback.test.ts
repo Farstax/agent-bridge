@@ -3,10 +3,10 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { WorkerFallbackChain } from "../src/workerFallback.js";
 import {
+  dispatchClaimedInteractiveWithFallback,
   dispatchInteractiveWithFallback,
   getUserCliPreference,
   setUserCliPreference,
-  type CliKind,
 } from "../src/interactiveBot.js";
 
 function makeMockClient() {
@@ -66,6 +66,20 @@ describe("interactive capacity fallback durable admission", () => {
       claude: makeEngine(claudeRun),
       antigravity: makeEngine(antigravityRun as any),
     };
+    const deps = {
+      engines,
+      fallbackChain,
+      exhaustedChats,
+      db,
+      notify: async (message: string) => { notifications.push(message); },
+    };
+
+    // Production wires every engine's claimed queue rows back through the
+    // shared interactive fallback owner. Keep that boundary in the regression.
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) =>
+        dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
 
     try {
       setUserCliPreference(db, "100", "codex");
@@ -81,13 +95,7 @@ describe("interactive capacity fallback durable admission", () => {
           },
         },
         "100",
-        {
-          engines,
-          fallbackChain,
-          exhaustedChats,
-          db,
-          notify: async (message) => { notifications.push(message); },
-        },
+        deps,
       );
 
       expect(codexRun).toHaveBeenCalledTimes(1);
