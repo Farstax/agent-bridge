@@ -23,6 +23,7 @@ import { sendTelegramMessage } from "./messageDelivery.js";
 import { shutdownCliProcesses } from "./cliSupervisor.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { autoUpdateClis } from "./health/autoRemediate.js";
+import { formatQualificationSummary } from "./providers/qualificationStatus.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
@@ -154,6 +155,7 @@ const scheduler = new HealthScheduler({
     await autoUpdateClis(report, {
       upgradeScript: `${_repoRoot}/scripts/upgrade.sh`,
       sendNotification: sendText,
+      bridgeCommit: process.env.AGENT_BRIDGE_COMMIT ?? process.env.BRIDGE_COMMIT ?? process.env.BRIDGE_RELEASE_COMMIT,
     });
   },
 });
@@ -175,7 +177,11 @@ const engine = new BridgeEngine(
         if (cmd === "/health") {
           await engine.sendText(ctx.chatId, { text: "Checking health..." });
           const results = await Promise.all(plugins.map(p => p.check()));
-          const combined = results.map(r => formatReport(r)).join("\n\n---\n\n");
+          const qualificationStatus = formatQualificationSummary();
+          const combined = [
+            ...results.map(r => formatReport(r)),
+            qualificationStatus,
+          ].join("\n\n---\n\n");
           // Persist reports through healthBot for context store without sending duplicates.
           await Promise.all(results.map(r => healthBot.handleReport(r, { force: true, silent: true })));
           return { text: combined || "✅ All checks passed." };
@@ -186,9 +192,9 @@ const engine = new BridgeEngine(
           const store = new HealthContextStore(rawDb);
           const context = store.getContext();
           if (!context?.lastReport) {
-            return { text: "No health data yet. Use /health to run a check." };
+            return { text: `No health data yet. Use /health to run a check.\n\n${formatQualificationSummary()}` };
           }
-          let statusText = formatReport(context.lastReport);
+          let statusText = `${formatReport(context.lastReport)}\n\n${formatQualificationSummary()}`;
           if (context.lastSuggestion) {
             statusText += `\n\n*Last suggestion:*\n\n${context.lastSuggestion}`;
           }
