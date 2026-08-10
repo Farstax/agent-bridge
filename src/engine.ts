@@ -149,6 +149,40 @@ interface FinalDeliveryPhase {
   release: () => void;
 }
 
+interface LaneRuntimeState {
+  cancellationOperations: Map<string, LaneCancellation>;
+  laneDrainers: Map<string, LaneDrainer>;
+  finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
+  activeAugmentedTasks: Map<string, AugmentedTask>;
+  transferredAugmentedLanes: Set<string>;
+  abortedChats: Set<string>;
+  resettingChats: Set<string>;
+}
+
+const laneRuntimeByDb = new WeakMap<BridgeDb, Map<string, LaneRuntimeState>>();
+
+function laneRuntimeState(db: BridgeDb, surfaceIdentity: string): LaneRuntimeState {
+  let bySurface = laneRuntimeByDb.get(db);
+  if (!bySurface) {
+    bySurface = new Map<string, LaneRuntimeState>();
+    laneRuntimeByDb.set(db, bySurface);
+  }
+  let state = bySurface.get(surfaceIdentity);
+  if (!state) {
+    state = {
+      cancellationOperations: new Map(),
+      laneDrainers: new Map(),
+      finalDeliveryPhases: new Map(),
+      activeAugmentedTasks: new Map(),
+      transferredAugmentedLanes: new Set(),
+      abortedChats: new Set(),
+      resettingChats: new Set(),
+    };
+    bySurface.set(surfaceIdentity, state);
+  }
+  return state;
+}
+
 /** Injected execution functions — replace real CLI for unit tests. */
 export interface ExecFns {
   runCli: typeof _runCli;
@@ -271,14 +305,14 @@ export class BridgeEngine {
   private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
-  private readonly cancellationOperations = new Map<string, LaneCancellation>();
-  private readonly laneDrainers = new Map<string, LaneDrainer>();
-  private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
-  private readonly activeAugmentedTasks = new Map<string, AugmentedTask>();
-  private readonly transferredAugmentedLanes = new Set<string>();
+  private readonly cancellationOperations: Map<string, LaneCancellation>;
+  private readonly laneDrainers: Map<string, LaneDrainer>;
+  private readonly finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
+  private readonly activeAugmentedTasks: Map<string, AugmentedTask>;
+  private readonly transferredAugmentedLanes: Set<string>;
   private readonly seenTelegramMessageKeys = new Set<string>();
-  private readonly abortedChats = new Set<string>();
-  private readonly resettingChats = new Set<string>();
+  private readonly abortedChats: Set<string>;
+  private readonly resettingChats: Set<string>;
   private readonly advisorSuggestions = new Map<string, {
     prompt: string; mode: AdvisorRequestMode; messageId: number; suggestionMessageId?: number;
     chatKey: string; chatType: string; userId?: number; createdAt: number;
@@ -295,6 +329,14 @@ export class BridgeEngine {
     this.kind = opts.kind;
     this.surfaceIdentity = opts.surfaceIdentity;
     this.db = db;
+    const laneRuntime = laneRuntimeState(db, this.surfaceIdentity);
+    this.cancellationOperations = laneRuntime.cancellationOperations;
+    this.laneDrainers = laneRuntime.laneDrainers;
+    this.finalDeliveryPhases = laneRuntime.finalDeliveryPhases;
+    this.activeAugmentedTasks = laneRuntime.activeAugmentedTasks;
+    this.transferredAugmentedLanes = laneRuntime.transferredAugmentedLanes;
+    this.abortedChats = laneRuntime.abortedChats;
+    this.resettingChats = laneRuntime.resettingChats;
     this.client = client;
     this.hooks = opts.hooks ?? {};
     this.queuedMessageHandler = this.hooks.onQueuedMessage;
