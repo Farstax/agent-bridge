@@ -9,7 +9,7 @@ import { getQualificationFailedProviders } from "../src/providers/qualificationS
 import { WorkerFallbackChain } from "../src/workerFallback.js";
 
 describe("provider qualification routing", () => {
-  it("reads hard failures from persisted qualification evidence", () => {
+  it("reads hard failures from persisted qualification evidence for the installed version", () => {
     const root = mkdtempSync(join(tmpdir(), "qualification-routing-"));
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord({
@@ -43,7 +43,32 @@ describe("provider qualification routing", () => {
       ],
     }, evidencePath);
 
-    expect([...getQualificationFailedProviders(evidencePath)]).toEqual(["agy"]);
+    expect([...getQualificationFailedProviders(evidencePath, {
+      agy: "1.1.12",
+      claude: "2.3.4",
+    })]).toEqual(["agy"]);
+  });
+
+  it("does not block a newly installed version using stale failure evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "qualification-routing-version-change-"));
+    const evidencePath = join(root, "qualification.json");
+    writeQualificationRecord({
+      provider: "agy",
+      providerVersion: "1.1.12",
+      previousVersion: "1.1.11",
+      bridgeCommit: "e".repeat(40),
+      contractVersion: PROVIDER_CONTRACT_VERSION,
+      qualifiedAt: "2026-08-10T17:00:00.000Z",
+      environment: "managed-appliance",
+      overall: "fail",
+      checks: [
+        { name: "version", status: "pass" },
+        { name: "fresh_prompt", status: "fail", diagnostic: "native JSON contract drift" },
+        { name: "session_resume", status: "not_applicable" },
+      ],
+    }, evidencePath);
+
+    expect([...getQualificationFailedProviders(evidencePath, { agy: "1.1.13" })]).toEqual([]);
   });
 
   it("excludes only providers with hard qualification failures from interactive selection", () => {
