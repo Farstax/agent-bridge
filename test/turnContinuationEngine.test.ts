@@ -278,13 +278,16 @@ describe("sync turn continuation", () => {
       botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
       executionMode: "safe", asyncEnabled: false, pollIntervalMs: 1000,
     }, db, client, { runCli }, continuation);
+    const cancelLane = vi.spyOn(engine as any, "_cancelLane");
 
     const first = engine.handleMessages([makeMessage("long task", 1)]);
     await waitUntil(() => (continuation.sleep as any).mock.calls.length > 0, "continuation wait");
     const stopped = engine.handleUpdate({ update_id: 2, message: makeMessage("/stop", 2) });
-    await nextTurn();
+    await waitUntil(() => cancelLane.mock.calls.length === 1, "stop cancellation admission");
+    const stopCleanup = cancelLane.mock.results[0]?.value as Promise<void> | undefined;
+    expect(stopCleanup).toBeDefined();
     wait.resolve();
-    await Promise.all([first, stopped]);
+    await Promise.all([first, stopped, stopCleanup!]);
 
     expect(continuation.killRunOwnedDescendants).toHaveBeenCalledOnce();
     expect(runCli).toHaveBeenCalledOnce();
