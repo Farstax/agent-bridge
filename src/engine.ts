@@ -35,6 +35,7 @@ import type { MessagingPlatform } from "./platform.js";
 import { downloadTelegramAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
+import { hasLiveRunOwnedDescendants, killRunOwnedDescendants } from "./turnContinuationProcesses.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
@@ -48,7 +49,7 @@ import { parseCompactionProviderChain, resolveCompactionRecoveryTargets } from "
 import { consumeHandoffRequired, isHandoffRequired } from "./handoffState.js";
 import { contextInjectionPolicy, preseedCompactMode, preseedCompactCharThreshold, type ContextInjectionPolicy } from "./contextPolicy.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
-import type { BridgeEvent } from "./events/types.js";
+import { type as eventType, type BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, BotConfig, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
@@ -99,7 +100,7 @@ export interface PendingMessage {
 
 export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
 
-type StagedCliResult = CliResult & { memoryCandidates: ProjectMemoryCandidate[] };
+type StagedCliResult = CliResult & { memoryCandidates: ProjectMemoryCandidate[]; continuationProcessObserved?: boolean };
 
 const MAX_QUEUE_RECOVERY_ATTEMPTS = 3;
 
@@ -153,6 +154,7 @@ interface LaneRuntimeState {
   cancellationOperations: Map<string, LaneCancellation>;
   laneDrainers: Map<string, LaneDrainer>;
   finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
+  activeContinuations: Set<string>;
   activeAugmentedTasks: Map<string, AugmentedTask>;
   transferredAugmentedLanes: Set<string>;
   abortedChats: Set<string>;
@@ -173,6 +175,7 @@ function laneRuntimeState(db: BridgeDb, surfaceIdentity: string): LaneRuntimeSta
       cancellationOperations: new Map(),
       laneDrainers: new Map(),
       finalDeliveryPhases: new Map(),
+      activeContinuations: new Set(),
       activeAugmentedTasks: new Map(),
       transferredAugmentedLanes: new Set(),
       abortedChats: new Set(),
@@ -189,11 +192,38 @@ export interface ExecFns {
   runCliAsync: typeof _runCliAsync;
 }
 
+/** Narrow continuation seams for deterministic engine tests. */
+export interface ContinuationFns {
+  hasLiveRunOwnedDescendants: (runId: string) => boolean;
+  killRunOwnedDescendants: (runId: string) => Promise<void>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}
+
 // ── Internals ────────────────────────────────────────────────────────────────
 
 const MAX_QUEUE_DEPTH = 5;
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
 const ENGINE_TURN_TEXT_LIMIT = 1_200;
+const CONTINUATION_POLL_MS = 250;
+const DEFAULT_CONTINUATION_MAX_RESUMPTIONS = 5;
+const DEFAULT_CONTINUATION_MAX_LIFETIME_MS = 30 * 60_000;
+const CONTINUATION_INSTRUCTION = [
+  "The background work from the current task has finished.",
+  "Inspect its result, continue the original task, and return the next genuine response.",
+  "Do not treat this as a new user request or repeat already completed work.",
+].join(" ");
+const CONTINUATION_SAFETY_NOTICE =
+  "Background continuation stopped after reaching its safety limit. The last provider response is preserved; send another message to continue.";
+const CONTINUATION_SESSION_NOTICE =
+  "Background continuation stopped because the provider session could not be resumed. The last provider response is preserved; send another message to continue.";
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
 
 export type { ContextInjectionPolicy };
 
@@ -302,12 +332,14 @@ export class BridgeEngine {
   private readonly db: BridgeDb;
   private readonly hooks: BridgeEngineHooks;
   private readonly exec: ExecFns;
+  private readonly continuation: ContinuationFns;
   private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly cancellationOperations: Map<string, LaneCancellation>;
   private readonly laneDrainers: Map<string, LaneDrainer>;
   private readonly finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
+  private readonly activeContinuations: Set<string>;
   private readonly activeAugmentedTasks: Map<string, AugmentedTask>;
   private readonly transferredAugmentedLanes: Set<string>;
   private readonly seenTelegramMessageKeys = new Set<string>();
@@ -323,6 +355,7 @@ export class BridgeEngine {
     db: BridgeDb,
     client: MessagingPlatform,
     exec: Partial<ExecFns> = {},
+    continuation: Partial<ContinuationFns> = {},
   ) {
     if (!opts.surfaceIdentity?.trim()) throw new Error("BridgeEngine surfaceIdentity is required");
     this.opts = opts;
@@ -333,6 +366,7 @@ export class BridgeEngine {
     this.cancellationOperations = laneRuntime.cancellationOperations;
     this.laneDrainers = laneRuntime.laneDrainers;
     this.finalDeliveryPhases = laneRuntime.finalDeliveryPhases;
+    this.activeContinuations = laneRuntime.activeContinuations;
     this.activeAugmentedTasks = laneRuntime.activeAugmentedTasks;
     this.transferredAugmentedLanes = laneRuntime.transferredAugmentedLanes;
     this.abortedChats = laneRuntime.abortedChats;
@@ -343,6 +377,12 @@ export class BridgeEngine {
     this.exec = {
       runCli: exec.runCli ?? _runCli,
       runCliAsync: exec.runCliAsync ?? _runCliAsync,
+    };
+    this.continuation = {
+      hasLiveRunOwnedDescendants: continuation.hasLiveRunOwnedDescendants ?? hasLiveRunOwnedDescendants,
+      killRunOwnedDescendants: continuation.killRunOwnedDescendants ?? ((runId) => killRunOwnedDescendants(runId)),
+      sleep: continuation.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
+      now: continuation.now ?? (() => Date.now()),
     };
     this.mediaBuffer = new MediaGroupBuffer({
       timeoutMs: 1500,
@@ -978,19 +1018,114 @@ export class BridgeEngine {
         }
       } else {
         const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, threadId, laneHandle!);
-        const result = await this.executePrompt(prompt, sessionId, chatId, { message_thread_id: threadId }, attachments, eventContext, runId, collect, chatKey, laneHandle!);
-        // For the sync path the final message is sent below; build a view from the
-        // collected events so the new event-driven path drives the output text.
-        const finalDeliveryPhase = this._claimFinalDeliveryPhase(laneHandle!);
-        if (!finalDeliveryPhase) return "fenced";
+        const maxResumptions = positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS);
+        const maxLifetimeMs = positiveIntegerEnv("CONTINUATION_MAX_LIFETIME_MS", DEFAULT_CONTINUATION_MAX_LIFETIME_MS);
+        let result = await this.executePrompt(prompt, sessionId, chatId, { message_thread_id: threadId }, attachments, eventContext, runId, collect, chatKey, laneHandle!);
+        let isInitialResult = true;
+        let resumptionCount = 0;
+        let continuationStartedAt: number | null = null;
+
         try {
-          if (result && result.text) {
-            await this.sendText(chatId, { text: result.text, message_thread_id: threadId });
+          for (;;) {
+            const shouldContinue = isAgentKind(this.kind)
+              && result.continuationHint === "background-process"
+              && result.continuationProcessObserved === true;
+            if (shouldContinue) this.activeContinuations.add(executionLane);
+            else this.activeContinuations.delete(executionLane);
+
+            // Every provider response is genuine and is delivered immediately.
+            // Only the original prompt is persisted as a user turn; internal
+            // continuation instructions are never written into conversation history.
+            const deliveryPhase = this._claimFinalDeliveryPhase(laneHandle!);
+            if (!deliveryPhase) return "fenced";
+            try {
+              if (result.text) {
+                await this.sendText(chatId, { text: result.text, message_thread_id: threadId });
+              }
+              if (isInitialResult) this._commitResultState(laneHandle!, prompt, result);
+              else this._commitContinuationResultState(laneHandle!, result);
+            } finally {
+              this._releaseFinalDeliveryPhase(laneHandle!, deliveryPhase);
+            }
+
+            if (!shouldContinue) {
+              finalize();
+              break;
+            }
+
+            continuationStartedAt ??= this.continuation.now();
+            if (!result.sessionId) {
+              if (this.continuation.hasLiveRunOwnedDescendants(runId)) {
+                await this.continuation.killRunOwnedDescendants(runId);
+              }
+              this.activeContinuations.delete(executionLane);
+              await this._deliverContinuationTerminalNotice(laneHandle!, chatId, threadId, CONTINUATION_SESSION_NOTICE);
+              finalize();
+              break;
+            }
+            if (resumptionCount >= maxResumptions) {
+              if (this.continuation.hasLiveRunOwnedDescendants(runId)) {
+                await this.continuation.killRunOwnedDescendants(runId);
+              }
+              this.activeContinuations.delete(executionLane);
+              await this._deliverContinuationTerminalNotice(laneHandle!, chatId, threadId, CONTINUATION_SAFETY_NOTICE);
+              finalize();
+              break;
+            }
+
+            const waitTyping = createTypingTracker(
+              this.client,
+              chatId,
+              this.kind,
+              { message_thread_id: threadId },
+              () => !this._canPublish(laneHandle!),
+            );
+            let lifetimeExceeded = false;
+            try {
+              await waitTyping.start();
+              while (this.continuation.hasLiveRunOwnedDescendants(runId)) {
+                await this._assertContinuationCanProceed(laneHandle!, runId, eventContext!, collect);
+                if (this.continuation.now() - continuationStartedAt >= maxLifetimeMs) {
+                  lifetimeExceeded = true;
+                  break;
+                }
+                await this.continuation.sleep(CONTINUATION_POLL_MS);
+              }
+              await this._assertContinuationCanProceed(laneHandle!, runId, eventContext!, collect);
+              if (this.continuation.now() - continuationStartedAt >= maxLifetimeMs) {
+                lifetimeExceeded = true;
+              }
+            } finally {
+              await waitTyping.stop();
+            }
+
+            if (lifetimeExceeded) {
+              if (this.continuation.hasLiveRunOwnedDescendants(runId)) {
+                await this.continuation.killRunOwnedDescendants(runId);
+              }
+              this.activeContinuations.delete(executionLane);
+              await this._deliverContinuationTerminalNotice(laneHandle!, chatId, threadId, CONTINUATION_SAFETY_NOTICE);
+              finalize();
+              break;
+            }
+
+            resumptionCount += 1;
+            result = await this.executePrompt(
+              CONTINUATION_INSTRUCTION,
+              result.sessionId,
+              chatId,
+              { message_thread_id: threadId },
+              [],
+              eventContext,
+              runId,
+              collect,
+              chatKey,
+              laneHandle!,
+            );
+            isInitialResult = false;
           }
-          this._commitResultState(laneHandle!, prompt, result);
-          finalize();
         } finally {
-          this._releaseFinalDeliveryPhase(laneHandle!, finalDeliveryPhase);
+          this.activeContinuations.delete(executionLane);
         }
       }
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
@@ -1126,7 +1261,10 @@ export class BridgeEngine {
       const finalDelivery = this.finalDeliveryPhases.get(executionLane);
       if (finalDelivery && record.mode === "augment") {
         await finalDelivery.promise;
-        if (record.mode === "augment") return;
+        // Existing augment semantics let a genuinely final delivery finish.
+        // An intermediate continuation response is different: after that
+        // delivery the old logical turn is still active and must be fenced.
+        if (record.mode === "augment" && !this.activeContinuations.has(executionLane)) return;
       }
       if (finalDelivery && record.mode !== "stop") await finalDelivery.promise;
       if (record.mode !== "stop") {
@@ -1382,6 +1520,63 @@ export class BridgeEngine {
   private _stageResultState(result: CliResult): StagedCliResult {
     const extracted = extractProjectMemorySidecars(result.text);
     return { ...result, text: extracted.cleanText, memoryCandidates: extracted.candidates };
+  }
+
+  private async _assertContinuationCanProceed(
+    handle: ExecutionLaneHandle,
+    runId: string,
+    eventContext: NonNullable<CliOptions["eventContext"]>,
+    collect: (event: BridgeEvent) => void,
+  ): Promise<void> {
+    if (this._canPublish(handle)) return;
+    try {
+      if (this.continuation.hasLiveRunOwnedDescendants(runId)) {
+        await this.continuation.killRunOwnedDescendants(runId);
+      }
+    } finally {
+      collect(eventType.runCancelled({
+        runId,
+        bot: eventContext.bot,
+        chatId: eventContext.chatId,
+        threadId: eventContext.threadId,
+        reason: this.abortedChats.has(this._executionLane(handle.chatKey)) ? "user" : "shutdown",
+      }));
+    }
+    throw new LostExecutionLeaseError();
+  }
+
+  private async _deliverContinuationTerminalNotice(
+    handle: ExecutionLaneHandle,
+    chatId: number,
+    threadId: number | undefined,
+    text: string,
+  ): Promise<void> {
+    const phase = this._claimFinalDeliveryPhase(handle);
+    if (!phase) throw new LostExecutionLeaseError();
+    try {
+      await this.sendText(chatId, { text, message_thread_id: threadId });
+      this._assertLaneOwned(handle);
+    } finally {
+      this._releaseFinalDeliveryPhase(handle, phase);
+    }
+  }
+
+  private _commitContinuationResultState(handle: ExecutionLaneHandle, result: StagedCliResult): void {
+    const chatKey = handle.chatKey;
+    this._runWithFence(handle, () => {
+      if (result.sessionId && isAgentKind(this.kind)) db_setSession(this.db, chatKey, this.kind, result.sessionId);
+      if (isAgentKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
+      for (const candidate of result.memoryCandidates) {
+        storeProjectMemoryCandidate(this.db, candidate, {
+          chatKey,
+          cliKind: this.kind,
+          repoPath: process.cwd(),
+        });
+      }
+      if (isAgentKind(this.kind)) {
+        this.db.addConvTurn(chatKey, "assistant", trimTurnText(result.text), this.kind);
+      }
+    });
   }
 
   private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult): void {
@@ -1749,7 +1944,11 @@ export class BridgeEngine {
       sessionId,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" ? undefined : "json",
+      // Claude sync turns request the prompt back via stdin (see
+      // claudeRuntime.buildInvocation) so continuation detection can scan
+      // the transcript for a backgrounded Bash tool_use; the CLI's actual
+      // args/output-format contract is unchanged from plain "json".
+      outputFormat: executionKind === "antigravity" ? undefined : executionKind === "claude" ? "stream-json" : "json",
       logFile,
       soulContext: promptForCli.soulContext,
       includeResponseContract: promptForCli.includeResponseContract,
@@ -1769,6 +1968,13 @@ export class BridgeEngine {
         eventContext,
         onEvent: collect ?? undefined,
       });
+      // Snapshot generic run-owned work immediately when the direct CLI exits.
+      // A short-lived background task may finish during parsing/hooks/delivery;
+      // the continuation decision must retain the evidence that it was live at
+      // the actual CLI completion boundary.
+      const continuationProcessObserved = executionKind === "claude"
+        && !!runId
+        && this.continuation.hasLiveRunOwnedDescendants(runId);
       this._assertLaneOwned(laneHandle);
 
       let logContent: string | null = null;
@@ -1787,7 +1993,7 @@ export class BridgeEngine {
         result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
       }
       result.text = scrubOutputDir(result.text, outDir);
-      const stagedResult = this._stageResultState(result);
+      const stagedResult = { ...this._stageResultState(result), continuationProcessObserved };
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));

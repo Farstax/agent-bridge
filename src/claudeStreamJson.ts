@@ -9,6 +9,14 @@ const MIME_MAP: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+export type ClaudeContinuationHint = "background-process";
+
+export interface ClaudeStreamJsonResult {
+  text: string;
+  sessionId: string | null;
+  continuationHint?: ClaudeContinuationHint;
+}
+
 export async function encodeFileAsBase64(filePath: string): Promise<{ data: string; mimeType: string }> {
   const ext = extname(filePath).toLowerCase();
   const mimeType = MIME_MAP[ext] ?? "application/octet-stream";
@@ -42,15 +50,33 @@ export function buildClaudeStreamJsonInput(prompt: string, attachments: string[]
   });
 }
 
-export function parseClaudeStreamJsonOutput(stdout: string): { text: string; sessionId: string | null } | null {
-  let last: { text: string; sessionId: string | null } | null = null;
+function recordsBackgroundBashToolUse(obj: any): boolean {
+  if (obj?.type !== "assistant" || !Array.isArray(obj?.message?.content)) return false;
+  return obj.message.content.some((block: any) =>
+    block?.type === "tool_use"
+    && block?.name === "Bash"
+    && block?.input?.run_in_background === true
+  );
+}
+
+export function parseClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonResult | null {
+  let last: ClaudeStreamJsonResult | null = null;
+  let continuationHint: ClaudeContinuationHint | undefined;
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
     try {
       const obj = JSON.parse(trimmed);
-      if (obj.type === "result" && typeof obj.result === "string") {
-        last = { text: obj.result, sessionId: obj.session_id ?? null };
+      if (recordsBackgroundBashToolUse(obj)) {
+        continuationHint = "background-process";
+      }
+      if (typeof obj.result === "string") {
+        last = {
+          text: obj.result,
+          sessionId: obj.session_id ?? null,
+          ...(continuationHint ? { continuationHint } : {}),
+        };
+        continuationHint = undefined;
       }
     } catch { /* skip non-JSON */ }
   }

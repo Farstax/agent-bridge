@@ -50,13 +50,19 @@ export function buildInvocation({
   if (model) args.push("--model", model);
   if (sessionId) args.push("--resume", sessionId);
   if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
-  if (outputFormat === "json") args.push("--output-format", "json");
+  if (outputFormat === "json" || outputFormat === "stream-json") args.push("--output-format", "json");
   // Preserve the established argv contract for normal prompts, but terminate
   // option parsing when a raw prompt itself starts with a hyphen.
   if (finalPrompt.startsWith("-")) args.push("--");
   args.push(finalPrompt);
 
-  return { command, args: appendEffortArgs(command, args, effort) };
+  // "stream-json" here signals the sync turn-continuation caller specifically:
+  // same on-the-wire args/output as plain "json" (unchanged for every other
+  // caller), but the prompt is *also* handed back as stdin so the caller can
+  // scan the transcript for a backgrounded Bash tool_use without altering
+  // the CLI's actual invocation contract.
+  const stdin = outputFormat === "stream-json" ? buildClaudeStreamJsonInput(finalPrompt, []) : undefined;
+  return { command, args: appendEffortArgs(command, args, effort), stdin };
 }
 
 export function parseResult(stdout: string): CliResult {
