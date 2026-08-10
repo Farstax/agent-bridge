@@ -55,4 +55,53 @@ exit 1
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps ERROR envelopes without a usable error fail closed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agy-native-json-partial-missing-error-"));
+    const homeDir = join(root, "home");
+    const script = join(root, "agy-fixture");
+    const events: BridgeEvent[] = [];
+    await mkdir(homeDir, { recursive: true });
+    await writeFile(script, `#!/usr/bin/env bash
+printf '%s\\n' '{"conversation_id":"66666666-7777-8888-9999-aaaaaaaaaaaa","status":"ERROR","response":"partial answer that must not be delivered"}'
+exit 1
+`, { mode: 0o700 });
+
+    try {
+      let caught: Error | null = null;
+      try {
+        await runAntigravitySerialized(
+          script,
+          ["--output-format", "json", "--print", "hello"],
+          root,
+          {
+            bot: "antigravity",
+            chatId: "telegram:interactive:partial-missing-error",
+            timeoutMs: 5_000,
+            idleTimeoutMs: 5_000,
+            eventContext: {
+              runId: "native-json-partial-missing-error",
+              bot: "antigravity",
+              chatId: "chat:partial-missing-error",
+            },
+            onEvent: (event) => events.push(event),
+          },
+          { homeDir, model: null, applyModel: false, outputMode: "json" },
+        );
+      } catch (error) {
+        caught = error as Error;
+      }
+
+      expect(caught?.message).toBe("Agy native JSON ERROR envelope did not include an error message");
+      expect(events.filter((event) => event.type === "run.failed")).toMatchObject([{
+        type: "run.failed",
+        error: "Agy native JSON ERROR envelope did not include an error message",
+        category: "cli",
+      }]);
+      expect(events.some((event) => event.type === "run.completed")).toBe(false);
+      expect(events.some((event) => event.type === "text.delta")).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
