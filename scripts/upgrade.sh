@@ -55,6 +55,15 @@ npm_pkg_version() {
     | tr -d '[:space:]' || true
 }
 
+cli_command_version() {
+  local command="$1" raw
+  if ! command -v "${command}" >/dev/null 2>&1; then
+    return 0
+  fi
+  raw="$(run_as_target_user "${command}" --version 2>/dev/null || true)"
+  printf '%s\n' "${raw}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?' | head -1 || true
+}
+
 qualification_bridge_commit() {
   local configured="${AGENT_BRIDGE_COMMIT:-${BRIDGE_COMMIT:-${BRIDGE_RELEASE_COMMIT:-}}}"
   if [[ -n "${configured}" ]]; then
@@ -144,9 +153,17 @@ install_shared_skills() {
 
 require_node
 
-# ── --update mode: update CLIs + build + test + safe service restart ──────────
+# ── --update mode: update CLIs + qualify + build + test + safe restart ────────
 # Does NOT reinstall systemd units.
 if [[ "${1:-}" == "--update" ]]; then
+  before_claude=""
+  before_codex=""
+  if command -v npm >/dev/null 2>&1; then
+    before_claude="$(npm_pkg_version @anthropic-ai/claude-code)"
+    before_codex="$(npm_pkg_version @openai/codex)"
+  fi
+  before_agy="$(cli_command_version agy)"
+
   echo "[update] Updating CLI packages..."
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
@@ -155,6 +172,15 @@ if [[ "${1:-}" == "--update" ]]; then
 
   echo "[update] Updating agy (antigravity)..."
   bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
+
+  if command -v npm >/dev/null 2>&1; then
+    after_claude="$(npm_pkg_version @anthropic-ai/claude-code)"
+    after_codex="$(npm_pkg_version @openai/codex)"
+    [[ -z "${after_claude}" ]] || qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
+    [[ -z "${after_codex}" ]] || qualify_provider_if_needed codex "${before_codex}" "${after_codex}"
+  fi
+  after_agy="$(cli_command_version agy)"
+  [[ -z "${after_agy}" ]] || qualify_provider_if_needed agy "${before_agy}" "${after_agy}"
 
   if (cd "${REPO_DIR}" && npm run | grep -q '^  build$'); then
     echo "[update] Building bridge..."
