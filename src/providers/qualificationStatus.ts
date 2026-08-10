@@ -16,35 +16,44 @@ export interface InstalledProviderQualificationStatus extends QualificationHealt
   version: string;
 }
 
+function readInstalledProviderVersion(providerId: ProviderId): string | undefined {
+  const adapter = getProviderAdapters().find((candidate) => candidate.id === providerId);
+  if (!adapter) return undefined;
+  try {
+    const raw = execFileSync(adapter.executable, ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+    }).trim();
+    return raw ? normalizeProviderVersion(raw) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function readInstalledProviderVersions(): Partial<Record<ProviderId, string>> {
   const versions: Partial<Record<ProviderId, string>> = {};
   for (const adapter of getProviderAdapters()) {
-    try {
-      const raw = execFileSync(adapter.executable, ["--version"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 5_000,
-      }).trim();
-      if (raw) versions[adapter.id] = normalizeProviderVersion(raw);
-    } catch {
-      // Missing/unavailable providers are already covered by ordinary doctor/health checks.
-    }
+    const version = readInstalledProviderVersion(adapter.id);
+    if (version) versions[adapter.id] = version;
   }
   return versions;
 }
 
 export function getQualificationFailedProviders(
   evidencePath: string = qualificationEvidencePath(),
-  installedVersions: Partial<Record<ProviderId, string>> = readInstalledProviderVersions(),
+  installedVersions?: Partial<Record<ProviderId, string>>,
 ): Set<ProviderId> {
   try {
     const evidence = readQualificationEvidence(evidencePath);
     const failed = new Set<ProviderId>();
     for (const [provider, record] of Object.entries(evidence.providers)) {
+      if (record?.overall !== "fail") continue;
       const providerId = provider as ProviderId;
-      const installedVersion = installedVersions[providerId];
-      if (!installedVersion) continue;
-      if (record?.overall === "fail" && isQualificationCurrent(record, providerId, installedVersion)) {
+      const installedVersion = installedVersions
+        ? installedVersions[providerId]
+        : readInstalledProviderVersion(providerId);
+      if (installedVersion && isQualificationCurrent(record, providerId, installedVersion)) {
         failed.add(providerId);
       }
     }
