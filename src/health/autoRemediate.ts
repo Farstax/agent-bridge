@@ -25,6 +25,8 @@ interface QualificationOutput {
   checks?: Array<{ name?: string; status?: string }>;
 }
 
+const reportedUnreadableQualificationEvidence = new Set<string>();
+
 function parseQualificationOutput(output: string): QualificationOutput[] {
   const records: QualificationOutput[] = [];
   for (const line of output.split("\n")) {
@@ -56,7 +58,14 @@ async function qualifyOutOfBandVersionChanges(options: AutoRemediateOptions): Pr
   let evidence;
   try {
     evidence = readQualificationEvidence(evidencePath);
-  } catch {
+    reportedUnreadableQualificationEvidence.delete(evidencePath);
+  } catch (error) {
+    if (!reportedUnreadableQualificationEvidence.has(evidencePath)) {
+      reportedUnreadableQualificationEvidence.add(evidencePath);
+      await options.sendNotification(
+        `⚠️ *CLI qualification evidence unreadable:* ${(error as Error).message.slice(0, 240)}`,
+      );
+    }
     return;
   }
 
