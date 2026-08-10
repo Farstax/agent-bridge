@@ -416,7 +416,10 @@ export async function dispatchInteractiveWithFallback(
       return dispatchInteractiveWithFallback(update, chatKey, deps, tried, claimedMessage);
     } else {
       await notify("All CLIs are currently unavailable. Please try again later.");
-      return "failed";
+      // The durable queue owns a claimed fallback turn. The terminal capacity
+      // notice is its final handled outcome; retire that row rather than asking
+      // generic queue recovery to retry the exhausted providers automatically.
+      return claimedMessage ? "committed" : "failed";
     }
   } else if (tried.size > 1) {
     // Persist only the CLI that actually completed the fallback turn.
