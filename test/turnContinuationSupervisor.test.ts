@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   hasLiveRunOwnedDescendants,
   killRunOwnedDescendants,
-} from "../src/cli.js";
+} from "../src/turnContinuationProcesses.js";
 
 const children = new Set<ChildProcess>();
 
