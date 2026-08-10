@@ -62,7 +62,13 @@ async function nextTurn(): Promise<void> {
 }
 
 async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  // Event-loop hop count to reach a given await point varies with which
+  // busyMessageMode branch admission takes (augment folds every message,
+  // including the first, through an extra enqueue+claim round trip before
+  // the continuation loop is reached). Bound on wall time, not a fixed
+  // iteration count, so this stays robust across branches.
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
     if (predicate()) return;
     await nextTurn();
   }
@@ -125,11 +131,11 @@ describe("sync turn continuation", () => {
       "Tests passed; the task is complete.",
     ]);
     expect(client.sendChatAction.mock.calls.length).toBeGreaterThanOrEqual(2);
-    const turns = db.raw.prepare("SELECT role, content FROM conversation_turns WHERE chat_key = ? ORDER BY id").all("100") as Array<{ role: string; content: string }>;
+    const turns = db.raw.prepare("SELECT role, text FROM conversation_turns WHERE chat_key = ? ORDER BY id").all("100") as Array<{ role: string; text: string }>;
     expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant", "assistant"]);
-    expect(turns[0].content).toContain("run the tests and fix failures");
-    expect(turns[1].content).toContain("Tests are running");
-    expect(turns[2].content).toContain("Tests passed");
+    expect(turns[0].text).toContain("run the tests and fix failures");
+    expect(turns[1].text).toContain("Tests are running");
+    expect(turns[2].text).toContain("Tests passed");
   });
 
   it("requires both the provider hint and run-owned process evidence", async () => {
