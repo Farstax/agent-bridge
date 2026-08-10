@@ -105,7 +105,10 @@ export async function autoUpdateClis(
   try {
     const output = execFileSync("bash", [options.upgradeScript, "--clis-only"], {
       encoding: "utf8",
-      timeout: 120_000,
+      // Two providers can each perform a bounded fresh + resume qualification.
+      // Keep the outer updater timeout above those per-process bounds while still
+      // preventing a wedged upgrade from running indefinitely.
+      timeout: 600_000,
     });
 
     const updated = output
