@@ -87,7 +87,7 @@ fi
     });
   });
 
-  it("fails closed when Agy native JSON violates the ERROR envelope contract", async () => {
+  it("fails closed when Agy native JSON violates the ERROR envelope contract on a nonzero exit", async () => {
     process.env.ANTIGRAVITY_OUTPUT_MODE = "json";
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-agy-"));
     const evidencePath = join(root, "qualification.json");
@@ -97,6 +97,7 @@ if [[ "\${1:-}" == "--version" ]]; then
   exit 0
 fi
 printf '%s\\n' '{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"ERROR","response":"partial response","error":"timed out waiting for idle"}'
+exit 1
 `);
 
     const result = await qualifyProvider({
