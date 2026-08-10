@@ -5,6 +5,7 @@ import {
   qualificationHealthCheck,
   qualificationEvidencePath,
   readQualificationEvidence,
+  isQualificationCurrent,
   normalizeProviderVersion,
   type QualificationHealthResult,
 } from "./qualification.js";
@@ -34,12 +35,18 @@ export function readInstalledProviderVersions(): Partial<Record<ProviderId, stri
 
 export function getQualificationFailedProviders(
   evidencePath: string = qualificationEvidencePath(),
+  installedVersions: Partial<Record<ProviderId, string>> = readInstalledProviderVersions(),
 ): Set<ProviderId> {
   try {
     const evidence = readQualificationEvidence(evidencePath);
     const failed = new Set<ProviderId>();
     for (const [provider, record] of Object.entries(evidence.providers)) {
-      if (record?.overall === "fail") failed.add(provider as ProviderId);
+      const providerId = provider as ProviderId;
+      const installedVersion = installedVersions[providerId];
+      if (!installedVersion) continue;
+      if (record?.overall === "fail" && isQualificationCurrent(record, providerId, installedVersion)) {
+        failed.add(providerId);
+      }
     }
     return failed;
   } catch {
