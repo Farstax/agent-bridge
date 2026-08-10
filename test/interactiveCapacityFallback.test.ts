@@ -83,6 +83,14 @@ describe("interactive capacity fallback durable admission", () => {
 
     try {
       setUserCliPreference(db, "100", "codex");
+      // An unrelated pending lane on the same surface must not be recovered as
+      // a side effect of chat 100 changing providers.
+      db.enqueueMsg("telegram:interactive", "200", {
+        prompt: "unrelated queued work",
+        chatId: 200,
+        chatType: "private",
+        userId: 42,
+      });
 
       await dispatchInteractiveWithFallback(
         {
@@ -102,6 +110,7 @@ describe("interactive capacity fallback durable admission", () => {
       expect(claudeRun).toHaveBeenCalledTimes(1);
       expect(antigravityRun).toHaveBeenCalledTimes(1);
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      expect(db.pendingMsgCount("telegram:interactive", "200")).toBe(1);
       expect(getUserCliPreference(db, "100")).toBe("antigravity");
       expect(notifications).toEqual([
         "Switching to claude (codex at capacity)",
