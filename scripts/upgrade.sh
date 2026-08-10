@@ -83,7 +83,7 @@ qualify_provider_if_needed() {
   local tsx="${REPO_DIR}/node_modules/tsx/dist/cli.mjs"
   if [[ ! -f "${qualifier}" || ! -f "${tsx}" ]]; then
     echo "provider qualification unavailable for ${provider}; runtime payload is incomplete" >&2
-    return 0
+    return 2
   fi
 
   local args=(
@@ -98,12 +98,26 @@ qualify_provider_if_needed() {
   fi
 
   echo "[qualification] ${provider} ${after}"
-  if ! run_as_target_user "${args[@]}"; then
-    # The qualifier persists the failed evidence before returning non-zero.
-    # Do not automatically downgrade the CLI: health/fallback routing consumes
-    # the degraded status while the installed version remains available for diagnosis.
-    echo "[qualification] ${provider} ${after}: FAILED — provider marked degraded; no automatic rollback" >&2
+  local output status
+  if output="$(run_as_target_user "${args[@]}")"; then
+    status=0
+  else
+    status=$?
   fi
+  if [[ -n "${output}" ]]; then
+    printf '%s\n' "${output}"
+  fi
+  if [[ "${status}" == "0" ]]; then
+    return 0
+  fi
+  if [[ "${status}" == "1" ]]; then
+    # Exit 1 means the qualifier persisted a deterministic contract failure.
+    # Keep the installed CLI for diagnosis; health/fallback routing consumes it.
+    echo "[qualification] ${provider} ${after}: FAILED — provider marked degraded; no automatic rollback" >&2
+    return 0
+  fi
+  echo "[qualification] ${provider} ${after}: qualification runner failed (exit ${status})" >&2
+  return "${status}"
 }
 
 install_unit() {
