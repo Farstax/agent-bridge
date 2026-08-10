@@ -63,6 +63,7 @@ describe("continuation process evidence timing", () => {
       asyncEnabled: false,
       pollIntervalMs: 1000,
       hooks: {
+        // Process evidence is captured at direct CLI exit; post-processing may observe it already gone.
         onAfterExecute: async () => { live = false; },
       },
     }, db, mockClient, { runCli }, continuation);
