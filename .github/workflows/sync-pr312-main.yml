@@ -1,0 +1,41 @@
+name: Sync PR 312 with main
+
+on:
+  push:
+    branches:
+      - agent/issue-261-turn-continuation
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/issue-261-turn-continuation
+          fetch-depth: 0
+
+      - name: Merge current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-ff --no-commit -X ours origin/main
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$unresolved" ]]; then
+            echo "Unresolved conflicts remain:" >&2
+            printf '%s\n' "$unresolved" >&2
+            exit 1
+          fi
+          rm -f .github/workflows/sync-pr312-main.yml
+          git add -A
+          git diff --cached --check
+          git commit -m "Merge current main into issue-261 continuation branch"
+          git push origin HEAD:agent/issue-261-turn-continuation
+          git push origin --delete tmp-sync-probe 2>/dev/null || true
