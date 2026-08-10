@@ -145,6 +145,40 @@ exit 1
     expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
   });
 
+  it("keeps an authentication prerequisite during session resume degraded", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-resume-auth-"));
+    const evidencePath = join(root, "qualification.json");
+    const fake = executable(join(root, "codex"), `
+if [[ "\${1:-}" == "--version" ]]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+if [[ " $* " == *" exec resume "* ]]; then
+  echo "Authentication required. Please log in." >&2
+  exit 1
+fi
+printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
+printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"AGENT_BRIDGE_QUALIFICATION_OK"}}'
+`);
+
+    const result = await qualifyProvider({
+      providerId: "codex",
+      executable: fake,
+      evidencePath,
+      bridgeCommit: "c".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("degraded");
+    expect(result.checks.find((check) => check.name === "fresh_prompt")?.status).toBe("pass");
+    expect(result.checks.find((check) => check.name === "session_resume")).toMatchObject({
+      status: "not_authenticated",
+      diagnostic: expect.stringMatching(/Authentication required/i),
+    });
+  });
+
   it("only considers evidence current for the same provider version and contract version", () => {
     const current = passingRecord();
     expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(true);
