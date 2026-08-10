@@ -29,7 +29,6 @@ function makeEngine(
   db: ReturnType<typeof openDb>,
   client: ReturnType<typeof makeMockClient>,
   runCli: ReturnType<typeof vi.fn>,
-  onBeforeExecute?: (prompt: string) => string,
 ) {
   return new BridgeEngine(
     {
@@ -41,7 +40,6 @@ function makeEngine(
       busyMessageMode: "augment",
       asyncEnabled: false,
       pollIntervalMs: 1000,
-      hooks: onBeforeExecute ? { onBeforeExecute: async (prompt) => onBeforeExecute(prompt) } : undefined,
     },
     db,
     client,
@@ -132,7 +130,6 @@ describe("cross-engine queue recovery", () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const recoveryRun = vi.fn().mockRejectedValue(new Error("default recovery engine must not execute the claimed turn"));
-    const executedPrompts: string[] = [];
     let markStarted!: () => void;
     let finishFirst!: (value: string) => void;
     const firstStarted = new Promise<void>((resolve) => { markStarted = resolve; });
@@ -145,10 +142,7 @@ describe("cross-engine queue recovery", () => {
       .mockResolvedValueOnce(claudeResult("combined successor", "session-successor"));
     const engines = {
       codex: makeEngine("codex", db, client, recoveryRun),
-      claude: makeEngine("claude", db, client, preferredRun, (prompt) => {
-        executedPrompts.push(prompt);
-        return prompt;
-      }),
+      claude: makeEngine("claude", db, client, preferredRun),
     };
     const deps = {
       engines,
@@ -179,10 +173,13 @@ describe("cross-engine queue recovery", () => {
       await Promise.all([recovery, live]);
 
       expect(preferredRun).toHaveBeenCalledTimes(2);
-      expect(executedPrompts).toEqual([
-        "recovered work",
-        "recovered work\n\naugment this work",
-      ]);
+      const providerPrompts = preferredRun.mock.calls.map(([, args]) => {
+        const argv = args as string[];
+        return argv.at(-1) ?? "";
+      });
+      expect(providerPrompts).toHaveLength(2);
+      expect(providerPrompts[0]).toContain("recovered work");
+      expect(providerPrompts[1]).toContain("recovered work\n\naugment this work");
       expect(db.pendingMsgCount(SURFACE, "100")).toBe(0);
     } finally {
       db.close();
