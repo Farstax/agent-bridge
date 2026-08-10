@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { isAbortRequested } from "../src/cliSupervisor.js";
 import {
   dispatchClaimedInteractiveWithFallback,
   dispatchInteractiveWithFallback,
@@ -72,6 +73,14 @@ function wireInteractiveQueue(
     engine.setQueuedMessageHandler(async (queued) =>
       dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
   }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("timed out waiting for test condition");
 }
 
 describe("cross-engine queue recovery", () => {
@@ -163,7 +172,8 @@ describe("cross-engine queue recovery", () => {
       await firstStarted;
 
       const live = dispatchInteractiveWithFallback(update(3, "augment this work"), "100", deps);
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      const executionLane = JSON.stringify([SURFACE, "100"]);
+      await waitFor(() => isAbortRequested(executionLane));
       finishFirst(claudeResult("superseded recovered result", "session-first"));
 
       await Promise.all([recovery, live]);
