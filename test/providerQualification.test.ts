@@ -49,11 +49,10 @@ describe("provider qualification contract", () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-codex-"));
     const evidencePath = join(root, "qualification.json");
     const fake = executable(join(root, "codex"), `
-if [[ "${1:-}" == "--version" ]]; then
+if [[ "\${1:-}" == "--version" ]]; then
   echo "codex-cli 9.9.9"
   exit 0
 fi
-session="11111111-2222-3333-4444-555555555555"
 if [[ " $* " == *" exec resume "* ]]; then
   printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
   printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"AGENT_BRIDGE_QUALIFICATION_RESUME_OK"}}'
@@ -93,7 +92,7 @@ fi
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-agy-"));
     const evidencePath = join(root, "qualification.json");
     const fake = executable(join(root, "agy"), `
-if [[ "${1:-}" == "--version" ]]; then
+if [[ "\${1:-}" == "--version" ]]; then
   echo "agy 1.1.12"
   exit 0
 fi
@@ -122,7 +121,7 @@ printf '%s\\n' '{"conversation_id":"11111111-2222-3333-4444-555555555555","statu
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-auth-"));
     const evidencePath = join(root, "qualification.json");
     const fake = executable(join(root, "claude"), `
-if [[ "${1:-}" == "--version" ]]; then
+if [[ "\${1:-}" == "--version" ]]; then
   echo "2.3.4"
   exit 0
 fi
