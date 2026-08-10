@@ -116,4 +116,86 @@ describe("interactive capacity fallback durable admission", () => {
       db.close();
     }
   });
+
+  it("terminally handles one admitted turn when every CLI is exhausted", async () => {
+    const db = openDb(":memory:");
+    const exhaustedChats = new Set<string>();
+    const client = makeMockClient();
+    const fallbackChain = new WorkerFallbackChain(["codex", "claude", "antigravity"], db);
+    const notifications: string[] = [];
+
+    const codexRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
+    const claudeRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
+    const antigravityRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
+
+    const makeEngine = (runCli: typeof codexRun) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind: "claude",
+        botConfig: { command: "claude", modelPreference: ["test-model"] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        asyncEnabled: false,
+        pollIntervalMs: 1000,
+        hooks: {
+          onCapacityExhausted: async (chatKey: string) => {
+            exhaustedChats.add(chatKey);
+          },
+        },
+      },
+      db,
+      client,
+      { runCli: runCli as any },
+    );
+
+    const engines = {
+      codex: makeEngine(codexRun),
+      claude: makeEngine(claudeRun),
+      antigravity: makeEngine(antigravityRun),
+    };
+    const deps = {
+      engines,
+      fallbackChain,
+      exhaustedChats,
+      db,
+      notify: async (message: string) => { notifications.push(message); },
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) =>
+        dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    try {
+      setUserCliPreference(db, "100", "codex");
+
+      await dispatchInteractiveWithFallback(
+        {
+          update_id: 9002,
+          message: {
+            message_id: 78,
+            chat: { id: 100, type: "private" },
+            from: { id: 42, first_name: "Test" },
+            text: "Open a pr for review",
+          },
+        },
+        "100",
+        deps,
+      );
+
+      expect(codexRun).toHaveBeenCalledTimes(1);
+      expect(claudeRun).toHaveBeenCalledTimes(1);
+      expect(antigravityRun).toHaveBeenCalledTimes(1);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      expect(getUserCliPreference(db, "100")).toBe("codex");
+      expect(notifications).toEqual([
+        "Switching to claude (codex at capacity)",
+        "Switching to antigravity (claude at capacity)",
+        "All CLIs are currently unavailable. Please try again later.",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
 });
