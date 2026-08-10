@@ -267,6 +267,8 @@ function describeMessageContentDetail(message: TelegramUpdate["message"]): strin
 export interface InteractiveDispatchEngine {
   handleUpdate(update: TelegramUpdate): Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
+  /** Recovers durable work for one chat after ordinary admission yields to fallback. */
+  recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
 
 export interface InteractiveDispatchDeps {
@@ -282,6 +284,44 @@ export interface InteractiveDispatchDeps {
    * A rejection or failed outcome must never block the provider switch.
    */
   compactBeforeSwitch?: (request: CapacityFallbackCompactionRequest) => Promise<CompactConversationResult>;
+}
+
+/**
+ * The first provider attempt enters through normal Telegram admission, which
+ * owns the durable pending row. If it exhausts capacity, queue recovery must
+ * re-enter with the already-tried provider set instead of resetting routing
+ * from the persisted preference. Scope the transient state to the fallback
+ * chain instance so identical chat IDs on other surfaces cannot collide.
+ */
+const pendingFallbackTries = new WeakMap<WorkerFallbackChain, Map<string, Set<string>>>();
+
+function fallbackTryMap(chain: WorkerFallbackChain): Map<string, Set<string>> {
+  let pending = pendingFallbackTries.get(chain);
+  if (!pending) {
+    pending = new Map();
+    pendingFallbackTries.set(chain, pending);
+  }
+  return pending;
+}
+
+function markPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string, tried: ReadonlySet<string>): void {
+  fallbackTryMap(chain).set(chatKey, new Set(tried));
+}
+
+function consumePendingFallbackResume(chain: WorkerFallbackChain, chatKey: string): Set<string> | null {
+  const pending = pendingFallbackTries.get(chain);
+  const tried = pending?.get(chatKey) ?? null;
+  if (!tried) return null;
+  pending!.delete(chatKey);
+  if (pending!.size === 0) pendingFallbackTries.delete(chain);
+  return tried;
+}
+
+function clearPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string): void {
+  const pending = pendingFallbackTries.get(chain);
+  if (!pending) return;
+  pending.delete(chatKey);
+  if (pending.size === 0) pendingFallbackTries.delete(chain);
 }
 
 /** Clears the target CLI's session and marks one-time handoff for it. Used by both manual /cli switch and capacity fallback. */
@@ -356,10 +396,31 @@ export async function dispatchInteractiveWithFallback(
         await onCliSwitched(next);
       }
 
+      if (!claimedMessage && engines[next].recoverPendingQueue) {
+        // The ordinary augment path already admitted this logical turn. Wake
+        // only this chat's durable queue instead of replaying the Telegram
+        // update or scanning unrelated lanes on the same surface. If the lane
+        // is currently busy, its scheduled recovery retains this `tried` set.
+        markPendingFallbackResume(fallbackChain, chatKey, tried);
+        try {
+          const hasPending = await engines[next].recoverPendingQueue!(chatKey);
+          if (hasPending) return "queued";
+        } catch (error) {
+          clearPendingFallbackResume(fallbackChain, chatKey);
+          throw error;
+        }
+        // Non-augment paths may have no pending row. Preserve their old direct
+        // retry behavior and discard the unused resume marker.
+        clearPendingFallbackResume(fallbackChain, chatKey);
+      }
+
       return dispatchInteractiveWithFallback(update, chatKey, deps, tried, claimedMessage);
     } else {
       await notify("All CLIs are currently unavailable. Please try again later.");
-      return "failed";
+      // The durable queue owns a claimed fallback turn. The terminal capacity
+      // notice is its final handled outcome; retire that row rather than asking
+      // generic queue recovery to retry the exhausted providers automatically.
+      return claimedMessage ? "committed" : "failed";
     }
   } else if (tried.size > 1) {
     // Persist only the CLI that actually completed the fallback turn.
@@ -383,5 +444,6 @@ export function dispatchClaimedInteractiveWithFallback(
       text: message.prompt,
     },
   };
-  return dispatchInteractiveWithFallback(update, chatKey, deps, new Set(), message);
+  const resumedTries = consumePendingFallbackResume(deps.fallbackChain, chatKey);
+  return dispatchInteractiveWithFallback(update, chatKey, deps, resumedTries ?? new Set(), message);
 }
