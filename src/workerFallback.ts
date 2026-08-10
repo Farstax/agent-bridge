@@ -16,12 +16,9 @@ function providerIdForCli(cli: string): ProviderId | null {
   return null;
 }
 
-function qualificationAvailability(): (cli: string) => boolean {
-  const failedProviders = getQualificationFailedProviders();
-  return (cli: string): boolean => {
-    const providerId = providerIdForCli(cli);
-    return providerId == null || !failedProviders.has(providerId);
-  };
+function qualificationAllowsCli(cli: string): boolean {
+  const providerId = providerIdForCli(cli);
+  return providerId == null || !getQualificationFailedProviders().has(providerId);
 }
 
 export class WorkerFallbackChain {
@@ -30,7 +27,7 @@ export class WorkerFallbackChain {
   private readonly db: BridgeDb;
   private readonly isCliAvailable: (cli: string) => boolean;
 
-  constructor(chain: string[], db: BridgeDb, isCliAvailable: (cli: string) => boolean = qualificationAvailability()) {
+  constructor(chain: string[], db: BridgeDb, isCliAvailable: (cli: string) => boolean = qualificationAllowsCli) {
     this.chain = chain;
     this.db = db;
     this.isCliAvailable = isCliAvailable;
