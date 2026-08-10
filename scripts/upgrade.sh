@@ -37,6 +37,66 @@ require_node() {
   fi
 }
 
+run_as_target_user() {
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    "$@"
+  else
+    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" PATH="${PATH}" "$@"
+  fi
+}
+
+npm_pkg_version() {
+  local listing
+  listing="$(npm list -g "${1}" --depth=0 2>/dev/null || true)"
+  printf '%s\n' "${listing}" \
+    | grep "${1}@" \
+    | head -1 \
+    | sed 's/.*@//' \
+    | tr -d '[:space:]' || true
+}
+
+qualification_bridge_commit() {
+  local configured="${AGENT_BRIDGE_COMMIT:-${BRIDGE_COMMIT:-${BRIDGE_RELEASE_COMMIT:-}}}"
+  if [[ -n "${configured}" ]]; then
+    printf '%s\n' "${configured}"
+    return
+  fi
+  if [[ "$(basename "${REPO_DIR}")" =~ ^[0-9a-f]{40}$ ]]; then
+    basename "${REPO_DIR}"
+    return
+  fi
+  git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || printf '%s\n' unknown
+}
+
+qualify_provider_if_needed() {
+  local provider="$1" before="$2" after="$3"
+  local qualifier="${REPO_DIR}/scripts/provider-qualification.ts"
+  local tsx="${REPO_DIR}/node_modules/tsx/dist/cli.mjs"
+  if [[ ! -f "${qualifier}" || ! -f "${tsx}" ]]; then
+    echo "provider qualification unavailable for ${provider}; runtime payload is incomplete" >&2
+    return 0
+  fi
+
+  local args=(
+    "${NODE_BIN}" "${tsx}" "${qualifier}"
+    --provider "${provider}"
+    --expected-version "${after}"
+    --bridge-commit "$(qualification_bridge_commit)"
+    --if-needed
+  )
+  if [[ -n "${before}" ]]; then
+    args+=(--previous-version "${before}")
+  fi
+
+  echo "[qualification] ${provider} ${after}"
+  if ! run_as_target_user "${args[@]}"; then
+    # The qualifier persists the failed evidence before returning non-zero.
+    # Do not automatically downgrade the CLI: health/fallback routing consumes
+    # the degraded status while the installed version remains available for diagnosis.
+    echo "[qualification] ${provider} ${after}: FAILED — provider marked degraded; no automatic rollback" >&2
+  fi
+}
+
 install_unit() {
   local name="$1"
   sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
@@ -136,22 +196,12 @@ if [[ "${1:-}" == "--update" ]]; then
   exit 0
 fi
 
-# ── --clis-only mode: upgrade npm CLIs only, print what changed ───────────────
+# ── --clis-only mode: upgrade npm CLIs, qualify installed contracts ───────────
 if [[ "${1:-}" == "--clis-only" ]]; then
   if ! command -v npm >/dev/null 2>&1; then
     echo "npm not found" >&2
     exit 1
   fi
-
-  npm_pkg_version() {
-    local listing
-    listing="$(npm list -g "${1}" --depth=0 2>/dev/null || true)"
-    printf '%s\n' "${listing}" \
-      | grep "${1}@" \
-      | head -1 \
-      | sed 's/.*@//' \
-      | tr -d '[:space:]' || true
-  }
 
   CLIS=("@anthropic-ai/claude-code" "@openai/codex")
   declare -A before_versions
@@ -177,21 +227,18 @@ if [[ "${1:-}" == "--clis-only" ]]; then
     else
       echo "verified: ${pkg} ${after}"
     fi
+
+    case "${pkg}" in
+      @anthropic-ai/claude-code) qualify_provider_if_needed claude "${before}" "${after}" ;;
+      @openai/codex) qualify_provider_if_needed codex "${before}" "${after}" ;;
+    esac
   done
 
   if [[ "${updated_any}" == "0" ]]; then
-    echo "no-op: CLIs already up to date"
+    echo "no-op: CLIs already up to date; qualification cache verified"
   fi
   exit 0
 fi
-
-run_as_target_user() {
-  if [[ "${USER}" == "${TARGET_USER}" ]]; then
-    "$@"
-  else
-    sudo -u "${TARGET_USER}" env HOME="${TARGET_HOME}" PATH="${PATH}" "$@"
-  fi
-}
 
 if [[ "${1:-}" != "--skip-cli-install" ]]; then
   if command -v npm >/dev/null 2>&1; then
