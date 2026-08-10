@@ -262,6 +262,12 @@ function describeMessageContentDetail(message: TelegramUpdate["message"]): strin
   return subtypeKeys.find((key) => record[key] != null) ?? "unknown_non_text";
 }
 
+function isResetUpdate(update: TelegramUpdate): boolean {
+  const raw = (update.message?.text ?? update.message?.caption ?? "").trim();
+  const command = raw.split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+  return command === "/reset" || command.startsWith("/reset@");
+}
+
 // ── Interactive Dispatch with Fallback ────────────────────────────────────────
 
 export interface InteractiveDispatchEngine {
@@ -324,6 +330,11 @@ function clearPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string)
   if (pending.size === 0) pendingFallbackTries.delete(chain);
 }
 
+/** Invalidates one lane's process-local capacity-fallback continuation state. */
+export function clearInteractiveFallbackState(chain: WorkerFallbackChain, chatKey: string): void {
+  clearPendingFallbackResume(chain, chatKey);
+}
+
 /** Clears the target CLI's session and marks one-time handoff for it. Used by both manual /cli switch and capacity fallback. */
 function prepareCliHandoff(db: BridgeDb, chatKey: string, targetCli: CliKind, reason: string): void {
   db.setSession(chatKey, targetCli, null);
@@ -349,6 +360,7 @@ export async function dispatchInteractiveWithFallback(
   const { engines, fallbackChain, exhaustedChats, db, notify, onCliSwitched, compactBeforeSwitch } = deps;
 
   exhaustedChats.delete(chatKey);
+  if (!claimedMessage && isResetUpdate(update)) clearInteractiveFallbackState(fallbackChain, chatKey);
 
   if (tried.size === 0) {
     const pref = getUserCliPreference(db, chatKey);
