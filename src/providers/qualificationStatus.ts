@@ -32,6 +32,23 @@ export function readInstalledProviderVersions(): Partial<Record<ProviderId, stri
   return versions;
 }
 
+export function getQualificationFailedProviders(
+  evidencePath: string = qualificationEvidencePath(),
+): Set<ProviderId> {
+  try {
+    const evidence = readQualificationEvidence(evidencePath);
+    const failed = new Set<ProviderId>();
+    for (const [provider, record] of Object.entries(evidence.providers)) {
+      if (record?.overall === "fail") failed.add(provider as ProviderId);
+    }
+    return failed;
+  } catch {
+    // Health/doctor surface unreadable evidence explicitly. Routing must not
+    // infer that every provider is bad merely because its evidence file broke.
+    return new Set<ProviderId>();
+  }
+}
+
 export function getInstalledQualificationStatus(
   evidencePath: string = qualificationEvidencePath(),
   installedVersions: Partial<Record<ProviderId, string>> = readInstalledProviderVersions(),
