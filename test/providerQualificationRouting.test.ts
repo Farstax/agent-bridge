@@ -1,9 +1,51 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
 import { getAvailableCliKinds } from "../src/interactiveCliAuth.js";
+import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
+import { getQualificationFailedProviders } from "../src/providers/qualificationStatus.js";
 import { WorkerFallbackChain } from "../src/workerFallback.js";
 
 describe("provider qualification routing", () => {
+  it("reads hard failures from persisted qualification evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "qualification-routing-"));
+    const evidencePath = join(root, "qualification.json");
+    writeQualificationRecord({
+      provider: "agy",
+      providerVersion: "1.1.12",
+      previousVersion: "1.1.11",
+      bridgeCommit: "e".repeat(40),
+      contractVersion: PROVIDER_CONTRACT_VERSION,
+      qualifiedAt: "2026-08-10T17:00:00.000Z",
+      environment: "managed-appliance",
+      overall: "fail",
+      checks: [
+        { name: "version", status: "pass" },
+        { name: "fresh_prompt", status: "fail", diagnostic: "native JSON contract drift" },
+        { name: "session_resume", status: "not_applicable" },
+      ],
+    }, evidencePath);
+    writeQualificationRecord({
+      provider: "claude",
+      providerVersion: "2.3.4",
+      previousVersion: "2.3.3",
+      bridgeCommit: "e".repeat(40),
+      contractVersion: PROVIDER_CONTRACT_VERSION,
+      qualifiedAt: "2026-08-10T17:00:01.000Z",
+      environment: "managed-appliance",
+      overall: "degraded",
+      checks: [
+        { name: "version", status: "pass" },
+        { name: "fresh_prompt", status: "not_authenticated" },
+        { name: "session_resume", status: "not_applicable" },
+      ],
+    }, evidencePath);
+
+    expect([...getQualificationFailedProviders(evidencePath)]).toEqual(["agy"]);
+  });
+
   it("excludes only providers with hard qualification failures from interactive selection", () => {
     const available = getAvailableCliKinds({
       homeDir: "/qualification-test-home",
