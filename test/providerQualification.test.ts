@@ -178,7 +178,7 @@ exit 1
 
     expect(qualificationHealthCheck("codex", "9.9.10", evidencePath)).toMatchObject({
       status: "amber",
-      message: expect.stringMatching(/unqualified.*9\.9\.10/i),
+      message: expect.stringMatching(/9\.9\.10.*unqualified/i),
     });
   });
 });
