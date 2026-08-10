@@ -267,8 +267,8 @@ function describeMessageContentDetail(message: TelegramUpdate["message"]): strin
 export interface InteractiveDispatchEngine {
   handleUpdate(update: TelegramUpdate): Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
-  /** Re-runs durable queue recovery after ordinary admission yielded to a capacity fallback. */
-  recoverPendingQueues?: () => Promise<void>;
+  /** Recovers durable work for one chat after ordinary admission yields to fallback. */
+  recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
 
 export interface InteractiveDispatchDeps {
@@ -322,10 +322,6 @@ function clearPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string)
   if (!pending) return;
   pending.delete(chatKey);
   if (pending.size === 0) pendingFallbackTries.delete(chain);
-}
-
-function hasPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string): boolean {
-  return pendingFallbackTries.get(chain)?.has(chatKey) ?? false;
 }
 
 /** Clears the target CLI's session and marks one-time handoff for it. Used by both manual /cli switch and capacity fallback. */
@@ -400,16 +396,21 @@ export async function dispatchInteractiveWithFallback(
         await onCliSwitched(next);
       }
 
-      if (!claimedMessage && engines[next].recoverPendingQueues) {
+      if (!claimedMessage && engines[next].recoverPendingQueue) {
         // The ordinary augment path already admitted this logical turn. Wake
-        // the durable queue instead of replaying the Telegram update through
-        // admission a second time. The queued callback consumes `tried` and
-        // therefore continues from `next` rather than the stored exhausted CLI.
+        // only this chat's durable queue instead of replaying the Telegram
+        // update or scanning unrelated lanes on the same surface. If the lane
+        // is currently busy, its scheduled recovery retains this `tried` set.
         markPendingFallbackResume(fallbackChain, chatKey, tried);
-        await engines[next].recoverPendingQueues!();
-        if (!hasPendingFallbackResume(fallbackChain, chatKey)) return "queued";
-        // Non-augment paths may have no pending row. In that case queue
-        // recovery cannot consume the marker, so preserve the old direct retry.
+        try {
+          const hasPending = await engines[next].recoverPendingQueue!(chatKey);
+          if (hasPending) return "queued";
+        } catch (error) {
+          clearPendingFallbackResume(fallbackChain, chatKey);
+          throw error;
+        }
+        // Non-augment paths may have no pending row. Preserve their old direct
+        // retry behavior and discard the unused resume marker.
         clearPendingFallbackResume(fallbackChain, chatKey);
       }
 
