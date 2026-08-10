@@ -42,11 +42,30 @@ function queuedMessage(id: number, chatKey = "100"): PendingMessage {
   };
 }
 
+function makeResetEngine(db: ReturnType<typeof openDb>, client: ReturnType<typeof makeMockClient>) {
+  return new BridgeEngine(
+    {
+      kind: "codex",
+      surfaceIdentity: "telegram:interactive",
+      botConfig: { command: "codex", modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      busyMessageMode: "augment",
+      asyncEnabled: false,
+      pollIntervalMs: 1000,
+      fullConfig: { allowedUserIds: new Set(["42"]), bots: {} } as any,
+    },
+    db,
+    client,
+  );
+}
+
 describe("/reset queue escape hatch", () => {
-  it("clears only the current lane, resets its session, and invokes transient reset cleanup", async () => {
+  it("clears only the current lane and resets its session", async () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
-    let resetCleanupCalls = 0;
+    const engine = makeResetEngine(db, client);
+    const fallbackChain = new WorkerFallbackChain(["codex"], db);
 
     db.setSession("100", "codex", "stuck-session");
     db.setSession("200", "codex", "other-session");
@@ -63,29 +82,16 @@ describe("/reset queue escape hatch", () => {
       userId: 42,
     });
 
-    const engine = new BridgeEngine(
-      {
-        kind: "codex",
-        surfaceIdentity: "telegram:interactive",
-        botConfig: { command: "codex", modelPreference: [] },
-        allowedUserIds: new Set(["42"]),
-        executionMode: "safe",
-        busyMessageMode: "augment",
-        asyncEnabled: false,
-        pollIntervalMs: 1000,
-        fullConfig: { allowedUserIds: new Set(["42"]), bots: {} } as any,
-        hooks: {
-          onReset: async () => { resetCleanupCalls += 1; },
-        } as any,
-      },
-      db,
-      client,
-    );
-
     try {
-      await engine.handleUpdate(resetUpdate(1));
+      interactiveBot.setUserCliPreference(db, "100", "codex");
+      await interactiveBot.dispatchInteractiveWithFallback(resetUpdate(1), "100", {
+        engines: { codex: engine },
+        fallbackChain,
+        exhaustedChats: new Set(),
+        db,
+        notify: vi.fn(),
+      } as any);
 
-      expect(resetCleanupCalls).toBe(1);
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
       expect(db.pendingMsgCount("telegram:interactive", "200")).toBe(1);
       expect(db.getSession("100", "codex")).toBeNull();
@@ -98,34 +104,39 @@ describe("/reset queue escape hatch", () => {
     }
   });
 
-  it("invalidates a pending capacity-fallback continuation before the next claimed turn", async () => {
+  it("invalidates multi-provider fallback continuation before a later claimed turn", async () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const exhaustedChats = new Set<string>();
-    const fallbackChain = new WorkerFallbackChain(["codex", "claude"], db);
-    const codexClaimed = vi.fn().mockResolvedValue("committed");
-    const claudeClaimed = vi.fn().mockResolvedValue("committed");
+    const fallbackChain = new WorkerFallbackChain(["codex", "claude", "antigravity"], db);
 
-    const engines = {
-      codex: {
-        handleUpdate: vi.fn(async () => { exhaustedChats.add("100"); }),
-        executeClaimedMessage: codexClaimed,
-      },
-      claude: {
-        handleUpdate: vi.fn(),
-        executeClaimedMessage: claudeClaimed,
-        // Simulate a busy target lane: fallback stores one-shot tried-state and
-        // schedules/retries durable recovery rather than consuming it now.
-        recoverPendingQueue: vi.fn().mockResolvedValue(true),
-      },
+    const codexInitial = {
+      handleUpdate: vi.fn(async () => { exhaustedChats.add("100"); }),
+      executeClaimedMessage: vi.fn(),
     };
-    const deps = {
-      engines,
+    const claudeInitial = {
+      handleUpdate: vi.fn(async () => { exhaustedChats.add("100"); }),
+      executeClaimedMessage: vi.fn(),
+      recoverPendingQueue: vi.fn().mockResolvedValue(false),
+    };
+    const antigravityInitial = {
+      handleUpdate: vi.fn(),
+      executeClaimedMessage: vi.fn(),
+      // Leave the already-tried {codex, claude} marker pending as if this
+      // provider lane is still busy and durable recovery will resume later.
+      recoverPendingQueue: vi.fn().mockResolvedValue(true),
+    };
+    const deps: any = {
+      engines: {
+        codex: codexInitial,
+        claude: claudeInitial,
+        antigravity: antigravityInitial,
+      },
       fallbackChain,
       exhaustedChats,
       db,
       notify: vi.fn(),
-    } as any;
+    };
 
     try {
       interactiveBot.setUserCliPreference(db, "100", "codex");
@@ -139,34 +150,30 @@ describe("/reset queue escape hatch", () => {
         },
       }, "100", deps);
 
-      const resetEngine = new BridgeEngine(
-        {
-          kind: "codex",
-          surfaceIdentity: "telegram:interactive",
-          botConfig: { command: "codex", modelPreference: [] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          busyMessageMode: "augment",
-          asyncEnabled: false,
-          pollIntervalMs: 1000,
-          fullConfig: { allowedUserIds: new Set(["42"]), bots: {} } as any,
-          hooks: {
-            onReset: async (chatKey: string) => {
-              const clear = (interactiveBot as any).clearInteractiveFallbackState;
-              if (typeof clear !== "function") throw new Error("interactive fallback reset cleanup is unavailable");
-              clear(fallbackChain, chatKey);
-            },
-          } as any,
-        },
-        db,
-        client,
-      );
+      expect(codexInitial.handleUpdate).toHaveBeenCalledTimes(1);
+      expect(claudeInitial.handleUpdate).toHaveBeenCalledTimes(1);
+      expect(antigravityInitial.recoverPendingQueue).toHaveBeenCalledTimes(1);
 
-      await resetEngine.handleUpdate(resetUpdate(11));
+      // Reset uses the same interactive dispatch boundary as production
+      // Telegram/worker surfaces. It must invalidate the stale fallback marker.
+      deps.engines.codex = makeResetEngine(db, client);
+      await interactiveBot.dispatchInteractiveWithFallback(resetUpdate(11), "100", deps);
+
+      const codexClaimed = vi.fn(async () => {
+        exhaustedChats.add("100");
+        return "failed" as const;
+      });
+      const claudeClaimed = vi.fn().mockResolvedValue("committed");
+      const antigravityClaimed = vi.fn().mockResolvedValue("committed");
+      deps.engines.codex = { handleUpdate: vi.fn(), executeClaimedMessage: codexClaimed };
+      deps.engines.claude = { handleUpdate: vi.fn(), executeClaimedMessage: claudeClaimed };
+      deps.engines.antigravity = { handleUpdate: vi.fn(), executeClaimedMessage: antigravityClaimed };
+
       await interactiveBot.dispatchClaimedInteractiveWithFallback(queuedMessage(99), "100", deps);
 
       expect(codexClaimed).toHaveBeenCalledTimes(1);
-      expect(claudeClaimed).not.toHaveBeenCalled();
+      expect(claudeClaimed).toHaveBeenCalledTimes(1);
+      expect(antigravityClaimed).not.toHaveBeenCalled();
     } finally {
       db.close();
     }
