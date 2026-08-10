@@ -3,9 +3,11 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildCliInvocation, parseCliResult, runCli } from "../cli.js";
+import { runSupervisedProcess } from "../cliSupervisor.js";
 import type { BotKind } from "../types.js";
+import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
-import { getProviderAdapter } from "./registry.js";
+import { getProcessWatchForCommand, getProviderAdapter } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
 export const PROVIDER_CONTRACT_VERSION = 1;
@@ -234,6 +236,61 @@ function resolveBridgeCommit(cwd: string): string {
   }
 }
 
+async function runQualificationInvocation({
+  providerId,
+  command,
+  args,
+  cwd,
+  homeDir,
+  timeoutMs,
+}: {
+  providerId: ProviderId;
+  command: string;
+  args: string[];
+  cwd: string;
+  homeDir: string;
+  timeoutMs: number;
+}): Promise<string> {
+  const bot = providerBotKind(providerId);
+  if (providerId !== "agy") {
+    return runCli(command, args, cwd, {
+      bot,
+      timeoutMs,
+      idleTimeoutMs: timeoutMs,
+      killGraceMs: 1_000,
+    });
+  }
+
+  // Production Agy execution deliberately recovers a usable provider error from
+  // a non-zero ERROR envelope that also contains partial response text. That is
+  // correct runtime behavior, but qualification must additionally detect the raw
+  // envelope contradiction as provider-contract drift. Keep the same invocation,
+  // supervisor, process watch, state lock and strict result parser; only bypass
+  // the runtime recovery shim so the provider's raw native JSON remains visible.
+  return withAntigravityStateLock(homeDir, async () => {
+    try {
+      const result = await runSupervisedProcess(command, args, cwd, {
+        bot,
+        timeoutMs,
+        idleTimeoutMs: timeoutMs,
+        killGraceMs: 1_000,
+        processWatch: getProcessWatchForCommand(command),
+      });
+      return result.stdout;
+    } catch (caught) {
+      const error = caught instanceof Error ? caught : new Error(String(caught));
+      const stdout = (error as Error & { stdout?: string }).stdout ?? "";
+      if (stdout.trim()) {
+        // A valid ERROR envelope throws a classifiable provider error here; a
+        // contradictory ERROR + response envelope throws the stricter contract
+        // error before runtime recovery can normalize it.
+        parseCliResult({ bot, stdout });
+      }
+      throw error;
+    }
+  });
+}
+
 async function executePromptCheck({
   providerId,
   executable,
@@ -269,11 +326,13 @@ async function executePromptCheck({
     homeDir,
     toolMode: adapter.capabilities.toolFree ? "none" : "default",
   });
-  const stdout = await runCli(invocation.command, invocation.args, cwd, {
-    bot,
+  const stdout = await runQualificationInvocation({
+    providerId,
+    command: invocation.command,
+    args: invocation.args,
+    cwd,
+    homeDir,
     timeoutMs,
-    idleTimeoutMs: timeoutMs,
-    killGraceMs: 1_000,
   });
   const parsed = parseCliResult({ bot, stdout });
   if (!parsed.text.includes(marker)) {
