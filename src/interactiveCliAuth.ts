@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
+import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
+import type { ProviderId } from "./providers/types.js";
 
 export interface InteractiveCliAuthPaths {
   codex: string;
@@ -14,6 +16,7 @@ export interface AvailableCliOptions {
   homeDir?: string;
   exists?: (path: string) => boolean;
   commandExists?: (command: string) => boolean;
+  failedProviders?: ReadonlySet<ProviderId>;
 }
 
 export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
@@ -40,13 +43,14 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const home = options.homeDir ?? homedir();
   const exists = options.exists ?? existsSync;
   const commandExists = options.commandExists ?? commandExistsOnPath;
+  const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
   const paths = resolveInteractiveCliAuthPaths(home);
   const available = new Set<CliKind>();
 
-  if (exists(paths.codex)) available.add("codex");
-  if (exists(paths.claude)) available.add("claude");
-  if (paths.antigravity.some(exists)) available.add("antigravity");
-  if (commandExists("kimchi")) available.add("kimchi");
+  if (exists(paths.codex) && !failedProviders.has("codex")) available.add("codex");
+  if (exists(paths.claude) && !failedProviders.has("claude")) available.add("claude");
+  if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
+  if (commandExists("kimchi") && !failedProviders.has("kimchi")) available.add("kimchi");
 
   return available;
 }
