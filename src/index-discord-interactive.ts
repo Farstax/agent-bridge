@@ -35,6 +35,7 @@ import {
   handleCliSwitchCallback,
   dispatchInteractiveWithFallback,
   dispatchClaimedInteractiveWithFallback,
+  clearInteractiveFallbackState,
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
@@ -276,7 +277,7 @@ function buildDiscordInteractiveCommands() {
         ],
       }],
     },
-    { name: "reset",  description: "Reset the current CLI session",   type: 1 },
+    { name: "reset",  description: "Reset session and clear pending work", type: 1 },
     { name: "models", description: "Show available models",            type: 1 },
     { name: "stop",   description: "Abort the running CLI execution",  type: 1 },
     { name: "queue_mode", description: "Set busy-message handling", type: 1 },
@@ -498,6 +499,7 @@ async function handleInteraction(d: any): Promise<void> {
       } satisfies TelegramMessage,
     };
 
+    if (commandName === "reset") clearInteractiveFallbackState(fallbackChain, chatKey);
     await engines[getUserCliPreference(db, chatKey)].handleUpdate(update);
   }
 }
