@@ -1,0 +1,184 @@
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  PROVIDER_CONTRACT_VERSION,
+  isQualificationCurrent,
+  qualificationHealthCheck,
+  qualifyProvider,
+  readQualificationEvidence,
+  writeQualificationRecord,
+  type ProviderQualificationRecord,
+} from "../src/providers/qualification.js";
+
+const originalAgyMode = process.env.ANTIGRAVITY_OUTPUT_MODE;
+
+afterEach(() => {
+  if (originalAgyMode === undefined) delete process.env.ANTIGRAVITY_OUTPUT_MODE;
+  else process.env.ANTIGRAVITY_OUTPUT_MODE = originalAgyMode;
+});
+
+function executable(path: string, body: string): string {
+  writeFileSync(path, `#!/usr/bin/env bash\nset -euo pipefail\n${body}`, { mode: 0o755 });
+  chmodSync(path, 0o755);
+  return path;
+}
+
+function passingRecord(overrides: Partial<ProviderQualificationRecord> = {}): ProviderQualificationRecord {
+  return {
+    provider: "codex",
+    providerVersion: "9.9.9",
+    previousVersion: "9.9.8",
+    bridgeCommit: "a".repeat(40),
+    contractVersion: PROVIDER_CONTRACT_VERSION,
+    qualifiedAt: "2026-08-10T17:00:00.000Z",
+    environment: "managed-appliance",
+    overall: "pass",
+    checks: [
+      { name: "version", status: "pass", diagnostic: "codex-cli 9.9.9" },
+      { name: "fresh_prompt", status: "pass" },
+      { name: "session_resume", status: "pass" },
+    ],
+    ...overrides,
+  };
+}
+
+describe("provider qualification contract", () => {
+  it("qualifies a real fake Codex process for version, fresh prompt and resume and persists versioned evidence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-codex-"));
+    const evidencePath = join(root, "qualification.json");
+    const fake = executable(join(root, "codex"), `
+if [[ "${1:-}" == "--version" ]]; then
+  echo "codex-cli 9.9.9"
+  exit 0
+fi
+session="11111111-2222-3333-4444-555555555555"
+if [[ " $* " == *" exec resume "* ]]; then
+  printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"AGENT_BRIDGE_QUALIFICATION_RESUME_OK"}}'
+else
+  printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"AGENT_BRIDGE_QUALIFICATION_OK"}}'
+fi
+`);
+
+    const result = await qualifyProvider({
+      providerId: "codex",
+      executable: fake,
+      evidencePath,
+      previousVersion: "9.9.8",
+      bridgeCommit: "a".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("pass");
+    expect(result.providerVersion).toBe("9.9.9");
+    expect(result.checks.map((check) => [check.name, check.status])).toEqual([
+      ["version", "pass"],
+      ["fresh_prompt", "pass"],
+      ["session_resume", "pass"],
+    ]);
+    expect(readQualificationEvidence(evidencePath).providers.codex).toEqual(result);
+    expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toMatchObject({
+      schemaVersion: 1,
+      contractVersion: PROVIDER_CONTRACT_VERSION,
+    });
+  });
+
+  it("fails closed when Agy native JSON violates the ERROR envelope contract", async () => {
+    process.env.ANTIGRAVITY_OUTPUT_MODE = "json";
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-agy-"));
+    const evidencePath = join(root, "qualification.json");
+    const fake = executable(join(root, "agy"), `
+if [[ "${1:-}" == "--version" ]]; then
+  echo "agy 1.1.12"
+  exit 0
+fi
+printf '%s\\n' '{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"ERROR","response":"partial response","error":"timed out waiting for idle"}'
+`);
+
+    const result = await qualifyProvider({
+      providerId: "agy",
+      executable: fake,
+      evidencePath,
+      bridgeCommit: "b".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("fail");
+    expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
+      status: "fail",
+      diagnostic: expect.stringMatching(/ERROR envelope included a response/i),
+    });
+    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
+  });
+
+  it("treats authentication prerequisites as degraded rather than a provider contract failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-auth-"));
+    const evidencePath = join(root, "qualification.json");
+    const fake = executable(join(root, "claude"), `
+if [[ "${1:-}" == "--version" ]]; then
+  echo "2.3.4"
+  exit 0
+fi
+echo "Authentication required. Please log in." >&2
+exit 1
+`);
+
+    const result = await qualifyProvider({
+      providerId: "claude",
+      executable: fake,
+      evidencePath,
+      bridgeCommit: "c".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("degraded");
+    expect(result.checks.find((check) => check.name === "fresh_prompt")?.status).toBe("not_authenticated");
+    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
+  });
+
+  it("only considers evidence current for the same provider version and contract version", () => {
+    const current = passingRecord();
+    expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(true);
+    expect(isQualificationCurrent(current, "codex", "9.9.10")).toBe(false);
+    expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "9.9.9")).toBe(false);
+    expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "9.9.9")).toBe(false);
+  });
+
+  it("surfaces persistent pass, degraded and unqualified states for health without rerunning tests", () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-health-"));
+    const evidencePath = join(root, "qualification.json");
+    writeQualificationRecord(passingRecord(), evidencePath);
+
+    expect(qualificationHealthCheck("codex", "9.9.9", evidencePath)).toMatchObject({
+      status: "green",
+      message: expect.stringContaining("qualified"),
+    });
+
+    writeQualificationRecord(passingRecord({
+      overall: "fail",
+      checks: [
+        { name: "version", status: "pass" },
+        { name: "fresh_prompt", status: "fail", diagnostic: "JSON envelope drift" },
+        { name: "session_resume", status: "not_applicable" },
+      ],
+    }), evidencePath);
+    expect(qualificationHealthCheck("codex", "9.9.9", evidencePath)).toMatchObject({
+      status: "red",
+      message: expect.stringMatching(/degraded.*fresh_prompt/i),
+    });
+
+    expect(qualificationHealthCheck("codex", "9.9.10", evidencePath)).toMatchObject({
+      status: "amber",
+      message: expect.stringMatching(/unqualified.*9\.9\.10/i),
+    });
+  });
+});
