@@ -375,6 +375,17 @@ export class BridgeEngine {
     }));
   }
 
+  async recoverPendingQueue(chatKey: string): Promise<boolean> {
+    if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
+    const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
+    if (handle) {
+      await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
+      return true;
+    }
+    this._scheduleStartupQueueRecovery(chatKey);
+    return true;
+  }
+
   async handleUpdate(update: TelegramUpdate): Promise<void> {
     if (update.callback_query) {
       await this.handleCallback(update.callback_query);
