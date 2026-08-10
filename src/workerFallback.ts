@@ -40,10 +40,14 @@ export class WorkerFallbackChain {
   getActiveCli(chatKey: string): string {
     const idx = Math.min(this.chatActiveIdx.get(chatKey) ?? 0, this.chain.length - 1);
     for (let candidate = idx; candidate < this.chain.length; candidate += 1) {
-      if (this.isCliAvailable(this.chain[candidate])) return this.chain[candidate];
+      if (!this.isCliAvailable(this.chain[candidate])) continue;
+      if (candidate !== idx) this.chatActiveIdx.set(chatKey, candidate);
+      return this.chain[candidate];
     }
     for (let candidate = 0; candidate < idx; candidate += 1) {
-      if (this.isCliAvailable(this.chain[candidate])) return this.chain[candidate];
+      if (!this.isCliAvailable(this.chain[candidate])) continue;
+      this.chatActiveIdx.set(chatKey, candidate);
+      return this.chain[candidate];
     }
     // Preserve the historical return type when every configured provider is
     // unavailable; admission/routing layers surface the terminal condition.
