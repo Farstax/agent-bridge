@@ -70,7 +70,7 @@ export function parseClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonRes
       if (recordsBackgroundBashToolUse(obj)) {
         continuationHint = "background-process";
       }
-      if (obj.type === "result" && typeof obj.result === "string") {
+      if (typeof obj.result === "string") {
         last = {
           text: obj.result,
           sessionId: obj.session_id ?? null,

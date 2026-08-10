@@ -8,6 +8,7 @@
 
 import { homedir } from "node:os";
 import type { CliOptions, CliResult, BotKind } from "./types.js";
+import type { ProviderInvocationRequest } from "./providers/types.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
@@ -118,7 +119,7 @@ export function buildCliInvocation({
   command: string;
   model: string | null;
   executionMode?: "safe" | "trusted";
-  outputFormat?: "json" | null;
+  outputFormat?: ProviderInvocationRequest["outputFormat"];
   logFile?: string | null;
   soulContext?: string | null;
   includeResponseContract?: boolean;

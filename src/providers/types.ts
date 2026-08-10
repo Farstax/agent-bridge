@@ -45,7 +45,7 @@ export interface ProviderInvocationRequest {
   command: string;
   model: string | null;
   executionMode: "safe" | "trusted";
-  outputFormat: "json" | null;
+  outputFormat: "json" | "stream-json" | null;
   soulContext: string | null;
   includeResponseContract?: boolean;
   attachments: string[];

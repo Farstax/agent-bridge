@@ -1944,7 +1944,11 @@ export class BridgeEngine {
       sessionId,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" ? undefined : "json",
+      // Claude sync turns request the prompt back via stdin (see
+      // claudeRuntime.buildInvocation) so continuation detection can scan
+      // the transcript for a backgrounded Bash tool_use; the CLI's actual
+      // args/output-format contract is unchanged from plain "json".
+      outputFormat: executionKind === "antigravity" ? undefined : executionKind === "claude" ? "stream-json" : "json",
       logFile,
       soulContext: promptForCli.soulContext,
       includeResponseContract: promptForCli.includeResponseContract,
