@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import {
   qualifyProvider,
@@ -37,6 +38,24 @@ function parseArgs(argv: string[]): Args {
   return { provider, expectedVersion, previousVersion, evidencePath, bridgeCommit, ifNeeded };
 }
 
+function resolveBridgeCommit(explicit?: string): string {
+  if (explicit?.trim()) return explicit.trim();
+  const configured = process.env.AGENT_BRIDGE_COMMIT
+    ?? process.env.BRIDGE_COMMIT
+    ?? process.env.BRIDGE_RELEASE_COMMIT;
+  if (configured?.trim()) return configured.trim();
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: process.env.BRIDGE_PROJECT_DIR ?? process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2_000,
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const providerId = assertProviderId(args.provider);
@@ -45,7 +64,7 @@ async function main(): Promise<void> {
     executable: getProviderAdapter(providerId).executable,
     evidencePath: args.evidencePath ?? qualificationEvidencePath(homedir()),
     previousVersion: args.previousVersion ?? null,
-    bridgeCommit: args.bridgeCommit,
+    bridgeCommit: resolveBridgeCommit(args.bridgeCommit),
   };
 
   const result = args.ifNeeded && args.expectedVersion
