@@ -22,11 +22,12 @@ export interface ContinuationRecord {
   deadlineAt: string;
   updatedAt: string;
   terminalReason?: string;
+  containedAt?: string;
 }
 
 export type SaveWaitingContinuation = Omit<
   ContinuationRecord,
-  "state" | "updatedAt" | "terminalReason"
+  "state" | "updatedAt" | "terminalReason" | "containedAt"
 >;
 
 const KEY_PREFIX = "turn_continuation:";
@@ -34,6 +35,10 @@ const ACTIVE_STATES = new Set<ContinuationState>(["waiting", "runnable", "runnin
 
 function key(runId: string): string {
   return `${KEY_PREFIX}${runId}`;
+}
+
+function needsRecovery(record: ContinuationRecord): boolean {
+  return ACTIVE_STATES.has(record.state) || (record.state === "cancelled" && !record.containedAt);
 }
 
 function parseRecord(value: unknown): ContinuationRecord | null {
@@ -51,6 +56,7 @@ function parseRecord(value: unknown): ContinuationRecord | null {
     if (!Number.isInteger(parsed.resumptionCount) || Number(parsed.resumptionCount) < 0) return null;
     if (!Array.isArray(parsed.pendingIds) || parsed.pendingIds.some((id) => !Number.isInteger(id) || id <= 0)) return null;
     if (typeof parsed.startedAt !== "string" || typeof parsed.deadlineAt !== "string" || typeof parsed.updatedAt !== "string") return null;
+    if (parsed.containedAt !== undefined && typeof parsed.containedAt !== "string") return null;
     return parsed as ContinuationRecord;
   } catch {
     return null;
@@ -70,14 +76,14 @@ export class ContinuationRepository {
     return rows
       .map((row) => parseRecord(row.value ?? null))
       .filter((record): record is ContinuationRecord => !!record)
-      .filter((record) => ACTIVE_STATES.has(record.state))
+      .filter(needsRecovery)
       .filter((record) => surface == null || record.surface === surface)
       .filter((record) => bot == null || record.bot === bot);
   }
 
   hasActiveRun(runId: string): boolean {
     const record = this.get(runId);
-    return !!record && ACTIVE_STATES.has(record.state);
+    return !!record && needsRecovery(record);
   }
 
   saveWaiting(input: SaveWaitingContinuation): ContinuationRecord | null {
@@ -129,15 +135,25 @@ export class ContinuationRepository {
       state: "completed",
       updatedAt: new Date().toISOString(),
       terminalReason: undefined,
+      containedAt: undefined,
     }));
   }
 
   markCancelled(runId: string, reason = "cancelled"): ContinuationRecord | null {
-    return this.transition(runId, new Set(["waiting", "runnable", "running", "ambiguous"]), (record) => ({
+    return this.transition(runId, new Set(["waiting", "runnable", "running", "ambiguous", "cancelled"]), (record) => ({
       ...record,
       state: "cancelled",
       updatedAt: new Date().toISOString(),
       terminalReason: reason,
+      containedAt: undefined,
+    }));
+  }
+
+  markCancellationContained(runId: string): ContinuationRecord | null {
+    return this.transition(runId, new Set(["cancelled"]), (record) => ({
+      ...record,
+      updatedAt: new Date().toISOString(),
+      containedAt: new Date().toISOString(),
     }));
   }
 
@@ -153,7 +169,7 @@ export class ContinuationRepository {
   cancelActiveForLane(surface: string, chatKey: string, reason: string): ContinuationRecord[] {
     const cancelled: ContinuationRecord[] = [];
     for (const record of this.listActive(surface)) {
-      if (record.chatKey !== chatKey) continue;
+      if (record.chatKey !== chatKey || record.state === "cancelled") continue;
       const next = this.markCancelled(record.runId, reason);
       if (next) cancelled.push(next);
     }
