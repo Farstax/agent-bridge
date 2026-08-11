@@ -359,16 +359,20 @@ describe("sync turn continuation", () => {
     expect(delivered.at(-1)).toContain("safety limit");
   });
 
-  it("leaves the async/streaming path explicitly unchanged", async () => {
+  it("waits for async background work and resumes once without unbounded polling", async () => {
     const { BridgeEngine } = await import("../src/engine.js");
+    let processState: "live" | "absent" = "live";
     const continuation: ContinuationFns = {
-      hasLiveRunOwnedDescendants: vi.fn(() => true),
+      hasLiveRunOwnedDescendants: vi.fn(() => processState === "live"),
+      getRunOwnedProcessState: vi.fn(() => processState),
       killRunOwnedDescendants: vi.fn(async () => {}),
-      sleep: vi.fn(async () => {}),
+      sleep: vi.fn(async () => { processState = "absent"; }),
       now: vi.fn(() => Date.now()),
     };
     const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
-      const raw = claudeOutput("Async background work started.", "session-async", true);
+      const raw = runCliAsync.mock.calls.length === 1
+        ? claudeOutput("Async background work started.", "session-async", true)
+        : claudeOutput("Async background work finished.", "session-async");
       const ctx = options.eventContext;
       options.onEvent?.(eventType.runCompleted({ ...ctx, text: raw, sessionId: null }));
       return { text: raw };
@@ -382,8 +386,11 @@ describe("sync turn continuation", () => {
 
     await engine.handleMessages([makeMessage("async task", 1)]);
 
-    expect(runCliAsync).toHaveBeenCalledOnce();
-    expect(continuation.hasLiveRunOwnedDescendants).not.toHaveBeenCalled();
-    expect(continuation.sleep).not.toHaveBeenCalled();
+    expect(runCliAsync).toHaveBeenCalledTimes(2);
+    expect(continuation.sleep).toHaveBeenCalledOnce();
+    expect(client.sendMessage.mock.calls.map((call: any[]) => String(call[0].text))).toEqual([
+      "Async background work started.",
+      "Async background work finished.",
+    ]);
   });
 });
