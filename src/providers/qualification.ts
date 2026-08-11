@@ -262,11 +262,10 @@ async function runQualificationInvocation({
   }
 
   // Production Agy execution deliberately recovers a usable provider error from
-  // a non-zero ERROR envelope that also contains partial response text. That is
-  // correct runtime behavior, but qualification must additionally detect the raw
-  // envelope contradiction as provider-contract drift. Keep the same invocation,
-  // supervisor, process watch, state lock and strict result parser; only bypass
-  // the runtime recovery shim so the provider's raw native JSON remains visible.
+  // a non-zero terminal ERROR result that may contain partial response text.
+  // Qualification must additionally detect that raw contradiction as provider-
+  // contract drift, so bypass the runtime recovery shim but keep the same
+  // invocation, supervisor, process watch, state lock and strict result parser.
   return withAntigravityStateLock(homeDir, async () => {
     try {
       const result = await runSupervisedProcess(command, args, cwd, {
@@ -281,8 +280,8 @@ async function runQualificationInvocation({
       const error = caught instanceof Error ? caught : new Error(String(caught));
       const stdout = (error as Error & { stdout?: string }).stdout ?? "";
       if (stdout.trim()) {
-        // A valid ERROR envelope throws a classifiable provider error here; a
-        // contradictory ERROR + response envelope throws the stricter contract
+        // A valid ERROR result throws a classifiable provider error here; a
+        // contradictory ERROR + response result throws the stricter contract
         // error before runtime recovery can normalize it.
         parseCliResult({ bot, stdout });
       }
@@ -356,7 +355,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const previousAgyMode = process.env.ANTIGRAVITY_OUTPUT_MODE;
 
   try {
-    if (options.providerId === "agy") process.env.ANTIGRAVITY_OUTPUT_MODE = "json";
+    if (options.providerId === "agy") process.env.ANTIGRAVITY_OUTPUT_MODE = "stream-json";
 
     try {
       const versionOutput = execFileSync(executable, ["--version"], {
@@ -472,7 +471,7 @@ export async function qualifyProviderIfNeeded(
   const evidencePath = options.evidencePath ?? qualificationEvidencePath(options.homeDir ?? homedir());
   const evidence = readQualificationEvidence(evidencePath);
   const current = evidence.providers[options.providerId];
-  if (isQualificationCurrent(current, options.providerId, options.installedVersion)) {
+  if (isQualificationCurrent(current, providerId, options.installedVersion)) {
     return { record: current!, ran: false };
   }
   const record = await qualifyProvider({
