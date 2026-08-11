@@ -140,6 +140,48 @@ describe("durable async continuation lifecycle", () => {
     ]);
   });
 
+  it("persists the waiting checkpoint before delivering the intermediate response", async () => {
+    let processState: "live" | "absent" = "live";
+    const deliveryGate = deferred();
+    const continuation: ContinuationFns = {
+      hasLiveRunOwnedDescendants: vi.fn(() => processState === "live"),
+      getRunOwnedProcessState: vi.fn(() => processState),
+      killRunOwnedDescendants: vi.fn(async () => { processState = "absent"; }),
+      sleep: vi.fn(async () => { processState = "absent"; }),
+      now: vi.fn(() => Date.now()),
+    };
+    const runIds: string[] = [];
+    const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+      runIds.push(options.eventContext.runId);
+      return {
+        text: runCliAsync.mock.calls.length === 1
+          ? claudeOutput("Background work is running.", "session-before-delivery-261", true)
+          : claudeOutput("Background work finished.", "session-before-delivery-261"),
+      };
+    });
+    const client = makeMockClient();
+    client.sendMessage.mockImplementation(async () => {
+      if (client.sendMessage.mock.calls.length === 1) await deliveryGate.promise;
+      return { ok: true, result: { message_id: 1 } };
+    });
+    const engine = new BridgeEngine({
+      surfaceIdentity: "test", kind: "claude",
+      botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    }, db, client, { runCliAsync }, continuation);
+    const repo = new ContinuationRepository(db.raw);
+
+    const execution = engine.handleMessages([makeMessage("run the tests", 2)]);
+    await waitUntil(() => client.sendMessage.mock.calls.length === 1 && runIds.length === 1, "intermediate delivery start");
+    const checkpointAtDeliveryStart = repo.get(runIds[0]);
+
+    deliveryGate.resolve();
+    await execution;
+
+    expect(checkpointAtDeliveryStart?.state).toBe("waiting");
+    expect(checkpointAtDeliveryStart?.sessionId).toBe("session-before-delivery-261");
+  });
+
   it("recovers a persisted waiting turn once, preserving the durable run id", async () => {
     const durableRunId = "durable-run-261";
     db.insertRun(durableRunId, "100", "claude");
