@@ -195,6 +195,7 @@ print(json.dumps({"calls": calls}))
       "risk-based-test-strategy",
       "release-readiness-review",
       "git-sandbox",
+      "cli-auth-telegram",
     ];
     expect(result.calls).toHaveLength(defaults.length * 2);
     for (const [index, skill] of defaults.entries()) {

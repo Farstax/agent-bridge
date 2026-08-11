@@ -38,6 +38,7 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "risk-based-test-strategy",
     "release-readiness-review",
     "git-sandbox",
+    "cli-auth-telegram",
 )
 
 # unit, defaults file, enabling token(s), persistent database directory
