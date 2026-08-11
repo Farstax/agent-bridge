@@ -19,6 +19,7 @@ import { loadBotsConfig, validateTokenUniqueness, resolveExecutionMode, resolveB
 import { runCli } from "./cli.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { standaloneServiceId } from "./executionIdentity.js";
+import { recoverCancelledContinuationContainment } from "./continuationRecovery.js";
 import { ContinuationRepository } from "./repositories/continuationRepository.js";
 
 dotenv.config({
@@ -77,6 +78,7 @@ const db = openProductionDb(config.dbPath, {
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const continuationStore = new ContinuationRepository(db.raw);
 
+await recoverCancelledContinuationContainment(db, continuationStore);
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
   // Durable continuation records own their own restart reconciliation. Treat
