@@ -46,7 +46,7 @@ Interactive requests stream responses back to the chat. Background worker jobs r
 - **Rate limit handling** — automatic retry on Telegram 429 responses
 - **Discord support** — Gateway transport, slash commands, message chunking, and an interactive Discord entry point
 - **Autonomous worker lane** — durable job queue for reviews, feature plans, TDD implementation, draft PRs, stale PR digests, and merge approvals
-- **Health monitoring** — dedicated scheduler service that runs health checks at a configurable interval and sends formatted reports to a Telegram chat; extensible to any external system via a one-file JSON script
+- **Health monitoring** — dedicated scheduler service that runs health checks at a configurable interval and sends formatted status reports to a Telegram chat; extensible to any external system via a one-file JSON script
 
 ## Requirements
 
@@ -182,7 +182,7 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 | `TELEGRAM_ALLOWED_USER_IDS` | All | — | Comma-separated Telegram user IDs. Also accepts legacy `TELEGRAM_ALLOWED_USER_ID`. |
 | `CODEX_COMMAND` | Codex | `codex` | CLI binary path |
 | `ANTIGRAVITY_COMMAND` | Antigravity | `agy` | CLI binary path |
-| `ANTIGRAVITY_OUTPUT_MODE` | Antigravity | `text` | `text` keeps legacy prompt/log parsing; `json` uses Agy 1.1.8+ native JSON envelopes |
+| `ANTIGRAVITY_OUTPUT_MODE` | Antigravity | `text` | `stream-json` (recommended) uses Agy 1.1.8+ typed NDJSON and extracts only the terminal result; `json` retains the native single-envelope rollback path; `text` keeps legacy prompt/log parsing |
 | `CLAUDE_COMMAND` | Claude | `claude` | CLI binary path |
 | `CODEX_MODEL_PREFERENCE` | Codex | — | Comma-separated model list; first = default, rest = fallbacks |
 | `ANTIGRAVITY_MODEL_PREFERENCE` | Antigravity | — | Comma-separated model list; first = default, rest = fallbacks |
@@ -754,13 +754,16 @@ Session IDs are stored as columns (`codex_session_id`, `antigravity_session_id`,
 
 Discord interactive rows use deterministic numeric aliases of Discord channel
 snowflakes. These aliases are stable across restarts; runtime delivery maps the
-alias back to the original channel snowflake before calling the Discord REST
+alias back to the original Discord channel snowflake before calling the Discord REST
 API.
 
 Antigravity session capture follows the same durable pattern as Codex. Its source depends on `ANTIGRAVITY_OUTPUT_MODE`:
 
-- `json` adds `--output-format json`. A successful envelope must contain `status: "SUCCESS"`, a non-empty `response`, and a valid `conversation_id`. That ID is authoritative for the invocation. The bridge does not use shared logs or the working-directory cache as a JSON-mode fallback.
+- `stream-json` adds `--output-format stream-json`. The bridge ignores non-terminal typed records for final delivery and requires exactly one terminal `result`; a successful result must contain `status: "SUCCESS"`, a non-empty `response`, and a valid `conversation_id`. The terminal response and ID are authoritative for the invocation.
+- `json` adds `--output-format json`. A successful single envelope must contain `status: "SUCCESS"`, a non-empty `response`, and a valid `conversation_id`. That ID is authoritative for the invocation. The bridge does not use shared logs or the working-directory cache as a structured-output fallback.
 - `text` preserves the legacy prompt-wrapped response and log-based session recovery described below. Set `ANTIGRAVITY_OUTPUT_MODE=text` for immediate rollback.
+
+In `text` mode:
 
 1. First turn runs `agy [flags] --print <prompt>` with no `--conversation` flag. Agy requires `--print` immediately before the prompt because it consumes the prompt as its flag value.
 2. The bridge extracts the conversation UUID from Agy's explicit log output when available.
