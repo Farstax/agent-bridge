@@ -230,4 +230,50 @@ describe("durable async continuation lifecycle", () => {
     expect(repo.get(durableRunId)?.state).toBe("completed");
     expect(db.getRun(durableRunId)?.status).toBe("done");
   });
+
+  it("contains a cancelled durable continuation after restart without replaying the provider", async () => {
+    const durableRunId = "cancelled-run-261";
+    db.insertRun(durableRunId, "100", "claude");
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({
+      runId: durableRunId,
+      surface: "test",
+      chatKey: "100",
+      chatId: 100,
+      threadId: null,
+      bot: "claude",
+      sessionId: "session-cancelled-261",
+      executionMode: "async",
+      triggerKind: "run-owned-background-process",
+      triggerId: durableRunId,
+      resumptionCount: 0,
+      pendingIds: [],
+      startedAt: new Date(Date.now() - 1000).toISOString(),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    repo.markCancelled(durableRunId, "stop");
+
+    let processState: "live" | "absent" = "live";
+    const continuation: ContinuationFns = {
+      hasLiveRunOwnedDescendants: vi.fn(() => processState === "live"),
+      getRunOwnedProcessState: vi.fn(() => processState),
+      killRunOwnedDescendants: vi.fn(async () => { processState = "absent"; }),
+      sleep: vi.fn(async () => {}),
+      now: vi.fn(() => Date.now()),
+    };
+    const runCliAsync = vi.fn();
+    const engine = new BridgeEngine({
+      surfaceIdentity: "test", kind: "claude",
+      botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    }, db, makeMockClient(), { runCliAsync }, continuation);
+
+    await engine.recoverContinuations();
+    await waitUntil(() => !!repo.get(durableRunId)?.containedAt, "cancelled continuation containment");
+
+    expect(continuation.killRunOwnedDescendants).toHaveBeenCalledWith(durableRunId);
+    expect(runCliAsync).not.toHaveBeenCalled();
+    expect(repo.hasActiveRun(durableRunId)).toBe(false);
+    expect(db.getRun(durableRunId)?.status).toBe("cancelled");
+  });
 });
