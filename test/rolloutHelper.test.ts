@@ -195,6 +195,40 @@ describe("guarded rollout helper", () => {
     }
   }, 15_000);
 
+  it("captures inventory only for the configured unit on a single-service host, not the full compiled allowlist", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    useMinimalInventory(fixture);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_FAIL_PHASE: "inspect" });
+    expect(result.status).not.toBe(0);
+    const actionLogContent = readFileSync(fixture.actionLog, "utf8");
+    expect(actionLogContent).toContain(`systemctl:cat ${units[0]}`);
+    for (const unallowedUnit of units.slice(1)) {
+      expect(actionLogContent).not.toContain(`systemctl:cat ${unallowedUnit}`);
+    }
+  }, 15_000);
+
+  it("captures inventory for every configured unit when multiple units are selected", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_FAIL_PHASE: "inspect" });
+    expect(result.status).not.toBe(0);
+    const actionLogContent = readFileSync(fixture.actionLog, "utf8");
+    for (const unit of units) {
+      expect(actionLogContent).toContain(`systemctl:cat ${unit}`);
+    }
+  }, 15_000);
+
+  it("fails closed before stopping services when a configured unit's systemd inventory cannot be captured", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    useMinimalInventory(fixture);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_UNCAPTURABLE_UNIT: units[0] });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/systemd unit cannot be captured/i);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+  }, 15_000);
+
   it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
