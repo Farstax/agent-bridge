@@ -471,7 +471,7 @@ export async function qualifyProviderIfNeeded(
   const evidencePath = options.evidencePath ?? qualificationEvidencePath(options.homeDir ?? homedir());
   const evidence = readQualificationEvidence(evidencePath);
   const current = evidence.providers[options.providerId];
-  if (isQualificationCurrent(current, providerId, options.installedVersion)) {
+  if (isQualificationCurrent(current, options.providerId, options.installedVersion)) {
     return { record: current!, ran: false };
   }
   const record = await qualifyProvider({
