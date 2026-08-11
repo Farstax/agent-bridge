@@ -60,11 +60,16 @@ describe("Execution Path Selection - TDD", () => {
       // Execution logic now lives in engine.ts (extracted from index.ts)
       const src = fs.readFileSync("src/engine.ts", "utf-8");
 
-      // The useAsync flag must be set from config alone, not per-bot-kind
-      const useAsyncLine = src.split("\n").find((l) => l.includes("useAsync") && l.includes("=") && !l.includes("if") && !l.includes("await"));
-      expect(useAsyncLine).toBeDefined();
-      expect(useAsyncLine).not.toContain("this.kind");
-      expect(useAsyncLine).not.toContain('"gemini"');
+      // The async/sync execution mode must be set from config alone, not
+      // per-bot-kind. The boolean useAsync flag (Phase 3) was later widened
+      // into a three-state ContinuationExecutionMode ("async" | "sync") for
+      // durable continuation (Issue #261); the derivation is still
+      // config-only, so this assertion tracks the same invariant under the
+      // renamed variable.
+      const modeLine = src.split("\n").find((l) => l.includes("asyncEnabled === true ? \"async\" : \"sync\""));
+      expect(modeLine).toBeDefined();
+      expect(modeLine).not.toContain("this.kind");
+      expect(modeLine).not.toContain('"gemini"');
     });
   });
 });
