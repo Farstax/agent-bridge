@@ -47,6 +47,7 @@ import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseHealthBotMode } from "./health/config.js";
 import { createHealthRuntime } from "./health/runtime.js";
 import { handleIntegratedHealthCommand } from "./health/integrated.js";
+import { recoverCancelledContinuationContainment } from "./continuationRecovery.js";
 import { ContinuationRepository } from "./repositories/continuationRepository.js";
 
 dotenv.config({
@@ -113,6 +114,7 @@ const integratedHealthRuntime = healthDb ? createHealthRuntime({
   sendText: async () => {},
 }) : null;
 
+await recoverCancelledContinuationContainment(db, continuationStore);
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
   // Durable continuation records own restart reconciliation. Keep their runs
