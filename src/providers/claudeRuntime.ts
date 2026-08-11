@@ -13,7 +13,7 @@ import type { CliResult } from "../types.js";
 import { appendEffortArgs } from "../effort.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import { buildClaudeSettingsArg } from "../claudeSettings.js";
-import { buildClaudeStreamJsonInput } from "../claudeStreamJson.js";
+import { buildClaudeStreamJsonInput, parseClaudeStreamJsonOutput } from "../claudeStreamJson.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 
 export function buildInvocation({
@@ -66,6 +66,9 @@ export function buildInvocation({
 }
 
 export function parseResult(stdout: string): CliResult {
+  const transcript = parseClaudeStreamJsonOutput(stdout);
+  if (transcript) return transcript;
+
   const lines = stdout.split("\n").map(l => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].startsWith("{")) continue;
