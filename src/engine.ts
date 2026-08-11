@@ -2558,13 +2558,21 @@ export class BridgeEngine {
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" ? undefined : "json",
+      // Mirror the primary attempt's Claude continuation treatment (Issue #261):
+      // the fallback model retry is still a normal writable Claude turn and
+      // must expose the same tool_use evidence to the continuation detector.
+      outputFormat: executionKind === "antigravity"
+        ? undefined
+        : executionKind === "claude"
+          ? "stream-json"
+          : "json",
       logFile: fallbackLogFile,
       soulContext: fallbackPromptForCli.soulContext,
       includeResponseContract: fallbackPromptForCli.includeResponseContract,
       outputDir: outDir,
       attachments,
     });
+    const isFallbackClaudeStreamJson = executionKind === "claude" && !!fallbackInvocation.stdin;
 
     try {
       const fallbackCwd = getCliWorkingDir(executionKind);
@@ -2587,6 +2595,13 @@ export class BridgeEngine {
             eventContext,
             onEvent: collect ?? undefined,
           });
+      // Snapshot generic run-owned work immediately when the direct CLI exits,
+      // matching the primary attempt (Issue #261). A capacity-fallback retry
+      // is still a normal writable Claude turn and must be eligible for the
+      // same continuation detection as the initial model.
+      const continuationProcessObserved = executionKind === "claude"
+        && !!runId
+        && this.continuation.hasLiveRunOwnedDescendants(runId);
       this._assertLaneOwned(laneHandle);
 
       let fallbackLogContent: string | null = null;
@@ -2595,7 +2610,13 @@ export class BridgeEngine {
         finally { try { rmSync(fallbackLogFile); } catch {} }
       }
 
-      const result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: fallbackLogContent });
+      let result: CliResult;
+      if (isFallbackClaudeStreamJson) {
+        const parsed = parseClaudeStreamJsonOutput(rawResult);
+        result = parsed ?? { text: rawResult.trim(), sessionId: null };
+      } else {
+        result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: fallbackLogContent });
+      }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd: fallbackCwd, sinceMs: fallbackStartedAtMs, explicitLogContent: fallbackLogContent });
       }
@@ -2604,7 +2625,7 @@ export class BridgeEngine {
         ...result,
         text: `⚠️ Fell back to ${fallbackModel} (${currentModel || "default"} at capacity)\n\n${result.text}`,
       };
-      const stagedResult = this._stageResultState(finalResult);
+      const stagedResult: StagedCliResult = { ...this._stageResultState(finalResult), continuationProcessObserved };
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, eventContext?.threadId));
