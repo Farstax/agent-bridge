@@ -747,13 +747,13 @@ describe("execution lane correctness", () => {
     await entered;
     const stopping = engine.handleUpdate({ update_id: 701, message: message("/stop", 7) });
     const executionLane = JSON.stringify(["telegram:interactive", "100:7"]);
-    expect((engine as any).abortedChats.has(executionLane)).toBe(true);
+    expect((engine as any).laneCoordinator.isAborted(executionLane)).toBe(true);
     await stopping;
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "🛑 Execution aborted by user.")).toBe(true);
 
     releaseDelivery();
     await execution;
-    await waitForCondition(() => !(engine as any).cancellationOperations.has(executionLane));
+    await waitForCondition(() => !(engine as any).laneCoordinator.hasCancellation(executionLane));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(db.getSession("100:7", "claude")).toBe("previous-session");
@@ -768,13 +768,13 @@ describe("execution lane correctness", () => {
     const executionLane = JSON.stringify(["telegram:interactive", chatKey]);
     let release!: () => void;
     const delivery = new Promise<void>((resolve) => { release = resolve; });
-    (engine as any).finalDeliveryPhases.set(executionLane, { promise: delivery, release });
+    (engine as any).laneCoordinator.setFinalDelivery(executionLane, { promise: delivery, release });
     db.enqueueMsg("telegram:interactive", chatKey, { prompt: "discard me", chatId: 100, threadId: 7, chatType: "private" });
 
     const firstCancellation = (engine as any)._cancelLane(chatKey, mode);
     const stopCancellation = (engine as any)._cancelLane(chatKey, "stop");
 
-    expect((engine as any).abortedChats.has(executionLane)).toBe(true);
+    expect((engine as any).laneCoordinator.isAborted(executionLane)).toBe(true);
     expect(db.pendingMsgCount("telegram:interactive", chatKey)).toBe(0);
 
     release();
@@ -846,7 +846,7 @@ describe("execution lane correctness", () => {
     const execution = engine.handleMessages([message("first upload turn", 7)]);
     await uploadStarted;
     const stopping = engine.handleUpdate({ update_id: 702, message: message("/stop", 7) });
-    await waitForCondition(() => (engine as any).cancellationOperations.has(JSON.stringify(["telegram:interactive", chatKey])));
+    await waitForCondition(() => (engine as any).laneCoordinator.hasCancellation(JSON.stringify(["telegram:interactive", chatKey])));
     releaseUpload();
     await Promise.all([execution, stopping]);
 

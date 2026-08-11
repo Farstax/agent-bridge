@@ -199,8 +199,8 @@ describe("Issue #229: silent queue/augment admission", () => {
     expect(mockRunCli).toHaveBeenCalledTimes(2);
     expect(prompts[prompts.length - 1]).toBe("first ask\n\nsecond ask");
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "merged answer")).toBe(true);
-    expect((engine as any).cancellationOperations.size).toBe(0);
-    expect((engine as any).activeAugmentedTasks.size).toBe(0);
+    expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
+    expect((engine as any).laneCoordinator.augmentedTaskCount()).toBe(0);
     expect(anyStatusNoise(c)).toBe(false);
 
     db.close();

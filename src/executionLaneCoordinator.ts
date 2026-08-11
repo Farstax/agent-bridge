@@ -42,6 +42,7 @@ export class ExecutionLaneCoordinator {
   clearCancellation(lane: string, expected?: LaneCancellation): void {
     if (!expected || this.cancellationOperations.get(lane) === expected) this.cancellationOperations.delete(lane);
   }
+  cancellationCount(): number { return this.cancellationOperations.size; }
 
   getDrainer(lane: string): LaneDrainer | undefined { return this.laneDrainers.get(lane); }
   setDrainer(lane: string, drainer: LaneDrainer): void { this.laneDrainers.set(lane, drainer); }
@@ -63,6 +64,7 @@ export class ExecutionLaneCoordinator {
   setAugmentedTask(lane: string, task: AugmentedTask): void { this.activeAugmentedTasks.set(lane, task); }
   hasAugmentedTask(lane: string): boolean { return this.activeAugmentedTasks.has(lane); }
   clearAugmentedTask(lane: string): void { this.activeAugmentedTasks.delete(lane); }
+  augmentedTaskCount(): number { return this.activeAugmentedTasks.size; }
 
   markAugmentTransferred(lane: string): void { this.transferredAugmentedLanes.add(lane); }
   isAugmentTransferred(lane: string): boolean { return this.transferredAugmentedLanes.has(lane); }
