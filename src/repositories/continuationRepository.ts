@@ -37,7 +37,7 @@ function key(runId: string): string {
   return `${KEY_PREFIX}${runId}`;
 }
 
-function needsRecovery(record: ContinuationRecord): boolean {
+function needsOrphanProtection(record: ContinuationRecord): boolean {
   return ACTIVE_STATES.has(record.state) || (record.state === "cancelled" && !record.containedAt);
 }
 
@@ -72,18 +72,19 @@ export class ContinuationRepository {
   }
 
   listActive(surface?: string, bot?: string): ContinuationRecord[] {
-    const rows = this.db.prepare("SELECT value FROM settings WHERE key LIKE ? ORDER BY key").all(`${KEY_PREFIX}%`) as Array<{ value?: string | null }>;
-    return rows
-      .map((row) => parseRecord(row.value ?? null))
-      .filter((record): record is ContinuationRecord => !!record)
-      .filter(needsRecovery)
+    return this.listRecords()
+      .filter((record) => ACTIVE_STATES.has(record.state))
       .filter((record) => surface == null || record.surface === surface)
       .filter((record) => bot == null || record.bot === bot);
   }
 
+  listUncontainedCancelled(): ContinuationRecord[] {
+    return this.listRecords().filter((record) => record.state === "cancelled" && !record.containedAt);
+  }
+
   hasActiveRun(runId: string): boolean {
     const record = this.get(runId);
-    return !!record && needsRecovery(record);
+    return !!record && needsOrphanProtection(record);
   }
 
   saveWaiting(input: SaveWaitingContinuation): ContinuationRecord | null {
@@ -140,7 +141,7 @@ export class ContinuationRepository {
   }
 
   markCancelled(runId: string, reason = "cancelled"): ContinuationRecord | null {
-    return this.transition(runId, new Set(["waiting", "runnable", "running", "ambiguous", "cancelled"]), (record) => ({
+    return this.transition(runId, new Set(["waiting", "runnable", "running", "ambiguous"]), (record) => ({
       ...record,
       state: "cancelled",
       updatedAt: new Date().toISOString(),
@@ -169,7 +170,7 @@ export class ContinuationRepository {
   cancelActiveForLane(surface: string, chatKey: string, reason: string): ContinuationRecord[] {
     const cancelled: ContinuationRecord[] = [];
     for (const record of this.listActive(surface)) {
-      if (record.chatKey !== chatKey || record.state === "cancelled") continue;
+      if (record.chatKey !== chatKey) continue;
       const next = this.markCancelled(record.runId, reason);
       if (next) cancelled.push(next);
     }
@@ -195,6 +196,13 @@ export class ContinuationRepository {
       }
       return true;
     })();
+  }
+
+  private listRecords(): ContinuationRecord[] {
+    const rows = this.db.prepare("SELECT value FROM settings WHERE key LIKE ? ORDER BY key").all(`${KEY_PREFIX}%`) as Array<{ value?: string | null }>;
+    return rows
+      .map((row) => parseRecord(row.value ?? null))
+      .filter((record): record is ContinuationRecord => !!record);
   }
 
   private transition(
