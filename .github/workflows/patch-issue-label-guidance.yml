@@ -1,0 +1,41 @@
+name: Patch issue label guidance
+
+on:
+  push:
+    branches:
+      - agent/issue-333-label-taxonomy
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/issue-333-label-taxonomy
+          fetch-depth: 0
+      - name: Patch AGENTS.md
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('AGENTS.md')
+          text = path.read_text()
+          marker = 'Issue-writing rules:\n\n'
+          block = '''Issue-writing rules:\n\n- Assign exactly one primary work-type label to every new issue: `type:bug`, `type:feature`, `type:marketing`, `type:research`, `type:maintenance`, or `type:docs`. Classify by **why the issue exists**, not by every file it may touch.\n- Add secondary labels only when they materially improve filtering: `security`; `area:provider`, `area:runtime`, `area:worker`, `area:memory`, `area:control-plane`, `area:appliance`, `area:infrastructure`, or `area:gtm`; `status:deferred` or `status:blocked`; and exceptional helpers such as `good first issue`, `breaking-change`, or `priority:high`. Do not require an area label and do not create low/medium/high priority tiers by default.\n'''
+          if block in text:
+              raise SystemExit('guidance already present')
+          if marker not in text:
+              raise SystemExit('issue-writing marker not found')
+          path.write_text(text.replace(marker, block, 1))
+          PY
+          rm .github/workflows/patch-issue-label-guidance.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add AGENTS.md .github/workflows/patch-issue-label-guidance.yml
+          git commit -m "docs: require issue type labels"
+          git push origin HEAD:agent/issue-333-label-taxonomy
