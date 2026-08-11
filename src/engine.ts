@@ -1725,122 +1725,20 @@ export class BridgeEngine {
     chatKey: string = String(chatId),
     laneHandle: ExecutionLaneHandle = undefined as never,
   ): Promise<StagedCliResult> {
-    if (!laneHandle) throw new Error("execution lane handle is required");
-    const executionKind = this._executionKind();
-    const model = isAgentKind(this.kind)
-      ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
-      : (this.opts.botConfig.modelPreference[0] || null);
-
-    let logFile: string | null = null;
-    if (executionKind === "antigravity") {
-      logFile = join(tmpdir(), `antigravity-${randomUUID()}.log`);
-    }
-
-    const threadId = body.message_thread_id;
-    const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
-    const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
-    const cwd = getCliWorkingDir(executionKind);
-    const startedAtMs = Date.now();
-    if (executionKind === "antigravity") setAntigravityModel(model);
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, sessionId, laneHandle, model);
-    const invocation = buildCliInvocation({
-      bot: executionKind,
-      command: this.opts.botConfig.command,
-      model,
-      effort: resolveEffort(executionKind, this.db),
-      prompt: promptForCli.prompt,
+    return this._executeProviderAttempt(
+      "async",
+      prompt,
       sessionId,
-      executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" ? undefined : "json",
-      logFile,
-      soulContext: promptForCli.soulContext,
-      includeResponseContract: promptForCli.includeResponseContract,
+      chatId,
+      body,
+      onProgress,
       attachments,
-      outputDir: outDir,
-    });
-    const isClaudeStreamJson = executionKind === "claude" && !!invocation.stdin;
-    try {
-      const cliResult = await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
-        ...buildExecutionOptions(executionKind),
-        onProgress,
-        chatId: this._executionLane(chatKey),
-        stdin: invocation.stdin,
-        contextEnv: promptForCli.contextEnv,
-        eventContext,
-        onEvent: collect ?? undefined,
-      });
-      this._assertLaneOwned(laneHandle);
-
-      let logContent: string | null = null;
-      if (logFile) {
-        try { logContent = readFileSync(logFile, "utf8"); } catch {} finally { try { rmSync(logFile); } catch {} }
-      }
-
-      let result: CliResult;
-      if (isClaudeStreamJson) {
-        const parsed = parseClaudeStreamJsonOutput(cliResult.text);
-        result = parsed ?? { text: cliResult.text.trim(), sessionId: null };
-      } else {
-        result = parseCliResult({ bot: executionKind, stdout: cliResult.text, logContent });
-      }
-      if (executionKind === "antigravity" && !result.sessionId) {
-        result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
-      } else if (executionKind === "kimchi" && !result.sessionId) {
-        result.sessionId = resolveKimchiSessionId(cwd);
-      }
-      result.text = scrubOutputDir(result.text, outDir);
-      const stagedResult = this._stageResultState(result);
-      this._renewLaneOrThrow(laneHandle);
-      if (this.hooks.onAfterExecute) {
-        await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
-      }
-      this._renewLaneOrThrow(laneHandle);
-      if (this._canPublish(laneHandle)) {
-        await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch((err) =>
-          console.error(`[${this.kind}] output file upload failed`, err)
-        );
-      }
-      // Emit a richer run.completed with the real sessionId for downstream
-      // collectors (e.g. sendMessageWithProgress's onEvent branch). The
-      // runCliAsync already emitted a run.completed with sessionId: null;
-      // appending a corrected one keeps the event stream coherent.
-      if (collect && runId && eventContext) {
-        collect({
-          type: "run.completed",
-          version: 1,
-          id: randomUUID(),
-          runId,
-          timestamp: new Date().toISOString(),
-          bot: eventContext.bot,
-          chatId: eventContext.chatId,
-          threadId: eventContext.threadId,
-          sessionId: stagedResult.sessionId ?? null,
-          text: stagedResult.text,
-        });
-      }
-      return stagedResult;
-    } catch (error) {
-      if (logFile) { try { rmSync(logFile); } catch {} }
-      if (error instanceof LostExecutionLeaseError) throw error;
-      if (this._canPublish(laneHandle)) await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
-      if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
-        console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
-        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
-        // executePromptAsync injects conversation context itself — do not pre-wrap
-        return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
-      }
-      if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
-        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, onProgress, attachments, "async", laneHandle, eventContext, runId, collect, body.message_thread_id);
-      }
-      if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
-        const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
-        if (fallbackModel) {
-          return this._runWithFallback(prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress, attachments, logFile, "async", laneHandle, eventContext, runId, collect);
-        }
-      }
-      this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
-      throw error;
-    }
+      eventContext,
+      runId,
+      collect,
+      chatKey,
+      laneHandle,
+    );
   }
 
   async executePrompt(
@@ -1855,8 +1753,38 @@ export class BridgeEngine {
     chatKey: string = String(chatId),
     laneHandle: ExecutionLaneHandle = undefined as never,
   ): Promise<StagedCliResult> {
+    return this._executeProviderAttempt(
+      "sync",
+      prompt,
+      sessionId,
+      chatId,
+      body,
+      () => {},
+      attachments,
+      eventContext,
+      runId,
+      collect,
+      chatKey,
+      laneHandle,
+    );
+  }
+
+  private async _executeProviderAttempt(
+    mode: "async" | "sync",
+    prompt: string,
+    sessionId: string | null,
+    chatId: number,
+    body: any,
+    onProgress: (text: string) => void,
+    attachments: string[],
+    eventContext: CliOptions["eventContext"],
+    runId: string | null,
+    collect: ((e: BridgeEvent) => void) | null,
+    chatKey: string,
+    laneHandle: ExecutionLaneHandle,
+  ): Promise<StagedCliResult> {
     if (!laneHandle) throw new Error("execution lane handle is required");
-    const { message_thread_id: threadId } = body;
+    const threadId = body.message_thread_id;
     const executionKind = this._executionKind();
     const model = isAgentKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
@@ -1880,13 +1808,17 @@ export class BridgeEngine {
       effort: resolveEffort(executionKind, this.db),
       prompt: promptForCli.prompt,
       sessionId,
-      sessionMode: "resume",
+      ...(mode === "sync" ? { sessionMode: "resume" as const } : {}),
       executionMode: this.opts.executionMode,
       // Claude sync turns request the prompt back via stdin (see
       // claudeRuntime.buildInvocation) so continuation detection can scan
       // the transcript for a backgrounded Bash tool_use; the CLI's actual
       // args/output-format contract is unchanged from plain "json".
-      outputFormat: executionKind === "antigravity" ? undefined : executionKind === "claude" ? "stream-json" : "json",
+      outputFormat: executionKind === "antigravity"
+        ? undefined
+        : mode === "sync" && executionKind === "claude"
+          ? "stream-json"
+          : "json",
       logFile,
       soulContext: promptForCli.soulContext,
       includeResponseContract: promptForCli.includeResponseContract,
@@ -1894,23 +1826,41 @@ export class BridgeEngine {
       outputDir: outDir,
     });
     const isClaudeStreamJson = executionKind === "claude" && !!invocation.stdin;
-    const typingTracker = createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId }, () => !this._canPublish(laneHandle));
+    const typingTracker = mode === "sync"
+      ? createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId }, () => !this._canPublish(laneHandle))
+      : null;
 
     try {
-      await typingTracker.start();
-      const stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
-        ...buildExecutionOptions(executionKind),
-        chatId: this._executionLane(chatKey),
-        stdin: invocation.stdin,
-        contextEnv: promptForCli.contextEnv,
-        eventContext,
-        onEvent: collect ?? undefined,
-      });
-      // Snapshot generic run-owned work immediately when the direct CLI exits.
-      // A short-lived background task may finish during parsing/hooks/delivery;
-      // the continuation decision must retain the evidence that it was live at
-      // the actual CLI completion boundary.
-      const continuationProcessObserved = executionKind === "claude"
+      if (typingTracker) await typingTracker.start();
+
+      let stdout: string;
+      if (mode === "async") {
+        stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
+          ...buildExecutionOptions(executionKind),
+          onProgress,
+          chatId: this._executionLane(chatKey),
+          stdin: invocation.stdin,
+          contextEnv: promptForCli.contextEnv,
+          eventContext,
+          onEvent: collect ?? undefined,
+        })).text;
+      } else {
+        stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
+          ...buildExecutionOptions(executionKind),
+          chatId: this._executionLane(chatKey),
+          stdin: invocation.stdin,
+          contextEnv: promptForCli.contextEnv,
+          eventContext,
+          onEvent: collect ?? undefined,
+        });
+      }
+
+      // Snapshot generic run-owned work immediately when the direct sync CLI
+      // exits. A short-lived background task may finish during parsing/hooks/
+      // delivery; the continuation decision must retain evidence from the
+      // actual CLI completion boundary.
+      const continuationProcessObserved = mode === "sync"
+        && executionKind === "claude"
         && !!runId
         && this.continuation.hasLiveRunOwnedDescendants(runId);
       this._assertLaneOwned(laneHandle);
@@ -1929,9 +1879,14 @@ export class BridgeEngine {
       }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
+      } else if (mode === "async" && executionKind === "kimchi" && !result.sessionId) {
+        // Preserve the existing async-only Kimchi session-file resolution.
+        result.sessionId = resolveKimchiSessionId(cwd);
       }
       result.text = scrubOutputDir(result.text, outDir);
-      const stagedResult = { ...this._stageResultState(result), continuationProcessObserved };
+      const stagedResult: StagedCliResult = mode === "sync"
+        ? { ...this._stageResultState(result), continuationProcessObserved }
+        : this._stageResultState(result);
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
@@ -1942,6 +1897,9 @@ export class BridgeEngine {
           console.error(`[${this.kind}] output file upload failed`, err)
         );
       }
+      // The process runner emits run.completed before provider-specific session
+      // recovery is known. Append the corrected terminal view for downstream
+      // collectors so both sync and async paths expose the resolved session id.
       if (collect && runId && eventContext) {
         collect({
           type: "run.completed",
@@ -1964,22 +1922,25 @@ export class BridgeEngine {
       if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
-        // executePrompt injects conversation context itself — do not pre-wrap
+        // Each public adapter injects conversation context itself — do not pre-wrap.
+        if (mode === "async") {
+          return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
+        }
         return this.executePrompt(prompt, null, chatId, body, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
-        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, () => {}, attachments, "sync", laneHandle, eventContext, runId, collect, body.message_thread_id);
+        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, onProgress, attachments, mode, laneHandle, eventContext, runId, collect, body.message_thread_id);
       }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
-          return this._runWithFallback(prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, () => {}, attachments, logFile, "sync", laneHandle, eventContext, runId, collect);
+          return this._runWithFallback(prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress, attachments, logFile, mode, laneHandle, eventContext, runId, collect);
         }
       }
       this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
       throw error;
     } finally {
-      await typingTracker.stop();
+      if (typingTracker) await typingTracker.stop();
     }
   }
 
