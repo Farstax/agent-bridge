@@ -193,6 +193,8 @@ For a **spike**, additionally state the hypothesis/question, evidence to collect
 
 Issue-writing rules:
 
+- Assign exactly one primary work-type label to every new issue: `type:bug`, `type:feature`, `type:marketing`, `type:research`, `type:maintenance`, or `type:docs`. Classify by **why the issue exists**, not by every file it may touch.
+- Add secondary labels only when they materially improve filtering: `security`; `area:provider`, `area:runtime`, `area:worker`, `area:memory`, `area:control-plane`, `area:appliance`, `area:infrastructure`, or `area:gtm`; `status:deferred` or `status:blocked`; and exceptional helpers such as `good first issue`, `breaking-change`, or `priority:high`. Do not require an area label and do not create low/medium/high priority tiers by default.
 - Lead with the intended outcome, not a chronology of prior discussion.
 - Prefer one vertically useful issue over a chain of phase issues unless independently valuable boundaries genuinely require splitting.
 - Reuse the current owner wherever possible; identify concrete evidence before proposing a new service, queue, schema, framework, or abstraction.
