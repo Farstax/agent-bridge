@@ -36,5 +36,14 @@ jobs:
       - run: npm ci
 
       - run: npm test
+        env:
+          # vitest.config.ts already runs the forks pool serial
+          # (maxForks: 1) to remove concurrent-process memory competition.
+          # That alone was not enough: the suite's cumulative memory
+          # growth across ~2500 tests in one process still exceeds V8's
+          # default ~4GB old-space ceiling and OOM-crashes the worker
+          # (observed directly on this runner, not reproducible locally).
+          # Raise the ceiling for this single process explicitly.
+          NODE_OPTIONS: "--max-old-space-size=8192"
 
       - run: npm run typecheck
