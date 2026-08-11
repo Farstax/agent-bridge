@@ -87,8 +87,7 @@ fi
     });
   });
 
-  it("fails closed when Agy native JSON violates the ERROR envelope contract on a nonzero exit", async () => {
-    process.env.ANTIGRAVITY_OUTPUT_MODE = "json";
+  it("fails closed when Agy stream-json terminal ERROR includes a partial response on nonzero exit", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-agy-"));
     const evidencePath = join(root, "qualification.json");
     const fake = executable(join(root, "agy"), `
@@ -96,7 +95,7 @@ if [[ "\${1:-}" == "--version" ]]; then
   echo "agy 1.1.12"
   exit 0
 fi
-printf '%s\\n' '{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"ERROR","response":"partial response","error":"timed out waiting for idle"}'
+printf '%s\\n' '{"event":"result","result":{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"ERROR","response":"partial response","error":"timed out waiting for idle"}}'
 exit 1
 `);
 
@@ -113,7 +112,7 @@ exit 1
     expect(result.overall).toBe("fail");
     expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
       status: "fail",
-      diagnostic: expect.stringMatching(/ERROR envelope included a response/i),
+      diagnostic: expect.stringMatching(/ERROR result included a response/i),
     });
     expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
   });

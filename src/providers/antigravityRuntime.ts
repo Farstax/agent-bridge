@@ -39,15 +39,15 @@ const ANTIGRAVITY_LOCK_OWNER = "owner.json";
 const OWNERLESS_LOCK_STALE_MS = 5_000;
 const LOCK_POLL_MS = 50;
 
-export type AntigravityOutputMode = "text" | "json";
+export type AntigravityOutputMode = "text" | "json" | "stream-json";
 
 export function resolveAntigravityOutputMode(
   env: NodeJS.ProcessEnv = process.env,
 ): AntigravityOutputMode {
   const configured = env.ANTIGRAVITY_OUTPUT_MODE ?? "text";
-  if (configured === "text" || configured === "json") return configured;
+  if (configured === "text" || configured === "json" || configured === "stream-json") return configured;
   throw new Error(
-    `ANTIGRAVITY_OUTPUT_MODE must be text or json (received ${JSON.stringify(configured)})`,
+    `ANTIGRAVITY_OUTPUT_MODE must be text, json, or stream-json (received ${JSON.stringify(configured)})`,
   );
 }
 
@@ -277,7 +277,7 @@ export function buildInvocation({
     const timeoutSeconds = Math.floor(timeouts.cliTimeoutMs / 1000);
     args.push("--print-timeout", `${timeoutSeconds}s`);
   }
-  if (outputMode === "json") args.push("--output-format", "json");
+  if (outputMode !== "text") args.push("--output-format", outputMode);
   const annotatedPrompt = appendAttachmentAnnotations(
     wrapAntigravityPrompt(prompt, soulContext, includeResponseContract ?? true, outputMode),
     attachments,
@@ -576,6 +576,11 @@ interface AntigravityNativeJsonEnvelope {
   error?: unknown;
 }
 
+interface AntigravityStreamJsonRecord {
+  event?: unknown;
+  result?: unknown;
+}
+
 function parseAntigravityNativeJsonEnvelope(stdout: string): AntigravityNativeJsonEnvelope {
   let envelope: unknown;
   try {
@@ -589,9 +594,41 @@ function parseAntigravityNativeJsonEnvelope(stdout: string): AntigravityNativeJs
   return envelope as AntigravityNativeJsonEnvelope;
 }
 
-function nativeJsonProviderError(envelope: AntigravityNativeJsonEnvelope): Error {
+function parseAntigravityStreamJsonTerminal(stdout: string): AntigravityNativeJsonEnvelope {
+  const lines = stdout.split(/\r?\n/).filter((line) => line.trim());
+  const results: AntigravityNativeJsonEnvelope[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(lines[index]);
+    } catch {
+      throw new Error(`Agy stream JSON parse failed: line ${index + 1} was not valid JSON`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`Agy stream JSON parse failed: line ${index + 1} must be an object`);
+    }
+    const record = parsed as AntigravityStreamJsonRecord;
+    if (record.event !== "result") continue;
+    if (!record.result || typeof record.result !== "object" || Array.isArray(record.result)) {
+      throw new Error("Agy stream JSON parse failed: terminal result must be an object");
+    }
+    results.push(record.result as AntigravityNativeJsonEnvelope);
+  }
+  if (results.length === 0) {
+    throw new Error("Agy stream JSON parse failed: terminal result event was missing");
+  }
+  if (results.length !== 1) {
+    throw new Error("Agy stream JSON parse failed: expected exactly one terminal result event");
+  }
+  return results[0];
+}
+
+function providerEnvelopeError(
+  envelope: AntigravityNativeJsonEnvelope,
+  missingMessage: string,
+): Error {
   if (typeof envelope.error !== "string" || !envelope.error.trim()) {
-    return new Error("Agy native JSON ERROR envelope did not include an error message");
+    return new Error(missingMessage);
   }
   const message = envelope.error.trim();
   if (/timed? out|timeout/i.test(message)) {
@@ -602,6 +639,20 @@ function nativeJsonProviderError(envelope: AntigravityNativeJsonEnvelope): Error
     return error;
   }
   return new Error(message);
+}
+
+function nativeJsonProviderError(envelope: AntigravityNativeJsonEnvelope): Error {
+  return providerEnvelopeError(
+    envelope,
+    "Agy native JSON ERROR envelope did not include an error message",
+  );
+}
+
+function streamJsonProviderError(result: AntigravityNativeJsonEnvelope): Error {
+  return providerEnvelopeError(
+    result,
+    "Agy stream JSON ERROR result did not include an error message",
+  );
 }
 
 function assertNativeJsonStatusFields(envelope: AntigravityNativeJsonEnvelope): void {
@@ -621,6 +672,42 @@ function assertNativeJsonStatusFields(envelope: AntigravityNativeJsonEnvelope): 
   }
 }
 
+function assertStreamJsonStatusFields(result: AntigravityNativeJsonEnvelope): void {
+  if (
+    result.status === "SUCCESS" &&
+    typeof result.error === "string" &&
+    result.error.trim()
+  ) {
+    throw new Error("Agy stream JSON parse failed: SUCCESS result included an error");
+  }
+  if (
+    result.status === "ERROR" &&
+    typeof result.response === "string" &&
+    result.response.trim()
+  ) {
+    throw new Error("Agy stream JSON parse failed: ERROR result included a response");
+  }
+}
+
+function assertSuccessfulResult(
+  result: AntigravityNativeJsonEnvelope,
+  prefix: string,
+): CliResult {
+  if (
+    typeof result.conversation_id !== "string" ||
+    !ANTIGRAVITY_CONVERSATION_ID_PATTERN.test(result.conversation_id)
+  ) {
+    throw new Error(`${prefix}: conversation_id must be a UUID`);
+  }
+  if (typeof result.response !== "string" || !result.response.trim()) {
+    throw new Error(`${prefix}: SUCCESS response must be non-empty`);
+  }
+  return {
+    text: result.response.trim(),
+    sessionId: result.conversation_id,
+  };
+}
+
 export function parseAntigravityNativeJsonResult(stdout: string): CliResult {
   const envelope = parseAntigravityNativeJsonEnvelope(stdout);
   assertNativeJsonStatusFields(envelope);
@@ -628,19 +715,17 @@ export function parseAntigravityNativeJsonResult(stdout: string): CliResult {
   if (envelope.status !== "SUCCESS") {
     throw new Error("Agy native JSON parse failed: status must be SUCCESS or ERROR");
   }
-  if (
-    typeof envelope.conversation_id !== "string" ||
-    !ANTIGRAVITY_CONVERSATION_ID_PATTERN.test(envelope.conversation_id)
-  ) {
-    throw new Error("Agy native JSON parse failed: conversation_id must be a UUID");
+  return assertSuccessfulResult(envelope, "Agy native JSON parse failed");
+}
+
+export function parseAntigravityStreamJsonResult(stdout: string): CliResult {
+  const result = parseAntigravityStreamJsonTerminal(stdout);
+  assertStreamJsonStatusFields(result);
+  if (result.status === "ERROR") throw streamJsonProviderError(result);
+  if (result.status !== "SUCCESS") {
+    throw new Error("Agy stream JSON parse failed: status must be SUCCESS or ERROR");
   }
-  if (typeof envelope.response !== "string" || !envelope.response.trim()) {
-    throw new Error("Agy native JSON parse failed: SUCCESS response must be non-empty");
-  }
-  return {
-    text: envelope.response.trim(),
-    sessionId: envelope.conversation_id,
-  };
+  return assertSuccessfulResult(result, "Agy stream JSON parse failed");
 }
 
 export function extractAntigravityNativeJsonError(stdout: string): Error | null {
@@ -654,10 +739,20 @@ export function extractAntigravityNativeJsonError(stdout: string): Error | null 
   return envelope.status === "ERROR" ? nativeJsonProviderError(envelope) : null;
 }
 
-export function parseResult(stdout: string, logContent?: string | null): CliResult {
-  if (resolveAntigravityOutputMode() === "json") {
-    return parseAntigravityNativeJsonResult(stdout);
+export function extractAntigravityStreamJsonError(stdout: string): Error | null {
+  let result: AntigravityNativeJsonEnvelope;
+  try {
+    result = parseAntigravityStreamJsonTerminal(stdout);
+  } catch {
+    return null;
   }
+  return result.status === "ERROR" ? streamJsonProviderError(result) : null;
+}
+
+export function parseResult(stdout: string, logContent?: string | null): CliResult {
+  const outputMode = resolveAntigravityOutputMode();
+  if (outputMode === "json") return parseAntigravityNativeJsonResult(stdout);
+  if (outputMode === "stream-json") return parseAntigravityStreamJsonResult(stdout);
 
   const logErr = extractAntigravityError(logContent);
   if (logErr) {
