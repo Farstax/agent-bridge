@@ -47,6 +47,7 @@ import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseHealthBotMode } from "./health/config.js";
 import { createHealthRuntime } from "./health/runtime.js";
 import { handleIntegratedHealthCommand } from "./health/integrated.js";
+import { ContinuationRepository } from "./repositories/continuationRepository.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
@@ -95,6 +96,7 @@ const db = openProductionDb(dbPath, {
   databaseRole: "interactive",
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
+const continuationStore = new ContinuationRepository(db.raw);
 const client = new TelegramClient(token, fetch, 45_000);
 const healthDbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 const healthDb = integratedHealth ? openProductionDb(healthDbPath, {
@@ -113,7 +115,10 @@ const integratedHealthRuntime = healthDb ? createHealthRuntime({
 
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
-  processState: (run) => getExecutionProcessState(run.run_id),
+  // Durable continuation records own restart reconciliation. Keep their runs
+  // out of generic orphan cleanup until the provider-specific engine has
+  // safely resumed or terminally fenced the continuation.
+  processState: (run) => continuationStore.hasActiveRun(run.run_id) ? "live" : getExecutionProcessState(run.run_id),
   containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
   onReconciled: async (run) => {
     const parts = run.chat_id.split(":");
@@ -233,6 +238,10 @@ for (const engine of Object.values(engines)) {
   });
 }
 
+// The interactive process owns one shared delivery surface but provider
+// continuations are provider-specific, so recover each provider's durable
+// records before allowing generic queue recovery or starting Telegram polling.
+await Promise.all(Object.values(engines).map((engine) => engine.recoverContinuations()));
 await engines[defaultPref].recoverPendingQueues();
 
 await registerGlobalCommands(defaultPref, "");
