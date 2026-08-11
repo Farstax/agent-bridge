@@ -25,7 +25,7 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
   let conversationId: string | null = null;
   let logFile: string | null = null;
   let printTimeout: string | null = null;
-  let agyOutputFormat: "json" | null = null;
+  let agyOutputFormat: "json" | "stream-json" | null = null;
   let model: string | null = null;
   let effort: EffortLevel | null = null;
   let resumeSessionId: string | null = null;
@@ -71,10 +71,10 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
         printTimeout = args[i + 1] ?? null;
         i++;
       } else if (arg === "--output-format") {
-        if (args[i + 1] === "json") agyOutputFormat = "json";
+        if (args[i + 1] === "json" || args[i + 1] === "stream-json") agyOutputFormat = args[i + 1] as "json" | "stream-json";
         i++;
-      } else if (arg === "--output-format=json") {
-        agyOutputFormat = "json";
+      } else if (arg === "--output-format=json" || arg === "--output-format=stream-json") {
+        agyOutputFormat = arg.slice("--output-format=".length) as "json" | "stream-json";
       } else if (arg === "--model") {
         model = args[i + 1] ?? null;
         i++;
