@@ -6,6 +6,17 @@ export default defineConfig({
   test: {
     env: { BRIDGE_SKIP_MEMORY_IMPORT: "1" },
     setupFiles: ["./test/setupEnv.ts"],
+    // The default forks pool spawns one process per CPU (4 on the CI
+    // runner). Each fork independently grows toward V8's ~4GB default
+    // old-space ceiling; several heavy files landing in concurrent forks
+    // can push aggregate memory past the runner's 16GB and OOM-crash a
+    // worker mid-suite. Capping concurrency keeps peak memory well under
+    // that ceiling at the cost of longer wall-clock time.
+    poolOptions: {
+      forks: {
+        maxForks: 2,
+      },
+    },
   },
   plugins: [
     {
