@@ -268,4 +268,43 @@ describe("durable async continuation lifecycle", () => {
     expect(repo.hasActiveRun(durableRunId)).toBe(false);
     expect(db.getRun(durableRunId)?.status).toBe("cancelled");
   });
+
+  it("keeps continuation detection when a Claude model fallback launches background work", async () => {
+    let processState: "live" | "absent" = "live";
+    const continuation: ContinuationFns = {
+      hasLiveRunOwnedDescendants: vi.fn(() => processState === "live"),
+      getRunOwnedProcessState: vi.fn(() => processState),
+      killRunOwnedDescendants: vi.fn(async () => { processState = "absent"; }),
+      sleep: vi.fn(async () => { processState = "absent"; }),
+      now: vi.fn(() => Date.now()),
+    };
+    const runIds: string[] = [];
+    const models: string[] = [];
+    const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
+      runIds.push(options.eventContext.runId);
+      const modelIndex = args.indexOf("--model");
+      models.push(modelIndex >= 0 ? args[modelIndex + 1] : "");
+      if (runCliAsync.mock.calls.length === 1) throw new Error("rate limit");
+      if (runCliAsync.mock.calls.length === 2) {
+        return { text: claudeOutput("Fallback background work is running.", "session-fallback-261", true) };
+      }
+      return { text: claudeOutput("Fallback background work finished.", "session-fallback-261") };
+    });
+    const client = makeMockClient();
+    const engine = new BridgeEngine({
+      surfaceIdentity: "test", kind: "claude",
+      botConfig: { command: "claude", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    }, db, client, { runCliAsync }, continuation);
+
+    await engine.handleMessages([makeMessage("run fallback work", 3)]);
+
+    expect(runCliAsync).toHaveBeenCalledTimes(3);
+    expect(models.slice(0, 2)).toEqual(["primary", "fallback"]);
+    expect(new Set(runIds).size).toBe(1);
+    expect(client.sendMessage.mock.calls.map((call: any[]) => String(call[0].text))).toEqual([
+      expect.stringContaining("Fallback background work is running."),
+      "Fallback background work finished.",
+    ]);
+  });
 });
