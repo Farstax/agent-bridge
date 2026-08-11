@@ -62,6 +62,14 @@ import { formatAdvisorResult } from "./advisor.js";
 import { AdvisorService } from "./advisorService.js";
 import type { AdvisorRequestMode, AdvisorResult } from "./advisorTypes.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
+import {
+  executionLaneCoordinator,
+  type ExecutionLaneCoordinator,
+  type LaneCancellation,
+  type AugmentedTask,
+  type LaneDrainer,
+  type FinalDeliveryPhase,
+} from "./executionLaneCoordinator.js";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -129,61 +137,6 @@ export interface BridgeEngineOptions {
   compactProfile?: CompactProfile;
   /** Bridge-owned issuer; absent when advisor is disabled or misconfigured. */
   advisorCapabilities?: AdvisorCapabilityIssuer;
-}
-
-interface LaneCancellation {
-  mode: "augment" | "interrupt" | "stop";
-  promise: Promise<void>;
-}
-
-interface AugmentedTask {
-  prompt: string;
-  attachments: string[];
-}
-
-interface LaneDrainer {
-  promise: Promise<void>;
-}
-
-interface FinalDeliveryPhase {
-  promise: Promise<void>;
-  release: () => void;
-}
-
-interface LaneRuntimeState {
-  cancellationOperations: Map<string, LaneCancellation>;
-  laneDrainers: Map<string, LaneDrainer>;
-  finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
-  activeContinuations: Set<string>;
-  activeAugmentedTasks: Map<string, AugmentedTask>;
-  transferredAugmentedLanes: Set<string>;
-  abortedChats: Set<string>;
-  resettingChats: Set<string>;
-}
-
-const laneRuntimeByDb = new WeakMap<BridgeDb, Map<string, LaneRuntimeState>>();
-
-function laneRuntimeState(db: BridgeDb, surfaceIdentity: string): LaneRuntimeState {
-  let bySurface = laneRuntimeByDb.get(db);
-  if (!bySurface) {
-    bySurface = new Map<string, LaneRuntimeState>();
-    laneRuntimeByDb.set(db, bySurface);
-  }
-  let state = bySurface.get(surfaceIdentity);
-  if (!state) {
-    state = {
-      cancellationOperations: new Map(),
-      laneDrainers: new Map(),
-      finalDeliveryPhases: new Map(),
-      activeContinuations: new Set(),
-      activeAugmentedTasks: new Map(),
-      transferredAugmentedLanes: new Set(),
-      abortedChats: new Set(),
-      resettingChats: new Set(),
-    };
-    bySurface.set(surfaceIdentity, state);
-  }
-  return state;
 }
 
 /** Injected execution functions — replace real CLI for unit tests. */
@@ -336,15 +289,8 @@ export class BridgeEngine {
   private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
-  private readonly cancellationOperations: Map<string, LaneCancellation>;
-  private readonly laneDrainers: Map<string, LaneDrainer>;
-  private readonly finalDeliveryPhases: Map<string, FinalDeliveryPhase>;
-  private readonly activeContinuations: Set<string>;
-  private readonly activeAugmentedTasks: Map<string, AugmentedTask>;
-  private readonly transferredAugmentedLanes: Set<string>;
+  private readonly laneCoordinator: ExecutionLaneCoordinator;
   private readonly seenTelegramMessageKeys = new Set<string>();
-  private readonly abortedChats: Set<string>;
-  private readonly resettingChats: Set<string>;
   private readonly advisorSuggestions = new Map<string, {
     prompt: string; mode: AdvisorRequestMode; messageId: number; suggestionMessageId?: number;
     chatKey: string; chatType: string; userId?: number; createdAt: number;
@@ -362,15 +308,7 @@ export class BridgeEngine {
     this.kind = opts.kind;
     this.surfaceIdentity = opts.surfaceIdentity;
     this.db = db;
-    const laneRuntime = laneRuntimeState(db, this.surfaceIdentity);
-    this.cancellationOperations = laneRuntime.cancellationOperations;
-    this.laneDrainers = laneRuntime.laneDrainers;
-    this.finalDeliveryPhases = laneRuntime.finalDeliveryPhases;
-    this.activeContinuations = laneRuntime.activeContinuations;
-    this.activeAugmentedTasks = laneRuntime.activeAugmentedTasks;
-    this.transferredAugmentedLanes = laneRuntime.transferredAugmentedLanes;
-    this.abortedChats = laneRuntime.abortedChats;
-    this.resettingChats = laneRuntime.resettingChats;
+    this.laneCoordinator = executionLaneCoordinator(db, this.surfaceIdentity);
     this.client = client;
     this.hooks = opts.hooks ?? {};
     this.queuedMessageHandler = this.hooks.onQueuedMessage;
@@ -540,8 +478,8 @@ export class BridgeEngine {
     const userId = primaryMessage.from?.id;
     const chatKey = topicChatKey(chatId, primaryMessage.chat.type, threadId);
     const executionLane = this._executionLane(chatKey);
-    if (!this.resettingChats.has(executionLane) && !this.cancellationOperations.has(executionLane)) {
-      this.abortedChats.delete(executionLane);
+    if (!this.laneCoordinator.isResetting(executionLane) && !this.laneCoordinator.hasCancellation(executionLane)) {
+      this.laneCoordinator.clearAborted(executionLane);
     }
 
     const hookCtx: HookContext = { chatId, chatKey, threadId, userId };
@@ -568,8 +506,8 @@ export class BridgeEngine {
         let resetHandle: ExecutionLaneHandle | null = null;
         if (commandText === "/reset") {
           const executionLane = this._executionLane(chatKey);
-          this.resettingChats.add(executionLane);
-          this.abortedChats.add(executionLane);
+          this.laneCoordinator.markResetting(executionLane);
+          this.laneCoordinator.markAborted(executionLane);
           resetHandle = await abortExecutionAndWait(executionLane);
           const pending = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
           for (const queued of pending) {
@@ -591,7 +529,7 @@ export class BridgeEngine {
               try {
                 await this.sendText(chatId, { text: commandResponse.text, message_thread_id: threadId });
               } finally {
-                this.resettingChats.delete(this._executionLane(chatKey));
+                this.laneCoordinator.clearResetting(this._executionLane(chatKey));
                 if (resetHandle) this.db.unlock(resetHandle);
               }
             } else {
@@ -780,10 +718,10 @@ export class BridgeEngine {
       }
     }
     let executionOutcome: ExecutionOutcome = "failed";
-    const finalDeliveryActive = this.finalDeliveryPhases.has(executionLane);
+    const finalDeliveryActive = this.laneCoordinator.hasFinalDelivery(executionLane);
     const augmentMode = (this.opts.busyMessageMode ?? "augment") === "augment";
-    const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.activeAugmentedTasks.has(executionLane);
-    if (ownsAugmentedTask) this.activeAugmentedTasks.set(executionLane, { prompt: executionPrompt, attachments: [...attachments] });
+    const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.laneCoordinator.hasAugmentedTask(executionLane);
+    if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt: executionPrompt, attachments: [...attachments] });
     try {
       executionOutcome = await this._executeAndSend(
         executionPrompt, chatId, chatKey, primaryMessage.chat.type, threadId, userId, hookCtx, attachments, attachmentLocalPath,
@@ -791,13 +729,13 @@ export class BridgeEngine {
         ownsAugmentedTask,
       );
     } finally {
-      const transferred = this.transferredAugmentedLanes.has(executionLane);
-      const retainedByCancellation = this.cancellationOperations.has(executionLane);
+      const transferred = this.laneCoordinator.isAugmentTransferred(executionLane);
+      const retainedByCancellation = this.laneCoordinator.hasCancellation(executionLane);
       if (executionOutcome !== "queued" && !transferred && !retainedByCancellation) {
         try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
       }
-      if (transferred) this.transferredAugmentedLanes.delete(executionLane);
-      if (ownsAugmentedTask && !retainedByCancellation && !transferred) this.activeAugmentedTasks.delete(executionLane);
+      if (transferred) this.laneCoordinator.clearAugmentTransferred(executionLane);
+      if (ownsAugmentedTask && !retainedByCancellation && !transferred) this.laneCoordinator.clearAugmentedTask(executionLane);
     }
   }
 
@@ -917,7 +855,7 @@ export class BridgeEngine {
     if (!laneHandle) {
       const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
         prompt, chatId, threadId, chatType, userId, attachments,
-      }, MAX_QUEUE_DEPTH, honorBusyMode && !ownsActiveTask && this.activeAugmentedTasks.has(this._executionLane(chatKey)));
+      }, MAX_QUEUE_DEPTH, honorBusyMode && !ownsActiveTask && this.laneCoordinator.hasAugmentedTask(this._executionLane(chatKey)));
       if (admission.kind === "full") {
         await this.sendText(chatId, {
           text: `⏳ Queue is full (max ${MAX_QUEUE_DEPTH}). Please wait.`,
@@ -974,7 +912,7 @@ export class BridgeEngine {
       try {
         if (!this.db.heartbeatLock(laneHandle!)) {
           console.error(`[${this.kind}] execution lock lease lost surface=${this.surfaceIdentity} chatKey=${chatKey}`);
-          this.abortedChats.add(executionLane);
+          this.laneCoordinator.markAborted(executionLane);
           abortCliProcess(executionLane);
         }
       } catch (error) {
@@ -995,7 +933,7 @@ export class BridgeEngine {
             chatId,
             body: { message_thread_id: threadId },
             showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, chatKey),
-            isAborted: () => this.abortedChats.has(this._executionLane(chatKey)) || !this.db.ownsLock(laneHandle!),
+            isAborted: () => this.laneCoordinator.isAborted(this._executionLane(chatKey)) || !this.db.ownsLock(laneHandle!),
             beforeFinalDelivery: () => {
               finalDeliveryPhase = this._claimFinalDeliveryPhase(laneHandle!);
               return finalDeliveryPhase !== null;
@@ -1030,8 +968,8 @@ export class BridgeEngine {
             const shouldContinue = isAgentKind(this.kind)
               && result.continuationHint === "background-process"
               && result.continuationProcessObserved === true;
-            if (shouldContinue) this.activeContinuations.add(executionLane);
-            else this.activeContinuations.delete(executionLane);
+            if (shouldContinue) this.laneCoordinator.markContinuationActive(executionLane);
+            else this.laneCoordinator.clearContinuation(executionLane);
 
             // Every provider response is genuine and is delivered immediately.
             // Only the original prompt is persisted as a user turn; internal
@@ -1058,7 +996,7 @@ export class BridgeEngine {
               if (this.continuation.hasLiveRunOwnedDescendants(runId)) {
                 await this.continuation.killRunOwnedDescendants(runId);
               }
-              this.activeContinuations.delete(executionLane);
+              this.laneCoordinator.clearContinuation(executionLane);
               await this._deliverContinuationTerminalNotice(laneHandle!, chatId, threadId, CONTINUATION_SESSION_NOTICE);
               finalize();
               break;
@@ -1067,7 +1005,7 @@ export class BridgeEngine {
               if (this.continuation.hasLiveRunOwnedDescendants(runId)) {
                 await this.continuation.killRunOwnedDescendants(runId);
               }
-              this.activeContinuations.delete(executionLane);
+              this.laneCoordinator.clearContinuation(executionLane);
               await this._deliverContinuationTerminalNotice(laneHandle!, chatId, threadId, CONTINUATION_SAFETY_NOTICE);
               finalize();
               break;
@@ -1103,7 +1041,7 @@ export class BridgeEngine {
               if (this.continuation.hasLiveRunOwnedDescendants(runId)) {
                 await this.continuation.killRunOwnedDescendants(runId);
               }
-              this.activeContinuations.delete(executionLane);
+              this.laneCoordinator.clearContinuation(executionLane);
               await this._deliverContinuationTerminalNotice(laneHandle!, chatId, threadId, CONTINUATION_SAFETY_NOTICE);
               finalize();
               break;
@@ -1125,7 +1063,7 @@ export class BridgeEngine {
             isInitialResult = false;
           }
         } finally {
-          this.activeContinuations.delete(executionLane);
+          this.laneCoordinator.clearContinuation(executionLane);
         }
       }
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
@@ -1173,10 +1111,10 @@ export class BridgeEngine {
         for (const id of activePendingIds) this.db.releasePendingClaim(laneHandle!, id);
       }
       try {
-        if (drainOnCompletion && !this.resettingChats.has(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
+        if (drainOnCompletion && !this.laneCoordinator.isResetting(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
           await this._drainQueueAndUnlock(laneHandle!, undefined, 0, true);
         }
-        if (!activeTaskCommitted && activePendingIds.length && !this.cancellationOperations.has(executionLane) && this.db.ownsLock(laneHandle!)) {
+        if (!activeTaskCommitted && activePendingIds.length && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(laneHandle!)) {
           this.db.unlock(laneHandle!);
         }
       } finally {
@@ -1240,7 +1178,7 @@ export class BridgeEngine {
    */
   private _cancelLane(chatKey: string, mode: "augment" | "interrupt" | "stop"): Promise<void> {
     const executionLane = this._executionLane(chatKey);
-    const existing = this.cancellationOperations.get(executionLane);
+    const existing = this.laneCoordinator.getCancellation(executionLane);
     if (existing) {
       if (mode === "stop" && existing.mode !== "stop") {
         existing.mode = "stop";
@@ -1255,21 +1193,21 @@ export class BridgeEngine {
     // cleanup. Install it synchronously so a final delivery already in
     // flight cannot commit once its send resolves.
     if (mode === "stop") this._installStopFence(chatKey, executionLane);
-    this.cancellationOperations.set(executionLane, record);
+    this.laneCoordinator.setCancellation(executionLane, record);
 
     const operation = (async () => {
-      const finalDelivery = this.finalDeliveryPhases.get(executionLane);
+      const finalDelivery = this.laneCoordinator.getFinalDelivery(executionLane);
       if (finalDelivery && record.mode === "augment") {
         await finalDelivery.promise;
         // Existing augment semantics let a genuinely final delivery finish.
         // An intermediate continuation response is different: after that
         // delivery the old logical turn is still active and must be fenced.
-        if (record.mode === "augment" && !this.activeContinuations.has(executionLane)) return;
+        if (record.mode === "augment" && !this.laneCoordinator.isContinuationActive(executionLane)) return;
       }
       if (finalDelivery && record.mode !== "stop") await finalDelivery.promise;
       if (record.mode !== "stop") {
-        this.resettingChats.add(executionLane);
-        this.abortedChats.add(executionLane);
+        this.laneCoordinator.markResetting(executionLane);
+        this.laneCoordinator.markAborted(executionLane);
       }
       let handle: ExecutionLaneHandle | null = null;
       try {
@@ -1278,9 +1216,9 @@ export class BridgeEngine {
 
         // abortExecutionAndWait has confirmed both process-tree termination
         // and lifecycle completion, so the old turn can no longer commit.
-        this.abortedChats.delete(executionLane);
-        this.resettingChats.delete(executionLane);
-        const activeDrainer = this.laneDrainers.get(executionLane);
+        this.laneCoordinator.clearAborted(executionLane);
+        this.laneCoordinator.clearResetting(executionLane);
+        const activeDrainer = this.laneCoordinator.getDrainer(executionLane);
         // A fresh augment must abort a running successor before waiting for
         // its drainer; otherwise the existing cancellation promise hides the
         // new arrival until the successor has already delivered.
@@ -1292,26 +1230,26 @@ export class BridgeEngine {
         // Keep cancellation coalescing active until the old drainer has
         // released its claimed row. Only then may a successor become the
         // target of a fresh interrupt.
-        if (record.mode === "augment") this.transferredAugmentedLanes.add(executionLane);
-        if (this.cancellationOperations.get(executionLane) === record) this.cancellationOperations.delete(executionLane);
+        if (record.mode === "augment") this.laneCoordinator.markAugmentTransferred(executionLane);
+        this.laneCoordinator.clearCancellation(executionLane, record);
         if (handle) await this._drainQueueAndUnlock(handle, undefined, 0, false, record.mode === "augment");
-        if (!this.cancellationOperations.has(executionLane)) this.activeAugmentedTasks.delete(executionLane);
+        if (!this.laneCoordinator.hasCancellation(executionLane)) this.laneCoordinator.clearAugmentedTask(executionLane);
       } finally {
-        if (this.cancellationOperations.get(executionLane) === record) {
-          this.abortedChats.delete(executionLane);
-          this.resettingChats.delete(executionLane);
-          this.cancellationOperations.delete(executionLane);
+        if (this.laneCoordinator.getCancellation(executionLane) === record) {
+          this.laneCoordinator.clearAborted(executionLane);
+          this.laneCoordinator.clearResetting(executionLane);
+          this.laneCoordinator.clearCancellation(executionLane);
         }
-        if (handle && !this.cancellationOperations.has(executionLane) && this.db.ownsLock(handle)) this.db.unlock(handle);
+        if (handle && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(handle)) this.db.unlock(handle);
       }
     })().finally(() => {
       // The augment/final-delivery race returns before the inner cleanup
       // boundary. Every cancellation exit must still release its lane record
       // so later messages can acquire and drain normally.
-      if (this.cancellationOperations.get(executionLane) === record) {
-        this.abortedChats.delete(executionLane);
-        this.resettingChats.delete(executionLane);
-        this.cancellationOperations.delete(executionLane);
+      if (this.laneCoordinator.getCancellation(executionLane) === record) {
+        this.laneCoordinator.clearAborted(executionLane);
+        this.laneCoordinator.clearResetting(executionLane);
+        this.laneCoordinator.clearCancellation(executionLane);
       }
     });
 
@@ -1320,32 +1258,32 @@ export class BridgeEngine {
   }
 
   private _installStopFence(chatKey: string, executionLane: string): void {
-    this.resettingChats.add(executionLane);
-    this.abortedChats.add(executionLane);
+    this.laneCoordinator.markResetting(executionLane);
+    this.laneCoordinator.markAborted(executionLane);
     this._discardPendingMessages(chatKey);
   }
 
   private _canPublish(handle: ExecutionLaneHandle): boolean {
-    return !this.abortedChats.has(this._executionLane(handle.chatKey)) && this.db.ownsLock(handle);
+    return !this.laneCoordinator.isAborted(this._executionLane(handle.chatKey)) && this.db.ownsLock(handle);
   }
 
   private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask): Promise<void> {
     const executionLane = this._executionLane(handle.chatKey);
-    const existing = this.laneDrainers.get(executionLane);
+    const existing = this.laneCoordinator.getDrainer(executionLane);
     if (existing) return existing.promise;
 
     const record = { promise: Promise.resolve() } as LaneDrainer;
     const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation);
     record.promise = operation.finally(() => {
-      if (this.laneDrainers.get(executionLane) === record) this.laneDrainers.delete(executionLane);
+      this.laneCoordinator.clearDrainer(executionLane, record);
     });
-    this.laneDrainers.set(executionLane, record);
+    this.laneCoordinator.setDrainer(executionLane, record);
     return record.promise;
   }
 
   private _claimFinalDeliveryPhase(handle: ExecutionLaneHandle): FinalDeliveryPhase | null {
     const executionLane = this._executionLane(handle.chatKey);
-    if (this.abortedChats.has(executionLane) || this.finalDeliveryPhases.has(executionLane)) return null;
+    if (this.laneCoordinator.isAborted(executionLane) || this.laneCoordinator.hasFinalDelivery(executionLane)) return null;
     try {
       this._runWithFence(handle, () => undefined);
     } catch (error) {
@@ -1356,15 +1294,15 @@ export class BridgeEngine {
     let release!: () => void;
     const promise = new Promise<void>((resolve) => { release = resolve; });
     const phase = { promise, release };
-    this.finalDeliveryPhases.set(executionLane, phase);
+    this.laneCoordinator.setFinalDelivery(executionLane, phase);
     return phase;
   }
 
   private _releaseFinalDeliveryPhase(handle: ExecutionLaneHandle, phase: FinalDeliveryPhase | null): void {
     if (!phase) return;
     const executionLane = this._executionLane(handle.chatKey);
-    if (this.finalDeliveryPhases.get(executionLane) !== phase) return;
-    this.finalDeliveryPhases.delete(executionLane);
+    if (this.laneCoordinator.getFinalDelivery(executionLane) !== phase) return;
+    this.laneCoordinator.clearFinalDelivery(executionLane, phase);
     phase.release();
   }
 
@@ -1403,7 +1341,7 @@ export class BridgeEngine {
       if (!next) {
         if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) > 0) return;
         if (this.db.unlockIfQueueEmpty(handle)) {
-          if (!this.cancellationOperations.has(executionLane)) this.activeAugmentedTasks.delete(executionLane);
+          if (!this.laneCoordinator.hasCancellation(executionLane)) this.laneCoordinator.clearAugmentedTask(executionLane);
           return;
         }
         if (!this.db.ownsLock(handle)) return;
@@ -1420,7 +1358,7 @@ export class BridgeEngine {
         if (outcome !== "committed") {
           for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           this.db.unlock(handle);
-          if (this.abortedChats.has(executionLane) || this.cancellationOperations.has(executionLane)) return;
+          if (this.laneCoordinator.isAborted(executionLane) || this.laneCoordinator.hasCancellation(executionLane)) return;
           this._scheduleQueueRecovery(chatKey, recoveryAttempt + 1);
           return;
         }
@@ -1482,7 +1420,7 @@ export class BridgeEngine {
     if (!next.laneHandle) throw new Error("claimed message requires its acquisition handle");
     const chatKey = next.chatKey;
     if (this.opts.busyMessageMode === "augment") {
-      this.activeAugmentedTasks.set(this._executionLane(chatKey), { prompt: next.prompt, attachments: [...next.attachments] });
+      this.laneCoordinator.setAugmentedTask(this._executionLane(chatKey), { prompt: next.prompt, attachments: [...next.attachments] });
     }
     const hookCtx: HookContext = { chatId: next.chatId, chatKey, threadId: next.threadId ?? undefined, userId: next.userId ?? undefined };
     return this._executeAndSend(
@@ -1506,13 +1444,13 @@ export class BridgeEngine {
   }
 
   private _assertLaneOwned(handle: ExecutionLaneHandle): void {
-    if (this.abortedChats.has(this._executionLane(handle.chatKey)) || !this.db.ownsLock(handle)) {
+    if (this.laneCoordinator.isAborted(this._executionLane(handle.chatKey)) || !this.db.ownsLock(handle)) {
       throw new LostExecutionLeaseError();
     }
   }
 
   private _renewLaneOrThrow(handle: ExecutionLaneHandle): void {
-    if (this.abortedChats.has(this._executionLane(handle.chatKey)) || !this.db.heartbeatLock(handle)) {
+    if (this.laneCoordinator.isAborted(this._executionLane(handle.chatKey)) || !this.db.heartbeatLock(handle)) {
       throw new LostExecutionLeaseError();
     }
   }
@@ -1539,7 +1477,7 @@ export class BridgeEngine {
         bot: eventContext.bot,
         chatId: eventContext.chatId,
         threadId: eventContext.threadId,
-        reason: this.abortedChats.has(this._executionLane(handle.chatKey)) ? "user" : "shutdown",
+        reason: this.laneCoordinator.isAborted(this._executionLane(handle.chatKey)) ? "user" : "shutdown",
       }));
     }
     throw new LostExecutionLeaseError();
