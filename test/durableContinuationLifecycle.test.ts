@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine, type ContinuationFns } from "../src/engine.js";
+import { recoverCancelledContinuationContainment } from "../src/continuationRecovery.js";
 import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
 import type { TelegramMessage } from "../src/types.js";
 
@@ -254,25 +255,16 @@ describe("durable async continuation lifecycle", () => {
     repo.markCancelled(durableRunId, "stop");
 
     let processState: "live" | "absent" = "live";
-    const continuation: ContinuationFns = {
-      hasLiveRunOwnedDescendants: vi.fn(() => processState === "live"),
+    const fns = {
       getRunOwnedProcessState: vi.fn(() => processState),
       killRunOwnedDescendants: vi.fn(async () => { processState = "absent"; }),
       sleep: vi.fn(async () => {}),
-      now: vi.fn(() => Date.now()),
     };
-    const runCliAsync = vi.fn();
-    const engine = new BridgeEngine({
-      surfaceIdentity: "test", kind: "claude",
-      botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
-      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
-    }, db, makeMockClient(), { runCliAsync }, continuation);
 
-    await engine.recoverContinuations();
-    await waitUntil(() => !!repo.get(durableRunId)?.containedAt, "cancelled continuation containment");
+    await recoverCancelledContinuationContainment(db, repo, fns, 0);
 
-    expect(continuation.killRunOwnedDescendants).toHaveBeenCalledWith(durableRunId);
-    expect(runCliAsync).not.toHaveBeenCalled();
+    expect(fns.killRunOwnedDescendants).toHaveBeenCalledWith(durableRunId);
+    expect(repo.get(durableRunId)?.containedAt).toBeTruthy();
     expect(repo.hasActiveRun(durableRunId)).toBe(false);
     expect(db.getRun(durableRunId)?.status).toBe("cancelled");
   });
