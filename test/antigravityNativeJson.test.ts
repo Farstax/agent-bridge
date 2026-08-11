@@ -59,8 +59,27 @@ describe("Agy native JSON invocation contract", () => {
     expect(normalizeCliArgs(invocation.command, invocation.args)).toEqual(invocation.args);
   });
 
-  it("fails clearly for an invalid configured mode", () => {
+  it("preserves stream-json output-format through arg normalization", () => {
     useOutputMode("stream-json");
+
+    const invocation = buildCliInvocation({
+      bot: "antigravity",
+      prompt: "hello",
+      sessionId: "11111111-2222-3333-4444-555555555555",
+      command: "agy",
+      model: null,
+    });
+
+    const outputFormatIndex = invocation.args.indexOf("--output-format");
+    const printIndex = invocation.args.indexOf("--print");
+    expect(outputFormatIndex).toBeGreaterThan(-1);
+    expect(invocation.args[outputFormatIndex + 1]).toBe("stream-json");
+    expect(outputFormatIndex).toBeLessThan(printIndex);
+    expect(normalizeCliArgs(invocation.command, invocation.args)).toEqual(invocation.args);
+  });
+
+  it("fails clearly for an invalid configured mode", () => {
+    useOutputMode("bogus");
 
     expect(() => buildCliInvocation({
       bot: "antigravity",
@@ -68,7 +87,7 @@ describe("Agy native JSON invocation contract", () => {
       sessionId: null,
       command: "agy",
       model: null,
-    })).toThrow("ANTIGRAVITY_OUTPUT_MODE must be text or json");
+    })).toThrow("ANTIGRAVITY_OUTPUT_MODE must be text, json, or stream-json");
   });
 });
 
