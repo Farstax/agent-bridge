@@ -1385,9 +1385,12 @@ export class BridgeEngine {
       await waitTyping.start();
       for (;;) {
         await this._assertContinuationCanProceed(handle, runId, eventContext, collect);
+        // The lifetime cap is a hard safety limit and must win a same-tick
+        // race against process completion — check it before treating the
+        // process as done, or a resume could slip past its own deadline.
+        if (this.continuation.now() >= deadlineAtMs) return "limit";
         const processState = this.continuation.getRunOwnedProcessState(runId);
         if (processState === "absent") return "ready";
-        if (this.continuation.now() >= deadlineAtMs) return "limit";
         // "ambiguous" deliberately follows the live path: do not interpret an
         // inspection failure as completion and never issue a duplicate resume.
         await this.continuation.sleep(CONTINUATION_POLL_MS);
