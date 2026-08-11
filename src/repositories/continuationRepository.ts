@@ -80,14 +80,30 @@ export class ContinuationRepository {
     return !!record && ACTIVE_STATES.has(record.state);
   }
 
-  saveWaiting(input: SaveWaitingContinuation): ContinuationRecord {
-    const record: ContinuationRecord = {
-      ...input,
-      state: "waiting",
-      updatedAt: new Date().toISOString(),
-    };
-    this.write(record);
-    return record;
+  saveWaiting(input: SaveWaitingContinuation): ContinuationRecord | null {
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key(input.runId)) as { value?: string | null } | undefined;
+      const currentText = row?.value ?? null;
+      const current = parseRecord(currentText);
+      // A cancellation/failure that raced the checkpoint wins permanently.
+      // The only valid re-checkpoint is a claimed continuation attempt moving
+      // back from running to waiting (or an idempotent waiting rewrite).
+      if (current && current.state !== "running" && current.state !== "waiting") return null;
+
+      const record: ContinuationRecord = {
+        ...input,
+        state: "waiting",
+        updatedAt: new Date().toISOString(),
+      };
+      const nextText = JSON.stringify(record);
+      if (currentText == null) {
+        this.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key(record.runId), nextText);
+        return record;
+      }
+      const changed = this.db.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
+        .run(nextText, key(record.runId), currentText).changes;
+      return changed === 1 ? record : null;
+    })();
   }
 
   markRunnable(runId: string): ContinuationRecord | null {
@@ -181,12 +197,5 @@ export class ContinuationRepository {
         .run(nextText, key(runId), currentText).changes;
       return changed === 1 ? next : null;
     })();
-  }
-
-  private write(record: ContinuationRecord): void {
-    this.db.prepare(`
-      INSERT INTO settings (key, value) VALUES (?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run(key(record.runId), JSON.stringify(record));
   }
 }
