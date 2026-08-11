@@ -9,12 +9,14 @@ export default defineConfig({
     // The default forks pool spawns one process per CPU (4 on the CI
     // runner). Each fork independently grows toward V8's ~4GB default
     // old-space ceiling; several heavy files landing in concurrent forks
-    // can push aggregate memory past the runner's 16GB and OOM-crash a
-    // worker mid-suite. Capping concurrency keeps peak memory well under
-    // that ceiling at the cost of longer wall-clock time.
+    // can push aggregate memory past the runner's ceiling and OOM-crash a
+    // worker mid-suite. maxForks: 2 (the first attempt at this) still hit
+    // the same OOM signature on the actual CI runner, so run fully serial:
+    // one worker at a time is the only setting that removes concurrent-fork
+    // memory competition entirely, at the cost of longer wall-clock time.
     poolOptions: {
       forks: {
-        maxForks: 2,
+        maxForks: 1,
       },
     },
   },
