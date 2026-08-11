@@ -16,8 +16,10 @@ import { isAbortRequested, runSupervisedProcess } from "../cliSupervisor.js";
 import { type as evtType, type BridgeEvent } from "../events/types.js";
 import {
   extractAntigravityNativeJsonError,
+  extractAntigravityStreamJsonError,
   isPreExecutionDnsFailure,
   parseAntigravityNativeJsonResult,
+  parseAntigravityStreamJsonResult,
   resolveAntigravityConversationId,
   type AntigravityOutputMode,
   toAntigravityModelLabel,
@@ -36,8 +38,12 @@ export interface AntigravityExecutionContext {
 
 function outputModeFromArgs(args: string[]): AntigravityOutputMode {
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === "--output-format" && args[index + 1] === "json") return "json";
+    if (args[index] === "--output-format") {
+      if (args[index + 1] === "json") return "json";
+      if (args[index + 1] === "stream-json") return "stream-json";
+    }
     if (args[index] === "--output-format=json") return "json";
+    if (args[index] === "--output-format=stream-json") return "stream-json";
   }
   return "text";
 }
@@ -123,6 +129,7 @@ export async function runAntigravitySerialized(
   };
   const { eventContext, onEvent } = options;
   const outputMode = executionContext.outputMode ?? outputModeFromArgs(args);
+  const structuredOutput = outputMode !== "text";
   const eventModel = executionContext.applyModel ? executionContext.model : null;
   if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: eventModel }));
 
@@ -147,13 +154,13 @@ export async function runAntigravitySerialized(
             onEvent: (event) => {
               if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
               if (
-                outputMode === "json" &&
+                structuredOutput &&
                 event.type === "text.delta" &&
                 event.source === "stdout"
               ) return;
               try { onEvent?.(event); } catch { /* observer failures are isolated */ }
             },
-          }, outputMode === "json" ? undefined : onProgress);
+          }, structuredOutput ? undefined : onProgress);
 
           if (options.chatId != null && isAbortRequested(options.chatId)) {
             cancelled = true;
@@ -164,6 +171,10 @@ export async function runAntigravitySerialized(
           let completionText: string;
           if (outputMode === "json") {
             const parsed = parseAntigravityNativeJsonResult(result.stdout);
+            sessionId = parsed.sessionId;
+            completionText = parsed.text;
+          } else if (outputMode === "stream-json") {
+            const parsed = parseAntigravityStreamJsonResult(result.stdout);
             sessionId = parsed.sessionId;
             completionText = parsed.text;
           } else {
@@ -189,7 +200,7 @@ export async function runAntigravitySerialized(
             }));
           }
           return {
-            stdout: outputMode === "json"
+            stdout: structuredOutput
               ? result.stdout
               : appendConversationMarker(result.stdout, sessionId),
           };
@@ -203,6 +214,12 @@ export async function runAntigravitySerialized(
             const nativeError = extractNativeJsonProviderError(stdout);
             if (nativeError) {
               lastError = nativeError;
+              throw lastError;
+            }
+          } else if (outputMode === "stream-json") {
+            const streamError = extractAntigravityStreamJsonError(stdout);
+            if (streamError) {
+              lastError = streamError;
               throw lastError;
             }
           }
