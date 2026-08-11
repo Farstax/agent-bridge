@@ -72,6 +72,20 @@ Skills supplement these repository invariants; they do not override them. If nat
 
 Use a two-approval model for normal delivery. Safety is enforced by machine-verifiable invariants and fail-closed execution, not by requesting repeated human approval for every procedural step.
 
+## Owner delivery shorthand — "ship it"
+
+When the repository owner says **"ship it"** after the scope or solution has been agreed, treat that as authorization to execute the unchanged agreed scope end-to-end without asking for routine procedural confirmation again.
+
+Unless the owner explicitly narrows or extends it, "ship it" means:
+
+`issue → branch/PR → implementation → relevant validation → independent review → in-scope review repairs → required exact-head checks → merge → post-merge branch/worktree cleanup → compact completion report`
+
+The directive itself is the explicit merge instruction for the resulting PR once the agreed scope is complete, the exact current head has satisfied required checks, and independent review has found no unresolved in-scope blocker. Do not pause to ask separately whether to create the issue, open the PR, apply review repairs, rerun invalidated checks, merge, or clean up the merged branch/worktree.
+
+"Ship it" does **not** authorize scope expansion, unrelated refactoring, bypassing tests/checks/review, weakening repository invariants, or concealing a material blocker. Stop only when a genuinely new decision falls outside the agreed scope or an existing stop condition is triggered.
+
+Production deployment, destructive operations, credential/permission mutation, and other separately protected operational actions are included only when they were explicitly part of the agreed scope and their repository authorization/qualification rules are satisfied. A code-delivery "ship it" must not be stretched into an unrequested production mutation.
+
 ## Approval 1 — exact-head merge approval
 
 One independent review approves one exact PR head SHA after required exact-head tests and checks pass. GitHub `CI` is the authoritative full-suite regression proof for that head; independent review adds code/contract scrutiny and focused investigation rather than another routine full-suite execution.
@@ -179,6 +193,8 @@ For a **spike**, additionally state the hypothesis/question, evidence to collect
 
 Issue-writing rules:
 
+- Assign exactly one primary work-type label to every new issue: `type:bug`, `type:feature`, `type:marketing`, `type:research`, `type:maintenance`, or `type:docs`. Classify by **why the issue exists**, not by every file it may touch.
+- Add secondary labels only when they materially improve filtering: `security`; `area:provider`, `area:runtime`, `area:worker`, `area:memory`, `area:control-plane`, `area:appliance`, `area:infrastructure`, or `area:gtm`; `status:deferred` or `status:blocked`; and exceptional helpers such as `good first issue`, `breaking-change`, or `priority:high`. Do not require an area label and do not create low/medium/high priority tiers by default.
 - Lead with the intended outcome, not a chronology of prior discussion.
 - Prefer one vertically useful issue over a chain of phase issues unless independently valuable boundaries genuinely require splitting.
 - Reuse the current owner wherever possible; identify concrete evidence before proposing a new service, queue, schema, framework, or abstraction.

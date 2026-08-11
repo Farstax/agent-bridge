@@ -64,7 +64,7 @@ proven, or services may have accepted writes after a failed start.
 
 For a production run, the public command automatically continues inside a
 root-owned transient systemd service before it validates or stops any Agent
-Bridge unit. This keeps the deployment worker outside the seven service
+Bridge unit. This keeps the deployment worker outside the configured service
 cgroups, so stopping the bridge that launched the command cannot terminate the
 rollout itself. Operators still invoke only `agent-bridge-deploy`; do not add a
 manual `systemd-run` wrapper or another deployment path.
@@ -134,7 +134,7 @@ migration, pointer activation, restart, acceptance and rollback sequencing.
 5. Validate effective systemd safety properties: exact units, fragment paths,
    drop-ins, environment files, active states and the fixed database inventory.
 6. Acquire the exclusive rollout lock and capture durable preflight evidence.
-7. Stop all seven services and prove `MainPID=0`, `ControlPID=0` and empty
+7. Stop the configured services and prove `MainPID=0`, `ControlPID=0` and empty
    service cgroups. No provider-CLI process classification is required after
    containment.
 8. Checkpoint WALs, verify integrity/foreign keys/schema, and create complete
@@ -161,11 +161,12 @@ restored: services are contained, the sentinel is retained and manual review is
 required. Queued and claimed Telegram messages are not a preflight blocker;
 contained claims are requeued without changing their content or attachments.
 
-Acceptance is intentionally narrow: the target pointer is active, all seven
-services are stable, all five databases pass integrity, foreign-key and
-expected-schema checks, startup has no errors or crash loop, complete result
-evidence exists, and the sentinel is removed. Historical before/after
-comparisons of runs, events, locks and delivery state are not rollout gates.
+Acceptance is intentionally narrow: the target pointer is active, all
+configured services are stable, all configured databases pass integrity,
+foreign-key and expected-schema checks, startup has no errors or crash loop,
+complete result evidence exists, and the sentinel is removed. Historical
+before/after comparisons of runs, events, locks and delivery state are not
+rollout gates.
 
 ## Supersession
 

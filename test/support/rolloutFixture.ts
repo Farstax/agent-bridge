@@ -209,6 +209,10 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
   case "$cmd" in
   cat)
     unit="$1"
+    if [ "\${FAKE_UNCAPTURABLE_UNIT:-}" = "$unit" ]; then
+      echo "Failed to get unit file: no such unit" >&2
+      exit 1
+    fi
     printf '[Unit]\nDescription=%s\n[Service]\nEnvironmentFile=-%s\nEnvironmentFile=%s\nEnvironmentFile=%s\n' "$unit" "${fixture.envDir}/agent-bridge-shared" "${fixture.envDir}/agent-bridge-release" "${fixture.envDir}/\${unit%.service}"
     ;;
   daemon-reload)

@@ -311,7 +311,7 @@ release_env="$defaults_dir/agent-bridge-release"
 validate_secure_path "$release_env" file
 systemd_inventory_dir="$log_dir/systemd-inventory-${expected_commit}-$$"
 /usr/bin/mkdir --mode=0700 -- "$systemd_inventory_dir"
-for inventory_unit in "${ALLOWED_UNITS[@]}"; do
+for inventory_unit in "${units[@]}"; do
   safe_unit="${inventory_unit%.service}"
   "$systemctl_cmd" cat "$inventory_unit" > "$systemd_inventory_dir/${safe_unit}.cat" || die "systemd unit cannot be captured: $inventory_unit"
   "$systemctl_cmd" show "$inventory_unit" --property=FragmentPath --value > "$systemd_inventory_dir/${safe_unit}.fragment-path" || die "systemd FragmentPath cannot be captured: $inventory_unit"
