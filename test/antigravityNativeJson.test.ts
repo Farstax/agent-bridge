@@ -60,7 +60,7 @@ describe("Agy native JSON invocation contract", () => {
   });
 
   it("fails clearly for an invalid configured mode", () => {
-    useOutputMode("stream-json");
+    useOutputMode("bogus");
 
     expect(() => buildCliInvocation({
       bot: "antigravity",
@@ -68,7 +68,7 @@ describe("Agy native JSON invocation contract", () => {
       sessionId: null,
       command: "agy",
       model: null,
-    })).toThrow("ANTIGRAVITY_OUTPUT_MODE must be text or json");
+    })).toThrow("ANTIGRAVITY_OUTPUT_MODE must be text, json, or stream-json");
   });
 });
 
