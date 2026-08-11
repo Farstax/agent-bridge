@@ -37,7 +37,7 @@ if [[ " $* " == *" --conversation ${conversationId} "* ]]; then
 fi
 printf '%s\\n' '{"event":"init","conversation_id":"${conversationId}","init":{"cwd":"/tmp"}}'
 printf '%s\\n' '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"system_message"}}'
-printf '%s\\n' "{\"event\":\"result\",\"result\":{\"conversation_id\":\"${conversationId}\",\"status\":\"SUCCESS\",\"response\":\"$marker\"}}"
+printf '%s\\n' '{"event":"result","result":{"conversation_id":"${conversationId}","status":"SUCCESS","response":"'"$marker"'"}}'
 `);
 
     const result = await qualifyProvider({
