@@ -81,7 +81,7 @@ export function parseClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonRes
       }
       if (typeof obj.result === "string") {
         last = {
-          text: obj.result,
+          text: obj.result.trim(),
           sessionId: obj.session_id ?? null,
           ...(continuationHint ? { continuationHint } : {}),
           ...(continuationProcessObserved ? { continuationProcessObserved: true } : {}),
