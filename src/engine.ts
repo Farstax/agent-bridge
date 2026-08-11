@@ -1055,6 +1055,8 @@ export class BridgeEngine {
       prompt: input.prompt,
       sessionId: input.sessionId,
       isInitialResult: true,
+      continuationStartedAtMs: null,
+      resumptionCount: 0,
     });
     if (!result) return false;
     return this._continueFromDeliveredResult({
@@ -1079,9 +1081,12 @@ export class BridgeEngine {
     threadId: number | undefined;
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
+    pendingIds: number[];
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (event: BridgeEvent) => void;
+    continuationStartedAtMs: number | null;
+    resumptionCount: number;
   }): Promise<StagedCliResult | null> {
     if (input.mode === "async") {
       let stagedResult: StagedCliResult | null = null;
@@ -1095,6 +1100,8 @@ export class BridgeEngine {
           showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
           isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
           beforeFinalDelivery: () => {
+            if (!stagedResult) return false;
+            this._checkpointContinuationBeforeDelivery(input, stagedResult);
             finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
             return finalDeliveryPhase !== null;
           },
@@ -1122,8 +1129,14 @@ export class BridgeEngine {
             else this._commitContinuationResultState(input.laneHandle, stagedResult);
           },
         });
-        if (!delivered || !stagedResult) return null;
+        if (!delivered || !stagedResult) {
+          await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery aborted");
+          return null;
+        }
         return stagedResult;
+      } catch (error) {
+        await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
+        throw error;
       } finally {
         this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
       }
@@ -1141,18 +1154,77 @@ export class BridgeEngine {
       input.chatKey,
       input.laneHandle,
     );
+    this._checkpointContinuationBeforeDelivery(input, result);
     const deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
-    if (!deliveryPhase) return null;
+    if (!deliveryPhase) {
+      await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
+      return null;
+    }
     try {
       if (result.text) {
         await this.sendText(input.chatId, { text: result.text, message_thread_id: input.threadId });
       }
       if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result);
       else this._commitContinuationResultState(input.laneHandle, result);
+    } catch (error) {
+      await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
+      throw error;
     } finally {
       this._releaseFinalDeliveryPhase(input.laneHandle, deliveryPhase);
     }
     return result;
+  }
+
+  private _checkpointContinuationBeforeDelivery(input: {
+    mode: ContinuationExecutionMode;
+    chatId: number;
+    chatKey: string;
+    threadId: number | undefined;
+    laneHandle: ExecutionLaneHandle;
+    pendingIds: number[];
+    runId: string;
+    continuationStartedAtMs: number | null;
+    resumptionCount: number;
+  }, result: StagedCliResult): void {
+    const shouldContinue = isAgentKind(this.kind)
+      && result.continuationHint === "background-process"
+      && result.continuationProcessObserved === true;
+    if (!shouldContinue || !result.sessionId) return;
+
+    const maxResumptions = positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS);
+    if (input.resumptionCount >= maxResumptions) return;
+    const now = this.continuation.now();
+    const startedAtMs = input.continuationStartedAtMs ?? now;
+    const deadlineAtMs = startedAtMs + positiveIntegerEnv("CONTINUATION_MAX_LIFETIME_MS", DEFAULT_CONTINUATION_MAX_LIFETIME_MS);
+    if (now >= deadlineAtMs) return;
+
+    this._assertLaneOwned(input.laneHandle);
+    const saved = this.continuationStore.saveWaiting({
+      runId: input.runId,
+      surface: this.surfaceIdentity,
+      chatKey: input.chatKey,
+      chatId: input.chatId,
+      threadId: input.threadId ?? null,
+      bot: this.kind,
+      sessionId: result.sessionId,
+      executionMode: input.mode,
+      triggerKind: "run-owned-background-process",
+      triggerId: input.runId,
+      resumptionCount: input.resumptionCount,
+      pendingIds: [...input.pendingIds],
+      startedAt: new Date(startedAtMs).toISOString(),
+      deadlineAt: new Date(deadlineAtMs).toISOString(),
+    });
+    if (!saved) throw new LostExecutionLeaseError();
+  }
+
+  private async _cancelUndeliveredContinuation(runId: string, reason: string): Promise<void> {
+    const checkpoint = this.continuationStore.get(runId);
+    if (checkpoint?.state !== "waiting") return;
+    this.continuationStore.markCancelled(runId, reason);
+    if (this.continuation.getRunOwnedProcessState(runId) === "live") {
+      await this.continuation.killRunOwnedDescendants(runId);
+    }
   }
 
   private async _continueFromDeliveredResult(input: {
@@ -1191,7 +1263,14 @@ export class BridgeEngine {
           return true;
         }
 
+        const checkpoint = this.continuationStore.get(input.runId);
+        if (checkpoint?.state === "waiting") {
+          const persistedStartedAt = Date.parse(checkpoint.startedAt);
+          if (Number.isFinite(persistedStartedAt)) continuationStartedAtMs = persistedStartedAt;
+          resumptionCount = checkpoint.resumptionCount;
+        }
         continuationStartedAtMs ??= this.continuation.now();
+
         if (!result.sessionId) {
           if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
             await this.continuation.killRunOwnedDescendants(input.runId);
@@ -1213,24 +1292,22 @@ export class BridgeEngine {
           return true;
         }
 
+        const deadlineAtMs = checkpoint?.state === "waiting"
+          ? Date.parse(checkpoint.deadlineAt)
+          : continuationStartedAtMs + maxLifetimeMs;
+        if (!Number.isFinite(deadlineAtMs) || this.continuation.now() >= deadlineAtMs) {
+          if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
+            await this.continuation.killRunOwnedDescendants(input.runId);
+          }
+          this.continuationStore.markCancelled(input.runId, "continuation lifetime limit reached");
+          this.laneCoordinator.clearContinuation(executionLane);
+          await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SAFETY_NOTICE);
+          input.finalize();
+          return true;
+        }
+
         await this._assertContinuationCanProceed(input.laneHandle, input.runId, input.eventContext!, input.collect);
-        const deadlineAtMs = continuationStartedAtMs + maxLifetimeMs;
-        this.continuationStore.saveWaiting({
-          runId: input.runId,
-          surface: this.surfaceIdentity,
-          chatKey: input.chatKey,
-          chatId: input.chatId,
-          threadId: input.threadId ?? null,
-          bot: this.kind,
-          sessionId: result.sessionId,
-          executionMode: input.mode,
-          triggerKind: "run-owned-background-process",
-          triggerId: input.runId,
-          resumptionCount,
-          pendingIds: [...input.pendingIds],
-          startedAt: new Date(continuationStartedAtMs).toISOString(),
-          deadlineAt: new Date(deadlineAtMs).toISOString(),
-        });
+        if (checkpoint?.state !== "waiting") throw new LostExecutionLeaseError();
 
         const wake = await this._waitForContinuationWake(
           input.laneHandle,
@@ -1269,9 +1346,12 @@ export class BridgeEngine {
           threadId: input.threadId,
           attachments: [],
           laneHandle: input.laneHandle,
+          pendingIds: input.pendingIds,
           runId: input.runId,
           eventContext: input.eventContext,
           collect: input.collect,
+          continuationStartedAtMs,
+          resumptionCount,
         });
         if (!next) {
           if (!this._canPublish(input.laneHandle)) throw new LostExecutionLeaseError();
@@ -1439,9 +1519,12 @@ export class BridgeEngine {
       threadId: claimed.threadId ?? undefined,
       attachments: [],
       laneHandle: handle,
+      pendingIds: claimed.pendingIds,
       runId: claimed.runId,
       eventContext,
       collect,
+      continuationStartedAtMs: Date.parse(claimed.startedAt),
+      resumptionCount: claimed.resumptionCount,
     });
     if (!result) {
       if (!this._canPublish(handle)) throw new LostExecutionLeaseError();
