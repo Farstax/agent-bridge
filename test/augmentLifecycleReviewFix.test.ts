@@ -161,13 +161,13 @@ describe("augment lifecycle review regressions", () => {
     resolveFirstCli('{"result":"first final","session_id":"first-session"}');
     await finalEntered.promise;
     noticeGate.release();
-    await waitForCondition(() => (engine as any).cancellationOperations.size === 1);
+    await waitForCondition(() => (engine as any).laneCoordinator.cancellationCount() === 1);
     finalGate.release();
     await Promise.all([first, second]);
 
     expect(prompts).toEqual(["first request", "second request", "second request"]);
-    expect((engine as any).cancellationOperations.size).toBe(0);
-    expect((engine as any).activeAugmentedTasks.size).toBe(0);
+    expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
+    expect((engine as any).laneCoordinator.augmentedTaskCount()).toBe(0);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "🔄 Updating the active task...")).toBe(false);
 
     await engine.handleMessages([message("third request")]);
