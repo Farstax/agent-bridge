@@ -1,0 +1,5 @@
+{
+  "name": "cli-auth-telegram",
+  "version": "1.0.0",
+  "description": "Walks a Telegram user through authenticating the Claude, Codex, or Agy CLI using clickable OAuth links and relayed auth codes"
+}
