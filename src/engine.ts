@@ -1457,11 +1457,12 @@ export class BridgeEngine {
       } finally {
         clearInterval(lockHeartbeat);
         this.laneCoordinator.clearContinuation(executionLane);
+        const deliveryStillPending = this.continuationStore.get(record.runId)?.deliveryState === "pending";
         if (!committed) {
           for (const id of record.pendingIds) this.db.releasePendingClaim(handle, id);
         }
         try {
-          if (!this.laneCoordinator.isResetting(executionLane) && this.db.ownsLock(handle)) {
+          if (!deliveryStillPending && !this.laneCoordinator.isResetting(executionLane) && this.db.ownsLock(handle)) {
             await this._drainQueueAndUnlock(handle, undefined, 0, true, this.opts.busyMessageMode === "augment");
           }
         } finally {
