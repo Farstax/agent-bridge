@@ -1,31 +1,70 @@
-# agent-bridge
+# Agent Bridge
 
-Operations bridge for CLI coding agents across Telegram and Discord. It connects chat messages, slash commands, approval buttons, and background worker jobs to Codex, Antigravity, and Claude Code while keeping state in SQLite and process lifecycle under systemd.
+**An always-on workspace for the coding agents you already use.**
+
+Agent Bridge is an open-source runtime for operating Codex, Claude Code, and
+Antigravity/Agy in a persistent environment that you control. Run it on an
+always-on host, direct and supervise work through Telegram or Discord, retain
+session and project context, switch providers when needed, and keep work moving
+when you are away from your laptop.
+
+**[Self-host Agent Bridge OSS](#setup)** or **[use Farstax for a managed workspace](https://farstax.com/)**.
+
+Agent Bridge operates supported coding-agent CLIs. It does not replace them
+with a proprietary agent. You supply the host, CLI accounts, repositories,
+credentials, and the authority each service receives.
+
+## Self-hosted or managed
+
+| | Agent Bridge OSS | Farstax |
+|---|---|---|
+| Best for | Operators who want to own and configure the runtime | Users who want a managed workspace |
+| Infrastructure | You install, secure, monitor, update, and recover the host | Farstax operates the workspace infrastructure |
+| Product | Open-source Companion Runtime, optional Engineering Worker, and Shared Runtime | Managed product powered by Agent Bridge |
+| Start | Continue to [Setup](#setup) | Visit [farstax.com](https://farstax.com/) |
+
+Farstax and a self-hosted installation share the same core idea, with different
+operational responsibility. Available managed features and configuration can
+differ from this repository. Agent Bridge OSS remains independently usable and
+fully documented here.
 
 ## What it does
 
-Runs one or more chat-facing services from the same TypeScript codebase:
+Agent Bridge gives coding-agent CLIs a durable operating environment and gives
+you remote control surfaces for supervising them:
 
-- dedicated Telegram bots for a single CLI backend
-- one unified Telegram bot with `/cli` switching and automatic CLI fallback
-- a Telegram worker bot for queued engineering jobs, GitHub issues, PRs, stale PR handling, and merge approvals
-- optional Discord single-CLI and interactive bots through the Discord Gateway
-- optional health bot that reports host, bridge, and external-system checks
+- **Keep sessions available** across chat turns and service restarts with
+  SQLite-backed state and systemd-managed processes.
+- **Use your preferred agents** through dedicated services or one interactive
+  service with CLI switching and eligible fallback across Codex, Claude Code,
+  and Antigravity/Agy.
+- **Direct work from anywhere** through Telegram, with optional Discord
+  services for supported conversational workflows.
+- **Stay in control** with stop/cancel commands, execution locks, bounded
+  recovery behavior, and, where enabled, approval gates and health/status
+  surfaces.
+- **Add engineering automation when you need it** with the optional Engineering
+  Worker for durable jobs, repository work, tests, pull requests, CI reaction,
+  and explicit merge approval.
 
-Interactive requests stream responses back to the chat. Background worker jobs run through a durable SQLite queue and report only at useful boundaries.
+The agents keep the development environment. You can check progress, make a
+decision, review a change, or unblock work from your phone when it suits you,
+without turning software development into a phone-only workflow.
 
-## Service matrix
+## Runtime structure
 
-| Service | Entry point | Surface | Purpose |
-|---|---|---|---|
-| `agent-bridge-codex.service` | `src/index.ts` | Telegram | Dedicated Codex bot |
-| `agent-bridge-antigravity.service` | `src/index.ts` | Telegram | Dedicated Antigravity bot |
-| `agent-bridge-claude.service` | `src/index.ts` | Telegram | Dedicated Claude Code bot |
-| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram | One bot with `/cli`, per-chat CLI preference, and CLI-to-CLI fallback |
-| `agent-bridge-worker-bot.service` | `src/index-worker.ts` | Telegram | Autonomous worker queue, GitHub issue/PR lifecycle, merge gate |
-| `agent-bridge-health.service` | `src/index-health.ts` | Telegram | Scheduled health reports and optional CLI suggestions |
-| `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord | Discord bot with switchable CLI routing |
-| `agent-bridge-tmp-cleanup.service` + `.timer` | `scripts/reap-tmp-artifacts.sh` | — | Daily sweep of leftover `/tmp` run artifacts and merged git worktrees (see [Temporary artifact cleanup](#temporary-artifact-cleanup)) |
+Agent Bridge OSS has three explicit parts:
+
+| Part | Role | Enablement |
+|---|---|---|
+| **Companion Runtime** | Conversational access, routing, sessions, fallback, memory seams, and response delivery | Primary runtime; choose the Telegram or optional Discord services you need |
+| **Engineering Worker** | Software-engineering jobs, disposable workspaces, TDD, issue/PR lifecycle, CI reaction, and merge gates | Optional and operator-enabled |
+| **Shared Runtime** | Provider adapters, SQLite persistence, session boundaries, memory access, health, notifications, and diagnostics | Used by the enabled services |
+
+Telegram and Discord are control surfaces for this runtime. They are not the
+product boundary. The [architecture overview](docs/architecture/overview.md)
+and [documentation index](docs/README.md) describe the ownership boundaries in
+more detail.
 
 ## Features
 
@@ -42,13 +81,18 @@ Interactive requests stream responses back to the chat. Background worker jobs r
 - **Orphan and restart recovery** — kills leftover CLI subprocesses from previous runs on boot, transitions interrupted SQLite runs to `failed`, retries pending interactive lanes blocked by a surviving lease until that lease expires, and notifies active Telegram/Discord chats to resume using `provide update` or `continue`
 - **Bridge-owned project memory** — conversation-aware memory retrieval and guarded agent writes through `AGENT_BRIDGE_CONTEXT_COMMAND`
 - **Shared skills installer** — optional SDLC skills can be installed across Codex, Antigravity, and Claude Code
-- **SOUL.md design** — proposed bridge-level persona contract for consistent voice, values, boundaries, and workflow across agents
+- **SOUL.md persona** — optional bridge-level persona contract for consistent voice, values, boundaries, and workflow across agents
 - **Rate limit handling** — automatic retry on Telegram 429 responses
-- **Discord support** — Gateway transport, slash commands, message chunking, and an interactive Discord entry point
-- **Autonomous worker lane** — durable job queue for reviews, feature plans, TDD implementation, draft PRs, stale PR digests, and merge approvals
-- **Health monitoring** — dedicated scheduler service that runs health checks at a configurable interval and sends formatted status reports to a Telegram chat; extensible to any external system via a one-file JSON script
+- **Optional Discord support** — Gateway transport, slash commands, message chunking, and an interactive Discord entry point
+- **Optional Engineering Worker** — durable job queue for reviews, feature plans, TDD implementation, draft PRs, stale PR digests, and merge approvals
+- **Optional health monitoring** — dedicated scheduler service that runs health checks at a configurable interval and sends formatted status reports to a Telegram chat; extensible to external systems through one-file JSON scripts
 
 ## Requirements
+
+Self-hosting means operating the machine, CLI authentication, service
+configuration, secrets, upgrades, monitoring, and recovery. If you want the
+same core outcome without owning that infrastructure, use the managed path at
+[farstax.com](https://farstax.com/).
 
 - Node 24+
 - `codex` on `$PATH` — `npm install -g @openai/codex`
@@ -116,6 +160,37 @@ Important:
 - `BRIDGE_PROJECT_DIR` should point at the agent-bridge repo
 - `NODE_BIN` must point at Node 24+ for systemd deployments
 - `CODEX_PROJECT_DIR` / `ANTIGRAVITY_PROJECT_DIR` / `CLAUDE_PROJECT_DIR` may override the CLI working dir per bot
+
+## Service matrix
+
+Install only the services you intend to operate. The Companion Runtime services
+can run without the Engineering Worker, Discord, or health service.
+
+| Service | Entry point | Surface | Purpose |
+|---|---|---|---|
+| `agent-bridge-codex.service` | `src/index.ts` | Telegram | Dedicated Codex companion |
+| `agent-bridge-antigravity.service` | `src/index.ts` | Telegram | Dedicated Antigravity companion |
+| `agent-bridge-claude.service` | `src/index.ts` | Telegram | Optional dedicated Claude Code companion |
+| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram | Optional unified companion with `/cli`, per-chat preference, and CLI fallback |
+| `agent-bridge-worker-bot.service` | `src/index-worker.ts` | Telegram | Optional Engineering Worker queue, GitHub issue/PR lifecycle, and merge gate |
+| `agent-bridge-health.service` | `src/index-health.ts` | Telegram | Optional scheduled health reports and CLI suggestions |
+| `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord | Optional Discord companion with switchable CLI routing |
+| `agent-bridge-tmp-cleanup.service` + `.timer` | `scripts/reap-tmp-artifacts.sh` | — | Daily sweep of leftover `/tmp` run artifacts and merged git worktrees (see [Temporary artifact cleanup](#temporary-artifact-cleanup)) |
+
+## Documentation
+
+The sections below remain the self-hosting reference. These canonical guides
+provide the deeper operational detail:
+
+- [Documentation index](docs/README.md) — authority order and complete map
+- [Initial installation](docs/INITIAL-INSTALL.md) — first install and bootstrap
+- [Engineering Worker guide](docs/WORKER-GUIDE.md) — optional worker commands,
+  configuration, and recovery
+- [Architecture overview](docs/architecture/overview.md) — Companion Runtime,
+  Engineering Worker, and Shared Runtime boundaries
+- [Safe restart](docs/SAFE-RESTART.md) — service restart procedure
+- [Guarded rollout](docs/GUARDED-ROLLOUT.md) — production schema and release
+  rollout procedure
 
 ## Commands
 
@@ -556,9 +631,13 @@ The content-crawler POC (`scripts/health_check.py` in `~/content-crawler`) check
 
 ## SOUL.md design
 
-`SOUL.md` is the proposed bridge-level persona contract for all CLI-backed agents.
+`SOUL.md` is the optional bridge-level persona contract for all CLI-backed
+agents. The runtime loads it through `src/soul.ts` when the configured file is
+present.
 
-It should be runtime-injected by the bridge on every turn, including the first prompt after `/reset`, rather than written into `AGENTS.md`, `ANTIGRAVITY.md`, or `CLAUDE.md`.
+The bridge injects it into CLI prompts, including the first prompt after
+`/reset`, rather than writing it into `AGENTS.md`, `ANTIGRAVITY.md`, or
+`CLAUDE.md`.
 
 The intended schema has 9 sections:
 
@@ -703,11 +782,12 @@ npm test -- test/cli.test.ts  # single file
 
 Agent Bridge OSS is two products on one shared runtime: the **Companion Runtime**
 (dedicated, interactive, and Discord bots — conversational, domain-agnostic) and
-the **Engineering Worker** (worker bot — software-engineering jobs, Git/PR/CI),
-both built on the **Shared Runtime** (SQLite, event store, memory, provider
-adapters, CLI management, config, notifications). See
-`docs/architecture/03-target-architecture.md` (ADR-008). Service and env var
-names below predate the split and are unchanged.
+the optional **Engineering Worker** (worker bot — software-engineering jobs,
+Git/PR/CI), both built on the **Shared Runtime** (SQLite, event store, memory,
+provider adapters, CLI management, config, notifications). See the canonical
+[`architecture overview`](docs/architecture/overview.md) and
+[`ADR-001`](docs/adr/ADR-001-oss-product-split.md). Service and environment
+variable names predate the split and remain unchanged.
 
 ```
 Telegram / Discord update
