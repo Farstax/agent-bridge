@@ -52,7 +52,19 @@ vi.mock("node:child_process", async (importOriginal) => {
         return "1.0.10";
       }
       return actual.execSync(cmd, options);
-    }
+    },
+    execFileSync: (command: string, args: readonly string[], options: any) => {
+      if ((globalThis as any).__mockExecFileSync) {
+        const res = (globalThis as any).__mockExecFileSync(command, args, options);
+        if (res !== undefined) return res;
+      }
+      if (args.includes("--version")) {
+        if (command.includes("claude")) return "Claude Code 2.1.185";
+        if (command.includes("codex")) return "codex 0.141.0";
+        if (command.includes("agy")) return "agy 1.0.10";
+      }
+      return actual.execFileSync(command, args, options);
+    },
   };
 });
 
@@ -981,6 +993,7 @@ describe("SelfPlugin — extended checks", () => {
     try { db.close(); } catch {}
     try { rmSync(dbPath); } catch {}
     delete (globalThis as any).__mockExecSync;
+    delete (globalThis as any).__mockExecFileSync;
   });
 
   it("includes heap-usage check with percentage value 0–100", async () => {
@@ -1053,6 +1066,11 @@ describe("SelfPlugin — extended checks", () => {
       }
       return undefined;
     };
+    (globalThis as any).__mockExecFileSync = (command: string) => {
+      if (command.includes("claude")) return "Claude Code 2.1.158";
+      if (command.includes("codex")) return "codex 0.135.0";
+      return "agy 1.0.10";
+    };
 
     const { SelfPlugin } = await import("../src/health/plugins/self.js");
     const plugin = new SelfPlugin(db as any, dbPath);
@@ -1089,6 +1107,11 @@ describe("SelfPlugin — extended checks", () => {
       if (cmd.includes("npm view @openai/codex version") && !cmd.includes("versions")) return "0.141.0";
       if (cmd.includes("agy --version")) return "1.0.10";
       return undefined;
+    };
+    (globalThis as any).__mockExecFileSync = (command: string) => {
+      if (command.includes("claude")) return "Claude Code 2.1.185";
+      if (command.includes("codex")) return "codex 0.141.0";
+      return "agy 1.0.10";
     };
 
     const { SelfPlugin } = await import("../src/health/plugins/self.js");
@@ -1127,9 +1150,10 @@ describe("SelfPlugin — extended checks", () => {
     const report = await plugin.check();
 
     // The plugin check itself should succeed, but there won't be any update checks
-    expect(report.status).toBe("green");
+    expect(report.status).toBe("amber");
     const claudeCheck = report.checks.find(c => c.name === "cli-update-claude-code");
-    expect(claudeCheck).toBeUndefined();
+    expect(claudeCheck?.status).toBe("amber");
+    expect(claudeCheck?.message).toContain("npm package metadata unavailable");
   });
   it("reports agy version as green when agy is installed", async () => {
     (globalThis as any).__mockExecSync = (cmd: string) => {
