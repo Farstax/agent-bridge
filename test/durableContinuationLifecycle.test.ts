@@ -45,7 +45,8 @@ function claudeOutput(text: string, sessionId: string, background = false): stri
   ].join("\n");
 }
 
-function readClaudeInput(options: any): string {
+function readClaudeInput(args: string[], options: any): string {
+  if (!options.stdin) return String(args.at(-1) ?? "");
   const parsed = JSON.parse(String(options.stdin));
   return typeof parsed.message.content === "string"
     ? parsed.message.content
@@ -102,7 +103,7 @@ describe("durable async continuation lifecycle", () => {
     const prompts: string[] = [];
     const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       runIds.push(options.eventContext.runId);
-      prompts.push(readClaudeInput(options));
+      prompts.push(readClaudeInput(_args, options));
       return {
         text: runCliAsync.mock.calls.length === 1
           ? claudeOutput("Background work is running.", "session-async-261", true)

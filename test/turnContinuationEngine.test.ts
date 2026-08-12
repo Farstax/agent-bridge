@@ -44,7 +44,8 @@ function claudeOutput(text: string, sessionId: string, background = false): stri
   ].join("\n");
 }
 
-function readClaudeInput(options: any): string {
+function readClaudeInput(args: string[], options: any): string {
+  if (!options.stdin) return String(args.at(-1) ?? "");
   const parsed = JSON.parse(String(options.stdin));
   return typeof parsed.message.content === "string"
     ? parsed.message.content
@@ -104,7 +105,7 @@ describe("sync turn continuation", () => {
     const prompts: string[] = [];
     const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       runIds.push(options.eventContext.runId);
-      prompts.push(readClaudeInput(options));
+      prompts.push(readClaudeInput(_args, options));
       return runCli.mock.calls.length === 1
         ? claudeOutput("Tests are running in the background.", "session-261", true)
         : claudeOutput("Tests passed; the task is complete.", "session-261");
@@ -205,7 +206,7 @@ describe("sync turn continuation", () => {
     };
     const prompts: string[] = [];
     const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
-      prompts.push(readClaudeInput(options));
+      prompts.push(readClaudeInput(_args, options));
       if (runCli.mock.calls.length === 1) return claudeOutput("Background work started.", "session-queue", true);
       if (runCli.mock.calls.length === 2) return claudeOutput("Background work finished.", "session-queue");
       return claudeOutput("Queued request finished.", "session-queue");
