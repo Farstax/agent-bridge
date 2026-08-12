@@ -2340,10 +2340,9 @@ export class BridgeEngine {
       sessionId,
       ...(mode === "sync" ? { sessionMode: "resume" as const } : {}),
       executionMode: this.opts.executionMode,
-      // Claude continuation-capable turns use the transcript-bearing adapter
-      // in both execution modes. The provider argv still requests JSON; the
-      // stream-json discriminator is bridge-internal and only exposes tool_use
-      // evidence needed by the continuation detector.
+      // Claude continuation-capable turns request transcript-bearing stream JSON
+      // in both execution modes so tool_use evidence reaches the continuation
+      // detector.
       outputFormat: executionKind === "antigravity"
         ? undefined
         : executionKind === "claude"
