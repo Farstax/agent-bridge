@@ -181,6 +181,17 @@ describe("durable async continuation lifecycle", () => {
 
     expect(checkpointAtDeliveryStart?.state).toBe("waiting");
     expect(checkpointAtDeliveryStart?.sessionId).toBe("session-before-delivery-261");
+    expect(checkpointAtDeliveryStart?.deliveryState).toBe("pending");
+    expect(checkpointAtDeliveryStart?.pendingAttempt).toEqual(expect.objectContaining({
+      prompt: "run the tests",
+      isInitialResult: true,
+      result: expect.objectContaining({
+        text: "Background work is running.",
+        sessionId: "session-before-delivery-261",
+      }),
+    }));
+    expect(repo.get(runIds[0])?.deliveryState).toBe("delivered");
+    expect(repo.get(runIds[0])?.pendingAttempt).toBeUndefined();
   });
 
   it("recovers a persisted waiting turn once, preserving the durable run id", async () => {
@@ -230,6 +241,74 @@ describe("durable async continuation lifecycle", () => {
     expect(options.eventContext.runId).toBe(durableRunId);
     expect(repo.get(durableRunId)?.state).toBe("completed");
     expect(db.getRun(durableRunId)?.status).toBe("done");
+  });
+
+  it("delivers and commits a checkpointed response before invoking the provider after restart", async () => {
+    const durableRunId = "delivery-pending-run-261";
+    db.insertRun(durableRunId, "100", "claude");
+    const repo = new ContinuationRepository(db.raw);
+    const startedAt = new Date(Date.now() - 1000).toISOString();
+    repo.saveWaiting({
+      runId: durableRunId,
+      surface: "test",
+      chatKey: "100",
+      chatId: 100,
+      threadId: null,
+      bot: "claude",
+      sessionId: "session-delivery-pending-261",
+      executionMode: "async",
+      triggerKind: "run-owned-background-process",
+      triggerId: durableRunId,
+      resumptionCount: 0,
+      pendingIds: [],
+      startedAt,
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      deliveryState: "pending",
+      pendingAttempt: {
+        prompt: "run the tests",
+        isInitialResult: true,
+        result: {
+          text: "Background work is running.",
+          sessionId: "session-delivery-pending-261",
+          memoryCandidates: [],
+          continuationHint: "background-process",
+          continuationProcessObserved: true,
+        },
+      },
+    });
+
+    const continuation: ContinuationFns = {
+      hasLiveRunOwnedDescendants: vi.fn(() => false),
+      getRunOwnedProcessState: vi.fn(() => "absent"),
+      killRunOwnedDescendants: vi.fn(async () => {}),
+      sleep: vi.fn(async () => {}),
+      now: vi.fn(() => Date.now()),
+    };
+    const client = makeMockClient();
+    const deliveryCountAtResume: number[] = [];
+    const runCliAsync = vi.fn().mockImplementation(async () => {
+      deliveryCountAtResume.push(client.sendMessage.mock.calls.length);
+      return { text: claudeOutput("Background work finished.", "session-delivery-pending-261") };
+    });
+    const engine = new BridgeEngine({
+      surfaceIdentity: "test", kind: "claude",
+      botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    }, db, client, { runCliAsync }, continuation);
+
+    await engine.recoverContinuations();
+    await waitUntil(() => repo.get(durableRunId)?.state === "completed", "delivery-pending continuation completion");
+
+    expect(deliveryCountAtResume).toEqual([1]);
+    expect(client.sendMessage.mock.calls.map((call: any[]) => String(call[0].text))).toEqual([
+      "Background work is running.",
+      "Background work finished.",
+    ]);
+    expect(db.raw.prepare("SELECT role, text FROM conversation_turns WHERE chat_key = ? ORDER BY id").all("100")).toEqual([
+      expect.objectContaining({ role: "user", text: expect.stringContaining("run the tests") }),
+      expect.objectContaining({ role: "assistant", text: expect.stringContaining("Background work is running.") }),
+      expect.objectContaining({ role: "assistant", text: expect.stringContaining("Background work finished.") }),
+    ]);
   });
 
   it("contains a cancelled durable continuation after restart without replaying the provider", async () => {
