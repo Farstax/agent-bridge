@@ -7,7 +7,7 @@ import { runSupervisedProcess } from "../cliSupervisor.js";
 import type { BotKind } from "../types.js";
 import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
-import { getProcessWatchForCommand, getProviderAdapter } from "./registry.js";
+import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
 export const PROVIDER_CONTRACT_VERSION = 1;
@@ -73,6 +73,19 @@ export function normalizeProviderVersion(raw: string): string {
   const trimmed = raw.trim();
   const match = trimmed.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/);
   return match?.[0] ?? trimmed;
+}
+
+/** Observe the version of the exact command used by the bridge runtime. */
+export function readProviderVersion(providerId: ProviderId, executable?: string): string {
+  const adapter = getProviderAdapter(providerId);
+  const command = executable ?? resolveProviderExecutable(providerId);
+  const raw = execFileSync(command, [...adapter.versionArgs], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+  }).trim();
+  if (!raw) throw new Error(`${providerId} version command returned no output`);
+  return normalizeProviderVersion(raw);
 }
 
 export function qualificationEvidencePath(homeDir: string = homedir()): string {
@@ -358,7 +371,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
     if (options.providerId === "agy") process.env.ANTIGRAVITY_OUTPUT_MODE = "stream-json";
 
     try {
-      const versionOutput = execFileSync(executable, ["--version"], {
+      const versionOutput = execFileSync(executable, [...adapter.versionArgs], {
         cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -466,18 +479,36 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
 }
 
 export async function qualifyProviderIfNeeded(
-  options: ProviderQualificationOptions & { installedVersion: string },
+  options: ProviderQualificationOptions & { installedVersion?: string },
 ): Promise<{ record: ProviderQualificationRecord; ran: boolean }> {
   const evidencePath = options.evidencePath ?? qualificationEvidencePath(options.homeDir ?? homedir());
+  const executable = options.executable ?? resolveProviderExecutable(options.providerId);
+  let observedVersion: string;
+  try {
+    observedVersion = readProviderVersion(options.providerId, executable);
+  } catch {
+    const evidence = readQualificationEvidence(evidencePath);
+    const current = evidence.providers[options.providerId];
+    // Let qualifyProvider persist the version-check failure and diagnostic.
+    const record = await qualifyProvider({
+      ...options,
+      executable,
+      evidencePath,
+      expectedVersion: undefined,
+      previousVersion: options.previousVersion ?? current?.providerVersion ?? null,
+    });
+    return { record, ran: true };
+  }
   const evidence = readQualificationEvidence(evidencePath);
   const current = evidence.providers[options.providerId];
-  if (isQualificationCurrent(current, options.providerId, options.installedVersion)) {
+  if (isQualificationCurrent(current, options.providerId, observedVersion)) {
     return { record: current!, ran: false };
   }
   const record = await qualifyProvider({
     ...options,
+    executable,
     evidencePath,
-    expectedVersion: options.installedVersion,
+    expectedVersion: observedVersion,
     previousVersion: options.previousVersion ?? current?.providerVersion ?? null,
   });
   return { record, ran: true };

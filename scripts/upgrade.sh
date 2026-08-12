@@ -57,11 +57,30 @@ npm_pkg_version() {
 
 cli_command_version() {
   local command="$1" raw
-  if ! command -v "${command}" >/dev/null 2>&1; then
+  local configured=""
+  case "${command}" in
+    claude) configured="${CLAUDE_COMMAND:-}" ;;
+    codex) configured="${CODEX_COMMAND:-}" ;;
+    agy) configured="${ANTIGRAVITY_COMMAND:-}" ;;
+    kimchi) configured="${KIMCHI_COMMAND:-}" ;;
+  esac
+  if [[ -n "${configured}" ]]; then
+    command="${configured}"
+  elif ! command -v "${command}" >/dev/null 2>&1; then
     return 0
   fi
   raw="$(run_as_target_user "${command}" --version 2>/dev/null || true)"
   printf '%s\n' "${raw}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?' | head -1 || true
+}
+
+update_claude_runtime() {
+  local command="${CLAUDE_COMMAND:-claude}"
+  if ! command -v "${command}" >/dev/null 2>&1 && [[ ! -x "${command}" ]]; then
+    echo "claude runtime executable not found: ${command}" >&2
+    return 1
+  fi
+  echo "[update] Updating Claude through the active executable (${command})..."
+  run_as_target_user "${command}" update
 }
 
 qualification_bridge_commit() {
@@ -174,8 +193,8 @@ require_node
 if [[ "${1:-}" == "--update" ]]; then
   before_claude=""
   before_codex=""
+  before_claude="$(cli_command_version claude)"
   if command -v npm >/dev/null 2>&1; then
-    before_claude="$(npm_pkg_version @anthropic-ai/claude-code)"
     before_codex="$(npm_pkg_version @openai/codex)"
   fi
   before_agy="$(cli_command_version agy)"
@@ -183,14 +202,15 @@ if [[ "${1:-}" == "--update" ]]; then
   echo "[update] Updating CLI packages..."
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
-    npm update -g @anthropic-ai/claude-code @openai/codex 2>/dev/null || true
+    npm update -g @openai/codex 2>/dev/null || true
   fi
+  update_claude_runtime
 
   echo "[update] Updating agy (antigravity)..."
   bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
 
   if command -v npm >/dev/null 2>&1; then
-    after_claude="$(npm_pkg_version @anthropic-ai/claude-code)"
+    after_claude="$(cli_command_version claude)"
     after_codex="$(npm_pkg_version @openai/codex)"
     [[ -z "${after_claude}" ]] || qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
     [[ -z "${after_codex}" ]] || qualify_provider_if_needed codex "${before_codex}" "${after_codex}"
@@ -245,7 +265,7 @@ if [[ "${1:-}" == "--clis-only" ]]; then
     exit 1
   fi
 
-  CLIS=("@anthropic-ai/claude-code" "@openai/codex")
+  CLIS=("@openai/codex")
   declare -A before_versions
   for pkg in "${CLIS[@]}"; do
     before_versions["${pkg}"]="$(npm_pkg_version "${pkg}")"
@@ -257,6 +277,21 @@ if [[ "${1:-}" == "--clis-only" ]]; then
   fi
 
   updated_any=0
+  before_claude="$(cli_command_version claude)"
+  update_claude_runtime
+  after_claude="$(cli_command_version claude)"
+  if [[ -z "${after_claude}" ]]; then
+    echo "unable to verify active Claude runtime version after update" >&2
+    exit 1
+  fi
+  if [[ "${after_claude}" != "${before_claude}" ]]; then
+    echo "updated: claude ${before_claude}→${after_claude}"
+    updated_any=1
+  else
+    echo "verified: claude ${after_claude}"
+  fi
+  qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
+
   for pkg in "${CLIS[@]}"; do
     after="$(npm_pkg_version "${pkg}")"
     before="${before_versions[${pkg}]:-}"
@@ -270,10 +305,7 @@ if [[ "${1:-}" == "--clis-only" ]]; then
       echo "verified: ${pkg} ${after}"
     fi
 
-    case "${pkg}" in
-      @anthropic-ai/claude-code) qualify_provider_if_needed claude "${before}" "${after}" ;;
-      @openai/codex) qualify_provider_if_needed codex "${before}" "${after}" ;;
-    esac
+    qualify_provider_if_needed codex "${before}" "${after}"
   done
 
   if [[ "${updated_any}" == "0" ]]; then

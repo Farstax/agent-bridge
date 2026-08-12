@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { getHeapStatistics } from "node:v8";
 import type { HealthPlugin, HealthReport, CheckResult } from "../types.js";
 import type { BridgeDb } from "../../db.js";
+import { readInstalledProviderVersions } from "../../providers/qualificationStatus.js";
 
 const upgradeCommand = process.env.BRIDGE_UPGRADE_COMMAND ?? `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh`;
 
@@ -169,21 +170,27 @@ export class SelfPlugin implements HealthPlugin {
     }
 
     if (globalListSuccess) {
+      const runtimeVersions = readInstalledProviderVersions();
       const cliSpecs = [
-        { pkg: "@anthropic-ai/claude-code", checkName: "cli-update-claude-code" },
-        { pkg: "@openai/codex", checkName: "cli-update-codex" },
+        { pkg: "@anthropic-ai/claude-code", provider: "claude" as const, checkName: "cli-update-claude-code" },
+        { pkg: "@openai/codex", provider: "codex" as const, checkName: "cli-update-codex" },
       ];
-      for (const { pkg, checkName } of cliSpecs) {
+      for (const { pkg, provider, checkName } of cliSpecs) {
         const installed = globalListParsed[pkg];
-        if (!installed?.version) {
+        const runtime = runtimeVersions[provider];
+        if (!runtime) {
           checks.push({
             name: checkName,
             status: "red",
-            message: `${pkg} not found globally — install: npm install -g ${pkg}`,
+            message: `${provider} runtime executable not found — run: ${upgradeCommand}`,
           });
           continue;
         }
-        const current = installed.version;
+        const packageVersion = installed?.version;
+        const mismatch = packageVersion && packageVersion !== runtime
+          ? ` package metadata ${packageVersion} differs from runtime ${runtime}`
+          : "";
+        const current = runtime;
         try {
           const latest = execSync(`npm view ${pkg} version`, {
             stdio: ["ignore", "pipe", "ignore"],
@@ -196,23 +203,40 @@ export class SelfPlugin implements HealthPlugin {
             else if (behind >= 3) status = "amber";
             checks.push({
               name: checkName,
-              status,
-              message: `${pkg} update available: ${current} -> ${latest} (${behind} version${behind === 1 ? "" : "s"} behind). Run: ${upgradeCommand}`,
+              status: mismatch ? "amber" : status,
+              message: `${pkg} runtime ${current}${mismatch}; update available: ${current} -> ${latest} (${behind} version${behind === 1 ? "" : "s"} behind). Run: ${upgradeCommand}`,
             });
           } else {
             checks.push({
               name: checkName,
-              status: "green",
-              message: `${pkg} is up to date (${current})`,
+              status: mismatch ? "amber" : "green",
+              message: `${pkg} runtime ${current}${mismatch} is up to date. Run: ${upgradeCommand}`,
             });
           }
         } catch {
           checks.push({
             name: checkName,
-            status: "green",
-            message: `${pkg} is up to date (${current})`,
+            status: mismatch ? "amber" : "green",
+            message: `${pkg} runtime ${current}${mismatch} (latest version unavailable)`,
           });
         }
+      }
+    }
+    if (!globalListSuccess) {
+      // Package metadata is optional diagnostic input; runtime state remains
+      // authoritative even when npm cannot be queried.
+      for (const { provider, checkName } of [
+        { provider: "claude" as const, checkName: "cli-update-claude-code" },
+        { provider: "codex" as const, checkName: "cli-update-codex" },
+      ]) {
+        const runtime = readInstalledProviderVersions()[provider];
+        checks.push({
+          name: checkName,
+          status: runtime ? "amber" : "red",
+          message: runtime
+            ? `${provider} runtime ${runtime}; npm package metadata unavailable`
+            : `${provider} runtime executable not found; npm package metadata unavailable`,
+        });
       }
     }
 

@@ -6,7 +6,7 @@ import {
   qualifyProviderIfNeeded,
   qualificationEvidencePath,
 } from "../src/providers/qualification.js";
-import { assertProviderId, getProviderAdapter } from "../src/providers/registry.js";
+import { assertProviderId, resolveProviderExecutable } from "../src/providers/registry.js";
 
 interface Args {
   provider: string;
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   const providerId = assertProviderId(args.provider);
   const common = {
     providerId,
-    executable: getProviderAdapter(providerId).executable,
+    executable: resolveProviderExecutable(providerId),
     evidencePath: args.evidencePath ?? qualificationEvidencePath(homedir()),
     previousVersion: args.previousVersion ?? null,
     bridgeCommit: resolveBridgeCommit(args.bridgeCommit),

@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { loadBotsConfig } from "../config.js";
 import {
   type ProviderAdapter,
   type ProviderId,
@@ -11,6 +12,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     id: "codex",
     displayName: "Codex",
     executable: "codex",
+    versionArgs: ["--version"],
     defaultArgs: ["--approval-mode", "full-auto"],
     capabilities: {
       interactive: true,
@@ -24,6 +26,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     id: "claude",
     displayName: "Claude Code",
     executable: "claude",
+    versionArgs: ["--version"],
     defaultArgs: ["--dangerously-skip-permissions"],
     capabilities: {
       interactive: true,
@@ -37,6 +40,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     id: "agy",
     displayName: "Antigravity",
     executable: "agy",
+    versionArgs: ["--version"],
     defaultArgs: ["--print"],
     capabilities: {
       interactive: true,
@@ -51,6 +55,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     id: "kimchi",
     displayName: "Kimchi",
     executable: "kimchi",
+    versionArgs: ["--version"],
     defaultArgs: ["--print"],
     capabilities: {
       interactive: true,
@@ -105,6 +110,12 @@ export function getProviderAdapter(id: ProviderId): ProviderAdapter {
 
 export function getProviderAdapters(): readonly ProviderAdapter[] {
   return PROVIDER_IDS.map((id) => ADAPTERS[id]);
+}
+
+/** Resolve the command used by the live bridge runtime, including command overrides. */
+export function resolveProviderExecutable(id: ProviderId, env: Record<string, string | undefined> = process.env): string {
+  const bot = id === "agy" ? "antigravity" : id;
+  return loadBotsConfig(env)[bot].command;
 }
 
 export function isProviderId(value: string): value is ProviderId {
