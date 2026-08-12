@@ -102,7 +102,8 @@ enough to reproduce without a provider call. It compares:
 * latest 20 turns plus scoped lexical search over older turns, selecting the
   newest matching evidence.
 
-The benchmark measures retrieval correctness for four queries, whether the
+Run `node scripts/research/issue-347-memory-benchmark.mjs` to reproduce the
+fixture. The benchmark measures retrieval correctness for four queries, whether the
 latest superseding fact is selected, prompt-size estimates at four characters per
 token, and local retrieval/composition time. It does not claim provider-model
 quality or network latency; those require a version-pinned provider evaluation.
@@ -113,7 +114,7 @@ quality or network latency; those require a version-pinned provider evaluation.
 | --- | ---: | --- | ---: | ---: |
 | Recent 20 turns | 0/4 | Cannot see older decisions | 655 tokens | <0.001 ms / <0.001 ms |
 | Summary + recent 20 | 4/4 | Correct in this fixture because the summary retained current values | 752 tokens | <0.001 ms / <0.001 ms |
-| Recent 20 + scoped search | 3/4 with naive exact terms; 4/4 after latest-match query expansion | Selects the newest branch/pin evidence when the query is scoped | ~698 tokens | 0.343 ms / 0.411 ms |
+| Recent 20 + scoped search | 3/4 with naive exact terms; 4/4 after latest-match query expansion | Selects the newest branch/pin evidence when the query is scoped | ~698 tokens | 0.402 ms / 0.499 ms |
 
 The missed case with naive search was a query phrased as “current branch” while
 the source turns said only “branch”. This is a retrieval-query limitation, not
