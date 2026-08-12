@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -172,7 +172,7 @@ exit 0
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("Claude runtime");
-    expect(readFileSync(log, "utf8")).not.toContain("--provider claude");
+    expect(existsSync(log)).toBe(false);
   });
 
   it("keeps the upgraded CLI installed when qualification fails", () => {
