@@ -41,9 +41,9 @@ export function formatReport(report: HealthReport): string {
 }
 
 export function formatAggregateReport(aggregate: HealthAggregate): string {
-  if (aggregate.status === null) return "No current health reports available.";
-  const icon = EMOJI[aggregate.status] ?? "❓";
-  const lines = [`*Health aggregate:* ${icon} ${aggregate.status.toUpperCase()}`];
+  const lines = aggregate.status === null
+    ? ["No current health reports available."]
+    : [`*Health aggregate:* ${EMOJI[aggregate.status] ?? "❓"} ${aggregate.status.toUpperCase()}`];
   if (aggregate.nonGreenReports.length) {
     lines.push(`*Non-green plugins:* ${aggregate.nonGreenReports.map((report) => `${report.pluginName} (${report.status})`).join(", ")}`);
   }
