@@ -140,6 +140,15 @@ export class ConversationRepository {
       .get(chatKey, summary?.range_end_turn_id ?? 0) as { turnCount: number; charCount: number };
   }
 
+  /**
+   * Deletes turns up to and including `upToTurnId`. As of issue #349, this is
+   * no longer invoked by normal compaction or startup maintenance — a
+   * summary must never become the only surviving copy of the turns it
+   * covers. This remains available as the primitive an explicit, separately
+   * owned retention policy would call (e.g. a bounded age/size-based sweep),
+   * not as something callers should reach for casually. `/reset`'s full
+   * history clear uses clearConvHistory below, not this method.
+   */
   pruneConvTurns(chatKey: string, upToTurnId: number): void {
     this.db
       .prepare(`DELETE FROM conversation_turns WHERE chat_key = ? AND id <= ?`)

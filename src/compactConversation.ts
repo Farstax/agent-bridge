@@ -1,9 +1,12 @@
 /**
  * PURPOSE: Shared compaction service — the single path for summarising a chat's
- * conversation, promoting durable memory candidates, and pruning covered turns.
- * Used by /compact; a later PR wires the same service into fallback/switch handoff.
- * Compaction failure is non-destructive: no summary is stored and no turns are
- * pruned unless summarisation succeeds and produces valid structured output.
+ * conversation and promoting durable memory candidates. Used by /compact; a
+ * later PR wires the same service into fallback/switch handoff.
+ * Compaction failure is non-destructive: no summary is stored unless
+ * summarisation succeeds and produces valid structured output. Source turns
+ * are never deleted here (issue #349) — a summary is a disposable handoff
+ * cache, never the only surviving copy of the conversation evidence it
+ * summarised. Turn retention/pruning is an explicit, separately owned policy.
  * NEIGHBORS: src/engine.ts, src/compactSummary.ts, src/projectMemory.ts, src/db.ts
  */
 
@@ -305,7 +308,14 @@ export async function compactConversation(
         else if (result.status === "rejected") rejectedCandidateCount++;
       }
 
-      db.pruneConvTurns(chatKey, endId);
+      // Issue #349: compaction stores a summary as a disposable handoff
+      // cache but must never delete the source turns it summarised — a
+      // summary must never become the only surviving copy of that evidence.
+      // Source turns stay in conversation_turns as the recoverable archive;
+      // bounded context/backlog construction already excludes covered turns
+      // via the summary's range_end_turn_id (see ConversationRepository
+      // buildConvContext/getConvTurnsForCompaction), so retaining them here
+      // does not change prompt size or compaction backlog behaviour.
     });
   } catch {
     return finish({
