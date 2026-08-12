@@ -135,6 +135,46 @@ exit 0
     expect(readFileSync(log, "utf8")).toContain("provider-qualification.ts --provider claude --expected-version 2.1.229");
   });
 
+  it("fails when Claude update succeeds but the active executable remains behind package metadata", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-claude-drift-"));
+    const npm = join(root, "npm");
+    const claude = join(root, "claude");
+    const node = join(root, "node");
+    const log = join(root, "qualification.log");
+
+    writeFileSync(node, `#!/usr/bin/env bash
+if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
+printf '%s\\n' "$*" >> "${log}"
+exit 0
+`, { mode: 0o755 });
+    chmodSync(node, 0o755);
+    writeFileSync(npm, `#!/usr/bin/env bash
+if [ "$1" = list ]; then
+  echo '@anthropic-ai/claude-code@2.1.229'
+  echo '@openai/codex@2.1.229'
+  exit 0
+fi
+if [ "$1" = install ]; then exit 0; fi
+exit 0
+`, { mode: 0o755 });
+    chmodSync(npm, 0o755);
+    writeFileSync(claude, `#!/usr/bin/env bash
+if [ "$1" = --version ]; then echo 'Claude Code 2.1.228'; exit 0; fi
+if [ "$1" = update ]; then exit 0; fi
+exit 0
+`, { mode: 0o755 });
+    chmodSync(claude, 0o755);
+
+    const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
+      encoding: "utf8",
+      env: { ...process.env, NODE_BIN: node, CLAUDE_COMMAND: claude, PATH: `${root}:${process.env.PATH}` },
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Claude runtime");
+    expect(readFileSync(log, "utf8")).not.toContain("--provider claude");
+  });
+
   it("keeps the upgraded CLI installed when qualification fails", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-qualification-fail-"));
     const npm = join(root, "npm");

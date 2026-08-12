@@ -218,6 +218,38 @@ printf '%s\\n' '{"result":"AGENT_BRIDGE_QUALIFICATION_OK","session_id":"session-
     expect(readQualificationEvidence(evidencePath).providers.claude?.providerVersion).toBe("2.1.228");
   });
 
+  it("reuses cached evidence only when the active executable version agrees", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-runtime-cache-"));
+    const evidencePath = join(root, "qualification.json");
+    const fake = executable(join(root, "claude"), `
+if [[ "\${1:-}" == "--version" ]]; then
+  echo "Claude Code 2.1.229"
+  exit 0
+fi
+exit 1
+`);
+    const cached = passingRecord({
+      provider: "claude",
+      providerVersion: "2.1.229",
+    });
+    writeQualificationRecord(cached, evidencePath);
+
+    const { qualifyProviderIfNeeded } = await import("../src/providers/qualification.js");
+    const result = await qualifyProviderIfNeeded({
+      providerId: "claude",
+      executable: fake,
+      installedVersion: "2.1.229",
+      evidencePath,
+      bridgeCommit: "f".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.ran).toBe(false);
+    expect(result.record).toEqual(cached);
+  });
+
   it("surfaces persistent pass, degraded and unqualified states for health without rerunning tests", () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-health-"));
     const evidencePath = join(root, "qualification.json");
