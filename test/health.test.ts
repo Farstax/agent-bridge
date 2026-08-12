@@ -165,6 +165,24 @@ describe("formatReport", () => {
   });
 });
 
+describe("formatAggregateReport", () => {
+  it("shows stale and missing evidence when no current report is available", async () => {
+    const { formatAggregateReport } = await import("../src/health/reporter.js");
+
+    const text = formatAggregateReport({
+      status: null,
+      reports: [],
+      nonGreenReports: [],
+      evidence: { missingPluginNames: ["server"], stalePluginNames: ["agent-bridge"] },
+    });
+
+    expect(text).toContain("Missing plugin reports");
+    expect(text).toContain("server");
+    expect(text).toContain("Stale plugin reports");
+    expect(text).toContain("agent-bridge");
+  });
+});
+
 // ── formatSuggestion ────────────────────────────────────────────────────────
 
 describe("formatSuggestion", () => {
