@@ -126,6 +126,12 @@ class LostExecutionLeaseError extends Error {
   constructor() { super("execution lane ownership lost"); }
 }
 
+class PendingContinuationDeliveryError extends Error {
+  constructor(cause: unknown) {
+    super("checkpointed continuation response delivery failed", { cause });
+  }
+}
+
 export interface BridgeEngineOptions {
   kind: string;
   /** Stable delivery surface. Providers within one interactive bot share this value. */
@@ -1091,6 +1097,7 @@ export class BridgeEngine {
     if (input.mode === "async") {
       let stagedResult: StagedCliResult | null = null;
       let finalDeliveryPhase: FinalDeliveryPhase | null = null;
+      let continuationCheckpointPending = false;
       try {
         const delivered = await sendMessageWithProgress({
           client: this.client,
@@ -1101,7 +1108,7 @@ export class BridgeEngine {
           isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
           beforeFinalDelivery: () => {
             if (!stagedResult) return false;
-            this._checkpointContinuationBeforeDelivery(input, stagedResult);
+            continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, stagedResult);
             finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
             return finalDeliveryPhase !== null;
           },
@@ -1125,8 +1132,9 @@ export class BridgeEngine {
           },
           afterFinalDelivery: () => {
             if (!stagedResult) throw new Error("missing staged CLI result at final delivery");
-            if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, stagedResult);
-            else this._commitContinuationResultState(input.laneHandle, stagedResult);
+            const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
+            if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, stagedResult, continuationRunId);
+            else this._commitContinuationResultState(input.laneHandle, stagedResult, continuationRunId);
           },
         });
         if (!delivered || !stagedResult) {
@@ -1154,7 +1162,7 @@ export class BridgeEngine {
       input.chatKey,
       input.laneHandle,
     );
-    this._checkpointContinuationBeforeDelivery(input, result);
+    const continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
     const deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
     if (!deliveryPhase) {
       await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
@@ -1164,8 +1172,9 @@ export class BridgeEngine {
       if (result.text) {
         await this.sendText(input.chatId, { text: result.text, message_thread_id: input.threadId });
       }
-      if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result);
-      else this._commitContinuationResultState(input.laneHandle, result);
+      const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
+      if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result, continuationRunId);
+      else this._commitContinuationResultState(input.laneHandle, result, continuationRunId);
     } catch (error) {
       await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
       throw error;
@@ -1177,6 +1186,8 @@ export class BridgeEngine {
 
   private _checkpointContinuationBeforeDelivery(input: {
     mode: ContinuationExecutionMode;
+    prompt: string;
+    isInitialResult: boolean;
     chatId: number;
     chatKey: string;
     threadId: number | undefined;
@@ -1185,18 +1196,18 @@ export class BridgeEngine {
     runId: string;
     continuationStartedAtMs: number | null;
     resumptionCount: number;
-  }, result: StagedCliResult): void {
+  }, result: StagedCliResult): boolean {
     const shouldContinue = isAgentKind(this.kind)
       && result.continuationHint === "background-process"
       && result.continuationProcessObserved === true;
-    if (!shouldContinue || !result.sessionId) return;
+    if (!shouldContinue || !result.sessionId) return false;
 
     const maxResumptions = positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS);
-    if (input.resumptionCount >= maxResumptions) return;
+    if (input.resumptionCount >= maxResumptions) return false;
     const now = this.continuation.now();
     const startedAtMs = input.continuationStartedAtMs ?? now;
     const deadlineAtMs = startedAtMs + positiveIntegerEnv("CONTINUATION_MAX_LIFETIME_MS", DEFAULT_CONTINUATION_MAX_LIFETIME_MS);
-    if (now >= deadlineAtMs) return;
+    if (now >= deadlineAtMs) return false;
 
     this._assertLaneOwned(input.laneHandle);
     const saved = this.continuationStore.saveWaiting({
@@ -1214,8 +1225,21 @@ export class BridgeEngine {
       pendingIds: [...input.pendingIds],
       startedAt: new Date(startedAtMs).toISOString(),
       deadlineAt: new Date(deadlineAtMs).toISOString(),
+      deliveryState: "pending",
+      pendingAttempt: {
+        prompt: input.prompt,
+        isInitialResult: input.isInitialResult,
+        result: {
+          text: result.text,
+          sessionId: result.sessionId,
+          memoryCandidates: result.memoryCandidates,
+          continuationHint: result.continuationHint,
+          continuationProcessObserved: result.continuationProcessObserved,
+        },
+      },
     });
     if (!saved) throw new LostExecutionLeaseError();
+    return true;
   }
 
   private async _cancelUndeliveredContinuation(runId: string, reason: string): Promise<void> {
@@ -1424,9 +1448,11 @@ export class BridgeEngine {
           throw new LostExecutionLeaseError();
         }
       } catch (error) {
-        if (!(error instanceof LostExecutionLeaseError)) {
+        if (!(error instanceof LostExecutionLeaseError) && !(error instanceof PendingContinuationDeliveryError)) {
           console.error(`[${this.kind}] recovered continuation failed runId=${record.runId}`, error);
           this.continuationStore.markAmbiguous(record.runId, error instanceof Error ? error.message : String(error));
+        } else if (error instanceof PendingContinuationDeliveryError) {
+          console.error(`[${this.kind}] recovered continuation delivery failed runId=${record.runId}`, error.cause);
         }
       } finally {
         clearInterval(lockHeartbeat);
@@ -1455,6 +1481,25 @@ export class BridgeEngine {
     }
 
     const { eventContext, collect, finalize } = this._createEventContext(record.chatId, record.threadId ?? undefined, handle, record.runId);
+
+    if (record.deliveryState === "pending") {
+      const result = await this._deliverRecoveredPendingAttempt(record, handle);
+      return this._continueFromDeliveredResult({
+        mode: record.executionMode,
+        result,
+        chatId: record.chatId,
+        chatKey: record.chatKey,
+        threadId: record.threadId ?? undefined,
+        laneHandle: handle,
+        pendingIds: record.pendingIds,
+        runId: record.runId,
+        eventContext,
+        collect,
+        finalize,
+        continuationStartedAtMs: Date.parse(record.startedAt),
+        resumptionCount: record.resumptionCount,
+      });
+    }
 
     if (record.state === "running" || record.state === "ambiguous") {
       const wake = await this._waitForContinuationWake(
@@ -1550,6 +1595,27 @@ export class BridgeEngine {
       continuationStartedAtMs: Date.parse(claimed.startedAt),
       resumptionCount: claimed.resumptionCount,
     });
+  }
+
+  private async _deliverRecoveredPendingAttempt(record: ContinuationRecord, handle: ExecutionLaneHandle): Promise<StagedCliResult> {
+    const attempt = record.pendingAttempt;
+    if (!attempt) throw new PendingContinuationDeliveryError(new Error("pending continuation response is missing"));
+    const result: StagedCliResult = { ...attempt.result };
+    const deliveryPhase = this._claimFinalDeliveryPhase(handle);
+    if (!deliveryPhase) throw new LostExecutionLeaseError();
+    try {
+      if (result.text) {
+        await this.sendText(record.chatId, { text: result.text, message_thread_id: record.threadId ?? undefined });
+      }
+      if (attempt.isInitialResult) this._commitResultState(handle, attempt.prompt, result, record.runId);
+      else this._commitContinuationResultState(handle, result, record.runId);
+      return result;
+    } catch (error) {
+      if (error instanceof LostExecutionLeaseError) throw error;
+      throw new PendingContinuationDeliveryError(error);
+    } finally {
+      this._releaseFinalDeliveryPhase(handle, deliveryPhase);
+    }
   }
 
   /**
@@ -1930,7 +1996,7 @@ export class BridgeEngine {
     }
   }
 
-  private _commitContinuationResultState(handle: ExecutionLaneHandle, result: StagedCliResult): void {
+  private _commitContinuationResultState(handle: ExecutionLaneHandle, result: StagedCliResult, continuationRunId?: string): void {
     const chatKey = handle.chatKey;
     this._runWithFence(handle, () => {
       if (result.sessionId && isAgentKind(this.kind)) db_setSession(this.db, chatKey, this.kind, result.sessionId);
@@ -1945,10 +2011,13 @@ export class BridgeEngine {
       if (isAgentKind(this.kind)) {
         this.db.addConvTurn(chatKey, "assistant", trimTurnText(result.text), this.kind);
       }
+      if (continuationRunId && !this.continuationStore.markDeliveryCommitted(continuationRunId)) {
+        throw new LostExecutionLeaseError();
+      }
     });
   }
 
-  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult): void {
+  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult, continuationRunId?: string): void {
     const chatKey = handle.chatKey;
     this._runWithFence(handle, () => {
       if (result.sessionId && isAgentKind(this.kind)) db_setSession(this.db, chatKey, this.kind, result.sessionId);
@@ -1961,6 +2030,9 @@ export class BridgeEngine {
         });
       }
       if (isAgentKind(this.kind)) this._rememberTurn(chatKey, promptForMemory(prompt), result.text);
+      if (continuationRunId && !this.continuationStore.markDeliveryCommitted(continuationRunId)) {
+        throw new LostExecutionLeaseError();
+      }
     });
   }
 

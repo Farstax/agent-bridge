@@ -1,8 +1,22 @@
 import type Database from "better-sqlite3";
+import type { ProjectMemoryCandidate } from "../projectMemory.js";
 import type { ExecutionLaneHandle } from "./lockRepository.js";
 
 export type ContinuationExecutionMode = "sync" | "async";
 export type ContinuationState = "waiting" | "runnable" | "running" | "completed" | "cancelled" | "ambiguous";
+export type ContinuationDeliveryState = "pending" | "delivered";
+
+export interface ContinuationAttemptCheckpoint {
+  prompt: string;
+  isInitialResult: boolean;
+  result: {
+    text: string;
+    sessionId: string | null;
+    memoryCandidates: ProjectMemoryCandidate[];
+    continuationHint?: "background-process";
+    continuationProcessObserved?: boolean;
+  };
+}
 
 export interface ContinuationRecord {
   runId: string;
@@ -20,6 +34,8 @@ export interface ContinuationRecord {
   pendingIds: number[];
   startedAt: string;
   deadlineAt: string;
+  deliveryState: ContinuationDeliveryState;
+  pendingAttempt?: ContinuationAttemptCheckpoint;
   updatedAt: string;
   terminalReason?: string;
   containedAt?: string;
@@ -27,8 +43,8 @@ export interface ContinuationRecord {
 
 export type SaveWaitingContinuation = Omit<
   ContinuationRecord,
-  "state" | "updatedAt" | "terminalReason" | "containedAt"
->;
+  "state" | "updatedAt" | "terminalReason" | "containedAt" | "deliveryState" | "pendingAttempt"
+> & Partial<Pick<ContinuationRecord, "deliveryState" | "pendingAttempt">>;
 
 const KEY_PREFIX = "turn_continuation:";
 const ACTIVE_STATES = new Set<ContinuationState>(["waiting", "runnable", "running", "ambiguous"]);
@@ -39,6 +55,20 @@ function key(runId: string): string {
 
 function needsOrphanProtection(record: ContinuationRecord): boolean {
   return ACTIVE_STATES.has(record.state) || (record.state === "cancelled" && !record.containedAt);
+}
+
+function parsePendingAttempt(value: unknown): ContinuationAttemptCheckpoint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const attempt = value as Partial<ContinuationAttemptCheckpoint>;
+  if (typeof attempt.prompt !== "string" || typeof attempt.isInitialResult !== "boolean") return undefined;
+  if (!attempt.result || typeof attempt.result !== "object" || Array.isArray(attempt.result)) return undefined;
+  const result = attempt.result as Partial<ContinuationAttemptCheckpoint["result"]>;
+  if (typeof result.text !== "string") return undefined;
+  if (result.sessionId !== null && typeof result.sessionId !== "string") return undefined;
+  if (!Array.isArray(result.memoryCandidates)) return undefined;
+  if (result.continuationHint !== undefined && result.continuationHint !== "background-process") return undefined;
+  if (result.continuationProcessObserved !== undefined && typeof result.continuationProcessObserved !== "boolean") return undefined;
+  return attempt as ContinuationAttemptCheckpoint;
 }
 
 function parseRecord(value: unknown): ContinuationRecord | null {
@@ -57,7 +87,11 @@ function parseRecord(value: unknown): ContinuationRecord | null {
     if (!Array.isArray(parsed.pendingIds) || parsed.pendingIds.some((id) => !Number.isInteger(id) || id <= 0)) return null;
     if (typeof parsed.startedAt !== "string" || typeof parsed.deadlineAt !== "string" || typeof parsed.updatedAt !== "string") return null;
     if (parsed.containedAt !== undefined && typeof parsed.containedAt !== "string") return null;
-    return parsed as ContinuationRecord;
+    const deliveryState = parsed.deliveryState ?? "delivered";
+    if (deliveryState !== "pending" && deliveryState !== "delivered") return null;
+    const pendingAttempt = parsePendingAttempt(parsed.pendingAttempt);
+    if (deliveryState === "pending" && !pendingAttempt) return null;
+    return { ...parsed, deliveryState, pendingAttempt } as ContinuationRecord;
   } catch {
     return null;
   }
@@ -99,9 +133,11 @@ export class ContinuationRepository {
 
       const record: ContinuationRecord = {
         ...input,
+        deliveryState: input.deliveryState ?? "delivered",
         state: "waiting",
         updatedAt: new Date().toISOString(),
       };
+      if (record.deliveryState === "pending" && !record.pendingAttempt) return null;
       const nextText = JSON.stringify(record);
       if (currentText == null) {
         this.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key(record.runId), nextText);
@@ -119,6 +155,18 @@ export class ContinuationRepository {
       state: "runnable",
       updatedAt: new Date().toISOString(),
     }));
+  }
+
+  markDeliveryCommitted(runId: string): ContinuationRecord | null {
+    return this.transition(runId, new Set(["waiting"]), (record) => {
+      if (record.deliveryState !== "pending") return record;
+      return {
+        ...record,
+        deliveryState: "delivered",
+        pendingAttempt: undefined,
+        updatedAt: new Date().toISOString(),
+      };
+    }, (record) => record.deliveryState === "pending");
   }
 
   claimRunnable(runId: string): ContinuationRecord | null {
@@ -209,12 +257,13 @@ export class ContinuationRepository {
     runId: string,
     allowedStates: ReadonlySet<ContinuationState>,
     update: (record: ContinuationRecord) => ContinuationRecord,
+    guard: (record: ContinuationRecord) => boolean = () => true,
   ): ContinuationRecord | null {
     return this.db.transaction(() => {
       const currentRow = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key(runId)) as { value?: string | null } | undefined;
       const currentText = currentRow?.value ?? null;
       const current = parseRecord(currentText);
-      if (!current || !allowedStates.has(current.state) || currentText == null) return null;
+      if (!current || !allowedStates.has(current.state) || currentText == null || !guard(current)) return null;
       const next = update(current);
       const nextText = JSON.stringify(next);
       const changed = this.db.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
