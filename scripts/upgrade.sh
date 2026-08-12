@@ -83,6 +83,18 @@ update_claude_runtime() {
   run_as_target_user "${command}" update
 }
 
+verify_claude_runtime_update() {
+  local before="$1" after="$2" package_version="$3"
+  # Claude's native updater owns the active executable. Package metadata is
+  # only a drift signal: it must never be used as qualification evidence.
+  # When it changed independently and the native updater leaves the runtime
+  # where it was, fail closed instead of qualifying the package version.
+  if [[ -n "${package_version}" && "${before}" == "${after}" && "${after}" != "${package_version}" ]]; then
+    echo "Claude runtime update mismatch: active executable remains ${after}, package metadata reports ${package_version}" >&2
+    return 1
+  fi
+}
+
 qualification_bridge_commit() {
   local configured="${AGENT_BRIDGE_COMMIT:-${BRIDGE_COMMIT:-${BRIDGE_RELEASE_COMMIT:-}}}"
   if [[ -n "${configured}" ]]; then
@@ -193,8 +205,10 @@ require_node
 if [[ "${1:-}" == "--update" ]]; then
   before_claude=""
   before_codex=""
+  before_claude_package=""
   before_claude="$(cli_command_version claude)"
   if command -v npm >/dev/null 2>&1; then
+    before_claude_package="$(npm_pkg_version @anthropic-ai/claude-code)"
     before_codex="$(npm_pkg_version @openai/codex)"
   fi
   before_agy="$(cli_command_version agy)"
@@ -214,6 +228,7 @@ if [[ "${1:-}" == "--update" ]]; then
     echo "unable to verify active Claude runtime version after update" >&2
     exit 1
   fi
+  verify_claude_runtime_update "${before_claude}" "${after_claude}" "${before_claude_package}"
   qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
 
   if command -v npm >/dev/null 2>&1; then
@@ -283,6 +298,7 @@ if [[ "${1:-}" == "--clis-only" ]]; then
 
   updated_any=0
   before_claude="$(cli_command_version claude)"
+  claude_package_version="$(npm_pkg_version @anthropic-ai/claude-code)"
   update_claude_runtime
   after_claude="$(cli_command_version claude)"
   if [[ -z "${after_claude}" ]]; then
@@ -295,6 +311,7 @@ if [[ "${1:-}" == "--clis-only" ]]; then
   else
     echo "verified: claude ${after_claude}"
   fi
+  verify_claude_runtime_update "${before_claude}" "${after_claude}" "${claude_package_version}"
   qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
 
   for pkg in "${CLIS[@]}"; do

@@ -40,6 +40,40 @@ Independent review must not duplicate a current green full-suite run without a c
 
 Do not skip the red verification. If you cannot see the focused test failing before writing implementation, the test is not testing the intended change.
 
+## Provider qualification and CLI drift
+
+Provider qualification is a bounded compatibility suite for external provider
+CLI contracts. It is not a model-intelligence benchmark or an end-to-end test
+of Agent Bridge. The executable Agent Bridge actually invokes, and its observed
+supported `--version` output, are authoritative for runtime health, upgrades,
+qualification lookup, and persisted evidence. Package-manager metadata may
+discover or install updates, but it is never proof of the runtime version; a
+package/PATH/runtime disagreement must be diagnosed explicitly.
+
+Qualification should cover concrete provider behavior Agent Bridge relies on:
+startup and version reporting, invocation and output envelopes, session/resume
+identity, error classification, and provider-specific continuation/background
+protocols where applicable. Keep live checks bounded, deterministic,
+non-destructive, and safe for a controlled authenticated environment. Telegram,
+Discord, queues, lanes, typing indicators, persistence, restart recovery,
+stop/interrupt fencing, routing, fallback policy, and final message delivery
+belong in deterministic repository tests.
+
+When production code starts relying on a new provider-specific CLI behavior,
+ask whether a provider release changing it would be detected before users hit
+the regression. If the contract can be checked reliably, update qualification;
+otherwise document why and retain deterministic fixtures rather than adding a
+flaky live check. Production provider regressions should normally become
+permanent qualification fixtures when they expose a reusable CLI assumption.
+
+Qualification is normally triggered when the actual runtime version changes,
+the provider contract version changes, or an operator explicitly requests it;
+do not run live provider qualification on ordinary CI builds. After upgrades,
+re-read the active executable, verify that the update affected that executable,
+qualify that exact observed version, and persist evidence keyed by provider,
+runtime version, and provider-contract version. Cached evidence for another
+runtime version is stale regardless of package-manager state.
+
 ## Commit discipline — required
 
 Tests and implementation are always **separate commits**:
