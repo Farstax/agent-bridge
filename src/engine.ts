@@ -435,8 +435,13 @@ export class BridgeEngine {
 
   async recoverPendingQueues(): Promise<void> {
     await Promise.all(this.db.getPendingLaneKeys(this.surfaceIdentity).map(async (chatKey) => {
+      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return;
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
       if (handle) {
+        if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
+          this.db.unlock(handle);
+          return;
+        }
         await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
         return;
       }
@@ -446,8 +451,13 @@ export class BridgeEngine {
 
   async recoverPendingQueue(chatKey: string): Promise<boolean> {
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
+    if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
     if (handle) {
+      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
+        this.db.unlock(handle);
+        return true;
+      }
       await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
       return true;
     }
@@ -1876,8 +1886,13 @@ export class BridgeEngine {
     const timer = setTimeout(() => {
       this.queueRecoveryTimers.delete(chatKey);
       try {
+        if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return;
         const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
         if (!handle) return;
+        if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
+          this.db.unlock(handle);
+          return;
+        }
         void this._drainQueueAndUnlock(handle, undefined, attempt).catch((error) =>
           console.error(`[${this.kind}] queue recovery failed chatKey=${chatKey}`, error)
         );
@@ -1894,9 +1909,14 @@ export class BridgeEngine {
     const timer = setTimeout(() => {
       this.startupQueueRecoveryTimers.delete(chatKey);
       if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return;
+      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return;
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
       if (!handle) {
         this._scheduleStartupQueueRecovery(chatKey);
+        return;
+      }
+      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
+        this.db.unlock(handle);
         return;
       }
       void this._drainQueueAndUnlock(

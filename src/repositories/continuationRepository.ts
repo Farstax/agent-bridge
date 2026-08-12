@@ -121,6 +121,10 @@ export class ContinuationRepository {
     return !!record && needsOrphanProtection(record);
   }
 
+  hasActiveForLane(surface: string, chatKey: string): boolean {
+    return this.listActive(surface).some((record) => record.chatKey === chatKey);
+  }
+
   saveWaiting(input: SaveWaitingContinuation): ContinuationRecord | null {
     return this.db.transaction(() => {
       const row = this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key(input.runId)) as { value?: string | null } | undefined;
