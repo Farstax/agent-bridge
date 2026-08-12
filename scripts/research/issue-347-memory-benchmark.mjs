@@ -72,11 +72,18 @@ function measure(fn) {
   return { medianMs: median(samples), p95Ms: p95(samples) };
 }
 
+function averageSearchChars(expanded) {
+  return queries.reduce(
+    (total, [query]) => total + scopedSearch(query, expanded).map((turn) => turn.text).join("\n").length,
+    0,
+  ) / queries.length;
+}
+
 const recent = turns.slice(-20).map((turn) => turn.text).join("\n");
 const recentSearch = () => queries.map(([query]) => scopedSearch(query, true));
 const cases = queries.map(([query, expected]) => ({
   query,
-  recent20: false,
+  recent20: recent.toLowerCase().includes(expected.toLowerCase()),
   summaryRecent: summary.toLowerCase().includes(expected.toLowerCase()),
   naiveSearch: scopedSearch(query).some((turn) => turn.text.includes(expected)),
   expandedSearch: scopedSearch(query, true).some((turn) => turn.text.includes(expected)),
@@ -89,11 +96,12 @@ console.log(JSON.stringify({
   tokenEstimate: {
     recent20: Math.ceil(recent.length / 4),
     summaryRecent: Math.ceil((summary.length + recent.length) / 4),
-    recentSearchApprox: Math.ceil((recent.length + queries.reduce((total, [query]) => total + scopedSearch(query).map((turn) => turn.text).join("\n").length, 0) / queries.length) / 4),
+    recentSearchNaiveApprox: Math.ceil((recent.length + averageSearchChars(false)) / 4),
+    recentSearchExpandedApprox: Math.ceil((recent.length + averageSearchChars(true)) / 4),
   },
   measured: {
     recent20: measure(() => recent.length),
     summaryRecent: measure(() => summary.length + recent.length),
-    recentSearch: measure(recentSearch),
+    recentSearchExpanded: measure(recentSearch),
   },
 }, null, 2));
