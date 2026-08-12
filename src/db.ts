@@ -18,6 +18,7 @@ import { RunRepository, type RunningRun } from "./repositories/runRepository.js"
 import { SessionRepository } from "./repositories/sessionRepository.js";
 import { SettingsRepository } from "./repositories/settingsRepository.js";
 import { WorkQueueRepository } from "./repositories/workQueueRepository.js";
+import { EventReceiptRepository } from "./repositories/eventReceiptRepository.js";
 import {
   CompactionRepository,
   type CompactionAttemptInput,
@@ -302,6 +303,7 @@ export class BridgeDb {
   private readonly settings: SettingsRepository;
   private readonly runs: RunRepository;
   private readonly workQueue: WorkQueueRepository;
+  private readonly eventReceipts: EventReceiptRepository;
   private readonly memories: MemoryRepository;
   private readonly compactions: CompactionRepository;
   private readonly advisorCalls: AdvisorRepository;
@@ -318,6 +320,7 @@ export class BridgeDb {
     this.settings = new SettingsRepository(raw);
     this.runs = new RunRepository(raw);
     this.workQueue = new WorkQueueRepository(raw);
+    this.eventReceipts = new EventReceiptRepository(raw);
     this.memories = new MemoryRepository(raw);
     this.compactions = new CompactionRepository(raw);
     this.advisorCalls = new AdvisorRepository(raw);
@@ -513,6 +516,40 @@ export class BridgeDb {
 
   updateWorkItemTitleAndBody(id: number, title: string, body: string | null): void {
     this.workQueue.updateWorkItemTitleAndBody(id, title, body);
+  }
+
+  // ── Event receipts ───────────────────────────────────────────────────────
+
+  createEventReceipt(input: {
+    event_id: string;
+    source: string;
+    event_kind: string;
+    idempotency_key: string;
+    received_at: string;
+    occurred_at: string;
+    payload_json: string;
+    authority_scope: string;
+  }): EventReceipt {
+    return this.eventReceipts.createReceipt(input);
+  }
+
+  getEventReceipt(id: number): EventReceipt | null {
+    return this.eventReceipts.getById(id);
+  }
+
+  getEventReceiptByIdempotencyKey(idempotencyKey: string): EventReceipt | null {
+    return this.eventReceipts.getByIdempotencyKey(idempotencyKey);
+  }
+
+  linkEventReceiptRun(id: number, input: { work_item_id: number; work_job_id: number }): void {
+    this.eventReceipts.linkRun(id, input);
+  }
+
+  recordEventReceiptResult(
+    id: number,
+    input: { status: "completed" | "failed" | "cancelled"; result_reference: string | null; error_class: string | null },
+  ): void {
+    this.eventReceipts.recordResult(id, input);
   }
 
   // ── Work jobs ────────────────────────────────────────────────────────────
@@ -1193,6 +1230,24 @@ export interface WorkJob {
   phase_data_json: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface EventReceipt {
+  id: number;
+  event_id: string;
+  source: string;
+  event_kind: string;
+  idempotency_key: string;
+  received_at: string;
+  occurred_at: string;
+  payload_json: string;
+  authority_scope: string;
+  status: string;
+  work_item_id: number | null;
+  work_job_id: number | null;
+  result_reference: string | null;
+  error_class: string | null;
+  created_at: string;
 }
 
 export interface Approval {

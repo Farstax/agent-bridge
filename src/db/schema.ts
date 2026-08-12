@@ -5,9 +5,10 @@ import { applyRoleAssignmentsMigration } from "./roleAssignmentsMigration.js";
 import { applyReconciliationAuditMigration } from "./reconciliationAuditMigration.js";
 import { applyMemoryResolutionMigration } from "./memoryResolutionMigration.js";
 import { applyHealthSchemaMigration } from "./healthSchemaMigration.js";
+import { applyEventReceiptsMigration } from "./eventReceiptsMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 export interface Migration {
   version: number;
@@ -142,6 +143,8 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 5 adds memory resolution (Issue #304) and repairs the
  * project_memories_fts triggers' invalid delete-command syntax.
  * Version 6 adds the health report read model for health-role databases.
+ * Version 7 adds authenticated health-event receipt persistence for
+ * health-role databases (Issue #351).
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -151,4 +154,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 4, name: "add-reconciliation-audit", up: applyReconciliationAuditMigration },
   { version: 5, name: "add-memory-resolution", up: applyMemoryResolutionMigration },
   { version: 6, name: "add-health-report-read-model", up: applyHealthSchemaMigration },
+  { version: 7, name: "add-health-event-receipts", up: applyEventReceiptsMigration },
 ];
