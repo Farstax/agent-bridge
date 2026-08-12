@@ -379,8 +379,12 @@ describe("BridgeDb session TTL", () => {
   });
 });
 
-describe("BridgeDb conversation startup pruning", () => {
-  it("openDb prunes only turns already covered by compact summaries", () => {
+describe("BridgeDb conversation startup retention (issue #349)", () => {
+  it("openDb does not delete turns already covered by compact summaries", () => {
+    // Regression for issue #349: startup maintenance used to DELETE
+    // conversation_turns covered by a summary's range_end_turn_id. That made
+    // the summary the only surviving copy of that evidence. Turns must now
+    // survive restart regardless of summary coverage.
     const dir = mkdtempSync(join(tmpdir(), "agent-bridge-conv-prune-"));
     const dbPath = join(dir, "bridge.sqlite");
     try {
@@ -396,14 +400,29 @@ describe("BridgeDb conversation startup pruning", () => {
       first.addConvSummary("chat:1", 1, coveredEnd, "Summary for covered turns.");
       first.close();
 
+      // Reopening simulates both a normal restart and opening a database file
+      // that was already populated before this change shipped (a "copied
+      // existing database" migration-compatibility scenario) — the schema is
+      // unchanged, so the same fixture file exercises both cases.
       const reopened = openDb(dbPath);
       const remaining = ((reopened as any).raw as import("better-sqlite3").Database)
         .prepare(`SELECT chat_key, text FROM conversation_turns ORDER BY id`)
         .all() as Array<{ chat_key: string; text: string }>;
       expect(remaining).toEqual([
+        { chat_key: "chat:1", text: "covered one" },
+        { chat_key: "chat:1", text: "covered two" },
         { chat_key: "chat:1", text: "uncovered three" },
         { chat_key: "chat:2", text: "never summarized" },
       ]);
+
+      // Bounded context construction must still be unaffected: turns covered
+      // by the summary must not leak into the prompt just because they are
+      // now retained in the archive.
+      const ctx = reopened.buildConvContext("chat:1");
+      expect(ctx).not.toContain("covered one");
+      expect(ctx).not.toContain("covered two");
+      expect(ctx).toContain("uncovered three");
+
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
