@@ -209,10 +209,15 @@ if [[ "${1:-}" == "--update" ]]; then
   echo "[update] Updating agy (antigravity)..."
   bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
 
+  after_claude="$(cli_command_version claude)"
+  if [[ -z "${after_claude}" ]]; then
+    echo "unable to verify active Claude runtime version after update" >&2
+    exit 1
+  fi
+  qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
+
   if command -v npm >/dev/null 2>&1; then
-    after_claude="$(cli_command_version claude)"
     after_codex="$(npm_pkg_version @openai/codex)"
-    [[ -z "${after_claude}" ]] || qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
     [[ -z "${after_codex}" ]] || qualify_provider_if_needed codex "${before_codex}" "${after_codex}"
   fi
   after_agy="$(cli_command_version agy)"
