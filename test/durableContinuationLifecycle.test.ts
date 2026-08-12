@@ -81,6 +81,7 @@ describe("durable async continuation lifecycle", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     delete process.env.CONTINUATION_MAX_RESUMPTIONS;
     delete process.env.CONTINUATION_MAX_LIFETIME_MS;
     db.close();
@@ -230,7 +231,6 @@ describe("durable async continuation lifecycle", () => {
       botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
       executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
     }, db, client, { runCliAsync }, continuation);
-
     await engine.recoverContinuations();
     await waitUntil(() => repo.get(durableRunId)?.state === "completed", "recovered continuation completion");
     await engine.recoverContinuations();
@@ -366,6 +366,80 @@ describe("durable async continuation lifecycle", () => {
     await waitUntil(() => !db.raw.prepare("SELECT 1 FROM execution_locks WHERE surface = ? AND chat_key = ?").get("test", "100"), "failed recovery unlock");
 
     expect(runCliAsync).not.toHaveBeenCalled();
+    expect(repo.get(durableRunId)).toEqual(expect.objectContaining({ state: "waiting", deliveryState: "pending" }));
+    expect(db.raw.prepare("SELECT state FROM pending_messages WHERE id = ?").get(pendingId)).toEqual({ state: "queued" });
+  });
+
+  it("does not let scheduled startup queue recovery replay a turn with an active continuation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-12T06:00:00.000Z"));
+    const durableRunId = "delivery-startup-race-261";
+    db.insertRun(durableRunId, "100", "claude");
+    db.enqueueMsg("test", "100", { prompt: "run the tests", chatId: 100, chatType: "private" });
+    const pendingId = db.dequeueMsgs("test", "100")[0].id;
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({
+      runId: durableRunId,
+      surface: "test",
+      chatKey: "100",
+      chatId: 100,
+      threadId: null,
+      bot: "claude",
+      sessionId: "session-delivery-startup-race-261",
+      executionMode: "async",
+      triggerKind: "run-owned-background-process",
+      triggerId: durableRunId,
+      resumptionCount: 0,
+      pendingIds: [pendingId],
+      startedAt: new Date(Date.now() - 1000).toISOString(),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      deliveryState: "pending",
+      pendingAttempt: {
+        prompt: "run the tests",
+        isInitialResult: true,
+        result: {
+          text: "Background work is running.",
+          sessionId: "session-delivery-startup-race-261",
+          memoryCandidates: [],
+          continuationHint: "background-process",
+          continuationProcessObserved: true,
+        },
+      },
+    });
+
+    const deliveryGate = deferred();
+    const continuation: ContinuationFns = {
+      hasLiveRunOwnedDescendants: vi.fn(() => false),
+      getRunOwnedProcessState: vi.fn(() => "absent"),
+      killRunOwnedDescendants: vi.fn(async () => {}),
+      sleep: vi.fn(async () => {}),
+      now: vi.fn(() => Date.now()),
+    };
+    const client = makeMockClient();
+    client.sendMessage.mockImplementationOnce(async () => {
+      await deliveryGate.promise;
+      throw new Error("telegram unavailable");
+    });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput("must not run", "session-delivery-startup-race-261") });
+    const engine = new BridgeEngine({
+      surfaceIdentity: "test", kind: "claude",
+      botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    }, db, client, { runCliAsync }, continuation);
+    const recoveredQueuePrompts: string[] = [];
+    engine.setQueuedMessageHandler(async (queued) => {
+      recoveredQueuePrompts.push(queued.prompt);
+      return "committed";
+    });
+
+    await engine.recoverContinuations();
+    await engine.recoverPendingQueues();
+    deliveryGate.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(db.lockHeartbeatMs + 1);
+
+    expect(runCliAsync).not.toHaveBeenCalled();
+    expect(recoveredQueuePrompts).toEqual([]);
     expect(repo.get(durableRunId)).toEqual(expect.objectContaining({ state: "waiting", deliveryState: "pending" }));
     expect(db.raw.prepare("SELECT state FROM pending_messages WHERE id = ?").get(pendingId)).toEqual({ state: "queued" });
   });
