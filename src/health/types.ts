@@ -15,6 +15,16 @@ export interface HealthReport {
   timestamp: string;
 }
 
+export interface HealthAggregate {
+  status: HealthStatus | null;
+  reports: HealthReport[];
+  nonGreenReports: HealthReport[];
+  evidence: {
+    missingPluginNames: string[];
+    stalePluginNames: string[];
+  };
+}
+
 export type AutonomyLevel = "report" | "suggest";
 
 export interface HealthPlugin {

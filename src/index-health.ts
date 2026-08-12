@@ -17,6 +17,8 @@ import { ExternalPlugin } from "./health/plugins/external.js";
 import { ServerPlugin } from "./health/plugins/server.js";
 import { parseHealthEnabled, parseCadenceSeconds, parseHealthCliConfig, resolveHealthEngineExecutionMode, parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } from "./health/config.js";
 import { formatReport } from "./health/reporter.js";
+import { formatAggregateReport } from "./health/reporter.js";
+import { HealthReportStore } from "./health/reports.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine } from "./engine.js";
 import { sendTelegramMessage } from "./messageDelivery.js";
@@ -191,11 +193,15 @@ const engine = new BridgeEngine(
           const { HealthContextStore } = await import("./health/context.js");
           const store = new HealthContextStore(rawDb);
           const context = store.getContext();
-          if (!context?.lastReport) {
+          const aggregate = new HealthReportStore(rawDb).getAggregate({
+            activePluginNames: plugins.map((plugin) => plugin.name),
+            freshnessSeconds: cadenceSeconds * 2,
+          });
+          if (aggregate.status === null && !aggregate.evidence.stalePluginNames.length) {
             return { text: `No health data yet. Use /health to run a check.\n\n${formatQualificationSummary()}` };
           }
-          let statusText = `${formatReport(context.lastReport)}\n\n${formatQualificationSummary()}`;
-          if (context.lastSuggestion) {
+          let statusText = `${formatAggregateReport(aggregate)}\n\n${formatQualificationSummary()}`;
+          if (context?.lastSuggestion) {
             statusText += `\n\n*Last suggestion:*\n\n${context.lastSuggestion}`;
           }
           return { text: statusText };

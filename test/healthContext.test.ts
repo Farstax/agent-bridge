@@ -40,6 +40,72 @@ describe("HealthContextStore", () => {
     expect(ctx?.lastReport?.status).toBe("red");
   });
 
+  it("excludes a previously persisted disabled plugin from the aggregate", async () => {
+    const { HealthReportStore } = await import("../src/health/reports.js");
+    const reports = new HealthReportStore(db);
+    const timestamp = new Date().toISOString();
+    reports.saveReport({ pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp });
+    reports.saveReport({ pluginName: "server", status: "red", checks: [], summary: "Disk full", timestamp });
+
+    const aggregate = reports.getAggregate({
+      activePluginNames: ["agent-bridge"],
+      freshnessSeconds: 300,
+    });
+
+    expect(aggregate.status).toBe("green");
+    expect(aggregate.evidence).toEqual({ missingPluginNames: [], stalePluginNames: [] });
+    expect(aggregate.nonGreenReports).toEqual([]);
+  });
+
+  it("derives the worst current status without losing another plugin report", async () => {
+    const { HealthReportStore } = await import("../src/health/reports.js");
+    const reports = new HealthReportStore(db);
+    const timestamp = new Date().toISOString();
+    reports.saveReport({ pluginName: "agent-bridge", status: "amber", checks: [], summary: "Updates", timestamp });
+    reports.saveReport({ pluginName: "server", status: "red", checks: [], summary: "Disk full", timestamp });
+    reports.saveReport({ pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp });
+
+    const aggregate = reports.getAggregate({ activePluginNames: ["agent-bridge", "server"], freshnessSeconds: 300 });
+
+    expect(aggregate.status).toBe("red");
+    expect(aggregate.reports.map((report) => report.pluginName)).toEqual(["agent-bridge", "server"]);
+    expect(aggregate.nonGreenReports.map((report) => report.pluginName)).toEqual(["server"]);
+  });
+
+  it("marks missing and stale evidence separately from HealthStatus", async () => {
+    const { HealthReportStore } = await import("../src/health/reports.js");
+    const reports = new HealthReportStore(db);
+    reports.saveReport({ pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp: new Date().toISOString() });
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    const aggregate = reports.getAggregate({
+      activePluginNames: ["agent-bridge", "server", "content-crawler"],
+      freshnessSeconds: 10,
+      nowSeconds: nowSeconds + 11,
+    });
+
+    expect(aggregate.status).toBeNull();
+    expect(aggregate.evidence).toEqual({
+      missingPluginNames: ["server", "content-crawler"],
+      stalePluginNames: ["agent-bridge"],
+    });
+  });
+
+  it("imports valid legacy last-report evidence without inventing other plugin reports", async () => {
+    db.exec(`CREATE TABLE health_context (id INTEGER PRIMARY KEY, last_report_json TEXT, updated_at INTEGER)`);
+    const report = { pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp: new Date().toISOString() };
+    db.prepare("INSERT INTO health_context (id, last_report_json, updated_at) VALUES (1, ?, unixepoch())").run(JSON.stringify(report));
+
+    const { HealthReportStore } = await import("../src/health/reports.js");
+    const aggregate = new HealthReportStore(db).getAggregate({
+      activePluginNames: ["agent-bridge", "server"],
+      freshnessSeconds: 300,
+    });
+
+    expect(aggregate.status).toBe("green");
+    expect(aggregate.evidence).toEqual({ missingPluginNames: ["server"], stalePluginNames: [] });
+  });
+
   it("stores and retrieves a suggestion", async () => {
     const { HealthContextStore } = await import("../src/health/context.js");
     const store = new HealthContextStore(db);
