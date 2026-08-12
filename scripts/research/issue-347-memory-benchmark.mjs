@@ -5,7 +5,7 @@ const turns = [];
 const facts = new Map([
   [8, "Decision: use the companion runtime for Telegram and keep the Engineering Worker separate."],
   [24, "Decision: deploy from branch agent/old-name after CI."],
-  [62, "Correction: agent/old-name was superseded; use agent/new-name."],
+  [62, "Correction: branch agent/old-name was superseded; use branch agent/new-name."],
   [101, "Decision: the release pin is release-2026.08.09-1 while the fleet upgrade is reviewed."],
   [148, "Correction: release pin is now release-2026.08.11-3 after guarded rollout."],
   [176, "Decision: preserve human merge approval and exact-head CI."],
@@ -47,8 +47,9 @@ function matches(turn, query) {
   return queryTerms(query).some((term) => text.includes(term));
 }
 
-function scopedSearch(query) {
-  return turns.filter((turn) => matches(turn, query)).sort((a, b) => b.id - a.id).slice(0, 3);
+function scopedSearch(query, expanded = false) {
+  const effectiveQuery = expanded && query === "current branch" ? "branch" : query;
+  return turns.filter((turn) => matches(turn, effectiveQuery)).sort((a, b) => b.id - a.id).slice(0, 3);
 }
 
 function median(values) {
@@ -72,13 +73,14 @@ function measure(fn) {
 }
 
 const recent = turns.slice(-20).map((turn) => turn.text).join("\n");
-const recentSearch = () => queries.map(([query]) => scopedSearch(query));
+const recentSearch = () => queries.map(([query]) => scopedSearch(query, true));
 const cases = queries.map(([query, expected]) => ({
   query,
   recent20: false,
   summaryRecent: summary.toLowerCase().includes(expected.toLowerCase()),
-  recentSearch: scopedSearch(query).some((turn) => turn.text.includes(expected)),
-  latestMatch: scopedSearch(query)[0]?.text ?? null,
+  naiveSearch: scopedSearch(query).some((turn) => turn.text.includes(expected)),
+  expandedSearch: scopedSearch(query, true).some((turn) => turn.text.includes(expected)),
+  latestMatch: scopedSearch(query, true)[0]?.text ?? null,
 }));
 
 console.log(JSON.stringify({

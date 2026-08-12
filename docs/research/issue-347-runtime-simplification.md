@@ -114,12 +114,13 @@ quality or network latency; those require a version-pinned provider evaluation.
 | --- | ---: | --- | ---: | ---: |
 | Recent 20 turns | 0/4 | Cannot see older decisions | 655 tokens | <0.001 ms / <0.001 ms |
 | Summary + recent 20 | 4/4 | Correct in this fixture because the summary retained current values | 752 tokens | <0.001 ms / <0.001 ms |
-| Recent 20 + scoped search | 3/4 with naive exact terms; 4/4 after latest-match query expansion | Selects the newest branch/pin evidence when the query is scoped | ~698 tokens | 0.402 ms / 0.499 ms |
+| Recent 20 + scoped search | 3/4 with naive exact terms; 4/4 after latest-match query expansion | Selects the newest branch/pin evidence when the query is scoped | ~698 tokens | 0.355 ms / 0.413 ms |
 
 The missed case with naive search was a query phrased as “current branch” while
-the source turns said only “branch”. This is a retrieval-query limitation, not
-evidence that the old turn was absent. It is why search must be agent-directed
-and chronology-aware, with explicit supersession wording in prompts and tools.
+the source turns said only “branch”. The script now emits both naive and
+expanded results. This is a retrieval-query limitation, not evidence that the
+old turn was absent. It is why search must be agent-directed and
+chronology-aware, with explicit supersession wording in prompts and tools.
 
 The result supports a hybrid policy: retain searchable source turns, use bounded
 recent turns for local detail, and use summaries as disposable handoff caches.
