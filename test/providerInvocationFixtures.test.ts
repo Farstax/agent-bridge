@@ -151,6 +151,18 @@ describe("provider invocation fixtures — claude", () => {
     const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: null, command: "claude", outputFormat: "json" });
     expect(inv.args.slice(3)).toEqual(["--output-format", "json", anyPrompt()]);
   });
+
+  it("stream-json output exposes assistant tool-use records for continuation detection", () => {
+    const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: "sess-9", command: "claude", outputFormat: "stream-json" });
+    expect(inv.args[0]).toBe("--settings");
+    expect(inv.args.slice(2)).toEqual([
+      "--resume", "sess-9", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+    ]);
+    expect(JSON.parse(String(inv.stdin))).toEqual({
+      type: "user",
+      message: { role: "user", content: expect.stringContaining("hi") },
+    });
+  });
 });
 
 describe("provider invocation fixtures — antigravity", () => {
