@@ -1,12 +1,11 @@
-import { execFileSync } from "node:child_process";
-import { getProviderAdapters } from "./registry.js";
+import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
 import {
   PROVIDER_CONTRACT_VERSION,
   qualificationHealthCheck,
   qualificationEvidencePath,
+  readProviderVersion,
   readQualificationEvidence,
   isQualificationCurrent,
-  normalizeProviderVersion,
   type QualificationHealthResult,
 } from "./qualification.js";
 import type { ProviderId } from "./types.js";
@@ -17,15 +16,8 @@ export interface InstalledProviderQualificationStatus extends QualificationHealt
 }
 
 function readInstalledProviderVersion(providerId: ProviderId): string | undefined {
-  const adapter = getProviderAdapters().find((candidate) => candidate.id === providerId);
-  if (!adapter) return undefined;
   try {
-    const raw = execFileSync(adapter.executable, ["--version"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
-    }).trim();
-    return raw ? normalizeProviderVersion(raw) : undefined;
+    return readProviderVersion(providerId, resolveProviderExecutable(providerId));
   } catch {
     return undefined;
   }

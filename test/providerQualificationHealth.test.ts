@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { HealthReport } from "../src/health/types.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
-import { formatQualificationSummary } from "../src/providers/qualificationStatus.js";
+import { formatQualificationSummary, readInstalledProviderVersions } from "../src/providers/qualificationStatus.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -20,6 +20,22 @@ const report: HealthReport = {
 };
 
 describe("provider qualification health integration", () => {
+  it("uses the active Claude executable version when package metadata is newer", async () => {
+    const root = mkdtempSync(join(tmpdir(), "qualification-health-runtime-"));
+    const claude = join(root, "claude");
+    writeFileSync(claude, "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo 'Claude Code 2.1.228'; else exit 1; fi\n", { mode: 0o755 });
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execFileSync).mockReturnValue("Claude Code 2.1.228\n" as never);
+    const previous = process.env.CLAUDE_COMMAND;
+    process.env.CLAUDE_COMMAND = claude;
+    try {
+      expect(readInstalledProviderVersions().claude).toBe("2.1.228");
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_COMMAND;
+      else process.env.CLAUDE_COMMAND = previous;
+    }
+  });
+
   it("sends a one-time upgrade notification when machine-readable qualification is degraded", async () => {
     const cp = await import("node:child_process");
     const execFileSync = vi.mocked(cp.execFileSync);

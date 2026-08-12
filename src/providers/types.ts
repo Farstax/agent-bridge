@@ -25,6 +25,7 @@ export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly displayName: string;
   readonly executable: string;
+  readonly versionArgs: readonly string[];
   readonly defaultArgs: readonly string[];
   readonly capabilities: ProviderCapabilities;
   readonly processWatch?: import("../types.js").CliProcessWatch;

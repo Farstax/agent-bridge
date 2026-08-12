@@ -15,6 +15,7 @@ describe("full CLI update qualification", () => {
     const agyState = join(root, "agy-updated");
     const npmState = join(root, "npm-updated");
     const qualificationLog = join(root, "qualification.log");
+    const claude = join(root, "claude");
 
     script(join(root, "node"), `
 if [ "$1" = "-p" ]; then echo 24.0.0; exit 0; fi
@@ -44,6 +45,11 @@ if [ "$1" = --version ]; then
 fi
 exit 0
 `);
+    script(claude, `
+if [ "$1" = --version ]; then echo 'Claude Code 1.1.12'; exit 0; fi
+if [ "$1" = update ]; then exit 0; fi
+exit 0
+`);
     script(join(root, "curl"), `
 printf '%s\\n' '#!/usr/bin/env bash' 'touch "${agyState}"'
 `);
@@ -54,6 +60,7 @@ printf '%s\\n' '#!/usr/bin/env bash' 'touch "${agyState}"'
       env: {
         ...process.env,
         NODE_BIN: join(root, "node"),
+        CLAUDE_COMMAND: claude,
         PATH: `${root}:${process.env.PATH}`,
       },
       timeout: 10_000,

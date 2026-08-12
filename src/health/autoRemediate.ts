@@ -136,6 +136,11 @@ export async function autoUpdateClis(
         await options.sendNotification(qualificationProblemMessage(record));
       }
     }
+
+    // The updater may have acted on package metadata, but the runtime
+    // executable is authoritative. Re-observe and qualify that executable
+    // before reporting remediation complete.
+    await qualifyOutOfBandVersionChanges(options);
   } catch (err) {
     await options.sendNotification(
       `⚠️ *CLI auto-update failed:* ${(err as Error).message.slice(0, 300)}`
