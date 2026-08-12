@@ -913,9 +913,11 @@ export class BridgeEngine {
     let activeTaskCommitted = false;
 
     if (!laneHandle) {
+      const continuationOwnsLane = this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey);
       const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
         prompt, chatId, threadId, chatType, userId, attachments,
-      }, MAX_QUEUE_DEPTH, honorBusyMode && !ownsActiveTask && this.laneCoordinator.hasAugmentedTask(this._executionLane(chatKey)));
+      }, MAX_QUEUE_DEPTH, continuationOwnsLane
+        || (honorBusyMode && !ownsActiveTask && this.laneCoordinator.hasAugmentedTask(this._executionLane(chatKey))));
       if (admission.kind === "full") {
         await this.sendText(chatId, {
           text: `⏳ Queue is full (max ${MAX_QUEUE_DEPTH}). Please wait.`,
@@ -1823,6 +1825,10 @@ export class BridgeEngine {
   ): Promise<void> {
     const chatKey = handle.chatKey;
     const executionLane = this._executionLane(chatKey);
+    if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
+      if (this.db.ownsLock(handle)) this.db.unlock(handle);
+      return;
+    }
     const scheduled = this.queueRecoveryTimers.get(chatKey);
     if (scheduled) {
       clearTimeout(scheduled);
@@ -2349,7 +2355,8 @@ export class BridgeEngine {
       attachments,
       outputDir: outDir,
     });
-    const isClaudeStreamJson = executionKind === "claude" && !!invocation.stdin;
+    const isClaudeStreamJson = executionKind === "claude"
+      && invocation.args.includes("stream-json");
     const typingTracker = mode === "sync"
       ? createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId }, () => !this._canPublish(laneHandle))
       : null;
@@ -2665,7 +2672,8 @@ export class BridgeEngine {
       outputDir: outDir,
       attachments,
     });
-    const isFallbackClaudeStreamJson = executionKind === "claude" && !!fallbackInvocation.stdin;
+    const isFallbackClaudeStreamJson = executionKind === "claude"
+      && fallbackInvocation.args.includes("stream-json");
 
     try {
       const fallbackCwd = getCliWorkingDir(executionKind);
