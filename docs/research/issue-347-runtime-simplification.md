@@ -41,7 +41,7 @@ work. The main implementation owners are:
 
 | Concern | Current evidence | Classification | Decision |
 | --- | --- | --- | --- |
-| Conversation identity | `src/repositories/conversationRepository.ts`, `src/engine.ts`, and the canonical-address issue #278 | small shared primitive | Keep as a surface-neutral Workstream/address. Do not attach repository, Task, provider, branch, PR, or job state. |
+| Conversation identity | `src/repositories/conversationRepository.ts`, `src/engine.ts`, and the canonical-address issue #278 | small shared primitive | Keep Workstream as a surface-neutral conversation grouping layered over canonical conversation addresses. Do not attach repository, Task, provider, branch, PR, or job state. |
 | Verbatim turns | `conversation_turns` in `src/db/legacyBaselineMigration.ts` and `ConversationRepository` | shipped | Make append-only turns the recoverable source. `/reset` remains an explicit user deletion command; routine compaction must stop deleting source history. |
 | Provider sessions | `bridge_state`, provider runtimes, `src/workerFallback.ts`, and `docs/architecture/memory-and-handoff.md` | shipped | Keep provider-native session IDs for same-provider continuity. A session is not cross-provider memory. |
 | Runs and events | `RunRepository`, `EventStore`, `src/events/reducer.ts`, and `BridgeDb.reconcileOrphanedRuns()` | shipped safety primitive | Keep a Run as the execution and restart unit. Events remain an audit projection until a separate evidence-backed event-sourcing change proves otherwise. |
@@ -57,6 +57,15 @@ work. The main implementation owners are:
 | Events without a turn | health scheduler and reports in `src/index-health.ts` and `src/health/*`; worker sources include `health`, `schedule`, and `github` | partial | Add only an idempotent receipt and result correlation before feeding the same agent + Skills path. |
 | Project memory | `MemoryRepository`, FTS5, `projectMemory.ts`, issue #304 resolution fields | derived/pinned knowledge | Keep for cross-conversation facts that are intentionally promoted and searchable. It is not a second transcript and must retain source provenance. |
 | Summaries | `compactConversation.ts`, `conversation_summaries`, `compactSummary.ts` | useful cache, unsafe authority | Keep as regenerable handoff/context acceleration. A summary must never justify destructive loss of the only source evidence. |
+
+### Workstream identity boundary
+
+Workstream must not duplicate #278's canonical conversation address. The canonical
+address answers where a surface interaction occurred; Workstream is the optional
+durable grouping that says which continuing conversation/objective that address
+belongs to. A first implementation can remain one address to one Workstream. The
+model should permit multiple addresses later without mirroring raw messages or
+expanding audience scope. No engineering fields belong on the Workstream.
 
 ## Representative ship-it trace
 
@@ -88,6 +97,41 @@ handoff in `work_jobs`. Those fields are useful execution checkpoints. The
 feature/defect/refactor policy around them belongs in Skills and local policy,
 not in a growing handler taxonomy.
 
+### Parallel-planning check
+
+The spike also exercised the decomposition rule against the same runtime
+simplification work. The planner can express dependencies without Agent Bridge
+persisting a subtask graph:
+
+```text
+A. inspect conversation/compaction persistence ─┐
+B. inspect Run/continuation ownership ──────────┼─ parallel, read-only
+C. inspect Worker workflow/policy ownership ────┘
+                         ↓
+D. synthesize minimum architecture
+                         ↓
+E. benchmark handoff strategies ────────────────┐
+F. model engineering/non-engineering workflows ─┤ parallel after D
+                                                ┘
+                         ↓
+G. produce recommendation and successors
+```
+
+The planning rule is deliberately small:
+
+- parallelise only work with no shared writable dependency and no unmet evidence
+  dependency;
+- keep provider-native subagents inside the owning Run/session;
+- synthesize their results before any decision or write that depends on them;
+- do not persist Bridge-side subtask/job identities merely to mirror provider
+  decomposition;
+- if native subagents leave observable work running after the direct CLI exits,
+  #289 owns qualification/lifecycle observation rather than a swarm scheduler.
+
+This demonstrates the required dependency/parallel-candidate planning contract.
+It does not claim provider-native subagent execution is already qualified across
+all supported CLIs; that remains explicit provider evidence work.
+
 ## Memory and handoff experiment
 
 ### Fixture and method
@@ -114,13 +158,14 @@ quality or network latency; those require a version-pinned provider evaluation.
 | --- | ---: | --- | ---: | ---: |
 | Recent 20 turns | 0/4 | Cannot see older decisions | 655 tokens | <0.001 ms / <0.001 ms |
 | Summary + recent 20 | 4/4 | Correct in this fixture because the summary retained current values | 752 tokens | <0.001 ms / <0.001 ms |
-| Recent 20 + scoped search | 3/4 with naive exact terms; 4/4 after latest-match query expansion | Selects the newest branch/pin evidence when the query is scoped | ~698 tokens | 0.355 ms / 0.413 ms |
+| Recent 20 + scoped search | 3/4 with naive exact terms; 4/4 after latest-match query expansion | Selects the newest branch/pin evidence when the query is scoped | ~698 tokens naive / ~682 expanded | 0.355 ms / 0.413 ms expanded |
 
 The missed case with naive search was a query phrased as “current branch” while
 the source turns said only “branch”. The script now emits both naive and
-expanded results. This is a retrieval-query limitation, not evidence that the
-old turn was absent. It is why search must be agent-directed and
-chronology-aware, with explicit supersession wording in prompts and tools.
+expanded results, including separate prompt-size estimates. This is a
+retrieval-query limitation, not evidence that the old turn was absent. It is why
+search must be agent-directed and chronology-aware, with explicit supersession
+wording in prompts and tools.
 
 The result supports a hybrid policy: retain searchable source turns, use bounded
 recent turns for local detail, and use summaries as disposable handoff caches.
@@ -227,11 +272,11 @@ These are intentionally small and ordered by safety:
 
 ## Release and rollback assessment
 
-This spike changes documentation only. It adds no schema, runtime, provider,
-permission, or deployment behaviour. No production rollout is required. The
-successor proposals that alter turn retention or event persistence will require
-copied-database migration tests, rollback semantics, retention/space monitoring,
-and exact-head CI before release.
+This spike changes documentation and a deterministic research fixture only. It
+adds no schema, runtime, provider, permission, or deployment behaviour. No
+production rollout is required. The successor proposals that alter turn
+retention or event persistence will require copied-database migration tests,
+rollback semantics, retention/space monitoring, and exact-head CI before release.
 
 ## Residual risk
 
