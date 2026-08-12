@@ -3,10 +3,11 @@
 **An always-on workspace for the coding agents you already use.**
 
 Agent Bridge is an open-source runtime for operating Codex, Claude Code, and
-Antigravity/Agy in a persistent environment that you control. Run it on an
-always-on host, direct and supervise work through Telegram or Discord, retain
-session and project context, switch providers when needed, and keep work moving
-when you are away from your laptop.
+Antigravity/Agy in a persistent environment that you control. The unified
+Telegram companion also supports Kimchi as an interactive and fallback target.
+Run Agent Bridge on an always-on host, direct and supervise work through
+Telegram or Discord, retain session and project context, switch providers when
+needed, and keep work moving when you are away from your laptop.
 
 **[Self-host Agent Bridge OSS](#setup)** or **[use Farstax for a managed workspace](https://farstax.com/)**.
 
@@ -37,7 +38,9 @@ you remote control surfaces for supervising them:
   SQLite-backed state and systemd-managed processes.
 - **Use your preferred agents** through dedicated services or one interactive
   service with CLI switching and eligible fallback across Codex, Claude Code,
-  and Antigravity/Agy.
+  Antigravity/Agy, and Kimchi. Kimchi is currently limited to the unified
+  Telegram companion; it has no dedicated service, Engineering Worker chain,
+  or Discord configuration.
 - **Direct work from anywhere** through Telegram, with optional Discord
   services for supported conversational workflows.
 - **Stay in control** with stop/cancel commands, execution locks, bounded
@@ -98,6 +101,9 @@ same core outcome without owning that infrastructure, use the managed path at
 - `codex` on `$PATH` — `npm install -g @openai/codex`
 - `agy` on `$PATH` — installed via `curl -fsSL https://antigravity.google/cli/install.sh | bash`
 - `claude` on `$PATH` — `npm install -g @anthropic-ai/claude-code` (required only if using the Claude bot)
+- Optional interactive target: `kimchi` plus `KIMCHI_API_KEY`; see
+  [`.env.interactive.example`](.env.interactive.example) for its command,
+  models, and fallback position
 - `npm` on `$PATH`
 - Telegram bot tokens from BotFather for the services you run
 - Optional: a Discord application/bot token with Message Content intent enabled
@@ -105,17 +111,44 @@ same core outcome without owning that infrastructure, use the managed path at
 
 ## Setup
 
-> Maintenance note: `codex` and `claude` are external global installs — **not** bundled as npm dependencies. Install them separately before running `install.sh`. The `@google/agy-cli` entry in `package.json` points to a committed mock at `test/mocks/mock-agy-cli` for offline testing only; the real `agy` binary is installed by the Google Antigravity installer.
+Choose the setup path that matches the host.
 
-**Recommended — let the installer generate env files:**
+### Immutable production installation
+
+Production uses a qualified immutable release archive and the one-time
+`scripts/agent-bridge-install.py` installer. It verifies the release, writes
+root-owned service configuration, creates the fixed rollout inventory, stages
+the release, starts only configured services, and validates service and SQLite
+state. The runtime account must already have unrestricted passwordless
+administrative sudo, which is a product invariant.
+
+Follow [Initial production installation](docs/INITIAL-INSTALL.md). After initial
+installation, activate later releases only through the guarded
+`agent-bridge-deploy` command documented there. Do not use `scripts/install.sh`
+or `scripts/upgrade.sh` as a production release activator.
+
+### Source or development installation
+
+For a source checkout or development host, the interactive installer generates
+local environment files and enables selected units without activating an
+immutable release or starting production services:
 
 ```bash
 sudo bash scripts/install.sh
 ```
 
-The installer prompts for bot tokens, user IDs, Discord credentials, and paths, then writes local env files from the example templates and installs the standard systemd services. Codex and Antigravity are the primary dedicated services; Claude, health, Discord, and Discord interactive are installed when their tokens/default files are present.
+The installer prompts for bot tokens, user IDs, CLI commands, worker settings,
+Discord credentials, and paths. Codex and Antigravity are the required source
+services. It writes, installs, and enables the optional Claude, interactive,
+worker, health, and Discord services when their corresponding tokens or health
+mode are supplied. It does not start them because immutable pointer activation
+is a separate guarded operation.
 
-The unified Telegram interactive bot and worker bot have service templates and env examples, but are intentionally operator-enabled: create `/etc/default/agent-bridge-interactive` or `/etc/default/agent-bridge-worker-bot` from the matching `.env.*.example`, then install/enable those units once their tokens and flags are correct.
+> Maintenance note: `codex` and `claude` are external global installs, not npm
+> dependencies. The source installer can install or update them. The
+> `@google/agy-cli` entry in `package.json` is a committed offline test mock; the
+> source installer obtains the real `agy` binary from the Google Antigravity
+> installer.
 
 The installer records the absolute Node binary path as `NODE_BIN` in each systemd defaults file and the service templates run `tsx` through that binary. This avoids systemd falling back to an older ambient `node` on the login shell path.
 
@@ -142,6 +175,8 @@ Then fill in the relevant token(s) and paths in each file:
 - `*_COMMAND` — absolute path to each CLI binary (use `which codex`, `which agy`, `which claude`)
 - `*_PROJECT_DIR` — working directory passed to the CLI (optional; defaults to `BRIDGE_PROJECT_DIR`)
 - `INTERACTIVE_CLI_CHAIN` / `WORKER_CLI_CHAIN` — CLI fallback order for unified and worker services
+- `KIMCHI_COMMAND`, `KIMCHI_API_KEY`, and `KIMCHI_MODEL_PREFERENCE` — optional
+  unified Telegram Kimchi target; Kimchi is excluded from worker chains
 - Bridge-owned project memory is exposed to spawned agents through `AGENT_BRIDGE_CONTEXT_COMMAND`
 
 Run a single bot for development:
@@ -259,12 +294,16 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 | `ANTIGRAVITY_COMMAND` | Antigravity | `agy` | CLI binary path |
 | `ANTIGRAVITY_OUTPUT_MODE` | Antigravity | `text` | `stream-json` (recommended) uses Agy 1.1.8+ typed NDJSON and extracts only the terminal result; `json` retains the native single-envelope rollback path; `text` keeps legacy prompt/log parsing |
 | `CLAUDE_COMMAND` | Claude | `claude` | CLI binary path |
+| `KIMCHI_COMMAND` | Interactive | `kimchi` | Optional Kimchi CLI path for the unified Telegram companion |
+| `KIMCHI_API_KEY` | Interactive | — | API key required by the Kimchi CLI; keep it in the service environment |
 | `CODEX_MODEL_PREFERENCE` | Codex | — | Comma-separated model list; first = default, rest = fallbacks |
 | `ANTIGRAVITY_MODEL_PREFERENCE` | Antigravity | — | Comma-separated model list; first = default, rest = fallbacks |
 | `CLAUDE_MODEL_PREFERENCE` | Claude | — | Comma-separated model list; first = default, rest = fallbacks. Example: `claude-sonnet-5,claude-opus-5,claude-opus-4-8,claude-haiku-4-5,claude-fable-5` |
+| `KIMCHI_MODEL_PREFERENCE` | Interactive | — | Optional comma-separated Kimchi model list; see `.env.interactive.example` for the current example |
 | `CODEX_EFFORT` | Codex | `medium` | Reasoning effort; mapped to `model_reasoning_effort` |
 | `ANTIGRAVITY_EFFORT` | Antigravity | `medium` | Recorded/displayed for parity only; Agy has no separate effort CLI flag |
 | `CLAUDE_EFFORT` | Claude | `medium` | Reasoning effort; mapped to `--effort` |
+| `KIMCHI_EFFORT` | Interactive | `medium` | Reasoning effort for Kimchi invocations |
 | `CODEX_PROJECT_DIR` | Codex | — | Working dir for CLI execution (overrides `BRIDGE_PROJECT_DIR`) |
 | `ANTIGRAVITY_PROJECT_DIR` | Antigravity | — | Working dir for CLI execution (overrides `BRIDGE_PROJECT_DIR`) |
 | `CLAUDE_PROJECT_DIR` | Claude | — | Working dir for CLI execution (overrides `BRIDGE_PROJECT_DIR`) |
@@ -279,7 +318,7 @@ Each service reads its own `.env` file. Only the token for that service's bot is
 | `TELEGRAM_LAYOUT_DOCUMENT_THRESHOLD` | Telegram bots | `3500` | Attachment threshold used only when `TELEGRAM_DOCUMENT_FALLBACK_ENABLED=true` |
 | `TELEGRAM_LAYOUT_CODE_BLOCK_THRESHOLD` | Telegram bots | `3` | Code-block attachment threshold used only when `TELEGRAM_DOCUMENT_FALLBACK_ENABLED=true` |
 | `INTERACTIVE_DEFAULT_CLI` | Interactive | `codex` | Default CLI for new interactive chats |
-| `INTERACTIVE_CLI_CHAIN` | Interactive | `codex,claude,antigravity` | CLI fallback order after model fallbacks are exhausted |
+| `INTERACTIVE_CLI_CHAIN` | Interactive | `codex,claude,antigravity,kimchi` | CLI fallback order after model fallbacks are exhausted |
 | `BRIDGE_COMPACTION_CHAIN` | Interactive/Worker | — | Optional ordered `provider[:model]` recovery targets; the healthy caller-selected provider is first, duplicates/invalid targets and exhausted providers are excluded, and Kimchi remains fail-closed |
 | `BRIDGE_COMPACTION_MAX_ATTEMPTS` | Interactive/Worker | `3` | Maximum provider/model targets tried for each structured compaction output; bounded to 8 |
 | `BRIDGE_COMPACTION_REPAIR_ATTEMPTS` | Interactive/Worker | `1` | Invalid structured-output repair attempts per provider/model target; bounded to 0 or 1 |
@@ -655,47 +694,23 @@ See [`docs/soul.md`](docs/soul.md) for the full design, runtime injection order,
 
 ## Systemd deployment
 
-`sudo` is only required for the systemd install step. The installer prompts for each bot token and skips services whose token is left blank.
+Production systemd services run from the immutable
+`/opt/agent-bridge/releases/current` pointer and require Node 24+. Use the
+one-time installer and guarded deployer described in
+[Initial production installation](docs/INITIAL-INSTALL.md). The repository unit
+templates and source-oriented `scripts/install.sh` remain available for
+development hosts; they are not a second production activation path.
 
-Systemd deployments require Node 24+. The current motivation is operational as well as compatibility related: direct Codex usage checks against ChatGPT's Codex usage endpoint returned Cloudflare HTML 403 responses under Node 20 on this host, while the same token and headers returned JSON under Node 24.
-
-```bash
-sudo bash scripts/install.sh
-```
-
-Or copy manually (include only the services you want):
-
-```bash
-sudo install -D -m 0644 systemd/agent-bridge-antigravity.service /etc/systemd/system/agent-bridge-antigravity.service
-sudo install -D -m 0644 systemd/agent-bridge-codex.service /etc/systemd/system/agent-bridge-codex.service
-sudo install -D -m 0644 systemd/agent-bridge-claude.service /etc/systemd/system/agent-bridge-claude.service
-sudo install -D -m 0644 systemd/agent-bridge-interactive.service /etc/systemd/system/agent-bridge-interactive.service
-sudo install -D -m 0644 systemd/agent-bridge-worker-bot.service /etc/systemd/system/agent-bridge-worker-bot.service
-sudo install -D -m 0644 systemd/agent-bridge-health.service /etc/systemd/system/agent-bridge-health.service
-sudo install -D -m 0644 systemd/agent-bridge-discord-interactive.service /etc/systemd/system/agent-bridge-discord-interactive.service
-sudo install -D -m 0644 systemd/agent-bridge-tmp-cleanup.service /etc/systemd/system/agent-bridge-tmp-cleanup.service
-sudo install -D -m 0644 systemd/agent-bridge-tmp-cleanup.timer /etc/systemd/system/agent-bridge-tmp-cleanup.timer
-sudo sed -i 's/User=BRIDGE_USER/User='"$USER"'/g' /etc/systemd/system/agent-bridge-*.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now agent-bridge-antigravity agent-bridge-codex agent-bridge-tmp-cleanup.timer
-```
-
-The repo service templates intentionally use `User=BRIDGE_USER` as an install-time placeholder. If you copy units manually, replace that placeholder with the real runtime account before starting the service; otherwise systemd fails with `status=217/USER`. The cleanup service resolves its executable through `/etc/default/agent-bridge-release` and the immutable `current` release pointer.
+The runtime account must retain unrestricted passwordless administrative sudo.
+Deployment and recovery depend on that authority. The fixed restart helper is
+a safer routine mechanism, not a replacement privilege boundary.
 
 ### Safe remote restart helper
 
-For restarts triggered from an active bridge session, install the narrow helper
-instead of granting passwordless `systemctl`:
+For restarts triggered from an active bridge session, install the fixed helper:
 
 ```bash
 sudo install -D -m 0750 -o root -g root scripts/restart-agent-bridge.sh /usr/local/sbin/restart-agent-bridge
-sudo visudo -f /etc/sudoers.d/agent-bridge-restart
-```
-
-Sudoers content:
-
-```sudoers
-content-crawler ALL=(root) NOPASSWD: /usr/local/sbin/restart-agent-bridge
 ```
 
 Use:
@@ -705,16 +720,15 @@ sudo -n /usr/local/sbin/restart-agent-bridge
 ```
 
 The helper waits 5 seconds before restarting the fixed `agent-bridge-*` unit
-list, giving the current bot response time to reach Telegram. Do not grant
-`NOPASSWD: ALL` or passwordless raw `systemctl`.
+list, giving the current bot response time to reach Telegram. It does not narrow
+or replace the runtime account's broader sudo authority. See
+[Safe restart](docs/SAFE-RESTART.md) for the full privilege and verification
+contract.
 
 Schema-changing production deployments must not use the restart helper. Use the
 separately installed, reviewed guarded rollout helper and fixed inventory in
 [`docs/GUARDED-ROLLOUT.md`](docs/GUARDED-ROLLOUT.md). Its merge or installation
 does not authorize a rollout; production execution requires separate approval.
-
-Only enable optional services after their `/etc/default/agent-bridge-*` file
-exists and contains a real token.
 
 Follow logs:
 
@@ -728,11 +742,13 @@ journalctl -u agent-bridge-discord-interactive -f
 journalctl -u agent-bridge-tmp-cleanup -f
 ```
 
-To update an existing deployment (updates npm packages, Claude Code CLI, and restarts services):
+To update an existing immutable production deployment, use the single guarded
+deployer with the exact qualified release and an approved deployment request or
+approval record. See [Guarded rollout](docs/GUARDED-ROLLOUT.md) for the complete
+command and verification contract.
 
-```bash
-sudo bash scripts/upgrade.sh
-```
+`scripts/upgrade.sh` remains a source/development helper. It is not a production
+release path.
 
 ### Temporary artifact cleanup
 
@@ -805,10 +821,12 @@ main bridge database stores chat sessions and polling state; the worker database
 also stores `work_items`, `work_jobs`, `approvals`, `github_links`, and dormant
 `role_assignment_revisions` with child `role_assignments` rows.
 
-Schema migration 2 retires the legacy SQLite `prompts` table. Schema migration 3
-adds the dormant desired role-assignment tables. Ordinary production services
-remain strict and require the guarded rollout helper to upgrade schema-version-2
-databases before a schema-3 service starts.
+The current schema version is 5. Migration 2 retires the legacy SQLite
+`prompts` table; migration 3 adds dormant desired role assignments; migration 4
+adds reconciliation evidence; migration 5 adds project-memory resolution and
+repairs its FTS triggers. Ordinary production services accept only the current
+schema and require the guarded rollout helper to advance older databases before
+the new service starts.
 
 ### Guarded production rollout
 
@@ -826,11 +844,14 @@ or bypass this sequence.
 |---------|-------|---------|
 | `<chatId>` | — | Per-chat row; holds session IDs and execution lock |
 | `$polling:codex` / `:antigravity` / `:claude` | last update_id | Telegram polling offset per bot |
-| `codex` / `antigravity` / `claude` (in `settings`) | model name | Per-bot model override (set via `/models`) |
-| `effort:codex` / `effort:antigravity` / `effort:claude` (in `settings`) | effort level | Per-bot effort override (set via `/effort`; Agy stored for parity only) |
+| `codex` / `antigravity` / `claude` / `kimchi` (in `settings`) | model name | Per-provider model override (set via `/models`) |
+| `effort:codex` / `effort:antigravity` / `effort:claude` / `effort:kimchi` (in `settings`) | effort level | Per-provider effort override (set via `/effort`; Agy stored for parity only) |
 | `interactive_cli_preference` | CLI kind | Per-chat active CLI for the unified interactive bot |
 
-Session IDs are stored as columns (`codex_session_id`, `antigravity_session_id`, legacy `gemini_session_id`, `claude_session_id`) on the chat row. The migration adds `antigravity_session_id` and backfills it from legacy `gemini_session_id` automatically on first run.
+Session IDs are stored as columns (`codex_session_id`,
+`antigravity_session_id`, legacy `gemini_session_id`, `claude_session_id`, and
+`kimchi_session_id`) on the chat row. The legacy-compatible migration adds the
+current columns and backfills Antigravity state from the legacy Gemini column.
 
 Discord interactive rows use deterministic numeric aliases of Discord channel
 snowflakes. These aliases are stable across restarts; runtime delivery maps the
