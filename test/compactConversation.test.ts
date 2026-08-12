@@ -156,7 +156,10 @@ describe("compactConversation", () => {
 
     expect(result.outcome).toBe("compacted");
     expect(db.getLatestConvSummary("chat:1")?.summary_md).toContain("compact safely");
-    expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(0);
+    // Issue #349: the covered turn is retained as recoverable evidence, not
+    // deleted — it is simply excluded from further compaction backlog.
+    expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(1);
+    expect(db.getConvTurnsForCompaction("chat:1")).toHaveLength(0);
     expect(warn).toHaveBeenCalledWith("[compaction-telemetry] write failed for manual/compacted");
     expect(JSON.stringify(warn.mock.calls)).not.toContain("must-not-leak");
     warn.mockRestore();
@@ -271,9 +274,11 @@ describe("compactConversation", () => {
     expect(retained).toEqual([{ text: "fix the bug" }, { text: "fixed" }]);
 
     // Bounded context/backlog construction stays bounded by the new
-    // summary's range_end_turn_id, exactly as before this change.
-    expect(db.getRecentConvTurns("chat:1", 100)).toEqual([]);
+    // summary's range_end_turn_id, exactly as before this change — the
+    // unbounded getRecentConvTurns (no sinceId) returns everything by
+    // design, so the retained rows above are expected there too.
     expect(db.getConvTurnsForCompaction("chat:1")).toEqual([]);
+    expect(db.buildConvContext("chat:1")).not.toContain("fix the bug");
   });
 
   it("promotes valid memory candidates and counts rejected ones separately", async () => {
@@ -468,7 +473,9 @@ describe("compactConversation", () => {
 
     const summary = db.getLatestConvSummary("chat:1");
     expect(summary?.summary_md).toBe("Current objective:\n- antigravity fixed bug");
-    expect(db.getRecentConvTurns("chat:1", 100)).toEqual([]);
+    // Issue #349: retained as recoverable evidence, not deleted.
+    expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(2);
+    expect(db.getConvTurnsForCompaction("chat:1")).toHaveLength(0);
   });
 
   it("fails safely without pruning turns when antigravity wrapped output response has invalid compact JSON", async () => {
