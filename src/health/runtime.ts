@@ -1,12 +1,13 @@
 import type { BridgeDb } from "../db.js";
 import type { BotKind } from "../types.js";
 import { HealthBridgeBot } from "./bot.js";
-import { parseHealthCliConfig } from "./config.js";
+import { parseCadenceSeconds, parseHealthCliConfig } from "./config.js";
 import { HealthContextStore } from "./context.js";
+import { HealthReportStore } from "./reports.js";
 import { ExternalPlugin } from "./plugins/external.js";
 import { SelfPlugin } from "./plugins/self.js";
 import { ServerPlugin } from "./plugins/server.js";
-import { formatReport } from "./reporter.js";
+import { formatAggregateReport, formatReport } from "./reporter.js";
 import type { HealthPlugin } from "./types.js";
 
 function defaultHealthCliCommand(bot: BotKind, env: Record<string, string | undefined>): string {
@@ -55,8 +56,12 @@ export function createHealthRuntime(options: {
     },
     statusText(): string {
       const context = new HealthContextStore(options.bridgeDb.raw).getContext();
-      if (!context?.lastReport) return "No health data yet. Use /health to run a check.";
-      return `${formatReport(context.lastReport)}${context.lastSuggestion ? `\n\n*Last suggestion:*\n\n${context.lastSuggestion}` : ""}`;
+      const aggregate = new HealthReportStore(options.bridgeDb.raw).getAggregate({
+        activePluginNames: plugins.map((plugin) => plugin.name),
+        freshnessSeconds: parseCadenceSeconds(options.env) * 2,
+      });
+      if (aggregate.status === null && !aggregate.evidence.stalePluginNames.length) return "No health data yet. Use /health to run a check.";
+      return `${formatAggregateReport(aggregate)}${context?.lastSuggestion ? `\n\n*Last suggestion:*\n\n${context.lastSuggestion}` : ""}`;
     },
   };
 }

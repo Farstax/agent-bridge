@@ -1,4 +1,4 @@
-import type { HealthReport } from "./types.js";
+import type { HealthAggregate, HealthReport } from "./types.js";
 
 const EMOJI: Record<string, string> = { green: "✅", amber: "⚠️", red: "🔴" };
 
@@ -37,6 +37,22 @@ export function formatReport(report: HealthReport): string {
   }
 
   lines.push(`⏱️ _${formatTimestamp(report.timestamp)}_`);
+  return lines.join("\n");
+}
+
+export function formatAggregateReport(aggregate: HealthAggregate): string {
+  if (aggregate.status === null) return "No current health reports available.";
+  const icon = EMOJI[aggregate.status] ?? "❓";
+  const lines = [`*Health aggregate:* ${icon} ${aggregate.status.toUpperCase()}`];
+  if (aggregate.nonGreenReports.length) {
+    lines.push(`*Non-green plugins:* ${aggregate.nonGreenReports.map((report) => `${report.pluginName} (${report.status})`).join(", ")}`);
+  }
+  if (aggregate.evidence.missingPluginNames.length) {
+    lines.push(`*Missing plugin reports:* ${aggregate.evidence.missingPluginNames.join(", ")}`);
+  }
+  if (aggregate.evidence.stalePluginNames.length) {
+    lines.push(`*Stale plugin reports:* ${aggregate.evidence.stalePluginNames.join(", ")}`);
+  }
   return lines.join("\n");
 }
 
