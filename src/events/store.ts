@@ -17,8 +17,15 @@ export class EventStore {
   private terminalPersisted = false;
   private pendingCompleted: Extract<BridgeEvent, { type: "run.completed" }> | null = null;
 
-  constructor(db: BridgeDb) {
+  constructor(db: BridgeDb, existingRunId?: string) {
     this.db = db;
+    if (existingRunId) {
+      const run = db.getRun(existingRunId);
+      if (run?.status === "running") {
+        this.runInserted = true;
+        this.seq = db.getEventsForRun(existingRunId).reduce((max, event) => Math.max(max, Number(event.seq) || 0), 0);
+      }
+    }
   }
 
   collect(event: BridgeEvent): void {

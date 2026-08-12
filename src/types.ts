@@ -156,4 +156,6 @@ export interface CliResult {
   sessionId: string | null;
   /** Provider evidence that the logical turn may need a bounded automatic resume. */
   continuationHint?: "background-process";
+  /** Bridge-owned evidence that the same durable run still owned a child process at CLI exit. */
+  continuationProcessObserved?: boolean;
 }

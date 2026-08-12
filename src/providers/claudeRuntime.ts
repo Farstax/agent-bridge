@@ -13,7 +13,7 @@ import type { CliResult } from "../types.js";
 import { appendEffortArgs } from "../effort.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import { buildClaudeSettingsArg } from "../claudeSettings.js";
-import { buildClaudeStreamJsonInput } from "../claudeStreamJson.js";
+import { buildClaudeStreamJsonInput, parseClaudeStreamJsonOutput } from "../claudeStreamJson.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 
 export function buildInvocation({
@@ -33,7 +33,7 @@ export function buildInvocation({
   const args: string[] = [];
   const finalPrompt = appendOutputDirInstruction(wrapPromptContext(prompt, soulContext, includeResponseContract), outputDir);
   if (attachments.length > 0) {
-    // Multimodal path: pipe stream-json with base64 images to stdin
+    // Multimodal path: pipe stream-json with base64 images to stdin.
     args.push(...buildClaudeSettingsArg());
     if (model) args.push("--model", model);
     if (sessionId) args.push("--resume", sessionId);
@@ -50,22 +50,20 @@ export function buildInvocation({
   if (model) args.push("--model", model);
   if (sessionId) args.push("--resume", sessionId);
   if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
-  if (outputFormat === "json" || outputFormat === "stream-json") args.push("--output-format", "json");
+  if (outputFormat === "json") args.push("--output-format", "json");
+  if (outputFormat === "stream-json") args.push("--output-format", "stream-json", "--verbose");
   // Preserve the established argv contract for normal prompts, but terminate
   // option parsing when a raw prompt itself starts with a hyphen.
   if (finalPrompt.startsWith("-")) args.push("--");
   args.push(finalPrompt);
 
-  // "stream-json" here signals the sync turn-continuation caller specifically:
-  // same on-the-wire args/output as plain "json" (unchanged for every other
-  // caller), but the prompt is *also* handed back as stdin so the caller can
-  // scan the transcript for a backgrounded Bash tool_use without altering
-  // the CLI's actual invocation contract.
-  const stdin = outputFormat === "stream-json" ? buildClaudeStreamJsonInput(finalPrompt, []) : undefined;
-  return { command, args: appendEffortArgs(command, args, effort), stdin };
+  return { command, args: appendEffortArgs(command, args, effort) };
 }
 
 export function parseResult(stdout: string): CliResult {
+  const transcript = parseClaudeStreamJsonOutput(stdout);
+  if (transcript) return transcript;
+
   const lines = stdout.split("\n").map(l => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].startsWith("{")) continue;

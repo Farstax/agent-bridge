@@ -44,7 +44,8 @@ function claudeOutput(text: string, sessionId: string, background = false): stri
   ].join("\n");
 }
 
-function readClaudeInput(options: any): string {
+function readClaudeInput(args: string[], options: any): string {
+  if (!options.stdin) return String(args.at(-1) ?? "");
   const parsed = JSON.parse(String(options.stdin));
   return typeof parsed.message.content === "string"
     ? parsed.message.content
@@ -104,7 +105,7 @@ describe("sync turn continuation", () => {
     const prompts: string[] = [];
     const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       runIds.push(options.eventContext.runId);
-      prompts.push(readClaudeInput(options));
+      prompts.push(readClaudeInput(_args, options));
       return runCli.mock.calls.length === 1
         ? claudeOutput("Tests are running in the background.", "session-261", true)
         : claudeOutput("Tests passed; the task is complete.", "session-261");
@@ -205,7 +206,7 @@ describe("sync turn continuation", () => {
     };
     const prompts: string[] = [];
     const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
-      prompts.push(readClaudeInput(options));
+      prompts.push(readClaudeInput(_args, options));
       if (runCli.mock.calls.length === 1) return claudeOutput("Background work started.", "session-queue", true);
       if (runCli.mock.calls.length === 2) return claudeOutput("Background work finished.", "session-queue");
       return claudeOutput("Queued request finished.", "session-queue");
@@ -359,16 +360,20 @@ describe("sync turn continuation", () => {
     expect(delivered.at(-1)).toContain("safety limit");
   });
 
-  it("leaves the async/streaming path explicitly unchanged", async () => {
+  it("waits for async background work and resumes once without unbounded polling", async () => {
     const { BridgeEngine } = await import("../src/engine.js");
+    let processState: "live" | "absent" = "live";
     const continuation: ContinuationFns = {
-      hasLiveRunOwnedDescendants: vi.fn(() => true),
+      hasLiveRunOwnedDescendants: vi.fn(() => processState === "live"),
+      getRunOwnedProcessState: vi.fn(() => processState),
       killRunOwnedDescendants: vi.fn(async () => {}),
-      sleep: vi.fn(async () => {}),
+      sleep: vi.fn(async () => { processState = "absent"; }),
       now: vi.fn(() => Date.now()),
     };
     const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
-      const raw = claudeOutput("Async background work started.", "session-async", true);
+      const raw = runCliAsync.mock.calls.length === 1
+        ? claudeOutput("Async background work started.", "session-async", true)
+        : claudeOutput("Async background work finished.", "session-async");
       const ctx = options.eventContext;
       options.onEvent?.(eventType.runCompleted({ ...ctx, text: raw, sessionId: null }));
       return { text: raw };
@@ -382,8 +387,11 @@ describe("sync turn continuation", () => {
 
     await engine.handleMessages([makeMessage("async task", 1)]);
 
-    expect(runCliAsync).toHaveBeenCalledOnce();
-    expect(continuation.hasLiveRunOwnedDescendants).not.toHaveBeenCalled();
-    expect(continuation.sleep).not.toHaveBeenCalled();
+    expect(runCliAsync).toHaveBeenCalledTimes(2);
+    expect(continuation.sleep).toHaveBeenCalledOnce();
+    expect(client.sendMessage.mock.calls.map((call: any[]) => String(call[0].text))).toEqual([
+      "Async background work started.",
+      "Async background work finished.",
+    ]);
   });
 });

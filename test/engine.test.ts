@@ -3139,7 +3139,7 @@ describe("BridgeEngine", () => {
       expect(capturedArgs[configIdx + 1]).toMatch(/model_reasoning_effort="high"/);
     });
 
-    it("passes --output-format json to Claude bot in sync path", async () => {
+    it("passes stream-json output to Claude bot in sync continuation path", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
@@ -3169,7 +3169,8 @@ describe("BridgeEngine", () => {
       expect(runCli).toHaveBeenCalledOnce();
       const outputFormatIdx = capturedArgs.indexOf("--output-format");
       expect(outputFormatIdx).not.toBe(-1);
-      expect(capturedArgs[outputFormatIdx + 1]).toBe("json");
+      expect(capturedArgs[outputFormatIdx + 1]).toBe("stream-json");
+      expect(capturedArgs).toContain("--verbose");
     });
 
     it("passes --json flag to Codex bot in sync path", async () => {

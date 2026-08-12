@@ -19,6 +19,8 @@ import { loadBotsConfig, validateTokenUniqueness, resolveExecutionMode, resolveB
 import { runCli } from "./cli.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { standaloneServiceId } from "./executionIdentity.js";
+import { recoverCancelledContinuationContainment } from "./continuationRecovery.js";
+import { ContinuationRepository } from "./repositories/continuationRepository.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env",
@@ -74,10 +76,15 @@ const db = openProductionDb(config.dbPath, {
   databaseRole: "shared",
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
+const continuationStore = new ContinuationRepository(db.raw);
 
+await recoverCancelledContinuationContainment(db, continuationStore);
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
-  processState: (run) => getExecutionProcessState(run.run_id),
+  // Durable continuation records own their own restart reconciliation. Treat
+  // them as live here so generic orphan cleanup cannot race and fail a turn
+  // that is legitimately waiting to resume.
+  processState: (run) => continuationStore.hasActiveRun(run.run_id) ? "live" : getExecutionProcessState(run.run_id),
   containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
   onReconciled: (run) => console.warn(`[bridge] reconciled orphaned run ${run.run_id}`),
 });

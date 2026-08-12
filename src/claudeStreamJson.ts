@@ -9,12 +9,15 @@ const MIME_MAP: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+export const CLAUDE_CONTINUATION_PROCESS_EVENT = "agent_bridge.continuation_process_observed";
+
 export type ClaudeContinuationHint = "background-process";
 
 export interface ClaudeStreamJsonResult {
   text: string;
   sessionId: string | null;
   continuationHint?: ClaudeContinuationHint;
+  continuationProcessObserved?: boolean;
 }
 
 export async function encodeFileAsBase64(filePath: string): Promise<{ data: string; mimeType: string }> {
@@ -62,19 +65,26 @@ function recordsBackgroundBashToolUse(obj: any): boolean {
 export function parseClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonResult | null {
   let last: ClaudeStreamJsonResult | null = null;
   let continuationHint: ClaudeContinuationHint | undefined;
+  let continuationProcessObserved = false;
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
     try {
       const obj = JSON.parse(trimmed);
+      if (obj?.type === CLAUDE_CONTINUATION_PROCESS_EVENT && obj?.observed === true) {
+        continuationProcessObserved = true;
+        if (last) last.continuationProcessObserved = true;
+        continue;
+      }
       if (recordsBackgroundBashToolUse(obj)) {
         continuationHint = "background-process";
       }
       if (typeof obj.result === "string") {
         last = {
-          text: obj.result,
+          text: obj.result.trim(),
           sessionId: obj.session_id ?? null,
           ...(continuationHint ? { continuationHint } : {}),
+          ...(continuationProcessObserved ? { continuationProcessObserved: true } : {}),
         };
         continuationHint = undefined;
       }
