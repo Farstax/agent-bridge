@@ -541,8 +541,8 @@ export class BridgeDb {
     return this.eventReceipts.getByIdempotencyKey(idempotencyKey);
   }
 
-  linkEventReceiptRun(id: number, input: { work_item_id: number; work_job_id: number }): void {
-    this.eventReceipts.linkRun(id, input);
+  linkEventReceiptRun(id: number, runId: string): void {
+    this.eventReceipts.linkRun(id, runId);
   }
 
   recordEventReceiptResult(
@@ -1243,8 +1243,7 @@ export interface EventReceipt {
   payload_json: string;
   authority_scope: string;
   status: string;
-  work_item_id: number | null;
-  work_job_id: number | null;
+  run_id: string | null;
   result_reference: string | null;
   error_class: string | null;
   created_at: string;

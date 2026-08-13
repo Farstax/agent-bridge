@@ -144,7 +144,8 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * project_memories_fts triggers' invalid delete-command syntax.
  * Version 6 adds the health report read model for health-role databases.
  * Version 7 adds authenticated health-event receipt persistence for
- * health-role databases (Issue #351).
+ * health-role databases (Issue #351), correlated to an ordinary owning
+ * bridge_runs row rather than a work_item/work_job.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [

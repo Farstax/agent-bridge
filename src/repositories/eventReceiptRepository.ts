@@ -47,10 +47,15 @@ export class EventReceiptRepository {
     ).get(idempotencyKey) as EventReceipt | undefined) ?? null;
   }
 
-  linkRun(id: number, input: { work_item_id: number; work_job_id: number }): void {
+  /**
+   * Compare-and-swapped on status = 'received' so a racing linker (e.g. two
+   * processes both replaying the same interrupted event) can only ever link
+   * one Run to a given receipt.
+   */
+  linkRun(id: number, runId: string): void {
     this.db.prepare(
-      `UPDATE event_receipts SET status = 'run_created', work_item_id = ?, work_job_id = ? WHERE id = ? AND status = 'received'`
-    ).run(input.work_item_id, input.work_job_id, id);
+      `UPDATE event_receipts SET status = 'run_created', run_id = ? WHERE id = ? AND status = 'received'`
+    ).run(runId, id);
   }
 
   recordResult(id: number, input: { status: "completed" | "failed" | "cancelled"; result_reference: string | null; error_class: string | null }): void {

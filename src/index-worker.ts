@@ -47,7 +47,6 @@ import { createPrWatchHandler } from "./handlers/prWatch.js";
 import { createPrRefreshHandler } from "./handlers/prRefresh.js";
 import { createRefactorScanHandler } from "./handlers/refactorScan.js";
 import { createImplementationPlanHandler } from "./handlers/implementationPlan.js";
-import { createOpsCheckHandler } from "./handlers/opsCheck.js";
 import { captureFeatureBrief, hasPendingCustomRepo, clearPendingCustomRepo } from "./featureBriefCapture.js";
 import { runCli } from "./cli.js";
 import { createRunCommand } from "./runCommandAsync.js";
@@ -388,7 +387,6 @@ const jobExecutor = startJobExecutorLoop({
       runTests,
       cleanupWorkspace,
     }),
-    ops_check: createOpsCheckHandler(),
   },
   sendMessage: async (chatId: number, text: string, replyMarkup?: object, threadId?: number) => {
     const body: any = { text };
