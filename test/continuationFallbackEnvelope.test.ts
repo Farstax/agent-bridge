@@ -101,6 +101,44 @@ describe("continuation fallback admitted-turn envelope", () => {
     }
   });
 
+  it("updates live coalesced partitions for a same-provider checkpoint resume", () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "same-provider-partitions-"));
+    const sourceA = join(sourceDir, "a.png");
+    const sourceB = join(sourceDir, "b.png");
+    writeFileSync(sourceA, "A");
+    writeFileSync(sourceB, "B");
+    const runId = "same-provider-partitions";
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "A", chatId: 100, chatType: "private", attachments: [sourceA] });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "B", chatId: 100, chatType: "private", attachments: [sourceB] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.claimPendingMsgs(handle!);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    const input: any = {
+      mode: "async", prompt: "A\n\nB", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private", userId: 42,
+      attachments: [sourceA, sourceB], attachmentPartitions: [[sourceA], [sourceB]], laneHandle: handle, pendingIds: rows.map((row) => row.id),
+      runId, continuationStartedAtMs: null, resumptionCount: 0,
+    };
+    const result = { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any;
+    try {
+      expect((engine as any)._checkpointContinuationBeforeDelivery(input, result)).toBe(true);
+      const staged = db.dequeueMsgs("telegram:interactive", "100").flatMap((row) => row.attachments);
+      input.attachments = staged;
+      expect(input.attachmentPartitions).toEqual([[staged[0]], [staged[1]]]);
+      expect((engine as any)._checkpointContinuationBeforeDelivery(input, { ...result, sessionId: "claude-session-2" })).toBe(true);
+      expect(input.attachments).toEqual(staged);
+      expect(input.attachmentPartitions).toEqual([[staged[0]], [staged[1]]]);
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true, force: true });
+      db.close();
+    }
+  });
+
   it("recovers a coalesced checkpoint with the exact staged envelope once", async () => {
     const db = openDb(":memory:");
     const sourceDir = mkdtempSync(join(tmpdir(), "coalesced-recovery-source-"));
