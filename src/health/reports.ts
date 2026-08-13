@@ -39,13 +39,6 @@ export class HealthReportStore {
 
   constructor(db: Database.Database) {
     this.db = db;
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS health_plugin_reports (
-        plugin_name TEXT PRIMARY KEY,
-        report_json TEXT NOT NULL,
-        saved_at INTEGER NOT NULL
-      )
-    `);
     this.migrateLegacyLastReport();
   }
 

@@ -156,7 +156,7 @@ export class DatabaseMissingError extends Error {
 function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
-  applyMigrations(raw);
+  applyMigrations(raw, undefined, options.databaseRole);
 
   // ── Non-schema runtime maintenance ────────────────────────────────────────
   // Prunes turns already covered by a compact summary. Depends on runtime

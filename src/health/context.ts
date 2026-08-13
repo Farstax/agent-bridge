@@ -15,16 +15,6 @@ export class HealthContextStore {
 
   constructor(db: Database.Database) {
     this.db = db;
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS health_context (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        last_report_json TEXT,
-        last_suggestion TEXT,
-        session_id TEXT,
-        session_started_at INTEGER,
-        updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-      )
-    `);
   }
 
   saveReport(report: HealthReport): void {

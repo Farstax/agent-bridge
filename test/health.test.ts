@@ -29,6 +29,16 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
+    execFileSync: (command: string, args: string[], options: any) => {
+      if (args.includes("--version")) {
+        const mockedList = (globalThis as any).__mockExecSync?.("npm list -g --depth=0 --json");
+        const installed = mockedList ? JSON.parse(String(mockedList)).dependencies ?? {} : {};
+        if (command === "claude") return installed["@anthropic-ai/claude-code"]?.version ?? "2.1.185";
+        if (command === "codex") return installed["@openai/codex"]?.version ?? "0.141.0";
+        if (command === "agy") return "1.0.10";
+      }
+      return actual.execFileSync(command, args, options);
+    },
     execSync: (cmd: string, options: any) => {
       if ((globalThis as any).__mockExecSync) {
         const res = (globalThis as any).__mockExecSync(cmd, options);

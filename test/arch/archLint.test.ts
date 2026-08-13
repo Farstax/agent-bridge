@@ -32,6 +32,15 @@ function runLintInRepo(repoDir: string, targetDir: string): { code: number; outp
 }
 
 describe("arch-lint", () => {
+  it("rejects durable CREATE TABLE statements outside migration owners", () => {
+    const dir = mkdtempSync(join(tmpdir(), "archlint-ddl-owner-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "feature.ts"), "export function install(db: any) { db.exec('CREATE TABLE foo_table (id INTEGER)'); }\n");
+    const res = runLint(dir, "src");
+    expect(res.code).toBe(1);
+    expect(res.output).toContain("durable CREATE TABLE statements must live in a migration owner");
+  });
+
   it("is executable", () => {
     accessSync(SCRIPT, constants.X_OK);
   });

@@ -344,6 +344,7 @@ read_env_key() {
 
 declare -A discovered_databases=()
 declare -A unit_databases=()
+declare -A unit_roles=()
 for unit in "${units[@]}"; do
   unit_env="$defaults_dir/${unit%.service}"
   validate_secure_path "$unit_env" file
@@ -381,6 +382,13 @@ for unit in "${units[@]}"; do
   canonical="$(/usr/bin/realpath -e "$discovered")"
   [[ "$canonical" == "$discovered" ]] || die "database path for $unit is not canonical: $discovered"
   unit_databases[$unit]="$canonical"
+  case "$unit" in
+    agent-bridge-health.service) unit_roles[$unit]=health ;;
+    agent-bridge-discord-interactive.service) unit_roles[$unit]=discord ;;
+    agent-bridge-interactive.service) unit_roles[$unit]=interactive ;;
+    agent-bridge-worker-bot.service) unit_roles[$unit]=worker ;;
+    *) unit_roles[$unit]=shared ;;
+  esac
   discovered_databases[$canonical]=1
 done
 
@@ -1108,6 +1116,7 @@ build_db_args() {
   # Per-database resolving-units evidence reuses the unit->canonical-path
   # resolution already proven above rather than re-deriving it in TypeScript.
   for unit in "${!unit_databases[@]}"; do db_args+=(--resolving-unit "${unit_databases[$unit]}=$unit"); done
+  for unit in "${!unit_databases[@]}"; do db_args+=(--database-role "${unit_databases[$unit]}=${unit_roles[$unit]}"); done
 }
 build_db_args
 run_db_tool() {
