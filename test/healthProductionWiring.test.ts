@@ -38,4 +38,50 @@ describe("health event production wiring", () => {
     const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
     expect(source).toContain("void executeAcceptedHealthEvent(accepted.receiptId)");
   });
+
+  it("reconciles abandoned health leases after generic orphan reconciliation, before final receipt correlation", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+    expect(source).toContain('from "./health/eventRecovery.js"');
+    expect(source).toContain("reconcileAbandonedHealthLeases");
+    const genericOrphans = source.indexOf("await bridgeDb.reconcileOrphanedRuns");
+    const healthLeases = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb", genericOrphans);
+    const finalCorrelation = source.lastIndexOf("reconcileTerminalPendingHealthEvents(bridgeDb)");
+    expect(genericOrphans).toBeGreaterThan(-1);
+    expect(healthLeases).toBeGreaterThan(genericOrphans);
+    expect(finalCorrelation).toBeGreaterThan(healthLeases);
+  });
+
+  it("arranges exactly one bounded setTimeout retry for an abandoned health lease whose lock hasn't yet expired, with no rescheduling inside that retry", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+    const genericOrphans = source.indexOf("await bridgeDb.reconcileOrphanedRuns");
+    const start = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb", genericOrphans);
+    const end = source.indexOf("reconcileTerminalPendingHealthEvents(bridgeDb)", start);
+    const block = source.slice(start, end);
+    expect(block).toContain("scheduleRetry: (delayMs)");
+    expect(block).toContain("setTimeout(");
+    const retryCallStart = block.indexOf("reconcileAbandonedHealthLeases(bridgeDb", block.indexOf("setTimeout("));
+    const retryCallEnd = block.indexOf(")\n", retryCallStart);
+    expect(block.slice(retryCallStart, retryCallEnd)).not.toContain("scheduleRetry");
+  });
+
+  it("gives interrupted marked health Runs a reconciliation opportunity after live execution and startup replay release the shared lane", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+
+    const helperStart = source.indexOf("async function reconcileInterruptedHealthRunsAfterExecution");
+    const helperEnd = source.indexOf("async function executeAcceptedHealthEvent", helperStart);
+    const helper = source.slice(helperStart, helperEnd);
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helper).toContain("await reconcileAbandonedHealthLeases(bridgeDb");
+    expect(helper).toContain("reconcileTerminalPendingHealthEvents(bridgeDb)");
+
+    const liveStart = source.indexOf("async function executeAcceptedHealthEvent");
+    const liveEnd = source.indexOf("async function handleHealthReportEventIngress", liveStart);
+    const liveOwner = source.slice(liveStart, liveEnd);
+    expect(liveOwner).toContain("await reconcileInterruptedHealthRunsAfterExecution()");
+
+    const replayStart = source.indexOf("void resumeDurablePendingHealthEvents");
+    const replayEnd = source.indexOf("await bridgeDb.reconcileOrphanedRuns", replayStart);
+    const replayOwner = source.slice(replayStart, replayEnd);
+    expect(replayOwner).toContain(".then(() => reconcileInterruptedHealthRunsAfterExecution())");
+  });
 });

@@ -41,6 +41,7 @@ import {
   healthRedEpisodeIdempotencyKey,
   reconcileTerminalPendingHealthEvents,
   replayablePendingHealthRunIds,
+  reconcileAbandonedHealthLeases,
 } from "./health/eventRecovery.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -150,6 +151,23 @@ const activeHealthEventRuns = new Set<number>();
 
 const waitForHealthLane = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// A newer health Run may legitimately take the shared health lane before a
+// crashed, provider-started predecessor can be reconciled. Once any live
+// health execution releases that lane, give older marked Runs one bounded
+// reconciliation opportunity. Exact lock-identity checks in eventRecovery
+// ensure this can never release a different execution's fence.
+async function reconcileInterruptedHealthRunsAfterExecution(): Promise<void> {
+  try {
+    await reconcileAbandonedHealthLeases(bridgeDb, {
+      processState: (runId) => getExecutionProcessState(runId),
+      onReconciled: (run) => console.warn(`[health-bot] reconciled interrupted health run ${run.run_id} after lane release`),
+    });
+    reconcileTerminalPendingHealthEvents(bridgeDb);
+  } catch (error) {
+    console.error("[health-bot] post-execution health reconciliation failed", error);
+  }
+}
+
 async function executeAcceptedHealthEvent(receiptId: number): Promise<void> {
   if (activeHealthEventRuns.has(receiptId)) return;
   activeHealthEventRuns.add(receiptId);
@@ -172,6 +190,7 @@ async function executeAcceptedHealthEvent(receiptId: number): Promise<void> {
     }
   } finally {
     activeHealthEventRuns.delete(receiptId);
+    await reconcileInterruptedHealthRunsAfterExecution();
   }
 }
 
@@ -292,9 +311,11 @@ engine = new BridgeEngine(
 await engine.recoverContinuations();
 reconcileTerminalPendingHealthEvents(bridgeDb);
 const replayableHealthRunIds = replayablePendingHealthRunIds(bridgeDb);
-void resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot }).catch((error) => {
-  console.error("[health-bot] durable health event replay failed", error);
-});
+void resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot })
+  .then(() => reconcileInterruptedHealthRunsAfterExecution())
+  .catch((error) => {
+    console.error("[health-bot] durable health event replay failed", error);
+  });
 await bridgeDb.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 60_000),
   processState: (run) => getExecutionProcessState(run.run_id),
@@ -302,6 +323,36 @@ await bridgeDb.reconcileOrphanedRuns({
     ? "ambiguous"
     : state === "absent" ? "proven" : "ambiguous",
   onReconciled: (run) => console.warn(`[health-bot] reconciled orphaned run ${run.run_id}`),
+});
+// Runs that reached the provider boundary are deliberately excluded from
+// replay, but a crash seconds after that marker was written leaves both the
+// marker and the health execution lane's lock durable — both younger than
+// the generic cutoff above, and the lock alone would keep generic orphan
+// containment from ever treating the lane as free. Release an abandoned
+// lease and terminalize the Run through the same lease/stale-lock and
+// orphan-containment semantics, so an immediate restart can't leave one
+// 'running' forever with no later pass to catch it.
+//
+// This only runs once, here, at startup — if the owning process is already
+// proven gone but its lock's lease simply hasn't expired yet, nothing above
+// can reconcile it, and no later pass would either. scheduleRetry arranges
+// exactly one bounded setTimeout for when that lease will have expired; the
+// retry itself passes no scheduleRetry, so it can never reschedule itself
+// into a loop.
+await reconcileAbandonedHealthLeases(bridgeDb, {
+  processState: (runId) => getExecutionProcessState(runId),
+  onReconciled: (run) => console.warn(`[health-bot] reconciled interrupted health run ${run.run_id}`),
+  scheduleRetry: (delayMs) => {
+    console.warn(`[health-bot] abandoned health lease not yet stale, retrying reconciliation in ${delayMs}ms`);
+    setTimeout(() => {
+      reconcileAbandonedHealthLeases(bridgeDb, {
+        processState: (runId) => getExecutionProcessState(runId),
+        onReconciled: (run) => console.warn(`[health-bot] reconciled interrupted health run ${run.run_id} on retry`),
+      })
+        .then(() => reconcileTerminalPendingHealthEvents(bridgeDb))
+        .catch((error) => console.error("[health-bot] deferred health lease reconciliation failed", error));
+    }, delayMs);
+  },
 });
 reconcileTerminalPendingHealthEvents(bridgeDb);
 

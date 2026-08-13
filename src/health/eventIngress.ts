@@ -57,6 +57,48 @@ export function healthEventExecutionStartedKey(receiptId: number): string {
   return `${HEALTH_EVENT_STARTED_SETTING_PREFIX}${receiptId}`;
 }
 
+/** The specific execution_locks identity (service_id/run_id/acquisition_id)
+ * that held the health lane at the moment a provider-start marker was
+ * written. execution_locks.run_id is a process-generation identity, not a
+ * bridge_runs run id, so this is the only way to later prove a given lock
+ * row is (or is not) the one a crashed attempt actually held — see
+ * eventRecovery.ts reconcileAbandonedHealthLeases. */
+export interface HealthEventExecutionLaneIdentity {
+  serviceId: string;
+  runId: string;
+  acquisitionId: string;
+}
+
+export interface HealthEventExecutionStartedMarker {
+  runId: string;
+  lane: HealthEventExecutionLaneIdentity | null;
+}
+
+export function serializeHealthEventExecutionStartedMarker(marker: HealthEventExecutionStartedMarker): string {
+  return JSON.stringify(marker);
+}
+
+/** Tolerates the legacy plain-runId marker format (lane: null) alongside
+ * the current JSON-with-lane-identity format. */
+export function parseHealthEventExecutionStartedMarker(value: string): HealthEventExecutionStartedMarker {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && typeof (parsed as { runId?: unknown }).runId === "string") {
+      const laneRaw = (parsed as { lane?: unknown }).lane;
+      const lane = laneRaw && typeof laneRaw === "object"
+        && typeof (laneRaw as Partial<HealthEventExecutionLaneIdentity>).serviceId === "string"
+        && typeof (laneRaw as Partial<HealthEventExecutionLaneIdentity>).runId === "string"
+        && typeof (laneRaw as Partial<HealthEventExecutionLaneIdentity>).acquisitionId === "string"
+        ? laneRaw as HealthEventExecutionLaneIdentity
+        : null;
+      return { runId: (parsed as { runId: string }).runId, lane };
+    }
+  } catch {
+    // fall through to legacy plain-runId format
+  }
+  return { runId: value, lane: null };
+}
+
 const MAX_PAYLOAD_BYTES = 4096;
 const REDACT_KEY_PATTERN = /token|secret|password|passwd|key|authorization|credential|prompt/i;
 const REDACTED = "[redacted]";
@@ -324,6 +366,32 @@ export async function executeHealthOpsRun(
   if (!laneHandle) throw new HealthOpsRunLaneUnavailableError();
 
   try {
+    // Authoritative re-check, taken only after the lane is held: a waiter
+    // (startup replay racing live dispatch, or a caller that queued behind
+    // another owner) can obtain the lane after the Run already reached a
+    // terminal or cancelled state. Crossing the provider boundary in that
+    // case would invoke the provider a second time for already-finished
+    // work, or run it for work that was cancelled while queued. Re-reading
+    // here — not relying on the state captured before lane acquisition —
+    // is what makes the boundary itself authoritative.
+    const eligibleRun = db.getRun(runId);
+    if (!eligibleRun || eligibleRun.status !== "running") {
+      return { runId, status: eligibleRun?.status === "done" ? "done" : "failed" };
+    }
+    // The Run being 'running' is not by itself proof this attempt hasn't
+    // already reached the provider: a prior attempt for this same
+    // receipt/Run can have written the durable provider-start marker and
+    // then crashed before its `finally` cleared it. Holding the lane proves
+    // no *other live* attempt is using it right now, but not that the prior
+    // attempt is dead — only process-liveness reconciliation
+    // (startedNonReplayableHealthRuns + reconcileAbandonedHealthLeases) can
+    // prove that safely. So a pre-existing marker must also block the
+    // provider boundary here, leaving the Run to that reconciliation path
+    // rather than risking a second provider invocation.
+    if (db.getSetting(healthEventExecutionStartedKey(receiptId)) !== null) {
+      return { runId, status: "failed" };
+    }
+
     // Seeded with the existing runId so EventStore recognizes the Run
     // already exists (see its constructor) and never re-inserts it — it
     // only needs to persist the terminal transition from the provider owner
@@ -354,7 +422,10 @@ export async function executeHealthOpsRun(
         collect,
         finalize: () => eventStore.finalize(),
         onProviderExecutionStarted: () => {
-          db.setSetting(healthEventExecutionStartedKey(receiptId), runId);
+          db.setSetting(healthEventExecutionStartedKey(receiptId), serializeHealthEventExecutionStartedMarker({
+            runId,
+            lane: { serviceId: laneHandle.serviceId, runId: laneHandle.runId, acquisitionId: laneHandle.acquisitionId },
+          }));
         },
       });
     } finally {
