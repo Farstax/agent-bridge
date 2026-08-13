@@ -447,6 +447,7 @@ export class BridgeEngine {
       if (!handle) continue;
       if (!this.continuationStore.reclaimPendingIds(handle, record.pendingIds)) {
         this.continuationStore.markAmbiguous(record.runId, "pending-message ownership could not be recovered");
+        this._cleanupContinuationAttachments(record.attachments ?? []);
         this.db.unlock(handle);
         continue;
       }
@@ -515,7 +516,7 @@ export class BridgeEngine {
         text: "Background continuation could not be safely handed to another provider because the original provider work could not be contained. Please try again later.",
         message_thread_id: record.threadId ?? undefined,
       });
-      this._deleteQueuedAttachments(record.attachments ?? []);
+      this._cleanupContinuationAttachments(record.attachments ?? []);
       return "blocked";
     }
     this.db.updateRunFailed(record.runId, "provider capacity fallback");
@@ -1251,13 +1252,15 @@ export class BridgeEngine {
       input.chatKey,
       input.laneHandle,
     );
-    const continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
-    const deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
-    if (!deliveryPhase) {
-      await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
-      return null;
-    }
+    let continuationCheckpointPending = false;
+    let deliveryPhase: FinalDeliveryPhase | null = null;
     try {
+      continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
+      deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
+      if (!deliveryPhase) {
+        await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
+        return null;
+      }
       if (result.text) {
         await this.sendText(input.chatId, { text: result.text, message_thread_id: input.threadId });
       }
@@ -1302,40 +1305,51 @@ export class BridgeEngine {
     if (now >= deadlineAtMs) return false;
 
     this._assertLaneOwned(input.laneHandle);
-    const continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
-    const saved = this.continuationStore.saveWaiting({
-      runId: input.runId,
-      surface: this.surfaceIdentity,
-      chatKey: input.chatKey,
-      chatId: input.chatId,
-      threadId: input.threadId ?? null,
-      bot: this.kind,
-      sessionId: result.sessionId,
-      prompt: input.prompt,
-      chatType: input.chatType,
-      userId: input.userId,
-      attachments: continuationAttachments,
-      executionMode: input.mode,
-      triggerKind: "run-owned-background-process",
-      triggerId: input.runId,
-      resumptionCount: input.resumptionCount,
-      pendingIds: [...input.pendingIds],
-      startedAt: new Date(startedAtMs).toISOString(),
-      deadlineAt: new Date(deadlineAtMs).toISOString(),
-      deliveryState: "pending",
-      pendingAttempt: {
+    let continuationAttachments: string[] = [];
+    let pendingRowOwnsContinuationAttachments = false;
+    try {
+      continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
+      if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments)) {
+        throw new LostExecutionLeaseError();
+      }
+      pendingRowOwnsContinuationAttachments = input.pendingIds.length > 0;
+      const saved = this.continuationStore.saveWaiting({
+        runId: input.runId,
+        surface: this.surfaceIdentity,
+        chatKey: input.chatKey,
+        chatId: input.chatId,
+        threadId: input.threadId ?? null,
+        bot: this.kind,
+        sessionId: result.sessionId,
         prompt: input.prompt,
-        isInitialResult: input.isInitialResult,
-        result: {
-          text: result.text,
-          sessionId: result.sessionId,
-          memoryCandidates: result.memoryCandidates,
-          continuationHint: result.continuationHint,
-          continuationProcessObserved: result.continuationProcessObserved,
+        chatType: input.chatType,
+        userId: input.userId,
+        attachments: continuationAttachments,
+        executionMode: input.mode,
+        triggerKind: "run-owned-background-process",
+        triggerId: input.runId,
+        resumptionCount: input.resumptionCount,
+        pendingIds: [...input.pendingIds],
+        startedAt: new Date(startedAtMs).toISOString(),
+        deadlineAt: new Date(deadlineAtMs).toISOString(),
+        deliveryState: "pending",
+        pendingAttempt: {
+          prompt: input.prompt,
+          isInitialResult: input.isInitialResult,
+          result: {
+            text: result.text,
+            sessionId: result.sessionId,
+            memoryCandidates: result.memoryCandidates,
+            continuationHint: result.continuationHint,
+            continuationProcessObserved: result.continuationProcessObserved,
+          },
         },
-      },
-    });
-    if (!saved) throw new LostExecutionLeaseError();
+      });
+      if (!saved) throw new LostExecutionLeaseError();
+    } catch (error) {
+      if (!pendingRowOwnsContinuationAttachments) this._cleanupContinuationAttachments(continuationAttachments);
+      throw error;
+    }
     return true;
   }
 
@@ -1343,6 +1357,7 @@ export class BridgeEngine {
     const directory = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
     const directoryExisted = existsSync(directory);
     const persisted: string[] = [];
+    const createdTargets: string[] = [];
     try {
       for (const [index, attachment] of attachments.entries()) {
         const target = join(directory, `${index}-${basename(attachment)}`);
@@ -1353,11 +1368,16 @@ export class BridgeEngine {
         if (!existsSync(attachment)) {
           throw new Error("source attachment is missing");
         }
+        const targetExisted = existsSync(target);
         mkdirSync(directory, { recursive: true });
+        if (!targetExisted) createdTargets.push(target);
         cpSync(attachment, target, { force: true });
         persisted.push(target);
       }
     } catch {
+      for (const target of createdTargets) {
+        try { unlinkSync(target); } catch {}
+      }
       if (!directoryExisted) rmSync(directory, { recursive: true, force: true });
       throw new Error("continuation attachment could not be persisted");
     }
@@ -1366,11 +1386,17 @@ export class BridgeEngine {
 
   private async _cancelUndeliveredContinuation(runId: string, reason: string): Promise<void> {
     const checkpoint = this.continuationStore.get(runId);
-    if (checkpoint?.state !== "waiting") return;
-    this.continuationStore.markCancelled(runId, reason);
+    if (checkpoint?.state === "waiting") {
+      this.continuationStore.markCancelled(runId, reason);
+      this._cleanupContinuationAttachments(checkpoint.attachments ?? []);
+    }
     if (this.continuation.getRunOwnedProcessState(runId) === "live") {
       await this.continuation.killRunOwnedDescendants(runId);
     }
+  }
+
+  private _cleanupContinuationAttachments(attachments: string[]): void {
+    this._deleteQueuedAttachments(attachments);
   }
 
   private async _continueFromDeliveredResult(input: {
@@ -1409,6 +1435,7 @@ export class BridgeEngine {
 
         if (!shouldContinue) {
           this.continuationStore.markCompleted(input.runId);
+          this._cleanupContinuationAttachments(this.continuationStore.get(input.runId)?.attachments ?? []);
           input.finalize();
           return true;
         }
@@ -1447,6 +1474,7 @@ export class BridgeEngine {
             await this.continuation.killRunOwnedDescendants(input.runId);
           }
           this.continuationStore.markCancelled(input.runId, "provider session unavailable");
+          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
           this.laneCoordinator.clearContinuation(executionLane);
           if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SESSION_NOTICE);
           input.finalize();
@@ -1457,6 +1485,7 @@ export class BridgeEngine {
             await this.continuation.killRunOwnedDescendants(input.runId);
           }
           this.continuationStore.markCancelled(input.runId, "automatic resumption limit reached");
+          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
           this.laneCoordinator.clearContinuation(executionLane);
           if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SAFETY_NOTICE);
           input.finalize();
@@ -1471,6 +1500,7 @@ export class BridgeEngine {
             await this.continuation.killRunOwnedDescendants(input.runId);
           }
           this.continuationStore.markCancelled(input.runId, "continuation lifetime limit reached");
+          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
           this.laneCoordinator.clearContinuation(executionLane);
           if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SAFETY_NOTICE);
           input.finalize();
@@ -1495,6 +1525,7 @@ export class BridgeEngine {
             await this.continuation.killRunOwnedDescendants(input.runId);
           }
           this.continuationStore.markCancelled(input.runId, "continuation lifetime limit reached");
+          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
           this.laneCoordinator.clearContinuation(executionLane);
           if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SAFETY_NOTICE);
           input.finalize();
@@ -1544,6 +1575,7 @@ export class BridgeEngine {
         if (!next) {
           if (!this._canPublish(input.laneHandle)) throw new LostExecutionLeaseError();
           this.continuationStore.markCancelled(input.runId, "continuation attempt ended without a deliverable result");
+          this._cleanupContinuationAttachments(this.continuationStore.get(input.runId)?.attachments ?? []);
           return true;
         }
         result = next;
@@ -1554,6 +1586,7 @@ export class BridgeEngine {
       if (!this._canPublish(input.laneHandle)) throw new LostExecutionLeaseError();
       const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
       this.continuationStore.markCancelled(input.runId, `continuation failed: ${detail}`);
+      this._cleanupContinuationAttachments(this.continuationStore.get(input.runId)?.attachments ?? []);
       this.db.updateRunFailed(input.runId, detail);
       await this._deliverContinuationTerminalNotice(
         input.laneHandle,
@@ -1633,6 +1666,7 @@ export class BridgeEngine {
           if (this._canPublish(handle)) {
             const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
             this.continuationStore.markAmbiguous(record.runId, detail);
+            this._cleanupContinuationAttachments(record.attachments ?? []);
             this.db.updateRunFailed(record.runId, detail);
             await this._deliverContinuationTerminalNotice(
               handle,
@@ -1673,6 +1707,7 @@ export class BridgeEngine {
     if (!Number.isFinite(deadlineAtMs)) {
       this.continuationStore.markAmbiguous(record.runId, "continuation deadline is invalid");
       this.db.updateRunFailed(record.runId, "continuation deadline is invalid");
+      this._cleanupContinuationAttachments(record.attachments ?? []);
       return true;
     }
 
@@ -1719,6 +1754,7 @@ export class BridgeEngine {
       }
       this.continuationStore.markAmbiguous(record.runId, "resume was already claimed before restart");
       this.db.updateRunFailed(record.runId, "resume was already claimed before restart");
+      this._cleanupContinuationAttachments(record.attachments ?? []);
       await this._deliverContinuationTerminalNotice(handle, record.chatId, record.threadId ?? undefined, CONTINUATION_RECOVERY_NOTICE);
       return true;
     }
@@ -1730,6 +1766,7 @@ export class BridgeEngine {
       }
       this.continuationStore.markCancelled(record.runId, "recovered continuation exceeded its safety limit");
       this.db.updateRunFailed(record.runId, "recovered continuation exceeded its safety limit");
+      this._cleanupContinuationAttachments(record.attachments ?? []);
       await this._deliverContinuationTerminalNotice(handle, record.chatId, record.threadId ?? undefined, CONTINUATION_SAFETY_NOTICE);
       return true;
     }
@@ -1751,6 +1788,7 @@ export class BridgeEngine {
         }
         this.continuationStore.markCancelled(record.runId, "recovered continuation lifetime limit reached");
         this.db.updateRunFailed(record.runId, "recovered continuation lifetime limit reached");
+        this._cleanupContinuationAttachments(record.attachments ?? []);
         await this._deliverContinuationTerminalNotice(handle, record.chatId, record.threadId ?? undefined, CONTINUATION_SAFETY_NOTICE);
         return true;
       }
@@ -1783,6 +1821,7 @@ export class BridgeEngine {
       if (!this._canPublish(handle)) throw new LostExecutionLeaseError();
       this.continuationStore.markCancelled(record.runId, "recovered continuation attempt failed");
       this.db.updateRunFailed(record.runId, "recovered continuation attempt failed");
+      this._cleanupContinuationAttachments(record.attachments ?? []);
       return true;
     }
 
@@ -1821,6 +1860,7 @@ export class BridgeEngine {
       }
       this.continuationStore.markAmbiguous(record.runId, "surface-neutral continuation was interrupted before replay");
       this.db.updateRunFailed(record.runId, "surface-neutral continuation was interrupted before replay");
+      this._cleanupContinuationAttachments(record.attachments ?? []);
       return true;
     }
     if (record.resumptionCount >= positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS)
@@ -1830,6 +1870,7 @@ export class BridgeEngine {
       }
       this.continuationStore.markCancelled(record.runId, "recovered continuation exceeded its safety limit");
       this.db.updateRunFailed(record.runId, "recovered continuation exceeded its safety limit");
+      this._cleanupContinuationAttachments(record.attachments ?? []);
       return true;
     }
     let runnable = record.state === "runnable" ? record : null;
@@ -1841,6 +1882,7 @@ export class BridgeEngine {
         }
         this.continuationStore.markCancelled(record.runId, "surface-neutral continuation lifetime limit reached");
         this.db.updateRunFailed(record.runId, "surface-neutral continuation lifetime limit reached");
+        this._cleanupContinuationAttachments(record.attachments ?? []);
         return true;
       }
       runnable = this.continuationStore.markRunnable(record.runId);
@@ -2263,6 +2305,7 @@ export class BridgeEngine {
   ): Promise<void> {
     if (this._canPublish(handle)) return;
     this.continuationStore.markCancelled(runId, "execution lane fenced");
+    this._cleanupContinuationAttachments(this.continuationStore.get(runId)?.attachments ?? []);
     try {
       if (this.continuation.getRunOwnedProcessState(runId) === "live") {
         await this.continuation.killRunOwnedDescendants(runId);

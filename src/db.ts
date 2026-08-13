@@ -956,6 +956,25 @@ export class BridgeDb {
     });
   }
 
+  replaceClaimedPendingAttachments(handle: ExecutionLaneHandle, ids: number[], attachments: string[]): boolean {
+    if (ids.length === 0) return true;
+    const { surface, chatKey } = handle;
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      if (!this.locks.owns(handle)) return false;
+      const statement = this.raw.prepare(`
+        UPDATE pending_messages SET attachments_json = ?
+        WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed'
+          AND claim_run_id = ? AND claim_acquisition_id = ?
+      `);
+      const encoded = JSON.stringify(attachments);
+      for (const id of ids) {
+        if (statement.run(encoded, id, surface, chatKey, handle.runId, handle.acquisitionId).changes !== 1) return false;
+      }
+      return true;
+    });
+  }
+
   claimNextPendingMsg(handle: ExecutionLaneHandle): {
     id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
   } | null {
