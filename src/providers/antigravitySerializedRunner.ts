@@ -36,7 +36,7 @@ export interface AntigravityExecutionContext {
   outputMode?: AntigravityOutputMode;
 }
 
-function outputModeFromArgs(args: string[]): AntigravityOutputMode {
+export function outputModeFromArgs(args: string[]): AntigravityOutputMode {
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--output-format") {
       if (args[index + 1] === "json") return "json";

@@ -26,6 +26,7 @@ import {
 } from "./providers/antigravityRuntime.js";
 import {
   runAntigravitySerialized,
+  outputModeFromArgs,
   type AntigravityExecutionContext,
 } from "./providers/antigravitySerializedRunner.js";
 import { resolveKimchiSessionId } from "./providers/kimchiRuntime.js";
@@ -152,11 +153,7 @@ export function buildCliInvocation({
       homeDir,
       model: model ?? null,
       applyModel: true,
-      outputMode: (() => {
-        const formatIndex = invocation.args.indexOf("--output-format");
-        const format = formatIndex >= 0 ? invocation.args[formatIndex + 1] : undefined;
-        return format === "json" || format === "stream-json" ? format : "text";
-      })(),
+      outputMode: outputModeFromArgs(invocation.args),
     });
     return invocation;
   }
