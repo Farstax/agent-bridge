@@ -993,6 +993,15 @@ export class BridgeDb {
     return rows.some((row) => wanted.has(row.id) && (JSON.parse(row.attachmentsJson || "[]") as string[]).some((path) => owned.has(path)));
   }
 
+  pendingMessagesOwnAnyAttachments(attachments: string[]): boolean {
+    if (attachments.length === 0) return false;
+    const owned = new Set(attachments);
+    const rows = this.raw.prepare(`
+      SELECT attachments_json AS attachmentsJson FROM pending_messages WHERE state IN ('queued', 'claimed')
+    `).all() as Array<{ attachmentsJson: string | null }>;
+    return rows.some((row) => (JSON.parse(row.attachmentsJson || "[]") as string[]).some((path) => owned.has(path)));
+  }
+
   getClaimedPendingAttachments(handle: ExecutionLaneHandle, id: number): string[] | null {
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);

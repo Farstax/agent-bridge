@@ -5,6 +5,7 @@ import {
   type RunOwnedProcessState,
 } from "./turnContinuationProcesses.js";
 import { ContinuationRepository } from "./repositories/continuationRepository.js";
+import { cleanupAttachmentPaths } from "./attachmentCleanup.js";
 
 const DEFAULT_POLL_MS = 250;
 
@@ -41,6 +42,7 @@ export async function recoverCancelledContinuationContainment(
     }
     const contained = store.markCancellationContained(record.runId);
     if (!contained) continue;
+    if (!db.pendingMessagesOwnAnyAttachments(record.attachments ?? [])) cleanupAttachmentPaths(record.attachments ?? []);
     db.updateRunCancelled(record.runId, record.terminalReason ?? "cancelled");
   }
 }

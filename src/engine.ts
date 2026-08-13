@@ -80,6 +80,7 @@ import {
   type ContinuationExecutionMode,
   type ContinuationRecord,
 } from "./repositories/continuationRepository.js";
+import { cleanupAttachmentPaths } from "./attachmentCleanup.js";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -1399,7 +1400,7 @@ export class BridgeEngine {
   }
 
   private _cleanupContinuationAttachments(attachments: string[]): void {
-    this._deleteQueuedAttachments(attachments);
+    if (!this.db.pendingMessagesOwnAnyAttachments(attachments)) cleanupAttachmentPaths(attachments);
   }
 
   private async _continueFromDeliveredResult(input: {
@@ -2272,15 +2273,7 @@ export class BridgeEngine {
   }
 
   private _deleteQueuedAttachments(attachments: string[]): void {
-    const uploadDirs = new Set<string>();
-    for (const attachment of attachments) {
-      try { unlinkSync(attachment); } catch {}
-      const parent = dirname(attachment);
-      if (basename(parent).startsWith("bridge-uploads-") || basename(parent).startsWith("bridge-continuation-attachments-")) uploadDirs.add(parent);
-    }
-    for (const dir of uploadDirs) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
-    }
+    cleanupAttachmentPaths(attachments);
   }
 
   private _assertLaneOwned(handle: ExecutionLaneHandle): void {
