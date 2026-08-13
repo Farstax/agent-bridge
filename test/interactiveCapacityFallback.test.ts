@@ -173,6 +173,53 @@ describe("interactive capacity fallback durable admission", () => {
     }
   });
 
+  it("fails closed when Claude descendants remain live or ambiguous during fallback handoff", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    const runId = "continuation-containment-blocker";
+    db.insertRun(runId, "100", "claude");
+    new ContinuationRepository(db.raw).saveWaiting({
+      runId,
+      surface: "telegram:interactive",
+      chatKey: "100",
+      chatId: 100,
+      threadId: null,
+      bot: "claude",
+      sessionId: "claude-native-session-3",
+      prompt: "finish the background task",
+      chatType: "private",
+      executionMode: "async",
+      triggerKind: "run-owned-background-process",
+      triggerId: runId,
+      resumptionCount: 1,
+      pendingIds: [],
+      startedAt: new Date(Date.now() - 1000).toISOString(),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const kill = vi.fn(async () => {});
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude",
+      botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    }, db, client, { runCliAsync: vi.fn() }, {
+      hasLiveRunOwnedDescendants: () => true,
+      getRunOwnedProcessState: () => "live",
+      killRunOwnedDescendants: kill,
+      sleep: vi.fn(async () => {}),
+    });
+
+    try {
+      await expect(engine.handoffActiveContinuationForFallback("100")).resolves.toBe("blocked");
+      expect(kill).toHaveBeenCalledWith(runId);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      expect(client.sendMessage.mock.calls.map(([body]: [any]) => body?.text)).toEqual([
+        "Background continuation could not be safely handed to another provider because the original provider work could not be contained. Please try again later.",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("continues one admitted turn across exhausted CLIs without replaying the Telegram update", async () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();

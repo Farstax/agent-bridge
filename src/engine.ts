@@ -475,14 +475,24 @@ export class BridgeEngine {
    * cross-provider fallback. Native descendants remain owned by this Run and
    * are fenced before another provider is allowed to execute.
    */
-  async handoffActiveContinuationForFallback(chatKey: string): Promise<boolean> {
+  async handoffActiveContinuationForFallback(chatKey: string): Promise<"queued" | "blocked" | "none"> {
     const record = this.continuationStore.listActive(this.surfaceIdentity, this.kind)
       .find((candidate) => candidate.chatKey === chatKey);
-    if (!record || !record.prompt) return false;
+    if (!record || !record.prompt) return "none";
 
-    this.continuationStore.markCancelled(record.runId, "provider capacity fallback");
-    if (this.continuation.getRunOwnedProcessState(record.runId) === "live") {
+    let processState = this.continuation.getRunOwnedProcessState(record.runId);
+    if (processState === "live") {
       await this.continuation.killRunOwnedDescendants(record.runId);
+      processState = this.continuation.getRunOwnedProcessState(record.runId);
+    }
+    this.continuationStore.markCancelled(record.runId, "provider capacity fallback");
+    if (processState !== "absent") {
+      this.db.updateRunFailed(record.runId, "provider capacity fallback could not contain provider work");
+      await this.sendText(record.chatId, {
+        text: "Background continuation could not be safely handed to another provider because the original provider work could not be contained. Please try again later.",
+        message_thread_id: record.threadId ?? undefined,
+      });
+      return "blocked";
     }
     this.db.updateRunFailed(record.runId, "provider capacity fallback");
     if (record.pendingIds.length === 0) {
@@ -493,7 +503,7 @@ export class BridgeEngine {
         chatType: record.chatType ?? "private",
       });
     }
-    return true;
+    return "queued";
   }
 
   async handleUpdate(update: TelegramUpdate): Promise<void> {

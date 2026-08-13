@@ -273,7 +273,7 @@ function isResetUpdate(update: TelegramUpdate): boolean {
 export interface InteractiveDispatchEngine {
   handleUpdate(update: TelegramUpdate): Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
-  handoffActiveContinuationForFallback?: (chatKey: string) => Promise<boolean>;
+  handoffActiveContinuationForFallback?: (chatKey: string) => Promise<"queued" | "blocked" | "none">;
   /** Recovers durable work for one chat after ordinary admission yields to fallback. */
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
@@ -410,7 +410,8 @@ export async function dispatchInteractiveWithFallback(
       }
 
       if (engines[activeCli].handoffActiveContinuationForFallback) {
-        await engines[activeCli].handoffActiveContinuationForFallback(chatKey);
+        const handoff = await engines[activeCli].handoffActiveContinuationForFallback(chatKey);
+        if (handoff === "blocked") return "failed";
       }
 
       if (!claimedMessage && engines[next].recoverPendingQueue) {
