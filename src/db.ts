@@ -939,17 +939,23 @@ export class BridgeDb {
 
   retireQueuedPendingMsgs(surface: string, chatKey: string, ids: number[]): boolean {
     assertExecutionScope(surface, chatKey);
-    return this.runInTransaction(() => {
-      const statement = this.raw.prepare(`
-        DELETE FROM pending_messages
-        WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'queued'
-          AND claim_run_id IS NULL AND claim_acquisition_id IS NULL
-      `);
-      for (const id of ids) {
-        if (statement.run(id, surface, chatKey).changes !== 1) return false;
-      }
-      return true;
-    });
+    const mismatch = new Error("queued pending-message ownership changed");
+    try {
+      return this.runInTransaction(() => {
+        const statement = this.raw.prepare(`
+          DELETE FROM pending_messages
+          WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'queued'
+            AND claim_run_id IS NULL AND claim_acquisition_id IS NULL
+        `);
+        for (const id of ids) {
+          if (statement.run(id, surface, chatKey).changes !== 1) throw mismatch;
+        }
+        return true;
+      });
+    } catch (error) {
+      if (error === mismatch) return false;
+      throw error;
+    }
   }
 
   replaceClaimedPendingAttachments(handle: ExecutionLaneHandle, ids: number[], attachments: string[], partitions?: string[][]): boolean {

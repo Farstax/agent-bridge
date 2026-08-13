@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
@@ -17,12 +17,70 @@ function client() {
 
 function claudeBackground(text: string, sessionId: string): string {
   return [
-    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "bg", name: "Bash", input: { run_in_background: true } }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "bg", name: "Bash", input: { command: "npm test", run_in_background: true } }] } }),
     JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId }),
   ].join("\n");
 }
 
 describe("continuation fallback admitted-turn envelope", () => {
+  it("rolls back every pending-ID reclaim when a later row is no longer eligible", () => {
+    const db = openDb(":memory:");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "first", chatId: 100, chatType: "private", attachments: ["A"] });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "second", chatId: 100, chatType: "private", attachments: ["B"] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.dequeueMsgs("telegram:interactive", "100");
+    const repo = new ContinuationRepository(db.raw);
+
+    try {
+      db.raw.prepare("DELETE FROM pending_messages WHERE id = ?").run(rows[1].id);
+
+      expect(repo.reclaimPendingIds(handle!, rows.map((row) => row.id))).toBe(false);
+      expect(db.raw.prepare("SELECT state, claim_run_id AS runId, claim_acquisition_id AS acquisitionId FROM pending_messages WHERE id = ?").get(rows[0].id)).toEqual({
+        state: "queued", runId: null, acquisitionId: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reclaims every eligible pending ID under the exact execution-lane claim", () => {
+    const db = openDb(":memory:");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "first", chatId: 100, chatType: "private" });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "second", chatId: 100, chatType: "private" });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "unrelated", chatId: 100, chatType: "private" });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.dequeueMsgs("telegram:interactive", "100");
+    const repo = new ContinuationRepository(db.raw);
+
+    try {
+      expect(repo.reclaimPendingIds(handle!, rows.slice(0, 2).map((row) => row.id))).toBe(true);
+      expect(db.raw.prepare("SELECT state, claim_run_id AS runId, claim_acquisition_id AS acquisitionId FROM pending_messages WHERE id IN (?, ?) ORDER BY id").all(rows[0].id, rows[1].id)).toEqual([
+        { state: "claimed", runId: handle!.runId, acquisitionId: handle!.acquisitionId },
+        { state: "claimed", runId: handle!.runId, acquisitionId: handle!.acquisitionId },
+      ]);
+      expect(db.raw.prepare("SELECT state, claim_run_id AS runId, claim_acquisition_id AS acquisitionId FROM pending_messages WHERE id = ?").get(rows[2].id)).toEqual({
+        state: "queued", runId: null, acquisitionId: null,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back every queued retirement when a later row is no longer eligible", () => {
+    const db = openDb(":memory:");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "first", chatId: 100, chatType: "private" });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "second", chatId: 100, chatType: "private" });
+    const rows = db.dequeueMsgs("telegram:interactive", "100");
+
+    try {
+      db.deletePendingMsg(rows[1].id);
+      expect(db.retireQueuedPendingMsgs("telegram:interactive", "100", rows.map((row) => row.id))).toBe(false);
+      expect(db.raw.prepare("SELECT id FROM pending_messages WHERE id = ?").get(rows[0].id)).toEqual({ id: rows[0].id });
+    } finally {
+      db.close();
+    }
+  });
+
   it("resumes same-provider continuation from staged attachments after source cleanup", async () => {
     const db = openDb(":memory:");
     const sourceDir = mkdtempSync(join(tmpdir(), "same-provider-source-"));
@@ -101,7 +159,7 @@ describe("continuation fallback admitted-turn envelope", () => {
     }
   });
 
-  it("updates live coalesced partitions for a same-provider checkpoint resume", () => {
+  it("preserves coalesced staged partitions through real same-provider checkpoints", async () => {
     const db = openDb(":memory:");
     const sourceDir = mkdtempSync(join(tmpdir(), "same-provider-partitions-"));
     const sourceA = join(sourceDir, "a.png");
@@ -113,25 +171,54 @@ describe("continuation fallback admitted-turn envelope", () => {
     db.enqueueMsg("telegram:interactive", "100", { prompt: "A", chatId: 100, chatType: "private", attachments: [sourceA] });
     db.enqueueMsg("telegram:interactive", "100", { prompt: "B", chatId: 100, chatType: "private", attachments: [sourceB] });
     const handle = db.acquireLock("telegram:interactive", "100");
-    const rows = db.claimPendingMsgs(handle!);
+    const afterFirstCheckpoint: string[][] = [];
+    const afterSecondCheckpoint: string[][] = [];
+    let providerCalls = 0;
+    const messaging = client();
+    messaging.sendMessage.mockImplementation(async () => {
+      const attachments = (db.raw.prepare("SELECT attachments_json AS attachmentsJson FROM pending_messages WHERE surface = ? AND chat_key = ? ORDER BY id").all("telegram:interactive", "100") as Array<{ attachmentsJson: string | null }>)
+        .map((row) => JSON.parse(row.attachmentsJson || "[]") as string[]);
+      if (attachments.length === 2) {
+        if (afterFirstCheckpoint.length === 0) {
+          afterFirstCheckpoint.push(...attachments);
+          rmSync(sourceA, { force: true });
+          rmSync(sourceB, { force: true });
+        } else if (afterSecondCheckpoint.length === 0) {
+          afterSecondCheckpoint.push(...attachments);
+        }
+      }
+      return { ok: true, result: { message_id: 1 } };
+    });
+    const continuation: any = {
+      hasLiveRunOwnedDescendants: vi.fn(() => providerCalls <= 2),
+      getRunOwnedProcessState: vi.fn(() => "absent"),
+      sleep: vi.fn(async () => {}),
+    };
+    const runCliAsync = vi.fn().mockImplementation(async () => {
+      providerCalls += 1;
+      if (providerCalls < 3) return { text: claudeBackground(`${providerCalls} background`, "claude-session-1") };
+      return { text: JSON.stringify({ type: "result", subtype: "success", result: "finished", session_id: "claude-session-1" }) };
+    });
     const engine = new BridgeEngine({
       surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
       allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
-    }, db, client(), { runCliAsync: vi.fn() });
-    const input: any = {
-      mode: "async", prompt: "A\n\nB", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private", userId: 42,
-      attachments: [sourceA, sourceB], attachmentPartitions: [[sourceA], [sourceB]], laneHandle: handle, pendingIds: rows.map((row) => row.id),
-      runId, continuationStartedAtMs: null, resumptionCount: 0,
-    };
-    const result = { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any;
+    }, db, messaging, { runCliAsync }, continuation);
     try {
-      expect((engine as any)._checkpointContinuationBeforeDelivery(input, result)).toBe(true);
-      const staged = db.dequeueMsgs("telegram:interactive", "100").flatMap((row) => row.attachments);
-      input.attachments = staged;
-      expect(input.attachmentPartitions).toEqual([[staged[0]], [staged[1]]]);
-      expect((engine as any)._checkpointContinuationBeforeDelivery(input, { ...result, sessionId: "claude-session-2" })).toBe(true);
-      expect(input.attachments).toEqual(staged);
-      expect(input.attachmentPartitions).toEqual([[staged[0]], [staged[1]]]);
+      await (engine as any)._drainQueueAndUnlock(handle, undefined, 0, false, true);
+      expect(runCliAsync).toHaveBeenCalledTimes(3);
+      expect(afterFirstCheckpoint).toHaveLength(2);
+      expect(afterSecondCheckpoint).toEqual(afterFirstCheckpoint);
+      expect(afterFirstCheckpoint[0]).toHaveLength(1);
+      expect(afterFirstCheckpoint[1]).toHaveLength(1);
+      expect(afterSecondCheckpoint.flat()).toHaveLength(2);
+      expect(afterSecondCheckpoint.flat()).not.toContain(sourceA);
+      expect(afterSecondCheckpoint.flat()).not.toContain(sourceB);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      expect(afterSecondCheckpoint.flat().every((path) => !path.includes("/a.png/a.png"))).toBe(true);
+      expect(afterSecondCheckpoint.flat().sort()).toEqual(afterFirstCheckpoint.flat().sort());
+      expect(afterSecondCheckpoint[0][0]).toMatch(/bridge-continuation-attachments-.*\/0-a\.png$/);
+      expect(afterSecondCheckpoint[1][0]).toMatch(/bridge-continuation-attachments-.*\/1-b\.png$/);
+      expect(existsSync(dirname(afterSecondCheckpoint[0][0]))).toBe(false);
     } finally {
       rmSync(sourceDir, { recursive: true, force: true });
       rmSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true, force: true });
