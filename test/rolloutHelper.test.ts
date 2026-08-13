@@ -405,7 +405,12 @@ describe("guarded rollout helper", () => {
     });
     bridge.raw.prepare("UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?")
       .run("schema-3-run", lane!.acquisitionId);
-    bridge.raw.exec("DROP TABLE reconciliation_audit; PRAGMA user_version = 3;");
+    // Issue #351 added migration 6 (event_receipts). A genuine schema-3
+    // database predates that table too, so it must be dropped here alongside
+    // reconciliation_audit (migration 4) — otherwise migration 6's CREATE
+    // TABLE collides with the table this fixture's earlier full openDb()
+    // call already created before being rewound to user_version = 3.
+    bridge.raw.exec("DROP TABLE reconciliation_audit; DROP TABLE event_receipts; PRAGMA user_version = 3;");
     bridge.close();
 
     const result = runRollout(fixture);
