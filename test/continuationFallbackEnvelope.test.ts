@@ -293,10 +293,7 @@ describe("continuation fallback admitted-turn envelope", () => {
     const chain = new WorkerFallbackChain(["claude", "codex"], db);
     let processState: "live" | "absent" = "live";
     const claudeRun = vi.fn()
-      .mockResolvedValueOnce({ text: [
-        JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "tool-bg", name: "Bash", input: { run_in_background: true } }] } }),
-        JSON.stringify({ type: "result", subtype: "success", result: "background started", session_id: "claude-session" }),
-      ].join("\n") })
+      .mockResolvedValueOnce({ text: claudeBackground("background started", "claude-session") })
       .mockRejectedValueOnce(new Error("rate limit"));
     const codexRun = vi.fn().mockResolvedValue({ text: [
       JSON.stringify({ type: "thread.started", thread_id: "codex-session" }),
