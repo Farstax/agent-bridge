@@ -1330,14 +1330,13 @@ export class BridgeEngine {
       const target = join(directory, `${index}-${basename(attachment)}`);
       try {
         if (!existsSync(attachment)) {
-          persisted.push(attachment);
-          continue;
+          throw new Error("source attachment is missing");
         }
         mkdirSync(directory, { recursive: true });
         cpSync(attachment, target, { force: true });
         persisted.push(target);
       } catch {
-        persisted.push(attachment);
+        throw new Error("continuation attachment could not be persisted");
       }
     }
     return persisted;
