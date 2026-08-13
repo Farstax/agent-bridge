@@ -169,13 +169,13 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
       .toThrow(/manifest database schema identity mismatch/);
   });
 
-  it("migrates a copied schema-3 fixture with the target runtime before validating schema 5", () => {
+  it("migrates a copied schema-3 fixture with the target runtime before validating schema 6", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-schema-migration-offline-test-"));
     const fixture = join(root, "schema3.sqlite");
     createLegacyFixture(fixture);
     execFileSync(process.execPath, ["--import", "tsx", "scripts/rollout-db.ts", "migrate", "--db", fixture, "--evidence", "-"], { encoding: "utf8" });
     const database = new Database(fixture);
-    database.exec("DROP TABLE reconciliation_audit; PRAGMA user_version = 3;");
+    database.exec("DROP TABLE reconciliation_audit; DROP TABLE event_receipts; PRAGMA user_version = 3;");
     database.exec(`
       INSERT INTO pending_messages
         (surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id, state, claim_run_id, claim_acquisition_id, claimed_at, attachments_json)
