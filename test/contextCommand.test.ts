@@ -405,5 +405,44 @@ describe("agent-bridge-context helper", () => {
         rmSync(path, { force: true });
       }
     });
+
+    it("prevents adjacent context insertion from downgrading an already promoted matching hit in a three-hit consecutive group", () => {
+      const { db, path } = makeDb();
+      try {
+        const addEvidence = (label: string) => {
+          db.addConvTurn("chat:1", "assistant", `context before ${label} ${"b".repeat(300)}`, "codex");
+        };
+        const addMatch = (label: string) => {
+          db.addConvTurn("chat:1", "user", `decision ${label} ${"m".repeat(300)}`, "codex");
+        };
+        const addTrailing = (label: string) => {
+          db.addConvTurn("chat:1", "assistant", `context after ${label} ${"a".repeat(300)}`, "codex");
+          db.addConvTurn("chat:1", "assistant", `separator ${label} ${"s".repeat(300)}`, "codex");
+        };
+
+        addEvidence("consecutive");
+        addMatch("oldest_consecutive");
+        addMatch("middle_consecutive");
+        addMatch("newest_consecutive");
+        addTrailing("consecutive");
+        addEvidence("3"); addMatch("3"); addTrailing("3");
+        addEvidence("4"); addMatch("4"); addTrailing("4");
+
+        const output = renderAgentBridgeContext(["--search", "decision"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        expect(output).toContain("decision oldest_consecutive");
+        expect(output).toContain("decision middle_consecutive");
+        expect(output).toContain("decision newest_consecutive");
+        expect(output).toContain("decision 3");
+        expect(output).toContain("decision 4");
+        expect(output.length).toBeLessThanOrEqual(4_000);
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
   });
 });

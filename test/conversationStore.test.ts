@@ -382,4 +382,21 @@ describe("searchConvTurns (issue #350)", () => {
     expect(new Set(results.map((row) => row.id)).size).toBe(results.length);
     expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
   });
+
+  it("preserves is_match: true for all 3 hits in a three-hit consecutive group when processed newest-first", () => {
+    db.addConvTurn("chat:1", "assistant", "context before", "codex");
+    db.addConvTurn("chat:1", "user", "decision oldest_consecutive", "codex");
+    db.addConvTurn("chat:1", "user", "decision middle_consecutive", "codex");
+    db.addConvTurn("chat:1", "user", "decision newest_consecutive", "codex");
+    db.addConvTurn("chat:1", "assistant", "context after", "codex");
+
+    const results = db.searchConvTurns("chat:1", "decision");
+    const matches = results.filter((r) => r.is_match);
+
+    expect(matches.map((r) => r.text)).toEqual([
+      "decision oldest_consecutive",
+      "decision middle_consecutive",
+      "decision newest_consecutive",
+    ]);
+  });
 });
