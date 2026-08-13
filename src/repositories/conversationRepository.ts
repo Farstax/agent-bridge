@@ -3,11 +3,41 @@ import type Database from "better-sqlite3";
 export const DEFAULT_CONTEXT_MAX_CHARS = 8_000;
 export const DEFAULT_CONTEXT_RECENT_TURN_LIMIT = 200;
 
+// Issue #350: bounds for scoped chronological search over conversation_turns.
+// Kept intentionally small — search results are inlined directly into
+// agent-facing prompt text (contextCommand.ts, handoff guidance), so both
+// the result count and the per-turn snippet length must stay prompt-safe
+// regardless of how large a match's source turn is.
+export const DEFAULT_SEARCH_TURN_LIMIT = 5;
+export const MAX_SEARCH_TURN_LIMIT = 20;
+export const MAX_SEARCH_CONTEXT_TURNS = 20;
+export const MAX_SEARCH_SNIPPET_CHARS = 300;
+
 function recentTurnCandidateLimit(): number {
   const raw = process.env.BRIDGE_CONTEXT_RECENT_TURN_LIMIT;
   if (!raw) return DEFAULT_CONTEXT_RECENT_TURN_LIMIT;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CONTEXT_RECENT_TURN_LIMIT;
+}
+
+// Same tokenization shape as db.ts's buildMemoryFtsQuery — lowercase,
+// alphanumeric words longer than one character, deduped, capped — but
+// without the FTS5-specific prefix-wildcard suffix, since this feeds a
+// plain LIKE query rather than an fts5 MATCH expression.
+function tokenizeSearchQuery(raw: string): string[] {
+  return [...new Set(
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 1)
+  )].slice(0, 8);
+}
+
+// Escapes SQLite LIKE metacharacters (% _ and the escape character itself)
+// so search terms are matched literally.
+function escapeLikeTerm(term: string): string {
+  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
 export interface ConvTurnRow {
@@ -128,6 +158,89 @@ export class ConversationRepository {
          ORDER BY id ASC`
       )
       .all(chatKey, summary?.range_end_turn_id ?? 0) as ConvTurnRow[];
+  }
+
+  /**
+   * Issue #350: read-only, chat-scoped chronological search over
+   * conversation_turns. Supplements — never replaces — the bounded
+   * recent-turn window that buildConvContext/getRecentConvTurns already
+   * construct; this is a separate retrieval path for older evidence that
+   * has scrolled out of that window (or out of a compact summary's covered
+   * range, since issue #349 stops those turns from ever being deleted).
+   *
+   * Scoping: strictly scoped to `chatKey` via the same WHERE clause every
+   * other conversation_turns query in this class uses — matches can never
+   * cross conversations/workstreams. Deliberately not additionally scoped
+   * by `cli`/provider: buildConvContext and getRecentConvTurns already
+   * blend turns from every CLI a chat has used (that is what makes
+   * provider handoff continuity work), so a provider-scoped search here
+   * would be a narrower, inconsistent contract than the context callers
+   * already rely on. The `cli` column is still returned on every row so a
+   * caller can see provenance and reason about it explicitly.
+   *
+   * Matching hits are selected newest-first so later corrections win when the
+   * hit bound is reached. Each selected hit contributes its nearest preceding
+   * and following turn in the same chat, then the deduplicated evidence is
+   * returned in chronological order for unambiguous inspection.
+   *
+   * Bounds: an empty/whitespace-only query returns `[]` without querying
+   * the database. Matching uses a plain indexed LIKE over
+   * `conversation_turns(chat_key, id)` — no FTS5 virtual table — since
+   * search is already scoped to one chat's turns, a volume plain LIKE
+   * comfortably handles; result count is capped at MAX_SEARCH_TURN_LIMIT
+   * and the complete context result is capped at MAX_SEARCH_CONTEXT_TURNS;
+   * each returned turn's text is truncated to MAX_SEARCH_SNIPPET_CHARS so
+   * results are always safe to inline into a prompt.
+   */
+  searchConvTurns(chatKey: string, query: string, limit = DEFAULT_SEARCH_TURN_LIMIT): ConvTurnRow[] {
+    const tokens = tokenizeSearchQuery(query);
+    if (tokens.length === 0) return [];
+    const boundedLimit = Math.min(Math.max(1, Math.trunc(limit) || DEFAULT_SEARCH_TURN_LIMIT), MAX_SEARCH_TURN_LIMIT);
+    const clauses = tokens.map(() => `text LIKE ? ESCAPE '\\'`).join(" OR ");
+    const params = tokens.map((t) => `%${escapeLikeTerm(t)}%`);
+
+    const matchingRows = this.db
+      .prepare(
+        `SELECT id, role, text, cli, created_at FROM conversation_turns
+         WHERE chat_key = ? AND (${clauses})
+         ORDER BY id DESC
+         LIMIT ?`
+      )
+      .all(chatKey, ...params, boundedLimit) as ConvTurnRow[];
+
+    const evidence = new Map<number, ConvTurnRow>();
+    const adjacent = (id: number, direction: "before" | "after"): ConvTurnRow | undefined => {
+      const operator = direction === "before" ? "<" : ">";
+      const order = direction === "before" ? "DESC" : "ASC";
+      return this.db
+        .prepare(
+          `SELECT id, role, text, cli, created_at FROM conversation_turns
+           WHERE chat_key = ? AND id ${operator} ?
+           ORDER BY id ${order} LIMIT 1`
+        )
+        .get(chatKey, id) as ConvTurnRow | undefined;
+    };
+
+    // Select newest hits first, but stop adding windows once the global
+    // evidence bound is reached. The hit itself is always admitted before its
+    // optional context, so the bound cannot silently replace a selected hit
+    // with surrounding non-matches.
+    for (const hit of matchingRows) {
+      if (evidence.has(hit.id)) continue;
+      if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
+      evidence.set(hit.id, hit);
+      for (const context of [adjacent(hit.id, "before"), adjacent(hit.id, "after")]) {
+        if (context && evidence.size < MAX_SEARCH_CONTEXT_TURNS) evidence.set(context.id, context);
+      }
+    }
+
+    return [...evidence.values()].sort((a, b) => a.id - b.id).map((row) => ({
+      ...row,
+      text:
+        row.text.length > MAX_SEARCH_SNIPPET_CHARS
+          ? `${row.text.slice(0, MAX_SEARCH_SNIPPET_CHARS)}…`
+          : row.text,
+    }));
   }
 
   getUncompactedConvStats(chatKey: string): { turnCount: number; charCount: number } {

@@ -1144,6 +1144,11 @@ export class BridgeDb {
     return this.conversations.getConvTurnsForCompaction(chatKey);
   }
 
+  /** Issue #350 — see ConversationRepository.searchConvTurns for the full contract. */
+  searchConvTurns(chatKey: string, query: string, limit?: number): Array<{ id: number; role: string; text: string; cli: string | null; created_at: string }> {
+    return this.conversations.searchConvTurns(chatKey, query, limit);
+  }
+
   getUncompactedConvStats(chatKey: string): { turnCount: number; charCount: number } {
     return this.conversations.getUncompactedConvStats(chatKey);
   }

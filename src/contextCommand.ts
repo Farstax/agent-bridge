@@ -1,15 +1,28 @@
 /**
  * PURPOSE: Read-only helper for agents to inspect Agent Bridge conversation context.
  * INPUTS: AGENT_BRIDGE_CONTEXT_DB, AGENT_BRIDGE_CHAT_KEY, and CLI args.
- * OUTPUTS: Compact Markdown for latest summary or recent turns.
+ * OUTPUTS: Compact Markdown for latest summary, recent turns, or a scoped
+ * chronological search over older turns (--search).
  * NEIGHBORS: src/engine.ts, bin/agent-bridge-context
  */
 
 import Database from "better-sqlite3";
 import { BridgeDb, buildMemoryFtsQuery } from "./db.js";
+import { ConversationRepository } from "./repositories/conversationRepository.js";
 import { formatProjectMemoryStoreResult, storeProjectMemoryCandidateJson } from "./projectMemory.js";
 
 type EnvLike = Record<string, string | undefined>;
+
+export const MAX_SEARCH_OUTPUT_CHARS = 4_000;
+const MAX_SEARCH_QUERY_CHARS = 240;
+
+function normalizeSearchQuery(raw: string): string {
+  return raw
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_SEARCH_QUERY_CHARS);
+}
 
 function requireEnv(env: EnvLike, key: string): string {
   const value = env[key]?.trim();
@@ -137,6 +150,28 @@ function recentTurns(db: Database.Database, chatKey: string, limit: number): str
   }).join("\n");
 }
 
+// Issue #350: read-only, chat-scoped chronological search over
+// conversation_turns — an agent-facing retrieval affordance that
+// supplements (never replaces) --recent's bounded recent-turn window.
+// Goes through ConversationRepository (not a direct query, unlike the
+// legacy helpers above) since searchConvTurns is new and has no pre-Phase
+// 4B precedent to preserve.
+function searchTurns(db: Database.Database, chatKey: string, query: string): string {
+  const trimmed = normalizeSearchQuery(query);
+  if (!trimmed) return "No conversation turns found for that query.";
+  const rows = new ConversationRepository(db).searchConvTurns(chatKey, trimmed);
+  if (!rows.length) return "No conversation turns found matching that query.";
+  const items = rows.map((r) => {
+    const label = r.role === "user" ? "User" : "Assistant";
+    const cli = r.cli ? ` via ${r.cli}` : "";
+    return `#${r.id} ${label}${cli} (${r.created_at}): ${r.text}`;
+  }).join("\n");
+  const rendered = `Conversation turns matching "${trimmed}" (${rows.length}, chronological):\n${items}`;
+  return rendered.length > MAX_SEARCH_OUTPUT_CHARS
+    ? `${rendered.slice(0, MAX_SEARCH_OUTPUT_CHARS - 1)}…`
+    : rendered;
+}
+
 export function renderAgentBridgeContext(args: string[], env: EnvLike = process.env): string {
   const dbPath = requireEnv(env, "AGENT_BRIDGE_CONTEXT_DB");
   const chatKey = requireEnv(env, "AGENT_BRIDGE_CHAT_KEY");
@@ -154,6 +189,10 @@ export function renderAgentBridgeContext(args: string[], env: EnvLike = process.
   try {
     if (args.includes("--recent")) {
       return recentTurns(db, chatKey, parseLimit(args, "--recent", 20));
+    }
+    if (args.includes("--search")) {
+      const idx = args.indexOf("--search");
+      return searchTurns(db, chatKey, args[idx + 1] ?? "");
     }
     if (args.includes("--memory-query")) {
       const idx = args.indexOf("--memory-query");

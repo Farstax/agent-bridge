@@ -289,3 +289,97 @@ describe("getConvStatus", () => {
     expect(s.latestTurnAt).not.toBeNull();
   });
 });
+
+describe("searchConvTurns (issue #350)", () => {
+  it("finds an old decision by scoped chronological search", () => {
+    db.addConvTurn("chat:1", "user", "let's use postgres for the new service", "codex");
+    db.addConvTurn("chat:1", "assistant", "sounds good, postgres it is", "codex");
+    for (let i = 0; i < 20; i++) db.addConvTurn("chat:1", "user", `unrelated filler ${i}`, "codex");
+
+    const results = db.searchConvTurns("chat:1", "postgres");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.some((r) => r.text.includes("postgres"))).toBe(true);
+  });
+
+  it("surfaces a later correction ahead of the superseded original (newest-first)", () => {
+    db.addConvTurn("chat:1", "user", "the deploy window is Tuesday", "claude");
+    db.addConvTurn("chat:1", "assistant", "correction: the deploy window is actually Thursday", "claude");
+
+    const results = db.searchConvTurns("chat:1", "deploy window");
+    expect(results.some((row) => row.text.includes("Thursday"))).toBe(true);
+    expect(results.some((row) => row.text.includes("Tuesday"))).toBe(true);
+    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
+  });
+
+  it("returns a bounded empty-ish result for an empty query without crashing", () => {
+    db.addConvTurn("chat:1", "user", "some turn", "codex");
+    expect(db.searchConvTurns("chat:1", "")).toEqual([]);
+    expect(db.searchConvTurns("chat:1", "   ")).toEqual([]);
+  });
+
+  it("returns an empty array for an ambiguous/no-match query without crashing", () => {
+    db.addConvTurn("chat:1", "user", "hello world", "codex");
+    expect(db.searchConvTurns("chat:1", "zzz-nonexistent-term-zzz")).toEqual([]);
+  });
+
+  it("cannot cross conversation/workstream (chat_key) scope", () => {
+    db.addConvTurn("chat:1", "user", "shared secret token alpha", "codex");
+    db.addConvTurn("chat:2", "user", "shared secret token beta", "codex");
+
+    const resultsChat1 = db.searchConvTurns("chat:1", "shared secret token");
+    expect(resultsChat1).toHaveLength(1);
+    expect(resultsChat1[0].text).toContain("alpha");
+    expect(resultsChat1.some((r) => r.text.includes("beta"))).toBe(false);
+  });
+
+  it("bounds the number of results returned", () => {
+    for (let i = 0; i < 30; i++) db.addConvTurn("chat:1", "user", `matching turn ${i}`, "codex");
+    const results = db.searchConvTurns("chat:1", "matching", 100);
+    expect(results.length).toBeLessThanOrEqual(20);
+  });
+
+  it("bounds each result's text to a safe snippet length", () => {
+    db.addConvTurn("chat:1", "user", `needle ${"x".repeat(1000)}`, "codex");
+    const results = db.searchConvTurns("chat:1", "needle");
+    expect(results).toHaveLength(1);
+    expect(results[0].text.length).toBeLessThanOrEqual(320);
+  });
+
+  it("exposes turn id, timestamp, role, and provider (cli) for handoff use", () => {
+    db.addConvTurn("chat:1", "assistant", "used minimax for this summary", "claude");
+    const [row] = db.searchConvTurns("chat:1", "minimax");
+    expect(row.id).toBeGreaterThan(0);
+    expect(row.created_at).toBeTruthy();
+    expect(row.role).toBe("assistant");
+    expect(row.cli).toBe("claude");
+  });
+
+  it("returns adjacent conversational evidence around each matching hit in chronology", () => {
+    db.addConvTurn("chat:1", "user", "we should choose the green deployment", "codex");
+    db.addConvTurn("chat:1", "assistant", "I agree; the rollout can proceed after review", "claude");
+    db.addConvTurn("chat:1", "user", "unrelated follow-up", "codex");
+
+    const results = db.searchConvTurns("chat:1", "deployment");
+
+    expect(results.map((row) => row.text)).toEqual([
+      "we should choose the green deployment",
+      "I agree; the rollout can proceed after review",
+    ]);
+    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
+    expect(results[1]).toMatchObject({ role: "assistant", cli: "claude" });
+  });
+
+  it("deduplicates overlapping context windows, stays scoped, and remains globally bounded", () => {
+    for (let i = 0; i < 40; i++) {
+      db.addConvTurn("chat:1", i % 2 === 0 ? "user" : "assistant", i % 2 === 0 ? `needle hit ${i}` : `context ${i}`, i % 2 === 0 ? "codex" : "claude");
+    }
+    db.addConvTurn("chat:2", "user", "needle from another workstream", "codex");
+
+    const results = db.searchConvTurns("chat:1", "needle", 100);
+
+    expect(results.length).toBeLessThanOrEqual(20);
+    expect(results.every((row) => row.text !== "needle from another workstream")).toBe(true);
+    expect(new Set(results.map((row) => row.id)).size).toBe(results.length);
+    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
+  });
+});

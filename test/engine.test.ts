@@ -2915,6 +2915,9 @@ describe("BridgeEngine", () => {
       expect(capturedPrompt).toContain("[Agent Bridge context]");
       expect(capturedPrompt).toContain("$AGENT_BRIDGE_CONTEXT_COMMAND");
       expect(capturedPrompt).toContain("--recent 20");
+      // Issue #350: handoff guidance also advertises scoped older-evidence
+      // search, alongside (not instead of) the existing recent-turn window.
+      expect(capturedPrompt).toContain("--search");
       expect(capturedPrompt).toContain("Current objective:");
     });
 
