@@ -1306,11 +1306,13 @@ export class BridgeEngine {
 
     this._assertLaneOwned(input.laneHandle);
     let continuationAttachments: string[] = [];
+    let pendingRowOwnsContinuationAttachments = false;
     try {
       continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
       if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments)) {
         throw new LostExecutionLeaseError();
       }
+      pendingRowOwnsContinuationAttachments = input.pendingIds.length > 0;
       const saved = this.continuationStore.saveWaiting({
         runId: input.runId,
         surface: this.surfaceIdentity,
@@ -1345,7 +1347,7 @@ export class BridgeEngine {
       });
       if (!saved) throw new LostExecutionLeaseError();
     } catch (error) {
-      this._cleanupContinuationAttachments(continuationAttachments);
+      if (!pendingRowOwnsContinuationAttachments) this._cleanupContinuationAttachments(continuationAttachments);
       throw error;
     }
     return true;
@@ -1355,6 +1357,7 @@ export class BridgeEngine {
     const directory = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
     const directoryExisted = existsSync(directory);
     const persisted: string[] = [];
+    const createdTargets: string[] = [];
     try {
       for (const [index, attachment] of attachments.entries()) {
         const target = join(directory, `${index}-${basename(attachment)}`);
@@ -1365,11 +1368,16 @@ export class BridgeEngine {
         if (!existsSync(attachment)) {
           throw new Error("source attachment is missing");
         }
+        const targetExisted = existsSync(target);
         mkdirSync(directory, { recursive: true });
+        if (!targetExisted) createdTargets.push(target);
         cpSync(attachment, target, { force: true });
         persisted.push(target);
       }
     } catch {
+      for (const target of createdTargets) {
+        try { unlinkSync(target); } catch {}
+      }
       if (!directoryExisted) rmSync(directory, { recursive: true, force: true });
       throw new Error("continuation attachment could not be persisted");
     }
