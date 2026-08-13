@@ -2464,6 +2464,7 @@ export class BridgeEngine {
         "More conversation history is available if needed:",
         '"$AGENT_BRIDGE_CONTEXT_COMMAND" --summary',
         '"$AGENT_BRIDGE_CONTEXT_COMMAND" --recent 20',
+        '"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>"',
         ...memoryHint,
         "",
       ].join("\n") : "";
