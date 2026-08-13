@@ -144,6 +144,42 @@ describe("acceptHealthOpsEvent", () => {
     expect(db.listWorkJobs()).toHaveLength(1);
   });
 
+  it("a crash after receipt persistence but before work/link creation leaves no orphan receipt, and replay creates exactly one receipt and one writable work item/job", () => {
+    const originalCreateWorkItem = db.createWorkItem.bind(db);
+    let calls = 0;
+    (db as unknown as { createWorkItem: typeof db.createWorkItem }).createWorkItem = ((input) => {
+      calls += 1;
+      throw new Error("simulated crash after receipt persistence, before work materialization");
+    }) as typeof db.createWorkItem;
+
+    expect(() => acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN })).toThrow(
+      "simulated crash",
+    );
+    expect(calls).toBe(1);
+
+    // The interrupted attempt must not leave an orphan receipt — otherwise
+    // idempotency-key dedupe on replay would treat the event as already
+    // accepted and the missing work would never be materialized.
+    expect(db.getEventReceiptByIdempotencyKey(makeEvent().idempotencyKey)).toBeNull();
+    expect(db.listWorkItems()).toHaveLength(0);
+    expect(db.listWorkJobs()).toHaveLength(0);
+
+    (db as unknown as { createWorkItem: typeof db.createWorkItem }).createWorkItem = originalCreateWorkItem;
+
+    const replay = acceptHealthOpsEvent(db, makeEvent({ eventId: "evt-1-post-crash-replay" }), {
+      expectedToken: EXPECTED_TOKEN,
+    });
+
+    expect(replay.created).toBe(true);
+    expect(replay.workItemId).not.toBeNull();
+    expect(replay.workJobId).not.toBeNull();
+    expect(db.listWorkItems()).toHaveLength(1);
+    expect(db.listWorkJobs()).toHaveLength(1);
+    expect(
+      db.getEventReceiptByIdempotencyKey(makeEvent().idempotencyKey),
+    ).not.toBeNull();
+  });
+
   it("the created work_job is claimable and completes through the standard restart-safe lease path", async () => {
     const result = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
 
