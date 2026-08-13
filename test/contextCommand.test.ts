@@ -362,10 +362,44 @@ describe("agent-bridge-context helper", () => {
           AGENT_BRIDGE_CONTEXT_DB: path,
           AGENT_BRIDGE_CHAT_KEY: "chat:1",
         });
-        expect(output).toContain('(15, chronological)');
+        expect(output).toContain('(5, chronological)');
         expect(output.length).toBeLessThanOrEqual(4_000);
         expect(output).toContain("NEWEST CORRECTION — deploy Friday at 15:00");
         for (let i = 0; i < 5; i++) expect(output).toContain(`decision ${i}:`);
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+
+    it("promotes a matching turn that was first captured as overlapping context", () => {
+      const { db, path } = makeDb();
+      try {
+        const addEvidence = (label: string) => {
+          db.addConvTurn("chat:1", "assistant", `context before ${label} ${"b".repeat(280)}`, "codex");
+        };
+        const addMatch = (label: string) => {
+          db.addConvTurn("chat:1", "user", `decision ${label} ${"m".repeat(280)}`, "codex");
+        };
+        const addTrailing = (label: string) => {
+          db.addConvTurn("chat:1", "assistant", `context after ${label} ${"a".repeat(280)}`, "codex");
+          db.addConvTurn("chat:1", "assistant", `separator ${label} ${"s".repeat(280)}`, "codex");
+        };
+
+        addEvidence("0"); addMatch("0"); addTrailing("0");
+        addEvidence("overlap"); addMatch("older"); addMatch("NEWEST CORRECTION"); addTrailing("overlap");
+        addEvidence("3"); addMatch("3"); addTrailing("3");
+        addEvidence("4"); addMatch("4"); addTrailing("4");
+
+        const output = renderAgentBridgeContext(["--search", "decision"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        expect(output).toContain("(5, chronological)");
+        expect(output.length).toBeLessThanOrEqual(4_000);
+        expect(output).toContain("decision older");
+        expect(output).toContain("decision NEWEST CORRECTION");
       } finally {
         db.close();
         rmSync(path, { force: true });

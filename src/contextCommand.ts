@@ -166,21 +166,33 @@ function searchTurns(db: Database.Database, chatKey: string, query: string): str
     const cli = r.cli ? ` via ${r.cli}` : "";
     return `#${r.id} ${label}${cli} (${r.created_at}): ${r.text}`;
   }).join("\n");
-  const header = `Conversation turns matching "${trimmed}" (${rows.length}, chronological):`;
-  const rendered = `${header}\n${renderRows(rows)}`;
+  const header = (count: number): string => `Conversation turns matching "${trimmed}" (${count}, chronological):`;
+  const rendered = `${header(rows.length)}\n${renderRows(rows)}`;
   if (rendered.length <= MAX_SEARCH_OUTPUT_CHARS) return rendered;
 
   // Adjacent rows are optional context. Drop them before applying the hard
   // output cap so chronological search never hides a selected (especially
   // newest) match behind a head-only slice.
   const matches = rows.filter((row) => row.is_match);
-  const matchesOnly = `${header}\n${renderRows(matches)}`;
+  const matchesOnly = `${header(matches.length)}\n${renderRows(matches)}`;
   if (matchesOnly.length <= MAX_SEARCH_OUTPUT_CHARS) return matchesOnly;
 
-  // The repository bounds selected hits and each snippet, so this is only a
-  // defensive fallback for future callers that raise those limits. Preserve
-  // the newest selected evidence if the defensive cap is ever reached.
-  return `${matchesOnly.slice(0, MAX_SEARCH_OUTPUT_CHARS - 1)}…`;
+  // The repository bounds selected hits and each snippet, so this defensive
+  // fallback is unreachable under the current contract. If a future caller
+  // raises those limits, keep the newest selected rows rather than slicing
+  // the chronological prefix and silently retaining only older evidence.
+  const omittedMarker = "\n…[older selected matches omitted]";
+  const prefix = `${header(matches.length)}\n`;
+  const rowBudget = MAX_SEARCH_OUTPUT_CHARS - prefix.length - omittedMarker.length;
+  const newestRows: typeof rows = [];
+  let used = 0;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const line = renderRows([matches[i]]);
+    if (used + line.length + (newestRows.length ? 1 : 0) > rowBudget) break;
+    newestRows.unshift(matches[i]);
+    used += line.length + (newestRows.length > 1 ? 1 : 0);
+  }
+  return `${prefix}${renderRows(newestRows)}${omittedMarker}`;
 }
 
 export function renderAgentBridgeContext(args: string[], env: EnvLike = process.env): string {
