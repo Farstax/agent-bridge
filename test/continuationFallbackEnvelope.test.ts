@@ -22,7 +22,65 @@ function claudeBackground(text: string, sessionId: string): string {
   ].join("\n");
 }
 
+async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 describe("continuation fallback admitted-turn envelope", () => {
+  it("cleans active-turn continuation staging after the claimed row retires", async () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "active-continuation-source-"));
+    const source = join(sourceDir, "attachment.png");
+    writeFileSync(source, "attachment");
+    let processCalls = 0;
+    let descendantsLive = true;
+    let resolveWake!: () => void;
+    const wake = new Promise<void>((resolve) => { resolveWake = resolve; });
+    const messaging = client();
+    const runCliAsync = vi.fn().mockImplementation(async () => {
+      processCalls += 1;
+      return processCalls === 1
+        ? { text: claudeBackground("background", "active-session") }
+        : { text: JSON.stringify({ type: "result", subtype: "success", result: "finished", session_id: "active-session" }) };
+    });
+    const repo = new ContinuationRepository(db.raw);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, messaging, { runCliAsync }, {
+      hasLiveRunOwnedDescendants: () => descendantsLive,
+      getRunOwnedProcessState: () => descendantsLive ? "live" : "absent",
+      sleep: vi.fn(async () => { descendantsLive = false; resolveWake(); }),
+    });
+    try {
+      const outcome = (engine as any)._executeAndSend(
+        "inspect attachment", 100, "100", "private", undefined, 42,
+        { chatId: 100, chatKey: "100", userId: 42 }, [source], source,
+        null, true, true, true, true,
+      );
+      await waitUntil(() => processCalls === 1, "active provider execution");
+      await waitUntil(() => repo.listActive("telegram:interactive", "claude").length === 1, "active continuation checkpoint");
+      const waiting = repo.listActive("telegram:interactive", "claude")[0];
+      const staging = dirname(waiting.attachments![0]);
+      await wake;
+      await outcome;
+      await waitUntil(() => repo.get(waiting.runId)?.state === "completed", "active continuation completion");
+      await waitUntil(() => db.pendingMsgCount("telegram:interactive", "100") === 0, "active pending row retirement");
+
+      expect(processCalls).toBe(2);
+      expect(messaging.sendMessage).toHaveBeenCalledTimes(2);
+      expect(existsSync(staging)).toBe(false);
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
   it("rolls back every pending-ID reclaim when a later row is no longer eligible", () => {
     const db = openDb(":memory:");
     db.enqueueMsg("telegram:interactive", "100", { prompt: "first", chatId: 100, chatType: "private", attachments: ["A"] });
