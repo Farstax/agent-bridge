@@ -13,6 +13,7 @@ import Database from "better-sqlite3";
 import { BridgeDb, openDb, openProductionDb } from "../src/db.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "../src/db/roleAssignmentsMigration.js";
+import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from "../src/db/schemaContract.js";
 
 /** The five canonical database roles (policy doc §4) — structural validity only; the actual role/path allowlist lives in the root-owned bootstrap config, outside this script's scope. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "worker"]);
@@ -24,6 +25,7 @@ interface Options {
   databases: string[];
   evidencePath: string | null;
   resolvingUnits: Map<string, string[]>;
+  databaseRoles: Map<string, DatabaseRole>;
   reason: string | null;
   restartBoundary: string | null;
 }
@@ -61,16 +63,6 @@ interface DbEvidence {
   role?: string;
 }
 
-const ALLOWED_TABLES = new Set([
-  "advisor_attempts", "advisor_calls", "approvals", "bridge_events", "bridge_runs", "bridge_state",
-  "compaction_attempts", "conversation_summaries", "conversation_turns", "execution_locks", "feature_plans",
-  "github_links", "health_context", "pending_messages", "project_memories", "project_memories_fts",
-  "project_memories_fts_config", "project_memories_fts_content", "project_memories_fts_data",
-  "project_memories_fts_docsize", "project_memories_fts_idx", "prompts", "settings", "sqlite_sequence",
-  "role_assignment_revisions", "role_assignments", "work_item_plans", "work_items", "work_jobs",
-  "reconciliation_audit",
-]);
-
 const REQUIRED_TABLES = new Set(["bridge_state", "pending_messages", "settings"]);
 const CURRENT_ROLE_TABLES = ["role_assignment_revisions", "role_assignments"] as const;
 const LEGACY_PENDING_COLUMNS = new Set([
@@ -92,6 +84,7 @@ function parseArgs(argv: string[]): Options {
   const databases: string[] = [];
   let evidencePath: string | null = null;
   const resolvingUnits = new Map<string, string[]>();
+  const databaseRoles = new Map<string, DatabaseRole>();
   let reason: string | null = null;
   let restartBoundary: string | null = null;
   while (argv.length > 0) {
@@ -111,6 +104,14 @@ function parseArgs(argv: string[]): Options {
       existing.push(unit);
       resolvingUnits.set(path, existing);
     }
+    else if (flag === "--database-role") {
+      const separator = value.indexOf("=");
+      const role = value.slice(separator + 1);
+      if (separator <= 0 || !["shared", "discord", "health", "interactive", "worker"].includes(role)) {
+        throw new Error(`--database-role must be PATH=shared|discord|health|interactive|worker, got: ${value}`);
+      }
+      databaseRoles.set(value.slice(0, separator), role as DatabaseRole);
+    }
     else if (flag === "--reason") reason = value;
     else if (flag === "--restart-boundary") restartBoundary = value;
     else throw new Error(`unknown argument: ${flag}`);
@@ -118,7 +119,7 @@ function parseArgs(argv: string[]): Options {
   if (databases.length === 0) throw new Error("at least one --db path is required");
   if (mode === "reconcile" && !reason?.trim()) throw new Error("reconcile requires --reason");
   if (restartBoundary && !/^[0-9T:.Z-]+$/.test(restartBoundary)) throw new Error("invalid --restart-boundary");
-  return { mode, databases, evidencePath, resolvingUnits, reason, restartBoundary };
+  return { mode, databases, evidencePath, resolvingUnits, databaseRoles, reason, restartBoundary };
 }
 
 function parseRelocationArgs(argv: string[]): { source: string; target: string } {
@@ -274,7 +275,7 @@ function digestRows(rows: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
-function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = []): DbEvidence {
+function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = [], role: DatabaseRole = "shared"): DbEvidence {
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
     const integrity = String(db.pragma("integrity_check", { simple: true }));
@@ -287,7 +288,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       throw new Error(`invalid schema version ${userVersion} for ${path}`);
     }
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
-    const unknownTables = tables.filter((table) => !ALLOWED_TABLES.has(table));
+    const unknownTables = tables.filter((table) => !new Set(canonicalSchemaTablesForRole(role)).has(table));
     const missingTables = [...REQUIRED_TABLES].filter((table) => !tables.includes(table));
     if (unknownTables.length > 0 || missingTables.length > 0) {
       throw new Error(`unknown schema for ${path}: unknown=[${unknownTables.join(",")}] missing=[${missingTables.join(",")}]`);
@@ -369,6 +370,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       claimRunAcquisitionCorrelation: digestRows({ queueRows, lockRows }),
       runLockCorrelation: { queue: queueRows, locks: lockRows as Array<Record<string, unknown>> }, deliveryState,
       runIdentityCorrelation, deliveryIdentityCorrelation,
+      role,
       lifecycle: {
         runs: lifecycleRuns,
         locks: lifecycleLocks,
@@ -389,7 +391,7 @@ function sidecarSize(path: string): number {
   }
 }
 
-function checkpointDatabase(path: string, resolvingUnits: string[] = []): DbEvidence & {
+function checkpointDatabase(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared"): DbEvidence & {
   walBytesBefore: number;
   walBytesAfter: number;
   checkpointedPages: number;
@@ -412,7 +414,7 @@ function checkpointDatabase(path: string, resolvingUnits: string[] = []): DbEvid
     throw new Error(`SQLite WAL checkpoint did not drain the WAL for ${path}: ${walBytesAfter} bytes remain`);
   }
   return {
-    ...inspectDatabase(path, false, resolvingUnits),
+    ...inspectDatabase(path, false, resolvingUnits, role),
     walBytesBefore,
     walBytesAfter,
     checkpointedPages: result.checkpointed,
@@ -822,7 +824,7 @@ async function bootstrapDatabase(path: string, role: string, evidencePath: strin
         raw.exec("PRAGMA user_version = 99;");
         raw.close();
       }
-      openDb(tempPath, { serviceId: `rollout:bootstrap:${role}` }).close();
+      openDb(tempPath, { serviceId: `rollout:bootstrap:${role}`, databaseRole: role }).close();
       const installationId = process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()
         || `install-${randomBytes(16).toString("hex")}`;
       const createdAt = new Date().toISOString();
@@ -875,7 +877,7 @@ async function bootstrapDatabase(path: string, role: string, evidencePath: strin
       await testPause("post-unlink");
 
       removeSidecars(tempPath);
-      const evidence = { ...inspectDatabase(path, true), role };
+      const evidence = { ...inspectDatabase(path, true, [], role as DatabaseRole), role };
       const provenancePath = `${path}.provenance.json`;
       const provenanceTemp = `${provenancePath}.tmp-${randomBytes(8).toString("hex")}`;
       writeFileSync(provenanceTemp, `${JSON.stringify({
@@ -958,8 +960,9 @@ async function main(): Promise<void> {
   }
   const options = parseArgs(argv);
   const unitsFor = (path: string) => options.resolvingUnits.get(path) ?? [];
+  const roleFor = (path: string): DatabaseRole => options.databaseRoles.get(path) ?? "shared";
   if (options.mode === "inspect") {
-    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path)));
+    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path), roleFor(path)));
     const legacyQueues = evidence.reduce((sum, database) => sum + database.legacyQueueCount, 0);
     if (legacyQueues !== 0) throw new Error(`legacy queue count is nonzero: ${legacyQueues}`);
     writeEvidence(options.evidencePath, options.mode, evidence);
@@ -968,7 +971,7 @@ async function main(): Promise<void> {
   if (options.mode === "reconcile") {
     const results = [];
     for (const path of options.databases) {
-      const currentEvidence = inspectDatabase(path, false, unitsFor(path));
+      const currentEvidence = inspectDatabase(path, false, unitsFor(path), roleFor(path));
       if (currentEvidence.schema !== "current") {
         results.push(currentEvidence);
         continue;
@@ -984,7 +987,7 @@ async function main(): Promise<void> {
       } finally {
         db.close();
       }
-      const result = inspectDatabase(path, true, unitsFor(path));
+      const result = inspectDatabase(path, true, unitsFor(path), roleFor(path));
       result.lifecycle.reconciliation.audits = result.lifecycle.reconciliation.audits.filter((audit) => !auditIdsBefore.has(String(audit.id)));
       result.lifecycle.reconciliation.runs = result.lifecycle.reconciliation.audits.filter((audit) => audit.kind === "run").map((audit) => String(audit.subject_id));
       result.lifecycle.reconciliation.locks = result.lifecycle.reconciliation.audits.filter((audit) => audit.kind === "lock").map((audit) => String(audit.subject_id));
@@ -995,7 +998,7 @@ async function main(): Promise<void> {
     return;
   }
   if (options.mode === "checkpoint") {
-    const evidence = options.databases.map((path) => checkpointDatabase(path, unitsFor(path)));
+    const evidence = options.databases.map((path) => checkpointDatabase(path, unitsFor(path), roleFor(path)));
     writeEvidence(options.evidencePath, options.mode, evidence);
     return;
   }
@@ -1013,7 +1016,7 @@ async function main(): Promise<void> {
     const testHooksAllowed = Boolean(barrierFile) && process.getuid?.() !== 0;
     let migratedCount = 0;
     for (const path of options.databases) {
-      openDb(path, { serviceId: "rollout:migration" }).close();
+      openDb(path, { serviceId: "rollout:migration", databaseRole: roleFor(path) }).close();
       migratedCount += 1;
       if (testHooksAllowed) {
         writeFileSync(barrierFile!, String(migratedCount));
@@ -1025,10 +1028,10 @@ async function main(): Promise<void> {
         }
       }
     }
-    writeEvidence(options.evidencePath, options.mode, options.databases.map((path) => inspectDatabase(path, true, unitsFor(path))));
+    writeEvidence(options.evidencePath, options.mode, options.databases.map((path) => inspectDatabase(path, true, unitsFor(path), roleFor(path))));
     return;
   }
-  const evidence = options.databases.map((path) => inspectDatabase(path, true, unitsFor(path)));
+  const evidence = options.databases.map((path) => inspectDatabase(path, true, unitsFor(path), roleFor(path)));
   const legacyQueues = evidence.reduce((sum, database) => sum + database.legacyQueueCount, 0);
   if (legacyQueues !== 0) throw new Error(`legacy queue count is nonzero after migration: ${legacyQueues}`);
   writeEvidence(options.evidencePath, options.mode, evidence, options.restartBoundary ? { restartBoundary: options.restartBoundary } : {});

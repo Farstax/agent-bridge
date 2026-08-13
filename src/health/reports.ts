@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { HealthAggregate, HealthReport, HealthStatus } from "./types.js";
+import { applyRoleSchema } from "../db/schemaContract.js";
 
 export interface HealthAggregateOptions {
   activePluginNames: string[];
@@ -39,13 +40,7 @@ export class HealthReportStore {
 
   constructor(db: Database.Database) {
     this.db = db;
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS health_plugin_reports (
-        plugin_name TEXT PRIMARY KEY,
-        report_json TEXT NOT NULL,
-        saved_at INTEGER NOT NULL
-      )
-    `);
+    applyRoleSchema(this.db, "health");
     this.migrateLegacyLastReport();
   }
 
