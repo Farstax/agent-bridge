@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
@@ -76,6 +76,60 @@ describe("continuation fallback admitted-turn envelope", () => {
         .toThrow();
       expect(cleanup).toHaveBeenCalledWith([staged]);
     } finally {
+      db.close();
+    }
+  });
+
+  it("keeps a claimed row on the continuation-owned path when checkpoint save loses a race", () => {
+    const db = openDb(":memory:");
+    const source = "/tmp/checkpoint-race-source.png";
+    const owned = "/tmp/bridge-continuation-attachments-checkpoint-race/0-checkpoint-race-source.png";
+    writeFileSync(source, "attachment");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "inspect", chatId: 100, chatType: "private", userId: 42, attachments: [source] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const row = db.claimNextPendingMsg(handle!);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    vi.spyOn((engine as any).continuationStore, "saveWaiting").mockReturnValue(null);
+    try {
+      expect(() => (engine as any)._checkpointContinuationBeforeDelivery({
+        mode: "async", prompt: "inspect", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private", userId: 42,
+        threadId: undefined, attachments: [source], laneHandle: handle, pendingIds: [row!.id], runId: "checkpoint-race",
+        continuationStartedAtMs: null, resumptionCount: 0,
+      }, { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any)).toThrow();
+      const persisted = db.raw.prepare("SELECT attachments_json AS attachmentsJson FROM pending_messages WHERE id = ?").get(row!.id) as { attachmentsJson: string };
+      expect(JSON.parse(persisted.attachmentsJson)).toEqual([owned]);
+      expect(readFileSync(owned, "utf8")).toBe("attachment");
+    } finally {
+      rmSync(source, { force: true });
+      rmSync(join(tmpdir(), "bridge-continuation-attachments-checkpoint-race"), { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  it("removes only files created by a partial copy into existing continuation staging", () => {
+    const db = openDb(":memory:");
+    const staging = join(tmpdir(), "bridge-continuation-attachments-partial-copy");
+    const sourceDir = mkdtempSync(join(tmpdir(), "continuation-partial-source-"));
+    const source = join(sourceDir, "first.png");
+    const existing = join(staging, "existing.png");
+    writeFileSync(source, "first");
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(existing, "keep");
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    try {
+      expect(() => (engine as any)._persistContinuationAttachments("partial-copy", [source, "/tmp/missing-partial-copy.png"]))
+        .toThrow("continuation attachment could not be persisted");
+      expect(() => readFileSync(join(staging, "0-first.png"))).toThrow();
+      expect(readFileSync(existing, "utf8")).toBe("keep");
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(staging, { recursive: true, force: true });
       db.close();
     }
   });
