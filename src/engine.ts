@@ -1346,6 +1346,7 @@ export class BridgeEngine {
         },
       });
       if (!saved) throw new LostExecutionLeaseError();
+      this._deleteQueuedAttachments(input.attachments.filter((attachment) => !continuationAttachments.includes(attachment)));
     } catch (error) {
       if (!pendingRowOwnsContinuationAttachments) this._cleanupContinuationAttachments(continuationAttachments);
       throw error;
@@ -1388,7 +1389,9 @@ export class BridgeEngine {
     const checkpoint = this.continuationStore.get(runId);
     if (checkpoint?.state === "waiting") {
       this.continuationStore.markCancelled(runId, reason);
-      this._cleanupContinuationAttachments(checkpoint.attachments ?? []);
+      if (!this.db.pendingMessagesOwnAttachments(checkpoint.surface, checkpoint.chatKey, checkpoint.pendingIds, checkpoint.attachments ?? [])) {
+        this._cleanupContinuationAttachments(checkpoint.attachments ?? []);
+      }
     }
     if (this.continuation.getRunOwnedProcessState(runId) === "live") {
       await this.continuation.killRunOwnedDescendants(runId);
