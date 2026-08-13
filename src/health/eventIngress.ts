@@ -277,7 +277,8 @@ export class HealthOpsRunLaneUnavailableError extends Error {
   }
 }
 
-/** No real Telegram chat backs an event-originated run. executePromptAsync
+/** No real Telegram chat backs an event-originated run. The surface-neutral
+ * engine wrapper
  * requires a numeric chatId (it is only actually used for optional file
  * delivery and hook context, both no-ops for a report-only turn with no
  * attachments) — 0 is never a valid Telegram chat id, so it can never be
@@ -290,8 +291,8 @@ export interface ExecuteHealthOpsRunOptions {
 
 /**
  * Executes the Run an already-accepted event was correlated to, by calling
- * the given engine's executePromptAsync — the same provider-turn execution
- * owner ordinary async turns use. This function's own responsibilities are
+ * the engine's surface-neutral provider-turn wrapper. The wrapper uses the
+ * same provider-turn execution owner ordinary async turns use. This function's own responsibilities are
  * narrow: resolve the receipt -> Run linkage, acquire the dedicated
  * execution lane (fencing two event-originated turns from ever running
  * concurrently), build the bounded/non-prescriptive prompt, and wire a
@@ -320,7 +321,7 @@ export async function executeHealthOpsRun(
   try {
     // Seeded with the existing runId so EventStore recognizes the Run
     // already exists (see its constructor) and never re-inserts it — it
-    // only needs to persist the terminal transition executePromptAsync
+    // only needs to persist the terminal transition from the provider owner
     // reports via `collect`.
     const eventStore = new EventStore(db, runId);
     const collect = (e: BridgeEvent) => {
@@ -355,7 +356,7 @@ export async function executeHealthOpsRun(
       eventStore.finalize();
     }
   } catch (err) {
-    // executePromptAsync can throw via a code path that never emitted a
+    // The provider owner can throw via a code path that never emitted a
     // run.failed BridgeEvent (e.g. a thrown ExecutionLockLostError before
     // any provider invocation). The CAS-guarded updateRunFailed (see
     // runRepository.ts) makes this a safe, idempotent fallback rather than
