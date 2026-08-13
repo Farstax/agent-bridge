@@ -345,6 +345,22 @@ describe("searchConvTurns (issue #350)", () => {
     expect(results[0].text.length).toBeLessThanOrEqual(320);
   });
 
+  it("keeps both outer neighbors when consecutive matching hits overlap", () => {
+    db.addConvTurn("chat:1", "assistant", "outer context before", "codex");
+    db.addConvTurn("chat:1", "user", "decision older matching turn", "codex");
+    db.addConvTurn("chat:1", "assistant", "decision newer correction", "claude");
+    db.addConvTurn("chat:1", "assistant", "outer context after", "codex");
+
+    const results = db.searchConvTurns("chat:1", "decision");
+
+    expect(results.map((row) => row.text)).toEqual([
+      "outer context before",
+      "decision older matching turn",
+      "decision newer correction",
+      "outer context after",
+    ]);
+  });
+
   it("exposes turn id, timestamp, role, and provider (cli) for handoff use", () => {
     db.addConvTurn("chat:1", "assistant", "used minimax for this summary", "claude");
     const [row] = db.searchConvTurns("chat:1", "minimax");
