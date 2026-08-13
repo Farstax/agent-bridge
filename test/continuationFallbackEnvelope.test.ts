@@ -430,6 +430,58 @@ describe("continuation fallback admitted-turn envelope", () => {
     }
   });
 
+  it("cleans continuation staging when a claimed fallback is terminally blocked", async () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "blocked-fallback-source-"));
+    const source = join(sourceDir, "blocked.png");
+    writeFileSync(source, "blocked attachment");
+    const telegram = client();
+    const exhaustedChats = new Set<string>();
+    const chain = new WorkerFallbackChain(["claude", "codex"], db);
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "blocked", chatId: 100, chatType: "private", userId: 42, attachments: [source] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const claimed = db.claimNextPendingMsg(handle!);
+    const runId = "blocked-fallback-run";
+    db.insertRun(runId, "100", "claude");
+    const sourceEngine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode: "augment", asyncEnabled: true, pollIntervalMs: 1,
+      hooks: { onCapacityExhausted: async (chatKey: string) => { exhaustedChats.add(chatKey); } },
+    }, db, telegram, { runCliAsync: vi.fn() }, {
+      getRunOwnedProcessState: () => "live", killRunOwnedDescendants: vi.fn().mockRejectedValue(new Error("still live")), sleep: vi.fn(async () => {}),
+    });
+    const staged = join(tmpdir(), `bridge-continuation-attachments-${runId}`, "0-blocked.png");
+    mkdirSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true });
+    writeFileSync(staged, "blocked attachment");
+    db.raw.prepare("UPDATE pending_messages SET attachments_json = ? WHERE id = ?").run(JSON.stringify([staged]), claimed!.id);
+    new ContinuationRepository(db.raw).saveWaiting({
+      runId, surface: "telegram:interactive", chatKey: "100", chatId: 100, threadId: null, bot: "claude",
+      sessionId: "claude-session", prompt: "blocked", chatType: "private", userId: 42, attachments: [staged],
+      executionMode: "async", triggerKind: "run-owned-background-process", triggerId: runId, resumptionCount: 0,
+      pendingIds: [claimed!.id], startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    } as any);
+    const sourceRouter = {
+      executeClaimedMessage: vi.fn(async () => { exhaustedChats.add("100"); return "failed" as const; }),
+      handoffActiveContinuationForFallback: vi.fn(async () => "blocked" as const),
+    };
+    const targetRouter = { executeClaimedMessage: vi.fn() };
+    const deps = { engines: { claude: sourceRouter, codex: targetRouter }, fallbackChain: chain, exhaustedChats, db, notify: vi.fn() };
+    try {
+      setUserCliPreference(db, "100", "claude");
+      const claimedMessage = { ...claimed!, laneHandle: handle! };
+      await dispatchClaimedInteractiveWithFallback(claimedMessage, "100", deps);
+      expect(db.completePendingMsg(handle!, claimed!.id)).toBe(true);
+      const stale = claimedMessage.attachments;
+      expect(stale).toEqual([staged]);
+      (sourceEngine as any)._deleteQueuedAttachments(stale);
+      expect(() => readFileSync(staged)).toThrow();
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true, force: true });
+      db.close();
+    }
+  });
+
   it("re-admits the original attachment when a fresh provider takes over", async () => {
     const db = openDb(":memory:");
     const repo = new ContinuationRepository(db.raw);
