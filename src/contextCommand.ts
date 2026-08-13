@@ -177,11 +177,22 @@ function searchTurns(db: Database.Database, chatKey: string, query: string): str
   const matchesOnly = `${header(matches.length)}\n${renderRows(matches)}`;
   if (matchesOnly.length <= MAX_SEARCH_OUTPUT_CHARS) return matchesOnly;
 
-  // The repository bounds selected hits and each snippet so this defensive
-  // fallback is unreachable under the current contract. Keep the hard cap
-  // if a future caller raises those limits; per-hit compaction would be a
-  // separate contract change.
-  return `${matchesOnly.slice(0, MAX_SEARCH_OUTPUT_CHARS - 1)}…`;
+  // The repository bounds selected hits and each snippet, so this defensive
+  // fallback is unreachable under the current contract. If a future caller
+  // raises those limits, keep the newest selected rows rather than slicing
+  // the chronological prefix and silently retaining only older evidence.
+  const omittedMarker = "\n…[older selected matches omitted]";
+  const prefix = `${header(matches.length)}\n`;
+  const rowBudget = MAX_SEARCH_OUTPUT_CHARS - prefix.length - omittedMarker.length;
+  const newestRows: typeof rows = [];
+  let used = 0;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const line = renderRows([matches[i]]);
+    if (used + line.length + (newestRows.length ? 1 : 0) > rowBudget) break;
+    newestRows.unshift(matches[i]);
+    used += line.length + (newestRows.length > 1 ? 1 : 0);
+  }
+  return `${prefix}${renderRows(newestRows)}${omittedMarker}`;
 }
 
 export function renderAgentBridgeContext(args: string[], env: EnvLike = process.env): string {
