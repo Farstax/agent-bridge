@@ -29,7 +29,14 @@ import { formatQualificationSummary } from "./providers/qualificationStatus.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
-import type { HealthPlugin } from "./health/types.js";
+import type { HealthPlugin, HealthReport } from "./health/types.js";
+import {
+  acceptHealthOpsEvent,
+  executeHealthOpsRun,
+  resumeDurablePendingHealthEvents,
+  reconcileEventReceiptResult,
+  HealthOpsRunLaneUnavailableError,
+} from "./health/eventIngress.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 dotenv.config({ path: process.env.BRIDGE_ENV_FILE || ".env", override: false });
@@ -87,13 +94,8 @@ const bridgeDb = openProductionDb(dbPath, {
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "health",
 });
-await bridgeDb.reconcileOrphanedRuns({
-  minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 60_000),
-  processState: (run) => getExecutionProcessState(run.run_id),
-  containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
-  onReconciled: (run) => console.warn(`[health-bot] reconciled orphaned run ${run.run_id}`),
-});
 const rawDb = bridgeDb.raw;
+const healthReportStore = new HealthReportStore(rawDb);
 const client = new TelegramClient(token, fetch, resolveTimeoutsForKind(cliBot).fetchTimeoutMs);
 
 const soulContext = loadSoulContext({
@@ -138,6 +140,61 @@ if (process.env.HEALTH_CONTENT_CRAWLER_ENABLED === "1") {
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────
+let engine: BridgeEngine;
+const activeHealthEventRuns = new Set<number>();
+
+const waitForHealthLane = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function executeAcceptedHealthEvent(receiptId: number): Promise<void> {
+  if (activeHealthEventRuns.has(receiptId)) return;
+  activeHealthEventRuns.add(receiptId);
+  try {
+    for (;;) {
+      try {
+        await executeHealthOpsRun(bridgeDb, receiptId, engine, { bot: cliBot });
+        reconcileEventReceiptResult(bridgeDb, receiptId);
+        return;
+      } catch (error) {
+        if (!(error instanceof HealthOpsRunLaneUnavailableError)) {
+          console.error(`[health-bot] event-owned health run failed receipt=${receiptId}`, error);
+          reconcileEventReceiptResult(bridgeDb, receiptId);
+          return;
+        }
+        // A receipt already owns a Run. Keep it runnable until the single
+        // health lane is free, then execute that same Run.
+        await waitForHealthLane(1000);
+      }
+    }
+  } finally {
+    activeHealthEventRuns.delete(receiptId);
+  }
+}
+
+async function handleHealthReportEventIngress(report: HealthReport): Promise<void> {
+  const previousStatus = healthReportStore.getReport(report.pluginName)?.status;
+  await healthBot.handleReport(report);
+  const eventToken = process.env.HEALTH_EVENT_TOKEN;
+  const crossedIntoRed = report.status === "red" && previousStatus !== "red";
+  if (eventToken && crossedIntoRed) {
+    try {
+      const eventId = `health:${report.pluginName}:${report.timestamp}`;
+      const accepted = acceptHealthOpsEvent(bridgeDb, {
+        eventId,
+        idempotencyKey: eventId,
+        occurredAt: report.timestamp,
+        report,
+        token: eventToken,
+      }, { expectedToken: eventToken, bot: cliBot });
+      // Event execution is deliberately detached from report persistence and
+      // the scheduler callback. A slow provider or busy lane cannot delay the
+      // next check or CLI auto-update handling.
+      void executeAcceptedHealthEvent(accepted.receiptId);
+    } catch (error) {
+      console.error(`[health-bot] event-owned health run failed for ${report.pluginName}`, error);
+    }
+  }
+}
+
 const scheduler = new HealthScheduler({
   plugins,
   config: {
@@ -151,7 +208,7 @@ const scheduler = new HealthScheduler({
     }
   },
   onRawReport: async (report) => {
-    await healthBot.handleReport(report);
+    await handleHealthReportEventIngress(report);
     const _repoRoot = process.env.BRIDGE_PROJECT_DIR
       ?? new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
     await autoUpdateClis(report, {
@@ -163,10 +220,10 @@ const scheduler = new HealthScheduler({
 });
 
 // ── BridgeEngine with health hooks ───────────────────────────────────────────
-const engine = new BridgeEngine(
+engine = new BridgeEngine(
   {
     kind: "health",
-    surfaceIdentity: "telegram:health",
+    surfaceIdentity: "health",
     executionKind: cliBot,
     botConfig: { command: cliBotConfig.command, modelPreference: cliBotConfig.modelPreference },
     allowedUserIds,
@@ -219,6 +276,19 @@ const engine = new BridgeEngine(
   client,
 );
 
+// Recovery ordering is deliberate: a persisted continuation or an accepted
+// receipt gets first chance to reclaim its normal lane. Generic orphan
+// reconciliation runs only afterward, so it cannot fail a legitimately
+// recoverable health run.
+await engine.recoverContinuations();
+await resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot });
+await bridgeDb.reconcileOrphanedRuns({
+  minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 60_000),
+  processState: (run) => getExecutionProcessState(run.run_id),
+  containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
+  onReconciled: (run) => console.warn(`[health-bot] reconciled orphaned run ${run.run_id}`),
+});
+
 // ── Start ────────────────────────────────────────────────────────────────────
 console.log("[health-bot] starting...");
 // A scheduler-only integrated service must stay resident even when scheduling
@@ -242,7 +312,7 @@ if (shouldHealthServicePoll(process.env)) {
 if (healthEnabled) {
   scheduler.start();
   for (const plugin of plugins) {
-    plugin.check().then(report => healthBot.handleReport(report)).catch((err: unknown) =>
+    plugin.check().then(report => handleHealthReportEventIngress(report)).catch((err: unknown) =>
       console.error("[health-bot] startup check error", err)
     );
   }

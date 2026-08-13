@@ -221,6 +221,20 @@ export class SelfPlugin implements HealthPlugin {
           });
         }
       }
+    } else {
+      // Preserve an observable health signal when npm metadata is
+      // unavailable; silently omitting both checks incorrectly reports the
+      // plugin as green and hides a degraded update monitor.
+      for (const [provider, checkName] of [
+        ["claude", "cli-update-claude-code"],
+        ["codex", "cli-update-codex"],
+      ] as const) {
+        checks.push({
+          name: checkName,
+          status: "amber",
+          message: `${provider} npm package metadata unavailable`,
+        });
+      }
     }
     // ── Agy (Antigravity) version check ───────────────────────────────────────
     try {

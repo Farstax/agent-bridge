@@ -4,7 +4,7 @@ import type { ExecutionLaneHandle } from "./lockRepository.js";
 
 export type ContinuationExecutionMode = "sync" | "async";
 export type ContinuationState = "waiting" | "runnable" | "running" | "completed" | "cancelled" | "ambiguous";
-export type ContinuationDeliveryState = "pending" | "delivered";
+export type ContinuationDeliveryState = "pending" | "delivered" | "none";
 
 export interface ContinuationAttemptCheckpoint {
   prompt: string;
@@ -93,7 +93,7 @@ function parseRecord(value: unknown): ContinuationRecord | null {
     if (typeof parsed.startedAt !== "string" || typeof parsed.deadlineAt !== "string" || typeof parsed.updatedAt !== "string") return null;
     if (parsed.containedAt !== undefined && typeof parsed.containedAt !== "string") return null;
     const deliveryState = parsed.deliveryState ?? "delivered";
-    if (deliveryState !== "pending" && deliveryState !== "delivered") return null;
+    if (deliveryState !== "pending" && deliveryState !== "delivered" && deliveryState !== "none") return null;
     const pendingAttempt = parsePendingAttempt(parsed.pendingAttempt);
     if (deliveryState === "pending" && !pendingAttempt) return null;
     const attachments = Array.isArray(parsed.attachments)

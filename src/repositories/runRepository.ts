@@ -35,37 +35,49 @@ export class RunRepository {
       .get(runId);
   }
 
-  updateRunCompleted(runId: string, text: string, sessionId: string | null): void {
+  /**
+   * All three terminal writers are compare-and-swapped on status = 'running'
+   * (the same guard reconcileOrphanedRun already used below for its own
+   * terminal write) so that whichever terminal transition lands first wins
+   * and a late/racing writer's update is a documented no-op instead of
+   * silently clobbering an already-terminal Run. Callers that need to know
+   * whether their write actually applied (e.g. a fence-losing execution
+   * must not report false success) can check the returned boolean.
+   */
+  updateRunCompleted(runId: string, text: string, sessionId: string | null): boolean {
     const endedAt = new Date().toISOString();
-    this.db
+    const { changes } = this.db
       .prepare(
         `UPDATE bridge_runs
          SET status = 'done', ended_at = ?, final_text_preview = ?, session_id = ?
-         WHERE run_id = ?`
+         WHERE run_id = ? AND status = 'running'`
       )
       .run(endedAt, text, sessionId, runId);
+    return changes === 1;
   }
 
-  updateRunFailed(runId: string, error: string): void {
+  updateRunFailed(runId: string, error: string): boolean {
     const endedAt = new Date().toISOString();
-    this.db
+    const { changes } = this.db
       .prepare(
         `UPDATE bridge_runs
          SET status = 'failed', ended_at = ?, error = ?
-         WHERE run_id = ?`
+         WHERE run_id = ? AND status = 'running'`
       )
       .run(endedAt, error, runId);
+    return changes === 1;
   }
 
-  updateRunCancelled(runId: string, reason: string): void {
+  updateRunCancelled(runId: string, reason: string): boolean {
     const endedAt = new Date().toISOString();
-    this.db
+    const { changes } = this.db
       .prepare(
         `UPDATE bridge_runs
          SET status = 'cancelled', ended_at = ?, error = ?
-         WHERE run_id = ?`
+         WHERE run_id = ? AND status = 'running'`
       )
       .run(endedAt, reason, runId);
+    return changes === 1;
   }
 
   insertEvent(runId: string, seq: number, type: string, timestamp: string, payload: any): void {

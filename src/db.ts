@@ -18,6 +18,7 @@ import { RunRepository, type RunningRun } from "./repositories/runRepository.js"
 import { SessionRepository } from "./repositories/sessionRepository.js";
 import { SettingsRepository } from "./repositories/settingsRepository.js";
 import { WorkQueueRepository } from "./repositories/workQueueRepository.js";
+import { EventReceiptRepository } from "./repositories/eventReceiptRepository.js";
 import {
   CompactionRepository,
   type CompactionAttemptInput,
@@ -302,6 +303,7 @@ export class BridgeDb {
   private readonly settings: SettingsRepository;
   private readonly runs: RunRepository;
   private readonly workQueue: WorkQueueRepository;
+  private readonly eventReceipts: EventReceiptRepository;
   private readonly memories: MemoryRepository;
   private readonly compactions: CompactionRepository;
   private readonly advisorCalls: AdvisorRepository;
@@ -318,6 +320,7 @@ export class BridgeDb {
     this.settings = new SettingsRepository(raw);
     this.runs = new RunRepository(raw);
     this.workQueue = new WorkQueueRepository(raw);
+    this.eventReceipts = new EventReceiptRepository(raw);
     this.memories = new MemoryRepository(raw);
     this.compactions = new CompactionRepository(raw);
     this.advisorCalls = new AdvisorRepository(raw);
@@ -461,16 +464,16 @@ export class BridgeDb {
     return this.runs.getRun(runId);
   }
 
-  updateRunCompleted(runId: string, text: string, sessionId: string | null): void {
-    this.runs.updateRunCompleted(runId, text, sessionId);
+  updateRunCompleted(runId: string, text: string, sessionId: string | null): boolean {
+    return this.runs.updateRunCompleted(runId, text, sessionId);
   }
 
-  updateRunFailed(runId: string, error: string): void {
-    this.runs.updateRunFailed(runId, error);
+  updateRunFailed(runId: string, error: string): boolean {
+    return this.runs.updateRunFailed(runId, error);
   }
 
-  updateRunCancelled(runId: string, reason: string): void {
-    this.runs.updateRunCancelled(runId, reason);
+  updateRunCancelled(runId: string, reason: string): boolean {
+    return this.runs.updateRunCancelled(runId, reason);
   }
 
   insertEvent(runId: string, seq: number, type: string, timestamp: string, payload: any): void {
@@ -513,6 +516,44 @@ export class BridgeDb {
 
   updateWorkItemTitleAndBody(id: number, title: string, body: string | null): void {
     this.workQueue.updateWorkItemTitleAndBody(id, title, body);
+  }
+
+  // ── Event receipts ───────────────────────────────────────────────────────
+
+  createEventReceipt(input: {
+    event_id: string;
+    source: string;
+    event_kind: string;
+    idempotency_key: string;
+    received_at: string;
+    occurred_at: string;
+    payload_json: string;
+    authority_scope: string;
+  }): EventReceipt {
+    return this.eventReceipts.createReceipt(input);
+  }
+
+  getEventReceipt(id: number): EventReceipt | null {
+    return this.eventReceipts.getById(id);
+  }
+
+  getEventReceiptByIdempotencyKey(idempotencyKey: string): EventReceipt | null {
+    return this.eventReceipts.getByIdempotencyKey(idempotencyKey);
+  }
+
+  listPendingEventReceipts(): EventReceipt[] {
+    return this.eventReceipts.listPending();
+  }
+
+  linkEventReceiptRun(id: number, runId: string): void {
+    this.eventReceipts.linkRun(id, runId);
+  }
+
+  recordEventReceiptResult(
+    id: number,
+    input: { status: "completed" | "failed" | "cancelled"; result_reference: string | null; error_class: string | null },
+  ): void {
+    this.eventReceipts.recordResult(id, input);
   }
 
   // ── Work jobs ────────────────────────────────────────────────────────────
@@ -1193,6 +1234,23 @@ export interface WorkJob {
   phase_data_json: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface EventReceipt {
+  id: number;
+  event_id: string;
+  source: string;
+  event_kind: string;
+  idempotency_key: string;
+  received_at: string;
+  occurred_at: string;
+  payload_json: string;
+  authority_scope: string;
+  status: string;
+  run_id: string | null;
+  result_reference: string | null;
+  error_class: string | null;
+  created_at: string;
 }
 
 export interface Approval {

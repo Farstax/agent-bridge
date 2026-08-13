@@ -538,6 +538,8 @@ User guide: `docs/WORKER-GUIDE.md`. Phase 9 plan:
 - The dedicated health service runs through `src/index-health.ts` with `BridgeEngine` kind `health`, but its suggestion CLI must execute through the configured agent kind (`HEALTH_SUGGEST_BOT` / `HEALTH_CLI_BOT`) so invocation, parsing, timeouts, and Telegram rendering match Codex, Antigravity, or Claude behavior.
 - Manual `/health` should return one combined report only. Persist plugin reports for `/status` context with `HealthBridgeBot.handleReport(..., { force: true, silent: true })`; do not also force-send each plugin report.
 - `HEALTH_SUGGEST_*` is the documented health suggestion config family. `HEALTH_CLI_*` remains a compatibility alias.
+- Health event runs use the fixed `health:report-only` authority scope. The event is evidence for investigation. It does not grant deploy, restart, credential, permission, or repository-mutation authority. The agent must follow this repository policy and the applicable Skill before taking any action.
+- `HEALTH_EVENT_TOKEN` enables the authenticated scheduler-to-agent health event path. The health service fails closed for event execution when it is unset.
 
 # Deployment contract
 
