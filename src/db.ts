@@ -952,7 +952,7 @@ export class BridgeDb {
     });
   }
 
-  replaceClaimedPendingAttachments(handle: ExecutionLaneHandle, ids: number[], attachments: string[]): boolean {
+  replaceClaimedPendingAttachments(handle: ExecutionLaneHandle, ids: number[], attachments: string[], partitions?: string[][]): boolean {
     if (ids.length === 0) return true;
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);
@@ -965,8 +965,10 @@ export class BridgeDb {
           WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed'
             AND claim_run_id = ? AND claim_acquisition_id = ?
         `);
-        const encoded = JSON.stringify(attachments);
-        for (const id of ids) {
+        if (partitions && partitions.length !== ids.length) throw mismatch;
+        if (partitions && partitions.flat().join("\u0000") !== attachments.join("\u0000")) throw mismatch;
+        for (const [index, id] of ids.entries()) {
+          const encoded = JSON.stringify(partitions ? partitions[index] : attachments);
           if (statement.run(encoded, id, surface, chatKey, handle.runId, handle.acquisitionId).changes !== 1) throw mismatch;
         }
         return true;
@@ -1009,6 +1011,22 @@ export class BridgeDb {
           AND claim_run_id = ? AND claim_acquisition_id = ?
       `).get(id, surface, chatKey, handle.runId, handle.acquisitionId) as { attachmentsJson: string | null } | undefined;
       return row ? JSON.parse(row.attachmentsJson || "[]") as string[] : null;
+    });
+  }
+
+  getClaimedPendingAttachmentPartitions(handle: ExecutionLaneHandle, ids: number[]): string[][] | null {
+    if (ids.length === 0) return [];
+    const { surface, chatKey } = handle;
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      if (!this.locks.owns(handle)) return null;
+      const rows = ids.map((id) => this.raw.prepare(`
+        SELECT attachments_json AS attachmentsJson FROM pending_messages
+        WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed'
+          AND claim_run_id = ? AND claim_acquisition_id = ?
+      `).get(id, surface, chatKey, handle.runId, handle.acquisitionId) as { attachmentsJson: string | null } | undefined);
+      if (rows.some((row) => !row)) return null;
+      return rows.map((row) => JSON.parse(row!.attachmentsJson || "[]") as string[]);
     });
   }
 

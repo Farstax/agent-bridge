@@ -653,6 +653,51 @@ describe("durable async continuation lifecycle", () => {
     rmSync(staging, { recursive: true, force: true });
   });
 
+  it("replays cancellation finalization after a crash before terminal commit", async () => {
+    const runId = "cancel-finalization-crash";
+    const staging = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
+    const attachment = join(staging, "attachment.png");
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(attachment, "orphan");
+    db.insertRun(runId, "100", "claude");
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({ runId, surface: "test", chatKey: "100", chatId: 100, threadId: null, bot: "claude", sessionId: "s", prompt: "p", chatType: "private", executionMode: "async", triggerKind: "run-owned-background-process", triggerId: runId, resumptionCount: 0, pendingIds: [], startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString(), attachments: [attachment] } as any);
+    repo.markCancelled(runId, "stop");
+    vi.spyOn(db, "updateRunCancelled").mockImplementation((id, reason) => { throw new Error("crash before terminal finalization"); });
+    const fns = { getRunOwnedProcessState: vi.fn(() => "absent" as const), killRunOwnedDescendants: vi.fn(async () => {}), sleep: vi.fn(async () => {}) };
+    await expect(recoverCancelledContinuationContainment(db, repo, fns, 0)).rejects.toThrow("crash before terminal finalization");
+    vi.restoreAllMocks();
+    await recoverCancelledContinuationContainment(db, repo, fns, 0);
+    expect(db.getRun(runId)?.status).toBe("cancelled");
+    expect(() => readFileSync(attachment)).toThrow();
+    rmSync(staging, { recursive: true, force: true });
+  });
+
+  it("replays cancellation finalization without deleting pending-owned staging", async () => {
+    const runId = "cancel-finalization-pending-owner";
+    const staging = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
+    const attachment = join(staging, "attachment.png");
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(attachment, "owned");
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("test", "100", { prompt: "retry", chatId: 100, chatType: "private", attachments: [attachment] });
+    const handle = db.acquireLock("test", "100");
+    const row = db.claimNextPendingMsg(handle!);
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({ runId, surface: "test", chatKey: "100", chatId: 100, threadId: null, bot: "claude", sessionId: "s", prompt: "p", chatType: "private", executionMode: "async", triggerKind: "run-owned-background-process", triggerId: runId, resumptionCount: 0, pendingIds: [row!.id], startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString(), attachments: [attachment] } as any);
+    repo.markCancelled(runId, "stop");
+    vi.spyOn(db, "updateRunCancelled").mockImplementation(() => { throw new Error("crash before terminal finalization"); });
+    const fns = { getRunOwnedProcessState: vi.fn(() => "absent" as const), killRunOwnedDescendants: vi.fn(async () => {}), sleep: vi.fn(async () => {}) };
+    await expect(recoverCancelledContinuationContainment(db, repo, fns, 0)).rejects.toThrow("crash before terminal finalization");
+    vi.restoreAllMocks();
+    await recoverCancelledContinuationContainment(db, repo, fns, 0);
+    expect(readFileSync(attachment, "utf8")).toBe("owned");
+    db.releasePendingClaim(handle!, row!.id);
+    db.completePendingMsg(handle!, row!.id);
+    rmSync(staging, { recursive: true, force: true });
+    db.close();
+  });
+
   it("keeps continuation detection when a Claude model fallback launches background work", async () => {
     let processState: "live" | "absent" = "live";
     const continuation: ContinuationFns = {

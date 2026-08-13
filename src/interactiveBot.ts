@@ -416,21 +416,19 @@ export async function dispatchInteractiveWithFallback(
           // continuation. Do not re-enter generic queue recovery here.
           if (claimedMessage && claimedMessage.laneHandle) {
             const pendingIds = claimedMessage.pendingIds ?? [claimedMessage.id];
-            const authoritativeAttachments = pendingIds.flatMap((id) =>
-              db.getClaimedPendingAttachments(claimedMessage!.laneHandle!, id) ?? []);
-            if (authoritativeAttachments.length > 0) {
-              claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...authoritativeAttachments);
-            }
+            const partitions = db.getClaimedPendingAttachmentPartitions(claimedMessage.laneHandle, pendingIds);
+            if (!partitions) return "fenced";
+            claimedMessage.attachmentPartitions = partitions;
+            claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...partitions.flat());
           }
           return claimedMessage ? "committed" : "failed";
         }
         if (claimedMessage && handoff === "queued" && claimedMessage.laneHandle) {
           const pendingIds = claimedMessage.pendingIds ?? [claimedMessage.id];
-          const authoritativeAttachments = pendingIds.flatMap((id) =>
-            db.getClaimedPendingAttachments(claimedMessage!.laneHandle!, id) ?? []);
-          if (authoritativeAttachments.length > 0) {
-            claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...authoritativeAttachments);
-          }
+          const partitions = db.getClaimedPendingAttachmentPartitions(claimedMessage.laneHandle, pendingIds);
+          if (!partitions) return "fenced";
+          claimedMessage.attachmentPartitions = partitions;
+          claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...partitions.flat());
         }
       }
 

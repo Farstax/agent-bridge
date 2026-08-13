@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
@@ -23,6 +23,216 @@ function claudeBackground(text: string, sessionId: string): string {
 }
 
 describe("continuation fallback admitted-turn envelope", () => {
+  it("resumes same-provider continuation from staged attachments after source cleanup", async () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "same-provider-source-"));
+    const source = join(sourceDir, "image.png");
+    writeFileSync(source, "same-provider attachment");
+    const runId = "same-provider-staged-resume";
+    db.insertRun(runId, "100", "claude");
+    const staging = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
+    const staged = join(staging, "0-image.png");
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(staged, "same-provider attachment");
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({
+      runId, surface: "telegram:interactive", chatKey: "100", chatId: 100, threadId: null, bot: "claude",
+      sessionId: "claude-session", prompt: "inspect", chatType: "private", userId: 42, attachments: [staged],
+      executionMode: "async", triggerKind: "run-owned-background-process", triggerId: runId, resumptionCount: 0,
+      pendingIds: [], startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    } as any);
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    const resumed = vi.spyOn(engine as any, "_executeAndDeliverTurnAttempt").mockResolvedValue({
+      text: "finished", sessionId: "claude-session", memoryCandidates: [],
+    });
+    vi.spyOn(engine as any, "_waitForContinuationWake").mockResolvedValue("ready");
+    try {
+      rmSync(source, { force: true });
+      await expect((engine as any)._continueFromDeliveredResult({
+        mode: "async", result: { text: "background", sessionId: "claude-session", continuationHint: "background-process", continuationProcessObserved: true },
+        chatId: 100, chatKey: "100", chatType: "private", userId: 42, attachments: [source], threadId: undefined,
+        laneHandle: handle, pendingIds: [], runId, eventContext: {}, collect: vi.fn(), finalize: vi.fn(),
+        continuationStartedAtMs: null, resumptionCount: 0,
+      })).resolves.toBe(true);
+      expect(resumed.mock.calls[0][0].attachments).toEqual([staged]);
+      expect(() => readFileSync(staged)).toThrow();
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(staging, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  it("preserves one staged attachment partition per claimed row during coalesced checkpoint", () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "coalesced-checkpoint-source-"));
+    const sourceA = join(sourceDir, "a.png");
+    const sourceB = join(sourceDir, "b.png");
+    writeFileSync(sourceA, "A");
+    writeFileSync(sourceB, "B");
+    const runId = "coalesced-partitioned-checkpoint";
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "A", chatId: 100, chatType: "private", attachments: [sourceA] });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "B", chatId: 100, chatType: "private", attachments: [sourceB] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.claimPendingMsgs(handle!);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    try {
+      expect((engine as any)._checkpointContinuationBeforeDelivery({
+        mode: "async", prompt: "A\n\nB", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private", userId: 42,
+        attachments: [sourceA, sourceB], laneHandle: handle, pendingIds: rows.map((row) => row.id), runId,
+        continuationStartedAtMs: null, resumptionCount: 0,
+      }, { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any)).toBe(true);
+      expect(db.dequeueMsgs("telegram:interactive", "100").map((row) => row.attachments)).toEqual([
+        [join(tmpdir(), `bridge-continuation-attachments-${runId}`, "0-a.png")],
+        [join(tmpdir(), `bridge-continuation-attachments-${runId}`, "1-b.png")],
+      ]);
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  it("updates live coalesced partitions for a same-provider checkpoint resume", () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "same-provider-partitions-"));
+    const sourceA = join(sourceDir, "a.png");
+    const sourceB = join(sourceDir, "b.png");
+    writeFileSync(sourceA, "A");
+    writeFileSync(sourceB, "B");
+    const runId = "same-provider-partitions";
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "A", chatId: 100, chatType: "private", attachments: [sourceA] });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "B", chatId: 100, chatType: "private", attachments: [sourceB] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.claimPendingMsgs(handle!);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    const input: any = {
+      mode: "async", prompt: "A\n\nB", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private", userId: 42,
+      attachments: [sourceA, sourceB], attachmentPartitions: [[sourceA], [sourceB]], laneHandle: handle, pendingIds: rows.map((row) => row.id),
+      runId, continuationStartedAtMs: null, resumptionCount: 0,
+    };
+    const result = { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any;
+    try {
+      expect((engine as any)._checkpointContinuationBeforeDelivery(input, result)).toBe(true);
+      const staged = db.dequeueMsgs("telegram:interactive", "100").flatMap((row) => row.attachments);
+      input.attachments = staged;
+      expect(input.attachmentPartitions).toEqual([[staged[0]], [staged[1]]]);
+      expect((engine as any)._checkpointContinuationBeforeDelivery(input, { ...result, sessionId: "claude-session-2" })).toBe(true);
+      expect(input.attachments).toEqual(staged);
+      expect(input.attachmentPartitions).toEqual([[staged[0]], [staged[1]]]);
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  it("recovers a coalesced checkpoint with the exact staged envelope once", async () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "coalesced-recovery-source-"));
+    const sourceA = join(sourceDir, "a.png");
+    const sourceB = join(sourceDir, "b.png");
+    writeFileSync(sourceA, "A");
+    writeFileSync(sourceB, "B");
+    const runId = "coalesced-recovery-envelope";
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "A", chatId: 100, chatType: "private", attachments: [sourceA] });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "B", chatId: 100, chatType: "private", attachments: [sourceB] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.claimPendingMsgs(handle!);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    const seen: string[][] = [];
+    engine.setQueuedMessageHandler(async (message) => { seen.push(message.attachments); return "committed"; });
+    try {
+      expect((engine as any)._checkpointContinuationBeforeDelivery({
+        mode: "async", prompt: "A\n\nB", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private", userId: 42,
+        attachments: [sourceA, sourceB], laneHandle: handle, pendingIds: rows.map((row) => row.id), runId,
+        continuationStartedAtMs: null, resumptionCount: 0,
+      }, { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any)).toBe(true);
+      const staged = db.dequeueMsgs("telegram:interactive", "100").flatMap((row) => row.attachments);
+      new ContinuationRepository(db.raw).markCancelled(runId, "recovery");
+      for (const row of rows) db.releasePendingClaim(handle!, row.id);
+      db.unlock(handle!);
+      const recoveryHandle = db.acquireLock("telegram:interactive", "100");
+      await (engine as any)._drainQueueAndUnlock(recoveryHandle, undefined, 0, false, true);
+      expect(seen).toEqual([staged]);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      expect(staged.every((path) => { try { readFileSync(path); return true; } catch { return false; } })).toBe(false);
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  it("fails closed when any expected claimed row is lost during authoritative refresh", () => {
+    const db = openDb(":memory:");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "A", chatId: 100, chatType: "private", attachments: ["A"] });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "B", chatId: 100, chatType: "private", attachments: ["B"] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.claimPendingMsgs(handle!);
+    db.raw.prepare("DELETE FROM pending_messages WHERE id = ?").run(rows[1].id);
+    expect(db.getClaimedPendingAttachmentPartitions(handle!, rows.map((row) => row.id))).toBeNull();
+    db.close();
+  });
+
+  it("passes a coalesced continuation envelope once through capacity fallback", async () => {
+    const db = openDb(":memory:");
+    const dir = mkdtempSync(join(tmpdir(), "coalesced-fallback-source-"));
+    const a = join(dir, "a.png");
+    const b = join(dir, "b.png");
+    writeFileSync(a, "A");
+    writeFileSync(b, "B");
+    const runId = "coalesced-fallback-envelope";
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "A", chatId: 100, chatType: "private", attachments: [a] });
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "B", chatId: 100, chatType: "private", attachments: [b] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const rows = db.claimPendingMsgs(handle!);
+    const stagedA = join(tmpdir(), `bridge-continuation-attachments-${runId}`, "0-a.png");
+    const stagedB = join(tmpdir(), `bridge-continuation-attachments-${runId}`, "1-b.png");
+    mkdirSync(dirname(stagedA), { recursive: true });
+    writeFileSync(stagedA, "A");
+    writeFileSync(stagedB, "B");
+    db.replaceClaimedPendingAttachments(handle!, rows.map((row) => row.id), [stagedA, stagedB], [[stagedA], [stagedB]]);
+    new ContinuationRepository(db.raw).saveWaiting({
+      runId, surface: "telegram:interactive", chatKey: "100", chatId: 100, threadId: null, bot: "claude", sessionId: "s", prompt: "A\n\nB", chatType: "private", userId: 42, attachments: [stagedA, stagedB], executionMode: "async", triggerKind: "run-owned-background-process", triggerId: runId, resumptionCount: 0, pendingIds: rows.map((row) => row.id), startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    } as any);
+    const exhaustedChats = new Set(["100"]);
+    const seen: string[][] = [];
+    const source = { executeClaimedMessage: vi.fn(async () => { exhaustedChats.add("100"); return "failed" as const; }), handoffActiveContinuationForFallback: vi.fn(async () => "queued" as const) };
+    const target = { executeClaimedMessage: vi.fn(async (message: any) => { seen.push(message.attachments); return "committed" as const; }) };
+    const deps = { engines: { claude: source, codex: target }, fallbackChain: new WorkerFallbackChain(["claude", "codex"], db), exhaustedChats, db, notify: vi.fn() };
+    try {
+      setUserCliPreference(db, "100", "claude");
+      new ContinuationRepository(db.raw).markCancelled(runId, "fallback");
+      await dispatchClaimedInteractiveWithFallback({ ...rows[0], pendingIds: rows.map((row) => row.id), attachmentPartitions: [[a], [b]], attachments: [a, b], laneHandle: handle! }, "100", deps);
+      expect(seen).toEqual([[stagedA, stagedB]]);
+      expect(target.executeClaimedMessage).toHaveBeenCalledOnce();
+      expect(target.executeClaimedMessage.mock.calls[0][0].attachmentPartitions).toEqual([[stagedA], [stagedB]]);
+      expect(db.completePendingMsgs(handle!, rows.map((row) => row.id))).toBe(true);
+      expect(() => readFileSync(stagedA)).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(dirname(stagedA), { recursive: true, force: true });
+      db.close();
+    }
+  });
   it("rolls back every claimed attachment replacement when a later row no longer matches", () => {
     const db = openDb(":memory:");
     const originalA = "/tmp/original-a.png";
