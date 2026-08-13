@@ -152,7 +152,11 @@ export function buildCliInvocation({
       homeDir,
       model: model ?? null,
       applyModel: true,
-      outputMode: invocation.args.includes("--output-format") ? "json" : "text",
+      outputMode: (() => {
+        const formatIndex = invocation.args.indexOf("--output-format");
+        const format = formatIndex >= 0 ? invocation.args[formatIndex + 1] : undefined;
+        return format === "json" || format === "stream-json" ? format : "text";
+      })(),
     });
     return invocation;
   }
