@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import Database from "better-sqlite3";
+import { applyMigrations } from "../src/db/schema.js";
 
 describe("HealthBridgeBot", () => {
   let db: Database.Database;
@@ -11,6 +12,7 @@ describe("HealthBridgeBot", () => {
   beforeEach(() => {
     dbPath = join(tmpdir(), `health-bot-test-${Date.now()}.sqlite`);
     db = new Database(dbPath);
+    applyMigrations(db, undefined, "health");
     vi.useFakeTimers();
   });
 

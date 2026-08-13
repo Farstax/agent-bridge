@@ -166,7 +166,7 @@ describe("recovery-readiness reconciliation guards", () => {
 
   it("only exposes reconciliation_audit through the migration-owned schema", () => {
     const bridge = open();
-    expect(Number(bridge.raw.pragma("user_version", { simple: true }))).toBe(5);
+    expect(Number(bridge.raw.pragma("user_version", { simple: true }))).toBe(6);
     expect(bridge.raw.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'"
     ).get()).toBeTruthy();

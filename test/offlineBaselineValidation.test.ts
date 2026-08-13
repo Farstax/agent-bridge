@@ -227,7 +227,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     ], { encoding: "utf8" }));
     expect(evidence.schema_compatibility).toContain("migrated");
     expect(evidence.databases[0].source_schema_version).toBe(3);
-    expect(evidence.databases[0].user_version).toBe(5);
+    expect(evidence.databases[0].user_version).toBe(6);
     expect(evidence.preservation.queue_claim_run_lock_preserved).toBe(true);
     expect(evidence.prestart_rollback_simulation.database_hashes_after_restore).toEqual(
       evidence.prestart_rollback_simulation.database_hashes_before,

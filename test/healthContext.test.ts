@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import Database from "better-sqlite3";
+import { applyMigrations } from "../src/db/schema.js";
 
 describe("HealthContextStore", () => {
   let db: Database.Database;
@@ -11,6 +12,7 @@ describe("HealthContextStore", () => {
   beforeEach(() => {
     dbPath = join(tmpdir(), `health-context-test-${Date.now()}.sqlite`);
     db = new Database(dbPath);
+    applyMigrations(db, undefined, "health");
   });
 
   afterEach(() => {
@@ -92,7 +94,6 @@ describe("HealthContextStore", () => {
   });
 
   it("imports valid legacy last-report evidence without inventing other plugin reports", async () => {
-    db.exec(`CREATE TABLE health_context (id INTEGER PRIMARY KEY, last_report_json TEXT, updated_at INTEGER)`);
     const report = { pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp: new Date().toISOString() };
     db.prepare("INSERT INTO health_context (id, last_report_json, updated_at) VALUES (1, ?, unixepoch())").run(JSON.stringify(report));
 

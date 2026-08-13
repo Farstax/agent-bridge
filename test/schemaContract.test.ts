@@ -4,18 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { applyRoleSchema, canonicalSchemaTablesForRole } from "../src/db/schemaContract.js";
+import { applyMigrations } from "../src/db/schema.js";
+import { canonicalSchemaTablesForRole } from "../src/db/schemaContract.js";
 import { openDb } from "../src/db.js";
 import { fileURLToPath } from "node:url";
 
 const rolloutScript = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
 
 describe("canonical production schema contract", () => {
-  it("owns the health table and creates it through the health role contract", () => {
+  it("derives the health table from the health migration contract", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-schema-contract-"));
     const db = new Database(join(root, "health.sqlite"));
     try {
-      applyRoleSchema(db, "health");
+      applyMigrations(db, undefined, "health");
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'health_plugin_reports'").get()).toBeTruthy();
       expect(canonicalSchemaTablesForRole("health")).toContain("health_plugin_reports");
       expect(canonicalSchemaTablesForRole("shared")).not.toContain("health_plugin_reports");
@@ -47,6 +48,17 @@ describe("canonical production schema contract", () => {
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let the health report feature create its durable table", async () => {
+    const { HealthReportStore } = await import("../src/health/reports.js");
+    const db = new Database(":memory:");
+    try {
+      new HealthReportStore(db);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'health_plugin_reports'").get()).toBeUndefined();
+    } finally {
+      db.close();
     }
   });
 });
