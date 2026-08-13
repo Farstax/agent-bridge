@@ -112,6 +112,7 @@ export interface BridgeEngineHooks {
 export interface PendingMessage {
   id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
   pendingIds?: number[];
+  attachmentPartitions?: string[][];
   queueRecoveryAttempt?: number;
   laneHandle?: ExecutionLaneHandle;
   laneLifecycleManaged?: boolean;
@@ -968,6 +969,7 @@ export class BridgeEngine {
     ownsActiveTask = false,
     notifyCapacityFailure = true,
     continuationPendingIds: number[] = [],
+    continuationAttachmentPartitions?: string[][],
   ): Promise<ExecutionOutcome> {
     // Apply onBeforeExecute hook
     let prompt = rawPrompt;
@@ -1066,6 +1068,7 @@ export class BridgeEngine {
         attachments,
         laneHandle: laneHandle!,
         pendingIds: [...activePendingIds, ...continuationPendingIds],
+        attachmentPartitions: continuationAttachmentPartitions,
       });
       if (!completed) return "fenced";
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
@@ -1137,6 +1140,7 @@ export class BridgeEngine {
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
+    attachmentPartitions?: string[][];
   }): Promise<boolean> {
     const { runId, eventContext, collect, finalize } = this._createEventContext(input.chatId, input.threadId, input.laneHandle);
     const result = await this._executeAndDeliverTurnAttempt({
@@ -1176,6 +1180,7 @@ export class BridgeEngine {
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
+    attachmentPartitions?: string[][];
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (event: BridgeEvent) => void;
@@ -1289,6 +1294,7 @@ export class BridgeEngine {
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
+    attachmentPartitions?: string[][];
     runId: string;
     continuationStartedAtMs: number | null;
     resumptionCount: number;
@@ -1310,7 +1316,17 @@ export class BridgeEngine {
     let pendingRowOwnsContinuationAttachments = false;
     try {
       continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
-      if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments)) {
+      const partitions = input.pendingIds.length > 0
+        ? (input.attachmentPartitions ?? this.db.getClaimedPendingAttachmentPartitions(input.laneHandle, input.pendingIds))
+        : undefined;
+      if (input.pendingIds.length > 0 && !partitions) throw new LostExecutionLeaseError();
+      let partitionOffset = 0;
+      const stagedPartitions = partitions?.map((partition) => {
+        const staged = continuationAttachments.slice(partitionOffset, partitionOffset + partition.length);
+        partitionOffset += partition.length;
+        return staged;
+      });
+      if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments, stagedPartitions)) {
         throw new LostExecutionLeaseError();
       }
       pendingRowOwnsContinuationAttachments = input.pendingIds.length > 0;
@@ -1414,6 +1430,7 @@ export class BridgeEngine {
     threadId: number | undefined;
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
+    attachmentPartitions?: string[][];
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (event: BridgeEvent) => void;
@@ -1567,7 +1584,8 @@ export class BridgeEngine {
           chatType: input.chatType,
           userId: input.userId,
           threadId: input.threadId,
-          attachments: input.attachments,
+          attachments: checkpoint?.attachments ?? input.attachments,
+          attachmentPartitions: input.attachmentPartitions,
           laneHandle: input.laneHandle,
           pendingIds: input.pendingIds,
           runId: input.runId,
@@ -1583,6 +1601,7 @@ export class BridgeEngine {
           return true;
         }
         result = next;
+        input.attachments = checkpoint?.attachments ?? input.attachments;
       }
     } catch (error) {
       if (error instanceof LostExecutionLeaseError || error instanceof PendingContinuationDeliveryError) throw error;
@@ -2164,6 +2183,7 @@ export class BridgeEngine {
         ...claimed[0],
         prompt: [...(augmentation ? [augmentation.prompt] : []), ...claimed.map((row) => row.prompt)].join("\n\n"),
         attachments: [...(augmentation?.attachments ?? []), ...claimed.flatMap((row) => row.attachments)],
+        attachmentPartitions: claimed.map((row) => row.attachments),
         pendingIds: claimed.map((row) => row.id),
         queueRecoveryAttempt: recoveryAttempt,
       };
@@ -2269,6 +2289,7 @@ export class BridgeEngine {
       false, !next.laneLifecycleManaged, false, false,
       next.queueRecoveryAttempt == null || next.queueRecoveryAttempt >= MAX_QUEUE_RECOVERY_ATTEMPTS,
       next.pendingIds ?? [next.id],
+      next.attachmentPartitions,
     );
   }
 

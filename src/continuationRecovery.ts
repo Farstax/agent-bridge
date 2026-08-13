@@ -40,9 +40,9 @@ export async function recoverCancelledContinuationContainment(
       if (state === "live") await fns.killRunOwnedDescendants(record.runId);
       await fns.sleep(pollMs);
     }
-    const contained = store.markCancellationContained(record.runId);
-    if (!contained) continue;
     if (!db.pendingMessagesOwnAnyAttachments(record.attachments ?? [])) cleanupAttachmentPaths(record.attachments ?? []);
     db.updateRunCancelled(record.runId, record.terminalReason ?? "cancelled");
+    const contained = store.markCancellationContained(record.runId);
+    if (!contained) continue;
   }
 }
