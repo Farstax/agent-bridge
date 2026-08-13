@@ -470,6 +470,32 @@ export class BridgeEngine {
     return true;
   }
 
+  /**
+   * Converts an active provider continuation into one durable queue turn for
+   * cross-provider fallback. Native descendants remain owned by this Run and
+   * are fenced before another provider is allowed to execute.
+   */
+  async handoffActiveContinuationForFallback(chatKey: string): Promise<boolean> {
+    const record = this.continuationStore.listActive(this.surfaceIdentity, this.kind)
+      .find((candidate) => candidate.chatKey === chatKey);
+    if (!record || !record.prompt) return false;
+
+    this.continuationStore.markCancelled(record.runId, "provider capacity fallback");
+    if (this.continuation.getRunOwnedProcessState(record.runId) === "live") {
+      await this.continuation.killRunOwnedDescendants(record.runId);
+    }
+    this.db.updateRunFailed(record.runId, "provider capacity fallback");
+    if (record.pendingIds.length === 0) {
+      this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
+        prompt: record.prompt,
+        chatId: record.chatId,
+        threadId: record.threadId ?? undefined,
+        chatType: record.chatType ?? "private",
+      });
+    }
+    return true;
+  }
+
   async handleUpdate(update: TelegramUpdate): Promise<void> {
     if (update.callback_query) {
       await this.handleCallback(update.callback_query);
@@ -995,6 +1021,7 @@ export class BridgeEngine {
         sessionId,
         chatId,
         chatKey,
+        chatType,
         threadId,
         attachments,
         laneHandle: laneHandle!,
@@ -1064,6 +1091,7 @@ export class BridgeEngine {
     sessionId: string | null;
     chatId: number;
     chatKey: string;
+    chatType: string;
     threadId: number | undefined;
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
@@ -1101,6 +1129,7 @@ export class BridgeEngine {
     isInitialResult: boolean;
     chatId: number;
     chatKey: string;
+    chatType?: string;
     threadId: number | undefined;
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
@@ -1160,6 +1189,9 @@ export class BridgeEngine {
         }
         return stagedResult;
       } catch (error) {
+        // Leave capacity failures to the interactive fallback router. It will
+        // fence this Run and re-admit the same logical turn on the next CLI.
+        if (isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)))) throw error;
         await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
         throw error;
       } finally {
@@ -1207,6 +1239,7 @@ export class BridgeEngine {
     isInitialResult: boolean;
     chatId: number;
     chatKey: string;
+    chatType?: string;
     threadId: number | undefined;
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
@@ -1235,6 +1268,8 @@ export class BridgeEngine {
       threadId: input.threadId ?? null,
       bot: this.kind,
       sessionId: result.sessionId,
+      prompt: input.prompt,
+      chatType: input.chatType,
       executionMode: input.mode,
       triggerKind: "run-owned-background-process",
       triggerId: input.runId,
@@ -1403,6 +1438,7 @@ export class BridgeEngine {
       }
     } catch (error) {
       if (error instanceof LostExecutionLeaseError || error instanceof PendingContinuationDeliveryError) throw error;
+      if (isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)))) throw error;
       if (!this._canPublish(input.laneHandle)) throw new LostExecutionLeaseError();
       const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
       this.continuationStore.markCancelled(input.runId, `continuation failed: ${detail}`);

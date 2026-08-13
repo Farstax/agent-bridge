@@ -18,6 +18,19 @@ Claude cannot SSH to Aruba — the user must pull and restart the control plane 
 
 The full TDD rules are in `CLAUDE.md`. The critical agent-specific requirements are:
 
+## Provider continuation and fallback invariant
+
+Provider-native delegated work and background processes belong to the owning
+provider Run. The main conversational agent remains responsible for exactly
+one user-visible terminal closure. If a provider is exhausted during
+continuation, the admitted logical turn must recover through the existing
+durable queue/capacity-fallback/fresh-session handoff path or close with one
+concrete blocker. Fallback transfers responsibility for the logical turn; it
+does not migrate or resume provider-native subagents in another provider.
+Regression tests should cover meaningful interactions between lifecycle
+boundaries, rather than only testing continuation and capacity fallback in
+isolation.
+
 ## Verification — mandatory each cycle
 
 Use focused red/green locally; exact-head GitHub CI owns the required full-suite regression gate.
