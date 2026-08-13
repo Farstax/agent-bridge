@@ -92,6 +92,38 @@ describe("continuation fallback admitted-turn envelope", () => {
     }
   });
 
+  it("does not clean continuation staging while a recoverable pending row still references it", () => {
+    const db = openDb(":memory:");
+    const source = "/tmp/cleanup-owner-source.png";
+    writeFileSync(source, "owned");
+    const runId = "cleanup-owner-run";
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "owned", chatId: 100, chatType: "private", attachments: [source] });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const row = db.claimNextPendingMsg(handle!);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    try {
+      expect((engine as any)._checkpointContinuationBeforeDelivery({
+        mode: "async", prompt: "owned", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private",
+        userId: 42, threadId: undefined, attachments: [source], laneHandle: handle, pendingIds: [row!.id], runId,
+        continuationStartedAtMs: null, resumptionCount: 0,
+      }, { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any)).toBe(true);
+      const staged = db.dequeueMsgs("telegram:interactive", "100")[0].attachments[0];
+      (engine as any)._cleanupContinuationAttachments([staged]);
+      expect(readFileSync(staged, "utf8")).toBe("owned");
+      expect(db.completePendingMsg(handle!, row!.id)).toBe(true);
+      (engine as any)._cleanupContinuationAttachments([staged]);
+      expect(() => readFileSync(staged)).toThrow();
+    } finally {
+      rmSync(source, { force: true });
+      rmSync(join(tmpdir(), `bridge-continuation-attachments-${runId}`), { recursive: true, force: true });
+      db.close();
+    }
+  });
+
   it("contains live descendants when synchronous checkpointing fails", async () => {
     const db = openDb(":memory:");
     const kill = vi.fn(async () => {});

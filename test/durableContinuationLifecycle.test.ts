@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
@@ -611,6 +611,10 @@ describe("durable async continuation lifecycle", () => {
 
   it("contains a cancelled durable continuation after restart without replaying the provider", async () => {
     const durableRunId = "cancelled-run-261";
+    const staging = join(tmpdir(), "bridge-continuation-attachments-cancelled-run-261");
+    const attachment = join(staging, "attachment.png");
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(attachment, "orphaned staging");
     db.insertRun(durableRunId, "100", "claude");
     const repo = new ContinuationRepository(db.raw);
     repo.saveWaiting({
@@ -628,6 +632,7 @@ describe("durable async continuation lifecycle", () => {
       pendingIds: [],
       startedAt: new Date(Date.now() - 1000).toISOString(),
       deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      attachments: [attachment],
     });
     repo.markCancelled(durableRunId, "stop");
 
@@ -644,6 +649,8 @@ describe("durable async continuation lifecycle", () => {
     expect(repo.get(durableRunId)?.containedAt).toBeTruthy();
     expect(repo.hasActiveRun(durableRunId)).toBe(false);
     expect(db.getRun(durableRunId)?.status).toBe("cancelled");
+    expect(() => readFileSync(attachment)).toThrow();
+    rmSync(staging, { recursive: true, force: true });
   });
 
   it("keeps continuation detection when a Claude model fallback launches background work", async () => {
