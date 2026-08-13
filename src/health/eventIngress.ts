@@ -57,6 +57,48 @@ export function healthEventExecutionStartedKey(receiptId: number): string {
   return `${HEALTH_EVENT_STARTED_SETTING_PREFIX}${receiptId}`;
 }
 
+/** The specific execution_locks identity (service_id/run_id/acquisition_id)
+ * that held the health lane at the moment a provider-start marker was
+ * written. execution_locks.run_id is a process-generation identity, not a
+ * bridge_runs run id, so this is the only way to later prove a given lock
+ * row is (or is not) the one a crashed attempt actually held — see
+ * eventRecovery.ts reconcileAbandonedHealthLeases. */
+export interface HealthEventExecutionLaneIdentity {
+  serviceId: string;
+  runId: string;
+  acquisitionId: string;
+}
+
+export interface HealthEventExecutionStartedMarker {
+  runId: string;
+  lane: HealthEventExecutionLaneIdentity | null;
+}
+
+export function serializeHealthEventExecutionStartedMarker(marker: HealthEventExecutionStartedMarker): string {
+  return JSON.stringify(marker);
+}
+
+/** Tolerates the legacy plain-runId marker format (lane: null) alongside
+ * the current JSON-with-lane-identity format. */
+export function parseHealthEventExecutionStartedMarker(value: string): HealthEventExecutionStartedMarker {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && typeof (parsed as { runId?: unknown }).runId === "string") {
+      const laneRaw = (parsed as { lane?: unknown }).lane;
+      const lane = laneRaw && typeof laneRaw === "object"
+        && typeof (laneRaw as Partial<HealthEventExecutionLaneIdentity>).serviceId === "string"
+        && typeof (laneRaw as Partial<HealthEventExecutionLaneIdentity>).runId === "string"
+        && typeof (laneRaw as Partial<HealthEventExecutionLaneIdentity>).acquisitionId === "string"
+        ? laneRaw as HealthEventExecutionLaneIdentity
+        : null;
+      return { runId: (parsed as { runId: string }).runId, lane };
+    }
+  } catch {
+    // fall through to legacy plain-runId format
+  }
+  return { runId: value, lane: null };
+}
+
 const MAX_PAYLOAD_BYTES = 4096;
 const REDACT_KEY_PATTERN = /token|secret|password|passwd|key|authorization|credential|prompt/i;
 const REDACTED = "[redacted]";
@@ -380,7 +422,10 @@ export async function executeHealthOpsRun(
         collect,
         finalize: () => eventStore.finalize(),
         onProviderExecutionStarted: () => {
-          db.setSetting(healthEventExecutionStartedKey(receiptId), runId);
+          db.setSetting(healthEventExecutionStartedKey(receiptId), serializeHealthEventExecutionStartedMarker({
+            runId,
+            lane: { serviceId: laneHandle.serviceId, runId: laneHandle.runId, acquisitionId: laneHandle.acquisitionId },
+          }));
         },
       });
     } finally {

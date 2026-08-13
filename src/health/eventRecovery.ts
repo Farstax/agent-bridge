@@ -1,12 +1,15 @@
 import type { BridgeDb } from "../db.js";
 import type { RunningRun } from "../repositories/runRepository.js";
+import type { ExecutionLockRecord } from "../repositories/lockRepository.js";
 import type { HealthReport } from "./types.js";
 import {
   HEALTH_EVENT_SOURCE,
   HEALTH_RUN_SURFACE,
   HEALTH_RUN_CHAT_KEY,
   healthEventExecutionStartedKey,
+  parseHealthEventExecutionStartedMarker,
   reconcileEventReceiptResult,
+  type HealthEventExecutionLaneIdentity,
 } from "./eventIngress.js";
 
 /** Stable identity for one red episode, anchored to the last durable report. */
@@ -75,6 +78,28 @@ export function startedNonReplayableHealthRuns(db: BridgeDb): RunningRun[] {
   return runs;
 }
 
+/**
+ * The execution_locks identity (service_id/run_id/acquisition_id) each
+ * started, non-replayable health Run's provider-start marker durably
+ * recorded when it was written — i.e. the specific lock a crashed attempt
+ * actually held, not "whatever lock currently occupies the health lane."
+ * Markers written before this identity was captured (or set directly by
+ * legacy plain-runId callers) yield no identity here.
+ */
+export function startedHealthRunLaneIdentities(db: BridgeDb): HealthEventExecutionLaneIdentity[] {
+  const identities: HealthEventExecutionLaneIdentity[] = [];
+  for (const receipt of db.listPendingEventReceipts()) {
+    if (receipt.source !== HEALTH_EVENT_SOURCE || !receipt.run_id) continue;
+    const raw = db.getSetting(healthEventExecutionStartedKey(receipt.id));
+    if (raw === null) continue;
+    const run = db.getRun(receipt.run_id);
+    if (run?.status !== "running") continue;
+    const marker = parseHealthEventExecutionStartedMarker(raw);
+    if (marker.lane) identities.push(marker.lane);
+  }
+  return identities;
+}
+
 export interface HealthLeaseReconciliationOptions {
   /** Proves whether the process that holds/held the health execution lane
    * for this Run is still alive. Same contract as
@@ -110,11 +135,21 @@ export interface HealthLeaseReconciliationOptions {
  *
  * execution_locks.run_id is the *process generation* identity a BridgeDb
  * was opened with (LockRepositoryOptions.runId), not a bridge_runs run
- * id — so the health lane's lock cannot be correlated to a specific Run by
- * that column. The health lane is exclusive (surface/chat_key is a fixed,
- * unique pair), so at most one health Run is ever mid-flight through it;
- * this proves the lock abandoned only once every started, non-replayable
- * health Run's owning process is proven absent.
+ * id — so a lock currently occupying the health lane can never be assumed
+ * to belong to any specific started Run just because it's in that lane.
+ * The lane being exclusive only guarantees at most one Run is ever
+ * mid-flight through it *at a time*; it does not guarantee the lock this
+ * pass observes is still the same one a crashed attempt held — ownership
+ * can have legitimately changed hands (a different receipt's dispatch
+ * acquired it once the crashed lease expired) before this pass ever runs.
+ * Applying a crashed Run's absence-proof to whatever lock happens to be
+ * there would risk releasing a live, unrelated execution's fence. Instead,
+ * this only ever considers the lane's lock abandoned when its exact
+ * identity (service_id/run_id/acquisition_id) still matches what a started
+ * Run's own provider-start marker durably recorded — see
+ * startedHealthRunLaneIdentities — and passes that as an exact-match
+ * `candidateLocks` entry so a legitimately-changed lock is left untouched
+ * either way.
  */
 export async function reconcileAbandonedHealthLeases(
   db: BridgeDb,
@@ -124,22 +159,30 @@ export async function reconcileAbandonedHealthLeases(
   if (!startedRuns.length) return;
   const nowMs = options.nowMs ?? Date.now();
   const allOwningProcessesAbsent = startedRuns.every((run) => options.processState(run.run_id) === "absent");
-  const isHealthLane = (lock: { surface: string; chat_key: string }) =>
-    lock.surface === HEALTH_RUN_SURFACE && lock.chat_key === HEALTH_RUN_CHAT_KEY;
 
-  db.reconcileStaleExecutionLocks({
-    nowMs,
-    reason: "health-event-restart-lease-boundary",
-    lockState: (lock) => {
-      if (!isHealthLane(lock)) return "live";
-      const expiresMs = Date.parse(lock.lease_expires_at);
-      return Number.isFinite(expiresMs) && expiresMs <= nowMs ? "stale" : "live";
-    },
-    containmentState: (lock) => {
-      if (!isHealthLane(lock)) return "ambiguous";
-      return allOwningProcessesAbsent ? "proven" : "ambiguous";
-    },
-  });
+  const laneIdentities = startedHealthRunLaneIdentities(db);
+  const currentLock = db.raw.prepare(
+    `SELECT surface, chat_key, service_id, run_id, acquisition_id, acquired_at, lease_expires_at
+     FROM execution_locks WHERE surface = ? AND chat_key = ?`
+  ).get(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY) as ExecutionLockRecord | undefined;
+  const abandonedLock = currentLock && laneIdentities.some((lane) =>
+    lane.serviceId === currentLock.service_id
+    && lane.runId === currentLock.run_id
+    && lane.acquisitionId === currentLock.acquisition_id
+  ) ? currentLock : undefined;
+
+  if (abandonedLock) {
+    db.reconcileStaleExecutionLocks({
+      nowMs,
+      reason: "health-event-restart-lease-boundary",
+      candidateLocks: [abandonedLock],
+      lockState: (lock) => {
+        const expiresMs = Date.parse(lock.lease_expires_at);
+        return Number.isFinite(expiresMs) && expiresMs <= nowMs ? "stale" : "live";
+      },
+      containmentState: () => allOwningProcessesAbsent ? "proven" : "ambiguous",
+    });
+  }
 
   await db.reconcileOrphanedRuns({
     nowMs,
@@ -155,15 +198,15 @@ export async function reconcileAbandonedHealthLeases(
   // gone, but the lock survives this pass exactly when its lease had not
   // yet expired — the sole remaining obstacle is time. Schedule one bounded
   // retry for when the lease will have expired, instead of leaving the Run
-  // 'running' with no later pass to catch it.
-  if (allOwningProcessesAbsent && options.scheduleRetry) {
-    const remainingLock = db.raw.prepare(
-      `SELECT lease_expires_at AS leaseExpiresAt FROM execution_locks WHERE surface = ? AND chat_key = ?`
-    ).get(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY) as { leaseExpiresAt: string } | undefined;
-    if (remainingLock) {
-      const expiresMs = Date.parse(remainingLock.leaseExpiresAt);
-      const delayMs = Number.isFinite(expiresMs) ? Math.max(0, expiresMs - nowMs) : 0;
-      options.scheduleRetry(delayMs);
-    }
+  // 'running' with no later pass to catch it. Only arranged when a specific
+  // abandoned lock is still correlated: if ownership has since changed
+  // hands, or the lock is already gone, retrying blindly could only ever
+  // misattribute again — that Run is left to the next legitimate
+  // reconciliation opportunity (the lane being genuinely free needs no
+  // lock-identity correlation at all).
+  if (allOwningProcessesAbsent && abandonedLock && options.scheduleRetry) {
+    const expiresMs = Date.parse(abandonedLock.lease_expires_at);
+    const delayMs = Number.isFinite(expiresMs) ? Math.max(0, expiresMs - nowMs) : 0;
+    options.scheduleRetry(delayMs);
   }
 }
