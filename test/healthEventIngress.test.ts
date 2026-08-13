@@ -16,6 +16,7 @@ import {
   type HealthOpsEventInput,
 } from "../src/health/eventIngress.js";
 import type { HealthReport } from "../src/health/types.js";
+import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
 
 /**
  * Issue #351 (corrected architecture, see issue body + PR #356 review
@@ -283,7 +284,7 @@ function makeEngine(
   const client = makeMockClient();
   const engine = new BridgeEngine(
     {
-      surfaceIdentity: "telegram:health",
+      surfaceIdentity: HEALTH_RUN_SURFACE,
       kind: "health",
       executionKind: "claude",
       botConfig: { command: "claude", modelPreference: ["default-model"] },
@@ -430,6 +431,38 @@ describe("executeHealthOpsRun", () => {
       HealthOpsRunLaneUnavailableError,
     );
     expect(runCliAsync).not.toHaveBeenCalled();
+  });
+
+  it("recovers a surface-neutral continuation on a health engine after restart", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({
+      runId: accepted.runId,
+      surface: HEALTH_RUN_SURFACE,
+      chatKey: HEALTH_RUN_CHAT_KEY,
+      chatId: 0,
+      threadId: null,
+      bot: "claude",
+      sessionId: "session-1",
+      executionMode: "async",
+      triggerKind: "run-owned-background-process",
+      triggerId: accepted.runId,
+      resumptionCount: 0,
+      pendingIds: [],
+      startedAt: new Date().toISOString(),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      deliveryState: "none",
+    });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("recovered", "session-2") });
+    const { engine } = makeEngine(runCliAsync, db, { getRunOwnedProcessState: () => "absent" });
+
+    await engine.recoverContinuations();
+    for (let i = 0; i < 50 && db.getRun(accepted.runId)?.status === "running"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(runCliAsync).toHaveBeenCalled();
+    expect(db.getRun(accepted.runId)?.status).toBe("done");
   });
 
   // ── Result correlation ────────────────────────────────────────────────────
