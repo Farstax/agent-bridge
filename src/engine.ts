@@ -181,6 +181,8 @@ export interface SurfaceNeutralTurnInput {
   eventContext: NonNullable<CliOptions["eventContext"]>;
   collect: (event: BridgeEvent) => void;
   finalize: () => void;
+  /** Called at the exact provider-attempt boundary, after lifecycle setup. */
+  onProviderExecutionStarted?: () => void;
 }
 
 type ResolvedContinuationFns = Omit<ContinuationFns, "getRunOwnedProcessState"> & {
@@ -1864,6 +1866,8 @@ export class BridgeEngine {
       result,
       chatId: claimed.chatId,
       chatKey: claimed.chatKey,
+      chatType: "private",
+      attachments: [],
       threadId: undefined,
       laneHandle: handle,
       pendingIds: [],
@@ -2564,7 +2568,7 @@ export class BridgeEngine {
         input.prompt,
         input.sessionId,
         input.chatId,
-        {},
+        { onProviderExecutionStarted: input.onProviderExecutionStarted },
         () => {},
         [],
         input.eventContext,
@@ -2578,6 +2582,8 @@ export class BridgeEngine {
         result,
         chatId: input.chatId,
         chatKey: input.chatKey,
+        chatType: "private",
+        attachments: [],
         threadId: undefined,
         laneHandle: input.laneHandle,
         pendingIds: [],
@@ -2690,6 +2696,7 @@ export class BridgeEngine {
 
       let stdout: string;
       if (mode === "async") {
+        (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
         stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
           ...buildExecutionOptions(executionKind),
           onProgress,
@@ -2700,6 +2707,7 @@ export class BridgeEngine {
           onEvent: collect ?? undefined,
         })).text;
       } else {
+        (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
         stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
           ...buildExecutionOptions(executionKind),
           chatId: this._executionLane(chatKey),

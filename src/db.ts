@@ -541,6 +541,10 @@ export class BridgeDb {
     return this.eventReceipts.getByIdempotencyKey(idempotencyKey);
   }
 
+  listPendingEventReceipts(): EventReceipt[] {
+    return this.eventReceipts.listPending();
+  }
+
   linkEventReceiptRun(id: number, runId: string): void {
     this.eventReceipts.linkRun(id, runId);
   }

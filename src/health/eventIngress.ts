@@ -51,6 +51,11 @@ export const HEALTH_OPS_EVENT_KIND_RED = "plugin_status_red" as const;
 export const HEALTH_RUN_SURFACE = "health" as const;
 export const HEALTH_RUN_CHAT_KEY = "health:ops" as const;
 export const HEALTH_RUN_AUTHORITY_SCOPE = "health:report-only" as const;
+const HEALTH_EVENT_STARTED_SETTING_PREFIX = "health:event-execution-started:";
+
+export function healthEventExecutionStartedKey(receiptId: number): string {
+  return `${HEALTH_EVENT_STARTED_SETTING_PREFIX}${receiptId}`;
+}
 
 const MAX_PAYLOAD_BYTES = 4096;
 const REDACT_KEY_PATTERN = /token|secret|password|passwd|key|authorization|credential|prompt/i;
@@ -170,7 +175,7 @@ function parsePersistedHealthReport(payloadJson: string): PersistedHealthReport 
  * but crashed before linking a Run, calling this again (with a fresh runId)
  * creates and links exactly one Run for it.
  */
-function ensureLinkedRun(
+export function ensureLinkedHealthEventRun(
   db: BridgeDb,
   receiptId: number,
   options: Pick<AcceptHealthOpsEventOptions, "runId" | "bot">,
@@ -236,7 +241,7 @@ export function acceptHealthOpsEvent(
     });
   }
 
-  const runId = ensureLinkedRun(db, receipt.id, options);
+  const runId = ensureLinkedHealthEventRun(db, receipt.id, options);
   return { receiptId: receipt.id, runId, created };
 }
 
@@ -348,6 +353,9 @@ export async function executeHealthOpsRun(
         eventContext,
         collect,
         finalize: () => eventStore.finalize(),
+        onProviderExecutionStarted: () => {
+          db.setSetting(healthEventExecutionStartedKey(receiptId), runId);
+        },
       });
     } finally {
       // Flushes the deferred run.completed persistence queued above (see
@@ -364,11 +372,40 @@ export async function executeHealthOpsRun(
     // this is a no-op.
     db.updateRunFailed(runId, (err as Error).message);
   } finally {
+    db.setSetting(healthEventExecutionStartedKey(receiptId), null);
     db.unlock(laneHandle);
   }
 
   const run = db.getRun(runId);
   return { runId, status: run?.status === "done" ? "done" : "failed" };
+}
+
+/**
+ * Reclaims accepted health receipts during startup. A receipt without a Run
+ * is the durable receipt-before-link crash window; a linked receipt is only
+ * replayed when no provider-attempt marker exists. The marker is written by
+ * BridgeEngine at the provider boundary, so a restart never blindly repeats
+ * an attempt that may already have reached the provider.
+ */
+export async function resumeDurablePendingHealthEvents(
+  db: BridgeDb,
+  engine: HealthOpsExecutionEngine,
+  options: ExecuteHealthOpsRunOptions = {},
+): Promise<void> {
+  for (const pending of db.listPendingEventReceipts()) {
+    if (pending.source !== HEALTH_EVENT_SOURCE) continue;
+    if (db.getSetting(healthEventExecutionStartedKey(pending.id)) !== null) continue;
+    if (!pending.run_id) {
+      ensureLinkedHealthEventRun(db, pending.id, { bot: options.bot });
+    }
+    try {
+      await executeHealthOpsRun(db, pending.id, engine, options);
+      reconcileEventReceiptResult(db, pending.id);
+    } catch (error) {
+      if (error instanceof HealthOpsRunLaneUnavailableError) throw error;
+      reconcileEventReceiptResult(db, pending.id);
+    }
+  }
 }
 
 /**

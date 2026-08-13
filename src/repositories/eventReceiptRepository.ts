@@ -47,6 +47,12 @@ export class EventReceiptRepository {
     ).get(idempotencyKey) as EventReceipt | undefined) ?? null;
   }
 
+  listPending(): EventReceipt[] {
+    return this.db.prepare(
+      `SELECT * FROM event_receipts WHERE status IN ('received', 'run_created') ORDER BY id ASC`,
+    ).all() as EventReceipt[];
+  }
+
   /**
    * Compare-and-swapped on status = 'received' so a racing linker (e.g. two
    * processes both replaying the same interrupted event) can only ever link

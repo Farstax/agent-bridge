@@ -52,6 +52,13 @@ export class HealthReportStore {
     `).run(report.pluginName, JSON.stringify(report));
   }
 
+  getReport(pluginName: string): HealthReport | null {
+    const row = this.db.prepare(
+      `SELECT report_json FROM health_plugin_reports WHERE plugin_name = ?`
+    ).get(pluginName) as { report_json?: string } | undefined;
+    return row?.report_json ? parseReport(row.report_json) : null;
+  }
+
   getAggregate(options: HealthAggregateOptions): HealthAggregate {
     const activePluginNames = [...new Set(options.activePluginNames)];
     if (!activePluginNames.length) {
