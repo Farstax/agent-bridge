@@ -1,17 +1,18 @@
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { applyLegacyCompatibleBaseline } from "./legacyBaselineMigration.js";
 import { dropLegacyPromptOverrides } from "./dropLegacyPromptOverridesMigration.js";
 import { applyRoleAssignmentsMigration } from "./roleAssignmentsMigration.js";
 import { applyReconciliationAuditMigration } from "./reconciliationAuditMigration.js";
 import { applyMemoryResolutionMigration } from "./memoryResolutionMigration.js";
+import { applyHealthSchemaMigration } from "./healthSchemaMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 export interface Migration {
   version: number;
   name: string;
-  up: (db: Database.Database) => void;
+  up: (db: Database.Database, databaseRole?: string) => void;
 }
 
 export class UnsupportedSchemaVersionError extends Error {
@@ -62,6 +63,7 @@ export function applyMigrationsUpTo(
   db: Database.Database,
   migrations: readonly Migration[],
   targetVersion: number,
+  databaseRole = "shared",
 ): void {
   const current = Number(db.pragma("user_version", { simple: true }));
   if (!Number.isInteger(current) || current < 0 || current > targetVersion) {
@@ -89,7 +91,7 @@ export function applyMigrationsUpTo(
     const migrate = db.transaction(() => {
       for (const migration of ordered) {
         if (migration.version <= current || migration.version > targetVersion) continue;
-        migration.up(db);
+        migration.up(db, databaseRole);
         db.pragma(`user_version = ${migration.version}`);
       }
       // foreign_key_check runs a full on-demand scan regardless of the
@@ -116,8 +118,20 @@ export function applyMigrationsUpTo(
 export function applyMigrations(
   db: Database.Database,
   migrations: readonly Migration[] = DEFAULT_MIGRATIONS,
+  databaseRole = "shared",
 ): void {
-  applyMigrationsUpTo(db, migrations, CURRENT_SCHEMA_VERSION);
+  applyMigrationsUpTo(db, migrations, CURRENT_SCHEMA_VERSION, databaseRole);
+}
+
+/** Returns the tables created by the registered migration plan for a role. */
+export function schemaTablesForRole(databaseRole = "shared"): readonly string[] {
+  const db = new Database(":memory:");
+  try {
+    applyMigrations(db, undefined, databaseRole);
+    return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -127,6 +141,7 @@ export function applyMigrations(
  * Version 4 adds schema-owned reconciliation evidence for Issue #193.
  * Version 5 adds memory resolution (Issue #304) and repairs the
  * project_memories_fts triggers' invalid delete-command syntax.
+ * Version 6 adds the health report read model for health-role databases.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -135,4 +150,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 3, name: "add-dormant-role-assignments", up: applyRoleAssignmentsMigration },
   { version: 4, name: "add-reconciliation-audit", up: applyReconciliationAuditMigration },
   { version: 5, name: "add-memory-resolution", up: applyMemoryResolutionMigration },
+  { version: 6, name: "add-health-report-read-model", up: applyHealthSchemaMigration },
 ];

@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
 import type { HealthAggregate, HealthReport, HealthStatus } from "./types.js";
-import { applyRoleSchema } from "../db/schemaContract.js";
 
 export interface HealthAggregateOptions {
   activePluginNames: string[];
@@ -40,7 +39,6 @@ export class HealthReportStore {
 
   constructor(db: Database.Database) {
     this.db = db;
-    applyRoleSchema(this.db, "health");
     this.migrateLegacyLastReport();
   }
 

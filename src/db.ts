@@ -63,7 +63,6 @@ export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "./db/roleAssignmentsMigration.js";
 import { classifyLifecycleState } from "./rolloutLifecycle.js";
-import { applyRoleSchema } from "./db/schemaContract.js";
 
 // Sentinel row keys stored in bridge_state for non-chat state
 const pollingKey = (bot: string) => `$polling:${bot}`;
@@ -157,8 +156,7 @@ export class DatabaseMissingError extends Error {
 function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
-  applyMigrations(raw);
-  applyRoleSchema(raw, options.databaseRole);
+  applyMigrations(raw, undefined, options.databaseRole);
 
   // ── Non-schema runtime maintenance ────────────────────────────────────────
   // Prunes turns already covered by a compact summary. Depends on runtime

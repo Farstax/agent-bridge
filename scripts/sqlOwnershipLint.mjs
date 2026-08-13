@@ -29,6 +29,7 @@ const OWNER_FILE_SUFFIXES = [
   // The canonical schema contract names all durable tables by design.
   "src/db/schemaContract.ts",
 ];
+const DURABLE_DDL = /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`]?([A-Za-z_][A-Za-z0-9_]*)/gi;
 
 function listFiles(dir) {
   const out = [];
@@ -43,6 +44,10 @@ function listFiles(dir) {
 
 function isOwnerFile(relPath) {
   return OWNER_FILE_SUFFIXES.some((suffix) => relPath === suffix || relPath.endsWith(`/${suffix}`));
+}
+
+function isMigrationOwner(relPath) {
+  return relPath === "src/db/schema.ts" || /(?:^|\/)src\/db\/[^/]+Migration\.ts$/.test(relPath);
 }
 
 /**
@@ -123,6 +128,14 @@ function lintFile(filePath, relPath) {
   const violations = [];
   if (isOwnerFile(relPath)) return violations;
   const content = readFileSync(filePath, "utf8");
+  if (!isMigrationOwner(relPath)) {
+    DURABLE_DDL.lastIndex = 0;
+    let ddl;
+    while ((ddl = DURABLE_DDL.exec(content)) !== null) {
+      const lineNumber = offsetToLine(content, ddl.index);
+      violations.push(`${relPath}:${lineNumber}:${content.split("\n")[lineNumber - 1]}`);
+    }
+  }
   const lines = content.split("\n");
   const statementRanges = findStatementRanges(content);
   const startsPerLine = new Map();
@@ -167,7 +180,8 @@ for (const file of files) {
 
 if (allViolations.length > 0) {
   console.error(
-    "arch-lint: advisor/conversation SQL must live in its owning repository " +
+    "arch-lint: durable CREATE TABLE statements must live in a migration owner; " +
+    "advisor/conversation SQL must live in its owning repository " +
     "(src/repositories/advisorRepository.ts, src/repositories/conversationRepository.ts) " +
     "or be textually inside a .prepare()/.exec() call explicitly marked with " +
     "arch-lint-allow-legacy-sql immediately above",
