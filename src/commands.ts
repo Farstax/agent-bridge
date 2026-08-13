@@ -123,7 +123,6 @@ export function handleCommand(
   if (text === "/reset") {
     db.setSession(chatId, kind, null);
     db.clearConvHistory(chatId);
-    db.setSetting(`ctx_suppress:${chatId}`, null);
     return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };
   }
 
