@@ -36,7 +36,7 @@ Agent Bridge now uses a compact-first memory model:
 - fallback can compact before provider handoff without blocking if compaction fails;
 - prompt context uses the latest compact summary plus latest recent-turn tail;
 - compaction processes the full un-compacted backlog independently of the prompt-context cap;
-- platform deployments can use `BRIDGE_CONTEXT_INJECTION_POLICY=handoff_once` to seed fresh provider sessions once and then rely on native CLI session continuity;
+- fresh provider invocations receive one bounded seed and resumed invocations rely on native CLI session continuity;
 - pre-seed compaction can run before oversized fresh handoff seeds via `BRIDGE_PRESEED_COMPACT_MODE=auto`.
 
 ## Operator Boundary
@@ -52,7 +52,6 @@ PR #80 finalized the operator surface:
 Recommended platform-managed deployment defaults:
 
 ```text
-BRIDGE_CONTEXT_INJECTION_POLICY=handoff_once
 BRIDGE_PRESEED_COMPACT_MODE=auto
 BRIDGE_PRESEED_COMPACT_CHARS=30000
 ```
@@ -60,7 +59,6 @@ BRIDGE_PRESEED_COMPACT_CHARS=30000
 OSS/self-hosted default behaviour remains compatible:
 
 ```text
-BRIDGE_CONTEXT_INJECTION_POLICY=always
 BRIDGE_PRESEED_COMPACT_MODE=off
 ```
 

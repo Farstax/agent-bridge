@@ -84,7 +84,6 @@ describe("BridgeEngine", () => {
     delete process.env.BRIDGE_COMPACT_CHUNK_MAX_CHARS;
     delete process.env.BRIDGE_COMPACT_PARALLELISM;
     delete process.env.BRIDGE_MEMORY_EXTRACTOR_ENABLED;
-    delete process.env.BRIDGE_CONTEXT_INJECTION_POLICY;
     delete process.env.BRIDGE_PRESEED_COMPACT_MODE;
     delete process.env.BRIDGE_PRESEED_COMPACT_CHARS;
     delete process.env.BRIDGE_COMPACTION_CHAIN;
@@ -110,7 +109,7 @@ describe("BridgeEngine", () => {
   describe("handoff consumption", () => {
     it("clears a pending handoff mark after the first turn for that chat+CLI", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const runCli = vi.fn().mockResolvedValue("Hello there!");
+      const runCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Hello there!", session_id: "handoff-session" }));
       const client = makeMockClient();
 
       const engine = new BridgeEngine(
@@ -163,11 +162,10 @@ describe("BridgeEngine", () => {
     });
   });
 
-  describe("context injection policy (BRIDGE_CONTEXT_INJECTION_POLICY)", () => {
+  describe("provider-native context handoff", () => {
     const MARKER = "earlier-turn-marker-XYZ123";
 
-    it("always policy (explicit) injects context every turn even when a native session already exists", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "always";
+    it("does not inject context into a resumed native session", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
       db.setSession("100", "claude", "existing-session-continuing");
@@ -185,10 +183,10 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makeMessage("continue please")]);
 
-      expect(capturedPrompt).toContain(MARKER);
+      expect(capturedPrompt).not.toContain(MARKER);
     });
 
-    it("default (no env set) behaves like always — preserves current OSS behavior", async () => {
+    it("does not inject context into a resumed native session by default", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
       db.setSession("100", "claude", "existing-session-continuing");
@@ -206,11 +204,10 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makeMessage("continue please")]);
 
-      expect(capturedPrompt).toContain(MARKER);
+      expect(capturedPrompt).not.toContain(MARKER);
     });
 
     it("handoff_once injects on the first turn when no native session exists", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
       // No db.setSession call — sessionId is null for this chat+CLI.
@@ -233,7 +230,6 @@ describe("BridgeEngine", () => {
     });
 
     it("injects Soul and the active model once on handoff, then sends only the request on continuation", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
 
@@ -272,7 +268,6 @@ describe("BridgeEngine", () => {
     });
 
     it("handoff_once suppresses context on a second same-provider turn once a native session exists (sync path)", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
 
@@ -297,7 +292,6 @@ describe("BridgeEngine", () => {
     });
 
     it("handoff_once suppresses context on a second same-provider turn once a native session exists (async path)", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
 
@@ -324,7 +318,6 @@ describe("BridgeEngine", () => {
     });
 
     it("handoff_once injects when handoff_required is set even though a native session already exists", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
       db.setSession("100", "claude", "stale-session-before-handoff-mark");
@@ -343,12 +336,11 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makeMessage("hello after switch")]);
 
-      expect(capturedPrompt).toContain(MARKER);
-      expect(isHandoffRequired(db, "100", "claude")).toBe(false);
+      expect(capturedPrompt).not.toContain(MARKER);
+      expect(isHandoffRequired(db, "100", "claude")).toBe(true);
     });
 
     it("handoff flag is only consumed on a turn where context was actually injected", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
       db.setSession("100", "claude", "session-continuing");
@@ -358,7 +350,7 @@ describe("BridgeEngine", () => {
       const capturedPrompts: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedPrompts.push(args[args.length - 1]);
-        return "ok";
+        return JSON.stringify({ result: "ok", session_id: "fresh-after-suppression" });
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -372,13 +364,13 @@ describe("BridgeEngine", () => {
       expect(isHandoffRequired(db, "100", "claude")).toBe(true);
 
       db.setSetting("ctx_suppress:100", null);
+      db.setSession("100", "claude", null);
       await engine.handleMessages([makeMessage("now it should inject")]);
       expect(capturedPrompts[1]).toContain(MARKER);
       expect(isHandoffRequired(db, "100", "claude")).toBe(false);
     });
 
     it("keeps Agent Bridge context env available under handoff_once even when the prompt preamble is suppressed", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
       db.setSession("100", "claude", "session-continuing");
@@ -429,7 +421,6 @@ describe("BridgeEngine", () => {
     }
 
     it("does not compact when mode is off (default) even past the char threshold", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       process.env.BRIDGE_PRESEED_COMPACT_CHARS = "10";
       const { BridgeEngine } = await import("../src/engine.js");
       seedLongTurns("100");
@@ -451,7 +442,6 @@ describe("BridgeEngine", () => {
     });
 
     it("compacts before injecting context when mode=auto and the char threshold is exceeded on a fresh-seed turn", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
       process.env.BRIDGE_PRESEED_COMPACT_CHARS = "10";
       const { BridgeEngine } = await import("../src/engine.js");
@@ -479,7 +469,6 @@ describe("BridgeEngine", () => {
     });
 
     it("uses the configured recovery chain through the real pre-seed engine path", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
       process.env.BRIDGE_PRESEED_COMPACT_CHARS = "10";
       process.env.BRIDGE_COMPACTION_CHAIN = "codex:gpt-preseed-fallback";
@@ -529,7 +518,6 @@ describe("BridgeEngine", () => {
     });
 
     it("does not compact when there are zero uncompacted turns", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
       process.env.BRIDGE_PRESEED_COMPACT_CHARS = "10";
       const { BridgeEngine } = await import("../src/engine.js");
@@ -551,7 +539,6 @@ describe("BridgeEngine", () => {
     });
 
     it("respects the compact-in-progress guard and skips pre-seed compaction", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
       process.env.BRIDGE_PRESEED_COMPACT_CHARS = "10";
       const { BridgeEngine } = await import("../src/engine.js");
@@ -579,7 +566,6 @@ describe("BridgeEngine", () => {
     });
 
     it("does not block execution when pre-seed compaction fails", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
       process.env.BRIDGE_PRESEED_COMPACT_CHARS = "10";
       const { BridgeEngine } = await import("../src/engine.js");
@@ -607,7 +593,6 @@ describe("BridgeEngine", () => {
     });
 
     it("runs on the async execution path as well", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
       process.env.BRIDGE_PRESEED_COMPACT_CHARS = "10";
       const { BridgeEngine } = await import("../src/engine.js");
@@ -1614,7 +1599,6 @@ describe("BridgeEngine", () => {
     });
 
     it("injects context on invalid-session retry under handoff_once, even though a valid-looking session existed beforehand", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
 
       const runCli = vi.fn()
@@ -1657,7 +1641,6 @@ describe("BridgeEngine", () => {
       expect(promptArg.match(/Active model: claude-primary/g) ?? []).toHaveLength(1);
     });
     it("falls back to the next model in preference list and retries with context and null sessionId on capacity error", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
 
       const runCli = vi.fn()
@@ -3037,7 +3020,6 @@ describe("BridgeEngine", () => {
     });
 
     it("suppresses context injection on the prompt following a reset", async () => {
-      process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 

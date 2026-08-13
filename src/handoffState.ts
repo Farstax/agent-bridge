@@ -1,10 +1,8 @@
 /**
  * PURPOSE: Persistent per-chat/per-CLI one-time handoff state. Marks that the
- * next execution for a given chat+CLI pair must receive injected Agent
- * Bridge context (a fresh CLI session started via manual switch or capacity
- * fallback), then clears itself after that context has been consumed once.
- * This is a standalone primitive — nothing calls it yet; wiring into the
- * manual-switch/fallback dispatch path is a later, separately-tested PR.
+ * next fresh provider execution for a given chat+CLI pair must receive
+ * injected Agent Bridge context. The marker stays durable until the engine
+ * persists provider-session evidence after a successful invocation.
  * NEIGHBORS: src/db.ts, src/engine.ts
  */
 
@@ -34,15 +32,4 @@ export function isHandoffRequired(db: HandoffDb, chatKey: string, cliKind: strin
 
 export function clearHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): void {
   db.setSetting(handoffRequiredSettingKey(chatKey, cliKind), null);
-}
-
-/**
- * Checks and clears the flag atomically (from the caller's perspective —
- * there is no concurrent writer for a single chat+CLI pair in this process
- * model). Returns true exactly once per markHandoffRequired() call.
- */
-export function consumeHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): boolean {
-  if (!isHandoffRequired(db, chatKey, cliKind)) return false;
-  clearHandoffRequired(db, chatKey, cliKind);
-  return true;
 }

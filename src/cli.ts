@@ -8,7 +8,7 @@
 
 import { homedir } from "node:os";
 import type { CliOptions, CliResult, BotKind } from "./types.js";
-import type { ProviderInvocationRequest } from "./providers/types.js";
+import type { ProviderInvocation, ProviderInvocationRequest } from "./providers/types.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
@@ -129,7 +129,7 @@ export function buildCliInvocation({
   effort?: EffortLevel | null;
   homeDir?: string;
   toolMode?: "default" | "none";
-}): { command: string; args: string[]; stdin?: string } {
+}): ProviderInvocation {
   void sessionMode;
   if (toolMode === "none" && !supportsToolFreeMode(bot)) {
     throw new Error(`Tool-free mode is not supported for ${bot}`);
@@ -163,7 +163,7 @@ export function buildCliInvocation({
     });
   }
 
-  return { command, args: appendEffortArgs(command, [], effort) };
+  return { command, args: appendEffortArgs(command, [], effort), nativeSessionMode: "fresh" };
 }
 
 export { validateBridgeConfig } from "./config.js";
