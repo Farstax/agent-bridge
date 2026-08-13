@@ -43,7 +43,7 @@ Agent Bridge now uses a compact-first memory model:
 
 PR #80 finalized the operator surface:
 
-- `/context` reports context and memory health: injection policy, pre-seed compact mode/threshold, uncompacted turn/char counts, and memory count;
+- `/context` reports context and memory health: pre-seed compact mode/threshold, uncompacted turn/char counts, and memory count;
 - no Telegram-facing `/memory`, `/memory <query>`, or `/memory forget` command was added;
 - persistent memory remains agent-facing and is consumed by subprocess CLIs through `agent-bridge-context --memory*`.
 

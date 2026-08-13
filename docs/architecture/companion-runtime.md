@@ -133,14 +133,14 @@ The Companion Runtime should support domain-agnostic requests such as:
 
 The Companion Runtime should preserve continuity across provider switching without repeatedly injecting full Agent Bridge context into every turn.
 
-**Current implementation (issue #69 PR 6 + context injection policy):**
+**Current implementation (issue #69 PR 6):**
 
 - manual provider switching and capacity fallback both clear the target CLI's session (`db.setSession(chatKey, targetCli, null)`) so it starts fresh rather than resuming a possibly stale, long-abandoned native session;
 - fallback additionally compacts the outgoing CLI's conversation first (rate-limited by `fallbackCompactCooldown.ts`) and promotes durable memory candidates, so the target CLI's context is a fresh summary rather than raw un-compacted turns; compaction failure never blocks the fallback itself;
 - a one-time `handoff_required:<chatKey>:<cliKind>` flag (`src/handoffState.ts`) is set on the target;
 - `BridgeEngine` injects context only for a fresh provider invocation. The provider adapter reports the invocation mode, including Codex attachment turns that cannot resume. A pending handoff never overrides a resumed invocation. Handoff markers clear only after provider-session evidence is persisted.
 - Minimal pre-seed compaction (`BRIDGE_PRESEED_COMPACT_MODE`, default `off`) runs before an oversized fresh-session handoff when mode is `auto`. It uses `BRIDGE_PRESEED_COMPACT_CHARS` (default `30000`) and never blocks a turn when compaction fails.
-- `/context` (`handleCommand`, `src/commands.ts`) is an operator diagnostics command, not a memory browser: it reports the injection policy, pre-seed compact mode/threshold, uncompacted turn/char counts, and a memory *count*. It never lists or renders memory contents. Durable memory is agent-facing only — subprocess CLIs read it via `agent-bridge-context --memory`/`--memory-query`/`--memory-add-json` (`src/contextCommand.ts`). There is no human-facing `/memory` Telegram command, and none is currently planned; memory is long-term recall for agents, not an operator-facing notes feature.
+- `/context` (`handleCommand`, `src/commands.ts`) is an operator diagnostics command, not a memory browser: it reports pre-seed compact mode/threshold, uncompacted turn/char counts, and a memory *count*. It never lists or renders memory contents. Durable memory is agent-facing only — subprocess CLIs read it via `agent-bridge-context --memory`/`--memory-query`/`--memory-add-json` (`src/contextCommand.ts`). There is no human-facing `/memory` Telegram command, and none is currently planned; memory is long-term recall for agents, not an operator-facing notes feature.
 
 Handoff context should be built from:
 

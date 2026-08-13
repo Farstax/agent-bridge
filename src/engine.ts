@@ -1369,6 +1369,7 @@ export class BridgeEngine {
             memoryCandidates: result.memoryCandidates,
             continuationHint: result.continuationHint,
             continuationProcessObserved: result.continuationProcessObserved,
+            nativeSessionMode: result.nativeSessionMode,
           },
         },
       });
@@ -2809,8 +2810,9 @@ export class BridgeEngine {
       }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
-      } else if (mode === "async" && executionKind === "kimchi" && !result.sessionId) {
-        // Preserve the existing async-only Kimchi session-file resolution.
+      } else if (executionKind === "kimchi" && !result.sessionId) {
+        // Kimchi writes native session evidence to its session files for both
+        // synchronous and asynchronous invocations.
         result.sessionId = resolveKimchiSessionId(cwd);
       }
       result.text = scrubOutputDir(result.text, outDir);

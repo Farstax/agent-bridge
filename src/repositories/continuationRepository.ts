@@ -15,6 +15,7 @@ export interface ContinuationAttemptCheckpoint {
     memoryCandidates: ProjectMemoryCandidate[];
     continuationHint?: "background-process";
     continuationProcessObserved?: boolean;
+    nativeSessionMode?: "fresh" | "resume";
   };
 }
 
@@ -73,6 +74,7 @@ function parsePendingAttempt(value: unknown): ContinuationAttemptCheckpoint | un
   if (!Array.isArray(result.memoryCandidates)) return undefined;
   if (result.continuationHint !== undefined && result.continuationHint !== "background-process") return undefined;
   if (result.continuationProcessObserved !== undefined && typeof result.continuationProcessObserved !== "boolean") return undefined;
+  if (result.nativeSessionMode !== undefined && result.nativeSessionMode !== "fresh" && result.nativeSessionMode !== "resume") return undefined;
   return attempt as ContinuationAttemptCheckpoint;
 }
 
