@@ -1056,7 +1056,7 @@ export class BridgeEngine {
     lockHeartbeat?.unref();
 
     try {
-      const completed = await this._executeTurnWithContinuations({
+      const execution = await this._executeTurnWithContinuations({
         mode,
         prompt,
         sessionId,
@@ -1070,9 +1070,12 @@ export class BridgeEngine {
         pendingIds: [...activePendingIds, ...continuationPendingIds],
         attachmentPartitions: continuationAttachmentPartitions,
       });
-      if (!completed) return "fenced";
+      if (!execution.completed) return "fenced";
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
         throw new LostExecutionLeaseError();
+      }
+      if (execution.continuationAttachments.length > 0) {
+        attachments.splice(0, attachments.length, ...execution.continuationAttachments);
       }
       activeTaskCommitted = true;
       return "committed";
@@ -1141,7 +1144,7 @@ export class BridgeEngine {
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
     attachmentPartitions?: string[][];
-  }): Promise<boolean> {
+  }): Promise<{ completed: boolean; continuationAttachments: string[] }> {
     const { runId, eventContext, collect, finalize } = this._createEventContext(input.chatId, input.threadId, input.laneHandle);
     const result = await this._executeAndDeliverTurnAttempt({
       ...input,
@@ -1154,8 +1157,8 @@ export class BridgeEngine {
       continuationStartedAtMs: null,
       resumptionCount: 0,
     });
-    if (!result) return false;
-    return this._continueFromDeliveredResult({
+    if (!result) return { completed: false, continuationAttachments: [] };
+    const completed = await this._continueFromDeliveredResult({
       ...input,
       runId,
       eventContext,
@@ -1165,6 +1168,7 @@ export class BridgeEngine {
       continuationStartedAtMs: null,
       resumptionCount: 0,
     });
+    return { completed, continuationAttachments: this.continuationStore.get(runId)?.attachments ?? [] };
   }
 
   private async _executeAndDeliverTurnAttempt(input: {
@@ -1317,7 +1321,7 @@ export class BridgeEngine {
     try {
       continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
       const partitions = input.pendingIds.length > 0
-        ? (input.attachmentPartitions ?? this.db.getClaimedPendingAttachmentPartitions(input.laneHandle, input.pendingIds))
+        ? this.db.getClaimedPendingAttachmentPartitions(input.laneHandle, input.pendingIds)
         : undefined;
       if (input.pendingIds.length > 0 && !partitions) throw new LostExecutionLeaseError();
       let partitionOffset = 0;
@@ -1329,7 +1333,6 @@ export class BridgeEngine {
       if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments, stagedPartitions)) {
         throw new LostExecutionLeaseError();
       }
-      input.attachmentPartitions = stagedPartitions;
       pendingRowOwnsContinuationAttachments = input.pendingIds.length > 0;
       const saved = this.continuationStore.saveWaiting({
         runId: input.runId,

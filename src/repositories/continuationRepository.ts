@@ -243,23 +243,29 @@ export class ContinuationRepository {
 
   reclaimPendingIds(handle: ExecutionLaneHandle, pendingIds: number[]): boolean {
     if (pendingIds.length === 0) return true;
-    return this.db.transaction(() => {
-      const owns = this.db.prepare(`
-        SELECT 1 FROM execution_locks
-        WHERE surface = ? AND chat_key = ? AND service_id = ? AND run_id = ? AND acquisition_id = ?
-      `).get(handle.surface, handle.chatKey, handle.serviceId, handle.runId, handle.acquisitionId);
-      if (!owns) return false;
-      const claim = this.db.prepare(`
-        UPDATE pending_messages
-        SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?, claimed_at = ?
-        WHERE id = ? AND surface = ? AND chat_key = ? AND state IN ('queued', 'claimed')
-      `);
-      const claimedAt = new Date().toISOString();
-      for (const id of pendingIds) {
-        if (claim.run(handle.runId, handle.acquisitionId, claimedAt, id, handle.surface, handle.chatKey).changes !== 1) return false;
-      }
-      return true;
-    })();
+    const mismatch = new Error("pending message ownership could not be reclaimed");
+    try {
+      return this.db.transaction(() => {
+        const owns = this.db.prepare(`
+          SELECT 1 FROM execution_locks
+          WHERE surface = ? AND chat_key = ? AND service_id = ? AND run_id = ? AND acquisition_id = ?
+        `).get(handle.surface, handle.chatKey, handle.serviceId, handle.runId, handle.acquisitionId);
+        if (!owns) throw mismatch;
+        const claim = this.db.prepare(`
+          UPDATE pending_messages
+          SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?, claimed_at = ?
+          WHERE id = ? AND surface = ? AND chat_key = ? AND state IN ('queued', 'claimed')
+        `);
+        const claimedAt = new Date().toISOString();
+        for (const id of pendingIds) {
+          if (claim.run(handle.runId, handle.acquisitionId, claimedAt, id, handle.surface, handle.chatKey).changes !== 1) throw mismatch;
+        }
+        return true;
+      })();
+    } catch (error) {
+      if (error === mismatch) return false;
+      throw error;
+    }
   }
 
   private listRecords(): ContinuationRecord[] {
