@@ -27,8 +27,10 @@ pruning predates #354.
 - Cleanup, if ever required, is an explicit operator action. Before any
   destructive cleanup, stop or otherwise quiesce the affected service as
   appropriate, preserve a verified recoverable copy of the affected database
-  and evidence, and record which database and rows are in scope. Cleanup must
-  not leave a summary as the only surviving evidence.
+  and evidence, and record which database and rows are in scope. The on-call
+  Agent Bridge operator owns this decision and records the affected paths and
+  verification in the incident/release evidence. Cleanup must not leave a
+  summary as the only surviving evidence.
 - After cleanup, verify SQLite integrity (`quick_check` and
   `foreign_key_check`) and service health before treating the operation as
   complete. If a safe, documented cleanup procedure cannot be established,
@@ -44,13 +46,28 @@ On the current host the active interactive and worker databases are:
 /home/content-crawler/runtime/agent-bridge/worker/bridge.sqlite
 ```
 
-The provider-specific services may use their configured `DB_PATH` (the
-development/default path is `<project>/.data/bridge.sqlite`). Check the
-service environment before operating on a file. These paths are on `/` on the
-current host; the health check for `/` therefore covers the conversation data.
+The current provider-specific services are configured to use the shared
+
+```text
+/home/content-crawler/agent-bridge/.data/bridge.sqlite
+```
+
+file. A fresh installation may instead use the installer state root
+`/var/lib/agent-bridge/<service>/bridge.sqlite`; `DB_PATH` is authoritative in
+all cases. Before operating on a database, inventory every selected service by
+reading its systemd `EnvironmentFile` and `DB_PATH`, resolve the path, and
+check the filesystem with `df -P`. Include any configured `HEALTH_DB_PATH` in
+the inventory, while treating the health-role database as separate health
+state unless its schema contains conversation evidence. These paths are on
+`/` on the current host; the health check for `/` therefore covers the current
+conversation data.
 
 The existing health `ServerPlugin` is the accepted #369 monitoring mechanism.
-It reports:
+On this host it is enabled by `agent-bridge-health.service` with
+`HEALTH_MONITOR_ENABLED=true`, the default non-disabled
+`HEALTH_SERVER_MONITOR_ENABLED` setting, and a configured operator Telegram
+chat. Before relying on an alert after a service/configuration change, verify
+those settings and the selected database mounts. The plugin reports:
 
 - `disk-space` for `/`: amber below 2 GB free, red below 0.5 GB free;
 - `disk-space-home` for `$HOME` (and `disk-space-tmp` for `/tmp`) with the
@@ -71,8 +88,11 @@ The retained-turn behavior from #349/#354 must not be deployed to production
 until this policy is approved and discoverable, the existing health monitoring
 coverage/alert path is evidenced, and rollback qualification is recorded.
 This is a sequencing prerequisite for normal release handling, not a runtime
-or GitHub-issue-aware deployment gate. #369 does not change guarded rollout
-scripts, deployment approval logic, release artifacts, or deployment state.
+or GitHub-issue-aware deployment gate. The release owner records this policy,
+the path/mount inventory, health evidence, and rollback evidence in the normal
+release qualification record before approving that subsequent release. #369
+does not change guarded rollout scripts, deployment approval logic, release
+artifacts, or deployment state.
 
 Reverting the #354 code does not itself delete rows already retained in
 `conversation_turns`. Code rollback and data cleanup are separate actions.
@@ -85,6 +105,9 @@ The qualification evidence is the existing #354/current test coverage:
 - `test/engine.test.ts` proves `/reset` behavior remains unchanged and keeps
   the existing conversation evidence;
 - the existing guarded rollout backup/integrity checks provide recoverable
-  database copies and post-restore verification.
+  database copies, file/hash restoration, schema, and post-restore
+  verification; the #354 reopen test supplies the retained-row semantic
+  evidence. Together these qualify recovery without claiming a new semantic
+  backup/restore test.
 
 No production deployment or cleanup is part of #369.
