@@ -26,6 +26,8 @@ const OWNER_FILE_SUFFIXES = [
   "src/repositories/advisorRepository.ts",
   "src/repositories/conversationRepository.ts",
   "src/db/legacyBaselineMigration.ts",
+  // The canonical schema contract names all durable tables by design.
+  "src/db/schemaContract.ts",
 ];
 
 function listFiles(dir) {
