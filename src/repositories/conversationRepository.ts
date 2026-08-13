@@ -10,6 +10,7 @@ export const DEFAULT_CONTEXT_RECENT_TURN_LIMIT = 200;
 // regardless of how large a match's source turn is.
 export const DEFAULT_SEARCH_TURN_LIMIT = 5;
 export const MAX_SEARCH_TURN_LIMIT = 20;
+export const MAX_SEARCH_CONTEXT_TURNS = 20;
 export const MAX_SEARCH_SNIPPET_CHARS = 300;
 
 function recentTurnCandidateLimit(): number {
@@ -177,18 +178,19 @@ export class ConversationRepository {
    * already rely on. The `cli` column is still returned on every row so a
    * caller can see provenance and reason about it explicitly.
    *
-   * Ordering: newest match first (`ORDER BY id DESC`), so a later
-   * correction/superseded value is surfaced ahead of the original it
-   * replaced, while the stale original is still returned (not hidden) for
-   * chronological inspection.
+   * Matching hits are selected newest-first so later corrections win when the
+   * hit bound is reached. Each selected hit contributes its nearest preceding
+   * and following turn in the same chat, then the deduplicated evidence is
+   * returned in chronological order for unambiguous inspection.
    *
    * Bounds: an empty/whitespace-only query returns `[]` without querying
    * the database. Matching uses a plain indexed LIKE over
    * `conversation_turns(chat_key, id)` — no FTS5 virtual table — since
    * search is already scoped to one chat's turns, a volume plain LIKE
    * comfortably handles; result count is capped at MAX_SEARCH_TURN_LIMIT
-   * and each returned turn's text is truncated to MAX_SEARCH_SNIPPET_CHARS
-   * so results are always safe to inline into a prompt.
+   * and the complete context result is capped at MAX_SEARCH_CONTEXT_TURNS;
+   * each returned turn's text is truncated to MAX_SEARCH_SNIPPET_CHARS so
+   * results are always safe to inline into a prompt.
    */
   searchConvTurns(chatKey: string, query: string, limit = DEFAULT_SEARCH_TURN_LIMIT): ConvTurnRow[] {
     const tokens = tokenizeSearchQuery(query);
@@ -197,7 +199,7 @@ export class ConversationRepository {
     const clauses = tokens.map(() => `text LIKE ? ESCAPE '\\'`).join(" OR ");
     const params = tokens.map((t) => `%${escapeLikeTerm(t)}%`);
 
-    const rows = this.db
+    const matchingRows = this.db
       .prepare(
         `SELECT id, role, text, cli, created_at FROM conversation_turns
          WHERE chat_key = ? AND (${clauses})
@@ -206,7 +208,33 @@ export class ConversationRepository {
       )
       .all(chatKey, ...params, boundedLimit) as ConvTurnRow[];
 
-    return rows.map((row) => ({
+    const evidence = new Map<number, ConvTurnRow>();
+    const adjacent = (id: number, direction: "before" | "after"): ConvTurnRow | undefined => {
+      const operator = direction === "before" ? "<" : ">";
+      const order = direction === "before" ? "DESC" : "ASC";
+      return this.db
+        .prepare(
+          `SELECT id, role, text, cli, created_at FROM conversation_turns
+           WHERE chat_key = ? AND id ${operator} ?
+           ORDER BY id ${order} LIMIT 1`
+        )
+        .get(chatKey, id) as ConvTurnRow | undefined;
+    };
+
+    // Select newest hits first, but stop adding windows once the global
+    // evidence bound is reached. The hit itself is always admitted before its
+    // optional context, so the bound cannot silently replace a selected hit
+    // with surrounding non-matches.
+    for (const hit of matchingRows) {
+      if (evidence.has(hit.id)) continue;
+      if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
+      evidence.set(hit.id, hit);
+      for (const context of [adjacent(hit.id, "before"), adjacent(hit.id, "after")]) {
+        if (context && evidence.size < MAX_SEARCH_CONTEXT_TURNS) evidence.set(context.id, context);
+      }
+    }
+
+    return [...evidence.values()].sort((a, b) => a.id - b.id).map((row) => ({
       ...row,
       text:
         row.text.length > MAX_SEARCH_SNIPPET_CHARS

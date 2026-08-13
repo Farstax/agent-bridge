@@ -13,6 +13,17 @@ import { formatProjectMemoryStoreResult, storeProjectMemoryCandidateJson } from 
 
 type EnvLike = Record<string, string | undefined>;
 
+export const MAX_SEARCH_OUTPUT_CHARS = 4_000;
+const MAX_SEARCH_QUERY_CHARS = 240;
+
+function normalizeSearchQuery(raw: string): string {
+  return raw
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_SEARCH_QUERY_CHARS);
+}
+
 function requireEnv(env: EnvLike, key: string): string {
   const value = env[key]?.trim();
   if (!value) throw new Error(`${key} is required`);
@@ -146,7 +157,7 @@ function recentTurns(db: Database.Database, chatKey: string, limit: number): str
 // legacy helpers above) since searchConvTurns is new and has no pre-Phase
 // 4B precedent to preserve.
 function searchTurns(db: Database.Database, chatKey: string, query: string): string {
-  const trimmed = query.trim();
+  const trimmed = normalizeSearchQuery(query);
   if (!trimmed) return "No conversation turns found for that query.";
   const rows = new ConversationRepository(db).searchConvTurns(chatKey, trimmed);
   if (!rows.length) return "No conversation turns found matching that query.";
@@ -155,7 +166,10 @@ function searchTurns(db: Database.Database, chatKey: string, query: string): str
     const cli = r.cli ? ` via ${r.cli}` : "";
     return `#${r.id} ${label}${cli} (${r.created_at}): ${r.text}`;
   }).join("\n");
-  return `Conversation turns matching "${trimmed}" (${rows.length}, newest first):\n${items}`;
+  const rendered = `Conversation turns matching "${trimmed}" (${rows.length}, chronological):\n${items}`;
+  return rendered.length > MAX_SEARCH_OUTPUT_CHARS
+    ? `${rendered.slice(0, MAX_SEARCH_OUTPUT_CHARS - 1)}…`
+    : rendered;
 }
 
 export function renderAgentBridgeContext(args: string[], env: EnvLike = process.env): string {
