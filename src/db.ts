@@ -956,18 +956,59 @@ export class BridgeDb {
     if (ids.length === 0) return true;
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);
+    const mismatch = new Error("claimed pending attachment ownership changed");
+    try {
+      return this.runInTransaction(() => {
+        if (!this.locks.owns(handle)) throw mismatch;
+        const statement = this.raw.prepare(`
+          UPDATE pending_messages SET attachments_json = ?
+          WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed'
+            AND claim_run_id = ? AND claim_acquisition_id = ?
+        `);
+        const encoded = JSON.stringify(attachments);
+        for (const id of ids) {
+          if (statement.run(encoded, id, surface, chatKey, handle.runId, handle.acquisitionId).changes !== 1) throw mismatch;
+        }
+        return true;
+      });
+    } catch (error) {
+      if (error === mismatch) return false;
+      throw error;
+    }
+  }
+
+  pendingMessagesOwnAttachments(surface: string, chatKey: string, ids: number[], attachments: string[]): boolean {
+    assertExecutionScope(surface, chatKey);
+    if (ids.length === 0 || attachments.length === 0) return false;
+    const wanted = new Set(ids);
+    const owned = new Set(attachments);
+    const rows = this.raw.prepare(`
+      SELECT id, attachments_json AS attachmentsJson
+      FROM pending_messages WHERE surface = ? AND chat_key = ? AND state IN ('queued', 'claimed')
+    `).all(surface, chatKey) as Array<{ id: number; attachmentsJson: string | null }>;
+    return rows.some((row) => wanted.has(row.id) && (JSON.parse(row.attachmentsJson || "[]") as string[]).some((path) => owned.has(path)));
+  }
+
+  pendingMessagesOwnAnyAttachments(attachments: string[]): boolean {
+    if (attachments.length === 0) return false;
+    const owned = new Set(attachments);
+    const rows = this.raw.prepare(`
+      SELECT attachments_json AS attachmentsJson FROM pending_messages WHERE state IN ('queued', 'claimed')
+    `).all() as Array<{ attachmentsJson: string | null }>;
+    return rows.some((row) => (JSON.parse(row.attachmentsJson || "[]") as string[]).some((path) => owned.has(path)));
+  }
+
+  getClaimedPendingAttachments(handle: ExecutionLaneHandle, id: number): string[] | null {
+    const { surface, chatKey } = handle;
+    assertExecutionScope(surface, chatKey);
     return this.runInTransaction(() => {
-      if (!this.locks.owns(handle)) return false;
-      const statement = this.raw.prepare(`
-        UPDATE pending_messages SET attachments_json = ?
+      if (!this.locks.owns(handle)) return null;
+      const row = this.raw.prepare(`
+        SELECT attachments_json AS attachmentsJson FROM pending_messages
         WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'claimed'
           AND claim_run_id = ? AND claim_acquisition_id = ?
-      `);
-      const encoded = JSON.stringify(attachments);
-      for (const id of ids) {
-        if (statement.run(encoded, id, surface, chatKey, handle.runId, handle.acquisitionId).changes !== 1) return false;
-      }
-      return true;
+      `).get(id, surface, chatKey, handle.runId, handle.acquisitionId) as { attachmentsJson: string | null } | undefined;
+      return row ? JSON.parse(row.attachmentsJson || "[]") as string[] : null;
     });
   }
 

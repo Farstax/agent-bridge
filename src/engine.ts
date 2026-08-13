@@ -80,6 +80,7 @@ import {
   type ContinuationExecutionMode,
   type ContinuationRecord,
 } from "./repositories/continuationRepository.js";
+import { cleanupAttachmentPaths } from "./attachmentCleanup.js";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -1346,6 +1347,7 @@ export class BridgeEngine {
         },
       });
       if (!saved) throw new LostExecutionLeaseError();
+      this._deleteQueuedAttachments(input.attachments.filter((attachment) => !continuationAttachments.includes(attachment)));
     } catch (error) {
       if (!pendingRowOwnsContinuationAttachments) this._cleanupContinuationAttachments(continuationAttachments);
       throw error;
@@ -1388,7 +1390,9 @@ export class BridgeEngine {
     const checkpoint = this.continuationStore.get(runId);
     if (checkpoint?.state === "waiting") {
       this.continuationStore.markCancelled(runId, reason);
-      this._cleanupContinuationAttachments(checkpoint.attachments ?? []);
+      if (!this.db.pendingMessagesOwnAttachments(checkpoint.surface, checkpoint.chatKey, checkpoint.pendingIds, checkpoint.attachments ?? [])) {
+        this._cleanupContinuationAttachments(checkpoint.attachments ?? []);
+      }
     }
     if (this.continuation.getRunOwnedProcessState(runId) === "live") {
       await this.continuation.killRunOwnedDescendants(runId);
@@ -1396,7 +1400,7 @@ export class BridgeEngine {
   }
 
   private _cleanupContinuationAttachments(attachments: string[]): void {
-    this._deleteQueuedAttachments(attachments);
+    if (!this.db.pendingMessagesOwnAnyAttachments(attachments)) cleanupAttachmentPaths(attachments);
   }
 
   private async _continueFromDeliveredResult(input: {
@@ -2269,15 +2273,7 @@ export class BridgeEngine {
   }
 
   private _deleteQueuedAttachments(attachments: string[]): void {
-    const uploadDirs = new Set<string>();
-    for (const attachment of attachments) {
-      try { unlinkSync(attachment); } catch {}
-      const parent = dirname(attachment);
-      if (basename(parent).startsWith("bridge-uploads-") || basename(parent).startsWith("bridge-continuation-attachments-")) uploadDirs.add(parent);
-    }
-    for (const dir of uploadDirs) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
-    }
+    cleanupAttachmentPaths(attachments);
   }
 
   private _assertLaneOwned(handle: ExecutionLaneHandle): void {
