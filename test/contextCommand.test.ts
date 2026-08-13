@@ -405,5 +405,48 @@ describe("agent-bridge-context helper", () => {
         rmSync(path, { force: true });
       }
     });
+
+    it("keeps all three consecutive selected hits marked through overlapping windows", () => {
+      const { db, path } = makeDb();
+      try {
+        const addTurn = (text: string, role: "user" | "assistant" = "assistant") => {
+          db.addConvTurn("chat:1", role, text, "codex");
+        };
+        const filler = (kind: string, label: string) => `${kind} ${label} ${kind[0].repeat(280)}`;
+
+        addTurn(filler("context", "before-0"));
+        addTurn(`decision isolated-0 ${"m".repeat(280)}`, "user");
+        addTurn(filler("context", "after-0"));
+        addTurn(filler("separator", "0"));
+
+        addTurn(filler("context", "before-group"));
+        addTurn(`decision A ${"m".repeat(280)}`, "user");
+        addTurn(`decision B ${"m".repeat(280)}`, "user");
+        addTurn(`decision C NEWEST CORRECTION ${"m".repeat(280)}`, "user");
+        addTurn(filler("context", "after-group"));
+        addTurn(filler("separator", "group"));
+
+        addTurn(filler("context", "before-4"));
+        addTurn(`decision isolated-4 ${"m".repeat(280)}`, "user");
+        addTurn(filler("context", "after-4"));
+        addTurn(filler("separator", "4"));
+
+        const query = `decision ${"q".repeat(230)}`;
+        const output = renderAgentBridgeContext(["--search", query], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        expect(output).toContain("decision isolated-0");
+        expect(output).toContain("decision A");
+        expect(output).toContain("decision B");
+        expect(output).toContain("decision C NEWEST CORRECTION");
+        expect(output).toContain("decision isolated-4");
+        expect(output.length).toBeLessThanOrEqual(4_000);
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
   });
 });
