@@ -361,6 +361,7 @@ describe("executeHealthOpsRun", () => {
       return { text: callCount === 1 ? claudeBackgroundOutput("started background work", "sess-1") : claudeStreamJsonOutput("finished", "sess-1") };
     });
     const { engine } = makeEngine(runCliAsync, db, {
+      hasLiveRunOwnedDescendants: vi.fn().mockReturnValueOnce(true).mockReturnValue(false),
       getRunOwnedProcessState: vi.fn().mockReturnValueOnce("live").mockReturnValue("absent"),
       killRunOwnedDescendants: vi.fn().mockResolvedValue(undefined),
       sleep: vi.fn().mockResolvedValue(undefined),
