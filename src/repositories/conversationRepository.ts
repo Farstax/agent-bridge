@@ -228,7 +228,11 @@ export class ConversationRepository {
     // optional context, so the bound cannot silently replace a selected hit
     // with surrounding non-matches.
     for (const hit of matchingRows) {
-      if (evidence.has(hit.id)) continue;
+      const existing = evidence.get(hit.id);
+      if (existing) {
+        evidence.set(hit.id, { ...existing, is_match: true });
+        continue;
+      }
       if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
       evidence.set(hit.id, { ...hit, is_match: true });
       for (const context of [adjacent(hit.id, "before"), adjacent(hit.id, "after")]) {

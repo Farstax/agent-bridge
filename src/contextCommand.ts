@@ -166,20 +166,21 @@ function searchTurns(db: Database.Database, chatKey: string, query: string): str
     const cli = r.cli ? ` via ${r.cli}` : "";
     return `#${r.id} ${label}${cli} (${r.created_at}): ${r.text}`;
   }).join("\n");
-  const header = `Conversation turns matching "${trimmed}" (${rows.length}, chronological):`;
-  const rendered = `${header}\n${renderRows(rows)}`;
+  const header = (count: number): string => `Conversation turns matching "${trimmed}" (${count}, chronological):`;
+  const rendered = `${header(rows.length)}\n${renderRows(rows)}`;
   if (rendered.length <= MAX_SEARCH_OUTPUT_CHARS) return rendered;
 
   // Adjacent rows are optional context. Drop them before applying the hard
   // output cap so chronological search never hides a selected (especially
   // newest) match behind a head-only slice.
   const matches = rows.filter((row) => row.is_match);
-  const matchesOnly = `${header}\n${renderRows(matches)}`;
+  const matchesOnly = `${header(matches.length)}\n${renderRows(matches)}`;
   if (matchesOnly.length <= MAX_SEARCH_OUTPUT_CHARS) return matchesOnly;
 
-  // The repository bounds selected hits and each snippet, so this is only a
-  // defensive fallback for future callers that raise those limits. Preserve
-  // the newest selected evidence if the defensive cap is ever reached.
+  // The repository bounds selected hits and each snippet so this defensive
+  // fallback is unreachable under the current contract. Keep the hard cap
+  // if a future caller raises those limits; per-hit compaction would be a
+  // separate contract change.
   return `${matchesOnly.slice(0, MAX_SEARCH_OUTPUT_CHARS - 1)}…`;
 }
 
