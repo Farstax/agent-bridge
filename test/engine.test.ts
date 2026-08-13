@@ -3000,13 +3000,16 @@ describe("BridgeEngine", () => {
   });
 
   describe("/reset command", () => {
-    it("preserves conversation turns and summaries after reset", async () => {
+    it("deletes conversation turns and summaries only for the reset conversation", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
       db.addConvTurn("100", "user", "important context");
       db.addConvSummary("100", 1, 1, "Current objective:\n- important work");
+      db.addConvTurn("200", "user", "other conversation context");
+      db.addConvSummary("200", 2, 2, "Current objective:\n- other work");
       db.setSession("100", "claude", "existing-session");
+      db.setSession("200", "claude", "other-session");
 
       const engine = new BridgeEngine(
         {
@@ -3024,13 +3027,13 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makeMessage("/reset")]);
 
-      // Data must be preserved
-      const status = db.getConvStatus("100", "test");
-      expect(status.turnCount).toBe(1);
-      const summary = db.getLatestConvSummary("100");
-      expect(summary).not.toBeNull();
-      // Session must be cleared
+      expect(db.getConvStatus("100", "test").turnCount).toBe(0);
+      expect(db.getLatestConvSummary("100")).toBeNull();
       expect(db.getSession("100", "claude")).toBeNull();
+
+      expect(db.getConvStatus("200", "test").turnCount).toBe(1);
+      expect(db.getLatestConvSummary("200")?.summary_md).toContain("other work");
+      expect(db.getSession("200", "claude")).toBe("other-session");
     });
 
     it("suppresses context injection on the prompt following a reset", async () => {

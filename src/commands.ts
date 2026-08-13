@@ -122,7 +122,8 @@ export function handleCommand(
 
   if (text === "/reset") {
     db.setSession(chatId, kind, null);
-    return { kind: "message", text: `${kind} session reset. Pending work cleared.` };
+    db.clearConvHistory(chatId);
+    return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };
   }
 
   if (text === "/models") {
@@ -286,7 +287,7 @@ export function buildTelegramCommands(kind: "codex" | "antigravity" | "claude" |
     { command: "models",   description: "Switch model" },
     { command: "effort",   description: "Switch reasoning effort" },
     { command: "queue_mode", description: "Set busy-message handling" },
-    { command: "reset",    description: "Reset session and clear pending work" },
+    { command: "reset",    description: "Reset session and clear conversation history" },
     { command: "stop",     description: "Abort running execution" },
     { command: "compact",  description: "Compact conversation context" },
     { command: "context",  description: "Show context status" },

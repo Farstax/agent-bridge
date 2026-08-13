@@ -19,8 +19,10 @@ pruning predates #354.
   conversation. `conversation_summaries` are bounded, replaceable handoff
   caches, not a replacement for that evidence.
 - Normal compaction and database startup/open do not prune retained turns.
-  Normal operation does not automatically delete them. `/reset` remains the
-  existing session-reset behavior and is unchanged by this policy.
+  Normal operation does not automatically delete them. `/reset` is the
+  explicit user-controlled full-history deletion path for the current
+  conversation scope; it clears that scope's provider session, pending work,
+  retained turns, and summaries without affecting other conversations.
 - There is no age-based retention period. Storage capacity pressure is the
   trigger for operator intervention; this policy does not add automatic
   pruning or a retention daemon.
@@ -102,8 +104,9 @@ The qualification evidence is the existing #354/current test coverage:
   source turns and failed compaction leaves retained turns unchanged;
 - `test/db.test.ts` proves reopening an existing database retains covered
   turns and keeps them out of bounded context;
-- `test/engine.test.ts` proves `/reset` behavior remains unchanged and keeps
-  the existing conversation evidence;
+- reset regression coverage proves `/reset` clears retained turns and summaries
+  only for the originating conversation scope while leaving other conversation
+  evidence untouched;
 - the existing guarded rollout backup/integrity checks provide recoverable
   database copies, file/hash restoration, schema, and post-restore
   verification; the #354 reopen test supplies the retained-row semantic
