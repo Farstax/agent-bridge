@@ -23,6 +23,94 @@ function makeMockClient() {
 }
 
 describe("interactive capacity fallback durable admission", () => {
+  it("recovers a Claude continuation through a fresh Codex session without replaying or double-closing the turn", async () => {
+    const db = openDb(":memory:");
+    const exhaustedChats = new Set<string>();
+    const client = makeMockClient();
+    const fallbackChain = new WorkerFallbackChain(["claude", "codex"], db);
+    const notifications: string[] = [];
+    let providerWork: "live" | "absent" = "live";
+    const claudeRun = vi.fn()
+      .mockResolvedValueOnce({ text: [
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "tool-bg", name: "Bash", input: { run_in_background: true } }] },
+        }),
+        JSON.stringify({ type: "result", subtype: "success", result: "Claude started background work.", session_id: "claude-native-session" }),
+      ].join("\n") })
+      .mockRejectedValueOnce(new Error("rate limit"));
+    const codexRun = vi.fn().mockResolvedValue({
+      text: JSON.stringify({ result: "Codex completed the request.", session_id: "codex-fresh-session" }),
+    });
+
+    const makeEngine = (kind: "claude" | "codex", runCliAsync: any) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        asyncEnabled: true,
+        pollIntervalMs: 1000,
+        hooks: kind === "claude" ? {
+          onCapacityExhausted: async (chatKey: string) => { exhaustedChats.add(chatKey); },
+        } : undefined,
+      },
+      db,
+      client,
+      { runCliAsync },
+      {
+        hasLiveRunOwnedDescendants: vi.fn(() => providerWork === "live"),
+        getRunOwnedProcessState: vi.fn(() => providerWork === "live" ? "live" : "absent"),
+        killRunOwnedDescendants: vi.fn(async () => { providerWork = "absent"; }),
+        sleep: vi.fn(async () => { providerWork = "absent"; }),
+      },
+    );
+
+    const engines = { claude: makeEngine("claude", claudeRun), codex: makeEngine("codex", codexRun) };
+    const deps = {
+      engines,
+      fallbackChain,
+      exhaustedChats,
+      db,
+      notify: async (message: string) => { notifications.push(message); },
+    };
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) =>
+        dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    try {
+      setUserCliPreference(db, "100", "claude");
+      await dispatchInteractiveWithFallback(
+        {
+          update_id: 9100,
+          message: {
+            message_id: 88,
+            chat: { id: 100, type: "private" },
+            from: { id: 42, first_name: "Test" },
+            text: "finish the background task",
+          },
+        },
+        "100",
+        deps,
+      );
+
+      expect(claudeRun).toHaveBeenCalledTimes(2);
+      expect(codexRun).toHaveBeenCalledTimes(1);
+      expect(codexRun.mock.calls[0][3]).not.toEqual(expect.objectContaining({ sessionId: "claude-native-session" }));
+      expect(notifications).toEqual(["Switching to codex (claude at capacity)"]);
+      expect(client.sendMessage.mock.calls.map(([body]: [any]) => body?.text)).toEqual([
+        "Claude started background work.",
+        "Codex completed the request.",
+      ]);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("continues one admitted turn across exhausted CLIs without replaying the Telegram update", async () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
