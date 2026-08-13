@@ -183,9 +183,10 @@ describe("continuation fallback admitted-turn envelope", () => {
     try {
       setUserCliPreference(db, "100", "claude");
       new ContinuationRepository(db.raw).markCancelled(runId, "fallback");
-      await dispatchClaimedInteractiveWithFallback({ ...rows[0], pendingIds: rows.map((row) => row.id), attachments: [a, b], laneHandle: handle! }, "100", deps);
+      await dispatchClaimedInteractiveWithFallback({ ...rows[0], pendingIds: rows.map((row) => row.id), attachmentPartitions: [[a], [b]], attachments: [a, b], laneHandle: handle! }, "100", deps);
       expect(seen).toEqual([[stagedA, stagedB]]);
       expect(target.executeClaimedMessage).toHaveBeenCalledOnce();
+      expect(target.executeClaimedMessage.mock.calls[0][0].attachmentPartitions).toEqual([[stagedA], [stagedB]]);
       expect(db.completePendingMsgs(handle!, rows.map((row) => row.id))).toBe(true);
       expect(() => readFileSync(stagedA)).not.toThrow();
     } finally {
