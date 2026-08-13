@@ -112,4 +112,18 @@ describe("continuation fallback admitted-turn envelope", () => {
     expect((record as any)?.attachments).toEqual(["/tmp/keep.png"]);
     db.close();
   });
+
+  it("fails closed when continuation attachment persistence cannot copy the source", () => {
+    const db = openDb(":memory:");
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    try {
+      expect(() => (engine as any)._persistContinuationAttachments("copy-failure", ["/tmp/disposable-upload-that-is-gone.png"]))
+        .toThrow("continuation attachment could not be persisted");
+    } finally {
+      db.close();
+    }
+  });
 });
