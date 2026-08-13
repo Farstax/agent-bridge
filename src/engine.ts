@@ -432,8 +432,10 @@ export class BridgeEngine {
   }
 
   async recoverContinuations(): Promise<void> {
-    if (!isAgentKind(this.kind)) return;
-    for (const record of this.continuationStore.listActive(this.surfaceIdentity, this.kind)) {
+    // Event-owned turns use kind=health but persist continuations under the
+    // selected provider kind. Recovery must cover both messaging and
+    // surface-neutral engines.
+    for (const record of this.continuationStore.listActive(this.surfaceIdentity, this._executionKind())) {
       let handle: ExecutionLaneHandle | null = null;
       while (this.continuationStore.hasActiveRun(record.runId) && !handle) {
         handle = this.db.acquireLock(this.surfaceIdentity, record.chatKey);

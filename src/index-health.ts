@@ -29,11 +29,12 @@ import { formatQualificationSummary } from "./providers/qualificationStatus.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
-import type { HealthPlugin } from "./health/types.js";
+import type { HealthPlugin, HealthReport } from "./health/types.js";
 import {
   acceptHealthOpsEvent,
   executeHealthOpsRun,
   reconcileEventReceiptResult,
+  HealthOpsRunLaneUnavailableError,
 } from "./health/eventIngress.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -144,6 +145,36 @@ if (process.env.HEALTH_CONTENT_CRAWLER_ENABLED === "1") {
 
 // ── Scheduler ────────────────────────────────────────────────────────────────
 let engine: BridgeEngine;
+const lastReportStatus = new Map<string, HealthReport["status"]>();
+const activeHealthEventRuns = new Set<number>();
+
+const waitForHealthLane = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function executeAcceptedHealthEvent(receiptId: number): Promise<void> {
+  if (activeHealthEventRuns.has(receiptId)) return;
+  activeHealthEventRuns.add(receiptId);
+  try {
+    for (;;) {
+      try {
+        await executeHealthOpsRun(bridgeDb, receiptId, engine, { bot: cliBot });
+        reconcileEventReceiptResult(bridgeDb, receiptId);
+        return;
+      } catch (error) {
+        if (!(error instanceof HealthOpsRunLaneUnavailableError)) {
+          console.error(`[health-bot] event-owned health run failed receipt=${receiptId}`, error);
+          reconcileEventReceiptResult(bridgeDb, receiptId);
+          return;
+        }
+        // A receipt already owns a Run. Keep it runnable until the single
+        // health lane is free, then execute that same Run.
+        await waitForHealthLane(1000);
+      }
+    }
+  } finally {
+    activeHealthEventRuns.delete(receiptId);
+  }
+}
+
 const scheduler = new HealthScheduler({
   plugins,
   config: {
@@ -159,7 +190,9 @@ const scheduler = new HealthScheduler({
   onRawReport: async (report) => {
     await healthBot.handleReport(report);
     const eventToken = process.env.HEALTH_EVENT_TOKEN;
-    if (eventToken && report.status === "red") {
+    const crossedIntoRed = report.status === "red" && lastReportStatus.get(report.pluginName) !== "red";
+    lastReportStatus.set(report.pluginName, report.status);
+    if (eventToken && crossedIntoRed) {
       try {
         const eventId = `health:${report.pluginName}:${report.timestamp}`;
         const accepted = acceptHealthOpsEvent(bridgeDb, {
@@ -169,8 +202,7 @@ const scheduler = new HealthScheduler({
           report,
           token: eventToken,
         }, { expectedToken: eventToken, bot: cliBot });
-        await executeHealthOpsRun(bridgeDb, accepted.receiptId, engine, { bot: cliBot });
-        reconcileEventReceiptResult(bridgeDb, accepted.receiptId);
+        void executeAcceptedHealthEvent(accepted.receiptId);
       } catch (error) {
         console.error(`[health-bot] event-owned health run failed for ${report.pluginName}`, error);
       }
@@ -189,7 +221,7 @@ const scheduler = new HealthScheduler({
 engine = new BridgeEngine(
   {
     kind: "health",
-    surfaceIdentity: "telegram:health",
+    surfaceIdentity: "health",
     executionKind: cliBot,
     botConfig: { command: cliBotConfig.command, modelPreference: cliBotConfig.modelPreference },
     allowedUserIds,
@@ -263,6 +295,7 @@ if (shouldHealthServicePoll(process.env)) {
 }
 
 if (healthEnabled) {
+  await engine.recoverContinuations();
   scheduler.start();
   for (const plugin of plugins) {
     plugin.check().then(report => healthBot.handleReport(report)).catch((err: unknown) =>
