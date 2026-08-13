@@ -10,4 +10,17 @@ describe("health event production wiring", () => {
     expect(source).toContain("reconcileEventReceiptResult");
     expect(source).toContain("onRawReport: async (report)");
   });
+
+  it("recovers continuations and durable receipts before generic orphan reconciliation", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+    expect(source.indexOf("await engine.recoverContinuations();")).toBeGreaterThan(-1);
+    expect(source.indexOf("await resumeDurablePendingHealthEvents")).toBeGreaterThan(source.indexOf("await engine.recoverContinuations();"));
+    expect(source.indexOf("await bridgeDb.reconcileOrphanedRuns")).toBeGreaterThan(source.indexOf("await resumeDurablePendingHealthEvents"));
+    expect(source).not.toContain("lastReportStatus");
+  });
+
+  it("detaches event execution from the scheduler report callback", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+    expect(source).toContain("void executeAcceptedHealthEvent(accepted.receiptId)");
+  });
 });
