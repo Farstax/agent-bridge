@@ -231,10 +231,10 @@ export class ConversationRepository {
       const existing = evidence.get(hit.id);
       if (existing) {
         evidence.set(hit.id, { ...existing, is_match: true });
-        continue;
+      } else {
+        if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
+        evidence.set(hit.id, { ...hit, is_match: true });
       }
-      if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
-      evidence.set(hit.id, { ...hit, is_match: true });
       for (const context of [adjacent(hit.id, "before"), adjacent(hit.id, "after")]) {
         if (context && !evidence.has(context.id) && evidence.size < MAX_SEARCH_CONTEXT_TURNS) {
           evidence.set(context.id, { ...context, is_match: false });
