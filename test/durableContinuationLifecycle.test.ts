@@ -281,12 +281,12 @@ describe("durable async continuation lifecycle", () => {
     }, db, client, { runCliAsync }, continuation);
 
     await engine.recoverContinuations();
-    await waitUntil(() => repo.get(durableRunId)?.state === "cancelled", "failed continuation closure");
+    await waitUntil(() => db.getRun(durableRunId)?.status === "failed", "failed continuation closure");
 
     expect(runCliAsync).toHaveBeenCalledOnce();
     expect(db.getRun(durableRunId)?.status).toBe("failed");
     expect(client.sendMessage.mock.calls.map((call: any[]) => String(call[0].text))).toEqual([
-      expect.stringContaining("Background continuation could not finish the task"),
+      expect.stringContaining("provider session lost while inspecting background work"),
     ]);
   });
 
