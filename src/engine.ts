@@ -1252,13 +1252,15 @@ export class BridgeEngine {
       input.chatKey,
       input.laneHandle,
     );
-    const continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
-    const deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
-    if (!deliveryPhase) {
-      await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
-      return null;
-    }
+    let continuationCheckpointPending = false;
+    let deliveryPhase: FinalDeliveryPhase | null = null;
     try {
+      continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
+      deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
+      if (!deliveryPhase) {
+        await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
+        return null;
+      }
       if (result.text) {
         await this.sendText(input.chatId, { text: result.text, message_thread_id: input.threadId });
       }
@@ -1303,43 +1305,49 @@ export class BridgeEngine {
     if (now >= deadlineAtMs) return false;
 
     this._assertLaneOwned(input.laneHandle);
-    const continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
-    if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments)) {
-      throw new LostExecutionLeaseError();
-    }
-    const saved = this.continuationStore.saveWaiting({
-      runId: input.runId,
-      surface: this.surfaceIdentity,
-      chatKey: input.chatKey,
-      chatId: input.chatId,
-      threadId: input.threadId ?? null,
-      bot: this.kind,
-      sessionId: result.sessionId,
-      prompt: input.prompt,
-      chatType: input.chatType,
-      userId: input.userId,
-      attachments: continuationAttachments,
-      executionMode: input.mode,
-      triggerKind: "run-owned-background-process",
-      triggerId: input.runId,
-      resumptionCount: input.resumptionCount,
-      pendingIds: [...input.pendingIds],
-      startedAt: new Date(startedAtMs).toISOString(),
-      deadlineAt: new Date(deadlineAtMs).toISOString(),
-      deliveryState: "pending",
-      pendingAttempt: {
+    let continuationAttachments: string[] = [];
+    try {
+      continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
+      if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments)) {
+        throw new LostExecutionLeaseError();
+      }
+      const saved = this.continuationStore.saveWaiting({
+        runId: input.runId,
+        surface: this.surfaceIdentity,
+        chatKey: input.chatKey,
+        chatId: input.chatId,
+        threadId: input.threadId ?? null,
+        bot: this.kind,
+        sessionId: result.sessionId,
         prompt: input.prompt,
-        isInitialResult: input.isInitialResult,
-        result: {
-          text: result.text,
-          sessionId: result.sessionId,
-          memoryCandidates: result.memoryCandidates,
-          continuationHint: result.continuationHint,
-          continuationProcessObserved: result.continuationProcessObserved,
+        chatType: input.chatType,
+        userId: input.userId,
+        attachments: continuationAttachments,
+        executionMode: input.mode,
+        triggerKind: "run-owned-background-process",
+        triggerId: input.runId,
+        resumptionCount: input.resumptionCount,
+        pendingIds: [...input.pendingIds],
+        startedAt: new Date(startedAtMs).toISOString(),
+        deadlineAt: new Date(deadlineAtMs).toISOString(),
+        deliveryState: "pending",
+        pendingAttempt: {
+          prompt: input.prompt,
+          isInitialResult: input.isInitialResult,
+          result: {
+            text: result.text,
+            sessionId: result.sessionId,
+            memoryCandidates: result.memoryCandidates,
+            continuationHint: result.continuationHint,
+            continuationProcessObserved: result.continuationProcessObserved,
+          },
         },
-      },
-    });
-    if (!saved) throw new LostExecutionLeaseError();
+      });
+      if (!saved) throw new LostExecutionLeaseError();
+    } catch (error) {
+      this._cleanupContinuationAttachments(continuationAttachments);
+      throw error;
+    }
     return true;
   }
 
