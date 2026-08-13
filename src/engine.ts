@@ -491,7 +491,9 @@ export class BridgeEngine {
     }
     this.continuationStore.markCancelled(record.runId, "provider capacity fallback");
     if (processState !== "absent") {
-      for (const pendingId of record.pendingIds) this.db.deletePendingMsg(pendingId);
+      if (record.pendingIds.length > 0) {
+        this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, record.pendingIds);
+      }
       this.db.updateRunFailed(record.runId, "provider capacity fallback could not contain provider work");
       await this.sendText(record.chatId, {
         text: "Background continuation could not be safely handed to another provider because the original provider work could not be contained. Please try again later.",
