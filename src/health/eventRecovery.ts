@@ -82,6 +82,15 @@ export interface HealthLeaseReconciliationOptions {
   processState: (runId: string) => "live" | "absent" | "ambiguous";
   nowMs?: number;
   onReconciled?: (run: RunningRun & { ended_at: string }) => void | Promise<void>;
+  /** Called with the remaining lease duration (ms) when this pass found
+   * every started, non-replayable health Run's owning process proven
+   * absent, but the health lane's lock could not be reconciled this pass
+   * because its lease has not yet expired. The caller should invoke this
+   * reconciliation exactly once more after that delay elapses (see
+   * index-health.ts) — a single bounded retry, not a rescheduling loop.
+   * Not called when there is nothing left to retry, or when the owning
+   * process cannot be proven absent (time is not the blocker then). */
+  scheduleRetry?: (delayMs: number) => void;
 }
 
 /**
@@ -140,4 +149,21 @@ export async function reconcileAbandonedHealthLeases(
     containmentState: (run, state) => state === "absent" ? "proven" : "ambiguous",
     onReconciled: options.onReconciled,
   });
+
+  // A caller that only ever reconciles once at startup (as index-health.ts
+  // does) can otherwise strand this Run for good: the owning process is
+  // gone, but the lock survives this pass exactly when its lease had not
+  // yet expired — the sole remaining obstacle is time. Schedule one bounded
+  // retry for when the lease will have expired, instead of leaving the Run
+  // 'running' with no later pass to catch it.
+  if (allOwningProcessesAbsent && options.scheduleRetry) {
+    const remainingLock = db.raw.prepare(
+      `SELECT lease_expires_at AS leaseExpiresAt FROM execution_locks WHERE surface = ? AND chat_key = ?`
+    ).get(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY) as { leaseExpiresAt: string } | undefined;
+    if (remainingLock) {
+      const expiresMs = Date.parse(remainingLock.leaseExpiresAt);
+      const delayMs = Number.isFinite(expiresMs) ? Math.max(0, expiresMs - nowMs) : 0;
+      options.scheduleRetry(delayMs);
+    }
+  }
 }

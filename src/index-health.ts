@@ -312,9 +312,27 @@ await bridgeDb.reconcileOrphanedRuns({
 // lease and terminalize the Run through the same lease/stale-lock and
 // orphan-containment semantics, so an immediate restart can't leave one
 // 'running' forever with no later pass to catch it.
+//
+// This only runs once, here, at startup — if the owning process is already
+// proven gone but its lock's lease simply hasn't expired yet, nothing above
+// can reconcile it, and no later pass would either. scheduleRetry arranges
+// exactly one bounded setTimeout for when that lease will have expired; the
+// retry itself passes no scheduleRetry, so it can never reschedule itself
+// into a loop.
 await reconcileAbandonedHealthLeases(bridgeDb, {
   processState: (runId) => getExecutionProcessState(runId),
   onReconciled: (run) => console.warn(`[health-bot] reconciled interrupted health run ${run.run_id}`),
+  scheduleRetry: (delayMs) => {
+    console.warn(`[health-bot] abandoned health lease not yet stale, retrying reconciliation in ${delayMs}ms`);
+    setTimeout(() => {
+      reconcileAbandonedHealthLeases(bridgeDb, {
+        processState: (runId) => getExecutionProcessState(runId),
+        onReconciled: (run) => console.warn(`[health-bot] reconciled interrupted health run ${run.run_id} on retry`),
+      })
+        .then(() => reconcileTerminalPendingHealthEvents(bridgeDb))
+        .catch((error) => console.error("[health-bot] deferred health lease reconciliation failed", error));
+    }, delayMs);
+  },
 });
 reconcileTerminalPendingHealthEvents(bridgeDb);
 
