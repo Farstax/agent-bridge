@@ -41,6 +41,7 @@ import {
   healthRedEpisodeIdempotencyKey,
   reconcileTerminalPendingHealthEvents,
   replayablePendingHealthRunIds,
+  reconcileAbandonedHealthLeases,
 } from "./health/eventRecovery.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -302,6 +303,18 @@ await bridgeDb.reconcileOrphanedRuns({
     ? "ambiguous"
     : state === "absent" ? "proven" : "ambiguous",
   onReconciled: (run) => console.warn(`[health-bot] reconciled orphaned run ${run.run_id}`),
+});
+// Runs that reached the provider boundary are deliberately excluded from
+// replay, but a crash seconds after that marker was written leaves both the
+// marker and the health execution lane's lock durable — both younger than
+// the generic cutoff above, and the lock alone would keep generic orphan
+// containment from ever treating the lane as free. Release an abandoned
+// lease and terminalize the Run through the same lease/stale-lock and
+// orphan-containment semantics, so an immediate restart can't leave one
+// 'running' forever with no later pass to catch it.
+await reconcileAbandonedHealthLeases(bridgeDb, {
+  processState: (runId) => getExecutionProcessState(runId),
+  onReconciled: (run) => console.warn(`[health-bot] reconciled interrupted health run ${run.run_id}`),
 });
 reconcileTerminalPendingHealthEvents(bridgeDb);
 

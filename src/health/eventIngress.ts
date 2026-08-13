@@ -324,6 +324,32 @@ export async function executeHealthOpsRun(
   if (!laneHandle) throw new HealthOpsRunLaneUnavailableError();
 
   try {
+    // Authoritative re-check, taken only after the lane is held: a waiter
+    // (startup replay racing live dispatch, or a caller that queued behind
+    // another owner) can obtain the lane after the Run already reached a
+    // terminal or cancelled state. Crossing the provider boundary in that
+    // case would invoke the provider a second time for already-finished
+    // work, or run it for work that was cancelled while queued. Re-reading
+    // here — not relying on the state captured before lane acquisition —
+    // is what makes the boundary itself authoritative.
+    const eligibleRun = db.getRun(runId);
+    if (!eligibleRun || eligibleRun.status !== "running") {
+      return { runId, status: eligibleRun?.status === "done" ? "done" : "failed" };
+    }
+    // The Run being 'running' is not by itself proof this attempt hasn't
+    // already reached the provider: a prior attempt for this same
+    // receipt/Run can have written the durable provider-start marker and
+    // then crashed before its `finally` cleared it. Holding the lane proves
+    // no *other live* attempt is using it right now, but not that the prior
+    // attempt is dead — only process-liveness reconciliation
+    // (startedNonReplayableHealthRuns + reconcileAbandonedHealthLeases) can
+    // prove that safely. So a pre-existing marker must also block the
+    // provider boundary here, leaving the Run to that reconciliation path
+    // rather than risking a second provider invocation.
+    if (db.getSetting(healthEventExecutionStartedKey(receiptId)) !== null) {
+      return { runId, status: "failed" };
+    }
+
     // Seeded with the existing runId so EventStore recognizes the Run
     // already exists (see its constructor) and never re-inserts it — it
     // only needs to persist the terminal transition from the provider owner
