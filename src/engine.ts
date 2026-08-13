@@ -1329,6 +1329,7 @@ export class BridgeEngine {
       if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments, stagedPartitions)) {
         throw new LostExecutionLeaseError();
       }
+      input.attachmentPartitions = stagedPartitions;
       pendingRowOwnsContinuationAttachments = input.pendingIds.length > 0;
       const saved = this.continuationStore.saveWaiting({
         runId: input.runId,
