@@ -236,7 +236,9 @@ export class ConversationRepository {
       if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
       evidence.set(hit.id, { ...hit, is_match: true });
       for (const context of [adjacent(hit.id, "before"), adjacent(hit.id, "after")]) {
-        if (context && evidence.size < MAX_SEARCH_CONTEXT_TURNS) evidence.set(context.id, { ...context, is_match: false });
+        if (context && !evidence.has(context.id) && evidence.size < MAX_SEARCH_CONTEXT_TURNS) {
+          evidence.set(context.id, { ...context, is_match: false });
+        }
       }
     }
 
