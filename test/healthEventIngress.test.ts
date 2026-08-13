@@ -9,6 +9,7 @@ import {
   executeHealthOpsRun,
   resumeDurablePendingHealthEvents,
   reconcileEventReceiptResult,
+  healthEventExecutionStartedKey,
   UnauthenticatedEventError,
   OversizedEventPayloadError,
   HealthOpsRunLaneUnavailableError,
@@ -440,6 +441,65 @@ describe("executeHealthOpsRun", () => {
     const outcome = await execPromise;
     expect(outcome.status).toBe("failed");
     expect(db.getRun(accepted.runId).status).toBe("cancelled");
+  });
+
+  it("does not re-invoke the provider when a lane waiter resolves to a Run that already terminalized (startup replay racing live dispatch)", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const { engine } = makeEngine(runCliAsync, db);
+
+    // Live dispatch completes the Run first.
+    const first = await executeHealthOpsRun(db, accepted.receiptId, engine);
+    expect(first.status).toBe("done");
+
+    // A lane waiter (e.g. startup replay that queued behind the live
+    // dispatch's lock) now obtains the lane for the same already-linked
+    // receipt/Run and must not invoke the provider a second time.
+    const second = await executeHealthOpsRun(db, accepted.receiptId, engine);
+
+    expect(runCliAsync).toHaveBeenCalledTimes(1);
+    expect(second.status).toBe("done");
+    expect(db.getRun(accepted.runId).status).toBe("done");
+  });
+
+  it("invokes the provider zero times when the Run is cancelled while a caller was waiting for the health lane", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const { engine } = makeEngine(runCliAsync, db);
+
+    // Simulate another owner holding the lane while this Run gets cancelled,
+    // then releasing it — reproducing the window where a waiter obtains the
+    // lane only after cancellation already landed.
+    const holder = db.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+    expect(holder).not.toBeNull();
+    expect(db.updateRunCancelled(accepted.runId, "operator cancelled while waiting")).toBe(true);
+    db.unlock(holder!);
+
+    const outcome = await executeHealthOpsRun(db, accepted.receiptId, engine);
+
+    expect(runCliAsync).not.toHaveBeenCalled();
+    expect(outcome.status).toBe("failed");
+    expect(db.getRun(accepted.runId).status).toBe("cancelled");
+  });
+
+  it("invokes the provider zero times when the durable provider-start marker already exists for a still-running Run", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const { engine } = makeEngine(runCliAsync, db);
+
+    // A prior attempt for this same receipt/Run reached the provider
+    // boundary (wrote the marker) and crashed before its `finally` cleared
+    // it — the Run itself is still 'running' because that crash never
+    // reached a terminal Run write either. A live or replayed dispatch that
+    // now obtains the lane must not treat 'running' alone as proof it is
+    // safe to invoke the provider.
+    db.setSetting(healthEventExecutionStartedKey(accepted.receiptId), accepted.runId);
+
+    const outcome = await executeHealthOpsRun(db, accepted.receiptId, engine);
+
+    expect(runCliAsync).not.toHaveBeenCalled();
+    expect(outcome.status).toBe("failed");
+    expect(db.getRun(accepted.runId).status).toBe("running");
   });
 
   it("rejects with HealthOpsRunLaneUnavailableError when the health execution lane is already held", async () => {

@@ -38,4 +38,16 @@ describe("health event production wiring", () => {
     const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
     expect(source).toContain("void executeAcceptedHealthEvent(accepted.receiptId)");
   });
+
+  it("reconciles abandoned health leases after generic orphan reconciliation, before final receipt correlation", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+    expect(source).toContain('from "./health/eventRecovery.js"');
+    expect(source).toContain("reconcileAbandonedHealthLeases");
+    const genericOrphans = source.indexOf("await bridgeDb.reconcileOrphanedRuns");
+    const healthLeases = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb");
+    const finalCorrelation = source.lastIndexOf("reconcileTerminalPendingHealthEvents(bridgeDb)");
+    expect(genericOrphans).toBeGreaterThan(-1);
+    expect(healthLeases).toBeGreaterThan(genericOrphans);
+    expect(finalCorrelation).toBeGreaterThan(healthLeases);
+  });
 });
