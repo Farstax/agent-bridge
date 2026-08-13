@@ -44,7 +44,7 @@ describe("health event production wiring", () => {
     expect(source).toContain('from "./health/eventRecovery.js"');
     expect(source).toContain("reconcileAbandonedHealthLeases");
     const genericOrphans = source.indexOf("await bridgeDb.reconcileOrphanedRuns");
-    const healthLeases = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb");
+    const healthLeases = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb", genericOrphans);
     const finalCorrelation = source.lastIndexOf("reconcileTerminalPendingHealthEvents(bridgeDb)");
     expect(genericOrphans).toBeGreaterThan(-1);
     expect(healthLeases).toBeGreaterThan(genericOrphans);
@@ -53,7 +53,8 @@ describe("health event production wiring", () => {
 
   it("arranges exactly one bounded setTimeout retry for an abandoned health lease whose lock hasn't yet expired, with no rescheduling inside that retry", () => {
     const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
-    const start = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb");
+    const genericOrphans = source.indexOf("await bridgeDb.reconcileOrphanedRuns");
+    const start = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb", genericOrphans);
     const end = source.indexOf("reconcileTerminalPendingHealthEvents(bridgeDb)", start);
     const block = source.slice(start, end);
     expect(block).toContain("scheduleRetry: (delayMs)");
