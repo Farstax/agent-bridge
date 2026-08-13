@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildCliInvocation, parseCliResult } from "../src/cli.js";
+import { buildCliInvocation, parseCliResult, runCli } from "../src/cli.js";
 import type { BridgeEvent } from "../src/events/types.js";
 import { runAntigravitySerialized } from "../src/providers/antigravitySerializedRunner.js";
 
@@ -39,6 +39,28 @@ describe("Agy stream-json invocation and parsing contract", () => {
     expect(formatIndex).toBeGreaterThan(-1);
     expect(invocation.args[formatIndex + 1]).toBe("stream-json");
     expect(formatIndex).toBeLessThan(printIndex);
+  });
+
+  it("keeps stream-json mode when the CLI runner consumes the built invocation", async () => {
+    useStreamJson();
+    const root = await mkdtemp(join(tmpdir(), "agy-cli-stream-json-"));
+    const script = join(root, "agy-fixture");
+    await writeFile(script, `#!/usr/bin/env bash
+printf '%s\\n' '${JSON.stringify({ event: "init", conversation_id: conversationId })}'
+printf '%s\\n' '${JSON.stringify({ event: "result", result: { conversation_id: conversationId, status: "SUCCESS", response: "stream response" } })}'
+`, { mode: 0o700 });
+    try {
+      const invocation = buildCliInvocation({
+        bot: "antigravity",
+        prompt: "hello",
+        sessionId: null,
+        command: script,
+        model: null,
+      });
+      await expect(runCli(script, invocation.args, root, { bot: "antigravity" })).resolves.toContain("stream response");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("returns only the terminal result response and ignores tool/system telemetry", () => {
