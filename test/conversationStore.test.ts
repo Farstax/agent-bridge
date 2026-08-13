@@ -104,6 +104,27 @@ describe("buildConvContext", () => {
     expect(ctx).toContain("Assistant: turn2");
   });
 
+  it("excludes covered turns from the prompt while they remain recoverable evidence (issue #349)", () => {
+    // Bounded prompt construction must stay bounded even though turns are
+    // now retained past compaction: a covered turn stays out of the prompt
+    // (filtered by the summary's range_end_turn_id) but is not deleted from
+    // conversation_turns.
+    db.addConvTurn("chat:1", "user", "covered turn");
+    const [t1] = db.getRecentConvTurns("chat:1", 1);
+    db.addConvSummary("chat:1", t1.id, t1.id, "## Summary\nObjective: fix bug");
+    db.addConvTurn("chat:1", "assistant", "fresh turn");
+
+    const ctx = db.buildConvContext("chat:1");
+    expect(ctx).not.toContain("covered turn");
+    expect(ctx).toContain("fresh turn");
+
+    const raw = (db as any).raw as import("better-sqlite3").Database;
+    const stillPresent = raw
+      .prepare(`SELECT text FROM conversation_turns WHERE chat_key = ? AND text = ?`)
+      .get("chat:1", "covered turn");
+    expect(stillPresent).toBeTruthy();
+  });
+
   it("excludes turns that exceed the char budget", () => {
     // Two turns: first is large (exceeds budget), second is small
     db.addConvTurn("chat:1", "user", "x".repeat(400));   // older

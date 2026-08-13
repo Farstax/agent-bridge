@@ -160,21 +160,17 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
   applyMigrations(raw, undefined, options.databaseRole);
 
   // ── Non-schema runtime maintenance ────────────────────────────────────────
-  // Prunes turns already covered by a compact summary. Depends on runtime
-  // data (conversation_summaries), not schema shape, so it must run on every
-  // open rather than once via migration — that's why this stays here rather
-  // than in ConversationRepository, which owns request-scoped conversation
-  // operations, not startup maintenance.
-  // arch-lint-allow-legacy-sql: startup conversation-turn prune, not a
-  // repository operation — see Phase 4B (issue #135).
-  raw.exec(`
-    DELETE FROM conversation_turns
-    WHERE id <= COALESCE((
-      SELECT MAX(range_end_turn_id)
-      FROM conversation_summaries
-      WHERE chat_key = conversation_turns.chat_key
-    ), 0)
-  `);
+  // Issue #349: startup maintenance used to DELETE conversation_turns already
+  // covered by a compact summary's range_end_turn_id. That made the summary
+  // the only surviving copy of that evidence, which violates the
+  // turns-are-recoverable-source-evidence contract (summaries are disposable
+  // handoff caches, not the archive). Turns are intentionally left in place
+  // on every open, including for a database that already existed before this
+  // change — bounded context construction is unaffected because
+  // ConversationRepository already filters covered turns out of prompts via
+  // the summary's range_end_turn_id (buildConvContext/getConvTurnsForCompaction),
+  // independent of whether the rows still physically exist. Turn retention is
+  // an explicit, separately owned policy; nothing here prunes automatically.
 
   // Expire sessions older than 7 days — prevents a stale/corrupt session from
   // being resumed indefinitely after a long gap without a /reset

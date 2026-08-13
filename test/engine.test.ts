@@ -2472,7 +2472,12 @@ describe("BridgeEngine", () => {
 
       expect(capturedPrompt).toContain("topic seven private objective");
       expect(capturedPrompt).not.toContain("topic eight must remain isolated");
-      expect(db.getRecentConvTurns("100:7", 10)).toEqual([]);
+      // Issue #349: turns are retained as recoverable evidence, not deleted;
+      // bounded compaction backlog is empty since the summary covers them.
+      expect(db.getRecentConvTurns("100:7", 10).map((turn) => turn.text)).toEqual([
+        "topic seven private objective", "topic seven private response",
+      ]);
+      expect(db.getConvTurnsForCompaction("100:7")).toEqual([]);
       expect(db.getRecentConvTurns("100:8", 10).map((turn) => turn.text)).toEqual([
         "topic eight must remain isolated", "topic eight private response",
       ]);
@@ -2747,7 +2752,7 @@ describe("BridgeEngine", () => {
       expect(summary?.summary_md).toContain("track training plan");
     });
 
-    it("compact prunes raw turns up to endId after storing the summary", async () => {
+    it("compact retains raw turns up to endId as recoverable evidence after storing the summary (issue #349)", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
@@ -2774,14 +2779,17 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makeMessage("/compact")]);
 
-      // All 3 turns should be pruned (they're covered by the summary)
+      // Issue #349: all 3 turns are retained as recoverable evidence, not
+      // pruned, even though the summary covers them.
       const remaining = db.getRecentConvTurns("100", 100);
-      expect(remaining.length).toBe(0);
+      expect(remaining.length).toBe(3);
+      // Bounded compaction backlog is empty since the summary covers them.
+      expect(db.getConvTurnsForCompaction("100")).toEqual([]);
       // Summary still exists
       expect(db.getLatestConvSummary("100")).not.toBeNull();
     });
 
-    it("compact chunks histories over 1000 turns and prunes the full covered range", async () => {
+    it("compact chunks histories over 1000 turns and retains the full covered range as evidence (issue #349)", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
@@ -2819,7 +2827,11 @@ describe("BridgeEngine", () => {
       expect(runCli.mock.calls.length).toBeGreaterThan(1);
       expect(capturedPrompts[0]).toContain("turn-0");
       expect(capturedPrompts.at(-1)).toContain("Merge these compact summaries");
-      expect(db.getRecentConvTurns("100", 2000)).toEqual([]);
+      // Issue #349: all 1005 turns are retained as recoverable evidence, not
+      // pruned; bounded compaction backlog is empty since the summary covers
+      // the full range.
+      expect(db.getRecentConvTurns("100", 2000)).toHaveLength(1005);
+      expect(db.getConvTurnsForCompaction("100")).toEqual([]);
       const summary = db.getLatestConvSummary("100");
       expect(summary?.summary_md).toContain("all 1005 turns covered");
       expect(summary?.range_start_turn_id).toBe(1);

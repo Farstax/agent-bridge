@@ -156,7 +156,10 @@ describe("compactConversation", () => {
 
     expect(result.outcome).toBe("compacted");
     expect(db.getLatestConvSummary("chat:1")?.summary_md).toContain("compact safely");
-    expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(0);
+    // Issue #349: the covered turn is retained as recoverable evidence, not
+    // deleted — it is simply excluded from further compaction backlog.
+    expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(1);
+    expect(db.getConvTurnsForCompaction("chat:1")).toHaveLength(0);
     expect(warn).toHaveBeenCalledWith("[compaction-telemetry] write failed for manual/compacted");
     expect(JSON.stringify(warn.mock.calls)).not.toContain("must-not-leak");
     warn.mockRestore();
@@ -248,7 +251,7 @@ describe("compactConversation", () => {
     expect(runCli).not.toHaveBeenCalled();
   });
 
-  it("stores the summary and prunes covered turns on success", async () => {
+  it("stores the summary and retains source turns as recoverable evidence on success (issue #349)", async () => {
     db.addConvTurn("chat:1", "user", "fix the bug");
     db.addConvTurn("chat:1", "assistant", "fixed");
 
@@ -261,7 +264,21 @@ describe("compactConversation", () => {
 
     const summary = db.getLatestConvSummary("chat:1");
     expect(summary?.summary_md).toBe("Current objective:\n- fix bug");
-    expect(db.getRecentConvTurns("chat:1", 100)).toEqual([]);
+
+    // The summary must not become the only surviving copy of the source
+    // turns: they remain in conversation_turns as recoverable evidence.
+    const raw = (db as any).raw as import("better-sqlite3").Database;
+    const retained = raw
+      .prepare(`SELECT text FROM conversation_turns WHERE chat_key = ? ORDER BY id`)
+      .all("chat:1") as Array<{ text: string }>;
+    expect(retained).toEqual([{ text: "fix the bug" }, { text: "fixed" }]);
+
+    // Bounded context/backlog construction stays bounded by the new
+    // summary's range_end_turn_id, exactly as before this change — the
+    // unbounded getRecentConvTurns (no sinceId) returns everything by
+    // design, so the retained rows above are expected there too.
+    expect(db.getConvTurnsForCompaction("chat:1")).toEqual([]);
+    expect(db.buildConvContext("chat:1")).not.toContain("fix the bug");
   });
 
   it("promotes valid memory candidates and counts rejected ones separately", async () => {
@@ -306,18 +323,23 @@ describe("compactConversation", () => {
     });
   });
 
-  it("rolls back summary, promoted memory and pruning when pruning fails", async () => {
+  it("leaves the existing summary and retained turns unchanged when the commit fence rejects (issue #349)", async () => {
+    // Regression for issue #349: an interrupted/failed compaction must leave
+    // both the prior summary and the source-turn evidence untouched. Since
+    // compaction no longer prunes turns as part of its transaction, this
+    // exercises rollback via the execution-lane commit fence instead of a
+    // failing prune call.
     db.addConvTurn("chat:1", "user", "keep this turn if the commit fails");
-    const originalPruneConvTurns = db.pruneConvTurns.bind(db);
-    vi.spyOn(db, "pruneConvTurns").mockImplementation((chatKey, upToTurnId) => {
-      originalPruneConvTurns(chatKey, upToTurnId);
-      throw new Error("prune failure repository=private-content");
-    });
     const runCli = vi.fn().mockResolvedValue(compactJson("Current objective:\n- atomic pruning", [
       { type: "decision", scope: "project", text: "Rollback every compaction mutation together.", confidence: 0.9 },
     ]));
 
-    const result = await compactConversation("chat:1", deps(runCli));
+    const result = await compactConversation("chat:1", {
+      ...deps(runCli),
+      assertCanCommit: () => {
+        throw new Error("commit fence rejected repository=private-content");
+      },
+    });
 
     expect(result).toMatchObject({
       outcome: "failed",
@@ -451,7 +473,9 @@ describe("compactConversation", () => {
 
     const summary = db.getLatestConvSummary("chat:1");
     expect(summary?.summary_md).toBe("Current objective:\n- antigravity fixed bug");
-    expect(db.getRecentConvTurns("chat:1", 100)).toEqual([]);
+    // Issue #349: retained as recoverable evidence, not deleted.
+    expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(2);
+    expect(db.getConvTurnsForCompaction("chat:1")).toHaveLength(0);
   });
 
   it("fails safely without pruning turns when antigravity wrapped output response has invalid compact JSON", async () => {
