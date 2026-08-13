@@ -119,6 +119,7 @@ last_validated_against: <commit-sha-or-branch>
 | `src/repositories/roleAssignmentRepository.ts` | implemented Slice 1 persistence | canonical SQL owner | Append-only desired assignment revisions through `BridgeDb`. |
 | `docs/WORKER-GUIDE.md` | authoritative operations | canonical for worker use | Role-based worker guide, prompt contracts, red-test quality, source-only prompts, and dormant assignment status. |
 | `docs/SAFE-RESTART.md` | authoritative operations | canonical for safe restart helper | Referenced by `AGENTS.md` restart policy. |
+| `docs/operations/retained-conversation-turns.md` | authoritative operations | canonical | #369 operator retention policy, monitoring trigger, rollout sequencing, and rollback evidence for retained `conversation_turns`. |
 | `docs/PRD.md` | partially-implemented product reference | advisory | Broad product/architecture reference; defer to ADRs and architecture docs on conflicts. |
 | `docs/soul.md` | runtime-design | advisory/canonical for SOUL.md behavior | Documents root `SOUL.md` runtime injection; the doc itself is not the default loaded file. |
 | `docs/agent-driven-memory-research.md` | implemented-record | advisory | Historical memory research and verification; current intended memory architecture is `docs/architecture/memory-and-handoff.md`. |
