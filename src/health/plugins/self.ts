@@ -222,25 +222,6 @@ export class SelfPlugin implements HealthPlugin {
         }
       }
     }
-    if (!globalListSuccess) {
-      // Package metadata is optional diagnostic input; runtime state remains
-      // authoritative even when npm cannot be queried.
-      for (const { provider, checkName } of [
-        { provider: "claude" as const, checkName: "cli-update-claude-code" },
-        { provider: "codex" as const, checkName: "cli-update-codex" },
-      ]) {
-        const runtime = readInstalledProviderVersions()[provider];
-        checks.push({
-          name: checkName,
-          status: runtime ? "amber" : "red",
-          message: runtime
-            ? `${provider} runtime ${runtime}; npm package metadata unavailable`
-            : `${provider} runtime executable not found; npm package metadata unavailable`,
-        });
-      }
-    }
-
-
     // ── Agy (Antigravity) version check ───────────────────────────────────────
     try {
       const agyVersion = execSync("agy --version", {
