@@ -244,6 +244,52 @@ describe("durable async continuation lifecycle", () => {
     expect(db.getRun(durableRunId)?.status).toBe("done");
   });
 
+  it("closes the user-visible loop when the resumed provider continuation fails", async () => {
+    const durableRunId = "provider-continuation-failure-289";
+    db.insertRun(durableRunId, "100", "claude");
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({
+      runId: durableRunId,
+      surface: "test",
+      chatKey: "100",
+      chatId: 100,
+      threadId: null,
+      bot: "claude",
+      sessionId: "session-failure-289",
+      executionMode: "async",
+      triggerKind: "run-owned-background-process",
+      triggerId: durableRunId,
+      resumptionCount: 0,
+      pendingIds: [],
+      startedAt: new Date(Date.now() - 1000).toISOString(),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const continuation: ContinuationFns = {
+      hasLiveRunOwnedDescendants: vi.fn(() => false),
+      getRunOwnedProcessState: vi.fn(() => "absent"),
+      killRunOwnedDescendants: vi.fn(async () => {}),
+      sleep: vi.fn(async () => {}),
+      now: vi.fn(() => Date.now()),
+    };
+    const client = makeMockClient();
+    const runCliAsync = vi.fn().mockRejectedValue(new Error("provider session lost while inspecting background work"));
+    const engine = new BridgeEngine({
+      surfaceIdentity: "test", kind: "claude",
+      botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    }, db, client, { runCliAsync }, continuation);
+
+    await engine.recoverContinuations();
+    await waitUntil(() => repo.get(durableRunId)?.state === "cancelled", "failed continuation closure");
+
+    expect(runCliAsync).toHaveBeenCalledOnce();
+    expect(db.getRun(durableRunId)?.status).toBe("failed");
+    expect(client.sendMessage.mock.calls.map((call: any[]) => String(call[0].text))).toEqual([
+      expect.stringContaining("Background continuation could not finish the task"),
+    ]);
+  });
+
   it("delivers and commits a checkpointed response before invoking the provider after restart", async () => {
     const durableRunId = "delivery-pending-run-261";
     db.insertRun(durableRunId, "100", "claude");
