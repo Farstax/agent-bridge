@@ -120,41 +120,51 @@ export function acceptHealthOpsEvent(
   const payloadJson = boundedRedactedPayload(event.report);
   const now = options.now ? options.now() : new Date().toISOString();
 
-  const receipt = db.createEventReceipt({
-    event_id: event.eventId,
-    source: HEALTH_EVENT_SOURCE,
-    event_kind: HEALTH_OPS_EVENT_KIND_RED,
-    idempotency_key: event.idempotencyKey,
-    occurred_at: event.occurredAt,
-    received_at: now,
-    payload_json: payloadJson,
-    authority_scope: "health:report-only",
-  });
+  // The receipt and its Run materialization must land atomically: writing
+  // the receipt alone, then crashing before the work item/job/link exist,
+  // would leave an orphan `received` receipt that permanently suppresses
+  // the missing work on replay (getEventReceiptByIdempotencyKey above
+  // short-circuits before anything is (re)created). A single local
+  // transaction means a crash anywhere in this block leaves nothing
+  // committed, so a restart/retry starts clean and creates all three rows
+  // together exactly once.
+  return db.runInTransaction(() => {
+    const receipt = db.createEventReceipt({
+      event_id: event.eventId,
+      source: HEALTH_EVENT_SOURCE,
+      event_kind: HEALTH_OPS_EVENT_KIND_RED,
+      idempotency_key: event.idempotencyKey,
+      occurred_at: event.occurredAt,
+      received_at: now,
+      payload_json: payloadJson,
+      authority_scope: "health:report-only",
+    });
 
-  const workItem = db.createWorkItem({
-    kind: "ops",
-    source: HEALTH_EVENT_SOURCE,
-    title: `Health degraded: ${event.report.pluginName}`,
-    body: event.report.summary,
-    created_by: "health-ingress",
-  });
+    const workItem = db.createWorkItem({
+      kind: "ops",
+      source: HEALTH_EVENT_SOURCE,
+      title: `Health degraded: ${event.report.pluginName}`,
+      body: event.report.summary,
+      created_by: "health-ingress",
+    });
 
-  const workJob = db.createWorkJob({
-    task_type: "ops_check",
-    idempotency_key: `ops_check:${event.idempotencyKey}`,
-    work_item_id: workItem.id,
-    input_json: {
+    const workJob = db.createWorkJob({
+      task_type: "ops_check",
+      idempotency_key: `ops_check:${event.idempotencyKey}`,
       work_item_id: workItem.id,
-      receipt_id: receipt.id,
-      plugin_name: event.report.pluginName,
-      status: event.report.status,
-      summary: event.report.summary,
-    },
+      input_json: {
+        work_item_id: workItem.id,
+        receipt_id: receipt.id,
+        plugin_name: event.report.pluginName,
+        status: event.report.status,
+        summary: event.report.summary,
+      },
+    });
+
+    db.linkEventReceiptRun(receipt.id, { work_item_id: workItem.id, work_job_id: workJob.id });
+
+    return { receiptId: receipt.id, workItemId: workItem.id, workJobId: workJob.id, created: true };
   });
-
-  db.linkEventReceiptRun(receipt.id, { work_item_id: workItem.id, work_job_id: workJob.id });
-
-  return { receiptId: receipt.id, workItemId: workItem.id, workJobId: workJob.id, created: true };
 }
 
 /**

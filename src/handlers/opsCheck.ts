@@ -24,7 +24,7 @@ export function createOpsCheckHandler(): JobHandler {
     return {
       summary: report,
       plugin_name: pluginName,
-      status,
+      plugin_status: status,
     };
   };
 }
