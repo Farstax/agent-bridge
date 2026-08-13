@@ -143,6 +143,35 @@ describe("durable async continuation lifecycle", () => {
     ]);
   });
 
+  it("fails closed without partially reclaiming a multi-row continuation", async () => {
+    const runId = "multi-row-reclaim-recovery-379";
+    db.insertRun(runId, "100", "claude");
+    db.enqueueMsg("test", "100", { prompt: "first", chatId: 100, chatType: "private", attachments: ["A"] });
+    db.enqueueMsg("test", "100", { prompt: "second", chatId: 100, chatType: "private", attachments: ["B"] });
+    const rows = db.dequeueMsgs("test", "100");
+    const repo = new ContinuationRepository(db.raw);
+    repo.saveWaiting({
+      runId, surface: "test", chatKey: "100", chatId: 100, threadId: null, bot: "claude", sessionId: "session-379",
+      prompt: "recover", chatType: "private", userId: 42, attachments: ["A", "B"], executionMode: "async",
+      triggerKind: "run-owned-background-process", triggerId: runId, resumptionCount: 0, pendingIds: rows.map((row) => row.id),
+      startedAt: new Date().toISOString(), deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    db.raw.prepare("DELETE FROM pending_messages WHERE id = ?").run(rows[1].id);
+    const runCliAsync = vi.fn();
+    const engine = new BridgeEngine({
+      surfaceIdentity: "test", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, makeMockClient(), { runCliAsync }, { getRunOwnedProcessState: () => "absent", sleep: vi.fn(async () => {}) });
+
+    await engine.recoverContinuations();
+
+    expect(runCliAsync).not.toHaveBeenCalled();
+    expect(repo.get(runId)).toEqual(expect.objectContaining({ state: "ambiguous" }));
+    expect(db.raw.prepare("SELECT state, claim_run_id AS runId, claim_acquisition_id AS acquisitionId FROM pending_messages WHERE id = ?").get(rows[0].id)).toEqual({
+      state: "queued", runId: null, acquisitionId: null,
+    });
+  });
+
   it("persists the waiting checkpoint before delivering the intermediate response", async () => {
     let processState: "live" | "absent" = "live";
     const deliveryGate = deferred();
