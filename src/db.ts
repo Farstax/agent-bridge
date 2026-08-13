@@ -464,16 +464,16 @@ export class BridgeDb {
     return this.runs.getRun(runId);
   }
 
-  updateRunCompleted(runId: string, text: string, sessionId: string | null): void {
-    this.runs.updateRunCompleted(runId, text, sessionId);
+  updateRunCompleted(runId: string, text: string, sessionId: string | null): boolean {
+    return this.runs.updateRunCompleted(runId, text, sessionId);
   }
 
-  updateRunFailed(runId: string, error: string): void {
-    this.runs.updateRunFailed(runId, error);
+  updateRunFailed(runId: string, error: string): boolean {
+    return this.runs.updateRunFailed(runId, error);
   }
 
-  updateRunCancelled(runId: string, reason: string): void {
-    this.runs.updateRunCancelled(runId, reason);
+  updateRunCancelled(runId: string, reason: string): boolean {
+    return this.runs.updateRunCancelled(runId, reason);
   }
 
   insertEvent(runId: string, seq: number, type: string, timestamp: string, payload: any): void {
