@@ -46,6 +46,8 @@ export interface ConvTurnRow {
   text: string;
   cli: string | null;
   created_at: string;
+  /** True when this row was a selected search hit rather than adjacent context. */
+  is_match?: boolean;
 }
 
 export interface ConvSummaryRow {
@@ -228,9 +230,9 @@ export class ConversationRepository {
     for (const hit of matchingRows) {
       if (evidence.has(hit.id)) continue;
       if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
-      evidence.set(hit.id, hit);
+      evidence.set(hit.id, { ...hit, is_match: true });
       for (const context of [adjacent(hit.id, "before"), adjacent(hit.id, "after")]) {
-        if (context && evidence.size < MAX_SEARCH_CONTEXT_TURNS) evidence.set(context.id, context);
+        if (context && evidence.size < MAX_SEARCH_CONTEXT_TURNS) evidence.set(context.id, { ...context, is_match: false });
       }
     }
 

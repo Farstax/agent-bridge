@@ -161,15 +161,26 @@ function searchTurns(db: Database.Database, chatKey: string, query: string): str
   if (!trimmed) return "No conversation turns found for that query.";
   const rows = new ConversationRepository(db).searchConvTurns(chatKey, trimmed);
   if (!rows.length) return "No conversation turns found matching that query.";
-  const items = rows.map((r) => {
+  const renderRows = (selectedRows: typeof rows): string => selectedRows.map((r) => {
     const label = r.role === "user" ? "User" : "Assistant";
     const cli = r.cli ? ` via ${r.cli}` : "";
     return `#${r.id} ${label}${cli} (${r.created_at}): ${r.text}`;
   }).join("\n");
-  const rendered = `Conversation turns matching "${trimmed}" (${rows.length}, chronological):\n${items}`;
-  return rendered.length > MAX_SEARCH_OUTPUT_CHARS
-    ? `${rendered.slice(0, MAX_SEARCH_OUTPUT_CHARS - 1)}…`
-    : rendered;
+  const header = `Conversation turns matching "${trimmed}" (${rows.length}, chronological):`;
+  const rendered = `${header}\n${renderRows(rows)}`;
+  if (rendered.length <= MAX_SEARCH_OUTPUT_CHARS) return rendered;
+
+  // Adjacent rows are optional context. Drop them before applying the hard
+  // output cap so chronological search never hides a selected (especially
+  // newest) match behind a head-only slice.
+  const matches = rows.filter((row) => row.is_match);
+  const matchesOnly = `${header}\n${renderRows(matches)}`;
+  if (matchesOnly.length <= MAX_SEARCH_OUTPUT_CHARS) return matchesOnly;
+
+  // The repository bounds selected hits and each snippet, so this is only a
+  // defensive fallback for future callers that raise those limits. Preserve
+  // the newest selected evidence if the defensive cap is ever reached.
+  return `${matchesOnly.slice(0, MAX_SEARCH_OUTPUT_CHARS - 1)}…`;
 }
 
 export function renderAgentBridgeContext(args: string[], env: EnvLike = process.env): string {
