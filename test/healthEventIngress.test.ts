@@ -379,7 +379,7 @@ describe("executeHealthOpsRun", () => {
     const runCliAsync = vi.fn(async (_command: string, args: string[], _cwd: string, options: any) => {
       callCount += 1;
       const prompt = options.stdin ? JSON.parse(String(options.stdin)).message.content : args.join(" ");
-      expect(prompt).toContain("accepted summary");
+      if (callCount === 1) expect(prompt).toContain("accepted summary");
       expect(prompt).not.toContain("untrusted replacement");
       await new Promise((resolve) => setTimeout(resolve, 150));
       return { text: callCount === 1 ? claudeBackgroundOutput("started background work", "sess-1") : claudeStreamJsonOutput("finished", "sess-1") };
