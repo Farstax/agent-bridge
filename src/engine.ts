@@ -1074,6 +1074,9 @@ export class BridgeEngine {
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
         throw new LostExecutionLeaseError();
       }
+      if (activePendingIds.length > 0) {
+        this._cleanupContinuationAttachments(execution.continuationAttachments);
+      }
       if (execution.continuationAttachments.length > 0) {
         attachments.splice(0, attachments.length, ...execution.continuationAttachments);
       }
