@@ -900,6 +900,21 @@ export class BridgeDb {
     this.raw.prepare(`DELETE FROM pending_messages WHERE id = ?`).run(id);
   }
 
+  retireQueuedPendingMsgs(surface: string, chatKey: string, ids: number[]): boolean {
+    assertExecutionScope(surface, chatKey);
+    return this.runInTransaction(() => {
+      const statement = this.raw.prepare(`
+        DELETE FROM pending_messages
+        WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'queued'
+          AND claim_run_id IS NULL AND claim_acquisition_id IS NULL
+      `);
+      for (const id of ids) {
+        if (statement.run(id, surface, chatKey).changes !== 1) return false;
+      }
+      return true;
+    });
+  }
+
   claimNextPendingMsg(handle: ExecutionLaneHandle): {
     id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
   } | null {

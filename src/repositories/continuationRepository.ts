@@ -26,6 +26,9 @@ export interface ContinuationRecord {
   threadId: number | null;
   bot: string;
   sessionId: string;
+  /** Original admitted prompt used only when responsibility moves providers. */
+  prompt?: string;
+  chatType?: string;
   executionMode: ContinuationExecutionMode;
   triggerKind: "run-owned-background-process";
   triggerId: string;
