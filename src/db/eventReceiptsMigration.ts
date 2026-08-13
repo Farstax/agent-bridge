@@ -19,7 +19,10 @@ export function applyEventReceiptsMigration(db: Database.Database): void {
     CREATE TABLE event_receipts (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       event_id         TEXT NOT NULL,
-      source           TEXT NOT NULL CHECK (source IN ('health','schedule','github')),
+      -- #351 only proves the health scenario; narrowed to just that source
+      -- rather than pre-designing a taxonomy for sources nothing exercises
+      -- yet. Widen with evidence when a second source is actually built.
+      source           TEXT NOT NULL CHECK (source IN ('health')),
       event_kind       TEXT NOT NULL,
       idempotency_key  TEXT NOT NULL UNIQUE,
       received_at      TEXT NOT NULL,

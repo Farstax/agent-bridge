@@ -1,14 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
+import { BridgeEngine } from "../src/engine.js";
 import {
   acceptHealthOpsEvent,
   executeHealthOpsRun,
   reconcileEventReceiptResult,
   UnauthenticatedEventError,
   OversizedEventPayloadError,
+  HealthOpsRunLaneUnavailableError,
   HEALTH_RUN_SURFACE,
   HEALTH_RUN_CHAT_KEY,
   type HealthOpsEventInput,
@@ -235,6 +237,54 @@ describe("acceptHealthOpsEvent", () => {
   });
 });
 
+// ── executeHealthOpsRun: reuses BridgeEngine.executePromptAsync ───────────────
+//
+// Per the independent architecture review on PR #356 ("do not replace Worker
+// orchestration with a second provider-execution stack"), the event path
+// must reach the SAME provider-turn execution owner ordinary Telegram-driven
+// turns use, not a parallel reimplementation of buildCliInvocation/runCli.
+// These tests construct a real BridgeEngine (the established test pattern
+// used throughout test/*.test.ts, e.g. test/durableContinuationLifecycle.test.ts)
+// with a fake Telegram client and an injected runCliAsync, so a spy on
+// engine.executePromptAsync proves executeHealthOpsRun literally calls it,
+// and the fake client proves no Telegram delivery happens along the way.
+
+function makeMockClient() {
+  return {
+    getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),
+    sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
+    sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+    setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
+    answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
+    editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+    sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
+    sendDocument: vi.fn().mockResolvedValue({ ok: true }),
+  } as any;
+}
+
+function claudeStreamJsonOutput(text: string, sessionId: string | null): string {
+  return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId });
+}
+
+function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, db: ReturnType<typeof openDb>) {
+  const client = makeMockClient();
+  const engine = new BridgeEngine(
+    {
+      surfaceIdentity: "telegram:health",
+      kind: "health",
+      botConfig: { command: "claude", modelPreference: ["default-model"] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      asyncEnabled: true,
+      pollIntervalMs: 1000,
+    },
+    db,
+    client,
+    { runCliAsync },
+  );
+  return { engine, client };
+}
+
 describe("executeHealthOpsRun", () => {
   let db: ReturnType<typeof openDb>;
   let dbPath: string;
@@ -248,16 +298,27 @@ describe("executeHealthOpsRun", () => {
     try { rmSync(dbPath); } catch {}
   });
 
+  it("calls engine.executePromptAsync — the same execution owner ordinary async turns use", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const { engine } = makeEngine(runCliAsync, db);
+    const spy = vi.spyOn(engine, "executePromptAsync");
+
+    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it("reaches the normal main-agent CLI execution path with a bounded instruction referencing the event", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-
     let capturedPrompt = "";
-    const fakeRunCli = async (_command: string, args: string[]) => {
+    const runCliAsync = vi.fn(async (_command: string, args: string[]) => {
       capturedPrompt = args.join(" ");
-      return JSON.stringify({ result: "investigated", session_id: null });
-    };
+      return { text: claudeStreamJsonOutput("investigated", null) };
+    });
+    const { engine } = makeEngine(runCliAsync, db);
 
-    const outcome = await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), { runCli: fakeRunCli });
+    const outcome = await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
 
     expect(outcome.status).toBe("done");
     expect(capturedPrompt).toContain("content-crawler");
@@ -265,11 +326,24 @@ describe("executeHealthOpsRun", () => {
     expect(db.getRun(accepted.runId).status).toBe("done");
   });
 
+  it("never delivers to Telegram and never persists conversation/session state merely because a health event ran", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", "sess-1") });
+    const { engine, client } = makeEngine(runCliAsync, db);
+
+    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.sendChatAction).not.toHaveBeenCalled();
+    expect(db.getSession(HEALTH_RUN_CHAT_KEY, "claude")).toBeNull();
+  });
+
   it("never touches work_items/work_jobs during execution", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const fakeRunCli = async () => JSON.stringify({ result: "ok" });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
+    const { engine } = makeEngine(runCliAsync, db);
 
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), { runCli: fakeRunCli });
+    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
 
     expect(db.listWorkItems()).toHaveLength(0);
     expect(db.listWorkJobs()).toHaveLength(0);
@@ -280,26 +354,42 @@ describe("executeHealthOpsRun", () => {
   it("cancelling the linked Run before execution finishes prevents a late result from overwriting cancellation", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
 
-    let resolveCli!: (v: string) => void;
-    const cliPromise = new Promise<string>((resolve) => { resolveCli = resolve; });
-    const fakeRunCli = async () => cliPromise;
+    let resolveCli!: (v: { text: string }) => void;
+    const cliPromise = new Promise<{ text: string }>((resolve) => { resolveCli = resolve; });
+    const runCliAsync = vi.fn().mockReturnValue(cliPromise);
+    const { engine } = makeEngine(runCliAsync, db);
 
-    const execPromise = executeHealthOpsRun(db, accepted.receiptId, makeEvent(), { runCli: fakeRunCli });
+    const execPromise = executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
 
     expect(db.updateRunCancelled(accepted.runId, "operator cancelled")).toBe(true);
-    resolveCli(JSON.stringify({ result: "late result" }));
+    resolveCli({ text: claudeStreamJsonOutput("late result", null) });
 
     const outcome = await execPromise;
     expect(outcome.status).toBe("failed");
     expect(db.getRun(accepted.runId).status).toBe("cancelled");
   });
 
+  it("rejects with HealthOpsRunLaneUnavailableError when the health execution lane is already held", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
+    const { engine } = makeEngine(runCliAsync, db);
+
+    const handle = db.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+    expect(handle).not.toBeNull();
+
+    await expect(executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine)).rejects.toBeInstanceOf(
+      HealthOpsRunLaneUnavailableError,
+    );
+    expect(runCliAsync).not.toHaveBeenCalled();
+  });
+
   // ── Result correlation ────────────────────────────────────────────────────
 
   it("reconcileEventReceiptResult correlates a completed Run's result back onto the receipt", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const fakeRunCli = async () => JSON.stringify({ result: "ok" });
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), { runCli: fakeRunCli });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
+    const { engine } = makeEngine(runCliAsync, db);
+    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
 
     reconcileEventReceiptResult(db, accepted.receiptId);
 
@@ -311,8 +401,9 @@ describe("executeHealthOpsRun", () => {
 
   it("reconcileEventReceiptResult correlates a failed Run's error class back onto the receipt", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const fakeRunCli = async () => { throw new Error("cli exploded"); };
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), { runCli: fakeRunCli });
+    const runCliAsync = vi.fn().mockRejectedValue(new Error("cli exploded"));
+    const { engine } = makeEngine(runCliAsync, db);
+    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
 
     reconcileEventReceiptResult(db, accepted.receiptId);
 
