@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import {
@@ -1325,19 +1325,25 @@ export class BridgeEngine {
 
   private _persistContinuationAttachments(runId: string, attachments: string[]): string[] {
     const directory = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
+    const directoryExisted = existsSync(directory);
     const persisted: string[] = [];
-    for (const [index, attachment] of attachments.entries()) {
-      const target = join(directory, `${index}-${basename(attachment)}`);
-      try {
+    try {
+      for (const [index, attachment] of attachments.entries()) {
+        const target = join(directory, `${index}-${basename(attachment)}`);
+        if (attachment.startsWith(`${directory}${sep}`)) {
+          persisted.push(attachment);
+          continue;
+        }
         if (!existsSync(attachment)) {
           throw new Error("source attachment is missing");
         }
         mkdirSync(directory, { recursive: true });
         cpSync(attachment, target, { force: true });
         persisted.push(target);
-      } catch {
-        throw new Error("continuation attachment could not be persisted");
       }
+    } catch {
+      if (!directoryExisted) rmSync(directory, { recursive: true, force: true });
+      throw new Error("continuation attachment could not be persisted");
     }
     return persisted;
   }
