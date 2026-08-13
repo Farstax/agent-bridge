@@ -37,6 +37,11 @@ import {
   reconcileEventReceiptResult,
   HealthOpsRunLaneUnavailableError,
 } from "./health/eventIngress.js";
+import {
+  healthRedEpisodeIdempotencyKey,
+  reconcileTerminalPendingHealthEvents,
+  replayablePendingHealthRunIds,
+} from "./health/eventRecovery.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 dotenv.config({ path: process.env.BRIDGE_ENV_FILE || ".env", override: false });
@@ -171,13 +176,16 @@ async function executeAcceptedHealthEvent(receiptId: number): Promise<void> {
 }
 
 async function handleHealthReportEventIngress(report: HealthReport): Promise<void> {
-  const previousStatus = healthReportStore.getReport(report.pluginName)?.status;
-  await healthBot.handleReport(report);
+  const previousReport = healthReportStore.getReport(report.pluginName);
   const eventToken = process.env.HEALTH_EVENT_TOKEN;
-  const crossedIntoRed = report.status === "red" && previousStatus !== "red";
+  const crossedIntoRed = report.status === "red" && previousReport?.status !== "red";
+
   if (eventToken && crossedIntoRed) {
     try {
-      const eventId = `health:${report.pluginName}:${report.timestamp}`;
+      // Anchor idempotency to the last durable predecessor. If the process
+      // dies after receipt acceptance but before this red report is saved,
+      // the same predecessor reproduces the same key after restart.
+      const eventId = healthRedEpisodeIdempotencyKey(report.pluginName, previousReport);
       const accepted = acceptHealthOpsEvent(bridgeDb, {
         eventId,
         idempotencyKey: eventId,
@@ -185,14 +193,15 @@ async function handleHealthReportEventIngress(report: HealthReport): Promise<voi
         report,
         token: eventToken,
       }, { expectedToken: eventToken, bot: cliBot });
-      // Event execution is deliberately detached from report persistence and
-      // the scheduler callback. A slow provider or busy lane cannot delay the
-      // next check or CLI auto-update handling.
+      // Start from the durable receipt immediately; report delivery/persistence
+      // remains independent and cannot strand accepted work.
       void executeAcceptedHealthEvent(accepted.receiptId);
     } catch (error) {
       console.error(`[health-bot] event-owned health run failed for ${report.pluginName}`, error);
     }
   }
+
+  await healthBot.handleReport(report);
 }
 
 const scheduler = new HealthScheduler({
@@ -276,18 +285,25 @@ engine = new BridgeEngine(
   client,
 );
 
-// Recovery ordering is deliberate: a persisted continuation or an accepted
-// receipt gets first chance to reclaim its normal lane. Generic orphan
-// reconciliation runs only afterward, so it cannot fail a legitimately
-// recoverable health run.
+// Continuations recover first and reclaim their normal lane. Terminal receipts
+// are correlated before replay is considered. Never-started pending Runs are
+// then dispatched without blocking scheduler startup and are temporarily
+// excluded from generic orphan classification while they acquire that lane.
 await engine.recoverContinuations();
-await resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot });
+reconcileTerminalPendingHealthEvents(bridgeDb);
+const replayableHealthRunIds = replayablePendingHealthRunIds(bridgeDb);
+void resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot }).catch((error) => {
+  console.error("[health-bot] durable health event replay failed", error);
+});
 await bridgeDb.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 60_000),
   processState: (run) => getExecutionProcessState(run.run_id),
-  containmentState: (_run, state) => state === "absent" ? "proven" : "ambiguous",
+  containmentState: (run, state) => replayableHealthRunIds.has(run.run_id)
+    ? "ambiguous"
+    : state === "absent" ? "proven" : "ambiguous",
   onReconciled: (run) => console.warn(`[health-bot] reconciled orphaned run ${run.run_id}`),
 });
+reconcileTerminalPendingHealthEvents(bridgeDb);
 
 // ── Start ────────────────────────────────────────────────────────────────────
 console.log("[health-bot] starting...");

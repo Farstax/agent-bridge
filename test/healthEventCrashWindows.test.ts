@@ -6,12 +6,14 @@ import { openDb } from "../src/db.js";
 import { HealthReportStore } from "../src/health/reports.js";
 import {
   acceptHealthOpsEvent,
-  executeHealthOpsRun,
   healthEventExecutionStartedKey,
-  healthRedEpisodeIdempotencyKey,
-  reconcileEventReceiptResult,
   resumeDurablePendingHealthEvents,
 } from "../src/health/eventIngress.js";
+import {
+  healthRedEpisodeIdempotencyKey,
+  reconcileTerminalPendingHealthEvents,
+  replayablePendingHealthRunIds,
+} from "../src/health/eventRecovery.js";
 import type { HealthReport } from "../src/health/types.js";
 
 const paths: string[] = [];
@@ -40,29 +42,28 @@ afterEach(() => {
 });
 
 describe("health event crash-window durability", () => {
-  it("reconciles a terminal linked Run without invoking the provider again after restart", async () => {
+  it("reconciles a terminal linked Run before replay can invoke the provider", async () => {
     const path = dbPath("health-terminal-reconcile");
-    const first = openDb(path, { serviceId: "first", runId: "p1", databaseRole: "health" });
-    const accepted = acceptHealthOpsEvent(first, {
+    const db = openDb(path, { serviceId: "first", runId: "p1", databaseRole: "health" });
+    const accepted = acceptHealthOpsEvent(db, {
       eventId: "evt-terminal",
       idempotencyKey: "health:terminal",
       occurredAt: "2026-08-13T12:00:00.000Z",
       report: report("red", "2026-08-13T12:00:00.000Z"),
       token,
     }, { expectedToken: token });
-    first.updateRunCompleted(accepted.runId, "completed before crash", null);
-    first.close();
+    db.updateRunCompleted(accepted.runId, "completed before crash", null);
 
-    const restarted = openDb(path, { serviceId: "second", runId: "p2", databaseRole: "health" });
+    reconcileTerminalPendingHealthEvents(db);
     const executeSurfaceNeutralTurn = vi.fn();
-    await resumeDurablePendingHealthEvents(restarted, { executeSurfaceNeutralTurn }, { bot: "claude" });
+    await resumeDurablePendingHealthEvents(db, { executeSurfaceNeutralTurn }, { bot: "claude" });
 
     expect(executeSurfaceNeutralTurn).not.toHaveBeenCalled();
-    expect(restarted.getEventReceipt(accepted.receiptId)?.status).toBe("completed");
-    restarted.close();
+    expect(db.getEventReceipt(accepted.receiptId)?.status).toBe("completed");
+    db.close();
   });
 
-  it("keeps provider-start evidence until the terminal receipt is reconciled", async () => {
+  it("clears stale provider-start evidence only after a terminal Run is correlated", () => {
     const path = dbPath("health-start-marker");
     const db = openDb(path, { serviceId: "marker", runId: "p1", databaseRole: "health" });
     const accepted = acceptHealthOpsEvent(db, {
@@ -72,38 +73,53 @@ describe("health event crash-window durability", () => {
       report: report("red", "2026-08-13T12:01:00.000Z"),
       token,
     }, { expectedToken: token });
+    db.setSetting(healthEventExecutionStartedKey(accepted.receiptId), accepted.runId);
+    db.updateRunFailed(accepted.runId, "interrupted after provider start");
 
-    const executeSurfaceNeutralTurn = vi.fn(async (input: any) => {
-      input.onProviderExecutionStarted?.();
-      db.updateRunCompleted(accepted.runId, "done", null);
-      return {} as any;
-    });
+    reconcileTerminalPendingHealthEvents(db);
 
-    await executeHealthOpsRun(db, accepted.receiptId, { executeSurfaceNeutralTurn }, { bot: "claude" });
-    expect(db.getSetting(healthEventExecutionStartedKey(accepted.receiptId))).toBe(accepted.runId);
-
-    reconcileEventReceiptResult(db, accepted.receiptId);
-    expect(db.getEventReceipt(accepted.receiptId)?.status).toBe("completed");
+    expect(db.getEventReceipt(accepted.receiptId)?.status).toBe("failed");
     expect(db.getSetting(healthEventExecutionStartedKey(accepted.receiptId))).toBeNull();
     db.close();
   });
 
-  it("reuses one red-episode idempotency key when a crash happens before the red report is persisted", () => {
+  it("identifies only never-started running health Runs as replayable", () => {
+    const path = dbPath("health-replayable-runs");
+    const db = openDb(path, { serviceId: "replayable", runId: "p1", databaseRole: "health" });
+    const replayable = acceptHealthOpsEvent(db, {
+      eventId: "evt-replayable",
+      idempotencyKey: "health:replayable",
+      occurredAt: "2026-08-13T12:02:00.000Z",
+      report: report("red", "2026-08-13T12:02:00.000Z"),
+      token,
+    }, { expectedToken: token });
+    const started = acceptHealthOpsEvent(db, {
+      eventId: "evt-started",
+      idempotencyKey: "health:started",
+      occurredAt: "2026-08-13T12:03:00.000Z",
+      report: report("red", "2026-08-13T12:03:00.000Z"),
+      token,
+    }, { expectedToken: token });
+    db.setSetting(healthEventExecutionStartedKey(started.receiptId), started.runId);
+
+    expect(replayablePendingHealthRunIds(db)).toEqual(new Set([replayable.runId]));
+    db.close();
+  });
+
+  it("reuses one red-episode key when a crash happens before the red report is persisted", () => {
     const path = dbPath("health-red-boundary");
     const first = openDb(path, { serviceId: "episode", runId: "p1", databaseRole: "health" });
     const store = new HealthReportStore(first.raw);
-    const priorGreen = report("green", "2026-08-13T11:55:00.000Z");
-    store.saveReport(priorGreen);
+    store.saveReport(report("green", "2026-08-13T11:55:00.000Z"));
 
     const keyBeforeCrash = healthRedEpisodeIdempotencyKey("content-crawler", store.getReport("content-crawler"));
     const accepted = acceptHealthOpsEvent(first, {
       eventId: keyBeforeCrash,
       idempotencyKey: keyBeforeCrash,
-      occurredAt: "2026-08-13T12:02:00.000Z",
-      report: report("red", "2026-08-13T12:02:00.000Z"),
+      occurredAt: "2026-08-13T12:04:00.000Z",
+      report: report("red", "2026-08-13T12:04:00.000Z"),
       token,
     }, { expectedToken: token });
-    // Simulate process loss before HealthBridgeBot persists the incoming red report.
     first.close();
 
     const restarted = openDb(path, { serviceId: "episode", runId: "p2", databaseRole: "health" });
@@ -114,15 +130,14 @@ describe("health event crash-window durability", () => {
     const replay = acceptHealthOpsEvent(restarted, {
       eventId: keyAfterCrash,
       idempotencyKey: keyAfterCrash,
-      occurredAt: "2026-08-13T12:03:00.000Z",
-      report: report("red", "2026-08-13T12:03:00.000Z"),
+      occurredAt: "2026-08-13T12:05:00.000Z",
+      report: report("red", "2026-08-13T12:05:00.000Z"),
       token,
     }, { expectedToken: token });
     expect(replay.receiptId).toBe(accepted.receiptId);
     expect(replay.runId).toBe(accepted.runId);
 
-    const recoveredGreen = report("green", "2026-08-13T12:10:00.000Z");
-    restartedStore.saveReport(recoveredGreen);
+    restartedStore.saveReport(report("green", "2026-08-13T12:10:00.000Z"));
     expect(healthRedEpisodeIdempotencyKey("content-crawler", restartedStore.getReport("content-crawler"))).not.toBe(keyBeforeCrash);
     restarted.close();
   });
