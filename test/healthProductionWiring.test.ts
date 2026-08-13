@@ -50,4 +50,16 @@ describe("health event production wiring", () => {
     expect(healthLeases).toBeGreaterThan(genericOrphans);
     expect(finalCorrelation).toBeGreaterThan(healthLeases);
   });
+
+  it("arranges exactly one bounded setTimeout retry for an abandoned health lease whose lock hasn't yet expired, with no rescheduling inside that retry", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+    const start = source.indexOf("await reconcileAbandonedHealthLeases(bridgeDb");
+    const end = source.indexOf("reconcileTerminalPendingHealthEvents(bridgeDb)", start);
+    const block = source.slice(start, end);
+    expect(block).toContain("scheduleRetry: (delayMs)");
+    expect(block).toContain("setTimeout(");
+    const retryCallStart = block.indexOf("reconcileAbandonedHealthLeases(bridgeDb", block.indexOf("setTimeout("));
+    const retryCallEnd = block.indexOf(")\n", retryCallStart);
+    expect(block.slice(retryCallStart, retryCallEnd)).not.toContain("scheduleRetry");
+  });
 });

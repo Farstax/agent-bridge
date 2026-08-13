@@ -146,6 +146,13 @@ describe("health event crash-window durability", () => {
     restarted.close();
   });
 
+  // NOTE: this test calls reconcileAbandonedHealthLeases() twice, manually
+  // advancing `now` between calls, to pin the underlying safety invariant in
+  // isolation (never release/terminalize before the lease is genuinely
+  // stale). It does not by itself prove production ever converges — nothing
+  // here calls the helper a second time. That convergence is what the
+  // scheduleRetry test below proves, exercising the same setTimeout-based
+  // single bounded retry index-health.ts wires in production.
   it("does not terminalize a Run interrupted after the provider-start marker until its abandoned health lane lease is proven stale", async () => {
     const path = dbPath("health-abandoned-lease");
     // bridge_runs.started_at is stamped from the real wall clock
@@ -228,12 +235,70 @@ describe("health event crash-window durability", () => {
 
     const genB = openDb(path, { serviceId: "gen-b", runId: "run-b", lockLeaseMs: leaseMs, clock });
     now += leaseMs + 1; // lease has expired, but the owning process is still (ambiguously) alive
-    await reconcileAbandonedHealthLeases(genB, { nowMs: now, processState: () => "live" });
+    const scheduleRetry = vi.fn();
+    await reconcileAbandonedHealthLeases(genB, { nowMs: now, processState: () => "live", scheduleRetry });
 
     expect(genB.getRun(accepted.runId).status).toBe("running");
     expect(genB.raw.prepare(
       "SELECT COUNT(*) AS n FROM execution_locks WHERE surface = ? AND chat_key = ?"
     ).get(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY)).toEqual({ n: 1 });
+    // Time isn't the blocker here — the owning process can't be proven
+    // absent — so scheduling a bounded retry wouldn't help and must not
+    // be arranged.
+    expect(scheduleRetry).not.toHaveBeenCalled();
     genB.close();
+  });
+
+  it("production owner: an abandoned-but-unexpired health lease schedules exactly one bounded retry, which terminalizes the Run and receipt once the lease expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const path = dbPath("health-abandoned-lease-scheduled-retry");
+      const leaseMs = 90_000;
+
+      // No injected clock anywhere below — vi.useFakeTimers() mocks Date and
+      // setTimeout globally, so this exercises the exact default-clock code
+      // path production runs (reconcileAbandonedHealthLeases falls back to
+      // Date.now() when no nowMs is supplied).
+      const genA = openDb(path, { serviceId: "gen-a", runId: "run-a", lockLeaseMs: leaseMs });
+      const accepted = acceptHealthOpsEvent(genA, {
+        eventId: "evt-scheduled-retry",
+        idempotencyKey: "health:scheduled-retry",
+        occurredAt: new Date().toISOString(),
+        report: report("red", new Date().toISOString()),
+        token,
+      }, { expectedToken: token });
+      genA.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+      genA.setSetting(healthEventExecutionStartedKey(accepted.receiptId), accepted.runId);
+      // Crash 5s after acquiring the lane — ~85s of lease remains.
+      vi.advanceTimersByTime(5_000);
+      genA.close();
+
+      const genB = openDb(path, { serviceId: "gen-b", runId: "run-b", lockLeaseMs: leaseMs });
+
+      // Mirrors index-health.ts's production wiring exactly: a bounded
+      // single retry via setTimeout, with no scheduleRetry passed to the
+      // retry's own call — so it can never reschedule itself into a loop.
+      let retryScheduledCount = 0;
+      const scheduleRetry = (delayMs: number) => {
+        retryScheduledCount += 1;
+        setTimeout(() => {
+          void reconcileAbandonedHealthLeases(genB, { processState: () => "absent" });
+        }, delayMs);
+      };
+
+      await reconcileAbandonedHealthLeases(genB, { processState: () => "absent", scheduleRetry });
+
+      expect(retryScheduledCount).toBe(1);
+      expect(genB.getRun(accepted.runId).status).toBe("running");
+
+      await vi.advanceTimersByTimeAsync(leaseMs);
+
+      expect(genB.getRun(accepted.runId).status).toBe("failed");
+      reconcileTerminalPendingHealthEvents(genB);
+      expect(genB.getEventReceipt(accepted.receiptId)?.status).toBe("failed");
+      genB.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
