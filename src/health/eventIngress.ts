@@ -398,12 +398,22 @@ export async function resumeDurablePendingHealthEvents(
     if (!pending.run_id) {
       ensureLinkedHealthEventRun(db, pending.id, { bot: options.bot });
     }
-    try {
-      await executeHealthOpsRun(db, pending.id, engine, options);
-      reconcileEventReceiptResult(db, pending.id);
-    } catch (error) {
-      if (error instanceof HealthOpsRunLaneUnavailableError) throw error;
-      reconcileEventReceiptResult(db, pending.id);
+    for (;;) {
+      try {
+        await executeHealthOpsRun(db, pending.id, engine, options);
+        reconcileEventReceiptResult(db, pending.id);
+        break;
+      } catch (error) {
+        if (error instanceof HealthOpsRunLaneUnavailableError) {
+          // The receipt remains durable and unmarked while waiting. A
+          // process crash here is therefore restart-safe; a live process
+          // simply retries the same Run after the owner releases the lane.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          continue;
+        }
+        reconcileEventReceiptResult(db, pending.id);
+        break;
+      }
     }
   }
 }
