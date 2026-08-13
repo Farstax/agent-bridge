@@ -411,7 +411,11 @@ export async function dispatchInteractiveWithFallback(
 
       if (engines[activeCli].handoffActiveContinuationForFallback) {
         const handoff = await engines[activeCli].handoffActiveContinuationForFallback(chatKey);
-        if (handoff === "blocked") return "failed";
+        if (handoff === "blocked") {
+          // The source engine retires any row attached to the blocked
+          // continuation. Do not re-enter generic queue recovery here.
+          return claimedMessage ? "committed" : "failed";
+        }
       }
 
       if (!claimedMessage && engines[next].recoverPendingQueue) {

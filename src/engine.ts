@@ -482,11 +482,16 @@ export class BridgeEngine {
 
     let processState = this.continuation.getRunOwnedProcessState(record.runId);
     if (processState === "live") {
-      await this.continuation.killRunOwnedDescendants(record.runId);
-      processState = this.continuation.getRunOwnedProcessState(record.runId);
+      try {
+        await this.continuation.killRunOwnedDescendants(record.runId);
+        processState = this.continuation.getRunOwnedProcessState(record.runId);
+      } catch {
+        processState = "ambiguous";
+      }
     }
     this.continuationStore.markCancelled(record.runId, "provider capacity fallback");
     if (processState !== "absent") {
+      for (const pendingId of record.pendingIds) this.db.deletePendingMsg(pendingId);
       this.db.updateRunFailed(record.runId, "provider capacity fallback could not contain provider work");
       await this.sendText(record.chatId, {
         text: "Background continuation could not be safely handed to another provider because the original provider work could not be contained. Please try again later.",

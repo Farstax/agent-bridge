@@ -196,7 +196,7 @@ describe("interactive capacity fallback durable admission", () => {
       startedAt: new Date(Date.now() - 1000).toISOString(),
       deadlineAt: new Date(Date.now() + 60_000).toISOString(),
     });
-    const kill = vi.fn(async () => {});
+    const kill = vi.fn().mockRejectedValueOnce(new Error("containment probe failed"));
     const engine = new BridgeEngine({
       surfaceIdentity: "telegram:interactive", kind: "claude",
       botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
