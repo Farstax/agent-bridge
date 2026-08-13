@@ -208,7 +208,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     const manifest = buildReleaseManifest({
       root: artifactRoot, commit: "a".repeat(40), tree: "b".repeat(40), nodeVersion: "v24.15.0",
       platform: "linux", arch: "x64", builderCommit, builderWorkflowRun: "123",
-      builderWorkflowHead: builderCommit, databaseSchemaVersion: 5,
+      builderWorkflowHead: builderCommit, databaseSchemaVersion: 6,
     });
     writeFileSync(join(artifactRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     const archive = join(root, "artifact.tar.gz");
@@ -221,7 +221,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     const evidence = JSON.parse(execFileSync("python3", [
       "scripts/offline-baseline-validate.py", "--archive", archive,
       "--target-commit", "a".repeat(40), "--expected-tree", "b".repeat(40),
-      "--builder-commit", builderCommit, "--artifact-run-id", "123", "--expected-schema", "5",
+      "--builder-commit", builderCommit, "--artifact-run-id", "123", "--expected-schema", "6",
       "--rollout-helper-sha256", helperHash, "--rollout-helper", "scripts/rollout-agent-bridge.sh",
       "--runtime-root", runtimeRoot, "--db-root", root, "--output", output,
     ], { encoding: "utf8" }));
