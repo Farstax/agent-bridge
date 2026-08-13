@@ -195,6 +195,11 @@ const CONTINUATION_SESSION_NOTICE =
 const CONTINUATION_RECOVERY_NOTICE =
   "Background continuation stopped after restart because a previously claimed resume could not be replayed safely. Send another message to continue.";
 
+function continuationFailureNotice(error: unknown): string {
+  const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
+  return `Background continuation could not finish the task: ${detail}`;
+}
+
 function positiveIntegerEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -1396,6 +1401,20 @@ export class BridgeEngine {
         }
         result = next;
       }
+    } catch (error) {
+      if (error instanceof LostExecutionLeaseError || error instanceof PendingContinuationDeliveryError) throw error;
+      if (!this._canPublish(input.laneHandle)) throw new LostExecutionLeaseError();
+      const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
+      this.continuationStore.markCancelled(input.runId, `continuation failed: ${detail}`);
+      this.db.updateRunFailed(input.runId, detail);
+      await this._deliverContinuationTerminalNotice(
+        input.laneHandle,
+        input.chatId,
+        input.threadId,
+        continuationFailureNotice(error),
+      );
+      input.finalize();
+      return true;
     } finally {
       this.laneCoordinator.clearContinuation(executionLane);
     }
@@ -1462,7 +1481,19 @@ export class BridgeEngine {
       } catch (error) {
         if (!(error instanceof LostExecutionLeaseError) && !(error instanceof PendingContinuationDeliveryError)) {
           console.error(`[${this.kind}] recovered continuation failed runId=${record.runId}`, error);
-          this.continuationStore.markAmbiguous(record.runId, error instanceof Error ? error.message : String(error));
+          if (this._canPublish(handle)) {
+            const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
+            this.continuationStore.markAmbiguous(record.runId, detail);
+            this.db.updateRunFailed(record.runId, detail);
+            await this._deliverContinuationTerminalNotice(
+              handle,
+              record.chatId,
+              record.threadId ?? undefined,
+              continuationFailureNotice(error),
+            ).catch((deliveryError) => {
+              console.error(`[${this.kind}] recovered continuation blocker delivery failed runId=${record.runId}`, deliveryError);
+            });
+          }
         } else if (error instanceof PendingContinuationDeliveryError) {
           console.error(`[${this.kind}] recovered continuation delivery failed runId=${record.runId}`, error.cause);
         }
@@ -1474,7 +1505,10 @@ export class BridgeEngine {
           for (const id of record.pendingIds) this.db.releasePendingClaim(handle, id);
         }
         try {
-          if (!deliveryStillPending && !this.laneCoordinator.isResetting(executionLane) && this.db.ownsLock(handle)) {
+          if (!deliveryStillPending
+            && !this.laneCoordinator.isResetting(executionLane)
+            && !this.continuationStore.hasActiveRun(record.runId)
+            && this.db.ownsLock(handle)) {
             await this._drainQueueAndUnlock(handle, undefined, 0, true, this.opts.busyMessageMode === "augment");
           }
         } finally {
@@ -1590,6 +1624,7 @@ export class BridgeEngine {
     if (!result) {
       if (!this._canPublish(handle)) throw new LostExecutionLeaseError();
       this.continuationStore.markCancelled(record.runId, "recovered continuation attempt failed");
+      this.db.updateRunFailed(record.runId, "recovered continuation attempt failed");
       return true;
     }
 
