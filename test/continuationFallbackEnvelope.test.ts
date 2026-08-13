@@ -173,7 +173,6 @@ describe("continuation fallback admitted-turn envelope", () => {
     const handle = db.acquireLock("telegram:interactive", "100");
     const afterFirstCheckpoint: string[][] = [];
     const afterSecondCheckpoint: string[][] = [];
-    let sleeps = 0;
     let providerCalls = 0;
     const messaging = client();
     messaging.sendMessage.mockImplementation(async () => {
@@ -193,7 +192,7 @@ describe("continuation fallback admitted-turn envelope", () => {
     const continuation: any = {
       hasLiveRunOwnedDescendants: vi.fn(() => providerCalls <= 2),
       getRunOwnedProcessState: vi.fn(() => "absent"),
-      sleep: vi.fn(async () => { sleeps += 1; }),
+      sleep: vi.fn(async () => {}),
     };
     const runCliAsync = vi.fn().mockImplementation(async () => {
       providerCalls += 1;
