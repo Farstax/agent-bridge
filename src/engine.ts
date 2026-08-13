@@ -171,6 +171,18 @@ export interface ContinuationFns {
   now: () => number;
 }
 
+export interface SurfaceNeutralTurnInput {
+  prompt: string;
+  sessionId: string | null;
+  chatId: number;
+  chatKey: string;
+  laneHandle: ExecutionLaneHandle;
+  runId: string;
+  eventContext: NonNullable<CliOptions["eventContext"]>;
+  collect: (event: BridgeEvent) => void;
+  finalize: () => void;
+}
+
 type ResolvedContinuationFns = Omit<ContinuationFns, "getRunOwnedProcessState"> & {
   getRunOwnedProcessState: (runId: string) => RunOwnedProcessState;
 };
@@ -1273,7 +1285,7 @@ export class BridgeEngine {
     continuationStartedAtMs: number | null;
     resumptionCount: number;
   }, result: StagedCliResult): boolean {
-    const shouldContinue = isAgentKind(this.kind)
+    const shouldContinue = isAgentKind(this._executionKind())
       && result.continuationHint === "background-process"
       && result.continuationProcessObserved === true;
     if (!shouldContinue || !result.sessionId) return false;
@@ -1384,7 +1396,7 @@ export class BridgeEngine {
 
     try {
       for (;;) {
-        const shouldContinue = isAgentKind(this.kind)
+        const shouldContinue = isAgentKind(this._executionKind())
           && result.continuationHint === "background-process"
           && result.continuationProcessObserved === true;
         if (shouldContinue) this.laneCoordinator.markContinuationActive(executionLane);
@@ -2408,6 +2420,134 @@ export class BridgeEngine {
       chatKey,
       laneHandle,
     );
+  }
+
+  /**
+   * Executes a turn for a non-messaging surface. Provider execution still
+   * belongs to executePromptAsync; this wrapper owns the lifecycle that the
+   * normal outer turn path supplies: lock heartbeat, process continuation,
+   * continuation fencing, and terminal event finalisation. It has no delivery
+   * or conversation-session side effects.
+   */
+  async executeSurfaceNeutralTurn(input: SurfaceNeutralTurnInput): Promise<StagedCliResult> {
+    const executionLane = this._executionLane(input.chatKey);
+    const lifecycleToken = beginExecutionLifecycle(executionLane, input.laneHandle);
+    const lockHeartbeat = setInterval(() => {
+      try {
+        if (!this.db.heartbeatLock(input.laneHandle)) {
+          this.laneCoordinator.markAborted(executionLane);
+          abortCliProcess(executionLane);
+        }
+      } catch (error) {
+        console.error(`[${this.kind}] surface-neutral execution lock heartbeat failed chatKey=${input.chatKey}`, error);
+      }
+    }, this.db.lockHeartbeatMs);
+    lockHeartbeat.unref();
+
+    let result: StagedCliResult;
+    let continuationStartedAtMs: number | null = null;
+    let resumptionCount = 0;
+    try {
+      result = await this.executePromptAsync(
+        input.prompt,
+        input.sessionId,
+        input.chatId,
+        {},
+        () => {},
+        [],
+        input.eventContext,
+        input.runId,
+        input.collect,
+        input.chatKey,
+        input.laneHandle,
+      );
+
+      for (;;) {
+        const shouldContinue = isAgentKind(this._executionKind())
+          && result.continuationHint === "background-process"
+          && result.continuationProcessObserved === true;
+        if (!shouldContinue) {
+          this.continuationStore.markCompleted(input.runId);
+          input.finalize();
+          return result;
+        }
+
+        this.laneCoordinator.markContinuationActive(executionLane);
+        if (!result.sessionId) {
+          if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
+            await this.continuation.killRunOwnedDescendants(input.runId);
+          }
+          this.continuationStore.markCancelled(input.runId, "provider session unavailable");
+          throw new Error("provider session unavailable for health continuation");
+        }
+
+        continuationStartedAtMs ??= this.continuation.now();
+        const deadlineAtMs = continuationStartedAtMs + positiveIntegerEnv("CONTINUATION_MAX_LIFETIME_MS", DEFAULT_CONTINUATION_MAX_LIFETIME_MS);
+        const maxResumptions = positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS);
+        if (resumptionCount >= maxResumptions || this.continuation.now() >= deadlineAtMs) {
+          if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
+            await this.continuation.killRunOwnedDescendants(input.runId);
+          }
+          this.continuationStore.markCancelled(input.runId, "continuation safety limit reached");
+          throw new Error("health continuation safety limit reached");
+        }
+
+        const saved = this.continuationStore.saveWaiting({
+          runId: input.runId,
+          surface: this.surfaceIdentity,
+          chatKey: input.chatKey,
+          chatId: input.chatId,
+          threadId: null,
+          bot: this._executionKind(),
+          sessionId: result.sessionId,
+          executionMode: "async",
+          triggerKind: "run-owned-background-process",
+          triggerId: input.runId,
+          resumptionCount,
+          pendingIds: [],
+          startedAt: new Date(continuationStartedAtMs).toISOString(),
+          deadlineAt: new Date(deadlineAtMs).toISOString(),
+          deliveryState: "delivered",
+        });
+        if (!saved) throw new LostExecutionLeaseError();
+
+        while (this.continuation.getRunOwnedProcessState(input.runId) !== "absent") {
+          await this._assertContinuationCanProceed(input.laneHandle, input.runId, input.eventContext, input.collect);
+          if (this.continuation.now() >= deadlineAtMs) {
+            if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
+              await this.continuation.killRunOwnedDescendants(input.runId);
+            }
+            this.continuationStore.markCancelled(input.runId, "continuation lifetime limit reached");
+            throw new Error("health continuation lifetime limit reached");
+          }
+          await this.continuation.sleep(CONTINUATION_POLL_MS);
+        }
+
+        await this._assertContinuationCanProceed(input.laneHandle, input.runId, input.eventContext, input.collect);
+        const runnable = this.continuationStore.markRunnable(input.runId);
+        if (!runnable) throw new LostExecutionLeaseError();
+        const claimed = this.continuationStore.claimRunnable(input.runId);
+        if (!claimed) throw new LostExecutionLeaseError();
+        resumptionCount = claimed.resumptionCount;
+        result = await this.executePromptAsync(
+          CONTINUATION_INSTRUCTION,
+          claimed.sessionId,
+          input.chatId,
+          {},
+          () => {},
+          [],
+          input.eventContext,
+          input.runId,
+          input.collect,
+          input.chatKey,
+          input.laneHandle,
+        );
+      }
+    } finally {
+      clearInterval(lockHeartbeat);
+      this.laneCoordinator.clearContinuation(executionLane);
+      completeExecutionLifecycle(executionLane, lifecycleToken);
+    }
   }
 
   async executePrompt(

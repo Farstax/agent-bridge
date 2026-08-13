@@ -30,6 +30,11 @@ import { resolveTimeoutsForKind } from "./timeouts.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
 import type { HealthPlugin } from "./health/types.js";
+import {
+  acceptHealthOpsEvent,
+  executeHealthOpsRun,
+  reconcileEventReceiptResult,
+} from "./health/eventIngress.js";
 
 // ── Config ──────────────────────────────────────────────────────────────────
 dotenv.config({ path: process.env.BRIDGE_ENV_FILE || ".env", override: false });
@@ -138,6 +143,7 @@ if (process.env.HEALTH_CONTENT_CRAWLER_ENABLED === "1") {
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────
+let engine: BridgeEngine;
 const scheduler = new HealthScheduler({
   plugins,
   config: {
@@ -152,6 +158,23 @@ const scheduler = new HealthScheduler({
   },
   onRawReport: async (report) => {
     await healthBot.handleReport(report);
+    const eventToken = process.env.HEALTH_EVENT_TOKEN;
+    if (eventToken && report.status === "red") {
+      try {
+        const eventId = `health:${report.pluginName}:${report.timestamp}`;
+        const accepted = acceptHealthOpsEvent(bridgeDb, {
+          eventId,
+          idempotencyKey: eventId,
+          occurredAt: report.timestamp,
+          report,
+          token: eventToken,
+        }, { expectedToken: eventToken, bot: cliBot });
+        await executeHealthOpsRun(bridgeDb, accepted.receiptId, engine, { bot: cliBot });
+        reconcileEventReceiptResult(bridgeDb, accepted.receiptId);
+      } catch (error) {
+        console.error(`[health-bot] event-owned health run failed for ${report.pluginName}`, error);
+      }
+    }
     const _repoRoot = process.env.BRIDGE_PROJECT_DIR
       ?? new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
     await autoUpdateClis(report, {
@@ -163,7 +186,7 @@ const scheduler = new HealthScheduler({
 });
 
 // ── BridgeEngine with health hooks ───────────────────────────────────────────
-const engine = new BridgeEngine(
+engine = new BridgeEngine(
   {
     kind: "health",
     surfaceIdentity: "telegram:health",

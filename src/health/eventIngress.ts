@@ -4,7 +4,7 @@
  * scenario (a health plugin report crossing into `red` status) and starts
  * bounded work through the ordinary owning Run (bridge_runs), executed by
  * the SAME provider-turn execution owner ordinary Telegram-driven turns use
- * (BridgeEngine.executePromptAsync), with no preceding chat turn. Not a
+ * (BridgeEngine.executeSurfaceNeutralTurn), with no preceding chat turn. Not a
  * general event bus: only this one event kind is accepted, and
  * authorization comes solely from the authenticated `token`, never from
  * event payload content.
@@ -14,38 +14,22 @@
  *     -> authenticated/idempotent durable receipt   (acceptHealthOpsEvent)
  *     -> ordinary owning Run                         (bridge_runs, linked here)
  *     -> main agent + AGENTS.md + Skill + tools       (executeHealthOpsRun)
- *     -> terminal Run/result                          (BridgeEngine.executePromptAsync + EventStore)
+ *     -> terminal Run/result                          (BridgeEngine.executeSurfaceNeutralTurn + EventStore)
  *     -> receipt correlation                          (reconcileEventReceiptResult)
  *
  * Deliberately does NOT create a work_item/work_job/ops_check job (that was
  * the original, superseded design that recreated the mechanical Worker
  * workflow layer issue #347 removes) and deliberately does NOT reimplement
- * CLI invocation via buildCliInvocation/runCli directly (an earlier
- * iteration of this file did — independent review correctly flagged that as
- * a second, reduced provider-execution stack). Instead executeHealthOpsRun
- * calls an injected BridgeEngine's public executePromptAsync — the exact
- * same method ordinary async turns call internally
- * (engine.ts:_executeTurnWithContinuations -> executePromptAsync ->
- * _executeProviderAttempt) — so prompt construction (workspace/recent-
- * context/Soul/response-contract), model/effort selection, provider
- * invocation, output parsing, session resolution, invalid-session/Agy
- * recovery, capacity fallback, and continuation evidence all stay owned by
- * that one execution path instead of being partially reimplemented here.
+ * CLI invocation via buildCliInvocation/runCli directly. Instead
+ * executeHealthOpsRun calls the engine's surface-neutral wrapper. That
+ * wrapper keeps the ordinary provider-attempt owner plus its outer lock
+ * heartbeat and continuation lifecycle.
  *
- * What IS new here, and why: executePromptAsync requires a numeric chatId,
- * a chatKey, and an ExecutionLaneHandle the caller already acquired, and it
- * reports terminal state only via the `collect`/eventContext BridgeEvent
- * plumbing (src/events/store.ts's EventStore), which in the ordinary
- * Telegram path is wired up by the private _createEventContext(). None of
- * that assumes a live chat by itself — it is a data shape, not a Telegram
- * dependency — so this module builds the same shape directly (a stable
- * synthetic chatKey/lock surface, and an EventStore seeded with the Run
- * already created by acceptHealthOpsEvent) rather than duplicating
- * _createEventContext or touching engine.ts. Telegram delivery
- * (sendMessageWithProgress) and conversation-history/session persistence
- * live one level up, in the private _executeAndDeliverTurnAttempt — this
- * module never calls that, so no message is sent and no session/history
- * write happens merely because a health event ran.
+ * The wrapper requires a numeric sentinel chat id, a synthetic chat key, an
+ * execution-lane handle, and the existing BridgeEvent collector. Those are
+ * data needed by the provider runtime and EventStore. They do not create a
+ * Telegram delivery or conversation session. The Run was already created by
+ * acceptHealthOpsEvent, so this module only seeds EventStore with that Run.
  *
  * NEIGHBORS: src/db.ts, src/repositories/eventReceiptRepository.ts,
  * src/engine.ts, src/events/store.ts, src/health/scheduler.ts
@@ -71,6 +55,16 @@ export const HEALTH_RUN_AUTHORITY_SCOPE = "health:report-only" as const;
 const MAX_PAYLOAD_BYTES = 4096;
 const REDACT_KEY_PATTERN = /token|secret|password|passwd|key|authorization|credential|prompt/i;
 const REDACTED = "[redacted]";
+
+function redactText(value: string): string {
+  return value
+    .replace(/Bearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
+    .replace(/\b(?:token|secret|password|passwd|api[_-]?key|authorization|credential)\s*[:=]\s*[^\s,;]+/gi, (match) => {
+      const key = match.slice(0, match.search(/[:=]/));
+      return `${key}${match.includes("=") ? "=" : ":"} ${REDACTED}`;
+    })
+    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, `https://[redacted]:[redacted]@`);
+}
 
 export class UnauthenticatedEventError extends Error {
   constructor() {
@@ -117,6 +111,7 @@ export interface AcceptedHealthOpsEvent {
 
 function redactValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactValue);
+  if (typeof value === "string") return redactText(value);
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
@@ -139,6 +134,31 @@ function boundedRedactedPayload(report: HealthOpsEventInput["report"]): string {
     throw new OversizedEventPayloadError();
   }
   return json;
+}
+
+type PersistedHealthReport = Pick<HealthReport, "pluginName" | "status" | "summary" | "checks">;
+
+function parsePersistedHealthReport(payloadJson: string): PersistedHealthReport {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadJson);
+  } catch {
+    throw new Error("event receipt payload is not valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object") throw new Error("event receipt payload is not an object");
+  const value = parsed as Partial<PersistedHealthReport>;
+  if (typeof value.pluginName !== "string" || value.status !== "red" || typeof value.summary !== "string" || !Array.isArray(value.checks)) {
+    throw new Error("event receipt payload is not a valid red health report");
+  }
+  const checks = value.checks.map((check) => {
+    if (!check || typeof check !== "object") throw new Error("event receipt check is invalid");
+    const item = check as { name?: unknown; status?: unknown; message?: unknown };
+    if (typeof item.name !== "string" || typeof item.message !== "string" || (item.status !== "red" && item.status !== "amber" && item.status !== "green")) {
+      throw new Error("event receipt check is invalid");
+    }
+    return { name: item.name, status: item.status as HealthReport["checks"][number]["status"], message: item.message };
+  });
+  return { pluginName: value.pluginName, status: "red", summary: value.summary, checks };
 }
 
 /**
@@ -225,14 +245,14 @@ export function acceptHealthOpsEvent(
  * AGENTS.md and the agent's own Skills own that reasoning, per #351's
  * authority-boundary requirement that event content is evidence/instruction
  * only, never a grant of authority or a prescribed procedure. */
-function buildHealthOpsPrompt(event: HealthOpsEventInput): string {
-  const checks = event.report.checks
+function buildHealthOpsPrompt(report: PersistedHealthReport): string {
+  const checks = report.checks
     .map((check) => `- ${check.name}: ${check.status} — ${check.message}`)
     .join("\n");
   return [
     `A health plugin report crossed into 'red' status.`,
-    `Plugin: ${event.report.pluginName}`,
-    `Summary: ${event.report.summary}`,
+    `Plugin: ${report.pluginName}`,
+    `Summary: ${report.summary}`,
     `Checks:`,
     checks,
     ``,
@@ -248,7 +268,7 @@ function buildHealthOpsPrompt(event: HealthOpsEventInput): string {
  * BridgeEngine with an injected exec/client (the established pattern used
  * throughout test/*.test.ts) or a minimal fake, and so this module cannot
  * accidentally reach into any other BridgeEngine method. */
-export type HealthOpsExecutionEngine = Pick<BridgeEngine, "executePromptAsync">;
+export type HealthOpsExecutionEngine = Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
 
 export class HealthOpsRunLaneUnavailableError extends Error {
   constructor() {
@@ -283,7 +303,6 @@ export interface ExecuteHealthOpsRunOptions {
 export async function executeHealthOpsRun(
   db: BridgeDb,
   receiptId: number,
-  event: HealthOpsEventInput,
   engine: HealthOpsExecutionEngine,
   options: ExecuteHealthOpsRunOptions = {},
 ): Promise<{ runId: string; status: "done" | "failed" }> {
@@ -293,6 +312,7 @@ export async function executeHealthOpsRun(
   }
   const runId = receipt.run_id;
   const bot = options.bot ?? "claude";
+  const report = parsePersistedHealthReport(receipt.payload_json);
 
   const laneHandle: ExecutionLaneHandle | null = db.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
   if (!laneHandle) throw new HealthOpsRunLaneUnavailableError();
@@ -317,19 +337,17 @@ export async function executeHealthOpsRun(
     };
 
     try {
-      await engine.executePromptAsync(
-        buildHealthOpsPrompt(event),
-        null,
-        HEALTH_RUN_SENTINEL_CHAT_ID,
-        {},
-        () => {},
-        [],
-        eventContext,
-        runId,
-        collect,
-        HEALTH_RUN_CHAT_KEY,
+      await engine.executeSurfaceNeutralTurn({
+        prompt: buildHealthOpsPrompt(report),
+        sessionId: null,
+        chatId: HEALTH_RUN_SENTINEL_CHAT_ID,
+        chatKey: HEALTH_RUN_CHAT_KEY,
         laneHandle,
-      );
+        runId,
+        eventContext,
+        collect,
+        finalize: () => eventStore.finalize(),
+      });
     } finally {
       // Flushes the deferred run.completed persistence queued above (see
       // EventStore.finalize()). Safe to call even when executePromptAsync
