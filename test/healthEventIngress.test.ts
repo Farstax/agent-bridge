@@ -27,9 +27,9 @@ import type { HealthReport } from "../src/health/types.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeDb() {
+function makeDb(leaseMs = 90_000) {
   const dbPath = join(tmpdir(), `health-event-ingress-test-${Date.now()}-${Math.random()}.sqlite`);
-  const db = openDb(dbPath, { serviceId: "test-service", runId: "test-process" });
+  const db = openDb(dbPath, { serviceId: "test-service", runId: "test-process", leaseMs });
   return { db, dbPath };
 }
 
@@ -64,7 +64,7 @@ describe("acceptHealthOpsEvent", () => {
   let dbPath: string;
 
   beforeEach(() => {
-    ({ db, dbPath } = makeDb());
+    ({ db, dbPath } = makeDb(300));
   });
 
   afterEach(() => {
@@ -208,13 +208,15 @@ describe("acceptHealthOpsEvent", () => {
       db,
       makeEvent({
         report: redReport({
-          checks: [{ name: "queue-depth", status: "red", message: "queue backed up", value: "secret_api_key=abcdef" } as any],
+          summary: "Bearer summary-secret token=summary-token https://user:pass@example.test/health",
+          checks: [{ name: "queue-depth", status: "red", message: "token=message-token and Bearer message-secret" }],
         }),
       }),
       { expectedToken: EXPECTED_TOKEN },
     );
     const receipt = db.getEventReceipt(result.receiptId)!;
-    expect(receipt.payload_json).not.toContain("abcdef");
+    expect(receipt.payload_json).not.toMatch(/summary-secret|summary-token|message-token|message-secret|user:pass/);
+    expect(receipt.payload_json).toContain("[redacted]");
   });
 
   it("rejects a payload that exceeds the bounded size limit", () => {
@@ -237,7 +239,7 @@ describe("acceptHealthOpsEvent", () => {
   });
 });
 
-// ── executeHealthOpsRun: reuses BridgeEngine.executePromptAsync ───────────────
+// ── executeHealthOpsRun: reuses the surface-neutral provider-turn owner ───────
 //
 // Per the independent architecture review on PR #356 ("do not replace Worker
 // orchestration with a second provider-execution stack"), the event path
@@ -266,12 +268,24 @@ function claudeStreamJsonOutput(text: string, sessionId: string | null): string 
   return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId });
 }
 
-function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, db: ReturnType<typeof openDb>) {
+function claudeBackgroundOutput(text: string, sessionId: string): string {
+  return [
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "npm test", run_in_background: true } }] } }),
+    JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId }),
+  ].join("\n");
+}
+
+function makeEngine(
+  runCliAsync: (...args: any[]) => Promise<{ text: string }>,
+  db: ReturnType<typeof openDb>,
+  continuation: ConstructorParameters<typeof BridgeEngine>[4] = {},
+) {
   const client = makeMockClient();
   const engine = new BridgeEngine(
     {
       surfaceIdentity: "telegram:health",
       kind: "health",
+      executionKind: "claude",
       botConfig: { command: "claude", modelPreference: ["default-model"] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
@@ -281,6 +295,7 @@ function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, 
     db,
     client,
     { runCliAsync },
+    continuation,
   );
   return { engine, client };
 }
@@ -298,13 +313,13 @@ describe("executeHealthOpsRun", () => {
     try { rmSync(dbPath); } catch {}
   });
 
-  it("calls engine.executePromptAsync — the same execution owner ordinary async turns use", async () => {
+  it("calls the surface-neutral provider-turn owner used by ordinary turns", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
     const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
     const { engine } = makeEngine(runCliAsync, db);
-    const spy = vi.spyOn(engine, "executePromptAsync");
+    const spy = vi.spyOn(engine, "executeSurfaceNeutralTurn");
 
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+    await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -318,7 +333,7 @@ describe("executeHealthOpsRun", () => {
     });
     const { engine } = makeEngine(runCliAsync, db);
 
-    const outcome = await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+    const outcome = await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(outcome.status).toBe("done");
     expect(capturedPrompt).toContain("content-crawler");
@@ -326,12 +341,45 @@ describe("executeHealthOpsRun", () => {
     expect(db.getRun(accepted.runId).status).toBe("done");
   });
 
+  it("derives the execution prompt from the durable receipt and keeps continuation ownership in the engine", async () => {
+    const accepted = acceptHealthOpsEvent(db, makeEvent({
+      report: redReport({ summary: "accepted summary", checks: [{ name: "accepted-check", status: "red", message: "accepted message" }] }),
+    }), { expectedToken: EXPECTED_TOKEN });
+    let callCount = 0;
+    let heartbeatCount = 0;
+    const originalHeartbeat = db.heartbeatLock.bind(db);
+    (db as unknown as { heartbeatLock: typeof db.heartbeatLock }).heartbeatLock = ((handle) => {
+      heartbeatCount += 1;
+      return originalHeartbeat(handle);
+    }) as typeof db.heartbeatLock;
+    const runCliAsync = vi.fn(async (_command: string, args: string[], _cwd: string, options: any) => {
+      callCount += 1;
+      const prompt = options.stdin ? JSON.parse(String(options.stdin)).message.content : args.join(" ");
+      expect(prompt).toContain("accepted summary");
+      expect(prompt).not.toContain("untrusted replacement");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return { text: callCount === 1 ? claudeBackgroundOutput("started background work", "sess-1") : claudeStreamJsonOutput("finished", "sess-1") };
+    });
+    const { engine } = makeEngine(runCliAsync, db, {
+      getRunOwnedProcessState: vi.fn().mockReturnValueOnce("live").mockReturnValue("absent"),
+      killRunOwnedDescendants: vi.fn().mockResolvedValue(undefined),
+      sleep: vi.fn().mockResolvedValue(undefined),
+      now: () => Date.now(),
+    });
+
+    const outcome = await executeHealthOpsRun(db, accepted.receiptId, engine);
+
+    expect(outcome.status).toBe("done");
+    expect(runCliAsync).toHaveBeenCalledTimes(2);
+    expect(heartbeatCount).toBeGreaterThan(0);
+  });
+
   it("never delivers to Telegram and never persists conversation/session state merely because a health event ran", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
     const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", "sess-1") });
     const { engine, client } = makeEngine(runCliAsync, db);
 
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+    await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(client.sendMessage).not.toHaveBeenCalled();
     expect(client.sendChatAction).not.toHaveBeenCalled();
@@ -343,7 +391,7 @@ describe("executeHealthOpsRun", () => {
     const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
     const { engine } = makeEngine(runCliAsync, db);
 
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+    await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(db.listWorkItems()).toHaveLength(0);
     expect(db.listWorkJobs()).toHaveLength(0);
@@ -359,7 +407,7 @@ describe("executeHealthOpsRun", () => {
     const runCliAsync = vi.fn().mockReturnValue(cliPromise);
     const { engine } = makeEngine(runCliAsync, db);
 
-    const execPromise = executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+    const execPromise = executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(db.updateRunCancelled(accepted.runId, "operator cancelled")).toBe(true);
     resolveCli({ text: claudeStreamJsonOutput("late result", null) });
@@ -377,7 +425,7 @@ describe("executeHealthOpsRun", () => {
     const handle = db.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
     expect(handle).not.toBeNull();
 
-    await expect(executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine)).rejects.toBeInstanceOf(
+    await expect(executeHealthOpsRun(db, accepted.receiptId, engine)).rejects.toBeInstanceOf(
       HealthOpsRunLaneUnavailableError,
     );
     expect(runCliAsync).not.toHaveBeenCalled();
@@ -389,7 +437,7 @@ describe("executeHealthOpsRun", () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
     const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
     const { engine } = makeEngine(runCliAsync, db);
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+    await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     reconcileEventReceiptResult(db, accepted.receiptId);
 
@@ -403,7 +451,7 @@ describe("executeHealthOpsRun", () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
     const runCliAsync = vi.fn().mockRejectedValue(new Error("cli exploded"));
     const { engine } = makeEngine(runCliAsync, db);
-    await executeHealthOpsRun(db, accepted.receiptId, makeEvent(), engine);
+    await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     reconcileEventReceiptResult(db, accepted.receiptId);
 
