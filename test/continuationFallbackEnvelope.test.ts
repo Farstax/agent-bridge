@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
@@ -123,6 +126,27 @@ describe("continuation fallback admitted-turn envelope", () => {
       expect(() => (engine as any)._persistContinuationAttachments("copy-failure", ["/tmp/disposable-upload-that-is-gone.png"]))
         .toThrow("continuation attachment could not be persisted");
     } finally {
+      db.close();
+    }
+  });
+
+  it("reuses continuation-owned attachments across repeated checkpoints", () => {
+    const db = openDb(":memory:");
+    const sourceDir = mkdtempSync(join(tmpdir(), "continuation-source-"));
+    const source = join(sourceDir, "image.png");
+    writeFileSync(source, "image");
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    try {
+      const first = (engine as any)._persistContinuationAttachments("repeat", [source]);
+      const second = (engine as any)._persistContinuationAttachments("repeat", first);
+      expect(second).toEqual(first);
+      expect(readFileSync(second[0], "utf8")).toBe("image");
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+      rmSync(join(tmpdir(), "bridge-continuation-attachments-repeat"), { recursive: true, force: true });
       db.close();
     }
   });
