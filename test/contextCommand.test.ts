@@ -301,7 +301,7 @@ describe("agent-bridge-context helper", () => {
       }
     });
 
-    it("surfaces the newest matching turn first, usable as handoff evidence", () => {
+    it("surfaces matching evidence in chronology, usable as handoff evidence", () => {
       const { db, path } = makeDb();
       try {
         db.addConvTurn("chat:1", "user", "the release date is March 1st", "claude");
@@ -316,7 +316,27 @@ describe("agent-bridge-context helper", () => {
         const marchFirstIdx = output.indexOf("March 1st");
         expect(marchFifteenIdx).toBeGreaterThanOrEqual(0);
         expect(marchFirstIdx).toBeGreaterThanOrEqual(0);
-        expect(marchFifteenIdx).toBeLessThan(marchFirstIdx);
+        expect(marchFirstIdx).toBeLessThan(marchFifteenIdx);
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+
+    it("keeps the complete rendered search output bounded for an oversized query", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "needle is the useful search term", "codex");
+        const oversizedQuery = `needle\n${"x".repeat(10_000)}`;
+
+        const output = renderAgentBridgeContext(["--search", oversizedQuery], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        expect(output.length).toBeLessThanOrEqual(4_000);
+        expect(output).not.toContain("\n" + "x".repeat(100));
+        expect(output).toContain("needle");
       } finally {
         db.close();
         rmSync(path, { force: true });

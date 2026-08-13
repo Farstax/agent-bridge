@@ -306,11 +306,9 @@ describe("searchConvTurns (issue #350)", () => {
     db.addConvTurn("chat:1", "assistant", "correction: the deploy window is actually Thursday", "claude");
 
     const results = db.searchConvTurns("chat:1", "deploy window");
-    expect(results.length).toBe(2);
-    // Newest match first.
-    expect(results[0].text).toContain("Thursday");
-    // Original remains inspectable, not hidden.
-    expect(results[1].text).toContain("Tuesday");
+    expect(results.some((row) => row.text.includes("Thursday"))).toBe(true);
+    expect(results.some((row) => row.text.includes("Tuesday"))).toBe(true);
+    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
   });
 
   it("returns a bounded empty-ish result for an empty query without crashing", () => {
@@ -354,5 +352,34 @@ describe("searchConvTurns (issue #350)", () => {
     expect(row.created_at).toBeTruthy();
     expect(row.role).toBe("assistant");
     expect(row.cli).toBe("claude");
+  });
+
+  it("returns adjacent conversational evidence around each matching hit in chronology", () => {
+    db.addConvTurn("chat:1", "user", "we should choose the green deployment", "codex");
+    db.addConvTurn("chat:1", "assistant", "I agree; the rollout can proceed after review", "claude");
+    db.addConvTurn("chat:1", "user", "unrelated follow-up", "codex");
+
+    const results = db.searchConvTurns("chat:1", "deployment");
+
+    expect(results.map((row) => row.text)).toEqual([
+      "we should choose the green deployment",
+      "I agree; the rollout can proceed after review",
+    ]);
+    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
+    expect(results[1]).toMatchObject({ role: "assistant", cli: "claude" });
+  });
+
+  it("deduplicates overlapping context windows, stays scoped, and remains globally bounded", () => {
+    for (let i = 0; i < 40; i++) {
+      db.addConvTurn("chat:1", i % 2 === 0 ? "user" : "assistant", i % 2 === 0 ? `needle hit ${i}` : `context ${i}`, i % 2 === 0 ? "codex" : "claude");
+    }
+    db.addConvTurn("chat:2", "user", "needle from another workstream", "codex");
+
+    const results = db.searchConvTurns("chat:1", "needle", 100);
+
+    expect(results.length).toBeLessThanOrEqual(20);
+    expect(results.every((row) => row.text !== "needle from another workstream")).toBe(true);
+    expect(new Set(results.map((row) => row.id)).size).toBe(results.length);
+    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
   });
 });
