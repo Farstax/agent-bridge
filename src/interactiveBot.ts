@@ -418,6 +418,7 @@ export async function dispatchInteractiveWithFallback(
             const pendingIds = claimedMessage.pendingIds ?? [claimedMessage.id];
             const partitions = db.getClaimedPendingAttachmentPartitions(claimedMessage.laneHandle, pendingIds);
             if (!partitions) return "fenced";
+            claimedMessage.attachmentPartitions = partitions;
             claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...partitions.flat());
           }
           return claimedMessage ? "committed" : "failed";
@@ -426,6 +427,7 @@ export async function dispatchInteractiveWithFallback(
           const pendingIds = claimedMessage.pendingIds ?? [claimedMessage.id];
           const partitions = db.getClaimedPendingAttachmentPartitions(claimedMessage.laneHandle, pendingIds);
           if (!partitions) return "fenced";
+          claimedMessage.attachmentPartitions = partitions;
           claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...partitions.flat());
         }
       }
