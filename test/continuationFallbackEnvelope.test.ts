@@ -23,6 +23,63 @@ function claudeBackground(text: string, sessionId: string): string {
 }
 
 describe("continuation fallback admitted-turn envelope", () => {
+  it("contains live descendants when synchronous checkpointing fails", async () => {
+    const db = openDb(":memory:");
+    const kill = vi.fn(async () => {});
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() }, {
+      hasLiveRunOwnedDescendants: () => true, getRunOwnedProcessState: () => "live", killRunOwnedDescendants: kill,
+      sleep: vi.fn(async () => {}),
+    });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    vi.spyOn(engine, "executePrompt").mockResolvedValue({
+      text: "background", sessionId: "claude-session", memoryCandidates: [],
+      continuationHint: "background-process", continuationProcessObserved: true,
+    } as any);
+    vi.spyOn((engine as any), "_checkpointContinuationBeforeDelivery").mockImplementation(() => {
+      throw new Error("attachment checkpoint failed");
+    });
+    try {
+      await expect((engine as any)._executeAndDeliverTurnAttempt({
+        mode: "sync", prompt: "inspect", sessionId: "claude-session", isInitialResult: true,
+        chatId: 100, chatKey: "100", chatType: "private", userId: 42, threadId: undefined, attachments: [],
+        laneHandle: handle, pendingIds: [], runId: "sync-checkpoint-failure", eventContext: {}, collect: vi.fn(),
+        continuationStartedAtMs: null, resumptionCount: 0,
+      })).rejects.toThrow("attachment checkpoint failed");
+      expect(kill).toHaveBeenCalledWith("sync-checkpoint-failure");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("cleans staged continuation attachments when row ownership replacement fails", () => {
+    const db = openDb(":memory:");
+    db.enqueueMsg("telegram:interactive", "100", { prompt: "inspect", chatId: 100, chatType: "private", userId: 42 });
+    const handle = db.acquireLock("telegram:interactive", "100");
+    const row = db.claimNextPendingMsg(handle!);
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+    }, db, client(), { runCliAsync: vi.fn() });
+    const staged = "/tmp/bridge-continuation-attachments-failed-checkpoint/0-file.png";
+    vi.spyOn((engine as any), "_persistContinuationAttachments").mockReturnValue([staged]);
+    vi.spyOn(db, "replaceClaimedPendingAttachments").mockReturnValue(false);
+    const cleanup = vi.spyOn((engine as any), "_cleanupContinuationAttachments");
+    try {
+      expect(() => (engine as any)._checkpointContinuationBeforeDelivery({
+        mode: "async", prompt: "inspect", isInitialResult: true, chatId: 100, chatKey: "100", chatType: "private", userId: 42,
+        threadId: undefined, attachments: ["/tmp/source.png"], laneHandle: handle, pendingIds: [row!.id], runId: "failed-checkpoint",
+        continuationStartedAtMs: null, resumptionCount: 0,
+      }, { text: "background", sessionId: "claude-session", memoryCandidates: [], continuationHint: "background-process", continuationProcessObserved: true } as any))
+        .toThrow();
+      expect(cleanup).toHaveBeenCalledWith([staged]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("contains live descendants when attachment checkpointing fails before waiting is saved", async () => {
     const db = openDb(":memory:");
     const kill = vi.fn(async () => {});
