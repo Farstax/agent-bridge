@@ -76,7 +76,7 @@ describe("acceptHealthOpsEvent", () => {
     expect(() =>
       acceptHealthOpsEvent(db, makeEvent(), { expectedToken: undefined }),
     ).toThrow(UnauthenticatedEventError);
-    expect(db.listRunningRuns?.() ?? []).toHaveLength(0);
+    expect(db.getEventReceiptByIdempotencyKey(makeEvent().idempotencyKey)).toBeNull();
   });
 
   it("rejects an event whose token does not match the configured authority", () => {
@@ -224,7 +224,7 @@ describe("acceptHealthOpsEvent", () => {
         { expectedToken: EXPECTED_TOKEN },
       ),
     ).toThrow(OversizedEventPayloadError);
-    expect(db.listRunningRuns()).toHaveLength(0);
+    expect(db.getEventReceiptByIdempotencyKey(makeEvent().idempotencyKey)).toBeNull();
   });
 
   it("does not persist prompt content — only structured plugin/status/summary/check fields", () => {
