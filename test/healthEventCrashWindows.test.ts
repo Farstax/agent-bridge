@@ -7,6 +7,7 @@ import { HealthReportStore } from "../src/health/reports.js";
 import {
   acceptHealthOpsEvent,
   healthEventExecutionStartedKey,
+  serializeHealthEventExecutionStartedMarker,
   resumeDurablePendingHealthEvents,
   HEALTH_RUN_SURFACE,
   HEALTH_RUN_CHAT_KEY,
@@ -179,7 +180,10 @@ describe("health event crash-window durability", () => {
     }, { expectedToken: token });
     const laneHandle = genA.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
     expect(laneHandle).not.toBeNull();
-    genA.setSetting(healthEventExecutionStartedKey(accepted.receiptId), accepted.runId);
+    genA.setSetting(healthEventExecutionStartedKey(accepted.receiptId), serializeHealthEventExecutionStartedMarker({
+      runId: accepted.runId,
+      lane: { serviceId: laneHandle!.serviceId, runId: laneHandle!.runId, acquisitionId: laneHandle!.acquisitionId },
+    }));
     genA.close();
 
     // Process generation B starts immediately — before the lease has
@@ -229,8 +233,11 @@ describe("health event crash-window durability", () => {
       report: report("red", "2026-08-13T12:08:00.000Z"),
       token,
     }, { expectedToken: token });
-    genA.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
-    genA.setSetting(healthEventExecutionStartedKey(accepted.receiptId), accepted.runId);
+    const laneHandleLive = genA.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+    genA.setSetting(healthEventExecutionStartedKey(accepted.receiptId), serializeHealthEventExecutionStartedMarker({
+      runId: accepted.runId,
+      lane: { serviceId: laneHandleLive!.serviceId, runId: laneHandleLive!.runId, acquisitionId: laneHandleLive!.acquisitionId },
+    }));
     genA.close();
 
     const genB = openDb(path, { serviceId: "gen-b", runId: "run-b", lockLeaseMs: leaseMs, clock });
@@ -267,8 +274,11 @@ describe("health event crash-window durability", () => {
         report: report("red", new Date().toISOString()),
         token,
       }, { expectedToken: token });
-      genA.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
-      genA.setSetting(healthEventExecutionStartedKey(accepted.receiptId), accepted.runId);
+      const laneHandleRetry = genA.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+      genA.setSetting(healthEventExecutionStartedKey(accepted.receiptId), serializeHealthEventExecutionStartedMarker({
+        runId: accepted.runId,
+        lane: { serviceId: laneHandleRetry!.serviceId, runId: laneHandleRetry!.runId, acquisitionId: laneHandleRetry!.acquisitionId },
+      }));
       // Crash 5s after acquiring the lane — ~85s of lease remains.
       vi.advanceTimersByTime(5_000);
       genA.close();

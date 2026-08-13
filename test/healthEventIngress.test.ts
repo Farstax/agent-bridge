@@ -10,6 +10,7 @@ import {
   resumeDurablePendingHealthEvents,
   reconcileEventReceiptResult,
   healthEventExecutionStartedKey,
+  serializeHealthEventExecutionStartedMarker,
   UnauthenticatedEventError,
   OversizedEventPayloadError,
   HealthOpsRunLaneUnavailableError,
@@ -17,6 +18,7 @@ import {
   HEALTH_RUN_CHAT_KEY,
   type HealthOpsEventInput,
 } from "../src/health/eventIngress.js";
+import { reconcileAbandonedHealthLeases } from "../src/health/eventRecovery.js";
 import type { HealthReport } from "../src/health/types.js";
 import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
 
@@ -500,6 +502,71 @@ describe("executeHealthOpsRun", () => {
     expect(runCliAsync).not.toHaveBeenCalled();
     expect(outcome.status).toBe("failed");
     expect(db.getRun(accepted.runId).status).toBe("running");
+  });
+
+  it("never releases or misattributes a different run's live health-lane lock when reconciling an unrelated crashed run's absence, and that run still executes exactly once", async () => {
+    // Run A: an earlier receipt crashed right after reaching the provider
+    // boundary, durably recording its own lane identity alongside the
+    // marker (as production now does).
+    const acceptedA = acceptHealthOpsEvent(db, makeEvent({
+      eventId: "evt-misattribution-a", idempotencyKey: "health:misattribution-a",
+    }), { expectedToken: EXPECTED_TOKEN });
+    const laneHandleA = db.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+    expect(laneHandleA).not.toBeNull();
+    db.setSetting(healthEventExecutionStartedKey(acceptedA.receiptId), serializeHealthEventExecutionStartedMarker({
+      runId: acceptedA.runId,
+      lane: { serviceId: laneHandleA!.serviceId, runId: laneHandleA!.runId, acquisitionId: laneHandleA!.acquisitionId },
+    }));
+    // The lane becomes free again (however that happens — natural lease
+    // expiry after the crash, in production) before Run B legitimately
+    // acquires it.
+    db.unlock(laneHandleA!);
+
+    // Run B: a second, unrelated receipt legitimately acquires the SAME
+    // lane afterward and starts real provider work.
+    const acceptedB = acceptHealthOpsEvent(db, makeEvent({
+      eventId: "evt-misattribution-b", idempotencyKey: "health:misattribution-b",
+    }), { expectedToken: EXPECTED_TOKEN });
+    let resolveCli!: (v: { text: string }) => void;
+    const cliPromise = new Promise<{ text: string }>((resolve) => { resolveCli = resolve; });
+    const runCliAsync = vi.fn().mockReturnValue(cliPromise);
+    const { engine } = makeEngine(runCliAsync, db);
+
+    const execPromiseB = executeHealthOpsRun(db, acceptedB.receiptId, engine);
+    // executeHealthOpsRun acquires its lane synchronously before its first
+    // await, so by now B genuinely holds the lane with a fresh, unexpired
+    // lease distinct from A's old (already-released) identity.
+    const lockBefore = db.raw.prepare(
+      `SELECT service_id, run_id, acquisition_id FROM execution_locks WHERE surface = ? AND chat_key = ?`
+    ).get(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+    expect(lockBefore).toBeDefined();
+
+    const scheduleRetry = vi.fn();
+    await reconcileAbandonedHealthLeases(db, { processState: () => "absent", scheduleRetry });
+
+    // B's lock must survive completely untouched — it does not belong to
+    // the crashed generation, no matter how confidently A's process is
+    // proven absent.
+    const lockAfter = db.raw.prepare(
+      `SELECT service_id, run_id, acquisition_id FROM execution_locks WHERE surface = ? AND chat_key = ?`
+    ).get(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
+    expect(lockAfter).toEqual(lockBefore);
+    expect(db.getRun(acceptedA.runId).status).toBe("running");
+    // Ownership no longer correlates to anything this pass captured for A,
+    // so scheduling a retry against it would only ever misattribute again.
+    expect(scheduleRetry).not.toHaveBeenCalled();
+
+    resolveCli({ text: claudeStreamJsonOutput("investigated", null) });
+    const outcomeB = await execPromiseB;
+    expect(runCliAsync).toHaveBeenCalledTimes(1);
+    expect(outcomeB.status).toBe("done");
+
+    // Now that B has finished and released the lane, the next
+    // reconciliation opportunity safely terminalizes A — B is unaffected,
+    // having already run to completion.
+    await reconcileAbandonedHealthLeases(db, { processState: () => "absent" });
+    expect(db.getRun(acceptedA.runId).status).toBe("failed");
+    expect(db.getRun(acceptedB.runId).status).toBe("done");
   });
 
   it("rejects with HealthOpsRunLaneUnavailableError when the health execution lane is already held", async () => {
