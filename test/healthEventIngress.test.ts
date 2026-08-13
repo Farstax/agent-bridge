@@ -7,6 +7,7 @@ import { BridgeEngine } from "../src/engine.js";
 import {
   acceptHealthOpsEvent,
   executeHealthOpsRun,
+  resumeDurablePendingHealthEvents,
   reconcileEventReceiptResult,
   UnauthenticatedEventError,
   OversizedEventPayloadError,
@@ -312,6 +313,28 @@ describe("executeHealthOpsRun", () => {
   afterEach(() => {
     db.close();
     try { rmSync(dbPath); } catch {}
+  });
+
+  it("replays a receipt that survived before Run linking, then executes it only once", async () => {
+    const originalInsertRun = db.insertRun.bind(db);
+    (db as unknown as { insertRun: typeof db.insertRun }).insertRun = (() => {
+      throw new Error("simulated crash before Run linking");
+    }) as typeof db.insertRun;
+
+    expect(() => acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN })).toThrow("simulated crash");
+    (db as unknown as { insertRun: typeof db.insertRun }).insertRun = originalInsertRun;
+
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("recovered", null) });
+    const { engine } = makeEngine(runCliAsync, db);
+    await resumeDurablePendingHealthEvents(db, engine, { bot: "claude" });
+    await resumeDurablePendingHealthEvents(db, engine, { bot: "claude" });
+
+    expect(runCliAsync).toHaveBeenCalledTimes(1);
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts").get()).toEqual({ count: 1 });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs").get()).toEqual({ count: 1 });
+    const receipt = db.raw.prepare("SELECT status, run_id FROM event_receipts").get() as { status: string; run_id: string };
+    expect(receipt.status).toBe("completed");
+    expect(db.getRun(receipt.run_id).status).toBe("done");
   });
 
   it("calls the surface-neutral provider-turn owner used by ordinary turns", async () => {
