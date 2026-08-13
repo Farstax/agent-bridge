@@ -8,9 +8,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { readFileSync, rmSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import {
   buildCliInvocation,
   buildExecutionOptions,
@@ -499,6 +499,7 @@ export class BridgeEngine {
         text: "Background continuation could not be safely handed to another provider because the original provider work could not be contained. Please try again later.",
         message_thread_id: record.threadId ?? undefined,
       });
+      this._deleteQueuedAttachments(record.attachments ?? []);
       return "blocked";
     }
     this.db.updateRunFailed(record.runId, "provider capacity fallback");
@@ -508,6 +509,8 @@ export class BridgeEngine {
         chatId: record.chatId,
         threadId: record.threadId ?? undefined,
         chatType: record.chatType ?? "private",
+        userId: record.userId ?? undefined,
+        attachments: [...(record.attachments ?? [])],
       });
     }
     return "queued";
@@ -946,6 +949,7 @@ export class BridgeEngine {
     honorBusyMode = false,
     ownsActiveTask = false,
     notifyCapacityFailure = true,
+    continuationPendingIds: number[] = [],
   ): Promise<ExecutionOutcome> {
     // Apply onBeforeExecute hook
     let prompt = rawPrompt;
@@ -1039,10 +1043,11 @@ export class BridgeEngine {
         chatId,
         chatKey,
         chatType,
+        userId,
         threadId,
         attachments,
         laneHandle: laneHandle!,
-        pendingIds: activePendingIds,
+        pendingIds: [...activePendingIds, ...continuationPendingIds],
       });
       if (!completed) return "fenced";
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
@@ -1109,6 +1114,7 @@ export class BridgeEngine {
     chatId: number;
     chatKey: string;
     chatType: string;
+    userId?: number;
     threadId: number | undefined;
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
@@ -1147,6 +1153,7 @@ export class BridgeEngine {
     chatId: number;
     chatKey: string;
     chatType?: string;
+    userId?: number;
     threadId: number | undefined;
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
@@ -1257,7 +1264,9 @@ export class BridgeEngine {
     chatId: number;
     chatKey: string;
     chatType?: string;
+    userId?: number;
     threadId: number | undefined;
+    attachments: string[];
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
     runId: string;
@@ -1277,6 +1286,7 @@ export class BridgeEngine {
     if (now >= deadlineAtMs) return false;
 
     this._assertLaneOwned(input.laneHandle);
+    const continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
     const saved = this.continuationStore.saveWaiting({
       runId: input.runId,
       surface: this.surfaceIdentity,
@@ -1287,6 +1297,8 @@ export class BridgeEngine {
       sessionId: result.sessionId,
       prompt: input.prompt,
       chatType: input.chatType,
+      userId: input.userId,
+      attachments: continuationAttachments,
       executionMode: input.mode,
       triggerKind: "run-owned-background-process",
       triggerId: input.runId,
@@ -1311,6 +1323,31 @@ export class BridgeEngine {
     return true;
   }
 
+  private _persistContinuationAttachments(runId: string, attachments: string[]): string[] {
+    const directory = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
+    const directoryExisted = existsSync(directory);
+    const persisted: string[] = [];
+    try {
+      for (const [index, attachment] of attachments.entries()) {
+        const target = join(directory, `${index}-${basename(attachment)}`);
+        if (attachment.startsWith(`${directory}${sep}`)) {
+          persisted.push(attachment);
+          continue;
+        }
+        if (!existsSync(attachment)) {
+          throw new Error("source attachment is missing");
+        }
+        mkdirSync(directory, { recursive: true });
+        cpSync(attachment, target, { force: true });
+        persisted.push(target);
+      }
+    } catch {
+      if (!directoryExisted) rmSync(directory, { recursive: true, force: true });
+      throw new Error("continuation attachment could not be persisted");
+    }
+    return persisted;
+  }
+
   private async _cancelUndeliveredContinuation(runId: string, reason: string): Promise<void> {
     const checkpoint = this.continuationStore.get(runId);
     if (checkpoint?.state !== "waiting") return;
@@ -1325,6 +1362,9 @@ export class BridgeEngine {
     result: StagedCliResult;
     chatId: number;
     chatKey: string;
+    chatType: string;
+    userId?: number;
+    attachments: string[];
     threadId: number | undefined;
     laneHandle: ExecutionLaneHandle;
     pendingIds: number[];
@@ -1436,8 +1476,10 @@ export class BridgeEngine {
           isInitialResult: false,
           chatId: input.chatId,
           chatKey: input.chatKey,
+          chatType: input.chatType,
+          userId: input.userId,
           threadId: input.threadId,
-          attachments: [],
+          attachments: input.attachments,
           laneHandle: input.laneHandle,
           pendingIds: input.pendingIds,
           runId: input.runId,
@@ -1589,6 +1631,9 @@ export class BridgeEngine {
         result,
         chatId: record.chatId,
         chatKey: record.chatKey,
+        chatType: record.chatType ?? "private",
+        userId: record.userId ?? undefined,
+        attachments: record.attachments ?? [],
         threadId: record.threadId ?? undefined,
         laneHandle: handle,
         pendingIds: record.pendingIds,
@@ -1664,8 +1709,10 @@ export class BridgeEngine {
       isInitialResult: false,
       chatId: claimed.chatId,
       chatKey: claimed.chatKey,
+      chatType: record.chatType ?? "private",
+      userId: record.userId ?? undefined,
       threadId: claimed.threadId ?? undefined,
-      attachments: [],
+      attachments: record.attachments ?? [],
       laneHandle: handle,
       pendingIds: claimed.pendingIds,
       runId: claimed.runId,
@@ -1686,6 +1733,9 @@ export class BridgeEngine {
       result,
       chatId: claimed.chatId,
       chatKey: claimed.chatKey,
+      chatType: record.chatType ?? "private",
+      userId: record.userId ?? undefined,
+      attachments: record.attachments ?? [],
       threadId: claimed.threadId ?? undefined,
       laneHandle: handle,
       pendingIds: claimed.pendingIds,
@@ -2039,6 +2089,7 @@ export class BridgeEngine {
       next.userId ?? undefined, hookCtx, next.attachments, null, next.laneHandle,
       false, !next.laneLifecycleManaged, false, false,
       next.queueRecoveryAttempt == null || next.queueRecoveryAttempt >= MAX_QUEUE_RECOVERY_ATTEMPTS,
+      next.pendingIds ?? [next.id],
     );
   }
 
@@ -2047,7 +2098,7 @@ export class BridgeEngine {
     for (const attachment of attachments) {
       try { unlinkSync(attachment); } catch {}
       const parent = dirname(attachment);
-      if (basename(parent).startsWith("bridge-uploads-")) uploadDirs.add(parent);
+      if (basename(parent).startsWith("bridge-uploads-") || basename(parent).startsWith("bridge-continuation-attachments-")) uploadDirs.add(parent);
     }
     for (const dir of uploadDirs) {
       try { rmSync(dir, { recursive: true, force: true }); } catch {}

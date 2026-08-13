@@ -29,6 +29,8 @@ export interface ContinuationRecord {
   /** Original admitted prompt used only when responsibility moves providers. */
   prompt?: string;
   chatType?: string;
+  userId?: number | null;
+  attachments?: string[];
   executionMode: ContinuationExecutionMode;
   triggerKind: "run-owned-background-process";
   triggerId: string;
@@ -94,7 +96,10 @@ function parseRecord(value: unknown): ContinuationRecord | null {
     if (deliveryState !== "pending" && deliveryState !== "delivered") return null;
     const pendingAttempt = parsePendingAttempt(parsed.pendingAttempt);
     if (deliveryState === "pending" && !pendingAttempt) return null;
-    return { ...parsed, deliveryState, pendingAttempt } as ContinuationRecord;
+    const attachments = Array.isArray(parsed.attachments)
+      ? parsed.attachments.filter((attachment): attachment is string => typeof attachment === "string")
+      : [];
+    return { ...parsed, deliveryState, pendingAttempt, attachments } as ContinuationRecord;
   } catch {
     return null;
   }
@@ -140,6 +145,10 @@ export class ContinuationRepository {
 
       const record: ContinuationRecord = {
         ...input,
+        prompt: current?.prompt ?? input.prompt,
+        chatType: current?.chatType ?? input.chatType,
+        userId: current?.userId ?? input.userId,
+        attachments: current?.attachments ?? input.attachments ?? [],
         deliveryState: input.deliveryState ?? "delivered",
         state: "waiting",
         updatedAt: new Date().toISOString(),
