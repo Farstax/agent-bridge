@@ -11,8 +11,8 @@ import type Database from "better-sqlite3";
  * task_type taxonomy was the original (superseded) design and would
  * recreate the mechanical workflow layer issue #347 removes.
  *
- * This migration has never shipped (schema version 6 is still unreleased),
- * so it is edited in place rather than compensated with a migration 7.
+ * This migration is registered as schema version 7 after the health report
+ * read-model migration (version 6).
  */
 export function applyEventReceiptsMigration(db: Database.Database): void {
   db.exec(`

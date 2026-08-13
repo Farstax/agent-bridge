@@ -169,7 +169,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
       .toThrow(/manifest database schema identity mismatch/);
   });
 
-  it("migrates a copied schema-3 fixture with the target runtime before validating schema 6", () => {
+  it("migrates a copied schema-3 fixture with the target runtime before validating schema 7", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-schema-migration-offline-test-"));
     const fixture = join(root, "schema3.sqlite");
     createLegacyFixture(fixture);
@@ -208,7 +208,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     const manifest = buildReleaseManifest({
       root: artifactRoot, commit: "a".repeat(40), tree: "b".repeat(40), nodeVersion: "v24.15.0",
       platform: "linux", arch: "x64", builderCommit, builderWorkflowRun: "123",
-      builderWorkflowHead: builderCommit, databaseSchemaVersion: 6,
+      builderWorkflowHead: builderCommit, databaseSchemaVersion: 7,
     });
     writeFileSync(join(artifactRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
     const archive = join(root, "artifact.tar.gz");
@@ -221,13 +221,13 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     const evidence = JSON.parse(execFileSync("python3", [
       "scripts/offline-baseline-validate.py", "--archive", archive,
       "--target-commit", "a".repeat(40), "--expected-tree", "b".repeat(40),
-      "--builder-commit", builderCommit, "--artifact-run-id", "123", "--expected-schema", "6",
+      "--builder-commit", builderCommit, "--artifact-run-id", "123", "--expected-schema", "7",
       "--rollout-helper-sha256", helperHash, "--rollout-helper", "scripts/rollout-agent-bridge.sh",
       "--runtime-root", runtimeRoot, "--db-root", root, "--output", output,
     ], { encoding: "utf8" }));
     expect(evidence.schema_compatibility).toContain("migrated");
     expect(evidence.databases[0].source_schema_version).toBe(3);
-    expect(evidence.databases[0].user_version).toBe(6);
+    expect(evidence.databases[0].user_version).toBe(7);
     expect(evidence.preservation.queue_claim_run_lock_preserved).toBe(true);
     expect(evidence.prestart_rollback_simulation.database_hashes_after_restore).toEqual(
       evidence.prestart_rollback_simulation.database_hashes_before,

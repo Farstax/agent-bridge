@@ -405,9 +405,9 @@ describe("guarded rollout helper", () => {
     });
     bridge.raw.prepare("UPDATE pending_messages SET state = 'claimed', claim_run_id = ?, claim_acquisition_id = ?")
       .run("schema-3-run", lane!.acquisitionId);
-    // Issue #351 added migration 6 (event_receipts). A genuine schema-3
+    // Issue #351 added migration 7 (event_receipts). A genuine schema-3
     // database predates that table too, so it must be dropped here alongside
-    // reconciliation_audit (migration 4) — otherwise migration 6's CREATE
+    // reconciliation_audit (migration 4) — otherwise migration 7's CREATE
     // TABLE collides with the table this fixture's earlier full openDb()
     // call already created before being rewound to user_version = 3.
     bridge.raw.exec("DROP TABLE reconciliation_audit; DROP TABLE event_receipts; PRAGMA user_version = 3;");
@@ -423,7 +423,7 @@ describe("guarded rollout helper", () => {
     expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf(" reconcile "));
     const verify = new Database(fixture.dbPaths[0], { readonly: true });
     try {
-      expect(verify.pragma("user_version", { simple: true })).toBe(6);
+      expect(verify.pragma("user_version", { simple: true })).toBe(7);
       expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'").get()).toEqual({ name: "reconciliation_audit" });
       expect(verify.prepare("SELECT state, attachments_json FROM pending_messages").get()).toEqual({ state: "queued", attachments_json: '["document:file-id"]' });
     } finally {
