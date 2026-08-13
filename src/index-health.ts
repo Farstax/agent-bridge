@@ -151,6 +151,23 @@ const activeHealthEventRuns = new Set<number>();
 
 const waitForHealthLane = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// A newer health Run may legitimately take the shared health lane before a
+// crashed, provider-started predecessor can be reconciled. Once any live
+// health execution releases that lane, give older marked Runs one bounded
+// reconciliation opportunity. Exact lock-identity checks in eventRecovery
+// ensure this can never release a different execution's fence.
+async function reconcileInterruptedHealthRunsAfterExecution(): Promise<void> {
+  try {
+    await reconcileAbandonedHealthLeases(bridgeDb, {
+      processState: (runId) => getExecutionProcessState(runId),
+      onReconciled: (run) => console.warn(`[health-bot] reconciled interrupted health run ${run.run_id} after lane release`),
+    });
+    reconcileTerminalPendingHealthEvents(bridgeDb);
+  } catch (error) {
+    console.error("[health-bot] post-execution health reconciliation failed", error);
+  }
+}
+
 async function executeAcceptedHealthEvent(receiptId: number): Promise<void> {
   if (activeHealthEventRuns.has(receiptId)) return;
   activeHealthEventRuns.add(receiptId);
@@ -173,6 +190,7 @@ async function executeAcceptedHealthEvent(receiptId: number): Promise<void> {
     }
   } finally {
     activeHealthEventRuns.delete(receiptId);
+    await reconcileInterruptedHealthRunsAfterExecution();
   }
 }
 
@@ -293,9 +311,11 @@ engine = new BridgeEngine(
 await engine.recoverContinuations();
 reconcileTerminalPendingHealthEvents(bridgeDb);
 const replayableHealthRunIds = replayablePendingHealthRunIds(bridgeDb);
-void resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot }).catch((error) => {
-  console.error("[health-bot] durable health event replay failed", error);
-});
+void resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot })
+  .then(() => reconcileInterruptedHealthRunsAfterExecution())
+  .catch((error) => {
+    console.error("[health-bot] durable health event replay failed", error);
+  });
 await bridgeDb.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 60_000),
   processState: (run) => getExecutionProcessState(run.run_id),
