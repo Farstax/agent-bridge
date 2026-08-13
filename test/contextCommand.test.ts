@@ -232,4 +232,95 @@ describe("agent-bridge-context helper", () => {
       rmSync(path, { force: true });
     }
   });
+
+  describe("--search flag (issue #350)", () => {
+    it("finds an older turn by scoped chronological search", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "we decided to use minimax for summarisation", "codex");
+        for (let i = 0; i < 10; i++) db.addConvTurn("chat:1", "user", `filler turn ${i}`, "codex");
+
+        const output = renderAgentBridgeContext(["--search", "minimax"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        expect(output).toContain("minimax");
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+
+    it("cannot cross chat scope", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "codename falcon lives here", "codex");
+        db.addConvTurn("chat:2", "user", "codename falcon lives elsewhere", "codex");
+
+        const output = renderAgentBridgeContext(["--search", "codename falcon"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        expect(output).toContain("lives here");
+        expect(output).not.toContain("lives elsewhere");
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+
+    it("returns a safe bounded message for an empty query", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "some turn", "codex");
+        const output = renderAgentBridgeContext(["--search", ""], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+        expect(output).toBe("No conversation turns found for that query.");
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+
+    it("returns a safe bounded message for a no-match query", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "hello world", "codex");
+        const output = renderAgentBridgeContext(["--search", "zzz-nonexistent-zzz"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+        expect(output).toBe("No conversation turns found matching that query.");
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+
+    it("surfaces the newest matching turn first, usable as handoff evidence", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "the release date is March 1st", "claude");
+        db.addConvTurn("chat:1", "assistant", "correction: the release date is March 15th", "claude");
+
+        const output = renderAgentBridgeContext(["--search", "release date"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        const marchFifteenIdx = output.indexOf("March 15th");
+        const marchFirstIdx = output.indexOf("March 1st");
+        expect(marchFifteenIdx).toBeGreaterThanOrEqual(0);
+        expect(marchFirstIdx).toBeGreaterThanOrEqual(0);
+        expect(marchFifteenIdx).toBeLessThan(marchFirstIdx);
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+  });
 });
