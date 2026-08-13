@@ -342,5 +342,34 @@ describe("agent-bridge-context helper", () => {
         rmSync(path, { force: true });
       }
     });
+
+    it("preserves every selected match, including the newest correction, when adjacent context exceeds the cap", () => {
+      const { db, path } = makeDb();
+      try {
+        for (let i = 0; i < 5; i++) {
+          db.addConvTurn("chat:1", "assistant", `adjacent before ${i} ${"b".repeat(280)}`, "codex");
+          db.addConvTurn(
+            "chat:1",
+            "user",
+            `decision ${i}: ${i === 4 ? "NEWEST CORRECTION — deploy Friday at 15:00" : "deploy Thursday at 10:00"} ${"m".repeat(270)}`,
+            "codex",
+          );
+          db.addConvTurn("chat:1", "assistant", `adjacent after ${i} ${"a".repeat(280)}`, "codex");
+          db.addConvTurn("chat:1", "assistant", `separator ${i} ${"s".repeat(280)}`, "codex");
+        }
+
+        const output = renderAgentBridgeContext(["--search", "decision"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+        expect(output).toContain('(15, chronological)');
+        expect(output.length).toBeLessThanOrEqual(4_000);
+        expect(output).toContain("NEWEST CORRECTION — deploy Friday at 15:00");
+        for (let i = 0; i < 5; i++) expect(output).toContain(`decision ${i}:`);
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
   });
 });
