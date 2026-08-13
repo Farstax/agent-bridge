@@ -368,6 +368,41 @@ describe("RunRepository", () => {
     expect(repo.getRun("run-orphan").error).toBe("Process interrupted by bridge restart");
     expect(repo.getRun("run-done").status).toBe("done");
   });
+
+  // Issue #351: event-originated runs are fenced by cancelling the owning
+  // Run out from under an in-flight execution. That only prevents a late
+  // result from clobbering the cancellation if the terminal writers are
+  // compare-and-swapped on status = 'running', the same way
+  // reconcileOrphanedRun already guards its own terminal write above.
+  it("terminal writers are compare-and-swapped on status = running and report whether they applied", () => {
+    const repo = new RunRepository(raw);
+    repo.insertRun("run-fenced", "chat-123", "claude");
+
+    expect(repo.updateRunCancelled("run-fenced", "operator cancelled")).toBe(true);
+    expect(repo.getRun("run-fenced").status).toBe("cancelled");
+
+    // A late completion from a fence-losing execution must not overwrite
+    // the cancellation, and must report that it did not apply.
+    expect(repo.updateRunCompleted("run-fenced", "late result", "sess-late")).toBe(false);
+    expect(repo.getRun("run-fenced").status).toBe("cancelled");
+    expect(repo.getRun("run-fenced").final_text_preview).toBeNull();
+
+    // A late failure report must not overwrite the cancellation either.
+    expect(repo.updateRunFailed("run-fenced", "late failure")).toBe(false);
+    expect(repo.getRun("run-fenced").status).toBe("cancelled");
+  });
+
+  it("updateRunCompleted/Failed/Cancelled report true when they apply to a running run", () => {
+    const repo = new RunRepository(raw);
+    repo.insertRun("run-a", "chat-123", "claude");
+    expect(repo.updateRunCompleted("run-a", "done", null)).toBe(true);
+
+    repo.insertRun("run-b", "chat-123", "claude");
+    expect(repo.updateRunFailed("run-b", "boom")).toBe(true);
+
+    repo.insertRun("run-c", "chat-123", "claude");
+    expect(repo.updateRunCancelled("run-c", "user")).toBe(true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
