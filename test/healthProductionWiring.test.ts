@@ -62,4 +62,25 @@ describe("health event production wiring", () => {
     const retryCallEnd = block.indexOf(")\n", retryCallStart);
     expect(block.slice(retryCallStart, retryCallEnd)).not.toContain("scheduleRetry");
   });
+
+  it("gives interrupted marked health Runs a reconciliation opportunity after live execution and startup replay release the shared lane", () => {
+    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+
+    const helperStart = source.indexOf("async function reconcileInterruptedHealthRunsAfterExecution");
+    const helperEnd = source.indexOf("async function executeAcceptedHealthEvent", helperStart);
+    const helper = source.slice(helperStart, helperEnd);
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helper).toContain("await reconcileAbandonedHealthLeases(bridgeDb");
+    expect(helper).toContain("reconcileTerminalPendingHealthEvents(bridgeDb)");
+
+    const liveStart = source.indexOf("async function executeAcceptedHealthEvent");
+    const liveEnd = source.indexOf("async function handleHealthReportEventIngress", liveStart);
+    const liveOwner = source.slice(liveStart, liveEnd);
+    expect(liveOwner).toContain("await reconcileInterruptedHealthRunsAfterExecution()");
+
+    const replayStart = source.indexOf("void resumeDurablePendingHealthEvents");
+    const replayEnd = source.indexOf("await bridgeDb.reconcileOrphanedRuns", replayStart);
+    const replayOwner = source.slice(replayStart, replayEnd);
+    expect(replayOwner).toContain(".then(() => reconcileInterruptedHealthRunsAfterExecution())");
+  });
 });
