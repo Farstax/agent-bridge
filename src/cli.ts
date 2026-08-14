@@ -95,14 +95,16 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function buildWithFreshExecutionContract(
+function seedFreshExecutionContract(
+  bot: string,
   prompt: string,
+  sessionId: string | null,
+  attachments: string[],
   includeResponseContract: boolean,
-  build: (providerPrompt: string) => ProviderInvocation,
-): ProviderInvocation {
-  const invocation = build(prompt);
-  if (includeResponseContract || invocation.nativeSessionMode !== "fresh") return invocation;
-  return build(wrapPromptContext(prompt, null, false, true));
+): string {
+  if (includeResponseContract) return prompt;
+  const startsFresh = !sessionId || (bot === "codex" && attachments.length > 0);
+  return startsFresh ? wrapPromptContext(prompt, null, false, true) : prompt;
 }
 
 /** Builds the CLI invocation for a bot. */
@@ -146,20 +148,22 @@ export function buildCliInvocation({
     throw new Error(`Tool-free mode is not supported for ${bot}`);
   }
 
+  const providerPrompt = seedFreshExecutionContract(bot, prompt, sessionId, attachments, includeResponseContract);
+
   if (bot === "codex") {
-    return buildWithFreshExecutionContract(prompt, includeResponseContract, (providerPrompt) => codexRuntime.buildInvocation({
+    return codexRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
-    }));
+    });
   }
   if (bot === "claude") {
-    return buildWithFreshExecutionContract(prompt, includeResponseContract, (providerPrompt) => claudeRuntime.buildInvocation({
+    return claudeRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
-    }));
+    });
   }
   if (bot === "antigravity") {
-    const invocation = buildWithFreshExecutionContract(prompt, includeResponseContract, (providerPrompt) => antigravityRuntime.buildInvocation({
+    const invocation = antigravityRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, logFile, homeDir,
-    }));
+    });
     antigravityInvocationMetadata.set(invocation.args, {
       homeDir,
       model: model ?? null,
@@ -169,9 +173,9 @@ export function buildCliInvocation({
     return invocation;
   }
   if (bot === "kimchi") {
-    return buildWithFreshExecutionContract(prompt, includeResponseContract, (providerPrompt) => kimchiRuntime.buildInvocation({
+    return kimchiRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
-    }));
+    });
   }
 
   return { command, args: appendEffortArgs(command, [], effort), nativeSessionMode: "fresh" };
