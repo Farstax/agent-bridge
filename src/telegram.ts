@@ -114,6 +114,10 @@ export class TelegramClient implements MessagingPlatform {
     return this.call("editMessageText", body);
   }
 
+  async deleteMessage(body: any): Promise<TelegramResponse<boolean>> {
+    return this.call("deleteMessage", body);
+  }
+
   async sendChatAction(body: any): Promise<TelegramResponse<boolean>> {
     return this.call("sendChatAction", body);
   }

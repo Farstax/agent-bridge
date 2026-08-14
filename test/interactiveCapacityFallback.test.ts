@@ -18,12 +18,71 @@ function makeMockClient() {
     setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
     answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
     editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+    deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
     sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
     sendDocument: vi.fn().mockResolvedValue({ ok: true }),
   } as any;
 }
 
 describe("interactive capacity fallback durable admission", () => {
+  it("removes an abandoned Claude answer preview before publishing the fallback answer", async () => {
+    const db = openDb(":memory:");
+    const exhaustedChats = new Set<string>();
+    const client = makeMockClient();
+    const fallbackChain = new WorkerFallbackChain(["claude", "codex"], db);
+    const notifications: string[] = [];
+    const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+      options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
+      throw new Error("rate limit capacity exhausted");
+    });
+    const codexRun = vi.fn().mockResolvedValue([
+      JSON.stringify({ type: "thread.started", thread_id: "codex-fallback-session" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "authoritative Codex fallback" } }),
+    ].join("\n"));
+    const makeEngine = (kind: "claude" | "codex", runCli: any) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        asyncEnabled: false,
+        pollIntervalMs: 1000,
+        hooks: { onCapacityExhausted: async (chatKey: string) => { exhaustedChats.add(chatKey); } },
+      },
+      db,
+      client,
+      { runCli },
+    );
+    const engines = { claude: makeEngine("claude", claudeRun), codex: makeEngine("codex", codexRun) };
+    const deps = { engines, fallbackChain, exhaustedChats, db, notify: async (message: string) => { notifications.push(message); } };
+
+    try {
+      setUserCliPreference(db, "100", "claude");
+      for (const engine of Object.values(engines)) {
+        engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+      }
+
+      await dispatchInteractiveWithFallback({
+        update_id: 9099,
+        message: { message_id: 87, chat: { id: 100, type: "private" }, from: { id: 42, first_name: "Test" }, text: "answer this" },
+      }, "100", deps);
+
+      expect(claudeRun).toHaveBeenCalledTimes(1);
+      expect(codexRun).toHaveBeenCalledTimes(1);
+      expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 100, message_id: 1 });
+      expect(client.sendMessage.mock.calls.map(([body]: [any]) => body?.text)).toEqual([
+        expect.stringContaining("stale Claude preview"),
+        expect.stringContaining("authoritative Codex fallback"),
+      ]);
+      expect(client.sendMessage).toHaveBeenCalledTimes(2);
+      expect(notifications).toEqual(["Switching to codex (claude at capacity)"]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("recovers a Claude continuation through a fresh Codex session without replaying or double-closing the turn", async () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();

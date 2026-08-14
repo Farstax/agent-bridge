@@ -223,7 +223,9 @@ export async function sendMessageWithProgress({
   // indicator alive. Visible narration is opt-in and only shows sanitized
   // STATUS lines, never generic thinking notes or raw pre-final narration.
   const streamingEnabled = kind === "antigravity";
-  let answerPreviewEnabled = kind === "claude";
+  // Abandoned previews must be removable before fallback can publish the
+  // authoritative answer. Clients without deletion support stay final-only.
+  let answerPreviewEnabled = kind === "claude" && typeof client.deleteMessage === "function";
   let answerPreviewMessageId: number | null = null;
   let answerPreviewText = "";
   let answerPreviewDirty = false;
@@ -307,6 +309,21 @@ export async function sendMessageWithProgress({
       if (!answerPreviewPending && answerPreviewDirty) queueAnswerPreview(true);
       await Promise.allSettled([...answerPreviewUpdates]);
     }
+  };
+
+  const discardAnswerPreview = async (): Promise<void> => {
+    if (answerPreviewTimer) {
+      clearTimeout(answerPreviewTimer);
+      answerPreviewTimer = null;
+    }
+    await Promise.allSettled(answerPreviewUpdates);
+    if (answerPreviewMessageId == null || typeof client.deleteMessage !== "function") return;
+    try {
+      await client.deleteMessage({ chat_id: chatId, message_id: answerPreviewMessageId });
+    } catch {
+      // The provider attempt is already abandoned; cleanup is best effort.
+    }
+    answerPreviewMessageId = null;
   };
 
   const onAnswerDelta = (delta: string): void => {
@@ -403,6 +420,7 @@ export async function sendMessageWithProgress({
   }
 
   let finalDeliveryPreparationFailed = false;
+  let finalDeliveryCompleted = false;
   try {
     let result: any;
     if (typeof execution === "function") {
@@ -439,12 +457,14 @@ export async function sendMessageWithProgress({
       throw err;
     }
     await deliverFinal(finalText);
+    finalDeliveryCompleted = true;
     await afterFinalDelivery?.();
 
     clearInterval(typingInterval);
     return cliResult;
   } catch (err: any) {
     clearInterval(typingInterval);
+    if (!finalDeliveryCompleted) await discardAnswerPreview();
     if (isAborted?.()) return null;
     if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;
     if (finalDeliveryPreparationFailed) throw err;

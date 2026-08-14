@@ -9,6 +9,7 @@ const createMockClient = () => ({
   sendMessage: vi.fn(async (body: any) => ({ ok: true, result: { message_id: 456, ...body } })),
   sendChatAction: vi.fn(async () => ({ ok: true, result: true })),
   editMessageText: vi.fn(async () => ({ ok: true, result: true })),
+  deleteMessage: vi.fn(async () => ({ ok: true, result: true })),
   sendMessageDraft: vi.fn(async () => ({ ok: true })),
 } as any as TelegramClient);
 
@@ -67,6 +68,44 @@ describe("sendMessageWithProgress", () => {
 
     expect(client.sendMessage).toHaveBeenCalledTimes(2);
     expect(client.sendMessage.mock.calls[1][0]).toEqual(expect.objectContaining({ text: expect.stringContaining("authoritative final") }));
+  });
+
+  it("removes a Claude preview before propagating an abandoned execution error", async () => {
+    const client = createMockClient();
+    client.deleteMessage = vi.fn(async () => ({ ok: true }));
+
+    await expect(sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      propagateExecutionErrors: true,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("abandoned answer");
+        throw new Error("provider execution failed");
+      },
+    })).rejects.toThrow("provider execution failed");
+
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not delete the authoritative preview after final delivery", async () => {
+    const client = createMockClient();
+    const afterFinalDelivery = vi.fn(async () => { throw new Error("post-delivery hook failed"); });
+
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      afterFinalDelivery,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("authoritative answer");
+        return { text: "authoritative answer", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(afterFinalDelivery).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).not.toHaveBeenCalled();
   });
 
   it("keeps Codex final-only even when a caller supplies answer-like deltas", async () => {
