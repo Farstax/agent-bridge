@@ -69,6 +69,25 @@ describe("sendMessageWithProgress", () => {
     expect(client.sendMessage.mock.calls[1][0]).toEqual(expect.objectContaining({ text: expect.stringContaining("authoritative final") }));
   });
 
+  it("removes a Claude preview before propagating an abandoned execution error", async () => {
+    const client = createMockClient();
+    client.deleteMessage = vi.fn(async () => ({ ok: true }));
+
+    await expect(sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      propagateExecutionErrors: true,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("abandoned answer");
+        throw new Error("provider execution failed");
+      },
+    })).rejects.toThrow("provider execution failed");
+
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps Codex final-only even when a caller supplies answer-like deltas", async () => {
     const client = createMockClient();
     await sendMessageWithProgress({
