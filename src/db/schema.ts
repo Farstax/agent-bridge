@@ -7,9 +7,10 @@ import { applyMemoryResolutionMigration } from "./memoryResolutionMigration.js";
 import { applyHealthSchemaMigration } from "./healthSchemaMigration.js";
 import { applyEventReceiptsMigration } from "./eventReceiptsMigration.js";
 import { applyAutonomousGoalsMigration } from "./autonomousGoalsMigration.js";
+import { dropLegacyWorkerTables } from "./dropLegacyWorkerTablesMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 8;
+export const CURRENT_SCHEMA_VERSION = 9;
 
 export interface Migration {
   version: number;
@@ -149,6 +150,9 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * bridge_runs row rather than a work_item/work_job.
  * Version 8 widens the receipt source for autonomous wakes and adds durable
  * autonomous goal state (Issue #392).
+ * Version 9 drops the final Engineering Worker persistence after #408/#409.
+ * Historical migrations remain unchanged so every prior user_version keeps a
+ * deterministic upgrade path; the current schema is Worker-free.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -160,4 +164,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 6, name: "add-health-report-read-model", up: applyHealthSchemaMigration },
   { version: 7, name: "add-health-event-receipts", up: applyEventReceiptsMigration },
   { version: 8, name: "add-autonomous-goals", up: applyAutonomousGoalsMigration },
+  { version: 9, name: "drop-legacy-worker-tables", up: dropLegacyWorkerTables },
 ];
