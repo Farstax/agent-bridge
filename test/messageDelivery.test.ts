@@ -9,6 +9,7 @@ const createMockClient = () => ({
   sendMessage: vi.fn(async (body: any) => ({ ok: true, result: { message_id: 456, ...body } })),
   sendChatAction: vi.fn(async () => ({ ok: true, result: true })),
   editMessageText: vi.fn(async () => ({ ok: true, result: true })),
+  deleteMessage: vi.fn(async () => ({ ok: true, result: true })),
   sendMessageDraft: vi.fn(async () => ({ ok: true })),
 } as any as TelegramClient);
 

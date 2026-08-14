@@ -22,6 +22,7 @@ export interface MessagingPlatform {
   sendRichMessage?(body: TransportRequest): Promise<TransportResponse>;
   sendRichMessageDraft?(body: TransportRequest): Promise<TransportResponse>;
   editMessageText(body: TransportRequest): Promise<TransportResponse>;
+  deleteMessage?(body: TransportRequest): Promise<TransportResponse>;
   sendChatAction(body: TransportRequest): Promise<TransportResponse>;
   answerCallbackQuery(body: TransportRequest): Promise<TransportResponse>;
   // Bot metadata
