@@ -89,6 +89,25 @@ describe("sendMessageWithProgress", () => {
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("does not delete the authoritative preview after final delivery", async () => {
+    const client = createMockClient();
+    const afterFinalDelivery = vi.fn(async () => { throw new Error("post-delivery hook failed"); });
+
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      afterFinalDelivery,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("authoritative answer");
+        return { text: "authoritative answer", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(afterFinalDelivery).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).not.toHaveBeenCalled();
+  });
+
   it("keeps Codex final-only even when a caller supplies answer-like deltas", async () => {
     const client = createMockClient();
     await sendMessageWithProgress({

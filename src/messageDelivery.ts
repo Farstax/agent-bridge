@@ -420,6 +420,7 @@ export async function sendMessageWithProgress({
   }
 
   let finalDeliveryPreparationFailed = false;
+  let finalDeliveryCompleted = false;
   try {
     let result: any;
     if (typeof execution === "function") {
@@ -456,13 +457,14 @@ export async function sendMessageWithProgress({
       throw err;
     }
     await deliverFinal(finalText);
+    finalDeliveryCompleted = true;
     await afterFinalDelivery?.();
 
     clearInterval(typingInterval);
     return cliResult;
   } catch (err: any) {
     clearInterval(typingInterval);
-    await discardAnswerPreview();
+    if (!finalDeliveryCompleted) await discardAnswerPreview();
     if (isAborted?.()) return null;
     if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;
     if (finalDeliveryPreparationFailed) throw err;
