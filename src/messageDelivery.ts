@@ -293,8 +293,18 @@ export async function sendMessageWithProgress({
     answerPreviewPending = true;
     answerPreviewChain = answerPreviewChain
       .then(publishAnswerPreview)
-      .finally(() => { answerPreviewPending = false; });
+      .finally(() => {
+        answerPreviewPending = false;
+        if (answerPreviewEnabled && answerPreviewDirty && !isAborted?.()) queueAnswerPreview(true);
+      });
     answerPreviewUpdates.push(answerPreviewChain);
+  };
+
+  const waitForAnswerPreview = async (): Promise<void> => {
+    while (answerPreviewEnabled && (answerPreviewPending || answerPreviewDirty)) {
+      if (!answerPreviewPending && answerPreviewDirty) queueAnswerPreview(true);
+      await Promise.allSettled([...answerPreviewUpdates]);
+    }
   };
 
   const onAnswerDelta = (delta: string): void => {
@@ -355,7 +365,7 @@ export async function sendMessageWithProgress({
       answerPreviewDirty = true;
       queueAnswerPreview(true);
     }
-    await Promise.allSettled(answerPreviewUpdates);
+    await waitForAnswerPreview();
     if (answerPreviewEnabled && answerPreviewMessageId != null
       && text.length <= MAX_TELEGRAM_TEXT
       && routeNativeLayout(text, { documentEnabled: documentFallbackEnabled() }).kind === "plain") {
