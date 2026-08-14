@@ -69,6 +69,41 @@ describe("sendMessageWithProgress", () => {
     expect(client.sendMessage.mock.calls[1][0]).toEqual(expect.objectContaining({ text: expect.stringContaining("authoritative final") }));
   });
 
+  it("keeps Codex final-only even when a caller supplies answer-like deltas", async () => {
+    const client = createMockClient();
+    await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("must remain final-only");
+        return { text: "authoritative Codex answer", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a preview or final result after fencing", async () => {
+    const client = createMockClient();
+    let aborted = false;
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      isAborted: () => aborted,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("partial answer");
+        aborted = true;
+        return { text: "authoritative final", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.editMessageText).not.toHaveBeenCalled();
+  });
+
   it("suppresses final delivery when the execution fence rejects publication", async () => {
     const client = createMockClient();
     const result = await sendMessageWithProgress({
