@@ -32,9 +32,9 @@ result
 ```
 
 Agent Bridge has no separate engineering workflow engine, Worker bot, job
-dispatcher, role chain, or replacement Task abstraction. Historical Worker
-tables remain migration-readable where required by existing databases. Runtime
-code does not create, claim, or execute rows in those tables.
+dispatcher, role chain, or replacement Task abstraction. Schema version 9
+removes the historical Worker tables. Runtime code does not create, claim, or
+execute rows in those tables.
 
 The provider adapter owns provider invocation and native protocol details.
 `cliSupervisor.ts` remains provider-agnostic. Shared runtime code owns process
