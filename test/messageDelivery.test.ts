@@ -471,13 +471,10 @@ describe("sendMessageWithProgress", () => {
   });
 
   it("does not duplicate a Claude preview when the final edit is already applied", async () => {
-    let editCalls = 0;
     const client = {
       sendMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
       sendChatAction: vi.fn(async () => ({ ok: true })),
       editMessageText: vi.fn(async () => {
-        editCalls += 1;
-        if (editCalls === 1) return { ok: true };
         throw new Error("Bad Request: message is not modified: specified new message content and reply markup are identical");
       }),
       deleteMessage: vi.fn(async () => ({ ok: true })),

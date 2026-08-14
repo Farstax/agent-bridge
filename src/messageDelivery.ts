@@ -43,6 +43,11 @@ function extractStatusProgress(text: string): string {
     .trim();
 }
 
+function isTelegramMessageNotModified(error: unknown): boolean {
+  const message = String((error as any)?.message ?? error);
+  return message.includes("message is not modified");
+}
+
 export async function sendTelegramMessage({
   client,
   kind,
@@ -284,7 +289,11 @@ export async function sendMessageWithProgress({
         });
       }
       lastAnswerPreviewEditMs = Date.now();
-    } catch {
+    } catch (error) {
+      if (isTelegramMessageNotModified(error)) {
+        lastAnswerPreviewEditMs = Date.now();
+        return;
+      }
       answerPreviewEnabled = false;
       answerPreviewDirty = false;
     }
@@ -407,8 +416,7 @@ export async function sendMessageWithProgress({
         });
         return;
       } catch (editErr: any) {
-        const msg = String(editErr?.message ?? editErr);
-        if (msg.includes("message is not modified")) return;
+        if (isTelegramMessageNotModified(editErr)) return;
         answerPreviewEnabled = false;
       }
     }
