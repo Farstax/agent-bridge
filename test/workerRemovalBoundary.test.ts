@@ -2,21 +2,12 @@ import Database from "better-sqlite3";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DATABASE_ROLES } from "../src/db/schemaContract.js";
+import { LEGACY_WORKER_TABLES } from "../src/db/dropLegacyWorkerTablesMigration.js";
+import { DATABASE_ROLES, canonicalSchemaTablesForRole } from "../src/db/schemaContract.js";
 import { applyMigrations, schemaTablesForRole } from "../src/db/schema.js";
 
 const root = resolve(import.meta.dirname, "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
-const LEGACY_WORKER_TABLES = [
-  "work_items",
-  "work_jobs",
-  "approvals",
-  "github_links",
-  "feature_plans",
-  "work_item_plans",
-  "role_assignments",
-  "role_assignment_revisions",
-] as const;
 
 describe("Engineering Worker removal boundary", () => {
   it("has no Worker runtime entrypoint or service", () => {
@@ -42,6 +33,15 @@ describe("Engineering Worker removal boundary", () => {
   it("does not include legacy Worker tables in the current schema", () => {
     const tables = new Set(schemaTablesForRole("shared"));
     for (const table of LEGACY_WORKER_TABLES) expect(tables.has(table)).toBe(false);
+  });
+
+  it("recognizes legacy Worker tables only for guarded pre-v9 migration inspection", () => {
+    const current = new Set(schemaTablesForRole("shared"));
+    const recognized = new Set(canonicalSchemaTablesForRole("shared"));
+    for (const table of LEGACY_WORKER_TABLES) {
+      expect(current.has(table)).toBe(false);
+      expect(recognized.has(table)).toBe(true);
+    }
   });
 
   it("drops legacy Worker tables when upgrading a schema-v8 database", () => {
