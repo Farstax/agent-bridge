@@ -16,11 +16,12 @@ export function wrapPromptContext(
   prompt: string,
   soulContext: string | null = null,
   includeResponseContract = true,
+  includeExecutionContract = includeResponseContract,
 ): string {
   const soulContract = renderSoulContract(soulContext);
   return [
     ...(soulContract ? [soulContract, ""] : []),
-    ...(includeResponseContract ? [SESSION_EXECUTION_CONTRACT, ""] : []),
+    ...(includeExecutionContract ? [SESSION_EXECUTION_CONTRACT, ""] : []),
     wrapResponseStyle(prompt, soulContext, includeResponseContract),
   ].join("\n");
 }
