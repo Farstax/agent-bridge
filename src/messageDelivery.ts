@@ -406,7 +406,9 @@ export async function sendMessageWithProgress({
           ...renderAnswerPreview(text),
         });
         return;
-      } catch {
+      } catch (editErr: any) {
+        const msg = String(editErr?.message ?? editErr);
+        if (msg.includes("message is not modified")) return;
         answerPreviewEnabled = false;
       }
     }
