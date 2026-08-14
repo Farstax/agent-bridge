@@ -1,8 +1,8 @@
 /**
  * PURPOSE: Standard effort-level config and CLI argument mapping.
- * INPUTS: Bot kind, BridgeDb settings, env defaults, worker task type.
+ * INPUTS: Bot kind, BridgeDb settings and environment defaults.
  * OUTPUTS: Validated effort levels, Telegram keyboards/text, CLI args.
- * NEIGHBORS: src/cli.ts, src/commands.ts, src/engine.ts, src/workerDispatch.ts
+ * NEIGHBORS: src/cli.ts, src/commands.ts, src/engine.ts
  */
 
 import type { BridgeDb } from "./db.js";
@@ -98,9 +98,4 @@ export function appendEffortArgs(command: string, args: string[], effort: Effort
     return next;
   }
   return args;
-}
-
-export function workerEffortForTask(taskType: string): EffortLevel {
-  if (taskType === "tdd_implementation" || taskType === "orchestrated_task") return "high";
-  return DEFAULT_EFFORT_LEVEL;
 }

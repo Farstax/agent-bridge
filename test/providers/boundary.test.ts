@@ -1,22 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  getProviderAdapter,
-  getProviderAdapters,
-  assertProviderId,
-} from "../../src/providers/registry.js";
+import { getProviderAdapters, assertProviderId } from "../../src/providers/registry.js";
 import { PROVIDER_IDS } from "../../src/providers/types.js";
 
 const SRC = join(__dirname, "..", "..", "src");
 
-const WORKER_ONLY_MODULES = [
-  "./workerBot.js",
-  "./jobExecutor.js",
-  "./workerDispatch.js",
-  "./prMergeGate.js",
-  "./workspace.js",
-];
+const REMOVED_WORKFLOW_MODULES = ["./workerBot.js", "./jobExecutor.js", "./workerDispatch.js", "./prMergeGate.js", "./workspace.js"];
 
 function importsOf(file: string): string[] {
   const text = readFileSync(join(SRC, file), "utf8");
@@ -27,17 +17,10 @@ describe("product boundaries", () => {
   it("companion entries do not import worker-only modules", () => {
     for (const companionFile of ["interactiveBot.ts", "engine.ts", "index-interactive.ts"]) {
       const imports = importsOf(companionFile);
-      for (const workerModule of WORKER_ONLY_MODULES) {
-        expect(imports, `${companionFile} must not import ${workerModule}`).not.toContain(workerModule);
+      for (const moduleName of REMOVED_WORKFLOW_MODULES) {
+        expect(imports, `${companionFile} must not import ${moduleName}`).not.toContain(moduleName);
       }
     }
-  });
-
-  it("worker-only capabilities are marked worker-scoped in the registry", () => {
-    // Agy must never be a code-writing worker provider.
-    expect(getProviderAdapter("agy").capabilities.worker).toBe(false);
-    // At least one provider must be worker-capable.
-    expect(getProviderAdapters().some((a) => a.capabilities.worker)).toBe(true);
   });
 
   it("provider fallback order is deterministic and matches PROVIDER_IDS", () => {

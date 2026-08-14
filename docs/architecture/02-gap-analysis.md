@@ -1,4 +1,6 @@
-# 02 — Gap Analysis
+# 02 — Gap Analysis (historical baseline)
+
+> Historical roadmap input. Worker and work-queue gaps below are retired.
 
 Legend — Priority: P0 critical, P1 high, P2 medium, P3 nice-to-have. Risk: migration risk if done / operational risk if not done.
 

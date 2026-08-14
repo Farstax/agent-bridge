@@ -50,8 +50,8 @@ describe("validateTokenUniqueness", () => {
   });
 
   it("throws naming both surfaces when two share a token", () => {
-    expect(() => validateTokenUniqueness({ codex: "same", worker: "same" }))
-      .toThrow(/codex.*worker|worker.*codex/);
+    expect(() => validateTokenUniqueness({ codex: "same", claude: "same" }))
+      .toThrow(/codex.*claude|claude.*codex/);
   });
 
   it("ignores undefined and empty tokens", () => {
@@ -121,7 +121,6 @@ describe("architectural intent: entry points use the shared config module", () =
   const entryPoints = [
     "src/index.ts",
     "src/index-interactive.ts",
-    "src/index-worker.ts",
     "src/index-discord-interactive.ts",
   ];
 

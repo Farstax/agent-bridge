@@ -14,11 +14,11 @@ It is a small runtime registry, not a plugin marketplace.
 
 ## Why It Exists
 
-Without a registry, new functionality tends to become ad hoc conditionals and provider-specific branches. A registry gives both the Companion Runtime and Engineering Worker a shared way to ask:
+Without a registry, new functionality tends to become ad hoc conditionals and provider-specific branches. A registry gives conversational and event Run paths a shared way to ask:
 
 - Is this capability known?
 - Is it available here?
-- Is it companion-scoped, worker-scoped, or shared?
+- Is it surface-scoped or shared?
 - What risk level does it carry?
 - What backend should be tried first?
 - How should readiness be diagnosed?
@@ -53,10 +53,6 @@ Examples:
 - summarisation helpers
 - document transformation helpers
 
-### `worker`
-
-Usable by the Engineering Worker only.
-
 Examples:
 
 - Git writes
@@ -86,7 +82,7 @@ Initial categories may be simple:
 - `execute`
 - `destructive`
 
-Worker policies and human approvals still govern dangerous actions.
+Repository instructions, Skills, provider policy, and human approvals govern dangerous actions.
 
 ## Diagnostics
 

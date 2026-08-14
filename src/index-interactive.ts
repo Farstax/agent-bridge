@@ -16,7 +16,7 @@ import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { sendTelegramMessage } from "./messageDelivery.js";
 import { loadBotsConfig, resolveExecutionMode, resolveBusyMessageMode, validateBusyMessageModeEnv } from "./config.js";
-import { WorkerFallbackChain } from "./workerFallback.js";
+import { ProviderFallbackChain } from "./providerFallback.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
@@ -152,10 +152,10 @@ if (!botUsername) {
 // Fallback chain state. Unknown chain entries are dropped by the shared
 // parser; an all-invalid chain falls back to the full default order.
 const cliChain = parseCliChain(
-  process.env.INTERACTIVE_CLI_CHAIN || process.env.WORKER_CLI_CHAIN,
+  process.env.INTERACTIVE_CLI_CHAIN,
   { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "kimchi"] },
 );
-const fallbackChain = new WorkerFallbackChain(cliChain, db);
+const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();
 

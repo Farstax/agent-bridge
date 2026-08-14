@@ -255,38 +255,6 @@ export class SelfPlugin implements HealthPlugin {
       });
     }
 
-    // ── PR lifecycle gauges ────────────────────────────────────────────────────
-    try {
-      const openPrs = (this.db.raw.prepare(
-        `SELECT COUNT(*) AS n FROM github_links
-         WHERE pr_number IS NOT NULL AND pr_state NOT IN ('merged','closed')`
-      ).get() as { n: number }).n;
-      checks.push({
-        name: "pr-open-count",
-        status: "green",
-        message: `${openPrs} open agent PR${openPrs !== 1 ? "s" : ""}`,
-      });
-
-      const stalePrs = (this.db.raw.prepare(
-        `SELECT COUNT(*) AS n FROM github_links WHERE pr_state = 'stale'`
-      ).get() as { n: number }).n;
-      checks.push({
-        name: "pr-stale-count",
-        status: stalePrs > 0 ? "amber" : "green",
-        message: `${stalePrs} stale PR${stalePrs !== 1 ? "s" : ""}`,
-      });
-
-      const pendingMerge = (this.db.raw.prepare(
-        `SELECT COUNT(*) AS n FROM approvals
-         WHERE approval_type = 'merge_pr' AND status = 'pending'`
-      ).get() as { n: number }).n;
-      checks.push({
-        name: "pending-merge-approvals",
-        status: "green",
-        message: `${pendingMerge} pending merge approval${pendingMerge !== 1 ? "s" : ""}`,
-      });
-    } catch { /* non-fatal — DB may not have the columns yet */ }
-
     const worst = checks.some(c => c.status === "red") ? "red"
                 : checks.some(c => c.status === "amber") ? "amber"
                 : "green";

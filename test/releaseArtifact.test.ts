@@ -9,7 +9,6 @@ const REQUIRED_ENTRYPOINTS = [
   "src/index-interactive.ts",
   "src/index-discord-interactive.ts",
   "src/index-health.ts",
-  "src/index-worker.ts",
 ];
 
 function baseArgs(overrides = {}) {
@@ -94,7 +93,7 @@ describe("release artifact manifest", () => {
   it("characterizes the issue #183 historical baseline (39580135024f2cca329e498f60b18e599ca145fd) as source-tsx", () => {
     // package.json scripts/dependencies observed directly at that commit: no "build" script,
     // tsx as a production dependency, systemd launching src/index-interactive.ts and
-    // src/index-worker.ts via node_modules/tsx/dist/cli.mjs.
+    // source entrypoints via node_modules/tsx/dist/cli.mjs.
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-"));
     writeFileSync(join(root, "package-lock.json"), "{\"lockfileVersion\": 3}\n");
     writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
@@ -203,23 +202,6 @@ describe("release artifact manifest", () => {
     expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/source-tsx artifact requires a regular tsx runtime CLI/);
   });
 
-  it("rejects source-tsx entrypoints replaced by symlinks", () => {
-    const root = sourceTsxRoot(mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-")));
-    const target = join(root, "entrypoint-target.ts");
-    writeFileSync(target, "// target\n");
-    rmSync(join(root, "src", "index-worker.ts"));
-    symlinkSync(target, join(root, "src", "index-worker.ts"));
-
-    expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/source-tsx artifact requires a regular runtime entrypoint: src\/index-worker\.ts/);
-  });
-
-  it("rejects a source-tsx artifact missing a required runtime entrypoint", () => {
-    const root = sourceTsxRoot(mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-")));
-    rmSync(join(root, "src", "index-worker.ts"));
-
-    expect(() => buildReleaseManifest({ root, ...baseArgs() })).toThrow(/source-tsx artifact is missing required runtime entrypoint: src\/index-worker\.ts/);
-  });
-
   it("does not include the manifest itself or files outside the artifact root", () => {
     const root = compiledRoot(mkdtempSync(join(tmpdir(), "agent-bridge-release-manifest-")));
     writeFileSync(join(root, "manifest.json"), "stale\n");
@@ -264,7 +246,6 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/upgrade.sh');
     expect(workflow).toContain('scripts/upgrade.sh');
     expect(workflow).toContain('scripts/skill-manager.ts');
-    expect(workflow).toContain('prompts/worker');
     expect(workflow).toContain('cp -a skills/. "$root/skills/"');
     expect(workflow).not.toContain('cp -a skills "$root/skills/"');
     expect(workflow).toContain('tsconfig.json');

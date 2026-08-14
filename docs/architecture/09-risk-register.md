@@ -1,5 +1,8 @@
 # 09 — Risk Register
 
+> Historical Worker risks are retained for context. Active risks concern
+> ordinary Runs, provider sessions, receipts, fencing, and guarded rollout.
+
 | ID | Risk | Likelihood | Impact | Mitigation | Owner phase |
 |---|---|---|---|---|---|
 | R1 | `isCapacityExhaustedError` over-broad "not found" match misroutes real errors into silent model fallback (cli.ts:843-844) | High (live) | High — masked failures, wrong models | Hotfix now (scope to model-context); permanent fix in adapter classifyError (Epic 2) | Phase 0 |

@@ -3,7 +3,6 @@
   "entry": [
     "src/index.ts",
     "src/index-interactive.ts",
-    "src/index-worker.ts",
     "src/index-health.ts",
     "src/index-discord-interactive.ts",
     "scripts/*.ts",

@@ -6,7 +6,7 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
 import { dispatchClaimedInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 import * as fileOutput from "../src/fileOutput.js";
 
 function message(text: string, threadId: number) {
@@ -119,7 +119,7 @@ describe("execution lane correctness", () => {
       cliOptions,
     ));
     const claudeRun = vi.fn().mockResolvedValue("claude done");
-    const fallbackChain = new WorkerFallbackChain(["codex", "claude"], db);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db);
     const exhaustedChats = new Set<string>();
     const engines = {} as Record<string, BridgeEngine>;
     // This test is about durable FIFO routing across providers, not busy-mode

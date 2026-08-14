@@ -865,7 +865,6 @@ describe("guarded rollout helper", () => {
     expect(byPath[fixture.dbPaths[1]]).toEqual(["agent-bridge-discord-interactive.service"]);
     expect(byPath[fixture.dbPaths[2]]).toEqual(["agent-bridge-health.service"]);
     expect(byPath[fixture.dbPaths[3]]).toEqual(["agent-bridge-interactive.service"]);
-    expect(byPath[fixture.dbPaths[4]]).toEqual(["agent-bridge-worker-bot.service"]);
   }, 15_000);
 
   it.each([
@@ -1264,14 +1263,14 @@ fi
   });
 
   it.each([
-    ["missing allowlist database", (fixture: Fixture) => rewriteConfig(fixture, (lines) => lines.filter((line) => line !== `database=${fixture.dbPaths[4]}`))],
+    ["missing allowlist database", (fixture: Fixture) => rewriteConfig(fixture, (lines) => lines.filter((line) => line !== `database=${fixture.dbPaths[3]}`))],
     ["extra allowlist database", (fixture: Fixture) => {
       const extra = join(fixture.root, "databases", "extra.sqlite");
       createLegacyDb(extra);
       rewriteConfig(fixture, (lines) => [...lines, `database=${extra}`]);
     }],
     ["duplicate allowlist database", (fixture: Fixture) => rewriteConfig(fixture, (lines) => [...lines, `database=${fixture.dbPaths[0]}`])],
-    ["mismatched unit database", (fixture: Fixture) => writeFileSync(join(fixture.envDir, "agent-bridge-worker-bot"), `DB_PATH=${fixture.dbPaths[3]}\n`, { mode: 0o600 })],
+    ["mismatched unit database", (fixture: Fixture) => writeFileSync(join(fixture.envDir, "agent-bridge-interactive"), `DB_PATH=${fixture.dbPaths[2]}\n`, { mode: 0o600 })],
     ["defaulted unit database", (fixture: Fixture) => {
       writeFileSync(join(fixture.envDir, "agent-bridge-shared"), "", { mode: 0o600 });
       writeFileSync(join(fixture.envDir, "agent-bridge-codex"), "", { mode: 0o600 });

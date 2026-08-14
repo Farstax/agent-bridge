@@ -11,10 +11,6 @@ export type ProviderErrorClassification =
 
 export interface ProviderCapabilities {
   readonly interactive: boolean;
-  /** Allowed to write production code in worker jobs. */
-  readonly worker: boolean;
-  /** Allowed in worker-bot fallback chains (interactive/scribe duty). */
-  readonly workerChain: boolean;
   readonly fallbackTarget: boolean;
   /** Supports buildCliInvocation's toolMode: "none" (tool-free mode). */
   readonly toolFree: boolean;

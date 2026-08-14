@@ -6,13 +6,13 @@ Superseded. Do not implement from this file.
 
 The original autonomous-worker research note has been archived because it mixed implemented history, future worker ideas, and roadmap-like phase language.
 
-## Current Worker Documentation
+## Current architecture
 
-Use this for the current implemented worker behavior:
+Autonomous work uses durable ingress and ordinary Runs. The provider agent
+follows repository-local `AGENTS.md`, bundled Skills, and provider-native tools.
+There is no current Worker product or Worker documentation.
 
-- `docs/WORKER-GUIDE.md`
-
-## Active Roadmap
+## Historical roadmap
 
 Use this for next implementation work:
 

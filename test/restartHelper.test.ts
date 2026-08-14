@@ -7,7 +7,6 @@ describe("safe restart helper", () => {
 
     expect(helper).toContain('RESTART_DELAY_SECONDS:-5');
     expect(helper).toContain('sleep "$delay"');
-    expect(helper).toContain("agent-bridge-worker-bot.service");
     expect(helper).toContain("agent-bridge-interactive.service");
     expect(helper).toContain('systemctl restart "${units[@]}"');
     expect(helper).toContain("systemctl list-units 'agent-bridge*' --all --no-pager");

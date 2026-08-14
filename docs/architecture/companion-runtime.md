@@ -59,10 +59,10 @@ budgets, chain, executable, timeout, and database remain server-side. A new
 turn revokes the previous capability; unused capabilities expire after ten
 minutes. Provider children receive no advisor configuration or capability.
 
-Every advisor entry point — manual `/advisor`, worker checkpoints, and agent
+Every advisor entry point, including manual `/advisor` and agent
 capability requests — resolves through one `AdvisorService` and its single
 private execution path, under one `tool_free` execution profile. `/advisor`
-and worker checkpoints call `requestTrusted()` in-process; the Unix-socket
+and bounded evidence requests call `requestTrusted()` in-process; the Unix-socket
 broker is only the untrusted cross-process adapter for CLI agents, and its
 `requestWithCapability()` merely authenticates a capability and reconstructs
 trusted scope before entering the same path. `tool_free` requires every chain
@@ -153,7 +153,7 @@ The canonical memory and handoff design is `docs/architecture/memory-and-handoff
 
 ## Explicit Non-Responsibilities
 
-The Companion Runtime must not own or depend on Engineering Worker concepts:
+The Companion Runtime must not own or depend on retired Worker concepts:
 
 - repositories
 - work items
@@ -165,15 +165,11 @@ The Companion Runtime must not own or depend on Engineering Worker concepts:
 - reviewer comments
 - merge approval gates
 
-If a conversational surface needs to trigger engineering work, it should do so through an explicit worker command/API boundary, not by importing worker internals.
+Engineering work starts through the ordinary provider-native agent path. A conversational surface does not import a Worker command or execution subsystem.
 
 Companion/provider development remains supported when used independently. The
-companion services intentionally do not take the worker's Git worktree lock;
-the worker uses isolated per-job workspaces and keeps locking enabled. Running
-development turns through both paths at the same time is an operational risk:
-the worker workspace is a snapshot and does not automatically include
-uncommitted changes made in the canonical checkout. Overlapping file or branch
-scopes must be coordinated by the operator.
+ordinary Run path uses its existing execution and repository safety boundaries.
+Overlapping file or branch scopes must be coordinated by the operator.
 
 The companion surface also supports `/btw <prompt>` for a fresh, one-off side
 question. It uses the currently selected provider without a session identifier,

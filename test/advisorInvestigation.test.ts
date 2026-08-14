@@ -75,8 +75,8 @@ describe("AdvisorService read-only debug investigation", () => {
 
     try {
       const result = await service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:work-item:1",
+        origin: "manual",
+        scopeKey: "manual:work-item:1",
         taskKey: "work-item:1",
         mode: "debug",
         task: "Diagnose the blocked attempt",
@@ -96,8 +96,8 @@ describe("AdvisorService read-only debug investigation", () => {
       expect(attempts.map((attempt) => attempt.ordinal)).toEqual([1, 2]);
 
       await expect(service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:work-item:1",
+        origin: "manual",
+        scopeKey: "manual:work-item:1",
         taskKey: "work-item:1",
         mode: "debug",
         task: "Try to spend the same logical task budget again",
@@ -133,8 +133,8 @@ describe("AdvisorService read-only debug investigation", () => {
 
     try {
       const result = await service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:work-item:2",
+        origin: "manual",
+        scopeKey: "manual:work-item:2",
         taskKey: "work-item:2",
         mode: "debug",
         task: "Diagnose missing evidence",
@@ -169,8 +169,8 @@ describe("AdvisorService read-only debug investigation", () => {
 
     try {
       const result = await service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:work-item:missing",
+        origin: "manual",
+        scopeKey: "manual:work-item:missing",
         taskKey: "work-item:missing",
         mode: "debug",
         task: "Diagnose incomplete context",
@@ -199,8 +199,8 @@ describe("AdvisorService read-only debug investigation", () => {
 
     try {
       await expect(service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:work-item:uncited",
+        origin: "manual",
+        scopeKey: "manual:work-item:uncited",
         taskKey: "work-item:uncited",
         mode: "debug",
         task: "Reject uncited advice",
@@ -226,8 +226,8 @@ describe("AdvisorService read-only debug investigation", () => {
 
     try {
       await expect(service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:work-item:3",
+        origin: "manual",
+        scopeKey: "manual:work-item:3",
         taskKey: "work-item:3",
         mode: "debug",
         task: "Reject unsupported evidence tools",
@@ -251,8 +251,8 @@ describe("AdvisorService read-only debug investigation", () => {
 
     try {
       await expect(service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:work-item:unsupported",
+        origin: "manual",
+        scopeKey: "manual:work-item:unsupported",
         taskKey: "work-item:unsupported",
         mode: "debug",
         task: "Use unavailable provider",

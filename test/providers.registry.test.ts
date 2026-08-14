@@ -63,9 +63,8 @@ describe("provider registry", () => {
     expect(() => getProviderAdapter("not-a-provider" as ProviderId)).toThrow();
   });
 
-  it("exposes worker and fallback metadata", () => {
+  it("exposes fallback metadata", () => {
     const codex = getProviderAdapter("codex");
-    expect(typeof codex.capabilities.worker).toBe("boolean");
     expect(typeof codex.capabilities.fallbackTarget).toBe("boolean");
   });
 });

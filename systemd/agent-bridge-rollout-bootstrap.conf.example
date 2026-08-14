@@ -5,10 +5,9 @@
 # authorize bootstrap. Only list role/path pairs that are genuinely expected
 # to be missing (a new database role not yet created), never an existing
 # production database. Each entry is role:absolute-path — role must be one
-# of shared, discord, health, interactive, worker (the five canonical roles
+# of shared, discord, health, interactive (the active canonical roles
 # in docs/roadmap/issue-135-phase4c-migration-ownership.md §4). The path
 # alone does not authorize bootstrap; the exact (role, path) pair must match.
 project_dir=/home/content-crawler/agent-bridge
 runtime_user=content-crawler
 node_bin=/home/content-crawler/.nvm/versions/node/v24.15.0/bin/node
-# bootstrap_role=worker:/home/content-crawler/runtime/agent-bridge/some-new-role/bridge.sqlite

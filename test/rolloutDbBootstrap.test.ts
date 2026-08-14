@@ -30,7 +30,7 @@ function tempDir(): string {
   return dir;
 }
 
-function bootstrapArgs(path: string, role = "worker"): string[] {
+function bootstrapArgs(path: string, role = "interactive"): string[] {
   return ["--db", path, "--role", role, "--confirm-new-role", path];
 }
 
@@ -72,7 +72,7 @@ describe("rollout-db.ts bootstrap", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
     const evidencePath = join(dir, "evidence.json");
-    const res = runBootstrap([...bootstrapArgs(dbPath, "worker"), "--evidence", evidencePath], { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
+    const res = runBootstrap([...bootstrapArgs(dbPath, "interactive"), "--evidence", evidencePath], { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
     expect(res.status, res.stderr).toBe(0);
     expect(existsSync(dbPath)).toBe(true);
     const db = new Database(dbPath, { readonly: true });
@@ -84,18 +84,18 @@ describe("rollout-db.ts bootstrap", () => {
     expect(JSON.parse(readFileSync(`${dbPath}.provenance.json`, "utf8")).databaseSha256).toMatch(/^[a-f0-9]{64}$/);
     const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
     expect(evidence.mode).toBe("bootstrap");
-    expect(evidence.databases[0].role).toBe("worker");
+    expect(evidence.databases[0].role).toBe("interactive");
     expect(evidence.databases[0].path).toBe(dbPath);
   });
 
   it("verifies the complete installation provenance contract", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
-    const res = runBootstrap(bootstrapArgs(dbPath, "worker"), { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
+    const res = runBootstrap(bootstrapArgs(dbPath, "interactive"), { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
     expect(res.status, res.stderr).toBe(0);
-    expect(runProvenanceCheck(dbPath, "worker", "install-test").status).toBe(0);
-    expect(runProvenanceCheck(dbPath, "interactive", "install-test").status).not.toBe(0);
-    expect(runProvenanceCheck(dbPath, "worker", "install-other").status).not.toBe(0);
+    expect(runProvenanceCheck(dbPath, "interactive", "install-test").status).toBe(0);
+    expect(runProvenanceCheck(dbPath, "discord", "install-test").status).not.toBe(0);
+    expect(runProvenanceCheck(dbPath, "interactive", "install-other").status).not.toBe(0);
   });
 
   it("rejects an unrecognized role name", () => {
@@ -129,7 +129,7 @@ describe("rollout-db.ts bootstrap", () => {
   it("requires --confirm-new-role to match the exact target path", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
-    const res = runBootstrap(["--db", dbPath, "--role", "worker", "--confirm-new-role", join(dir, "other.sqlite")]);
+    const res = runBootstrap(["--db", dbPath, "--role", "interactive", "--confirm-new-role", join(dir, "other.sqlite")]);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/confirm-new-role/i);
     expect(existsSync(dbPath)).toBe(false);
@@ -138,7 +138,7 @@ describe("rollout-db.ts bootstrap", () => {
   it("refuses without --confirm-new-role at all", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
-    const res = runBootstrap(["--db", dbPath, "--role", "worker"]);
+    const res = runBootstrap(["--db", dbPath, "--role", "interactive"]);
     expect(res.status).not.toBe(0);
     expect(existsSync(dbPath)).toBe(false);
   });
@@ -756,7 +756,7 @@ describe("rollout-db.ts ordinary modes never bootstrap", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
     try {
-      execFileSync(process.execPath, [tsxCli, migrationScript, "bootstrapp", "--db", dbPath, "--role", "worker", "--confirm-new-role", dbPath], { encoding: "utf8" });
+      execFileSync(process.execPath, [tsxCli, migrationScript, "bootstrapp", "--db", dbPath, "--role", "interactive", "--confirm-new-role", dbPath], { encoding: "utf8" });
       expect.fail("expected an unrecognized mode to fail");
     } catch (err: any) {
       expect(err.status).not.toBe(0);

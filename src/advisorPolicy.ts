@@ -1,7 +1,7 @@
 import type { AdvisorOrigin, AdvisorPolicyMode, AdvisorTarget } from "./advisorTypes.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
 export function shouldAllowAdvisorCall(mode: AdvisorPolicyMode, origin: AdvisorOrigin, approved: boolean): boolean {
-  if (origin === "manual" || origin === "worker") return true;
+  if (origin === "manual") return true;
   if (origin === "suggest") return mode !== "manual" && approved;
   return mode === "auto";
 }

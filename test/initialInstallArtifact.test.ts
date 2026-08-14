@@ -27,7 +27,6 @@ describe("initial installation release contract", () => {
       "systemd/agent-bridge-discord-interactive.service",
       "systemd/agent-bridge-health.service",
       "systemd/agent-bridge-interactive.service",
-      "systemd/agent-bridge-worker-bot.service",
       "systemd/agent-bridge-tmp-cleanup.service",
       "systemd/agent-bridge-tmp-cleanup.timer",
     ]) {

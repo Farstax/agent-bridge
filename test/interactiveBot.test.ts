@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
 import type { TelegramUpdate } from "../src/types.js";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 import {
   getUserCliPreference,
   setUserCliPreference,
@@ -553,7 +553,7 @@ describe("dispatchInteractiveWithFallback", () => {
   let codex: { handleUpdate: any; handleCount: number };
   let claude: { handleUpdate: any; handleCount: number };
   let antigravity: { handleUpdate: any; handleCount: number };
-  let fallbackChain: WorkerFallbackChain;
+  let fallbackChain: ProviderFallbackChain;
   let exhaustedChats: Set<string>;
   let sentMessages: string[];
   let onCliSwitchedCalls: CliKind[];
@@ -563,7 +563,7 @@ describe("dispatchInteractiveWithFallback", () => {
     codex = { handleCount: 0, handleUpdate: async () => { codex.handleCount++; } };
     claude = { handleCount: 0, handleUpdate: async () => { claude.handleCount++; } };
     antigravity = { handleCount: 0, handleUpdate: async () => { antigravity.handleCount++; } };
-    fallbackChain = new WorkerFallbackChain(["codex", "claude", "antigravity"], db);
+    fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
     exhaustedChats = new Set();
     sentMessages = [];
     onCliSwitchedCalls = [];

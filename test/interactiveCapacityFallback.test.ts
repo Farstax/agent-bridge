@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
 import {
   dispatchClaimedInteractiveWithFallback,
@@ -30,7 +30,7 @@ describe("interactive capacity fallback durable admission", () => {
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
     client.deleteMessage.mockRejectedValue(new Error("Telegram delete failed"));
-    const fallbackChain = new WorkerFallbackChain(["claude", "codex"], db);
+    const fallbackChain = new ProviderFallbackChain(["claude", "codex"], db);
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
@@ -87,7 +87,7 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new WorkerFallbackChain(["claude", "codex"], db);
+    const fallbackChain = new ProviderFallbackChain(["claude", "codex"], db);
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
@@ -145,7 +145,7 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new WorkerFallbackChain(["claude", "codex"], db);
+    const fallbackChain = new ProviderFallbackChain(["claude", "codex"], db);
     const notifications: string[] = [];
     let providerWork: "live" | "absent" = "live";
     const claudeRun = vi.fn()
@@ -241,7 +241,7 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new WorkerFallbackChain(["claude", "codex"], db);
+    const fallbackChain = new ProviderFallbackChain(["claude", "codex"], db);
     const notifications: string[] = [];
     let providerWork: "live" | "absent" = "live";
     const claudeRun = vi.fn()
@@ -341,7 +341,7 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new WorkerFallbackChain(["codex", "claude", "antigravity"], db);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
     const notifications: string[] = [];
 
     const codexRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
@@ -444,7 +444,7 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new WorkerFallbackChain(["codex", "claude", "antigravity"], db);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
     const notifications: string[] = [];
 
     const codexRun = vi.fn().mockRejectedValue(new Error("session limit reached"));

@@ -24,7 +24,6 @@ describe("systemd templates", () => {
       "agent-bridge-discord-interactive.service",
       "agent-bridge-health.service",
       "agent-bridge-interactive.service",
-      "agent-bridge-worker-bot.service",
     ];
 
     for (const unit of units) {
@@ -66,15 +65,13 @@ describe("systemd templates", () => {
     expect(claude).toContain("KillMode=control-group");
   });
 
-  it("enables workspace locking only for the worker service", () => {
-    const worker = readFileSync(new URL("../systemd/agent-bridge-worker-bot.service", import.meta.url), "utf8");
+  it("keeps workspace locking off for shared canonical-checkout services", () => {
     const codex = readFileSync(new URL("../systemd/agent-bridge-codex.service", import.meta.url), "utf8");
     const antigravity = readFileSync(new URL("../systemd/agent-bridge-antigravity.service", import.meta.url), "utf8");
     const claude = readFileSync(new URL("../systemd/agent-bridge-claude.service", import.meta.url), "utf8");
     const interactive = readFileSync(new URL("../systemd/agent-bridge-interactive.service", import.meta.url), "utf8");
     const discord = readFileSync(new URL("../systemd/agent-bridge-discord-interactive.service", import.meta.url), "utf8");
 
-    expect(worker).toContain("Environment=BRIDGE_WORKSPACE_LOCK_MODE=on");
     for (const [name, content] of [["codex", codex], ["antigravity", antigravity], ["claude", claude], ["interactive", interactive], ["discord", discord]] as const) {
       expect(content, name).toContain("Environment=BRIDGE_WORKSPACE_LOCK_MODE=off");
     }

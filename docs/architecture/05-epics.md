@@ -1,4 +1,7 @@
-# 05 — Epic Breakdown & Implementation Roadmap
+# 05 — Epic Breakdown & Implementation Roadmap (historical)
+
+> Historical roadmap input. Current engineering work uses provider-native
+> agents, repository instructions, and Skills through ordinary Runs.
 
 Effort scale: S ≤ 300 LoC, M ≤ 1,000, L ≤ 2,500, XL > 2,500 (incl. tests). Every epic ships behind green suite + arch-lint. One epic per PR series; no cross-epic PRs.
 

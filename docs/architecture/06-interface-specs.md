@@ -1,4 +1,7 @@
-# 06 — Interface Specifications
+# 06 — Interface Specifications (historical sections retained)
+
+> Worker job and approval interfaces below are historical. They are not live
+> runtime contracts.
 
 Design-only. No implementation in this PR.
 

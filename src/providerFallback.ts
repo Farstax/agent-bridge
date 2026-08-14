@@ -1,9 +1,9 @@
 /**
- * PURPOSE: Per-chat CLI fallback chain for the worker bot.
+ * PURPOSE: Per-chat CLI fallback chain for interactive provider execution.
  * Tracks which CLI is active for each chat. When a CLI is exhausted,
  * advance() moves to the next CLI in the chain. Conversation turns and
  * context injection are owned by BridgeEngine (single recorder/injector).
- * NEIGHBORS: src/index-worker.ts, src/engine.ts
+ * NEIGHBORS: src/index-interactive.ts, src/engine.ts
  */
 
 import type { BridgeDb } from "./db.js";
@@ -21,7 +21,7 @@ function qualificationAllowsCli(cli: string): boolean {
   return providerId == null || !getQualificationFailedProviders().has(providerId);
 }
 
-export class WorkerFallbackChain {
+export class ProviderFallbackChain {
   private readonly chain: string[];
   private readonly chatActiveIdx = new Map<string, number>();
   private readonly db: BridgeDb;

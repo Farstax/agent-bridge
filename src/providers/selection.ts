@@ -1,9 +1,9 @@
 /**
  * PURPOSE: Shared CLI/provider chain selection (Epic 11, issue #51).
  * Single owner of fallback-chain parsing for Companion Runtime
- * (index-interactive) and Engineering Worker (workerCliPolicy). Chain
- * vocabulary uses CLI kinds; "antigravity" maps to provider id "agy".
- * NEIGHBORS: src/providers/registry.ts, src/workerCliPolicy.ts,
+ * interactive provider chains. Chain vocabulary uses CLI kinds;
+ * "antigravity" maps to provider id "agy".
+ * NEIGHBORS: src/providers/registry.ts,
  * src/index-interactive.ts
  */
 
@@ -21,20 +21,6 @@ const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
 export function interactiveChainKinds(): ChainCliKind[] {
   return getProviderAdapters()
     .filter((a) => a.capabilities.interactive)
-    .map((a) => PROVIDER_TO_CHAIN_KIND[a.id]);
-}
-
-/** CLI kinds usable in worker-bot fallback chains (interactive/scribe duty). */
-export function workerChainKinds(): ChainCliKind[] {
-  return getProviderAdapters()
-    .filter((a) => a.capabilities.workerChain)
-    .map((a) => PROVIDER_TO_CHAIN_KIND[a.id]);
-}
-
-/** CLI kinds allowed to write production code in worker jobs. */
-export function codeChainKinds(): ChainCliKind[] {
-  return getProviderAdapters()
-    .filter((a) => a.capabilities.worker)
     .map((a) => PROVIDER_TO_CHAIN_KIND[a.id]);
 }
 

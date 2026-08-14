@@ -110,7 +110,7 @@ def validate_release(release: Path, expected_commit: str, strict: bool = False) 
             fail("release runtime contract is missing a required regular helper")
         strategy = manifest.get("build_strategy", "source-tsx")
         if strategy == "source-tsx":
-            for path in ("tsconfig.json", "node_modules/tsx/dist/cli.mjs", "src/index.ts", "src/index-interactive.ts", "src/index-discord-interactive.ts", "src/index-health.ts", "src/index-worker.ts"):
+            for path in ("tsconfig.json", "node_modules/tsx/dist/cli.mjs", "src/index.ts", "src/index-interactive.ts", "src/index-discord-interactive.ts", "src/index-health.ts"):
                 if not _regular(release / path):
                     fail(f"source-tsx runtime contract requires regular file: {path}")
 

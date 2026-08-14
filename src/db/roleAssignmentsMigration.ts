@@ -121,7 +121,7 @@ export function assertDatabaseForeignKeyIntegrity(raw: Database.Database): void 
 }
 
 /**
- * Schema version 3: additive, dormant Engineering Worker role assignments.
+ * Historical schema version 3: retained role-assignment tables for old databases.
  *
  * The revision row is the append-only policy identity for one scope. Role rows
  * are children of that revision and contain only bounded provider/model

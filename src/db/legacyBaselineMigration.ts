@@ -461,9 +461,8 @@ export function applyLegacyCompatibleBaseline(raw: Database.Database): void {
   addColumnIfMissing(raw, `ALTER TABLE project_memories ADD COLUMN source_turn_id INTEGER`);
   addColumnIfMissing(raw, `ALTER TABLE project_memories ADD COLUMN source_repo_path TEXT`);
 
-  // ── Job checkpointing (Phase A) ───────────────────────────────────────────
-  // Adds phase + phase_data_json to work_jobs so handlers can yield mid-job
-  // and resume from a named phase with accumulated state.
+  // Legacy job checkpoint columns remain readable for old databases. The
+  // current runtime does not create, claim, or execute these records.
   addColumnIfMissing(raw, `ALTER TABLE work_jobs ADD COLUMN phase TEXT NOT NULL DEFAULT 'initial'`);
   addColumnIfMissing(raw, `ALTER TABLE work_jobs ADD COLUMN phase_data_json TEXT`);
 }

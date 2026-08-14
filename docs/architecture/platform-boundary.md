@@ -15,11 +15,10 @@ Agent Bridge OSS owns autonomous execution.
 It contains:
 
 - Companion Runtime
-- Engineering Worker
 - Shared Runtime
 - local runtime state
 - provider/CLI execution
-- worker queue and merge gates
+- ordinary Runs and event receipts
 - capability registry and diagnostics
 
 ## Platform Responsibilities
@@ -39,11 +38,7 @@ It owns:
 
 ## Workspace Composition
 
-A platform-managed workspace may enable:
-
-- Companion Runtime only
-- Engineering Worker only
-- both
+A platform-managed workspace may enable the conversational, Discord, health, and event Run services required by its deployment.
 
 The Platform should treat these as runtime modules/capabilities of an OSS deployment, not as separate execution engines owned by the control plane.
 
@@ -51,7 +46,7 @@ The Platform should treat these as runtime modules/capabilities of an OSS deploy
 
 The Platform may start, stop, configure, update, and monitor Agent Bridge deployments.
 
-The Platform should not own autonomous prompt execution, worker planning, TDD implementation, PR lifecycle, or merge decision logic.
+The Platform should not own autonomous prompt execution, planning, TDD implementation, PR lifecycle, or merge decision logic. Provider agents and repository Skills own engineering workflow.
 
 ## Security and Policy
 

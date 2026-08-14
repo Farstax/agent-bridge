@@ -18,7 +18,7 @@
  *     -> receipt correlation                          (reconcileEventReceiptResult)
  *
  * Deliberately does NOT create a work_item/work_job/ops_check job (that was
- * the original, superseded design that recreated the mechanical Worker
+ * the original, superseded design that recreated the mechanical worker
  * workflow layer issue #347 removes) and deliberately does NOT reimplement
  * CLI invocation via buildCliInvocation/runCli directly. Instead
  * executeHealthOpsRun calls the engine's surface-neutral wrapper. That
