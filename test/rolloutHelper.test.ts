@@ -517,6 +517,17 @@ describe("guarded rollout helper", () => {
     expect(log).toContain("systemctl:show agent-bridge-tmp-cleanup.timer --property=TimersCalendar --value");
   }, 15_000);
 
+  it("rejects an installed cleanup service unit whose bytes were modified after being written", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_CORRUPT_CLEANUP_UNIT: "1" });
+
+    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("installed cleanup unit hash mismatch");
+  }, 20_000);
+
   it("replaces an existing cleanup timer installation idempotently", () => {
     const fixture = createFixture();
     const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
