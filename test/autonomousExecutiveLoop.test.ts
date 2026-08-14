@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
+import { openDb } from "../src/db.js";
 import {
   AutonomousGoalCoordinator,
   InMemoryAutonomousGoalStore,
+  SqliteAutonomousGoalStore,
   type AutonomousCycleResult,
 } from "../src/autonomousExecutiveLoop.js";
 
@@ -38,7 +43,9 @@ describe("autonomous executive loop spike", () => {
   });
 
   it("deduplicates a wake and preserves successor intent across coordinator restart", async () => {
-    const store = new InMemoryAutonomousGoalStore();
+    const dbPath = join(tmpdir(), `autonomous-goal-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(dbPath, { serviceId: "test-autonomous", runId: "test-process" });
+    const store = new SqliteAutonomousGoalStore(db);
     const first = new AutonomousGoalCoordinator(store, { runId: (cycle) => `run-${cycle}` });
     store.createGoal({ goalId: "goal-2", prompt: "Make progress", constraints: [] });
     expect(store.scheduleWake("goal-2", { key: "goal-2:wake:0", reason: "initial" })).toBe(true);
@@ -50,12 +57,23 @@ describe("autonomous executive loop spike", () => {
       nextWakeReason: "restart-safe successor",
     }));
 
-    const restarted = new AutonomousGoalCoordinator(store, { runId: (cycle) => `run-${cycle}` });
+    db.close();
+    const reopened = openDb(dbPath, { serviceId: "test-autonomous", runId: "test-process-restarted" });
+    const restarted = new AutonomousGoalCoordinator(new SqliteAutonomousGoalStore(reopened), { runId: (cycle) => `run-${cycle}` });
     await restarted.runNext("goal-2", async () => ({ status: "complete", evidence: "second result" }));
 
-    expect(store.listRuns("goal-2")).toHaveLength(2);
-    expect(store.getGoal("goal-2").status).toBe("complete");
-    expect(store.listWakeKeys("goal-2")).toEqual(["goal-2:wake:0", "goal-2:wake:1"]);
+    expect(reopened.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:goal-2")).toEqual({ count: 2 });
+    expect(reopened.raw.prepare("SELECT status FROM autonomous_spike_goals WHERE goal_id = ?").get("goal-2")).toEqual({ status: "complete" });
+    expect(reopened.raw.prepare("SELECT wake_key FROM autonomous_spike_wakes WHERE goal_id = ? ORDER BY wake_key").all("goal-2")).toEqual([
+      { wake_key: "goal-2:wake:0" },
+      { wake_key: "goal-2:wake:1" },
+    ]);
+    expect(reopened.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at").all("autonomous:goal-2")).toEqual([
+      { status: "done" },
+      { status: "done" },
+    ]);
+    reopened.close();
+    rmSync(dbPath, { force: true });
   });
 
   it("stops at the cycle bound and records a mechanical budget outcome", async () => {
