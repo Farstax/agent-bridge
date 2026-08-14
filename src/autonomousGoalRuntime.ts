@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
-import { openDb } from "./db.js";
+import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
 import type { BotKind } from "./types.js";
@@ -255,7 +255,7 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
 }
 
 export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<{ providerBoundaryReached: boolean; status: AutonomousGoalStatus }> {
-  const db = openDb(databasePath, { serviceId: "autonomous-live-smoke", runId: randomUUID() });
+  const db = openProductionDb(databasePath, { serviceId: "autonomous-live-smoke", runId: randomUUID() });
   const command = process.env.AGENT_BRIDGE_AUTONOMOUS_PROVIDER_COMMAND ?? "claude";
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
   const engine = new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
