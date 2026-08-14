@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createClaudeAnswerPresentationDecoder } from "../src/providers/claudeAnswerPresentation.js";
 
 const textDelta = (text: string) => JSON.stringify({
@@ -11,6 +13,17 @@ const textDelta = (text: string) => JSON.stringify({
 });
 
 describe("Claude answer presentation decoder", () => {
+  it("decodes the sanitized live fresh and resumed fixtures", () => {
+    for (const fixture of ["claude-2.1.231-fresh.jsonl", "claude-2.1.231-resumed.jsonl"]) {
+      const deltas: string[] = [];
+      const decoder = createClaudeAnswerPresentationDecoder((delta) => deltas.push(delta));
+      decoder.push(readFileSync(join(process.cwd(), "test/fixtures/issue388", fixture), "utf8"));
+      decoder.finish();
+      expect(decoder.enabled).toBe(true);
+      expect(deltas.join("")).toMatch(/CLAUDE_/);
+    }
+  });
+
   it("emits only text deltas and handles JSONL records split across chunks", () => {
     const deltas: string[] = [];
     const decoder = createClaudeAnswerPresentationDecoder((delta) => deltas.push(delta));

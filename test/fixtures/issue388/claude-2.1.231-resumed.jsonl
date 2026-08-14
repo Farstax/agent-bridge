@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"fixture-claude-resumed"}
+{"type":"stream_event","event":{"type":"message_start","message":{"role":"assistant","content":[]}}}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"C"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"LAUDE_RESUMED_OK."}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"CLAUDE_RESUMED_OK."}]}}
+{"type":"result","subtype":"success","result":"CLAUDE_RESUMED_OK.","session_id":"fixture-claude-resumed"}

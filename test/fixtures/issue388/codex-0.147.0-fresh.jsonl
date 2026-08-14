@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"fixture-codex-fresh"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"CODEX_PROBE_ALPHA.\nCODEX_PROBE_BETA."}}
+{"type":"turn.completed","usage":{"output_tokens":18}}
