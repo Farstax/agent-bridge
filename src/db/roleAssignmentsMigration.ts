@@ -88,7 +88,24 @@ function assertExactTableConstraints(raw: Database.Database, table: string, expe
   }
 }
 
-export function assertExactRoleAssignmentSchema(raw: Database.Database): void {
+/**
+ * Production validation now requires the removed role-assignment tables to be
+ * absent. The historical schema-v3 migration passes `historical = true` so it
+ * can still validate the exact legacy shape before later migrations advance
+ * to v9 and remove it.
+ */
+export function assertExactRoleAssignmentSchema(raw: Database.Database, historical = false): void {
+  if (!historical) {
+    const existing = raw.prepare(`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table' AND name IN (?, ?)
+      ORDER BY name
+    `).all(...ROLE_TABLES) as Array<{ name: string }>;
+    if (existing.length === 0) return;
+    throw new Error(`unexpected role_assignments schema: legacy Worker table(s) remain: ${existing.map((row) => row.name).join(",")}`);
+  }
+
   assertExactColumns(raw, "role_assignment_revisions", REVISION_COLUMNS);
   assertExactColumns(raw, "role_assignments", ASSIGNMENT_COLUMNS);
   const revisionIndexes = indexSignatures(raw, "role_assignment_revisions");
@@ -153,5 +170,5 @@ export function applyRoleAssignmentsMigration(raw: Database.Database): void {
   // The assertions execute inside the migration transaction. A defect in the
   // migration DDL leaves user_version and every migration-created object
   // unchanged rather than blessing an incomplete current schema.
-  assertExactRoleAssignmentSchema(raw);
+  assertExactRoleAssignmentSchema(raw, true);
 }
