@@ -15,6 +15,16 @@ import { parseMarkdownToIR, renderMarkerString, TELEGRAM_HTML_MARKERS, markdownT
 const MAX_TELEGRAM_TEXT = 4096;
 const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
 
+export class PreviewCleanupError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("failed to remove an abandoned answer preview");
+    this.name = "PreviewCleanupError";
+    this.cause = cause;
+  }
+}
+
 function truncate(text: string): string {
   return text.length > MAX_TELEGRAM_TEXT ? text.slice(-MAX_TELEGRAM_TEXT) : text;
 }
@@ -320,8 +330,8 @@ export async function sendMessageWithProgress({
     if (answerPreviewMessageId == null || typeof client.deleteMessage !== "function") return;
     try {
       await client.deleteMessage({ chat_id: chatId, message_id: answerPreviewMessageId });
-    } catch {
-      // The provider attempt is already abandoned; cleanup is best effort.
+    } catch (error) {
+      throw new PreviewCleanupError(error);
     }
     answerPreviewMessageId = null;
   };

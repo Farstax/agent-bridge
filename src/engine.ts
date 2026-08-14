@@ -43,7 +43,7 @@ import {
   type RunOwnedProcessState,
 } from "./turnContinuationProcesses.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
-import { sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
+import { PreviewCleanupError, sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
 import { handleCommand, isBridgeCommand, buildTelegramCommands, isAntigravityNarrationVisible, compactInProgressSettingKey } from "./commands.js";
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
@@ -1092,6 +1092,21 @@ export class BridgeEngine {
         return "fenced";
       }
       console.error(`[${this.kind}] prompt execution failed`, error);
+      if (error instanceof PreviewCleanupError) {
+        console.error(`[${this.kind}] abandoned preview cleanup failed; suppressing terminal output`, error.cause);
+        const terminalPendingIds = [...new Set([...activePendingIds, ...continuationPendingIds])];
+        if (terminalPendingIds.length > 0) {
+          const claimedRetired = this.db.completePendingMsgs(laneHandle!, terminalPendingIds);
+          if (!claimedRetired && !this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds)) {
+            console.error(`[${this.kind}] abandoned preview cleanup could not retire owned pending rows`);
+            return "fenced";
+          }
+        }
+        // The provider turn failed, but its admitted queue row was handled
+        // terminally: never let durable recovery replay a turn whose visible
+        // preview can no longer be reconciled.
+        return "committed";
+      }
       if (error instanceof CliTimeoutError) {
         // A configured timeout follows the /stop cancellation path: discard
         // pending work for this lane rather than letting the completion-drain

@@ -25,6 +25,64 @@ function makeMockClient() {
 }
 
 describe("interactive capacity fallback durable admission", () => {
+  it("suppresses terminal error output when an abandoned Claude preview cannot be deleted", async () => {
+    const db = openDb(":memory:");
+    const exhaustedChats = new Set<string>();
+    const client = makeMockClient();
+    client.deleteMessage.mockRejectedValue(new Error("Telegram delete failed"));
+    const fallbackChain = new WorkerFallbackChain(["claude", "codex"], db);
+    const notifications: string[] = [];
+    const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+      options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
+      throw new Error("rate limit capacity exhausted");
+    });
+    const codexRun = vi.fn().mockResolvedValue([
+      JSON.stringify({ type: "thread.started", thread_id: "must-not-run" }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "must not be published" } }),
+    ].join("\n"));
+    const makeEngine = (kind: "claude" | "codex", runCli: any) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        asyncEnabled: false,
+        pollIntervalMs: 1000,
+        hooks: { onCapacityExhausted: async (chatKey: string) => { exhaustedChats.add(chatKey); } },
+      },
+      db,
+      client,
+      { runCli },
+    );
+    const engines = { claude: makeEngine("claude", claudeRun), codex: makeEngine("codex", codexRun) };
+    const deps = { engines, fallbackChain, exhaustedChats, db, notify: async (message: string) => { notifications.push(message); } };
+
+    try {
+      setUserCliPreference(db, "100", "claude");
+      for (const engine of Object.values(engines)) {
+        engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+      }
+
+      await dispatchInteractiveWithFallback({
+        update_id: 9098,
+        message: { message_id: 86, chat: { id: 100, type: "private" }, from: { id: 42, first_name: "Test" }, text: "answer this" },
+      }, "100", deps);
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      expect(claudeRun).toHaveBeenCalledTimes(1);
+      expect(codexRun).not.toHaveBeenCalled();
+      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+      expect(client.sendMessage.mock.calls[0][0].text).toContain("stale Claude preview");
+      expect(notifications).toEqual([]);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it("removes an abandoned Claude answer preview before publishing the fallback answer", async () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
