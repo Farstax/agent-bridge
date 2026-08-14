@@ -153,7 +153,7 @@ Update documentation that the shipped change makes inaccurate or incomplete. Do 
 
 ## Owner release shorthand — "release it"
 
-When the repository owner says **"release it"**, treat that as authorization to qualify, publish, deploy, and verify the current qualified `main` without another routine approval.
+When the repository owner says **"release it"**, treat that as authorization to qualify, publish, deploy, and verify the current `main` without another routine approval.
 
 Unless the owner explicitly narrows or extends it, "release it" means:
 
