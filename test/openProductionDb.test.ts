@@ -105,32 +105,6 @@ describe("Issue #135 Phase 4C.2: openProductionDb()", () => {
     }
   });
 
-  it("fails closed when a current-version database has a malformed role-assignment table", () => {
-    const dir = tempDir("malformed-role-schema");
-    try {
-      const dbPath = join(dir, "bridge.sqlite");
-      openDb(dbPath).close();
-
-      const raw = new Database(dbPath);
-      raw.exec(`
-        DROP TABLE role_assignments;
-        CREATE TABLE role_assignments (
-          revision_id INTEGER NOT NULL,
-          role TEXT NOT NULL,
-          primary_cli TEXT NOT NULL,
-          PRIMARY KEY(revision_id, role)
-        );
-      `);
-      raw.close();
-      const beforeHash = createHash("sha256").update(readFileSync(dbPath)).digest("hex");
-
-      expect(() => openProductionDb(dbPath)).toThrow(/unexpected role_assignments schema/i);
-      assertNoSidecarsAndNoWrite(dbPath, beforeHash);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it("fails closed with MigrationRequiredError for a legacy/migratable version, without WAL mode or mutation", () => {
     const dir = tempDir("legacy");
     try {

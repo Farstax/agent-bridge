@@ -32,10 +32,8 @@ agent path. The receipt is not a job queue.
 - Install and upgrade paths expose only active Telegram, Discord, health, and
   cleanup services.
 
-Historical `work_items`, `work_jobs`, approval, GitHub-link, feature-plan, and
-role-assignment tables may remain in old SQLite files. They are migration
-compatibility data. Current runtime code does not create, claim, or execute
-them.
+Schema version 9 removes the obsolete Engineering Worker tables. Current
+runtime code does not create, claim, or execute those records.
 
 ## Non-goals
 

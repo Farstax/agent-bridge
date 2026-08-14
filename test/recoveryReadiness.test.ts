@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb, type BridgeDb } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 
 const NOW = Date.parse("2026-07-26T12:00:00.000Z");
 
@@ -166,7 +167,7 @@ describe("recovery-readiness reconciliation guards", () => {
 
   it("only exposes reconciliation_audit through the migration-owned schema", () => {
     const bridge = open();
-    expect(Number(bridge.raw.pragma("user_version", { simple: true }))).toBe(8);
+    expect(Number(bridge.raw.pragma("user_version", { simple: true }))).toBe(CURRENT_SCHEMA_VERSION);
     expect(bridge.raw.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'"
     ).get()).toBeTruthy();

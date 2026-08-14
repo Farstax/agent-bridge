@@ -25,22 +25,11 @@ describe("database schema versioning", () => {
       expect(db.raw.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
 
       // Historical repairs actually ran: execution_locks gained acquisition_id,
-      // work_items/work_jobs CHECK constraints were widened, bridge_state and
-      // github_links gained their later columns, and the conversation/memory
-      // tables introduced after versioning now exist.
+      // bridge_state gained provider session columns, and the
+      // conversation/memory tables introduced after versioning now exist.
       const lockColumns = (db.raw.prepare(`PRAGMA table_info(execution_locks)`).all() as Array<{ name: string }>)
         .map((c) => c.name);
       expect(lockColumns).toContain("acquisition_id");
-
-      const workItemsSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'`
-      ).get() as { sql: string }).sql;
-      expect(workItemsSql).toContain("'refactor'");
-
-      const workJobsSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='work_jobs'`
-      ).get() as { sql: string }).sql;
-      expect(workJobsSql).toContain("'orchestrated_task'");
 
       const bridgeStateColumns = (db.raw.prepare(`PRAGMA table_info(bridge_state)`).all() as Array<{ name: string }>)
         .map((c) => c.name);
@@ -51,35 +40,18 @@ describe("database schema versioning", () => {
       }
       expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'prompts'").get()).toBeUndefined();
 
-      // The linked work_items -> work_jobs -> approvals/github_links chain
-      // survived the rename-recreate repairs intact (foreign_keys is
-      // suspended for the whole migration, not left enabled mid-rename).
-      expect(db.raw.prepare("SELECT id, title FROM work_items WHERE id = 1").get()).toEqual({ id: 1, title: "Legacy work item" });
-      expect(db.raw.prepare("SELECT id, work_item_id FROM work_jobs WHERE id = 1").get()).toEqual({ id: 1, work_item_id: 1 });
-      expect(db.raw.prepare("SELECT id, work_item_id, job_id FROM approvals WHERE id = 1").get()).toEqual({ id: 1, work_item_id: 1, job_id: 1 });
-      expect(db.raw.prepare("SELECT id, pr_number FROM github_links WHERE id = 1").get()).toEqual({ id: 1, pr_number: 147 });
+      for (const table of [
+        "work_items", "work_jobs", "approvals", "github_links", "feature_plans",
+        "work_item_plans", "role_assignments", "role_assignment_revisions",
+      ]) {
+        expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeUndefined();
+      }
       expect(db.raw.pragma("foreign_keys", { simple: true })).toBe(1);
 
       // foreign_key_check reports zero violations post-migration — proves
       // the rename-recreate repairs didn't just avoid throwing, but left a
       // referentially sound database.
       expect(db.raw.pragma("foreign_key_check")).toEqual([]);
-
-      // The rebuilt tables' FK clauses target the final table names
-      // (work_items, work_jobs), not a leftover *_migrate_tmp reference —
-      // proves legacy_alter_table's reference-preservation actually landed
-      // on the real target, not a temporary intermediate.
-      const workJobsFkSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='work_jobs'`
-      ).get() as { sql: string }).sql;
-      expect(workJobsFkSql).toContain("REFERENCES work_items(id)");
-      expect(workJobsFkSql).not.toContain("_migrate_tmp");
-      const approvalsFkSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'`
-      ).get() as { sql: string }).sql;
-      expect(approvalsFkSql).toContain("REFERENCES work_items(id)");
-      expect(approvalsFkSql).toContain("REFERENCES work_jobs(id)");
-      expect(approvalsFkSql).not.toContain("_migrate_tmp");
 
       // No migration temp/scratch tables remain.
       const tableNames = (db.raw.prepare(
@@ -253,7 +225,9 @@ it("rolls back prompt-table retirement when an unexpected row exists", () => {
 
       let caught: unknown;
       try {
-        applyMigrations(raw);
+        applyMigrationsUpTo(raw, [
+          { version: 1, name: "legacy-compatible-baseline", up: applyLegacyCompatibleBaseline },
+        ], 1);
       } catch (err) {
         caught = err;
       }
