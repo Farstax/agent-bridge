@@ -230,8 +230,9 @@ describe("autonomous goal production runtime", () => {
     expect(reopened.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 3 });
     expect(reopened.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:release-readiness")).toEqual({ count: 3 });
     expect(reopened.raw.prepare("SELECT DISTINCT status FROM bridge_runs WHERE chat_id = ?").all("autonomous:release-readiness")).toEqual([{ status: "done" }]);
-    expect(reopened.raw.prepare("SELECT COUNT(*) AS count FROM work_items").get()).toEqual({ count: 0 });
-    expect(reopened.raw.prepare("SELECT COUNT(*) AS count FROM work_jobs").get()).toEqual({ count: 0 });
+    for (const table of ["work_items", "work_jobs"]) {
+      expect(reopened.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeUndefined();
+    }
 
     reopened.close();
     removeDb(dbPath);
