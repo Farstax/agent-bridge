@@ -125,6 +125,16 @@ describe("1. env-scrub parity", () => {
   });
 });
 
+describe("provider output observation", () => {
+  it("forwards provider output chunks to the caller without interpreting them", async () => {
+    const chunks: string[] = [];
+    await runCliAsync(process.execPath, ["-e", "process.stdout.write('provider-chunk')"], cliTestCwd, {
+      onProviderOutputChunk: (chunk) => chunks.push(chunk),
+    } as CliOptions);
+    expect(chunks.join(""), "provider output callback should receive the complete stdout stream").toContain("provider-chunk");
+  });
+});
+
 describe("2. Codex disabled-tool flag parity", () => {
   it("runCli and runCliAsync normalize --disable flags identically for a codex-named command", async () => {
     const echoArgv = "process.stdout.write(JSON.stringify(process.argv.slice(1)))";
