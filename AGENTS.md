@@ -1,3 +1,19 @@
+# Core Architecture Principle — Native CLI First
+
+Agent Bridge coordinates capable native agent CLIs. It is **not** a competing agent runtime.
+
+When designing, implementing, or reviewing changes:
+
+- Prefer provider-native capabilities for reasoning, tools, skills, subagents, and provider-specific execution.
+- Keep Agent Bridge focused on cross-provider or durable coordination the CLIs cannot provide themselves: Run identity and ownership, routing/failover, continuation and restart recovery, cancellation/fencing, delivery, idempotency, and hard mechanical safety boundaries.
+- Before adding Bridge-side orchestration, scheduling, agent hierarchies, tool frameworks, or execution logic, ask: **can the native CLI already do this?**
+- If yes, expose, configure, or stitch together that native capability instead of duplicating it.
+- New abstractions should make native agents more capable together, not make Agent Bridge a competing agent framework.
+
+Add Bridge-owned machinery only when a concrete cross-provider, durability, lifecycle, or safety requirement cannot be met at the native CLI boundary.
+
+---
+
 # Platform Infrastructure Ownership
 
 | Component | Host | Managed by | Keys/Access |
