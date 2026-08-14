@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { LEGACY_WORKER_TABLES } from "./dropLegacyWorkerTablesMigration.js";
 
 const REVISION_COLUMNS = [
   "id",
@@ -89,20 +90,23 @@ function assertExactTableConstraints(raw: Database.Database, table: string, expe
 }
 
 /**
- * Production validation now requires the removed role-assignment tables to be
- * absent. The historical schema-v3 migration passes `historical = true` so it
- * can still validate the exact legacy shape before later migrations advance
- * to v9 and remove it.
+ * Production validation now requires every removed Worker table to be absent.
+ * The historical schema-v3 migration passes `historical = true` so it can
+ * still validate the exact role-assignment shape before later migrations
+ * advance to v9 and remove all Worker persistence.
  */
 export function assertExactRoleAssignmentSchema(raw: Database.Database, historical = false): void {
   if (!historical) {
+    const placeholders = LEGACY_WORKER_TABLES.map(() => "?").join(", ");
     const existing = raw.prepare(`
       SELECT name
       FROM sqlite_master
-      WHERE type = 'table' AND name IN (?, ?)
+      WHERE type = 'table' AND name IN (${placeholders})
       ORDER BY name
-    `).all(...ROLE_TABLES) as Array<{ name: string }>;
+    `).all(...LEGACY_WORKER_TABLES) as Array<{ name: string }>;
     if (existing.length === 0) return;
+    // Keep the historical error prefix because production/schema tests and
+    // rollout diagnostics already identify this guard by that contract.
     throw new Error(`unexpected role_assignments schema: legacy Worker table(s) remain: ${existing.map((row) => row.name).join(",")}`);
   }
 
