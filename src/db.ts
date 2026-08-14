@@ -55,7 +55,7 @@ export interface ControlledRolloutReconciliationOptions {
 import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS } from "./repositories/conversationRepository.js";
 export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./repositories/conversationRepository.js";
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
-import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "./db/roleAssignmentsMigration.js";
+import { assertDatabaseForeignKeyIntegrity } from "./db/roleAssignmentsMigration.js";
 import { classifyLifecycleState } from "./rolloutLifecycle.js";
 
 // Sentinel row keys stored in bridge_state for non-chat state
@@ -274,7 +274,6 @@ export function openProductionDb(dbPath: string, options: OpenDbOptions = {}): B
     throw new MigrationRequiredError(schemaVersion);
   }
   try {
-    assertExactRoleAssignmentSchema(raw);
     assertDatabaseForeignKeyIntegrity(raw);
     assertProductionInstallation(raw, dbPath, options);
   } catch (error) {

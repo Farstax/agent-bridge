@@ -12,10 +12,10 @@ import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { BridgeDb, openDb, openProductionDb } from "../src/db.js";
 import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
-import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "../src/db/roleAssignmentsMigration.js";
+import { assertDatabaseForeignKeyIntegrity } from "../src/db/roleAssignmentsMigration.js";
 import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from "../src/db/schemaContract.js";
 
-/** The active database roles. Historical Worker databases remain readable through legacy migrations. */
+/** The active database roles. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive"]);
 
 type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "relocate" | "bootstrap";
@@ -64,7 +64,10 @@ interface DbEvidence {
 }
 
 const REQUIRED_TABLES = new Set(["bridge_state", "pending_messages", "settings"]);
-const CURRENT_ROLE_TABLES = ["role_assignment_revisions", "role_assignments"] as const;
+const LEGACY_WORKER_TABLES = new Set([
+  "work_items", "work_jobs", "approvals", "github_links", "feature_plans",
+  "work_item_plans", "role_assignments", "role_assignment_revisions",
+]);
 const LEGACY_PENDING_COLUMNS = new Set([
   "id", "chat_key", "prompt", "chat_id", "thread_id", "chat_type", "user_id", "created_at",
 ]);
@@ -288,7 +291,9 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
       throw new Error(`invalid schema version ${userVersion} for ${path}`);
     }
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
-    const unknownTables = tables.filter((table) => !new Set(canonicalSchemaTablesForRole(role)).has(table));
+    const canonicalTables = new Set(canonicalSchemaTablesForRole(role));
+    const unknownTables = tables.filter((table) => !canonicalTables.has(table)
+      && !(userVersion < CURRENT_SCHEMA_VERSION && LEGACY_WORKER_TABLES.has(table)));
     const missingTables = [...REQUIRED_TABLES].filter((table) => !tables.includes(table));
     if (unknownTables.length > 0 || missingTables.length > 0) {
       throw new Error(`unknown schema for ${path}: unknown=[${unknownTables.join(",")}] missing=[${missingTables.join(",")}]`);
@@ -300,12 +305,9 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
     const lockColumns = tables.includes("execution_locks") ? columnNames(db, "execution_locks") : [];
     const currentPending = sameSet(pendingColumns, CURRENT_PENDING_COLUMNS);
     const currentLocks = sameSet(lockColumns, CURRENT_LOCK_COLUMNS);
-    let currentRoleTables = CURRENT_ROLE_TABLES.every((table) => tables.includes(table));
     if (userVersion === CURRENT_SCHEMA_VERSION) {
       try {
-        assertExactRoleAssignmentSchema(db);
         assertDatabaseForeignKeyIntegrity(db);
-        currentRoleTables = true;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         const phase = requireCurrent ? " after migration" : "";
@@ -314,7 +316,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
     }
     const schema = userVersion === 0
       ? "legacy"
-      : currentPending && currentLocks && currentRoleTables
+      : currentPending && currentLocks
         ? "current"
       : sameSet(pendingColumns, LEGACY_PENDING_COLUMNS) && lockColumns.length === 0
         ? "legacy"
