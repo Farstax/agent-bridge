@@ -41,6 +41,13 @@ export class AutonomousGoalLaneUnavailableError extends Error {
   }
 }
 
+export class AutonomousGoalProgressError extends Error {
+  constructor(goalId: string) {
+    super(`active autonomous goal ${goalId} has no pending or recoverable autonomous wake`);
+    this.name = "AutonomousGoalProgressError";
+  }
+}
+
 function goalChatKey(goalId: string): string {
   return `${AUTONOMOUS_RUN_CHAT_KEY_PREFIX}${goalId}`;
 }
@@ -164,16 +171,48 @@ function pendingWake(db: BridgeDb, goalId: string): any | null {
       AND json_extract(payload_json, '$.goalId') = ? ORDER BY id LIMIT 1`).get(goalId) ?? null;
 }
 
+function recoverableWake(db: BridgeDb, goalId: string): any | null {
+  return db.raw.prepare(`SELECT * FROM event_receipts
+    WHERE source = 'autonomous' AND status = 'run_created'
+      AND json_extract(payload_json, '$.goalId') = ? ORDER BY id LIMIT 1`).get(goalId) ?? null;
+}
+
+function boundedEvidence(goal: AutonomousGoal, evidence: string): string[] {
+  const nextEvidence: string[] = [];
+  for (const item of [...goal.evidence, evidence].reverse()) {
+    const candidate = [...nextEvidence, item];
+    if (candidate.join("\n").length > MAX_TOTAL_EVIDENCE_CHARS) break;
+    nextEvidence.unshift(item);
+  }
+  return nextEvidence;
+}
+
+/**
+ * A claimed wake is deliberately never replayed after restart: the provider
+ * boundary may already have been crossed before the process died. Reconcile
+ * the orphaned ordinary Run and terminate the goal with bounded evidence.
+ */
+function recoverUnreconciledWake(db: BridgeDb, goal: AutonomousGoal, receipt: any): void {
+  db.runInTransaction(() => {
+    const run = receipt.run_id ? db.getRun(receipt.run_id) : null;
+    const evidence = "recovered claimed autonomous wake without reconciliation; provider result not replayed";
+    const status = run?.status === "cancelled" ? "cancelled" : "blocked";
+    if (run && run.status !== "cancelled") {
+      db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ? WHERE run_id = ? AND status IN ('running', 'done')")
+        .run("autonomous wake orphaned during restart", run.run_id);
+    }
+    db.raw.prepare("UPDATE event_receipts SET status = ?, error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'")
+      .run(status === "cancelled" ? "cancelled" : "failed", "restart_recovery", receipt.run_id ?? null, receipt.id);
+    db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
+      .run(goal.cycle + 1, status, JSON.stringify(boundedEvidence(goal, evidence)), goal.goalId);
+  });
+}
+
 function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: string, result: AutonomousCycleResult | null, error?: string): void {
   db.runInTransaction(() => {
     const run = db.getRun(runId);
     const evidence = result?.evidence ?? error ?? "malformed provider output";
-    const nextEvidence: string[] = [];
-    for (const item of [...goal.evidence, evidence].reverse()) {
-      const candidate = [...nextEvidence, item];
-      if (candidate.join("\n").length > MAX_TOTAL_EVIDENCE_CHARS) break;
-      nextEvidence.unshift(item);
-    }
+    const nextEvidence = boundedEvidence(goal, evidence);
     if (run?.status === "cancelled") {
       db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?").run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
       db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
@@ -199,19 +238,26 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
   });
 }
 
-export async function runNextAutonomousGoal(db: BridgeDb, goalId: string, engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<void> {
+export async function runNextAutonomousGoal(db: BridgeDb, goalId: string, engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<boolean> {
   const goal = getAutonomousGoal(db, goalId);
-  if (goal.status !== "active") return;
+  if (goal.status !== "active") return false;
   const wake = pendingWake(db, goalId);
-  if (!wake) return;
+  const claimed = recoverableWake(db, goalId);
+  if (!wake && !claimed) return false;
   const laneHandle: ExecutionLaneHandle | null = db.acquireLock(AUTONOMOUS_RUN_SURFACE, goalChatKey(goalId));
   if (!laneHandle) throw new AutonomousGoalLaneUnavailableError(goalId);
   try {
     const current = getAutonomousGoal(db, goalId);
+    const currentClaimed = recoverableWake(db, goalId);
+    if (current.status !== "active") return false;
+    if (currentClaimed) {
+      recoverUnreconciledWake(db, current, currentClaimed);
+      return true;
+    }
     const currentWake = pendingWake(db, goalId);
-    if (current.status !== "active" || !currentWake) return;
+    if (!currentWake) return false;
     const runId = claimWakeAndRun(db, goalId, currentWake.id);
-    if (!runId) return;
+    if (!runId) return false;
     const eventStore = new EventStore(db, runId);
     const input: SurfaceNeutralTurnInput = {
       prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason),
@@ -235,13 +281,17 @@ export async function runNextAutonomousGoal(db: BridgeDb, goalId: string, engine
       eventStore.finalize();
     }
     reconcile(db, current, currentWake, runId, parsed, error);
+    return true;
   } finally {
     db.unlock(laneHandle);
   }
 }
 
 export async function drainAutonomousGoal(db: BridgeDb, goalId: string, engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<void> {
-  while (getAutonomousGoal(db, goalId).status === "active") await runNextAutonomousGoal(db, goalId, engine);
+  while (getAutonomousGoal(db, goalId).status === "active") {
+    const progressed = await runNextAutonomousGoal(db, goalId, engine);
+    if (!progressed && getAutonomousGoal(db, goalId).status === "active") throw new AutonomousGoalProgressError(goalId);
+  }
 }
 
 export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], engine?: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<AutonomousGoal> {
