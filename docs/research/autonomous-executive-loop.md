@@ -53,6 +53,19 @@ stream JSON for continuation work, Codex uses JSON, and Antigravity has its
 own stream output handling. The spike does not flatten those protocols into a
 Bridge subagent API.
 
+On 2026-08-14 the installed CLIs were inspected in a disposable workspace:
+
+| CLI | Observed native capability | Bridge boundary implication |
+| --- | --- | --- |
+| Claude Code 2.1.231 | `--agents`, `--bg/--background`, `--forward-subagent-text`, and `agents --json`; the machine-readable agent listing completed successfully | Keep agent/team topology inside the Claude Run; Bridge only owns the Run and stream protocol |
+| Codex CLI 0.147.0 | `exec --json` emits JSONL and `resume` preserves a provider session | Keep planning and delegation inside the Codex session; Bridge owns session identity and Run recovery |
+| Agy 1.1.13 | `--output-format stream-json`, `--agent`, and `agent`/`agents` commands are present | Preserve Agy's native agent/output contract; do not infer a shared subagent model |
+
+The Claude agent listing returned an empty configured-agent list, which is a
+valid capability result rather than evidence of a configured team. This smoke
+checked the installed provider contracts without starting a model turn,
+changing a provider session, or mutating production state.
+
 ## Deterministic evidence
 
 `test/autonomousExecutiveLoop.test.ts` proves:
