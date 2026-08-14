@@ -505,6 +505,9 @@ describe("guarded rollout helper", () => {
     const systemdDir = join(fixture.root, "etc", "systemd", "system");
     expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8")).toContain("BRIDGE_CURRENT_RELEASE_DIR");
     expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), "utf8")).toContain("OnCalendar=");
+    const installedCleanupService = readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8");
+    expect(installedCleanupService).toContain("User=rollout-test");
+    expect(installedCleanupService).not.toContain("BRIDGE_USER");
     expect(existsSync(join(fixture.root, "daemon-reloaded"))).toBe(true);
     expect(existsSync(join(fixture.root, "cleanup-timer-enabled"))).toBe(true);
     expect(existsSync(join(fixture.root, "cleanup-timer-active"))).toBe(true);

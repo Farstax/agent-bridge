@@ -519,7 +519,7 @@ install_cleanup_timer() {
     if "$systemctl_cmd" is-enabled --quiet "$unit"; then cleanup_timer_was_enabled[$unit]=1; else cleanup_timer_was_enabled[$unit]=0; fi
     if "$systemctl_cmd" is-active --quiet "$unit"; then cleanup_timer_was_active[$unit]=1; else cleanup_timer_was_active[$unit]=0; fi
     temporary="$(/usr/bin/mktemp --tmpdir="$systemd_dir" ".${unit}.XXXXXX")"
-    /usr/bin/cp -f -- "$source" "$temporary"
+    /usr/bin/sed -e "s/BRIDGE_USER/${runtime_user}/g" "$source" > "$temporary"
     /usr/bin/chmod 0644 "$temporary"
     /usr/bin/mv -f -- "$temporary" "$destination"
   done
@@ -533,7 +533,7 @@ install_cleanup_timer() {
   schedule="$($systemctl_cmd show "$CLEANUP_TIMER_UNIT" --property=TimersCalendar --value)"
   [[ -n "$schedule" && "$schedule" != "n/a" ]] || die "cleanup timer schedule is missing"
   for unit in "$CLEANUP_SERVICE_UNIT" "$CLEANUP_TIMER_UNIT"; do
-    [[ "$(/usr/bin/sha256sum "$project_dir/systemd/$unit" | /usr/bin/cut -d' ' -f1)" == "$(/usr/bin/sha256sum "$systemd_dir/$unit" | /usr/bin/cut -d' ' -f1)" ]] || die "installed cleanup unit hash mismatch: $unit"
+    [[ "$(/usr/bin/sed -e "s/BRIDGE_USER/${runtime_user}/g" "$project_dir/systemd/$unit")" == "$(cat "$systemd_dir/$unit")" ]] || die "installed cleanup unit content mismatch: $unit"
   done
   cleanup_timer_completed=1
   echo "cleanup timer installed and verified schedule=$schedule"
