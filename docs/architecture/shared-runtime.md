@@ -6,7 +6,7 @@ Canonical architecture documentation.
 
 ## Purpose
 
-The Shared Runtime provides common services consumed by both the Companion Runtime and the Engineering Worker.
+The Shared Runtime provides common services consumed by conversational and unattended Run paths.
 
 It prevents duplication while keeping product-specific domain models separate.
 
@@ -30,12 +30,10 @@ Shared Runtime may provide:
 ## Dependency Direction
 
 ```text
-Companion Runtime ─┐
-                   ├── Shared Runtime
-Engineering Worker ┘
+Companion and event Run paths ── Shared Runtime
 ```
 
-Shared Runtime must not depend on Companion Runtime or Engineering Worker internals.
+Shared Runtime must not depend on surface-specific runtime internals.
 
 Product-specific concepts must remain outside Shared Runtime unless they are represented as neutral interfaces or metadata.
 
@@ -54,7 +52,7 @@ Shared Runtime must not own:
 
 - Telegram-specific conversational command behavior
 - Discord-specific conversational command behavior
-- worker work item lifecycles
+- Worker work item lifecycles. These are legacy database data only.
 - TDD phases
 - GitHub PR state machines
 - merge approval state machines
@@ -82,8 +80,8 @@ Shared Runtime may provide neutral services for:
 - building provider-agnostic handoff context;
 - tracking one-time handoff state.
 
-The Companion Runtime and Engineering Worker decide when those services are invoked and which compact profile to use.
+The Companion Runtime and event Run paths decide when those services are invoked and which compact profile to use.
 
-Shared Runtime must not own Companion-specific chat behavior or Engineering Worker-specific job/PR/review/merge lifecycles.
+Shared Runtime must not own surface-specific chat behavior or engineering workflow lifecycles. Provider agents and Skills own that work.
 
 The canonical memory and handoff architecture is `docs/architecture/memory-and-handoff.md`.

@@ -1,8 +1,12 @@
 # Issue 347: turns, skills, runs, and provider-native orchestration
 
-Status: research result for issue #347
+Status: completed research result for issue #347. The Worker-removal work in the
+current implementation supersedes the staged-subtraction wording below.
 
 Date: 2026-08-12
+
+Current implementation note: historical Worker owners and workflow sections
+below describe the pre-removal state. They are retained as decision evidence.
 
 ## Decision
 
@@ -10,7 +14,7 @@ Agent Bridge can become smaller around durable conversation evidence and
 execution safety. The smaller model is viable, but this is a staged subtraction
 programme. It is not a reason to delete the current worker in one change.
 
-Keep these owners:
+The accepted architecture is now implemented. Keep these owners:
 
 ```text
 surface-neutral Workstream
@@ -27,7 +31,7 @@ restart reconciliation, cancellation, queue admission, Git safety, CI evidence,
 human approvals, and artifact correlation. The provider agent should own task
 decomposition and native subagent reasoning.
 
-The current `work_items` and `work_jobs` model remains a compatibility and
+The historical `work_items` and `work_jobs` model remains a compatibility and
 unattended-work boundary for now. It should not grow into a second general
 workflow engine. Future changes should reduce it to intake, execution attempts,
 checkpoints, and external artifact references where the invariant cannot live in

@@ -12,7 +12,7 @@ last_validated_against: issue-69
 
 This document defines the intended memory and provider-handoff architecture for Agent Bridge.
 
-It supersedes the post-turn memory extractor direction and makes compaction the single durable-memory distillation point for both the Companion Runtime and Engineering Worker.
+It supersedes the post-turn memory extractor direction and makes compaction the single durable-memory distillation point for conversational and unattended Run paths.
 
 **Implementation status:** the post-turn extractor removal, structured compact output, compact profiles, shared compaction service, latest-N recent-turn fix, and manual-switch/fallback handoff wiring are implemented on `main`. Fresh provider invocations receive one bounded handoff and resumed invocations use provider-native continuity. Handoff markers remain durable until provider-session evidence is persisted. Minimal pre-seed compaction is controlled by `BRIDGE_PRESEED_COMPACT_MODE` and `BRIDGE_PRESEED_COMPACT_CHARS`. See `docs/roadmap/issue-69-compact-memory-handoff.md` for the current PR-by-PR status.
 
@@ -173,7 +173,7 @@ It should preserve:
 
 ### Engineering Profile
 
-Used by the Engineering Worker and coding-specific flows.
+Used by provider-native engineering flows and other coding-specific Runs.
 
 It should preserve:
 
@@ -184,7 +184,7 @@ It should preserve:
 - commands and test results;
 - architecture decisions;
 - accepted/rejected implementation choices;
-- worker job IDs;
+- Run and attempt IDs;
 - pending approvals;
 - failing checks and open blockers.
 
@@ -386,7 +386,7 @@ This design does not introduce:
 - silent per-turn persistent memory mutation;
 - full cross-repo memory routing;
 - broad service renames;
-- a rewrite of the worker queue.
+- a replacement workflow or task queue.
 
 ## Relationship to Issue #69
 

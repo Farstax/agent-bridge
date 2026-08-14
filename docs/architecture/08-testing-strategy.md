@@ -12,7 +12,7 @@ Strict red-green-refactor applies to every behaviour change. Acceptance and boun
 | Acceptance | `test/acceptance/**` or current repository convention | End-to-end workflow, issue-mutation, exact-head, and structural intent |
 | Integration | existing `test/*.test.ts` pattern | Handler, repository, advisor, provider, workspace, documentation, migration, and lifecycle seams |
 | Unit | current pure-logic test locations | Validators, target provenance, ranking, schemas, and policy functions |
-| Characterization | current integration fixtures | Preserve existing worker, provider, stored-plan, TDD, and compatibility behaviour before refactoring |
+| Characterization | current integration fixtures | Preserve provider, stored-plan, TDD, and compatibility behaviour before refactoring |
 | Architecture Lint | `scripts/arch-lint.sh` | Ownership, permission, SQL, import, and bypass rules |
 | Migration/rollback | database/config fixtures | Existing workspace upgrade and safe fallback |
 | Disposable qualification | isolated repository/workspace | Real CLI/model and workflow evidence without production mutation |
