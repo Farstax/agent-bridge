@@ -49,7 +49,7 @@ describe("Claude answer presentation decoder", () => {
     ].join("\n") + "\n");
 
     expect(deltas).toEqual([]);
-    expect(decoder.enabled).toBe(true);
+    expect(decoder.enabled).toBe(false);
   });
 
   it("disables preview on malformed complete JSON and ignores later records", () => {
