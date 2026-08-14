@@ -936,11 +936,11 @@ describe("buildSuggestionInvocation", () => {
     expect(inv.args).toContain("--output-format");
   });
 
-  it("uses the provider's structured output format for antigravity", async () => {
+  it("does not use json output format for antigravity", async () => {
     const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
     const inv = buildSuggestionInvocation("antigravity", { command: "agy", modelPreference: [] }, "test");
     expect(inv.args).not.toContain("--json");
-    expect(inv.args).toContain("--output-format");
+    expect(inv.args).not.toContain("--output-format");
   });
 });
 
