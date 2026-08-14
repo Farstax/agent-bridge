@@ -105,15 +105,14 @@ describe("Issue #135 Phase 4C.2: openProductionDb()", () => {
     }
   });
 
-  it("fails closed when a current-version database has a malformed role-assignment table", () => {
-    const dir = tempDir("malformed-role-schema");
+  it("fails closed when a current-version database contains a removed role-assignment table", () => {
+    const dir = tempDir("legacy-role-schema");
     try {
       const dbPath = join(dir, "bridge.sqlite");
       openDb(dbPath).close();
 
       const raw = new Database(dbPath);
       raw.exec(`
-        DROP TABLE role_assignments;
         CREATE TABLE role_assignments (
           revision_id INTEGER NOT NULL,
           role TEXT NOT NULL,
