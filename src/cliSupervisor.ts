@@ -448,6 +448,7 @@ export async function runSupervisedProcess(
       stdout += chunk;
       resetIdleTimer();
       if (onProgress) onProgress(chunk);
+      options.onProviderOutputChunk?.(chunk);
       if (evtCtx) emit(evtType.textDelta({ ...evtCtx, text: chunk, source: "stdout" }));
     });
 
