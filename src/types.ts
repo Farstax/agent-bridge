@@ -119,6 +119,8 @@ export interface CliOptions {
   idleTimeoutMs?: number | null;
   killGraceMs?: number;
   onProgress?: (text: string) => void;
+  /** Provider-owned observation hook for structured presentation decoders. */
+  onProviderOutputChunk?: (text: string) => void;
   chatId?: number | string;
   stdin?: string;
   /** Extra non-secret env vars to expose to the child CLI process. */

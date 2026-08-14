@@ -317,6 +317,49 @@ describe("BridgeEngine", () => {
       expect(capturedPrompts[1]).not.toContain(MARKER);
     });
 
+    it("streams only Claude answer deltas into one preview while final output stays authoritative", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+        options.onProviderOutputChunk?.(`${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "secret" } }] } })}\n`);
+        options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "safe answer" } } })}\n`);
+        options.onProviderOutputFinished?.();
+        return { text: JSON.stringify({ type: "result", result: "safe answer", session_id: "stream-session" }) };
+      });
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        { surfaceIdentity: "test", kind: "claude", botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 },
+        db, client, { runCliAsync },
+      );
+
+      await engine.handleMessages([makeMessage("hello")]);
+
+      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+      expect(client.sendMessage.mock.calls[0][0].text).toContain("safe answer");
+      expect(client.sendMessage.mock.calls[0][0].text).not.toContain("secret");
+      expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("safe answer") }));
+      expect(db.getSession("100", "claude")).toBe("stream-session");
+    });
+
+    it("streams the same safe Claude preview on the synchronous Telegram path", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+        options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "sync answer" } } })}\n`);
+        options.onProviderOutputFinished?.();
+        return JSON.stringify({ result: "sync answer", session_id: "sync-stream-session" });
+      });
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        { surfaceIdentity: "test", kind: "claude", botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: false, pollIntervalMs: 1000 },
+        db, client, { runCli },
+      );
+
+      await engine.handleMessages([makeMessage("hello")]);
+
+      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+      expect(client.sendMessage.mock.calls[0][0].text).toContain("sync answer");
+      expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("sync answer") }));
+    });
+
     it("handoff_once injects when handoff_required is set even though a native session already exists", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);

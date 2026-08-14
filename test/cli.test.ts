@@ -625,6 +625,7 @@ describe("buildCliInvocation — attachment injection", () => {
       expect(result.args).toContain("stream-json");
       expect(result.args).toContain("--output-format");
       expect(result.args).toContain("--verbose");
+      expect(result.args).toContain("--include-partial-messages");
       expect(result.stdin).toBeDefined();
       const payload = JSON.parse(result.stdin!);
       expect(payload.type).toBe("user");

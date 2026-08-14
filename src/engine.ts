@@ -35,6 +35,7 @@ import type { MessagingPlatform } from "./platform.js";
 import { downloadTelegramAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
+import { createClaudeAnswerPresentationDecoder } from "./providers/claudeAnswerPresentation.js";
 import {
   getRunOwnedProcessState,
   hasLiveRunOwnedDescendants,
@@ -1217,12 +1218,19 @@ export class BridgeEngine {
           },
           runId: input.runId,
           onEvent: input.collect,
-          execution: async (onProgress: (text: string) => void) => {
+          execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
+            const answerDecoder = this._executionKind() === "claude"
+              ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
+              : null;
             stagedResult = await this.executePromptAsync(
               input.prompt,
               input.sessionId,
               input.chatId,
-              { message_thread_id: input.threadId },
+              {
+                message_thread_id: input.threadId,
+                onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
+                onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
+              },
               onProgress,
               input.attachments,
               input.eventContext,
@@ -1256,40 +1264,66 @@ export class BridgeEngine {
       }
     }
 
-    const result = await this.executePrompt(
-      input.prompt,
-      input.sessionId,
-      input.chatId,
-      { message_thread_id: input.threadId },
-      input.attachments,
-      input.eventContext,
-      input.runId,
-      input.collect,
-      input.chatKey,
-      input.laneHandle,
-    );
+    let result: StagedCliResult | null = null;
     let continuationCheckpointPending = false;
-    let deliveryPhase: FinalDeliveryPhase | null = null;
+    let finalDeliveryPhase: FinalDeliveryPhase | null = null;
     try {
-      continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
-      deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
-      if (!deliveryPhase) {
+      const delivered = await sendMessageWithProgress({
+        client: this.client,
+        kind: this._deliveryKind(),
+        chatId: input.chatId,
+        body: { message_thread_id: input.threadId },
+        isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
+        beforeFinalDelivery: () => {
+          if (!result) return false;
+          continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
+          finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
+          return finalDeliveryPhase !== null;
+        },
+        propagateExecutionErrors: true,
+        runId: input.runId,
+        onEvent: input.collect,
+        execution: async (_onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
+          const answerDecoder = this._executionKind() === "claude"
+            ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
+            : null;
+          result = await this.executePrompt(
+            input.prompt,
+            input.sessionId,
+            input.chatId,
+            {
+              message_thread_id: input.threadId,
+              skipProviderTyping: true,
+              onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
+              onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
+            },
+            input.attachments,
+            input.eventContext,
+            input.runId,
+            input.collect,
+            input.chatKey,
+            input.laneHandle,
+          );
+          return result;
+        },
+        afterFinalDelivery: () => {
+          if (!result) throw new Error("missing staged CLI result at final delivery");
+          const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
+          if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result, continuationRunId);
+          else this._commitContinuationResultState(input.laneHandle, result, continuationRunId);
+        },
+      });
+      if (!delivered || !result) {
         await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
         return null;
       }
-      if (result.text) {
-        await this.sendText(input.chatId, { text: result.text, message_thread_id: input.threadId });
-      }
-      const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
-      if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result, continuationRunId);
-      else this._commitContinuationResultState(input.laneHandle, result, continuationRunId);
+      return result;
     } catch (error) {
       await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
       throw error;
     } finally {
-      this._releaseFinalDeliveryPhase(input.laneHandle, deliveryPhase);
+      this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
     }
-    return result;
   }
 
   private _checkpointContinuationBeforeDelivery(input: {
@@ -2756,7 +2790,7 @@ export class BridgeEngine {
     });
     const isClaudeStreamJson = executionKind === "claude"
       && invocation.args.includes("stream-json");
-    const typingTracker = mode === "sync"
+    const typingTracker = mode === "sync" && !(body as { skipProviderTyping?: boolean }).skipProviderTyping
       ? createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId }, () => !this._canPublish(laneHandle))
       : null;
 
@@ -2769,6 +2803,7 @@ export class BridgeEngine {
         stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
           ...buildExecutionOptions(executionKind),
           onProgress,
+          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
           chatId: this._executionLane(chatKey),
           stdin: invocation.stdin,
           contextEnv: promptForCli.contextEnv,
@@ -2779,6 +2814,7 @@ export class BridgeEngine {
         (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
         stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
           ...buildExecutionOptions(executionKind),
+          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
           chatId: this._executionLane(chatKey),
           stdin: invocation.stdin,
           contextEnv: promptForCli.contextEnv,
@@ -2786,6 +2822,8 @@ export class BridgeEngine {
           onEvent: collect ?? undefined,
         });
       }
+
+      (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
 
       // Snapshot generic run-owned work immediately when the direct CLI exits.
       // A short-lived background task may finish during parsing/hooks/delivery;
@@ -2864,7 +2902,10 @@ export class BridgeEngine {
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
-          return this._runWithFallback(prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress, attachments, logFile, mode, laneHandle, eventContext, runId, collect);
+          return this._runWithFallback(
+            prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress,
+            attachments, logFile, mode, laneHandle, eventContext, runId, collect, body,
+          );
         }
       }
       this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
@@ -3042,6 +3083,7 @@ export class BridgeEngine {
     eventContext: CliOptions["eventContext"] = undefined as any,
     runId: string | null = null,
     collect: ((e: BridgeEvent) => void) | null = null,
+    body: any = {},
   ): Promise<StagedCliResult> {
     const executionKind = this._executionKind();
     let fallbackLogFile: string | null = null;
@@ -3084,6 +3126,7 @@ export class BridgeEngine {
         ? (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
             ...buildExecutionOptions(executionKind),
             onProgress,
+            onProviderOutputChunk: body.onProviderOutputChunk,
             chatId: this._executionLane(chatKey),
             stdin: fallbackInvocation.stdin,
             contextEnv: fallbackPromptForCli.contextEnv,
@@ -3096,8 +3139,9 @@ export class BridgeEngine {
             stdin: fallbackInvocation.stdin,
             contextEnv: fallbackPromptForCli.contextEnv,
             eventContext,
-            onEvent: collect ?? undefined,
-          });
+          onEvent: collect ?? undefined,
+        });
+      body.onProviderOutputFinished?.();
       // Snapshot generic run-owned work immediately when the direct CLI exits,
       // matching the primary attempt (Issue #261). A capacity-fallback retry
       // is still a normal writable Claude turn and must be eligible for the

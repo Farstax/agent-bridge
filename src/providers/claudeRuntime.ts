@@ -38,7 +38,7 @@ export function buildInvocation({
     if (model) args.push("--model", model);
     if (sessionId) args.push("--resume", sessionId);
     if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
-    args.push("--input-format", "stream-json", "--output-format", "stream-json", "--verbose");
+    args.push("--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages");
     const stdinPayload = buildClaudeStreamJsonInput(finalPrompt, attachments);
     return { command, args: appendEffortArgs(command, args, effort), stdin: stdinPayload, nativeSessionMode: sessionId ? "resume" : "fresh" };
   }
@@ -51,7 +51,7 @@ export function buildInvocation({
   if (sessionId) args.push("--resume", sessionId);
   if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
   if (outputFormat === "json") args.push("--output-format", "json");
-  if (outputFormat === "stream-json") args.push("--output-format", "stream-json", "--verbose");
+  if (outputFormat === "stream-json") args.push("--output-format", "stream-json", "--verbose", "--include-partial-messages");
   // Preserve the established argv contract for normal prompts, but terminate
   // option parsing when a raw prompt itself starts with a hyphen.
   if (finalPrompt.startsWith("-")) args.push("--");

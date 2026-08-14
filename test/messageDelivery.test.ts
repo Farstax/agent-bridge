@@ -30,6 +30,80 @@ const withEnv = async (env: Record<string, string | undefined>, fn: () => Promis
 };
 
 describe("sendMessageWithProgress", () => {
+  it("creates one safe preview from answer deltas and reconciles it with the final result", async () => {
+    const client = createMockClient();
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("*safe");
+        onAnswerDelta?.(" answer*");
+        return { text: "*safe answer*", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ chat_id: 123 }));
+    expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 123,
+      message_id: 456,
+      text: expect.stringContaining("safe answer"),
+    }));
+  });
+
+  it("keeps final-only delivery when preview editing fails", async () => {
+    const client = createMockClient();
+    client.editMessageText.mockRejectedValue(new Error("preview edit failed"));
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("safe preview");
+        return { text: "authoritative final", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(2);
+    expect(client.sendMessage.mock.calls[1][0]).toEqual(expect.objectContaining({ text: expect.stringContaining("authoritative final") }));
+  });
+
+  it("keeps Codex final-only even when a caller supplies answer-like deltas", async () => {
+    const client = createMockClient();
+    await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("must remain final-only");
+        return { text: "authoritative Codex answer", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a preview or final result after fencing", async () => {
+    const client = createMockClient();
+    let aborted = false;
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      isAborted: () => aborted,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("partial answer");
+        aborted = true;
+        return { text: "authoritative final", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.editMessageText).not.toHaveBeenCalled();
+  });
+
   it("suppresses final delivery when the execution fence rejects publication", async () => {
     const client = createMockClient();
     const result = await sendMessageWithProgress({

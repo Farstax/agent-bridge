@@ -141,7 +141,7 @@ describe("provider invocation fixtures — claude", () => {
       });
       expect(inv.args[0]).toBe("--settings");
       expect(inv.args.slice(2)).toEqual([
-        "--resume", "sess-1", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+        "--resume", "sess-1", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       ]);
       expect(inv.stdin).toBeTruthy();
     });
@@ -157,7 +157,7 @@ describe("provider invocation fixtures — claude", () => {
     expect(inv.args[0]).toBe("--print");
     expect(inv.args[1]).toBe("--settings");
     expect(inv.args.slice(3)).toEqual([
-      "--resume", "sess-9", "--output-format", "stream-json", "--verbose", anyPrompt(),
+      "--resume", "sess-9", "--output-format", "stream-json", "--verbose", "--include-partial-messages", anyPrompt(),
     ]);
     expect(inv.stdin).toBeUndefined();
 

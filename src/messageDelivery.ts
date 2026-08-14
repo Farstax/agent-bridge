@@ -13,6 +13,7 @@ import {
 import { parseMarkdownToIR, renderMarkerString, TELEGRAM_HTML_MARKERS, markdownTableToRichHtml } from "./markdownIR.js";
 
 const MAX_TELEGRAM_TEXT = 4096;
+const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
 
 function truncate(text: string): string {
   return text.length > MAX_TELEGRAM_TEXT ? text.slice(-MAX_TELEGRAM_TEXT) : text;
@@ -186,19 +187,21 @@ export async function sendMessageWithProgress({
   isAborted,
   beforeFinalDelivery,
   afterFinalDelivery,
+  propagateExecutionErrors = false,
   runId,
   onEvent,
 }: {
   client: MessagingPlatform;
   kind: string;
   chatId: number;
-  execution: ((onProgress: (text: string) => void) => Promise<CliResult>) | Promise<CliResult>;
+  execution: ((onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => Promise<CliResult>) | Promise<CliResult>;
   onProgress?: (text: string) => void;
   body?: any;
   showProgressNarration?: boolean;
   isAborted?: () => boolean;
   beforeFinalDelivery?: () => boolean;
   afterFinalDelivery?: () => void | Promise<void>;
+  propagateExecutionErrors?: boolean;
   runId?: string;
   onEvent?: (event: BridgeEvent) => void;
 }): Promise<CliResult | null> {
@@ -220,6 +223,15 @@ export async function sendMessageWithProgress({
   // indicator alive. Visible narration is opt-in and only shows sanitized
   // STATUS lines, never generic thinking notes or raw pre-final narration.
   const streamingEnabled = kind === "antigravity";
+  let answerPreviewEnabled = kind === "claude";
+  let answerPreviewMessageId: number | null = null;
+  let answerPreviewText = "";
+  let answerPreviewDirty = false;
+  let answerPreviewPending = false;
+  let answerPreviewTimer: NodeJS.Timeout | null = null;
+  let answerPreviewChain = Promise.resolve();
+  let lastAnswerPreviewEditMs = 0;
+  const answerPreviewUpdates: Promise<unknown>[] = [];
   let progressMsgId: number | null = null;
   let progressMsgPending = false;
   const progressUpdates: Promise<unknown>[] = [];
@@ -231,6 +243,77 @@ export async function sendMessageWithProgress({
   const PROGRESS_EDIT_INTERVAL_MS = 5_000;
   const TYPING_REFRESH_INTERVAL_MS = 4_000;
   const originalOnProgress = onProgress;
+
+  const renderAnswerPreview = (text: string): any => {
+    const bounded = text.length > MAX_TELEGRAM_TEXT
+      ? `${text.slice(0, MAX_TELEGRAM_TEXT - 1)}…`
+      : text;
+    try {
+      return { text: renderTelegramHtml(bounded), parse_mode: "HTML" };
+    } catch {
+      return { text: bounded };
+    }
+  };
+
+  const publishAnswerPreview = async (): Promise<void> => {
+    if (!answerPreviewEnabled || !answerPreviewDirty || !answerPreviewText.trim() || isAborted?.()) return;
+    answerPreviewDirty = false;
+    const previewBody = { chat_id: chatId, ...body, ...renderAnswerPreview(answerPreviewText) };
+    try {
+      if (answerPreviewMessageId == null) {
+        const sent = await client.sendMessage(previewBody);
+        const messageId = sent?.result?.message_id;
+        if (typeof messageId !== "number") throw new Error("Telegram preview message ID missing");
+        answerPreviewMessageId = messageId;
+      } else {
+        await client.editMessageText({
+          ...previewBody,
+          message_id: answerPreviewMessageId,
+        });
+      }
+      lastAnswerPreviewEditMs = Date.now();
+    } catch {
+      answerPreviewEnabled = false;
+      answerPreviewDirty = false;
+    }
+  };
+
+  const queueAnswerPreview = (immediate = false): void => {
+    if (!answerPreviewEnabled || !answerPreviewText.trim() || isAborted?.()) return;
+    answerPreviewDirty = true;
+    const elapsed = Date.now() - lastAnswerPreviewEditMs;
+    if (!immediate && answerPreviewMessageId != null && elapsed < ANSWER_PREVIEW_EDIT_INTERVAL_MS) {
+      if (!answerPreviewTimer) {
+        answerPreviewTimer = setTimeout(() => {
+          answerPreviewTimer = null;
+          queueAnswerPreview(true);
+        }, ANSWER_PREVIEW_EDIT_INTERVAL_MS - elapsed);
+      }
+      return;
+    }
+    if (answerPreviewPending) return;
+    answerPreviewPending = true;
+    answerPreviewChain = answerPreviewChain
+      .then(publishAnswerPreview)
+      .finally(() => {
+        answerPreviewPending = false;
+        if (answerPreviewEnabled && answerPreviewDirty && !isAborted?.()) queueAnswerPreview(true);
+      });
+    answerPreviewUpdates.push(answerPreviewChain);
+  };
+
+  const waitForAnswerPreview = async (): Promise<void> => {
+    while (answerPreviewEnabled && (answerPreviewPending || answerPreviewDirty)) {
+      if (!answerPreviewPending && answerPreviewDirty) queueAnswerPreview(true);
+      await Promise.allSettled([...answerPreviewUpdates]);
+    }
+  };
+
+  const onAnswerDelta = (delta: string): void => {
+    if (!answerPreviewEnabled || !delta || isAborted?.()) return;
+    answerPreviewText += delta;
+    queueAnswerPreview(answerPreviewMessageId == null);
+  };
 
   const wrappedOnProgress = (chunk: string) => {
     currentText += chunk;
@@ -276,6 +359,30 @@ export async function sendMessageWithProgress({
 
   async function deliverFinal(text: string): Promise<void> {
     await Promise.allSettled(progressUpdates);
+    if (answerPreviewTimer) {
+      clearTimeout(answerPreviewTimer);
+      answerPreviewTimer = null;
+    }
+    if (answerPreviewEnabled && answerPreviewText.trim()) {
+      answerPreviewDirty = true;
+      queueAnswerPreview(true);
+    }
+    await waitForAnswerPreview();
+    if (answerPreviewEnabled && answerPreviewMessageId != null
+      && text.length <= MAX_TELEGRAM_TEXT
+      && routeNativeLayout(text, { documentEnabled: documentFallbackEnabled() }).kind === "plain") {
+      try {
+        await client.editMessageText({
+          chat_id: chatId,
+          ...body,
+          message_id: answerPreviewMessageId,
+          ...renderAnswerPreview(text),
+        });
+        return;
+      } catch {
+        answerPreviewEnabled = false;
+      }
+    }
     if (streamingEnabled && progressMsgId != null) {
       try {
         await client.editMessageText({
@@ -295,10 +402,11 @@ export async function sendMessageWithProgress({
     await sendTelegramMessage({ client, kind, chatId, body: { ...body, text } });
   }
 
+  let finalDeliveryPreparationFailed = false;
   try {
     let result: any;
     if (typeof execution === "function") {
-      result = await execution(wrappedOnProgress);
+      result = await execution(wrappedOnProgress, onAnswerDelta);
     } else {
       result = await execution;
     }
@@ -321,9 +429,14 @@ export async function sendMessageWithProgress({
       sessionId: result?.sessionId,
     });
 
-    if (beforeFinalDelivery?.() === false) {
-      clearInterval(typingInterval);
-      return null;
+    try {
+      if (beforeFinalDelivery?.() === false) {
+        clearInterval(typingInterval);
+        return null;
+      }
+    } catch (err) {
+      finalDeliveryPreparationFailed = true;
+      throw err;
     }
     await deliverFinal(finalText);
     await afterFinalDelivery?.();
@@ -333,6 +446,8 @@ export async function sendMessageWithProgress({
   } catch (err: any) {
     clearInterval(typingInterval);
     if (isAborted?.()) return null;
+    if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;
+    if (finalDeliveryPreparationFailed) throw err;
     if (isCapacityExhaustedError(err instanceof Error ? err : new Error(String(err)))) {
       throw err;
     }
