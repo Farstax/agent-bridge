@@ -168,14 +168,20 @@ describe("unified advisor service", () => {
       if (runCli.mock.calls.length === 1) {
         return JSON.stringify({
           hypothesis: "Inspect the current repository documentation",
-          tool_requests: [{ tool: "repo.read_file", path: "README.md" }],
+          tool_requests: [],
           missing_evidence: [],
         });
       }
       return JSON.stringify({
+        verdict: "needs_human",
         advice_md: "Manual debugging guidance.",
         risks: [],
         suggested_next_steps: ["Inspect the reported behavior"],
+        verification_steps: [],
+        evidence_ids: [],
+        evidence_basis: [],
+        assumptions: [],
+        unresolved_conflicts: [],
         confidence: "medium",
       });
     });
@@ -205,7 +211,7 @@ describe("unified advisor service", () => {
       suggestedNextSteps: ["Inspect the reported behavior"],
       confidence: "medium",
     });
-    expect(result.verdict).toBeUndefined();
+    expect(result.verdict).toBe("needs_human");
     expect(runCli).toHaveBeenCalledTimes(2);
     db.close();
   });

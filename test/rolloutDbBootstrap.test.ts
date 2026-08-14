@@ -94,7 +94,7 @@ describe("rollout-db.ts bootstrap", () => {
     const res = runBootstrap(bootstrapArgs(dbPath, "interactive"), { AGENT_BRIDGE_INSTALLATION_ID: "install-test" });
     expect(res.status, res.stderr).toBe(0);
     expect(runProvenanceCheck(dbPath, "interactive", "install-test").status).toBe(0);
-    expect(runProvenanceCheck(dbPath, "interactive", "install-test").status).not.toBe(0);
+    expect(runProvenanceCheck(dbPath, "discord", "install-test").status).not.toBe(0);
     expect(runProvenanceCheck(dbPath, "interactive", "install-other").status).not.toBe(0);
   });
 
