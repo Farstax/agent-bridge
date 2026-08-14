@@ -410,7 +410,7 @@ describe("guarded rollout helper", () => {
     // reconciliation_audit (migration 4) — otherwise migration 7's CREATE
     // TABLE collides with the table this fixture's earlier full openDb()
     // call already created before being rewound to user_version = 3.
-    bridge.raw.exec("DROP TABLE reconciliation_audit; DROP TABLE event_receipts; PRAGMA user_version = 3;");
+    bridge.raw.exec("DROP TABLE reconciliation_audit; DROP TABLE event_receipts; DROP TABLE autonomous_goals; PRAGMA user_version = 3;");
     bridge.close();
 
     const result = runRollout(fixture);
@@ -423,7 +423,7 @@ describe("guarded rollout helper", () => {
     expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf(" reconcile "));
     const verify = new Database(fixture.dbPaths[0], { readonly: true });
     try {
-      expect(verify.pragma("user_version", { simple: true })).toBe(7);
+      expect(verify.pragma("user_version", { simple: true })).toBe(8);
       expect(verify.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reconciliation_audit'").get()).toEqual({ name: "reconciliation_audit" });
       expect(verify.prepare("SELECT state, attachments_json FROM pending_messages").get()).toEqual({ state: "queued", attachments_json: '["document:file-id"]' });
     } finally {
