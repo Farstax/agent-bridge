@@ -15,7 +15,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,delivery-directives"
 
 if [[ -z "${NODE_BIN}" ]]; then
   echo "node not found on PATH" >&2
