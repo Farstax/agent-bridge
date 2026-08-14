@@ -35,6 +35,7 @@ function makeMockClient() {
     setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
     answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
     editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+    deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
     sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
     sendDocument: vi.fn().mockResolvedValue({ ok: true }),
   } as any;
