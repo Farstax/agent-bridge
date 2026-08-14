@@ -187,6 +187,7 @@ export async function sendMessageWithProgress({
   isAborted,
   beforeFinalDelivery,
   afterFinalDelivery,
+  propagateExecutionErrors = false,
   runId,
   onEvent,
 }: {
@@ -200,6 +201,7 @@ export async function sendMessageWithProgress({
   isAborted?: () => boolean;
   beforeFinalDelivery?: () => boolean;
   afterFinalDelivery?: () => void | Promise<void>;
+  propagateExecutionErrors?: boolean;
   runId?: string;
   onEvent?: (event: BridgeEvent) => void;
 }): Promise<CliResult | null> {
@@ -400,6 +402,7 @@ export async function sendMessageWithProgress({
     await sendTelegramMessage({ client, kind, chatId, body: { ...body, text } });
   }
 
+  let finalDeliveryPreparationFailed = false;
   try {
     let result: any;
     if (typeof execution === "function") {
@@ -426,9 +429,14 @@ export async function sendMessageWithProgress({
       sessionId: result?.sessionId,
     });
 
-    if (beforeFinalDelivery?.() === false) {
-      clearInterval(typingInterval);
-      return null;
+    try {
+      if (beforeFinalDelivery?.() === false) {
+        clearInterval(typingInterval);
+        return null;
+      }
+    } catch (err) {
+      finalDeliveryPreparationFailed = true;
+      throw err;
     }
     await deliverFinal(finalText);
     await afterFinalDelivery?.();
@@ -438,6 +446,8 @@ export async function sendMessageWithProgress({
   } catch (err: any) {
     clearInterval(typingInterval);
     if (isAborted?.()) return null;
+    if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;
+    if (finalDeliveryPreparationFailed) throw err;
     if (isCapacityExhaustedError(err instanceof Error ? err : new Error(String(err)))) {
       throw err;
     }

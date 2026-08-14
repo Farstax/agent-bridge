@@ -1280,6 +1280,7 @@ export class BridgeEngine {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
+        propagateExecutionErrors: true,
         runId: input.runId,
         onEvent: input.collect,
         execution: async (_onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
