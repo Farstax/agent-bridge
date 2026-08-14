@@ -123,6 +123,7 @@ describe("immutable release staging", () => {
     const skillNames = catalog.map((entry) => entry.name);
     expect(skillNames).toEqual([
       "cli-auth-telegram",
+      "delivery-directives",
       "git-sandbox",
       "red-green-refactor-tdd",
       "release-readiness-review",
