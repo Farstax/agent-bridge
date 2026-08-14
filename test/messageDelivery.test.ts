@@ -470,6 +470,31 @@ describe("sendMessageWithProgress", () => {
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("does not duplicate a Claude preview when the final edit is already applied", async () => {
+    const client = {
+      sendMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+      sendChatAction: vi.fn(async () => ({ ok: true })),
+      editMessageText: vi.fn(async () => {
+        throw new Error("Bad Request: message is not modified: specified new message content and reply markup are identical");
+      }),
+      deleteMessage: vi.fn(async () => ({ ok: true })),
+      sendMessageDraft: vi.fn(async () => ({ ok: true })),
+    } as any as TelegramClient;
+
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("Hello");
+        return { text: "Hello", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.editMessageText).toHaveBeenCalledTimes(2);
+  });
+
   it("calls sendMessageDraft for non-DM chats instead of editMessageText during streaming", async () => {
     const client = createMockClient();
     const chatId = 123;
