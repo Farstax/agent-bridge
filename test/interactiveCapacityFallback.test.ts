@@ -70,11 +70,14 @@ describe("interactive capacity fallback durable admission", () => {
         message: { message_id: 86, chat: { id: 100, type: "private" }, from: { id: 42, first_name: "Test" }, text: "answer this" },
       }, "100", deps);
 
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
       expect(claudeRun).toHaveBeenCalledTimes(1);
       expect(codexRun).not.toHaveBeenCalled();
       expect(client.sendMessage).toHaveBeenCalledTimes(1);
       expect(client.sendMessage.mock.calls[0][0].text).toContain("stale Claude preview");
       expect(notifications).toEqual([]);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
     } finally {
       db.close();
     }

@@ -1094,7 +1094,13 @@ export class BridgeEngine {
       console.error(`[${this.kind}] prompt execution failed`, error);
       if (error instanceof PreviewCleanupError) {
         console.error(`[${this.kind}] abandoned preview cleanup failed; suppressing terminal output`, error.cause);
-        return "failed";
+        const matchingPending = this.db.dequeueMsgs(this.surfaceIdentity, chatKey)
+          .find((pending) => pending.prompt === rawPrompt);
+        if (matchingPending) this.db.deletePendingMsg(matchingPending.id);
+        // The provider turn failed, but its admitted queue row was handled
+        // terminally: never let durable recovery replay a turn whose visible
+        // preview can no longer be reconciled.
+        return "committed";
       }
       if (error instanceof CliTimeoutError) {
         // A configured timeout follows the /stop cancellation path: discard
