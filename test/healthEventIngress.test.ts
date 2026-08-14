@@ -118,10 +118,11 @@ describe("acceptHealthOpsEvent", () => {
     expect(run.chat_id).toBe(HEALTH_RUN_CHAT_KEY);
   });
 
-  it("never routes through work_items or work_jobs", () => {
+  it("accepts events with no Worker persistence in the schema", () => {
     acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_items").get() as { n: number }).n).toBe(0);
-    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_jobs").get() as { n: number }).n).toBe(0);
+    for (const table of ["work_items", "work_jobs"]) {
+      expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeUndefined();
+    }
   });
 
   // ── Idempotency / duplicate delivery ─────────────────────────────────────
@@ -414,15 +415,16 @@ describe("executeHealthOpsRun", () => {
     expect(db.getSession(HEALTH_RUN_CHAT_KEY, "claude")).toBeNull();
   });
 
-  it("never touches work_items/work_jobs during execution", async () => {
+  it("executes successfully with no Worker persistence in the schema", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
     const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
     const { engine } = makeEngine(runCliAsync, db);
 
     await executeHealthOpsRun(db, accepted.receiptId, engine);
 
-    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_items").get() as { n: number }).n).toBe(0);
-    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_jobs").get() as { n: number }).n).toBe(0);
+    for (const table of ["work_items", "work_jobs"]) {
+      expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeUndefined();
+    }
   });
 
   // ── Cancellation / fence loss ─────────────────────────────────────────────
