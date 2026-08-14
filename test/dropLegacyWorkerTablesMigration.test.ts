@@ -99,10 +99,12 @@ describe("schema version 9 legacy Worker table removal", () => {
     expect(db.prepare("SELECT * FROM bridge_events WHERE id = 'event-retained'").get()).toEqual(retainedBefore.event);
     expect(db.pragma("foreign_key_check")).toEqual([]);
 
+    const placeholders = LEGACY_WORKER_TABLES.map(() => "?").join(",");
     const legacyObjects = db.prepare(`
-      SELECT name FROM sqlite_master
-      WHERE name IN (${LEGACY_WORKER_TABLES.map(() => "?").join(",")})
-    `).all(...LEGACY_WORKER_TABLES);
+      SELECT type, name, tbl_name FROM sqlite_master
+      WHERE (type = 'table' AND name IN (${placeholders}))
+         OR (type IN ('index', 'trigger') AND tbl_name IN (${placeholders}))
+    `).all(...LEGACY_WORKER_TABLES, ...LEGACY_WORKER_TABLES);
     expect(legacyObjects).toEqual([]);
     db.close();
   });
