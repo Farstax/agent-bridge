@@ -35,6 +35,7 @@ import type { MessagingPlatform } from "./platform.js";
 import { downloadTelegramAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
+import { createClaudeAnswerPresentationDecoder } from "./providers/claudeAnswerPresentation.js";
 import {
   getRunOwnedProcessState,
   hasLiveRunOwnedDescendants,
@@ -1217,12 +1218,19 @@ export class BridgeEngine {
           },
           runId: input.runId,
           onEvent: input.collect,
-          execution: async (onProgress: (text: string) => void) => {
+          execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
+            const answerDecoder = this._executionKind() === "claude"
+              ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
+              : null;
             stagedResult = await this.executePromptAsync(
               input.prompt,
               input.sessionId,
               input.chatId,
-              { message_thread_id: input.threadId },
+              {
+                message_thread_id: input.threadId,
+                onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
+                onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
+              },
               onProgress,
               input.attachments,
               input.eventContext,
@@ -2769,6 +2777,7 @@ export class BridgeEngine {
         stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
           ...buildExecutionOptions(executionKind),
           onProgress,
+          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
           chatId: this._executionLane(chatKey),
           stdin: invocation.stdin,
           contextEnv: promptForCli.contextEnv,
@@ -2786,6 +2795,8 @@ export class BridgeEngine {
           onEvent: collect ?? undefined,
         });
       }
+
+      (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
 
       // Snapshot generic run-owned work immediately when the direct CLI exits.
       // A short-lived background task may finish during parsing/hooks/delivery;
