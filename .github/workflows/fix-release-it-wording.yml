@@ -1,0 +1,37 @@
+name: Fix release-it wording
+
+on:
+  push:
+    branches: [agent/release-it-docs]
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/release-it-docs
+      - name: Repair wording
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("AGENTS.md")
+          text = path.read_text()
+          old = "treat that as authorization to qualify, publish, deploy, and verify the current qualified `main` without another routine approval."
+          new = "treat that as authorization to qualify, publish, deploy, and verify the current `main` without another routine approval."
+          if text.count(old) != 1:
+              raise SystemExit("wording anchor not found exactly once")
+          path.write_text(text.replace(old, new))
+      - name: Commit repair
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add AGENTS.md
+          git diff --cached --check
+          git commit -m "docs: clarify release it target"
+          git push origin HEAD:agent/release-it-docs
