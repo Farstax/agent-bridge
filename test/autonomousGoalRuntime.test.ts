@@ -288,6 +288,45 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
+  it("fails closed after restart when a wake was claimed and its owning Run was left unreconciled", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, {
+      goalId: "claimed-crash",
+      prompt: "Do not replay an unknown provider attempt",
+      constraints: [],
+      bot: "claude",
+      maxCycles: 3,
+    });
+    const wake = db.raw.prepare("SELECT id FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE) as { id: number };
+    const runId = "crashed-autonomous-run";
+    db.insertRun(runId, "autonomous:claimed-crash", "claude");
+    db.linkEventReceiptRun(wake.id, runId);
+    db.close();
+
+    const reopened = openDb(dbPath, { serviceId: "test-autonomous", runId: "process-after-claim-crash" });
+    const provider = vi.fn();
+    await drainAutonomousGoal(reopened, "claimed-crash", makeEngine(provider, reopened));
+
+    expect(provider).not.toHaveBeenCalled();
+    expect(getAutonomousGoal(reopened, "claimed-crash")).toMatchObject({ status: "blocked", cycle: 1 });
+    expect(reopened.raw.prepare("SELECT status FROM event_receipts WHERE id = ?").get(wake.id)).toEqual({ status: "failed" });
+    expect(reopened.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = ?").get(runId)).toEqual({ status: "failed" });
+
+    reopened.close();
+    removeDb(dbPath);
+  });
+
+  it("detects an active goal with no pending or recoverable wake instead of spinning", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "missing-wake", prompt: "Missing wake", constraints: [], bot: "claude", maxCycles: 2 });
+    db.raw.prepare("DELETE FROM event_receipts WHERE source = ?").run(AUTONOMOUS_EVENT_SOURCE);
+
+    await expect(drainAutonomousGoal(db, "missing-wake", makeEngine(vi.fn(), db))).rejects.toThrow(/no pending or recoverable autonomous wake/i);
+
+    db.close();
+    removeDb(dbPath);
+  });
+
   it("fences concurrent execution of the same goal on one dedicated lane", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {
