@@ -318,11 +318,7 @@ export async function sendMessageWithProgress({
     }
     await Promise.allSettled(answerPreviewUpdates);
     if (answerPreviewMessageId == null || typeof client.deleteMessage !== "function") return;
-    try {
-      await client.deleteMessage({ chat_id: chatId, message_id: answerPreviewMessageId });
-    } catch {
-      // The provider attempt is already abandoned; cleanup is best effort.
-    }
+    await client.deleteMessage({ chat_id: chatId, message_id: answerPreviewMessageId });
     answerPreviewMessageId = null;
   };
 

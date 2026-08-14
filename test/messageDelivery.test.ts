@@ -89,6 +89,23 @@ describe("sendMessageWithProgress", () => {
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("fails closed instead of propagating capacity when abandoned preview deletion fails", async () => {
+    const client = createMockClient();
+    client.deleteMessage = vi.fn(async () => { throw new Error("Telegram delete failed"); });
+
+    await expect(sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("abandoned answer");
+        throw new Error("capacity exhausted");
+      },
+    })).rejects.toThrow("Telegram delete failed");
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("does not delete the authoritative preview after final delivery", async () => {
     const client = createMockClient();
     const afterFinalDelivery = vi.fn(async () => { throw new Error("post-delivery hook failed"); });
