@@ -11,6 +11,7 @@ export const AUTONOMOUS_RUN_SURFACE = "autonomous" as const;
 export const AUTONOMOUS_RUN_AUTHORITY_SCOPE = "goal-constraints-only" as const;
 export const AUTONOMOUS_RUN_CHAT_KEY_PREFIX = "autonomous:";
 const MAX_EVIDENCE_CHARS = 2_000;
+const MAX_TOTAL_EVIDENCE_CHARS = 8_000;
 const MAX_REASON_CHARS = 300;
 
 export type AutonomousGoalStatus = "active" | "complete" | "blocked" | "cancelled" | "budget_exhausted";
@@ -167,7 +168,12 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
   db.runInTransaction(() => {
     const run = db.getRun(runId);
     const evidence = result?.evidence ?? error ?? "malformed provider output";
-    const nextEvidence = [...goal.evidence, evidence].slice(-20);
+    const nextEvidence: string[] = [];
+    for (const item of [...goal.evidence, evidence].reverse()) {
+      const candidate = [...nextEvidence, item];
+      if (candidate.join("\n").length > MAX_TOTAL_EVIDENCE_CHARS) break;
+      nextEvidence.unshift(item);
+    }
     if (run?.status === "cancelled") {
       db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?").run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
       db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
@@ -259,10 +265,16 @@ export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<
   const command = process.env.AGENT_BRIDGE_AUTONOMOUS_PROVIDER_COMMAND ?? "claude";
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
   const engine = new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+  let providerBoundaryReached = false;
+  const executeSurfaceNeutralTurn = engine.executeSurfaceNeutralTurn.bind(engine);
+  engine.executeSurfaceNeutralTurn = async (input) => {
+    providerBoundaryReached = true;
+    return executeSurfaceNeutralTurn(input);
+  };
   const goalId = `live-smoke-${randomUUID()}`;
   createAutonomousGoal(db, { goalId, prompt: "Return a bounded JSON result only; do not modify files or contact external systems.", constraints: ["non-destructive smoke only"], bot: "claude", maxCycles: 1 });
   await drainAutonomousGoal(db, goalId, engine);
   const status = getAutonomousGoal(db, goalId).status;
   db.close();
-  return { providerBoundaryReached: true, status };
+  return { providerBoundaryReached, status };
 }
