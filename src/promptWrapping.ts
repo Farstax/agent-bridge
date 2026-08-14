@@ -16,10 +16,12 @@ export function wrapPromptContext(
   prompt: string,
   soulContext: string | null = null,
   includeResponseContract = true,
+  includeExecutionContract = includeResponseContract,
 ): string {
   const soulContract = renderSoulContract(soulContext);
   return [
     ...(soulContract ? [soulContract, ""] : []),
+    ...(includeExecutionContract ? [SESSION_EXECUTION_CONTRACT, ""] : []),
     wrapResponseStyle(prompt, soulContext, includeResponseContract),
   ].join("\n");
 }
@@ -32,6 +34,17 @@ export function prependHandoffModel(prompt: string, model: string | null): strin
     prompt,
   ].join("\n");
 }
+
+const SESSION_EXECUTION_CONTRACT = [
+  "Agent Bridge execution contract:",
+  "- A question asks for an answer, not permission to make changes.",
+  "- When asked to act, complete the requested scope. Do not silently omit requested work.",
+  "- For reversible, low-cost actions inside that authorised scope, act without procedural confirmation.",
+  "- Ask before actions that reach an external audience, are difficult to undo, or have meaningful cost unless the user has already authorised them.",
+  "- Fix defects that directly block or are caused by the requested work. Do not expand into unrelated cleanup.",
+  "- If part of the work is genuinely blocked, complete the unblocked work and state the specific blocker.",
+  "- Do not claim work was completed or verified unless it was.",
+].join("\n");
 
 const MINIMAL_RESPONSE_CONTRACT = [
   "Response contract:",

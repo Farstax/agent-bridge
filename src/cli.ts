@@ -64,6 +64,7 @@ import {
   isChildRunning,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
+import { wrapPromptContext } from "./promptWrapping.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
 
@@ -92,6 +93,18 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
   const filtered = lines.filter((line) => !line.includes(outDir));
   // Collapse runs of more than one consecutive blank line left by removed lines
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function seedFreshExecutionContract(
+  bot: string,
+  prompt: string,
+  sessionId: string | null,
+  attachments: string[],
+  includeResponseContract: boolean,
+): string {
+  if (includeResponseContract) return prompt;
+  const startsFresh = !sessionId || (bot === "codex" && attachments.length > 0);
+  return startsFresh ? wrapPromptContext(prompt, null, false, true) : prompt;
 }
 
 /** Builds the CLI invocation for a bot. */
@@ -135,19 +148,21 @@ export function buildCliInvocation({
     throw new Error(`Tool-free mode is not supported for ${bot}`);
   }
 
+  const providerPrompt = seedFreshExecutionContract(bot, prompt, sessionId, attachments, includeResponseContract);
+
   if (bot === "codex") {
     return codexRuntime.buildInvocation({
-      prompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
     });
   }
   if (bot === "claude") {
     return claudeRuntime.buildInvocation({
-      prompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
     });
   }
   if (bot === "antigravity") {
     const invocation = antigravityRuntime.buildInvocation({
-      prompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, logFile, homeDir,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, logFile, homeDir,
     });
     antigravityInvocationMetadata.set(invocation.args, {
       homeDir,
@@ -159,7 +174,7 @@ export function buildCliInvocation({
   }
   if (bot === "kimchi") {
     return kimchiRuntime.buildInvocation({
-      prompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
     });
   }
 

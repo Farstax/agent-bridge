@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildCliInvocation } from "../src/cli.js";
 
+const EXECUTION_CONTRACT_MARKER = "Agent Bridge execution contract:";
+
 describe("Claude leading-hyphen prompt argv handling", () => {
-  it("terminates option parsing before a fresh raw prompt that starts with a hyphen", () => {
+  it("wraps a fresh raw leading-hyphen prompt in the execution contract before argv parsing", () => {
     const prompt = "- existing attempt is rediscovered;";
     const inv = buildCliInvocation({
       bot: "claude",
@@ -12,7 +14,9 @@ describe("Claude leading-hyphen prompt argv handling", () => {
       includeResponseContract: false,
     });
 
-    expect(inv.args.slice(-2)).toEqual(["--", prompt]);
+    expect(inv.args.at(-1)).toContain(EXECUTION_CONTRACT_MARKER);
+    expect(inv.args.at(-1)).toContain(prompt);
+    expect(inv.args.at(-2)).not.toBe("--");
     expect(inv.stdin).toBeUndefined();
   });
 
@@ -31,7 +35,7 @@ describe("Claude leading-hyphen prompt argv handling", () => {
     expect(inv.args.slice(-2)).toEqual(["--", prompt]);
   });
 
-  it("preserves the existing argv shape for raw prompts that do not start with a hyphen", () => {
+  it("wraps a fresh raw non-hyphen prompt in the execution contract", () => {
     const prompt = "existing attempt is rediscovered;";
     const inv = buildCliInvocation({
       bot: "claude",
@@ -41,7 +45,8 @@ describe("Claude leading-hyphen prompt argv handling", () => {
       includeResponseContract: false,
     });
 
-    expect(inv.args.at(-1)).toBe(prompt);
+    expect(inv.args.at(-1)).toContain(EXECUTION_CONTRACT_MARKER);
+    expect(inv.args.at(-1)).toContain(prompt);
     expect(inv.args.at(-2)).not.toBe("--");
   });
 });
