@@ -410,7 +410,7 @@ describe("guarded rollout helper", () => {
     // reconciliation_audit (migration 4) — otherwise migration 7's CREATE
     // TABLE collides with the table this fixture's earlier full openDb()
     // call already created before being rewound to user_version = 3.
-    bridge.raw.exec("DROP TABLE reconciliation_audit; DROP TABLE event_receipts; PRAGMA user_version = 3;");
+    bridge.raw.exec("DROP TABLE reconciliation_audit; DROP TABLE event_receipts; DROP TABLE autonomous_goals; PRAGMA user_version = 3;");
     bridge.close();
 
     const result = runRollout(fixture);
