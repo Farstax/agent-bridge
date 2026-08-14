@@ -2875,7 +2875,10 @@ export class BridgeEngine {
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
-          return this._runWithFallback(prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress, attachments, logFile, mode, laneHandle, eventContext, runId, collect);
+          return this._runWithFallback(
+            prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress,
+            attachments, logFile, mode, laneHandle, eventContext, runId, collect, body,
+          );
         }
       }
       this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
@@ -3053,6 +3056,7 @@ export class BridgeEngine {
     eventContext: CliOptions["eventContext"] = undefined as any,
     runId: string | null = null,
     collect: ((e: BridgeEvent) => void) | null = null,
+    body: any = {},
   ): Promise<StagedCliResult> {
     const executionKind = this._executionKind();
     let fallbackLogFile: string | null = null;
@@ -3095,6 +3099,7 @@ export class BridgeEngine {
         ? (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
             ...buildExecutionOptions(executionKind),
             onProgress,
+            onProviderOutputChunk: body.onProviderOutputChunk,
             chatId: this._executionLane(chatKey),
             stdin: fallbackInvocation.stdin,
             contextEnv: fallbackPromptForCli.contextEnv,
@@ -3107,8 +3112,9 @@ export class BridgeEngine {
             stdin: fallbackInvocation.stdin,
             contextEnv: fallbackPromptForCli.contextEnv,
             eventContext,
-            onEvent: collect ?? undefined,
-          });
+          onEvent: collect ?? undefined,
+        });
+      body.onProviderOutputFinished?.();
       // Snapshot generic run-owned work immediately when the direct CLI exits,
       // matching the primary attempt (Issue #261). A capacity-fallback retry
       // is still a normal writable Claude turn and must be eligible for the
