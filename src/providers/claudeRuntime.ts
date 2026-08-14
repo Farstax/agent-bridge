@@ -40,7 +40,7 @@ export function buildInvocation({
     if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
     args.push("--input-format", "stream-json", "--output-format", "stream-json", "--verbose");
     const stdinPayload = buildClaudeStreamJsonInput(finalPrompt, attachments);
-    return { command, args: appendEffortArgs(command, args, effort), stdin: stdinPayload };
+    return { command, args: appendEffortArgs(command, args, effort), stdin: stdinPayload, nativeSessionMode: sessionId ? "resume" : "fresh" };
   }
   args.push("--print");
   if (toolMode === "none") {
@@ -57,7 +57,7 @@ export function buildInvocation({
   if (finalPrompt.startsWith("-")) args.push("--");
   args.push(finalPrompt);
 
-  return { command, args: appendEffortArgs(command, args, effort) };
+  return { command, args: appendEffortArgs(command, args, effort), nativeSessionMode: sessionId ? "resume" : "fresh" };
 }
 
 export function parseResult(stdout: string): CliResult {

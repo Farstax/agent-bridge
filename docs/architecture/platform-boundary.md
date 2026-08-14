@@ -61,6 +61,6 @@ The Platform may help provision or distribute configuration, but runtime-specifi
 
 ## Recommended Configuration for Platform-Managed Workspaces
 
-Set `BRIDGE_CONTEXT_INJECTION_POLICY=handoff_once`, `BRIDGE_PRESEED_COMPACT_MODE=auto`, and `BRIDGE_PRESEED_COMPACT_CHARS=30000`.
+Set `BRIDGE_PRESEED_COMPACT_MODE=auto` and `BRIDGE_PRESEED_COMPACT_CHARS=30000`.
 
-Self-hosted OSS deployments default to `always` (inject Agent Bridge context on every turn, the original behavior) and `BRIDGE_PRESEED_COMPACT_MODE=off` (no pre-seed compaction). Platform-managed workspaces need deterministic first-turn seeding instead: inject context into a fresh provider session, then rely on the provider-native session ID until the next handoff/fresh-session event (manual switch, capacity fallback, `/compact`, or invalid-session recovery). Pre-seed compaction keeps that fresh seed a summary rather than a large raw-turn dump when the un-compacted backlog is large. See `docs/architecture/memory-and-handoff.md` and `docs/architecture/companion-runtime.md` for the full mechanism.
+Provider adapters inject context into fresh native sessions, then rely on provider-native continuity. Pre-seed compaction keeps a large fresh seed bounded. See `docs/architecture/memory-and-handoff.md` and `docs/architecture/companion-runtime.md` for the full mechanism.

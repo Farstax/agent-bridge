@@ -444,14 +444,10 @@ removed; compaction produces both a conversation summary and validated
 memory candidates in one deliberate step instead of running an extra CLI
 call after every successful reply.
 
-Set `BRIDGE_CONTEXT_INJECTION_POLICY=handoff_once` to inject full Agent
-Bridge context only on a fresh session (no native CLI session, a pending
-manual-switch/fallback handoff, or after `/compact`/invalid-session
-recovery resets the session), then rely on the provider-native session
-for continuity. Defaults to `always` (inject on every turn), matching
-prior behavior. Context-command env vars (`AGENT_BRIDGE_CONTEXT_COMMAND`,
-etc.) remain available under both policies. Recommended for
-platform-managed workspaces; self-hosted deployments can leave it unset.
+Agent Bridge injects bounded context only when the provider invocation starts
+a fresh native session. Resumed invocations rely on provider-native
+continuity. The provider invocation builder is authoritative, including for
+Codex attachment turns that cannot resume a session.
 
 ## Shared skills
 

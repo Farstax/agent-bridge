@@ -6,6 +6,7 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine, type ContinuationFns } from "../src/engine.js";
 import { recoverCancelledContinuationContainment } from "../src/continuationRecovery.js";
 import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
+import { markHandoffRequired, isHandoffRequired } from "../src/handoffState.js";
 import type { TelegramMessage } from "../src/types.js";
 
 function makeMessage(text: string, messageId: number): TelegramMessage {
@@ -349,9 +350,11 @@ describe("durable async continuation lifecycle", () => {
           memoryCandidates: [],
           continuationHint: "background-process",
           continuationProcessObserved: true,
+          nativeSessionMode: "fresh",
         },
       },
     });
+    markHandoffRequired(db, "100", "claude", "provider switch");
 
     const continuation: ContinuationFns = {
       hasLiveRunOwnedDescendants: vi.fn(() => false),
@@ -376,6 +379,8 @@ describe("durable async continuation lifecycle", () => {
     await waitUntil(() => repo.get(durableRunId)?.state === "completed", "delivery-pending continuation completion");
 
     expect(deliveryCountAtResume).toEqual([1]);
+    expect(db.getSession("100", "claude")).toBe("session-delivery-pending-261");
+    expect(isHandoffRequired(db, "100", "claude")).toBe(false);
     expect(client.sendMessage.mock.calls.map((call: any[]) => String(call[0].text))).toEqual([
       "Background work is running.",
       "Background work finished.",

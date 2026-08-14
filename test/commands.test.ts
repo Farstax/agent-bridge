@@ -28,29 +28,25 @@ describe("/context operator diagnostics", () => {
   });
 
   afterEach(() => {
-    delete process.env.BRIDGE_CONTEXT_INJECTION_POLICY;
     delete process.env.BRIDGE_PRESEED_COMPACT_MODE;
     delete process.env.BRIDGE_PRESEED_COMPACT_CHARS;
     db.close();
   });
 
-  it("shows the always policy and off pre-seed mode by default", () => {
+  it("shows off pre-seed mode by default", () => {
     const result = handleCommand("claude", "/context", { db, chatId: "100", config: makeConfig() });
     expect(result?.kind).toBe("message");
     const text = (result as any).text as string;
-    expect(text).toContain("Injection policy: always");
     expect(text).toContain("Pre-seed compact: off");
   });
 
-  it("shows the configured handoff_once policy and auto pre-seed threshold", () => {
-    process.env.BRIDGE_CONTEXT_INJECTION_POLICY = "handoff_once";
+  it("shows the configured auto pre-seed threshold", () => {
     process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
     process.env.BRIDGE_PRESEED_COMPACT_CHARS = "12345";
 
     const result = handleCommand("claude", "/context", { db, chatId: "100", config: makeConfig() });
     const text = (result as any).text as string;
 
-    expect(text).toContain("Injection policy: handoff_once");
     expect(text).toContain("Pre-seed compact: auto (threshold 12345 chars)");
   });
 

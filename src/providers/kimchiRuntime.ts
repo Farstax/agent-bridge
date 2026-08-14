@@ -57,7 +57,7 @@ export function buildInvocation({
   );
   args.push(finalPrompt);
 
-  return { command, args: appendEffortArgs(command, args, effort) };
+  return { command, args: appendEffortArgs(command, args, effort), nativeSessionMode: sessionId ? "resume" : "fresh" };
 }
 
 /**

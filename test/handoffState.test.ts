@@ -4,7 +4,6 @@ import {
   markHandoffRequired,
   isHandoffRequired,
   clearHandoffRequired,
-  consumeHandoffRequired,
 } from "../src/handoffState.js";
 
 let db: BridgeDb;
@@ -44,24 +43,10 @@ describe("handoff state", () => {
     expect(isHandoffRequired(db, "chat:1", "claude")).toBe(false);
   });
 
-  describe("consumeHandoffRequired", () => {
-    it("returns false and does nothing when handoff was not required", () => {
-      expect(consumeHandoffRequired(db, "chat:1", "claude")).toBe(false);
-    });
-
-    it("returns true exactly once, then clears the flag (one-time injection)", () => {
-      markHandoffRequired(db, "chat:1", "claude", "manual switch");
-      expect(consumeHandoffRequired(db, "chat:1", "claude")).toBe(true);
-      expect(consumeHandoffRequired(db, "chat:1", "claude")).toBe(false);
-      expect(isHandoffRequired(db, "chat:1", "claude")).toBe(false);
-    });
-
-    it("does not consume a different chat/CLI's handoff flag", () => {
-      markHandoffRequired(db, "chat:1", "claude", "manual switch");
-      expect(consumeHandoffRequired(db, "chat:2", "claude")).toBe(false);
-      expect(consumeHandoffRequired(db, "chat:1", "codex")).toBe(false);
-      // Original flag is untouched by the non-matching consume attempts.
-      expect(isHandoffRequired(db, "chat:1", "claude")).toBe(true);
-    });
+  it("keeps the marker durable until successful provider state commit", () => {
+    markHandoffRequired(db, "chat:1", "claude", "manual switch");
+    expect(isHandoffRequired(db, "chat:1", "claude")).toBe(true);
+    clearHandoffRequired(db, "chat:1", "claude");
+    expect(isHandoffRequired(db, "chat:1", "claude")).toBe(false);
   });
 });

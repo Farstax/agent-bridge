@@ -11,7 +11,7 @@ import type { BridgeDb } from "./db.js";
 import { buildModelKeyboard, buildModelsText } from "./bridge.js";
 import { listLocalCatalog } from "./skills.js";
 import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js";
-import { contextInjectionPolicy, preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
+import { preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
 import { parseAdvisorConfig } from "./advisorConfig.js";
 import { inspectAdvisorConfigSources } from "./advisorConfigSource.js";
 import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
@@ -264,13 +264,11 @@ export function handleCommand(
       lines.push("High turn count - consider /compact");
     }
 
-    const policy = contextInjectionPolicy();
     const preseedMode = preseedCompactMode();
     const uncompacted = db.getUncompactedConvStats(chatId);
     const memoryCount = db.getMemoryCount();
     lines.push(
       "",
-      `Injection policy: ${policy}`,
       `Pre-seed compact: ${preseedMode === "auto" ? `auto (threshold ${preseedCompactCharThreshold()} chars)` : "off"}`,
       `Uncompacted: ${uncompacted.turnCount} turns, ${uncompacted.charCount} chars`,
       `Memory count: ${memoryCount}`,

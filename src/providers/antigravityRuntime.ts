@@ -286,7 +286,7 @@ export function buildInvocation({
   args.push("--print", finalPrompt);
 
   const providerArgs = appendEffortArgs(command, args, effort);
-  return { command, args: providerArgs };
+  return { command, args: providerArgs, nativeSessionMode: sessionId ? "resume" : "fresh" };
 }
 
 export function extractAntigravityConversationId(text: string | null | undefined): string | null {

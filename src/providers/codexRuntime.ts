@@ -70,11 +70,11 @@ export function buildInvocation({
       args.push("-i", att);
     }
     args.push("--", "-");
-    return { command, args: appendEffortArgs(command, args, effort), stdin: finalPrompt };
+    return { command, args: appendEffortArgs(command, args, effort), stdin: finalPrompt, nativeSessionMode: "fresh" };
   }
   args.push(finalPrompt);
 
-  return { command, args: appendEffortArgs(command, args, effort) };
+  return { command, args: appendEffortArgs(command, args, effort), nativeSessionMode: sessionId && !forceFreshForAttachments ? "resume" : "fresh" };
 }
 
 export function parseResult(stdout: string): CliResult {

@@ -59,6 +59,8 @@ export interface ProviderInvocation {
   command: string;
   args: string[];
   stdin?: string;
+  /** Whether this invocation continues or establishes native provider state. */
+  nativeSessionMode: "fresh" | "resume";
 }
 
 // Issue #135 Phase 3C — Antigravity is the only provider using logFile/
