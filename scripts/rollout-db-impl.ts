@@ -316,7 +316,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
     }
     const schema = userVersion === 0
       ? "legacy"
-      : currentPending && currentLocks
+      : userVersion === CURRENT_SCHEMA_VERSION && currentPending && currentLocks
         ? "current"
       : sameSet(pendingColumns, LEGACY_PENDING_COLUMNS) && lockColumns.length === 0
         ? "legacy"
