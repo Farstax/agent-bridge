@@ -1264,40 +1264,65 @@ export class BridgeEngine {
       }
     }
 
-    const result = await this.executePrompt(
-      input.prompt,
-      input.sessionId,
-      input.chatId,
-      { message_thread_id: input.threadId },
-      input.attachments,
-      input.eventContext,
-      input.runId,
-      input.collect,
-      input.chatKey,
-      input.laneHandle,
-    );
+    let result: StagedCliResult | null = null;
     let continuationCheckpointPending = false;
-    let deliveryPhase: FinalDeliveryPhase | null = null;
+    let finalDeliveryPhase: FinalDeliveryPhase | null = null;
     try {
-      continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
-      deliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
-      if (!deliveryPhase) {
+      const delivered = await sendMessageWithProgress({
+        client: this.client,
+        kind: this._deliveryKind(),
+        chatId: input.chatId,
+        body: { message_thread_id: input.threadId },
+        isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
+        beforeFinalDelivery: () => {
+          if (!result) return false;
+          continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
+          finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
+          return finalDeliveryPhase !== null;
+        },
+        runId: input.runId,
+        onEvent: input.collect,
+        execution: async (_onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
+          const answerDecoder = this._executionKind() === "claude"
+            ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
+            : null;
+          result = await this.executePrompt(
+            input.prompt,
+            input.sessionId,
+            input.chatId,
+            {
+              message_thread_id: input.threadId,
+              skipProviderTyping: true,
+              onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
+              onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
+            },
+            input.attachments,
+            input.eventContext,
+            input.runId,
+            input.collect,
+            input.chatKey,
+            input.laneHandle,
+          );
+          return result;
+        },
+        afterFinalDelivery: () => {
+          if (!result) throw new Error("missing staged CLI result at final delivery");
+          const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
+          if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result, continuationRunId);
+          else this._commitContinuationResultState(input.laneHandle, result, continuationRunId);
+        },
+      });
+      if (!delivered || !result) {
         await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
         return null;
       }
-      if (result.text) {
-        await this.sendText(input.chatId, { text: result.text, message_thread_id: input.threadId });
-      }
-      const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
-      if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result, continuationRunId);
-      else this._commitContinuationResultState(input.laneHandle, result, continuationRunId);
+      return result;
     } catch (error) {
       await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
       throw error;
     } finally {
-      this._releaseFinalDeliveryPhase(input.laneHandle, deliveryPhase);
+      this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
     }
-    return result;
   }
 
   private _checkpointContinuationBeforeDelivery(input: {
@@ -2764,7 +2789,7 @@ export class BridgeEngine {
     });
     const isClaudeStreamJson = executionKind === "claude"
       && invocation.args.includes("stream-json");
-    const typingTracker = mode === "sync"
+    const typingTracker = mode === "sync" && !(body as { skipProviderTyping?: boolean }).skipProviderTyping
       ? createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId }, () => !this._canPublish(laneHandle))
       : null;
 
@@ -2788,6 +2813,7 @@ export class BridgeEngine {
         (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
         stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
           ...buildExecutionOptions(executionKind),
+          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
           chatId: this._executionLane(chatKey),
           stdin: invocation.stdin,
           contextEnv: promptForCli.contextEnv,
@@ -2795,6 +2821,8 @@ export class BridgeEngine {
           onEvent: collect ?? undefined,
         });
       }
+
+      (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
 
       (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
 
