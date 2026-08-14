@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { DATABASE_ROLES } from "../src/db/schemaContract.js";
 
 const root = resolve(import.meta.dirname, "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
@@ -24,5 +25,9 @@ describe("Engineering Worker removal boundary", () => {
     expect(db).not.toContain("claimNextWorkJob");
     expect(db).not.toContain("createWorkJob");
     expect(db).not.toContain("recoverExpiredWorkJobs");
+  });
+
+  it("does not expose a Worker database role", () => {
+    expect(DATABASE_ROLES).not.toContain("worker");
   });
 });
