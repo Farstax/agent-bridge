@@ -14,6 +14,7 @@ import {
   getAutonomousGoal,
   parseAutonomousCycleResult,
   runNextAutonomousGoal,
+  runAutonomousGoalOperator,
 } from "../src/autonomousGoalRuntime.js";
 
 function makeDb() {
@@ -67,6 +68,138 @@ function removeDb(dbPath: string) {
 }
 
 describe("autonomous goal production runtime", () => {
+  it("inherits the complete bounded goal context into every execution seam input", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, {
+      goalId: "context",
+      prompt: "Original goal",
+      constraints: ["no deploy", "read-only evidence"],
+      bot: "claude",
+      maxCycles: 2,
+    });
+    const inputs: any[] = [];
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+      inputs.push(input);
+      return { text: claudeOutput({ status: inputs.length === 1 ? "progress" : "complete", evidence: `cycle-${inputs.length}`, nextWakeReason: "continue" }) } as any;
+    });
+
+    await drainAutonomousGoal(db, "context", engine);
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs.map((input) => input.prompt)).toEqual([
+      expect.stringContaining("Original goal"),
+      expect.stringContaining("Original goal"),
+    ]);
+    for (const [index, input] of inputs.entries()) {
+      expect(input.prompt).toContain("no deploy");
+      expect(input.prompt).toContain("read-only evidence");
+      expect(input.prompt).toContain(`Current cycle: ${index + 1}`);
+      expect(input.prompt).toContain(index === 0 ? "Prior evidence: none" : "cycle-1");
+      expect(input.prompt).toContain(index === 0 ? "Wake reason: initial" : "Wake reason: continue");
+      expect(input.prompt).toContain('status must be exactly one of "progress", "complete", "blocked", or "cancelled"');
+      expect(input.prompt).toContain("authority");
+    }
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it.each([
+    ["complete", "complete"],
+    ["blocked", "blocked"],
+    ["cancelled", "cancelled"],
+  ] as const)("treats a valid %s provider result as terminal", async (providerStatus, expectedStatus) => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: `terminal-${providerStatus}`, prompt: "Stop", constraints: [], bot: "claude", maxCycles: 3 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: providerStatus, evidence: providerStatus }) });
+
+    await runNextAutonomousGoal(db, `terminal-${providerStatus}`, makeEngine(runCliAsync, db));
+
+    expect(getAutonomousGoal(db, `terminal-${providerStatus}`)).toMatchObject({ status: expectedStatus, cycle: 1, evidence: [providerStatus] });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 1 });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("does not persist a successor after authoritative cancellation wins a provider race", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "cancel-race", prompt: "Do not revive", constraints: [], bot: "claude", maxCycles: 3 });
+    let started!: (value: unknown) => void;
+    const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+      await providerFinished;
+      return { text: claudeOutput({ status: "progress", evidence: "late progress", nextWakeReason: "continue" }) } as any;
+    });
+
+    const attempt = runNextAutonomousGoal(db, "cancel-race", engine);
+    while (db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:cancel-race").count !== 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const run = db.raw.prepare("SELECT run_id FROM bridge_runs WHERE chat_id = ?").get("autonomous:cancel-race") as { run_id: string };
+    expect(db.updateRunCancelled(run.run_id, "operator fence")).toBe(true);
+    started(undefined);
+    await attempt;
+
+    expect(getAutonomousGoal(db, "cancel-race")).toMatchObject({ status: "cancelled", cycle: 1, evidence: ["late progress"] });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 1 });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("lets two real concurrent attempts race and only one owns a Run and reaches the provider", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "concurrent", prompt: "One run", constraints: [], bot: "claude", maxCycles: 1 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+
+    const results = await Promise.allSettled([
+      runNextAutonomousGoal(db, "concurrent", makeEngine(runCliAsync, db)),
+      runNextAutonomousGoal(db, "concurrent", makeEngine(runCliAsync, db)),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(runCliAsync).toHaveBeenCalledTimes(1);
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:concurrent")).toEqual({ count: 1 });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("mechanically invokes only BridgeEngine.executeSurfaceNeutralTurn", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "seam", prompt: "Use the seam", constraints: [], bot: "claude", maxCycles: 1 });
+    const directCli = vi.fn().mockRejectedValue(new Error("direct provider invocation is forbidden"));
+    const engine = makeEngine(directCli, db);
+    const surfaceNeutral = vi.spyOn(engine, "executeSurfaceNeutralTurn").mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "seam reached" }) } as any);
+
+    await runNextAutonomousGoal(db, "seam", engine);
+
+    expect(surfaceNeutral).toHaveBeenCalledTimes(1);
+    expect(directCli).not.toHaveBeenCalled();
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("provides a controlled create, drain, and status operator surface", async () => {
+    const { db, dbPath } = makeDb();
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "operator done" }) });
+    const engine = makeEngine(runCliAsync, db);
+
+    expect(await runAutonomousGoalOperator(db, ["create", "operator-goal", "Operator goal", "--max-cycles", "1"])).toMatchObject({ goalId: "operator-goal", status: "active" });
+    expect(await runAutonomousGoalOperator(db, ["run", "operator-goal"], engine)).toMatchObject({ goalId: "operator-goal", status: "complete" });
+    expect(await runAutonomousGoalOperator(db, ["status", "operator-goal"])).toMatchObject({ goalId: "operator-goal", status: "complete" });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
   it("persists one goal and drives three real surface-neutral Runs from the original instruction", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {
