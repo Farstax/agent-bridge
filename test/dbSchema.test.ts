@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { applyMigrations, applyMigrationsUpTo, CURRENT_SCHEMA_VERSION, MigrationForeignKeyViolationError, type Migration } from "../src/db/schema.js";
 import { applyLegacyCompatibleBaseline } from "../src/db/legacyBaselineMigration.js";
 import { LegacyPromptOverridesPresentError } from "../src/db/dropLegacyPromptOverridesMigration.js";
+import { LEGACY_WORKER_TABLES } from "../src/db/dropLegacyWorkerTablesMigration.js";
 import { openDb } from "../src/db.js";
 import { createLegacyFixture, ROLE_FIXTURES } from "./support/legacyDbFixture";
 
@@ -24,23 +25,13 @@ describe("database schema versioning", () => {
       const db = openDb(fixture.path, { serviceId: `schema-test:${role}` });
       expect(db.raw.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
 
-      // Historical repairs actually ran: execution_locks gained acquisition_id,
-      // work_items/work_jobs CHECK constraints were widened, bridge_state and
-      // github_links gained their later columns, and the conversation/memory
-      // tables introduced after versioning now exist.
+      // Historical repairs still run before the final Worker cleanup:
+      // execution_locks gains acquisition_id, provider session columns are
+      // normalized, and the conversation/memory tables introduced after
+      // versioning exist in the current schema.
       const lockColumns = (db.raw.prepare(`PRAGMA table_info(execution_locks)`).all() as Array<{ name: string }>)
         .map((c) => c.name);
       expect(lockColumns).toContain("acquisition_id");
-
-      const workItemsSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='work_items'`
-      ).get() as { sql: string }).sql;
-      expect(workItemsSql).toContain("'refactor'");
-
-      const workJobsSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='work_jobs'`
-      ).get() as { sql: string }).sql;
-      expect(workJobsSql).toContain("'orchestrated_task'");
 
       const bridgeStateColumns = (db.raw.prepare(`PRAGMA table_info(bridge_state)`).all() as Array<{ name: string }>)
         .map((c) => c.name);
@@ -51,35 +42,13 @@ describe("database schema versioning", () => {
       }
       expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'prompts'").get()).toBeUndefined();
 
-      // The linked work_items -> work_jobs -> approvals/github_links chain
-      // survived the rename-recreate repairs intact (foreign_keys is
-      // suspended for the whole migration, not left enabled mid-rename).
-      expect(db.raw.prepare("SELECT id, title FROM work_items WHERE id = 1").get()).toEqual({ id: 1, title: "Legacy work item" });
-      expect(db.raw.prepare("SELECT id, work_item_id FROM work_jobs WHERE id = 1").get()).toEqual({ id: 1, work_item_id: 1 });
-      expect(db.raw.prepare("SELECT id, work_item_id, job_id FROM approvals WHERE id = 1").get()).toEqual({ id: 1, work_item_id: 1, job_id: 1 });
-      expect(db.raw.prepare("SELECT id, pr_number FROM github_links WHERE id = 1").get()).toEqual({ id: 1, pr_number: 147 });
+      // The legacy fixture contains real Worker rows and relationships. They
+      // are intentionally retired by v9 rather than preserved as inert data.
+      for (const table of LEGACY_WORKER_TABLES) {
+        expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeUndefined();
+      }
       expect(db.raw.pragma("foreign_keys", { simple: true })).toBe(1);
-
-      // foreign_key_check reports zero violations post-migration — proves
-      // the rename-recreate repairs didn't just avoid throwing, but left a
-      // referentially sound database.
       expect(db.raw.pragma("foreign_key_check")).toEqual([]);
-
-      // The rebuilt tables' FK clauses target the final table names
-      // (work_items, work_jobs), not a leftover *_migrate_tmp reference —
-      // proves legacy_alter_table's reference-preservation actually landed
-      // on the real target, not a temporary intermediate.
-      const workJobsFkSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='work_jobs'`
-      ).get() as { sql: string }).sql;
-      expect(workJobsFkSql).toContain("REFERENCES work_items(id)");
-      expect(workJobsFkSql).not.toContain("_migrate_tmp");
-      const approvalsFkSql = (db.raw.prepare(
-        `SELECT sql FROM sqlite_master WHERE type='table' AND name='approvals'`
-      ).get() as { sql: string }).sql;
-      expect(approvalsFkSql).toContain("REFERENCES work_items(id)");
-      expect(approvalsFkSql).toContain("REFERENCES work_jobs(id)");
-      expect(approvalsFkSql).not.toContain("_migrate_tmp");
 
       // No migration temp/scratch tables remain.
       const tableNames = (db.raw.prepare(
@@ -88,8 +57,8 @@ describe("database schema versioning", () => {
       expect(tableNames.filter((name) => name.includes("_migrate_tmp") || name.includes("_legacy_migration"))).toEqual([]);
       db.close();
 
-      // Reopening an already-current database must not re-run the repair
-      // or prompt-retirement paths — user_version is authoritative.
+      // Reopening an already-current database must not re-run historical
+      // repair or cleanup paths — user_version is authoritative.
       const reopened = openDb(fixture.path, { serviceId: `schema-test:${role}` });
       expect(reopened.raw.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
       reopened.close();
@@ -218,11 +187,9 @@ it("rolls back prompt-table retirement when an unexpected row exists", () => {
     try {
       const raw = new Database(fixture.path);
       // Uses the explicit-target test helper (targetVersion 2) because this
-      // The explicit-target helper injects a deliberate failing plan without
-      // changing the production migration registry. Production code always calls
-      // applyMigrations(), which never accepts
-      // an override and rejects any plan that doesn't end exactly at
-      // CURRENT_SCHEMA_VERSION.
+      // explicit-target helper injects a deliberate failing plan without
+      // changing the production migration registry. Production code always
+      // calls applyMigrations(), which never accepts an override.
       expect(() => applyMigrationsUpTo(raw, migrations, 2)).toThrow("deliberate migration failure");
       expect(raw.pragma("user_version", { simple: true })).toBe(0);
       expect(raw.prepare("SELECT name FROM sqlite_master WHERE name = 'probe'").get()).toBeUndefined();
@@ -232,15 +199,45 @@ it("rolls back prompt-table retirement when an unexpected row exists", () => {
     }
   });
 
-  it("rolls back completely when applyLegacyCompatibleBaseline itself fails on a real dangling foreign key", () => {
-    // Not a synthetic migration list — this drives the actual production
-    // migration entry point (applyMigrations -> applyLegacyCompatibleBaseline)
-    // against a legacy fixture carrying a genuine data defect: an orphaned
-    // approvals row referencing a work_job that doesn't exist (plausible in
-    // a real pre-versioning instance that ran without FK enforcement).
-    // Proves the new foreign_key_check gate actually blocks a real repair
-    // failure, not just a contrived test migration.
-    const fixture = tempDbPath("baseline-failure");
+  it("rolls back when the target schema leaves a real dangling foreign key", () => {
+    const fixture = tempDbPath("foreign-key-failure");
+    const migrations: readonly Migration[] = [
+      {
+        version: 1,
+        name: "create_related_tables",
+        up: (db) => db.exec(`
+          CREATE TABLE parent (id INTEGER PRIMARY KEY);
+          CREATE TABLE child (
+            id INTEGER PRIMARY KEY,
+            parent_id INTEGER NOT NULL,
+            FOREIGN KEY(parent_id) REFERENCES parent(id)
+          );
+          INSERT INTO child (id, parent_id) VALUES (1, 999);
+        `),
+      },
+    ];
+    try {
+      const raw = new Database(fixture.path);
+      let caught: unknown;
+      try {
+        applyMigrationsUpTo(raw, migrations, 1);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(MigrationForeignKeyViolationError);
+      expect((caught as MigrationForeignKeyViolationError).violations).toEqual([
+        expect.objectContaining({ table: "child", parent: "parent" }),
+      ]);
+      expect(raw.pragma("user_version", { simple: true })).toBe(0);
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE name IN ('parent', 'child')").all()).toEqual([]);
+      raw.close();
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retires dangling foreign keys that exist only inside legacy Worker persistence", () => {
+    const fixture = tempDbPath("worker-foreign-key-retirement");
     try {
       createLegacyFixture(fixture.path);
       const raw = new Database(fixture.path);
@@ -251,31 +248,14 @@ it("rolls back prompt-table retirement when an unexpected row exists", () => {
       `);
       raw.pragma("foreign_keys = ON");
 
-      let caught: unknown;
-      try {
-        applyMigrations(raw);
-      } catch (err) {
-        caught = err;
-      }
-      expect(caught).toBeInstanceOf(MigrationForeignKeyViolationError);
-      const violationError = caught as MigrationForeignKeyViolationError;
-      expect(violationError.violations).toEqual([
-        expect.objectContaining({ table: "approvals", parent: "work_jobs" }),
-      ]);
+      applyMigrations(raw);
 
-      // Complete rollback on the very connection that ran the failed
-      // migration: version marker untouched, no migration temp tables left
-      // behind, the pre-existing dangling row (the defect itself) is exactly
-      // as it was, and foreign_keys enforcement — suspended for the
-      // migration attempt — is restored to its prior value (ON).
-      expect(raw.pragma("user_version", { simple: true })).toBe(0);
+      expect(raw.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
       expect(raw.pragma("foreign_keys", { simple: true })).toBe(1);
-      const tableNames = (raw.prepare(
-        `SELECT name FROM sqlite_master WHERE type = 'table'`
-      ).all() as Array<{ name: string }>).map((t) => t.name);
-      expect(tableNames.filter((name) => name.includes("_migrate_tmp") || name.includes("_legacy_migration"))).toEqual([]);
-      expect(raw.prepare("SELECT id, job_id FROM approvals WHERE id = 2").get()).toEqual({ id: 2, job_id: 999 });
-      expect(raw.prepare("SELECT id, title FROM work_items WHERE id = 1").get()).toEqual({ id: 1, title: "Legacy work item" });
+      expect(raw.pragma("foreign_key_check")).toEqual([]);
+      for (const table of LEGACY_WORKER_TABLES) {
+        expect(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeUndefined();
+      }
       raw.close();
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
