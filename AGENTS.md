@@ -141,13 +141,31 @@ When the repository owner says **"ship it"** after the scope or solution has bee
 
 Unless the owner explicitly narrows or extends it, "ship it" means:
 
-`issue → branch/PR → implementation → relevant validation → independent review → in-scope review repairs → required exact-head checks → merge → post-merge branch/worktree cleanup → compact completion report`
+`issue → branch/PR → implementation + affected documentation → relevant validation → independent review → in-scope review repairs → required exact-head checks → merge → post-merge branch/worktree cleanup → compact completion report`
 
 The directive itself is the explicit merge instruction for the resulting PR once the agreed scope is complete, the exact current head has satisfied required checks, and independent review has found no unresolved in-scope blocker. Do not pause to ask separately whether to create the issue, open the PR, apply review repairs, rerun invalidated checks, merge, or clean up the merged branch/worktree.
 
 "Ship it" does **not** authorize scope expansion, unrelated refactoring, bypassing tests/checks/review, weakening repository invariants, or concealing a material blocker. Stop only when a genuinely new decision falls outside the agreed scope or an existing stop condition is triggered.
 
 Production deployment, destructive operations, credential/permission mutation, and other separately protected operational actions are included only when they were explicitly part of the agreed scope and their repository authorization/qualification rules are satisfied. A code-delivery "ship it" must not be stretched into an unrequested production mutation.
+
+Update documentation that the shipped change makes inaccurate or incomplete. Do not create documentation churn when documented behaviour did not change.
+
+## Owner release shorthand — "release it"
+
+When the repository owner says **"release it"**, treat that as authorization to qualify, publish, deploy, and verify the current qualified `main` without another routine approval.
+
+Unless the owner explicitly narrows or extends it, "release it" means:
+
+`current main → release-delta review → release notes + release-facing documentation → existing exact-SHA qualification → publish existing qualified artifact → established deployment path → existing post-deploy verification → compact completion report`
+
+Review the merged delta since the previous release for concrete integration, migration, compatibility, or operational blockers. Do not reopen already-reviewed implementation work without a concrete release risk.
+
+Reuse existing GitHub Actions, release-artifact qualification, publication, deployment, rollback, and acceptance automation. Do not duplicate tests, builds, checksums, or rollout mechanics unless required evidence is missing or failing.
+
+Release notes should summarize meaningful user- or operator-visible features, fixes, and operational changes rather than list commits. Update release-facing documentation when the combined release makes it inaccurate or incomplete; change-specific documentation belongs in the originating `ship it` work.
+
+If the exact candidate SHA has the required green qualification evidence and no concrete release blocker remains, publish and deploy it through the established paths. If qualification or verification fails, follow the existing fail-closed deployment and rollback rules rather than weakening the release gate.
 
 ## Approval 1 — exact-head merge approval
 
