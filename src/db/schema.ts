@@ -6,9 +6,10 @@ import { applyReconciliationAuditMigration } from "./reconciliationAuditMigratio
 import { applyMemoryResolutionMigration } from "./memoryResolutionMigration.js";
 import { applyHealthSchemaMigration } from "./healthSchemaMigration.js";
 import { applyEventReceiptsMigration } from "./eventReceiptsMigration.js";
+import { applyAutonomousGoalsMigration } from "./autonomousGoalsMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 
 export interface Migration {
   version: number;
@@ -146,6 +147,8 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 7 adds authenticated health-event receipt persistence for
  * health-role databases (Issue #351), correlated to an ordinary owning
  * bridge_runs row rather than a work_item/work_job.
+ * Version 8 widens the receipt source for autonomous wakes and adds durable
+ * autonomous goal state (Issue #392).
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -156,4 +159,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 5, name: "add-memory-resolution", up: applyMemoryResolutionMigration },
   { version: 6, name: "add-health-report-read-model", up: applyHealthSchemaMigration },
   { version: 7, name: "add-health-event-receipts", up: applyEventReceiptsMigration },
+  { version: 8, name: "add-autonomous-goals", up: applyAutonomousGoalsMigration },
 ];
