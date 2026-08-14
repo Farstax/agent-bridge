@@ -2824,8 +2824,6 @@ export class BridgeEngine {
 
       (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
 
-      (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
-
       // Snapshot generic run-owned work immediately when the direct CLI exits.
       // A short-lived background task may finish during parsing/hooks/delivery;
       // the continuation decision must retain evidence from the actual process
