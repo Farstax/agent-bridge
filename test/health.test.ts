@@ -938,9 +938,16 @@ describe("buildSuggestionInvocation", () => {
 
   it("does not use json output format for antigravity", async () => {
     const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
-    const inv = buildSuggestionInvocation("antigravity", { command: "agy", modelPreference: [] }, "test");
-    expect(inv.args).not.toContain("--json");
-    expect(inv.args).not.toContain("--output-format");
+    const previous = process.env.ANTIGRAVITY_OUTPUT_MODE;
+    process.env.ANTIGRAVITY_OUTPUT_MODE = "text";
+    try {
+      const inv = buildSuggestionInvocation("antigravity", { command: "agy", modelPreference: [] }, "test");
+      expect(inv.args).not.toContain("--json");
+      expect(inv.args).not.toContain("--output-format");
+    } finally {
+      if (previous === undefined) delete process.env.ANTIGRAVITY_OUTPUT_MODE;
+      else process.env.ANTIGRAVITY_OUTPUT_MODE = previous;
+    }
   });
 });
 
