@@ -101,7 +101,7 @@ describe("sendMessageWithProgress", () => {
         onAnswerDelta?.("abandoned answer");
         throw new Error("capacity exhausted");
       },
-    })).rejects.toThrow("Telegram delete failed");
+    })).rejects.toThrow("failed to remove an abandoned answer preview");
 
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
   });
