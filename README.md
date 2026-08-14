@@ -70,10 +70,11 @@ existing behaviour.
 
 ## Data compatibility
 
-Old databases may contain `work_items`, `work_jobs`, approvals, GitHub links,
-feature plans, or role-assignment rows. They remain migration-readable where
-needed. The active runtime never creates, claims, or executes those records.
-No destructive migration is required for Worker removal.
+Schema version 9 removes the final Engineering Worker persistence:
+`work_items`, `work_jobs`, approvals, GitHub links, feature/work-item plans,
+and role assignments. Historical migrations remain in the codebase only to
+provide a deterministic upgrade path from older `user_version` values; the
+current schema contains no Worker tables or Worker database role.
 
 ## Development
 
