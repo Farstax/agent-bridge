@@ -344,7 +344,16 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
           elif [ "\${FAKE_RESTART_COUNTER_HISTORY:-}" ] && [ ! -f "${fixture.root}/restart-counters-reset" ]; then echo "\${FAKE_RESTART_COUNTER_HISTORY}";
           elif [ "\${FAKE_FAIL_PHASE:-}" = delayed ] && [ -f "${fixture.root}/started" ]; then echo 1; else echo 0; fi
           ;;
-        TimersCalendar) [ "$unit" = agent-bridge-tmp-cleanup.timer ] && echo '*-*-* 03:30:00' || exit 2 ;;
+        TimersCalendar)
+          if [ "$unit" = agent-bridge-tmp-cleanup.timer ]; then
+            if [ -n "\${FAKE_CORRUPT_CLEANUP_UNIT:-}" ]; then
+              printf '\n' >> "${fixture.root}/etc/systemd/system/agent-bridge-tmp-cleanup.service"
+            fi
+            echo '*-*-* 03:30:00'
+          else
+            exit 2
+          fi
+          ;;
         *) exit 2 ;;
       esac
     done

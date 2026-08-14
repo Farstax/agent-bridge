@@ -505,6 +505,9 @@ describe("guarded rollout helper", () => {
     const systemdDir = join(fixture.root, "etc", "systemd", "system");
     expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8")).toContain("BRIDGE_CURRENT_RELEASE_DIR");
     expect(readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.timer"), "utf8")).toContain("OnCalendar=");
+    const installedCleanupService = readFileSync(join(systemdDir, "agent-bridge-tmp-cleanup.service"), "utf8");
+    expect(installedCleanupService).toContain("User=rollout-test");
+    expect(installedCleanupService).not.toContain("BRIDGE_USER");
     expect(existsSync(join(fixture.root, "daemon-reloaded"))).toBe(true);
     expect(existsSync(join(fixture.root, "cleanup-timer-enabled"))).toBe(true);
     expect(existsSync(join(fixture.root, "cleanup-timer-active"))).toBe(true);
@@ -513,6 +516,17 @@ describe("guarded rollout helper", () => {
     expect(log).toContain("systemctl:enable agent-bridge-tmp-cleanup.timer");
     expect(log).toContain("systemctl:show agent-bridge-tmp-cleanup.timer --property=TimersCalendar --value");
   }, 15_000);
+
+  it("rejects an installed cleanup service unit whose bytes were modified after being written", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_CORRUPT_CLEANUP_UNIT: "1" });
+
+    execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("installed cleanup unit hash mismatch");
+  }, 20_000);
 
   it("replaces an existing cleanup timer installation idempotently", () => {
     const fixture = createFixture();
