@@ -1,9 +1,7 @@
 import type Database from "better-sqlite3";
 import { schemaTablesForRole } from "./schema.js";
 
-// `worker` remains readable only as a historical database role. The installer
-// and rollout allowlists no longer create or operate it.
-export const DATABASE_ROLES = ["shared", "discord", "health", "interactive", "worker"] as const;
+export const DATABASE_ROLES = ["shared", "discord", "health", "interactive"] as const;
 export type DatabaseRole = (typeof DATABASE_ROLES)[number];
 
 export function canonicalSchemaTablesForRole(role: string = "shared"): readonly string[] {
