@@ -5,7 +5,6 @@ import { resolve, dirname } from "node:path";
 export default defineConfig({
   test: {
     env: { BRIDGE_SKIP_MEMORY_IMPORT: "1" },
-    setupFiles: ["./test/setupEnv.ts"],
   },
   // The default forks pool spawns one process per CPU (4 on the CI
   // runner). Each fork independently grows toward V8's ~4GB default
