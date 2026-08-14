@@ -26,7 +26,7 @@ describe("advisor configuration and policy", () => {
 
   it("allows explicit calls in manual mode and gates suggested/automatic calls", () => {
     expect(shouldAllowAdvisorCall("manual", "manual", false)).toBe(true);
-    expect(shouldAllowAdvisorCall("manual", "worker", false)).toBe(true);
+    expect(shouldAllowAdvisorCall("manual", "manual", false)).toBe(true);
     expect(shouldAllowAdvisorCall("manual", "suggest", true)).toBe(false);
     expect(shouldAllowAdvisorCall("suggest", "suggest", false)).toBe(false);
     expect(shouldAllowAdvisorCall("suggest", "suggest", true)).toBe(true);

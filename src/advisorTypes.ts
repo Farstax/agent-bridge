@@ -2,7 +2,7 @@ import type { ProviderId } from "./providers/types.js";
 
 export type AdvisorPolicyMode = "manual" | "suggest" | "auto";
 export type AdvisorRequestMode = "plan" | "review" | "debug" | "risk" | "decision" | "pr_ready";
-export type AdvisorOrigin = "manual" | "worker" | "suggest" | "auto";
+export type AdvisorOrigin = "manual" | "suggest" | "auto";
 export type AdvisorConfidence = "low" | "medium" | "high";
 export type AdvisorDebugVerdict = "retry" | "needs_human" | "insufficient_evidence";
 export type AdvisorCheckpointDecision = "approve" | "reject";

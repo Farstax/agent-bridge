@@ -43,21 +43,21 @@ describe("unified advisor service", () => {
     db.close();
   });
 
-  it("executes worker checkpoint requests through the same tool-free path", async () => {
+  it("executes bounded evidence requests through the same tool-free path", async () => {
     const { db, runCli, service } = setup();
     await service.requestTrusted({
-      origin: "worker", scopeKey: "worker:task-9", taskKey: "task-9", mode: "plan", task: "Plan it",
-      activeProvider: "codex", activeModel: null, cwd: "/worker/repo",
+      origin: "manual", scopeKey: "manual:task-9", taskKey: "task-9", mode: "plan", task: "Plan it",
+      activeProvider: "codex", activeModel: null, cwd: "/tmp/repo",
       evidence: { diffSummary: "diff", testOutput: "tests" },
     });
     expect(runCli).toHaveBeenCalledWith(
       "/trusted/claude",
       expect.arrayContaining(["--tools", ""]),
-      "/worker/repo",
+      "/tmp/repo",
       expect.objectContaining({ advisorChild: true }),
     );
     const call = db.raw.prepare("SELECT scope_key, task_key, trigger FROM advisor_calls").get() as any;
-    expect(call).toMatchObject({ scope_key: "worker:task-9", task_key: "task-9", trigger: "worker" });
+    expect(call).toMatchObject({ scope_key: "manual:task-9", task_key: "task-9", trigger: "manual" });
     db.close();
   });
 

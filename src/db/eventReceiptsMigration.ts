@@ -7,7 +7,7 @@ import type Database from "better-sqlite3";
  * re-executing work. Correlates to the ordinary owning bridge_runs row (the
  * "Run" in the issue's architecture diagram) the event triggered, and the
  * eventual result reference. Deliberately has no work_item/work_job
- * columns: routing this event through the Worker work_item/work_job/
+ * columns: routing this event through the historical work_item/work_job/
  * task_type taxonomy was the original (superseded) design and would
  * recreate the mechanical workflow layer issue #347 removes.
  *

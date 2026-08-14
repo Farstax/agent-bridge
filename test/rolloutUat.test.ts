@@ -248,7 +248,7 @@ describe.runIf(REAL_SYSTEMD)("Phase 4C.5 UAT — real systemd, non-production fi
   afterEach(() => releaseSystemdLock());
 
   it(
-    "runs a full successful rollout across all seven real units and the five PR #147 role-specific legacy fixtures",
+    "runs a full successful rollout across all active units and role-specific legacy fixtures",
     async () => {
       const fixture = createFixture();
       seedRoleFixtures(fixture);
@@ -265,7 +265,7 @@ describe.runIf(REAL_SYSTEMD)("Phase 4C.5 UAT — real systemd, non-production fi
         expect(existsSync(join(fixture.logDir, ".rollout-in-progress")), "sentinel must be gone after DONE").toBe(false);
 
         // Each role-specific legacy shape actually migrated and validated —
-        // not just five identical minimal databases changing bytes.
+        // not just identical minimal databases changing bytes.
         for (const path of fixture.dbPaths) {
           const db = new Database(path, { readonly: true });
           try {

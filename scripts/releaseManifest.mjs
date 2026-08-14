@@ -39,7 +39,6 @@ const REQUIRED_SOURCE_TSX_ENTRYPOINTS = [
   "src/index-interactive.ts",
   "src/index-discord-interactive.ts",
   "src/index-health.ts",
-  "src/index-worker.ts",
 ];
 
 // Derives the packaging strategy from the packaged package.json itself, not from any flag the

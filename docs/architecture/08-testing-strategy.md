@@ -1,5 +1,8 @@
 # 08 — Testing Strategy
 
+> Historical Worker-specific test sections are retired. Current acceptance
+> follows [overview.md](overview.md) and ordinary Run boundaries.
+
 Strict red-green-refactor applies to every behaviour change. Acceptance and boundary tests are written before implementation; deterministic evidence outranks model claims.
 
 ## Test layers

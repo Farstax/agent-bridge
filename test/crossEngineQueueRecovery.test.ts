@@ -7,7 +7,7 @@ import {
   dispatchInteractiveWithFallback,
   setUserCliPreference,
 } from "../src/interactiveBot.js";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 
 const SURFACE = "telegram:interactive";
 
@@ -95,7 +95,7 @@ describe("cross-engine queue recovery", () => {
     };
     const deps = {
       engines,
-      fallbackChain: new WorkerFallbackChain(["codex", "claude"], db),
+      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -146,7 +146,7 @@ describe("cross-engine queue recovery", () => {
     };
     const deps = {
       engines,
-      fallbackChain: new WorkerFallbackChain(["codex", "claude"], db),
+      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),

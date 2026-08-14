@@ -6,12 +6,12 @@
 import Database from "better-sqlite3";
 
 // All five production entrypoints (index.ts, index-discord-interactive.ts,
-// index-worker.ts, index-health.ts, index-interactive.ts) call the same
+// index-health.ts, index-interactive.ts) call the same
 // openDb() against the same schema — verified by inspection of each
 // entrypoint's openDb() call site. The roles differ only by serviceId and
 // database file path, so one fixed legacy-shape fixture is parameterized
 // across all five rather than duplicated per role.
-export const ROLE_FIXTURES = ["shared", "discord", "health", "interactive", "worker"] as const;
+export const ROLE_FIXTURES = ["shared", "discord", "health", "interactive"] as const;
 
 /**
  * Fixed pre-versioned SQL modeling the actual legacy on-disk shape observed

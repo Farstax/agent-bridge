@@ -18,7 +18,6 @@ units=(
   agent-bridge-discord-interactive.service
   agent-bridge-health.service
   agent-bridge-interactive.service
-  agent-bridge-worker-bot.service
 )
 
 echo "Restarting agent bridge services in ${delay}s..."

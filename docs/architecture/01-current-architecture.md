@@ -1,4 +1,7 @@
-# 01 — Current Architecture
+# 01 — Current Architecture (historical baseline)
+
+> Historical snapshot. The Engineering Worker described below was removed
+> after issue #347. Use [overview.md](overview.md) for current behaviour.
 
 Status: current architecture record · Validated against the Slice 1 branch `agent/issue-161-role-assignment-persistence` on 20 July 2026 · Exact review head and checks are recorded in PR #174.
 

@@ -26,7 +26,7 @@ import { loadBotsConfig, resolveBusyMessageMode, validateBusyMessageModeEnv } fr
 import { DiscordClient, type DiscordUpdate } from "./discord.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
-import { WorkerFallbackChain } from "./workerFallback.js";
+import { ProviderFallbackChain } from "./providerFallback.js";
 import type { MessagingPlatform } from "./platform.js";
 import {
   getUserCliPreference,
@@ -105,7 +105,7 @@ const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots
 
 const cliChain = (process.env.INTERACTIVE_CLI_CHAIN || "codex,claude,antigravity")
   .split(",").map((s) => s.trim()).filter(Boolean);
-const fallbackChain = new WorkerFallbackChain(cliChain, db);
+const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();
 const snowflakeAliases = new Map<string, string>();

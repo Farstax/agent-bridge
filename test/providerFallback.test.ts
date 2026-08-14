@@ -1,18 +1,18 @@
 /**
- * Tests for WorkerFallbackChain — per-chat CLI fallback state.
+ * Tests for ProviderFallbackChain — per-chat CLI fallback state.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { openDb, BridgeDb } from "../src/db.js";
 
-describe("WorkerFallbackChain", () => {
+describe("ProviderFallbackChain", () => {
   let db: BridgeDb;
-  let chain: WorkerFallbackChain;
+  let chain: ProviderFallbackChain;
 
   beforeEach(() => {
     db = openDb(":memory:");
-    chain = new WorkerFallbackChain(["codex", "claude", "antigravity"], db);
+    chain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
   });
 
   describe("getActiveCli", () => {
@@ -27,7 +27,7 @@ describe("WorkerFallbackChain", () => {
     });
 
     it("does not exceed chain bounds after multiple advances", () => {
-      const c = new WorkerFallbackChain(["codex", "claude"], db);
+      const c = new ProviderFallbackChain(["codex", "claude"], db);
       c.advance("chat:1");
       c.advance("chat:1"); // beyond end — should clamp to last
       expect(c.getActiveCli("chat:1")).toBe("claude");
@@ -40,7 +40,7 @@ describe("WorkerFallbackChain", () => {
     });
 
     it("returns null when already at the last CLI", () => {
-      const c = new WorkerFallbackChain(["codex", "claude"], db);
+      const c = new ProviderFallbackChain(["codex", "claude"], db);
       c.advance("chat:1"); // now at claude
       expect(c.advance("chat:1")).toBeNull(); // exhausted
     });
@@ -54,7 +54,7 @@ describe("WorkerFallbackChain", () => {
   describe("getChain", () => {
     it("returns a copy of the fallback chain array", () => {
       const chainList = ["codex", "claude", "antigravity"];
-      const c = new WorkerFallbackChain(chainList, db);
+      const c = new ProviderFallbackChain(chainList, db);
       expect(c.getChain()).toEqual(chainList);
       expect(c.getChain()).not.toBe(chainList);
     });
@@ -62,25 +62,25 @@ describe("WorkerFallbackChain", () => {
 
   describe("isChainExhausted", () => {
     it("returns false when not at the last CLI", () => {
-      const c = new WorkerFallbackChain(["codex", "claude"], db);
+      const c = new ProviderFallbackChain(["codex", "claude"], db);
       expect(c.isChainExhausted("chat:1")).toBe(false);
     });
 
     it("returns true when at the last CLI", () => {
-      const c = new WorkerFallbackChain(["codex", "claude"], db);
+      const c = new ProviderFallbackChain(["codex", "claude"], db);
       c.advance("chat:1");
       expect(c.isChainExhausted("chat:1")).toBe(true);
     });
 
     it("returns true for a single-item chain", () => {
-      const c = new WorkerFallbackChain(["codex"], db);
+      const c = new ProviderFallbackChain(["codex"], db);
       expect(c.isChainExhausted("chat:1")).toBe(true);
     });
   });
 
   describe("resetToHead", () => {
     it("resets the active CLI back to the first in the chain", () => {
-      const c = new WorkerFallbackChain(["codex", "claude"], db);
+      const c = new ProviderFallbackChain(["codex", "claude"], db);
       c.advance("chat:1");
       c.resetToHead("chat:1");
       expect(c.getActiveCli("chat:1")).toBe("codex");

@@ -19,7 +19,6 @@ describe("Issue #135 Phase 3D: internal ownership boundaries", () => {
   it("entrypoints import config, database, and supervisor owners directly", () => {
     for (const file of [
       "src/index.ts",
-      "src/index-worker.ts",
       "src/index-interactive.ts",
       "src/index-discord-interactive.ts",
       "src/index-health.ts",

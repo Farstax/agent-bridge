@@ -14,7 +14,7 @@ describe("doctor diagnostics", () => {
 
   it("reports provider commands as missing when the executable does not resolve", () => {
     const report = runDoctor({
-      env: { WORKER_CLI_CHAIN: "codex,claude,antigravity,kimchi" },
+      env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity,kimchi" },
       commandExists: noneFound,
     });
     expect(report.providers.length).toBeGreaterThan(0);
@@ -29,8 +29,6 @@ describe("doctor diagnostics", () => {
 
     expect(report.chains.find((chain) => chain.name === "INTERACTIVE_CLI_CHAIN")?.entries)
       .toEqual(["codex", "claude", "antigravity", "kimchi"]);
-    expect(report.chains.find((chain) => chain.name === "WORKER_CLI_CHAIN")?.entries)
-      .toEqual(["codex", "claude", "antigravity"]);
     expect(report.ok).toBe(false);
   });
 
@@ -38,9 +36,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
-        WORKER_CLI_CHAIN: "codex",
-        WORKER_CODE_CLI_CHAIN: "codex",
-        WORKER_SCRIBE_CLI_CHAIN: "codex",
+        INTERACTIVE_CLI_CHAIN: "codex",
       },
       commandExists: (executable) => executable === "codex",
     });
@@ -61,10 +57,10 @@ describe("doctor diagnostics", () => {
 
   it("accepts a parseable fallback chain", () => {
     const report = runDoctor({
-      env: { WORKER_CLI_CHAIN: "codex,claude,antigravity" },
+      env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity" },
       commandExists: allFound,
     });
-    const chain = report.chains.find((c) => c.name === "WORKER_CLI_CHAIN");
+    const chain = report.chains.find((c) => c.name === "INTERACTIVE_CLI_CHAIN");
     expect(chain?.ok).toBe(true);
     expect(chain?.entries).toEqual(["codex", "claude", "antigravity"]);
   });
@@ -100,7 +96,7 @@ describe("doctor diagnostics", () => {
 
   it("is ok when providers exist, chains parse, and env is present", () => {
     const report = runDoctor({
-      env: { WORKER_CLI_CHAIN: "codex,claude" },
+      env: { INTERACTIVE_CLI_CHAIN: "codex,claude" },
       commandExists: allFound,
     });
     expect(report.ok).toBe(true);

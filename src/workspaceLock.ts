@@ -26,7 +26,7 @@ const FLOCK_CANDIDATES = ["/usr/bin/flock", "/bin/flock"];
 /**
  * Workspace locking is enabled by default for fail-safe compatibility. The
  * companion/provider services can explicitly opt out because they share the
- * canonical checkout by design; worker jobs retain locking in their isolated
+ * canonical checkout by design; ordinary runs retain locking in their isolated
  * worktrees.
  */
 function workspaceLockEnabled(): boolean {

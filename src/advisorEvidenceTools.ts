@@ -69,7 +69,7 @@ export interface AdvisorEvidenceToolLimits {
   timeoutMs: number;
 }
 
-export interface AdvisorWorkerEvidence {
+export interface AdvisorEvidence {
   acceptance?: string;
   plan?: string;
   testFailures?: string;
@@ -347,7 +347,7 @@ export class AdvisorEvidenceToolBroker {
   constructor(private readonly options: {
     repoPath: string;
     runGit?: RunGit;
-    evidence?: AdvisorWorkerEvidence;
+    evidence?: AdvisorEvidence;
     limits?: Partial<AdvisorEvidenceToolLimits>;
     audit?: (event: AdvisorEvidenceAuditEvent) => void;
   }) {
@@ -532,17 +532,17 @@ export class AdvisorEvidenceToolBroker {
       case "git.log":
         return this.runGit(this.gitArgs(["log", `-${request.count ?? 10}`, "--date=iso-strict", "--pretty=format:%H%x09%ad%x09%s"]), deadline, false, request.repoPath);
       case "evidence.acceptance":
-        return this.workerEvidence("acceptance");
+        return this.evidence("acceptance");
       case "evidence.plan":
-        return this.workerEvidence("plan");
+        return this.evidence("plan");
       case "evidence.test_failures":
-        return this.workerEvidence("testFailures");
+        return this.evidence("testFailures");
       case "evidence.attempt_summary":
-        return this.workerEvidence("attemptSummary");
+        return this.evidence("attemptSummary");
     }
   }
 
-  private workerEvidence(key: keyof AdvisorWorkerEvidence): EvidencePayload {
+  private evidence(key: keyof AdvisorEvidence): EvidencePayload {
     const value = this.options.evidence?.[key];
     if (!value) throw new Error(`Advisor evidence unavailable: ${key}`);
     return { content: value, complete: true };

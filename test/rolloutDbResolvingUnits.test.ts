@@ -101,14 +101,14 @@ describe("rollout-db.ts inspect resolving-units evidence", () => {
     const res = runInspect([
       "--db", first,
       "--db", second,
-      "--resolving-unit", `${first}=agent-bridge-worker-bot.service`,
+      "--resolving-unit", `${first}=agent-bridge-interactive.service`,
       "--resolving-unit", `${second}=agent-bridge-health.service`,
       "--evidence", evidencePath,
     ]);
     expect(res.status, res.stderr).toBe(0);
     const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
     const byPath = Object.fromEntries(evidence.databases.map((d: any) => [d.path, d.resolvingUnits]));
-    expect(byPath[first]).toEqual(["agent-bridge-worker-bot.service"]);
+    expect(byPath[first]).toEqual(["agent-bridge-interactive.service"]);
     expect(byPath[second]).toEqual(["agent-bridge-health.service"]);
   });
 

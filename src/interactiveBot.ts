@@ -7,7 +7,7 @@
 import type { BridgeDb } from "./db.js";
 import type { TelegramUpdate } from "./types.js";
 import { buildTelegramCommands } from "./commands.js";
-import { WorkerFallbackChain } from "./workerFallback.js";
+import { ProviderFallbackChain } from "./providerFallback.js";
 import { markHandoffRequired } from "./handoffState.js";
 import { shouldCompactBeforeFallback, recordFallbackCompactSuccess } from "./fallbackCompactCooldown.js";
 import type { CompactConversationResult } from "./compactConversation.js";
@@ -280,7 +280,7 @@ export interface InteractiveDispatchEngine {
 
 export interface InteractiveDispatchDeps {
   engines: Record<string, InteractiveDispatchEngine>;
-  fallbackChain: WorkerFallbackChain;
+  fallbackChain: ProviderFallbackChain;
   exhaustedChats: Set<string>;
   db: BridgeDb;
   notify: (msg: string) => Promise<void> | void;
@@ -300,9 +300,9 @@ export interface InteractiveDispatchDeps {
  * from the persisted preference. Scope the transient state to the fallback
  * chain instance so identical chat IDs on other surfaces cannot collide.
  */
-const pendingFallbackTries = new WeakMap<WorkerFallbackChain, Map<string, Set<string>>>();
+const pendingFallbackTries = new WeakMap<ProviderFallbackChain, Map<string, Set<string>>>();
 
-function fallbackTryMap(chain: WorkerFallbackChain): Map<string, Set<string>> {
+function fallbackTryMap(chain: ProviderFallbackChain): Map<string, Set<string>> {
   let pending = pendingFallbackTries.get(chain);
   if (!pending) {
     pending = new Map();
@@ -311,11 +311,11 @@ function fallbackTryMap(chain: WorkerFallbackChain): Map<string, Set<string>> {
   return pending;
 }
 
-function markPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string, tried: ReadonlySet<string>): void {
+function markPendingFallbackResume(chain: ProviderFallbackChain, chatKey: string, tried: ReadonlySet<string>): void {
   fallbackTryMap(chain).set(chatKey, new Set(tried));
 }
 
-function consumePendingFallbackResume(chain: WorkerFallbackChain, chatKey: string): Set<string> | null {
+function consumePendingFallbackResume(chain: ProviderFallbackChain, chatKey: string): Set<string> | null {
   const pending = pendingFallbackTries.get(chain);
   const tried = pending?.get(chatKey) ?? null;
   if (!tried) return null;
@@ -324,7 +324,7 @@ function consumePendingFallbackResume(chain: WorkerFallbackChain, chatKey: strin
   return tried;
 }
 
-function clearPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string): void {
+function clearPendingFallbackResume(chain: ProviderFallbackChain, chatKey: string): void {
   const pending = pendingFallbackTries.get(chain);
   if (!pending) return;
   pending.delete(chatKey);
@@ -332,7 +332,7 @@ function clearPendingFallbackResume(chain: WorkerFallbackChain, chatKey: string)
 }
 
 /** Invalidates one lane's process-local capacity-fallback continuation state. */
-export function clearInteractiveFallbackState(chain: WorkerFallbackChain, chatKey: string): void {
+export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chatKey: string): void {
   clearPendingFallbackResume(chain, chatKey);
 }
 

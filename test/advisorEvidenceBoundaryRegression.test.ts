@@ -60,8 +60,8 @@ describe("advisor evidence boundary regressions", () => {
 
     try {
       await service.requestTrusted({
-        origin: "worker",
-        scopeKey: "worker:redaction",
+        origin: "manual",
+        scopeKey: "manual:redaction",
         taskKey: "redaction",
         mode: "review",
         task: "Review client_secret=task-secret",

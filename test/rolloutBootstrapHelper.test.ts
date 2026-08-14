@@ -54,7 +54,7 @@ function createFixture(options: { allowlist?: string[]; preExisting?: boolean } 
   const newRolePath = join(dbDir, "new-role.sqlite");
   if (options.preExisting) writeFileSync(newRolePath, "already here");
 
-  const allowlist = options.allowlist ?? [`worker:${newRolePath}`];
+  const allowlist = options.allowlist ?? [`interactive:${newRolePath}`];
   writeFileSync(configFile, [
     `project_dir=${project}`,
     "runtime_user=rollout-test",
@@ -110,7 +110,7 @@ describe("rollout-bootstrap.sh", () => {
 
   it("bootstraps an allowlisted role/path pair for a genuinely missing database", () => {
     const fixture = createFixture();
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
     expect(res.status, res.stderr).toBe(0);
     expect(existsSync(fixture.newRolePath)).toBe(true);
     const db = new Database(fixture.newRolePath, { readonly: true });
@@ -128,7 +128,7 @@ describe("rollout-bootstrap.sh", () => {
 
   it("refuses a role/path pair that isn't on the allowlist even when the role alone is valid", () => {
     const fixture = createFixture({ allowlist: ["discord:/nonexistent/discord.sqlite"] });
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/allowlist/i);
     expect(existsSync(fixture.newRolePath)).toBe(false);
@@ -137,7 +137,7 @@ describe("rollout-bootstrap.sh", () => {
   it("refuses the correct path under the wrong role (role/path pair must match exactly, not just the path)", () => {
     const probe = createFixture();
     const target = join(probe.root, "databases", "shared.sqlite");
-    const fixture = createFixture({ allowlist: [`worker:${target}`] });
+    const fixture = createFixture({ allowlist: [`interactive:${target}`] });
     const res = runBootstrapHelper(fixture, "discord", target, target);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/allowlist/i);
@@ -147,7 +147,7 @@ describe("rollout-bootstrap.sh", () => {
   it("refuses a target not on the fixed bootstrap allowlist at all", () => {
     const fixture = createFixture();
     const outsidePath = join(fixture.root, "databases", "not-allowed.sqlite");
-    const res = runBootstrapHelper(fixture, "worker", outsidePath, outsidePath);
+    const res = runBootstrapHelper(fixture, "interactive", outsidePath, outsidePath);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/allowlist/i);
     expect(existsSync(outsidePath)).toBe(false);
@@ -155,7 +155,7 @@ describe("rollout-bootstrap.sh", () => {
 
   it("refuses when --confirm-new-role does not exactly match --new-role", () => {
     const fixture = createFixture();
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, `${fixture.newRolePath}.other`);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, `${fixture.newRolePath}.other`);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/confirm-new-role/i);
     expect(existsSync(fixture.newRolePath)).toBe(false);
@@ -163,7 +163,7 @@ describe("rollout-bootstrap.sh", () => {
 
   it("refuses when the target already exists (not a genuinely missing database)", () => {
     const fixture = createFixture({ preExisting: true });
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/already exists/i);
   });
@@ -171,14 +171,14 @@ describe("rollout-bootstrap.sh", () => {
   it("refuses when the target is a dangling symlink", () => {
     const fixture = createFixture();
     symlinkSync(join(fixture.root, "databases", "nowhere.sqlite"), fixture.newRolePath);
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/already exists/i);
   });
 
   it("refuses a relative target path", () => {
-    const fixture = createFixture({ allowlist: ["worker:relative/path.sqlite"] });
-    const res = runBootstrapHelper(fixture, "worker", "relative/path.sqlite", "relative/path.sqlite");
+    const fixture = createFixture({ allowlist: ["interactive:relative/path.sqlite"] });
+    const res = runBootstrapHelper(fixture, "interactive", "relative/path.sqlite", "relative/path.sqlite");
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/absolute/i);
   });
@@ -186,7 +186,7 @@ describe("rollout-bootstrap.sh", () => {
   it("refuses when the parent directory is world-writable", () => {
     const fixture = createFixture();
     execFileSync("chmod", ["0777", join(fixture.root, "databases")]);
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/writable/i);
   });
@@ -204,7 +204,7 @@ describe("rollout-bootstrap.sh", () => {
     // process itself) — proving the mismatch is what's actually checked,
     // not merely that some ownership value happens to be logged.
     const fixture = createFixture();
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath, {
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath, {
       FAKE_RUNTIME_UID: "424242",
     });
     expect(res.status).not.toBe(0);
@@ -215,8 +215,8 @@ describe("rollout-bootstrap.sh", () => {
   it("refuses when the parent directory is missing", () => {
     const fixture = createFixture();
     const target = join(fixture.root, "databases", "nope", "new-role.sqlite");
-    const withMissingParentAllowed = createFixture({ allowlist: [`worker:${target}`] });
-    const res = runBootstrapHelper(withMissingParentAllowed, "worker", target, target);
+    const withMissingParentAllowed = createFixture({ allowlist: [`interactive:${target}`] });
+    const res = runBootstrapHelper(withMissingParentAllowed, "interactive", target, target);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/missing or symlinked/i);
     expect(existsSync(target)).toBe(false);
@@ -225,7 +225,7 @@ describe("rollout-bootstrap.sh", () => {
   it("refuses a malformed bootstrap_role config entry (missing the role: prefix)", () => {
     const fixture = createFixture({ allowlist: [] });
     execFileSync("bash", ["-c", `echo "bootstrap_role=${fixture.newRolePath}" >> "${fixture.configFile}"`]);
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/role:absolute-path/i);
   });
@@ -233,7 +233,7 @@ describe("rollout-bootstrap.sh", () => {
   it("refuses without a fixed config file", () => {
     const fixture = createFixture();
     execFileSync("rm", ["-f", fixture.configFile]);
-    const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+    const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
     expect(res.status).not.toBe(0);
     expect(res.stderr).toMatch(/missing fixed bootstrap config/i);
   });
@@ -254,7 +254,7 @@ describe("rollout-bootstrap.sh", () => {
         exit 1
       `]);
       expect(waitUntilLocked.status, "lock holder never acquired the lock").toBe(0);
-      const res = runBootstrapHelper(fixture, "worker", fixture.newRolePath, fixture.newRolePath);
+      const res = runBootstrapHelper(fixture, "interactive", fixture.newRolePath, fixture.newRolePath);
       expect(res.status).not.toBe(0);
       expect(res.stderr).toMatch(/already active/i);
       expect(existsSync(fixture.newRolePath)).toBe(false);

@@ -16,8 +16,6 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     defaultArgs: ["--approval-mode", "full-auto"],
     capabilities: {
       interactive: true,
-      worker: true,
-      workerChain: true,
       fallbackTarget: true,
       toolFree: true,
     },
@@ -30,8 +28,6 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     defaultArgs: ["--dangerously-skip-permissions"],
     capabilities: {
       interactive: true,
-      worker: true,
-      workerChain: true,
       fallbackTarget: true,
       toolFree: true,
     },
@@ -44,8 +40,6 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     defaultArgs: ["--print"],
     capabilities: {
       interactive: true,
-      worker: false,
-      workerChain: true,
       fallbackTarget: true,
       toolFree: true,
     },
@@ -59,8 +53,6 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     defaultArgs: ["--print"],
     capabilities: {
       interactive: true,
-      worker: false,
-      workerChain: false,
       fallbackTarget: true,
       toolFree: false,
     },

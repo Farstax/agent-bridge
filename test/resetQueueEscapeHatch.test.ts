@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine, type PendingMessage } from "../src/engine.js";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 import * as interactiveBot from "../src/interactiveBot.js";
 
 function makeMockClient() {
@@ -65,7 +65,7 @@ describe("/reset queue escape hatch", () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const engine = makeResetEngine(db, client);
-    const fallbackChain = new WorkerFallbackChain(["codex"], db);
+    const fallbackChain = new ProviderFallbackChain(["codex"], db);
 
     db.setSession("100", "codex", "stuck-session");
     db.setSession("200", "codex", "other-session");
@@ -108,7 +108,7 @@ describe("/reset queue escape hatch", () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const exhaustedChats = new Set<string>();
-    const fallbackChain = new WorkerFallbackChain(["codex", "claude", "antigravity"], db);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
 
     const codexInitial = {
       handleUpdate: vi.fn(async () => { exhaustedChats.add("100"); }),

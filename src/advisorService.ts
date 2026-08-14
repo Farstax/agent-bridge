@@ -2,14 +2,14 @@
  * PURPOSE: Single trusted entry point for every advisor request origin.
  * INPUTS: Bridge-owned config, bots, db, and per-request trusted scope details.
  * OUTPUTS: AdvisorResult produced by the shared mutation-free execution path.
- * NEIGHBORS: src/advisor.ts, src/advisorBroker.ts, src/engine.ts, src/index-worker.ts
+ * NEIGHBORS: src/advisor.ts, src/advisorBroker.ts, src/engine.ts
  */
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { executeAdvisorInvestigation, executeAdvisorRequest } from "./advisor.js";
 import { redactAdvisorEvidenceText } from "./advisorEvidenceRedaction.js";
-import { AdvisorEvidenceToolBroker, type AdvisorWorkerEvidence } from "./advisorEvidenceTools.js";
+import { AdvisorEvidenceToolBroker, type AdvisorEvidence } from "./advisorEvidenceTools.js";
 import type { AdvisorExecutionProfile } from "./advisorPolicy.js";
 import type { AdvisorConfig, AdvisorOrigin, AdvisorRequest, AdvisorRequestMode, AdvisorResult } from "./advisorTypes.js";
 import type { BridgeDb } from "./db.js";
@@ -29,7 +29,7 @@ export interface TrustedAdvisorRequest {
   cwd: string;
   approved?: boolean;
   evidence?: AdvisorRequest["evidence"];
-  /** Optional caller-supplied read-only broker, including worker-specific evidence. */
+  /** Optional caller-supplied read-only broker with bounded evidence. */
   evidenceTools?: AdvisorEvidenceToolBroker;
 }
 
@@ -56,7 +56,7 @@ function createRepositoryEvidenceTools(
     return undefined;
   }
 
-  const workerEvidence: AdvisorWorkerEvidence = {
+  const evidenceValues: AdvisorEvidence = {
     ...(evidence?.acceptanceCriteria ? { acceptance: evidence.acceptanceCriteria } : {}),
     ...(evidence?.plan ? { plan: evidence.plan } : {}),
     ...(evidence?.testOutput ? { testFailures: evidence.testOutput } : {}),
@@ -64,7 +64,7 @@ function createRepositoryEvidenceTools(
   };
   return new AdvisorEvidenceToolBroker({
     repoPath: request.cwd,
-    ...(Object.keys(workerEvidence).length > 0 ? { evidence: workerEvidence } : {}),
+    ...(Object.keys(evidenceValues).length > 0 ? { evidence: evidenceValues } : {}),
   });
 }
 

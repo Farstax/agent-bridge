@@ -10,14 +10,12 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { RoleAssignmentConfig } from "./agentRoles.js";
 import { LockRepository, type ExecutionLaneHandle, type ExecutionLockRecord } from "./repositories/lockRepository.js";
 export type { ExecutionLaneHandle } from "./repositories/lockRepository.js";
 import { MemoryRepository } from "./repositories/memoryRepository.js";
 import { RunRepository, type RunningRun } from "./repositories/runRepository.js";
 import { SessionRepository } from "./repositories/sessionRepository.js";
 import { SettingsRepository } from "./repositories/settingsRepository.js";
-import { WorkQueueRepository } from "./repositories/workQueueRepository.js";
 import { EventReceiptRepository } from "./repositories/eventReceiptRepository.js";
 import {
   CompactionRepository,
@@ -25,11 +23,6 @@ import {
   type CompactionAttemptRecord,
 } from "./repositories/compactionRepository.js";
 import { AdvisorRepository } from "./repositories/advisorRepository.js";
-import {
-  RoleAssignmentRepository,
-  type RoleAssignmentRevisionRecord,
-} from "./repositories/roleAssignmentRepository.js";
-export type { RoleAssignmentRevisionRecord } from "./repositories/roleAssignmentRepository.js";
 
 type OrphanProcessState = "live" | "absent" | "ambiguous";
 export type ReconciliationContainment = "proven" | "unproven" | "ambiguous";
@@ -298,12 +291,10 @@ export class BridgeDb {
   private readonly locks: LockRepository;
   private readonly settings: SettingsRepository;
   private readonly runs: RunRepository;
-  private readonly workQueue: WorkQueueRepository;
   private readonly eventReceipts: EventReceiptRepository;
   private readonly memories: MemoryRepository;
   private readonly compactions: CompactionRepository;
   private readonly advisorCalls: AdvisorRepository;
-  private readonly roleAssignments: RoleAssignmentRepository;
   private readonly conversations: ConversationRepository;
 
   constructor(raw: Database.Database, lockOptions: {
@@ -315,12 +306,10 @@ export class BridgeDb {
     this.lockHeartbeatMs = Math.max(100, Math.floor(lockOptions.leaseMs / 3));
     this.settings = new SettingsRepository(raw);
     this.runs = new RunRepository(raw);
-    this.workQueue = new WorkQueueRepository(raw);
     this.eventReceipts = new EventReceiptRepository(raw);
     this.memories = new MemoryRepository(raw);
     this.compactions = new CompactionRepository(raw);
     this.advisorCalls = new AdvisorRepository(raw);
-    this.roleAssignments = new RoleAssignmentRepository(raw);
     this.conversations = new ConversationRepository(raw);
   }
 
@@ -426,20 +415,6 @@ export class BridgeDb {
     return this.advisorCalls.getAdvisorAttempts(requestId);
   }
 
-  // ── Dormant role assignment revisions ───────────────────────────────────
-
-  createRoleAssignmentRevision(input: RoleAssignmentConfig): RoleAssignmentRevisionRecord {
-    return this.roleAssignments.createRevision(input);
-  }
-
-  getCurrentRoleAssignmentRevision(scopeKey: string): RoleAssignmentRevisionRecord | null {
-    return this.roleAssignments.getCurrentRevision(scopeKey);
-  }
-
-  listRoleAssignmentRevisions(scopeKey: string): RoleAssignmentRevisionRecord[] {
-    return this.roleAssignments.listRevisions(scopeKey);
-  }
-
   getChatRepo(chatId: string): string | null {
     return this.settings.getChatRepo(chatId);
   }
@@ -480,40 +455,6 @@ export class BridgeDb {
     return this.runs.getEventsForRun(runId);
   }
 
-  // ── Work items ───────────────────────────────────────────────────────────
-
-  createWorkItem(input: {
-    kind: string;
-    source: string;
-    title: string;
-    created_by: string;
-    repository?: string;
-    body?: string;
-    priority?: string;
-  }): WorkItem {
-    return this.workQueue.createWorkItem(input);
-  }
-
-  getWorkItem(id: number): WorkItem | null {
-    return this.workQueue.getWorkItem(id);
-  }
-
-  listWorkItems(filter: { status?: string } = {}): WorkItem[] {
-    return this.workQueue.listWorkItems(filter);
-  }
-
-  updateWorkItemStatus(id: number, status: string): void {
-    this.workQueue.updateWorkItemStatus(id, status);
-  }
-
-  updateWorkItemBody(id: number, body: string): void {
-    this.workQueue.updateWorkItemBody(id, body);
-  }
-
-  updateWorkItemTitleAndBody(id: number, title: string, body: string | null): void {
-    this.workQueue.updateWorkItemTitleAndBody(id, title, body);
-  }
-
   // ── Event receipts ───────────────────────────────────────────────────────
 
   createEventReceipt(input: {
@@ -550,175 +491,6 @@ export class BridgeDb {
     input: { status: "completed" | "failed" | "cancelled"; result_reference: string | null; error_class: string | null },
   ): void {
     this.eventReceipts.recordResult(id, input);
-  }
-
-  // ── Work jobs ────────────────────────────────────────────────────────────
-
-  createWorkJob(input: {
-    task_type: string;
-    idempotency_key: string;
-    work_item_id?: number | null;
-    bot?: string;
-    input_json?: object;
-    max_attempts?: number;
-  }): WorkJob {
-    return this.workQueue.createWorkJob(input);
-  }
-
-  getWorkJob(id: number): WorkJob | null {
-    return this.workQueue.getWorkJob(id);
-  }
-
-  listWorkJobs(filter: { status?: string } = {}): WorkJob[] {
-    return this.workQueue.listWorkJobs(filter);
-  }
-
-  // ── Job lease lifecycle ──────────────────────────────────────────────────
-
-  claimNextWorkJob(workerId: string, now: string, leaseSeconds: number, jobId?: number): WorkJob | null {
-    return this.workQueue.claimNextWorkJob(workerId, now, leaseSeconds, jobId);
-  }
-
-  markWorkJobRunning(jobId: number, workerId: string): void {
-    this.workQueue.markWorkJobRunning(jobId, workerId);
-  }
-
-  heartbeatWorkJob(jobId: number, workerId: string, now: string, leaseSeconds?: number): void {
-    this.workQueue.heartbeatWorkJob(jobId, workerId, now, leaseSeconds);
-  }
-
-  completeWorkJob(jobId: number, result: object, workerId: string): void {
-    this.workQueue.completeWorkJob(jobId, result, workerId);
-  }
-
-  failWorkJob(jobId: number, error: string, workerId: string): void {
-    this.workQueue.failWorkJob(jobId, error, workerId);
-  }
-
-  failWorkJobPermanently(jobId: number, error: string, workerId: string): void {
-    this.workQueue.failWorkJobPermanently(jobId, error, workerId);
-  }
-
-  /** Re-queue a job as pending with an updated phase and phaseData checkpoint. */
-  continueWorkJob(jobId: number, phase: string, phaseData: object, workerId: string): void {
-    this.workQueue.continueWorkJob(jobId, phase, phaseData, workerId);
-  }
-
-  recoverExpiredWorkJobs(now: string): number {
-    return this.workQueue.recoverExpiredWorkJobs(now);
-  }
-
-  cancelWorkJob(jobId: number, _reason: string): void {
-    this.workQueue.cancelWorkJob(jobId, _reason);
-  }
-
-  // ── Approvals ────────────────────────────────────────────────────────────
-
-  createApproval(input: {
-    approval_type: string;
-    requested_by: string;
-    work_item_id?: number | null;
-    job_id?: number | null;
-    expires_at?: string | null;
-    payload?: object;
-  }): Approval {
-    return this.workQueue.createApproval(input);
-  }
-
-  resolveApproval(id: number, decision: "approved" | "rejected", decidedBy: string, now: string = new Date().toISOString()): Approval {
-    return this.workQueue.resolveApproval(id, decision, decidedBy, now);
-  }
-
-  // ── GitHub links ─────────────────────────────────────────────────────────
-
-  linkGithubIssue(input: { work_item_id: number; repository: string; issue_number: number }): GithubLink {
-    return this.workQueue.linkGithubIssue(input);
-  }
-
-  getGithubIssueLink(repository: string, issueNumber: number): GithubLink | null {
-    return this.workQueue.getGithubIssueLink(repository, issueNumber);
-  }
-
-  linkGithubPr(input: { work_item_id: number; repository: string; pr_number: number; branch_name?: string; commit_sha?: string }): GithubLink {
-    return this.workQueue.linkGithubPr(input);
-  }
-
-  updatePrState(linkId: number, state: string): void {
-    this.workQueue.updatePrState(linkId, state);
-  }
-
-  listOpenAgentPrs(repository: string): GithubLink[] {
-    return this.workQueue.listOpenAgentPrs(repository);
-  }
-
-  listAllOpenAgentPrs(): GithubLink[] {
-    return this.workQueue.listAllOpenAgentPrs();
-  }
-
-  touchPrActivity(linkId: number, ts: string): void {
-    this.workQueue.touchPrActivity(linkId, ts);
-  }
-
-  setProofCommentSha(linkId: number, sha: string): void {
-    this.workQueue.setProofCommentSha(linkId, sha);
-  }
-
-  countDailyAgentPrs(repository: string): number {
-    return this.workQueue.countDailyAgentPrs(repository);
-  }
-
-  // ── Feature plans ────────────────────────────────────────────────────────
-
-  createFeaturePlan(input: { chatId: string; userId: string; brief: string }): FeaturePlan {
-    const { chatId, userId, brief } = input;
-    // Cancel any existing drafting plan for this chat before creating a new one
-    this.raw.prepare(
-      `UPDATE feature_plans SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-       WHERE chat_id = ? AND status = 'drafting'`
-    ).run(chatId);
-    return this.raw.prepare(
-      `INSERT INTO feature_plans (chat_id, user_id, brief) VALUES (?, ?, ?) RETURNING *`
-    ).get(chatId, userId, brief) as FeaturePlan;
-  }
-
-  getFeaturePlan(id: number): FeaturePlan | null {
-    return (this.raw.prepare(`SELECT * FROM feature_plans WHERE id = ?`).get(id) as FeaturePlan | undefined) ?? null;
-  }
-
-  getActivePlanForChat(chatId: string): FeaturePlan | null {
-    return (this.raw.prepare(
-      `SELECT * FROM feature_plans WHERE chat_id = ? AND status = 'drafting' ORDER BY id DESC LIMIT 1`
-    ).get(chatId) as FeaturePlan | undefined) ?? null;
-  }
-
-  updateFeaturePlanStatus(id: number, status: string): void {
-    this.raw.prepare(
-      `UPDATE feature_plans SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
-    ).run(status, id);
-  }
-
-  updateFeaturePlanScope(id: number, scope: object): void {
-    this.raw.prepare(
-      `UPDATE feature_plans SET scope_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
-    ).run(JSON.stringify(scope), id);
-  }
-
-  setWorkItemPlan(workItemId: number, planText: string, quality: object = {}): WorkItemPlan {
-    return this.raw.prepare(
-      `INSERT INTO work_item_plans (work_item_id, plan_text, quality_json)
-       VALUES (?, ?, ?)
-       ON CONFLICT(work_item_id) DO UPDATE SET
-         plan_text = excluded.plan_text,
-         quality_json = excluded.quality_json,
-         updated_at = CURRENT_TIMESTAMP
-       RETURNING *`
-    ).get(workItemId, planText, JSON.stringify(quality)) as WorkItemPlan;
-  }
-
-  getWorkItemPlan(workItemId: number): WorkItemPlan | null {
-    return (this.raw.prepare(
-      `SELECT * FROM work_item_plans WHERE work_item_id = ? LIMIT 1`
-    ).get(workItemId) as WorkItemPlan | undefined) ?? null;
   }
 
   async reconcileOrphanedRuns(options: OrphanReconciliationOptions): Promise<Array<RunningRun & { ended_at: string }>> {
@@ -1286,41 +1058,6 @@ export class BridgeDb {
 
 // ── Domain types ─────────────────────────────────────────────────────────────
 
-export interface WorkItem {
-  id: number;
-  kind: string;
-  source: string;
-  repository: string | null;
-  title: string;
-  body: string | null;
-  status: string;
-  priority: string;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkJob {
-  id: number;
-  work_item_id: number | null;
-  task_type: string;
-  status: string;
-  bot: string | null;
-  lease_owner: string | null;
-  lease_expires_at: string | null;
-  heartbeat_at: string | null;
-  attempt_count: number;
-  max_attempts: number;
-  idempotency_key: string;
-  input_json: string;
-  result_json: string | null;
-  error: string | null;
-  phase: string;
-  phase_data_json: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface EventReceipt {
   id: number;
   event_id: string;
@@ -1336,54 +1073,4 @@ export interface EventReceipt {
   result_reference: string | null;
   error_class: string | null;
   created_at: string;
-}
-
-export interface Approval {
-  id: number;
-  work_item_id: number | null;
-  job_id: number | null;
-  approval_type: string;
-  status: string;
-  requested_by: string;
-  requested_at: string;
-  decided_by: string | null;
-  decided_at: string | null;
-  expires_at: string | null;
-  payload_json: string;
-}
-
-export interface GithubLink {
-  id: number;
-  work_item_id: number;
-  repository: string;
-  issue_number: number | null;
-  pr_number: number | null;
-  branch_name: string | null;
-  commit_sha: string | null;
-  remote_url: string | null;
-  pr_state: string;
-  last_activity_at: string | null;
-  proof_comment_sha: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface FeaturePlan {
-  id: number;
-  chat_id: string;
-  user_id: string;
-  status: string;
-  brief: string;
-  scope_json: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkItemPlan {
-  id: number;
-  work_item_id: number;
-  plan_text: string;
-  quality_json: string;
-  created_at: string;
-  updated_at: string;
 }

@@ -15,8 +15,8 @@ import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity, assertExactRoleAssignmentSchema } from "../src/db/roleAssignmentsMigration.js";
 import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from "../src/db/schemaContract.js";
 
-/** The five canonical database roles (policy doc §4) — structural validity only; the actual role/path allowlist lives in the root-owned bootstrap config, outside this script's scope. */
-const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "worker"]);
+/** The active database roles. Historical Worker databases remain readable through legacy migrations. */
+const VALID_ROLES = new Set(["shared", "discord", "health", "interactive"]);
 
 type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "relocate" | "bootstrap";
 
@@ -107,8 +107,8 @@ function parseArgs(argv: string[]): Options {
     else if (flag === "--database-role") {
       const separator = value.indexOf("=");
       const role = value.slice(separator + 1);
-      if (separator <= 0 || !["shared", "discord", "health", "interactive", "worker"].includes(role)) {
-        throw new Error(`--database-role must be PATH=shared|discord|health|interactive|worker, got: ${value}`);
+      if (separator <= 0 || !["shared", "discord", "health", "interactive"].includes(role)) {
+        throw new Error(`--database-role must be PATH=shared|discord|health|interactive, got: ${value}`);
       }
       databaseRoles.set(value.slice(0, separator), role as DatabaseRole);
     }

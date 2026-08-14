@@ -26,7 +26,7 @@ die() {
   exit 1
 }
 
-readonly -a ALLOWED_ROLES=(shared discord health interactive worker)
+readonly -a ALLOWED_ROLES=(shared discord health interactive)
 is_allowed_role() {
   local candidate="$1" allowed
   for allowed in "${ALLOWED_ROLES[@]}"; do [[ "$candidate" == "$allowed" ]] && return 0; done
@@ -41,7 +41,7 @@ if [[ "${1:-}" == "--role" && -n "${2:-}" && "${3:-}" == "--new-role" && -n "${4
   new_role_path="$4"
   [[ "$6" == "$new_role_path" ]] || die "--confirm-new-role must exactly match --new-role (expected \"$new_role_path\", got \"$6\")"
 else
-  die "usage: rollout-bootstrap --role <shared|discord|health|interactive|worker> --new-role <absolute path> --confirm-new-role <same absolute path>"
+  die "usage: rollout-bootstrap --role <shared|discord|health|interactive> --new-role <absolute path> --confirm-new-role <same absolute path>"
 fi
 is_allowed_role "$new_role" || die "unknown database role: $new_role"
 [[ "$new_role_path" == /* ]] || die "new-role path must be absolute"

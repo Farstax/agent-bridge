@@ -48,7 +48,6 @@ SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ("agent-bridge-antigravity.service", "agent-bridge-antigravity", ("TELEGRAM_BOT_TOKEN_ANTIGRAVITY", "TELEGRAM_BOT_TOKEN_GEMINI"), "antigravity"),
     ("agent-bridge-claude.service", "agent-bridge-claude", ("TELEGRAM_BOT_TOKEN_CLAUDE",), "claude"),
     ("agent-bridge-interactive.service", "agent-bridge-interactive", ("TELEGRAM_BOT_TOKEN_INTERACTIVE",), "interactive"),
-    ("agent-bridge-worker-bot.service", "agent-bridge-worker-bot", ("TELEGRAM_BOT_TOKEN_WORKER",), "worker"),
     ("agent-bridge-health.service", "agent-bridge-health", ("TELEGRAM_BOT_TOKEN_HEALTH",), "health"),
     ("agent-bridge-discord-interactive.service", "agent-bridge-discord-interactive", ("DISCORD_BOT_TOKEN",), "discord-interactive"),
 )
@@ -61,7 +60,6 @@ DATABASE_ROLES = {
     "antigravity": "shared",
     "claude": "shared",
     "interactive": "interactive",
-    "worker": "worker",
     "health": "health",
     "discord-interactive": "discord",
 }
@@ -94,11 +92,10 @@ SHARED_KEYS = (
 SERVICE_KEYS = (
     "TELEGRAM_BOT_TOKEN_CODEX", "TELEGRAM_BOT_TOKEN_ANTIGRAVITY",
     "TELEGRAM_BOT_TOKEN_GEMINI", "TELEGRAM_BOT_TOKEN_CLAUDE",
-    "TELEGRAM_BOT_TOKEN_INTERACTIVE", "TELEGRAM_BOT_TOKEN_WORKER",
+    "TELEGRAM_BOT_TOKEN_INTERACTIVE",
     "TELEGRAM_BOT_TOKEN_HEALTH", "DISCORD_BOT_TOKEN", "DISCORD_APPLICATION_ID",
     "DISCORD_GUILD_ID", "DISCORD_ALLOWED_USER_IDS", "GITHUB_USERNAME",
-    "WORKER_DEFAULT_REPO", "WORKER_ENABLED", "WORKER_CLI_CHAIN",
-    "WORKER_CODE_CLI_CHAIN", "WORKER_SCRIBE_CLI_CHAIN", "GITHUB_TOKEN_FILE",
+    "GITHUB_TOKEN_FILE",
     "INTERACTIVE_DEFAULT_CLI", "INTERACTIVE_CLI_CHAIN", "BRIDGE_COMPACTION_CHAIN",
     "BRIDGE_COMPACTION_MAX_ATTEMPTS", "BRIDGE_COMPACTION_REPAIR_ATTEMPTS",
     "CODEX_COMMAND", "CODEX_MODEL_PREFERENCE", "CODEX_EFFORT", "CODEX_PROJECT_DIR",

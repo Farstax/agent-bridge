@@ -43,7 +43,6 @@ export const units = [
   "agent-bridge-discord-interactive.service",
   "agent-bridge-health.service",
   "agent-bridge-interactive.service",
-  "agent-bridge-worker-bot.service",
 ];
 
 export interface Fixture {
@@ -471,7 +470,7 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   execFileSync("git", ["-C", project, "commit", "-qm", "fixture (target release)"]);
   const expectedCommit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 
-  const dbPaths = Array.from({ length: 5 }, (_, index) => join(dbDir, `bridge-${index}.sqlite`));
+  const dbPaths = Array.from({ length: 4 }, (_, index) => join(dbDir, `bridge-${index}.sqlite`));
   for (const [index, path] of dbPaths.entries()) {
     if (options.unknownSchema && index === 0) {
       mkdirSync(dirname(path), { recursive: true });
@@ -489,7 +488,6 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
     if (unit === "agent-bridge-discord-interactive.service") content = `DB_PATH=${dbPaths[1]}\n`;
     if (unit === "agent-bridge-health.service") content = `HEALTH_DB_PATH=${dbPaths[2]}\n`;
     if (unit === "agent-bridge-interactive.service") content = `DB_PATH=${dbPaths[3]}\n`;
-    if (unit === "agent-bridge-worker-bot.service") content = `DB_PATH=${dbPaths[4]}\n`;
     writeFileSync(join(envDir, name), content, { mode: 0o600 });
   }
 
@@ -621,8 +619,8 @@ export function uniqueUnitName(fixture: Fixture, productionUnit: string): string
 }
 
 /**
- * Reseeds all five configured databases from the fixed, pre-versioned
- * PR #147 role fixtures (shared/discord/health/interactive/worker, in the
+ * Reseeds all configured databases from the fixed, pre-versioned
+ * PR #147 role fixtures (shared/discord/health/interactive, in the
  * same order as fixture.dbPaths — see the DB_PATH wiring above), instead
  * of the generic minimal shape createFixture() uses by default. Layers a
  * legacy-shaped pending_messages table on top of the untouched upstream

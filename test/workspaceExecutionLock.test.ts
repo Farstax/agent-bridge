@@ -77,7 +77,7 @@ describe("OS-backed workspace execution lock", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  it("disables the workspace lock explicitly for non-worker executions", () => {
+  it("disables the workspace lock explicitly when configured", () => {
     const root = initRepository();
     roots.push(root);
     process.env.BRIDGE_WORKSPACE_LOCK_MODE = "off";
@@ -89,7 +89,7 @@ describe("OS-backed workspace execution lock", () => {
     expect(invocation.workspaceLock).toBeNull();
   });
 
-  it("keeps workspace locking enabled by default for worker executions", () => {
+  it("keeps workspace locking enabled by default for ordinary executions", () => {
     const root = initRepository();
     roots.push(root);
     delete process.env.BRIDGE_WORKSPACE_LOCK_MODE;

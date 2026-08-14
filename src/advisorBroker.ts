@@ -18,7 +18,6 @@ import type { AdvisorConfig, AdvisorRequestMode, AdvisorResult } from "./advisor
 import type { BridgeDb } from "./db.js";
 import type { BotConfig, BotKind } from "./types.js";
 import { parseAdvisorConfig } from "./advisorConfig.js";
-import { formatWorkerBlockedResult, type WorkerBlockedResult } from "./workerBlockedResult.js";
 
 const CAPABILITY_TTL_MS = 10 * 60_000;
 const ALLOWED_MODES = new Set<AdvisorRequestMode>(["plan", "review", "debug", "risk", "decision"]);
@@ -119,7 +118,7 @@ export class AdvisorBroker implements AdvisorCapabilityIssuer {
 
   /**
    * Untrusted entry point: authenticates the capability, reconstructs trusted
-   * scope, then resolves into the same execution path as manual and worker
+   * scope, then resolves into the same execution path as manual
    * requests via AdvisorService.requestTrusted().
    */
   async requestWithCapability(input: { capability: string; mode: AdvisorRequestMode; task: string }): Promise<string> {
@@ -159,52 +158,6 @@ export class AdvisorBroker implements AdvisorCapabilityIssuer {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
-}
-
-export async function requestConfiguredWorkerAdvisorDebug(input: {
-  db: BridgeDb;
-  taskKey: string;
-  task: string;
-  repoPath: string;
-  activeProvider: string;
-  acceptanceCriteria: string;
-  plan: string;
-  blocked: WorkerBlockedResult;
-  /** Legacy caller field retained for compatibility; evidence Git is broker-owned and this value is never executed. */
-  runGit?: unknown;
-  audit?: (event: AdvisorEvidenceAuditEvent) => void;
-}): Promise<AdvisorResult> {
-  const service = CONFIGURED_TRUSTED_SERVICES.get(input.db);
-  if (!service) throw new Error("Advisor debug checkpoint unavailable: configured trusted advisor service not running");
-  const attemptSummary = formatWorkerBlockedResult(input.blocked);
-  const evidenceTools = new AdvisorEvidenceToolBroker({
-    repoPath: input.repoPath,
-    evidence: {
-      acceptance: input.acceptanceCriteria,
-      plan: input.plan,
-      testFailures: input.blocked.failingEvidence,
-      attemptSummary,
-    },
-    audit: input.audit,
-  });
-  return service.requestTrusted({
-    origin: "worker",
-    scopeKey: `worker:${input.taskKey}`,
-    taskKey: input.taskKey,
-    mode: "debug",
-    task: input.task,
-    activeProvider: input.activeProvider,
-    activeModel: null,
-    evidence: {
-      acceptanceCriteria: input.acceptanceCriteria,
-      plan: input.plan,
-      attemptSummary,
-      testOutput: input.blocked.failingEvidence,
-      references: input.blocked.relevantFiles,
-    },
-    cwd: input.repoPath,
-    evidenceTools,
-  });
 }
 
 export async function requestAdvisorViaBroker(

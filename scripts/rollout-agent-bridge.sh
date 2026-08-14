@@ -14,7 +14,6 @@ readonly -a ALLOWED_UNITS=(
   agent-bridge-discord-interactive.service
   agent-bridge-health.service
   agent-bridge-interactive.service
-  agent-bridge-worker-bot.service
 )
 readonly CLEANUP_SERVICE_UNIT="agent-bridge-tmp-cleanup.service"
 readonly CLEANUP_TIMER_UNIT="agent-bridge-tmp-cleanup.timer"
@@ -386,7 +385,6 @@ for unit in "${units[@]}"; do
     agent-bridge-health.service) unit_roles[$unit]=health ;;
     agent-bridge-discord-interactive.service) unit_roles[$unit]=discord ;;
     agent-bridge-interactive.service) unit_roles[$unit]=interactive ;;
-    agent-bridge-worker-bot.service) unit_roles[$unit]=worker ;;
     *) unit_roles[$unit]=shared ;;
   esac
   discovered_databases[$canonical]=1

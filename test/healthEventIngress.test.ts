@@ -120,8 +120,8 @@ describe("acceptHealthOpsEvent", () => {
 
   it("never routes through work_items or work_jobs", () => {
     acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    expect(db.listWorkItems()).toHaveLength(0);
-    expect(db.listWorkJobs()).toHaveLength(0);
+    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_items").get() as { n: number }).n).toBe(0);
+    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_jobs").get() as { n: number }).n).toBe(0);
   });
 
   // ── Idempotency / duplicate delivery ─────────────────────────────────────
@@ -246,7 +246,7 @@ describe("acceptHealthOpsEvent", () => {
 
 // ── executeHealthOpsRun: reuses the surface-neutral provider-turn owner ───────
 //
-// Per the independent architecture review on PR #356 ("do not replace Worker
+// Per the independent architecture review on PR #356 ("do not replace a
 // orchestration with a second provider-execution stack"), the event path
 // must reach the SAME provider-turn execution owner ordinary Telegram-driven
 // turns use, not a parallel reimplementation of buildCliInvocation/runCli.
@@ -421,8 +421,8 @@ describe("executeHealthOpsRun", () => {
 
     await executeHealthOpsRun(db, accepted.receiptId, engine);
 
-    expect(db.listWorkItems()).toHaveLength(0);
-    expect(db.listWorkJobs()).toHaveLength(0);
+    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_items").get() as { n: number }).n).toBe(0);
+    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM work_jobs").get() as { n: number }).n).toBe(0);
   });
 
   // ── Cancellation / fence loss ─────────────────────────────────────────────

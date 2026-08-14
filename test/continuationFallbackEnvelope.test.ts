@@ -6,7 +6,7 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
 import { dispatchClaimedInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 
 function client() {
   return {
@@ -362,7 +362,7 @@ describe("continuation fallback admitted-turn envelope", () => {
     const seen: string[][] = [];
     const source = { executeClaimedMessage: vi.fn(async () => { exhaustedChats.add("100"); return "failed" as const; }), handoffActiveContinuationForFallback: vi.fn(async () => "queued" as const) };
     const target = { executeClaimedMessage: vi.fn(async (message: any) => { seen.push(message.attachments); return "committed" as const; }) };
-    const deps = { engines: { claude: source, codex: target }, fallbackChain: new WorkerFallbackChain(["claude", "codex"], db), exhaustedChats, db, notify: vi.fn() };
+    const deps = { engines: { claude: source, codex: target }, fallbackChain: new ProviderFallbackChain(["claude", "codex"], db), exhaustedChats, db, notify: vi.fn() };
     try {
       setUserCliPreference(db, "100", "claude");
       new ContinuationRepository(db.raw).markCancelled(runId, "fallback");
@@ -677,7 +677,7 @@ describe("continuation fallback admitted-turn envelope", () => {
     const db = openDb(":memory:");
     const telegram = client();
     const exhaustedChats = new Set<string>();
-    const chain = new WorkerFallbackChain(["claude", "codex"], db);
+    const chain = new ProviderFallbackChain(["claude", "codex"], db);
     let processState: "live" | "absent" = "live";
     const claudeRun = vi.fn()
       .mockResolvedValueOnce({ text: claudeBackground("background started", "claude-session") })
@@ -727,7 +727,7 @@ describe("continuation fallback admitted-turn envelope", () => {
     writeFileSync(source, "fallback attachment");
     const telegram = client();
     const exhaustedChats = new Set<string>();
-    const chain = new WorkerFallbackChain(["claude", "codex"], db);
+    const chain = new ProviderFallbackChain(["claude", "codex"], db);
     let processState: "live" | "absent" = "live";
     const claudeRun = vi.fn()
       .mockResolvedValueOnce({ text: claudeBackground("background started", "claude-session") })
@@ -792,7 +792,7 @@ describe("continuation fallback admitted-turn envelope", () => {
     writeFileSync(source, "blocked attachment");
     const telegram = client();
     const exhaustedChats = new Set<string>();
-    const chain = new WorkerFallbackChain(["claude", "codex"], db);
+    const chain = new ProviderFallbackChain(["claude", "codex"], db);
     db.enqueueMsg("telegram:interactive", "100", { prompt: "blocked", chatId: 100, chatType: "private", userId: 42, attachments: [source] });
     const handle = db.acquireLock("telegram:interactive", "100");
     const claimed = db.claimNextPendingMsg(handle!);

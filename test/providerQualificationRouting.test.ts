@@ -6,7 +6,7 @@ import { openDb } from "../src/db.js";
 import { getAvailableCliKinds } from "../src/interactiveCliAuth.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 import { getQualificationFailedProviders } from "../src/providers/qualificationStatus.js";
-import { WorkerFallbackChain } from "../src/workerFallback.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
 
 describe("provider qualification routing", () => {
   it("reads hard failures from persisted qualification evidence for the installed version", () => {
@@ -84,7 +84,7 @@ describe("provider qualification routing", () => {
 
   it("skips unavailable providers when advancing the fallback chain", () => {
     const db = openDb(":memory:");
-    const chain = new WorkerFallbackChain(
+    const chain = new ProviderFallbackChain(
       ["codex", "claude", "antigravity"],
       db,
       (cli) => cli !== "claude",
@@ -98,7 +98,7 @@ describe("provider qualification routing", () => {
 
   it("moves the effective active provider past an unavailable chain head without retrying it", () => {
     const db = openDb(":memory:");
-    const chain = new WorkerFallbackChain(
+    const chain = new ProviderFallbackChain(
       ["codex", "claude", "antigravity"],
       db,
       (cli) => cli !== "codex",
