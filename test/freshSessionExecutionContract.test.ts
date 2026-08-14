@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildCliInvocation } from "../src/cli.js";
 import { wrapPromptContext } from "../src/promptWrapping.js";
 import { prependWorkspaceContext } from "../src/workspaceContext.js";
 
@@ -32,6 +33,24 @@ describe("fresh-session execution contract", () => {
     expect(wrapped).toContain("Soul contract:");
     expect(wrapped).toContain("## Communication Style");
     expect(wrapped).not.toContain("Response contract:");
+  });
+
+  it("seeds the execution contract on a fresh invocation even when /reset suppresses Bridge context", () => {
+    for (const bot of ["codex", "claude", "antigravity", "kimchi"]) {
+      const invocation = buildCliInvocation({
+        bot,
+        prompt: "first turn after reset",
+        sessionId: null,
+        command: bot,
+        model: null,
+        includeResponseContract: false,
+      });
+      const invocationText = [...invocation.args, invocation.stdin ?? ""].join("\n");
+
+      expect(invocation.nativeSessionMode, bot).toBe("fresh");
+      expect(invocationText, bot).toContain(EXECUTION_CONTRACT_MARKER);
+      expect(invocationText, bot).not.toContain("Response contract:");
+    }
   });
 
   it("omits the execution contract when Bridge context is disabled for native resume", () => {
