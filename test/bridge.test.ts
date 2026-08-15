@@ -660,6 +660,25 @@ describe("agent bridge MVP", () => {
       expect(result && "text" in result ? result.text : "").toContain("antigravity bridge ready");
     });
 
+    it("turns a bounded /start payload into an ordinary execution prompt", () => {
+      const result = handleCommand("antigravity", "/start investigate-health-systematic-debug-customer-app-http-non-2xx", {
+        db,
+        chatId: "123",
+        config,
+      });
+      expect(result).toEqual({
+        kind: "execute",
+        prompt: expect.stringContaining("investigate-health-systematic-debug-customer-app-http-non-2xx"),
+      });
+    });
+
+    it("keeps malformed or oversized /start payloads on the normal ready response", () => {
+      for (const payload of ["not safe", "x".repeat(65), "payload_with_underscore"]) {
+        const result = handleCommand("antigravity", `/start ${payload}`, { db, chatId: "123", config });
+        expect(result?.kind).toBe("message");
+      }
+    });
+
     it("lists bundled skills with install guidance", () => {
       const result = handleCommand("codex", "/skills", { db, chatId: "123", config });
       expect(result?.kind).toBe("message");
