@@ -65,9 +65,17 @@ describe("owner-authorized health recovery loop", () => {
       healthEvidence: "red",
       constraints: ["inspect only"], bot: "claude", maxCycles: 3,
     }, engine(prompts));
+    await startOwnerAuthorizedHealthRecovery(db, {
+      ownerAction: "investigate",
+      goalId: healthRecoveryGoalId(healthReportCorrelationId("api-v2")),
+      correlationId: healthReportCorrelationId("api-v2"),
+      objective: "Investigate the second API health gap.",
+      healthEvidence: "red",
+      constraints: ["inspect only"], bot: "claude", maxCycles: 3,
+    }, engine(prompts));
     expect(applyAuthoritativeHealthReport(db, { pluginName: "api", status: "red", summary: "still red", timestamp: "2026-08-15T10:01:00Z" })).toHaveLength(1);
     await runOwnerAuthorizedHealthRecovery(db, healthRecoveryGoalId(healthReportCorrelationId("api")), engine(prompts));
-    expect(prompts).toHaveLength(2);
+    expect(prompts).toHaveLength(3);
     expect(applyAuthoritativeHealthReport(db, { pluginName: "api", status: "green", summary: "recovered", timestamp: "2026-08-15T10:02:00Z" })).toEqual([]);
     expect(getAutonomousGoal(db, healthRecoveryGoalId(healthReportCorrelationId("api"))).status).toBe("complete");
     db.close();
