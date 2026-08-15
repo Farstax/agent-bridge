@@ -28,7 +28,7 @@ import { autoUpdateClis } from "./health/autoRemediate.js";
 import { formatQualificationSummary } from "./providers/qualificationStatus.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } from "./runIngress.js";
-import { startOwnerAuthorizedHealthRecovery, type OwnerAuthorizedHealthRecoveryRequest } from "./autonomousGoalRuntime.js";
+import { applyAuthoritativeHealthReport, runOwnerAuthorizedHealthRecovery, startOwnerAuthorizedHealthRecovery, type OwnerAuthorizedHealthRecoveryRequest } from "./autonomousGoalRuntime.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
 import type { HealthPlugin, HealthReport } from "./health/types.js";
@@ -223,6 +223,10 @@ async function handleHealthReportEventIngress(report: HealthReport): Promise<voi
   }
 
   await healthBot.handleReport(report);
+  for (const goalId of applyAuthoritativeHealthReport(bridgeDb, report)) {
+    void runOwnerAuthorizedHealthRecovery(bridgeDb, goalId, engine).catch((error) =>
+      console.error(`[health-bot] successor recovery execution failed for ${goalId}`, error));
+  }
 }
 
 const scheduler = new HealthScheduler({

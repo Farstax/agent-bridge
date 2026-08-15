@@ -361,6 +361,32 @@ export function healthRecoveryGoalId(correlationId: string): string {
   return `health-recovery:${correlationId}`;
 }
 
+export function healthReportCorrelationId(pluginName: string): string {
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(pluginName)) throw new Error("invalid health plugin name");
+  return `health-report:${pluginName}`;
+}
+
+/** Applies one later authoritative health report to owner-authorized goals.
+ * It only returns goals with a newly-created successor wake; callers keep the
+ * existing ordinary Run executor responsible for running those wakes. */
+export function applyAuthoritativeHealthReport(
+  db: BridgeDb,
+  report: { pluginName: string; status: "green" | "amber" | "red"; summary: string; timestamp: string },
+): string[] {
+  const correlationId = healthReportCorrelationId(report.pluginName);
+  const rows = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' AND constraints_json LIKE ?")
+    .all(`%${HEALTH_CORRELATION_PREFIX}${correlationId}%`) as Array<{ goal_id: string }>;
+  const status = report.status === "green" ? "healthy" : report.status === "red" ? "unhealthy" : "unknown";
+  const successors: string[] = [];
+  for (const row of rows) {
+    const outcome = applyAuthoritativeHealthObservation(db, row.goal_id, {
+      status, evidence: report.summary, correlationId, observedAt: report.timestamp,
+    });
+    if (outcome === "active" && pendingWake(db, row.goal_id)) successors.push(row.goal_id);
+  }
+  return successors;
+}
+
 function policyForGoal(goal: AutonomousGoal): AutonomousRunPolicy {
   return goal.constraints.includes(HEALTH_POLICY_CONSTRAINT) ? "external-observation" : "provider";
 }
