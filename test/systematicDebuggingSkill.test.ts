@@ -21,6 +21,9 @@ describe("systematic debugging skill", () => {
     expect(skill).toMatch(/root cause/i);
     expect(skill).toMatch(/smallest justified fix/i);
     expect(skill).toMatch(/verify/i);
+    expect(skill).toMatch(/Advisor/i);
+    expect(skill).toMatch(/goal, constraints, observations,\s+hypotheses tested, attempted actions, measured outcomes/i);
+    expect(skill).toMatch(/evidence[\s\S]*authority|authority[\s\S]*evidence/i);
     expect(skill).toMatch(/does not grant|does not authorize|authority/i);
     expect(skill).toMatch(/adapted from.*systematic-debugging/i);
     expect(license).toMatch(/MIT License/);
