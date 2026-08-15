@@ -28,10 +28,22 @@ export type CommandResult =
   | { kind: "btw"; prompt: string };
 
 const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/queue_mode", "/skills", "/usage", "/narration", "/compact", "/context", "/advisor", "/btw"]);
+const START_PAYLOAD_MAX_LENGTH = 64;
+const START_PAYLOAD_PATTERN = /^[a-z0-9-]+$/;
 
 function normalizeCommand(text: string): string {
   const [command] = String(text || "").trim().toLowerCase().split(/\s+/, 1);
   return command.replace(/@\S+$/, "");
+}
+
+function startPayloadExecution(prompt: string): CommandResult | null {
+  const match = String(prompt || "").trim().match(/^\/start(?:@\S+)?\s+([^\s]+)$/i);
+  const payload = match?.[1] || "";
+  if (!payload || payload.length > START_PAYLOAD_MAX_LENGTH || !START_PAYLOAD_PATTERN.test(payload)) return null;
+  return {
+    kind: "execute",
+    prompt: `Investigate this issue using the available local agent skills and tools. Bounded context: ${payload}`,
+  };
 }
 
 export function isBridgeCommand(text: string): boolean {
@@ -114,6 +126,8 @@ export function handleCommand(
   const text = normalizeCommand(prompt);
 
   if (text === "/start") {
+    const execution = startPayloadExecution(prompt);
+    if (execution) return execution;
     return {
       kind: "message",
       text: `${kind} bridge ready. use /models to change model, or just send a message to start a thread.`,
