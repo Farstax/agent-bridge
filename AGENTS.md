@@ -9,6 +9,8 @@ When designing, implementing, or reviewing changes:
 - Before adding Bridge-side orchestration, scheduling, agent hierarchies, tool frameworks, or execution logic, ask: **can the native CLI already do this?**
 - If yes, expose, configure, or stitch together that native capability instead of duplicating it.
 - New abstractions should make native agents more capable together, not make Agent Bridge a competing agent framework.
+- Provider-native fan-out (subagents, teams, parallel tool calls) is the active provider agent's planning decision within its own Run, not Bridge orchestration. Use it only for genuinely independent scopes or questions; prefer useful independent coverage over worker count, avoid several workers inspecting the same scope without a specific reason, and weigh the cost of reconciling outputs before adding more of them.
+- Before asking a model to synthesize several native subagent outputs, reduce them first with ordinary deterministic tools/code where practical — deduplicate exact findings, normalize structured fields, sort/group evidence, compare identifiers/paths/SHAs, drop malformed or irrelevant records, compute mechanical results — rather than routing raw output straight into another model call.
 
 Add Bridge-owned machinery only when a concrete cross-provider, durability, lifecycle, or safety requirement cannot be met at the native CLI boundary.
 
@@ -170,6 +172,8 @@ If the exact candidate SHA has the required green qualification evidence and no 
 ## Approval 1 — exact-head merge approval
 
 One independent review approves one exact PR head SHA after required exact-head tests and checks pass. GitHub `CI` is the authoritative full-suite regression proof for that head; independent review adds code/contract scrutiny and focused investigation rather than another routine full-suite execution.
+
+The implementer's job is to produce the strongest valid solution; the reviewer's job is adversarial, not confirmatory — actively look for reasons the exact head should not be accepted, including unmet acceptance criteria, wrong ownership, regressions, lifecycle/restart/concurrency defects, weak evidence, scope drift, or stale exact-head evidence, and reject when found. Route any rejection through the existing repair → reverify → re-review path (see "Owner delivery shorthand" above) and replan when the finding invalidates the agreed scope; do not impose a fixed retry count.
 
 Before merge approval, agents may perform without additional approval:
 
