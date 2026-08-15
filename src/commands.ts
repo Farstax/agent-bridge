@@ -6,6 +6,8 @@
  * LOGIC: Normalizes user commands and routes "/start", "/reset", "/models", "/skills" to appropriate action structures.
  */
 
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { BridgeConfig } from "./types.js";
 import type { BridgeDb } from "./db.js";
 import { buildModelKeyboard, buildModelsText } from "./bridge.js";
@@ -43,16 +45,107 @@ export function parseStartPayload(prompt: string): string | null {
   return payload;
 }
 
-export function buildStartPayloadPrompt(payload: string): string {
-  return `Investigate this issue using the available local agent skills and tools. Bounded context: ${payload}`;
+// The alert token is "app-<name-slug>-2x-<reason-code>-<investigationId>": a
+// bounded correlation key, not evidence. This pulls out the trailing 12-hex
+// investigation id so the real evidence can be looked up locally.
+const INVESTIGATION_ID_PATTERN = /\bapp-[a-z0-9-]+-2x-[a-z0-9-]+-([a-f0-9]{12})$/;
+
+export function extractInvestigationId(payload: string): string | null {
+  return INVESTIGATION_ID_PATTERN.exec(String(payload || ""))?.[1] ?? null;
+}
+
+export interface InvestigationEvidence {
+  investigationId: string;
+  applicationName: string;
+  workspaceId: string;
+  status: string;
+  reason: string;
+  checkedAt: string;
+  correlationId: string;
+}
+
+const EVIDENCE_FIELD_MAX_LENGTH = 200;
+const EVIDENCE_FILE_MAX_BYTES = 4096;
+const EVIDENCE_REQUIRED_STRING_FIELDS: Array<keyof InvestigationEvidence> = [
+  "investigationId",
+  "applicationName",
+  "workspaceId",
+  "status",
+  "reason",
+  "checkedAt",
+  "correlationId",
+];
+
+function defaultInvestigationsDir(): string {
+  return process.env.AGENT_BRIDGE_INVESTIGATIONS_DIR || "/var/lib/agent-bridge/investigations";
+}
+
+/**
+ * Reads the small, bounded, non-secret evidence record a control plane
+ * already wrote locally (over the existing authenticated appliance channel)
+ * when it opened the health gap that triggered this investigation. Never
+ * throws — a missing, oversized, or malformed record degrades to null so a
+ * corrupt/stale file can't be mistaken for real evidence.
+ */
+export function readInvestigationEvidence(
+  investigationId: string,
+  dir: string = defaultInvestigationsDir(),
+): InvestigationEvidence | null {
+  if (!investigationId || !/^[a-f0-9]{12}$/.test(investigationId)) return null;
+  const path = join(dir, `${investigationId}.json`);
+  try {
+    if (!existsSync(path)) return null;
+    if (statSync(path).size > EVIDENCE_FILE_MAX_BYTES) return null;
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    for (const field of EVIDENCE_REQUIRED_STRING_FIELDS) {
+      const value = record[field];
+      if (typeof value !== "string" || value.length === 0 || value.length > EVIDENCE_FIELD_MAX_LENGTH) return null;
+    }
+    if (record.investigationId !== investigationId) return null;
+    return {
+      investigationId: record.investigationId as string,
+      applicationName: record.applicationName as string,
+      workspaceId: record.workspaceId as string,
+      status: record.status as string,
+      reason: record.reason as string,
+      checkedAt: record.checkedAt as string,
+      correlationId: record.correlationId as string,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function buildStartPayloadPrompt(payload: string, evidence: InvestigationEvidence | null): string {
+  if (!evidence) {
+    return [
+      "Investigate this issue using the available local agent skills and tools.",
+      `Correlation id: ${payload}`,
+      "No investigation evidence record was found locally for this id (missing, expired, or unreadable).",
+      "Do not treat the correlation id itself as evidence — confirm with the registered application's own status/logs before concluding anything.",
+    ].join("\n");
+  }
+  return [
+    "Investigate this issue using the available local agent skills and tools.",
+    `Registered application: ${evidence.applicationName}`,
+    `Workspace: ${evidence.workspaceId}`,
+    `Health status: ${evidence.status}`,
+    `Reason: ${evidence.reason}`,
+    `Last checked: ${evidence.checkedAt}`,
+    `Correlation id: ${payload}`,
+  ].join("\n");
 }
 
 function startPayloadExecution(prompt: string): CommandResult | null {
   const payload = parseStartPayload(prompt);
   if (!payload) return null;
+  const investigationId = extractInvestigationId(payload);
+  const evidence = investigationId ? readInvestigationEvidence(investigationId) : null;
   return {
     kind: "execute",
-    prompt: buildStartPayloadPrompt(payload),
+    prompt: buildStartPayloadPrompt(payload, evidence),
   };
 }
 
