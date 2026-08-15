@@ -1,4 +1,4 @@
-export const PROVIDER_IDS = ["codex", "claude", "agy", "kimchi"] as const;
+export const PROVIDER_IDS = ["codex", "claude", "agy"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export type ProviderErrorClassification =
@@ -28,7 +28,7 @@ export interface ProviderAdapter {
 }
 
 /** CLI kind vocabulary used in fallback-chain env vars; "antigravity" maps to provider id "agy". */
-export type ChainCliKind = "codex" | "claude" | "antigravity" | "kimchi";
+export type ChainCliKind = "codex" | "claude" | "antigravity";
 
 // Issue #135 Phase 3B — provider runtime invocation/parsing boundary.
 // Shared request/result shapes for src/providers/codexRuntime.ts and

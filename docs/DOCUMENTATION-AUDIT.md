@@ -85,7 +85,7 @@ Current behavior:
 - `AGENT_BRIDGE_SOUL_MODE` controls `summary`, `full`, or `off`.
 - `src/index.ts` loads the context and passes it to each companion engine.
 - `src/index-health.ts` also loads the same context for health suggestions.
-- `src/cli.ts` renders the soul contract into the prompt wrapper for Codex, Claude, Antigravity, and Kimchi paths.
+- `src/cli.ts` renders the soul contract into the prompt wrapper for Codex, Claude, and Antigravity paths.
 
 Recommendation: keep `docs/soul.md` as runtime design documentation and ensure a root `SOUL.md` exists when persona injection is desired.
 

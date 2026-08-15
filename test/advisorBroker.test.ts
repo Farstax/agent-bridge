@@ -107,11 +107,11 @@ describe("bridge-owned advisor broker", () => {
   });
 
   it("fails closed when the trusted chain contains a provider without tool-free mode", async () => {
-    const { broker, db, runCli } = setup({ BRIDGE_ADVISOR_CHAIN: "kimchi:some-model" });
+    const { broker, db, runCli } = setup({ BRIDGE_ADVISOR_CHAIN: "unsupported:some-model" });
     await broker.start();
     expect(() => broker.issue({
       chatKey: "chat", cliKind: "claude", turnKey: "turn", taskKey: "task", repoPath: "/repo", activeModel: null,
-    })).toThrow(/tool-free advisor provider/i);
+    })).toThrow(/Advisor disabled or misconfigured/i);
     expect(runCli).not.toHaveBeenCalled();
     await broker.close();
     db.close();

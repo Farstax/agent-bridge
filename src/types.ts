@@ -6,7 +6,7 @@
  * LOGIC: Declares central data types representing telegram payload structures, configuration schemas, and CLI returns.
  */
 
-export type BotKind = "codex" | "antigravity" | "claude" | "kimchi";
+export type BotKind = "codex" | "antigravity" | "claude";
 
 /**
  * Configuration for the Agent Bridge.
@@ -26,7 +26,6 @@ export interface BridgeConfig {
     codex: BotConfig;
     antigravity: BotConfig;
     claude: BotConfig;
-    kimchi: BotConfig;
   };
 }
 
@@ -127,9 +126,9 @@ export interface CliOptions {
   contextEnv?: Record<string, string>;
   /** Strip advisor authority from nested provider children. */
   advisorChild?: boolean;
-  bot?: "codex" | "antigravity" | "claude" | "kimchi";
+  bot?: "codex" | "antigravity" | "claude";
   /** Context for BridgeEvent emission. When provided, runCliAsync emits lifecycle events. */
-  eventContext?: { runId: string; bot: "codex" | "antigravity" | "claude" | "kimchi"; chatId: string; threadId?: string; serviceId?: string; acquisitionId?: string };
+  eventContext?: { runId: string; bot: "codex" | "antigravity" | "claude"; chatId: string; threadId?: string; serviceId?: string; acquisitionId?: string };
   /** Called with each emitted BridgeEvent. Requires eventContext to be set. */
   onEvent?: (event: import("./events/types.js").BridgeEvent) => void;
   /** Optional provider-supplied failure watch; supervisor only owns lifecycle/settlement. */

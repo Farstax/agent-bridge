@@ -181,13 +181,6 @@ export async function compactConversation(
   const boundedTargets = targets.slice(0, maxAttempts);
 
   const callTarget = async (target: CompactionFallbackTarget, prompt: string): Promise<string> => {
-    if (target.provider === "kimchi") {
-      throw new CompactionFailure(
-        "fatal",
-        false,
-        "Kimchi compaction is disabled because verified tool-free execution is not supported",
-      );
-    }
     if (!target.command.trim()) {
       throw new CompactionFailure("provider_unavailable", true);
     }

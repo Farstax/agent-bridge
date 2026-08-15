@@ -26,7 +26,7 @@ export function getBridgeProjectDir(): string {
   return process.env.BRIDGE_PROJECT_DIR || process.cwd();
 }
 
-export function getCliWorkingDir(bot?: "codex" | "antigravity" | "claude" | "kimchi"): string {
+export function getCliWorkingDir(bot?: "codex" | "antigravity" | "claude"): string {
   if (bot === "codex" && process.env.CODEX_PROJECT_DIR) return process.env.CODEX_PROJECT_DIR;
   if (bot === "antigravity" && (process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR)) {
     return process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR!;

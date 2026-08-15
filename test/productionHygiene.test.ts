@@ -108,8 +108,8 @@ describe("Issue #135 Phase 3B: codex/claude runtime ownership", () => {
 
 });
 
-describe("Issue #135 Phase 3C: antigravity/kimchi runtime ownership", () => {
-  it("src/cli.ts no longer defines Antigravity/Kimchi argument-shape branches or result-parsing markers (moved to src/providers/)", () => {
+describe("Issue #135 Phase 3C: antigravity runtime ownership", () => {
+  it("src/cli.ts no longer defines Antigravity argument-shape branches or result-parsing markers (moved to src/providers/)", () => {
     const source = readFileSync(join(process.cwd(), "src/cli.ts"), "utf8");
     // Antigravity-specific: --print-timeout/--conversation only ever appeared
     // in the antigravity branch of buildCliInvocation; the *** delimiter and
@@ -118,49 +118,45 @@ describe("Issue #135 Phase 3C: antigravity/kimchi runtime ownership", () => {
     expect(source).not.toContain("--conversation");
     expect(source).not.toContain("🧠 Memory Loaded");
     expect(source).not.toContain("agent executor error:");
-    // Kimchi-specific: --no-session and the thought/tool-call stripping
-    // markers only ever appeared in the kimchi branch/parseKimchiResult.
     expect(source).not.toContain("--no-session");
     expect(source).not.toContain("thought_section_begin");
   });
 
-  it("buildCliInvocation dispatches antigravity/kimchi to their provider runtime modules", () => {
+  it("buildCliInvocation dispatches antigravity to its provider runtime module", () => {
     const source = readFileSync(join(process.cwd(), "src/cli.ts"), "utf8");
     expect(source).toMatch(/bot === "antigravity"[\s\S]{0,80}antigravityRuntime\.buildInvocation/);
-    expect(source).toMatch(/bot === "kimchi"[\s\S]{0,80}kimchiRuntime\.buildInvocation/);
   });
 
-  it("parseCliResult dispatches antigravity/kimchi to their provider runtime modules", () => {
+  it("parseCliResult dispatches antigravity to its provider runtime module", () => {
     const source = readFileSync(join(process.cwd(), "src/cli.ts"), "utf8");
     expect(source).toContain("antigravityRuntime.parseResult(stdout, logContent)");
-    expect(source).toContain("kimchiRuntime.parseResult(stdout)");
   });
 });
 
-describe("Issue #135 Phase 3: all four provider runtimes own buildInvocation and parseResult", () => {
-  it("exactly codexRuntime/claudeRuntime/antigravityRuntime/kimchiRuntime export buildInvocation", () => {
+describe("Issue #135 Phase 3: supported provider runtimes own buildInvocation and parseResult", () => {
+  it("exactly supported provider runtimes export buildInvocation", () => {
     const dir = join(process.cwd(), "src/providers");
     const owners = readdirSync(dir).filter((f) => {
       if (!f.endsWith(".ts")) return false;
       const source = readFileSync(join(dir, f), "utf8");
       return /export function buildInvocation/.test(source);
     });
-    expect(owners.sort()).toEqual(["antigravityRuntime.ts", "claudeRuntime.ts", "codexRuntime.ts", "kimchiRuntime.ts"]);
+    expect(owners.sort()).toEqual(["antigravityRuntime.ts", "claudeRuntime.ts", "codexRuntime.ts"]);
   });
 
-  it("exactly codexRuntime/claudeRuntime/antigravityRuntime/kimchiRuntime export parseResult", () => {
+  it("exactly supported provider runtimes export parseResult", () => {
     const dir = join(process.cwd(), "src/providers");
     const owners = readdirSync(dir).filter((f) => {
       if (!f.endsWith(".ts")) return false;
       const source = readFileSync(join(dir, f), "utf8");
       return /export function parseResult/.test(source);
     });
-    expect(owners.sort()).toEqual(["antigravityRuntime.ts", "claudeRuntime.ts", "codexRuntime.ts", "kimchiRuntime.ts"]);
+    expect(owners.sort()).toEqual(["antigravityRuntime.ts", "claudeRuntime.ts", "codexRuntime.ts"]);
   });
 
-  it("src/cli.ts's buildCliInvocation and parseCliResult are pure dispatchers for all four bot kinds", () => {
+  it("src/cli.ts's buildCliInvocation and parseCliResult are pure dispatchers for supported bot kinds", () => {
     const source = readFileSync(join(process.cwd(), "src/cli.ts"), "utf8");
-    for (const bot of ["codex", "claude", "antigravity", "kimchi"]) {
+    for (const bot of ["codex", "claude", "antigravity"]) {
       expect(source, `${bot} buildInvocation dispatch`).toMatch(new RegExp(`bot === "${bot}"[\\s\\S]{0,100}${bot}Runtime\\.buildInvocation`));
       expect(source, `${bot} parseResult dispatch`).toContain(`${bot}Runtime.parseResult(`);
     }

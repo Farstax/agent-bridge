@@ -14,7 +14,6 @@ import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
 import * as claudeRuntime from "./providers/claudeRuntime.js";
 import * as antigravityRuntime from "./providers/antigravityRuntime.js";
-import * as kimchiRuntime from "./providers/kimchiRuntime.js";
 import {
   extractAntigravityConversationId,
   toAntigravityModelLabel,
@@ -29,7 +28,6 @@ import {
   outputModeFromArgs,
   type AntigravityExecutionContext,
 } from "./providers/antigravitySerializedRunner.js";
-import { resolveKimchiSessionId } from "./providers/kimchiRuntime.js";
 
 export { buildClaudeExcludedPluginSettings };
 export {
@@ -40,7 +38,6 @@ export {
   readAntigravityLastConversation,
   readLatestAntigravityConversationFromLogs,
   resolveAntigravityConversationId,
-  resolveKimchiSessionId,
 };
 import { appendEffortArgs, type EffortLevel } from "./effort.js";
 import { isProviderFallbackEligibleError } from "./providers/fallbackEligibility.js";
@@ -172,12 +169,6 @@ export function buildCliInvocation({
     });
     return invocation;
   }
-  if (bot === "kimchi") {
-    return kimchiRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
-    });
-  }
-
   return { command, args: appendEffortArgs(command, [], effort), nativeSessionMode: "fresh" };
 }
 
@@ -209,8 +200,6 @@ export function parseCliResult({
     return claudeRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
     return antigravityRuntime.parseResult(stdout, logContent);
-  } else if (bot === "kimchi") {
-    return kimchiRuntime.parseResult(stdout);
   }
   throw new Error(`Unknown bot type: ${bot}`);
 }

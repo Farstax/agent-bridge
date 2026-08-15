@@ -218,36 +218,6 @@ describe("provider invocation fixtures — antigravity", () => {
   });
 });
 
-describe("provider invocation fixtures — kimchi", () => {
-  it("fresh session — exact arg order, --no-session", () => {
-    const inv = buildCliInvocation({ bot: "kimchi", prompt: "hi", sessionId: null, command: "kimchi" });
-    expect(inv.args).toEqual(["--print", "--no-session", anyPrompt()]);
-  });
-
-  it("resumes an existing session — exact arg order", () => {
-    const inv = buildCliInvocation({ bot: "kimchi", prompt: "hi", sessionId: "kim-1", command: "kimchi" });
-    expect(inv.args).toEqual(["--print", "--resume", "kim-1", anyPrompt()]);
-  });
-
-  it("trusted mode — exact arg order, --yolo", () => {
-    const inv = buildCliInvocation({ bot: "kimchi", prompt: "hi", sessionId: null, command: "kimchi", executionMode: "trusted" });
-    expect(inv.args).toEqual(["--print", "--yolo", "--no-session", anyPrompt()]);
-  });
-
-  it("tool-free mode is not supported for kimchi", () => {
-    expect(() => buildCliInvocation({ bot: "kimchi", prompt: "hi", sessionId: null, command: "kimchi", toolMode: "none" }))
-      .toThrow(/tool-free mode.*kimchi/i);
-  });
-
-  it("attachments are annotated inline into the prompt text (no native attachment support) — exact arg order", () => {
-    const inv = buildCliInvocation({
-      bot: "kimchi", prompt: "hi", sessionId: null, command: "kimchi", attachments: ["/tmp/a.png"],
-    });
-    expect(inv.args).toHaveLength(3);
-    expect(inv.args[inv.args.length - 1]).toContain("/tmp/a.png");
-  });
-});
-
 describe("provider result parsing fixtures", () => {
   it("codex: extracts sessionId from thread.started and text from response.completed", () => {
     const stdout = [
@@ -278,11 +248,6 @@ describe("provider result parsing fixtures", () => {
     expect(result.sessionId).toBeNull();
   });
 
-  it("kimchi: parses plain stdout as text with no session id from stdout alone", () => {
-    const result = parseCliResult({ bot: "kimchi", stdout: "kimchi says hi" });
-    expect(result.text).toBe("kimchi says hi");
-  });
-
   it("unknown bot type throws", () => {
     expect(() => parseCliResult({ bot: "unknown-bot", stdout: "x" })).toThrow(/Unknown bot type/);
   });
@@ -290,10 +255,9 @@ describe("provider result parsing fixtures", () => {
 
 describe("provider result parsing fixtures — antigravity gaps (CTO review blocker 3)", () => {
   // Antigravity's JSON/fenced-JSON/legacy-***-delimiter/🧠-memory-marker/
-  // STATUS-line-stripping/RESOURCE_EXHAUSTED-error parsing, and Kimchi's
-  // thought/tool-call stripping and newest-session-file resolution, are
+  // STATUS-line-stripping/RESOURCE_EXHAUSTED-error parsing is
   // already exhaustively characterized in test/cli.test.ts ("antigravity
-  // model mapping and settings override", "kimchi integration") and
+  // model mapping and settings override") and
   // test/bridge.test.ts (ensureAntigravityStateDirs, readAntigravityLastConversation,
   // readLatestAntigravityConversationFromLogs, resolveAntigravityConversationId,
   // extractAntigravityConversationId). These three were genuinely missing:
@@ -346,6 +310,6 @@ describe("provider failure fallback classification fixtures", () => {
   });
 
   it("a generic non-capacity CLI failure is not fallback-eligible", () => {
-    expect(isCapacityExhaustedError(new Error("CLI exited with code 1: command not found: kimchi"))).toBe(false);
+    expect(isCapacityExhaustedError(new Error("CLI exited with code 1: command not found: unsupported-provider"))).toBe(false);
   });
 });

@@ -27,14 +27,13 @@ dotenv.config({
   override: false,
 });
 
-function getServiceKindFromEnvFile(envPath: string): "codex" | "antigravity" | "claude" | "kimchi" | null {
+function getServiceKindFromEnvFile(envPath: string): "codex" | "antigravity" | "claude" | null {
   if (!envPath) return null;
   const name = basename(envPath);
   if (name.includes("codex")) return "codex";
   if (name.includes("antigravity")) return "antigravity";
   if (name.includes("gemini")) return "antigravity";
   if (name.includes("claude")) return "claude";
-  if (name.includes("kimchi")) return "kimchi";
   return null;
 }
 

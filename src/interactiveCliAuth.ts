@@ -50,7 +50,6 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   if (exists(paths.codex) && !failedProviders.has("codex")) available.add("codex");
   if (exists(paths.claude) && !failedProviders.has("claude")) available.add("claude");
   if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
-  if (commandExists("kimchi") && !failedProviders.has("kimchi")) available.add("kimchi");
 
   return available;
 }

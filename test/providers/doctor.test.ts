@@ -14,7 +14,7 @@ describe("doctor diagnostics", () => {
 
   it("reports provider commands as missing when the executable does not resolve", () => {
     const report = runDoctor({
-      env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity,kimchi" },
+      env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity,unsupported" },
       commandExists: noneFound,
     });
     expect(report.providers.length).toBeGreaterThan(0);
@@ -28,11 +28,11 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({ env: {}, commandExists: noneFound });
 
     expect(report.chains.find((chain) => chain.name === "INTERACTIVE_CLI_CHAIN")?.entries)
-      .toEqual(["codex", "claude", "antigravity", "kimchi"]);
+      .toEqual(["codex", "claude", "antigravity"]);
     expect(report.ok).toBe(false);
   });
 
-  it("does not fail for a missing provider that no configured chain uses", () => {
+  it("does not fail for an unavailable provider that no configured chain uses", () => {
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
@@ -41,7 +41,7 @@ describe("doctor diagnostics", () => {
       commandExists: (executable) => executable === "codex",
     });
 
-    expect(report.providers.find((p) => p.id === "kimchi")?.status).toBe("missing");
+    expect(report.providers.find((p) => p.id === "agy")?.status).toBe("missing");
     expect(report.ok).toBe(true);
   });
 

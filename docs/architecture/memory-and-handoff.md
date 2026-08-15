@@ -44,7 +44,7 @@ prepare handoff context
 
 ### Native CLI Session Memory
 
-Native CLI session memory belongs to the provider CLI: Codex, Claude, Antigravity, Kimchi, or another supported runtime.
+Native CLI session memory belongs to the provider CLI: Codex, Claude, Antigravity, or another supported runtime.
 
 Agent Bridge should rely on this for continuity inside a single provider session.
 

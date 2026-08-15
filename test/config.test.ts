@@ -10,24 +10,21 @@ describe("loadBotsConfig", () => {
     );
   });
 
-  it("builds all four bot configs with defaults from an empty env", () => {
+  it("builds all supported bot configs with defaults from an empty env", () => {
     const bots = loadBotsConfig({});
-    expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex", "kimchi"]);
+    expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex"]);
     expect(bots.codex.command).toBe("codex");
     expect(bots.claude.command).toBe("claude");
     expect(bots.antigravity.command).toBe("agy");
-    expect(bots.kimchi.command).toContain("kimchi");
-    expect(bots.kimchi.modelPreference[0]).toBe("kimi-k2.7");
   });
 
   it("respects env overrides for commands and model preferences", () => {
     const bots = loadBotsConfig({
       CODEX_COMMAND: "/opt/bin/codex",
-      KIMCHI_MODEL_PREFERENCE: "a,b",
+      REMOVED_PROVIDER_MODEL_PREFERENCE: "a,b",
       ANTIGRAVITY_MODEL_PREFERENCE: "m1, m2 ,m3",
     });
     expect(bots.codex.command).toBe("/opt/bin/codex");
-    expect(bots.kimchi.modelPreference).toEqual(["a", "b"]);
     expect(bots.antigravity.modelPreference).toEqual(["m1", "m2", "m3"]);
   });
 
@@ -60,20 +57,17 @@ describe("validateTokenUniqueness", () => {
 });
 
 describe("resolveExecutionMode", () => {
-  it("defaults Kimchi to trusted and others to safe", () => {
-    expect(resolveExecutionMode("kimchi", {})).toBe("trusted");
+  it("defaults supported providers to safe", () => {
     expect(resolveExecutionMode("codex", {})).toBe("safe");
     expect(resolveExecutionMode("claude", {})).toBe("safe");
     expect(resolveExecutionMode("antigravity", {})).toBe("safe");
   });
 
   it("lets per-bot env vars override the global mode", () => {
-    expect(resolveExecutionMode("kimchi", { KIMCHI_EXECUTION_MODE: "safe" })).toBe("safe");
     expect(resolveExecutionMode("codex", { CODEX_EXECUTION_MODE: "trusted", BRIDGE_EXECUTION_MODE: "safe" })).toBe("trusted");
   });
 
   it("falls back to BRIDGE_EXECUTION_MODE when no per-bot var is set", () => {
-    expect(resolveExecutionMode("kimchi", { BRIDGE_EXECUTION_MODE: "safe" })).toBe("safe");
     expect(resolveExecutionMode("codex", { BRIDGE_EXECUTION_MODE: "trusted" })).toBe("trusted");
   });
 });
@@ -129,6 +123,6 @@ describe("architectural intent: entry points use the shared config module", () =
     expect(source).toMatch(/from ["']\.\/config\.js["']/);
     // No entry point may build a bot config inline any more.
     expect(source).not.toMatch(/modelPreference:\s*parseModelPreference\(/);
-    expect(source).not.toMatch(/KIMCHI_MODEL_PREFERENCE\s*\|\|/);
+    expect(source).not.toMatch(/REMOVED_PROVIDER_MODEL_PREFERENCE\s*\|\|/);
   });
 });

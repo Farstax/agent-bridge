@@ -28,7 +28,6 @@ import {
   CliTimeoutError,
 } from "./cli.js";
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
-import { resolveKimchiSessionId } from "./providers/kimchiRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
 import { MediaGroupBuffer } from "./telegram.js";
 import type { MessagingPlatform } from "./platform.js";
@@ -229,7 +228,7 @@ function positiveIntegerEnv(name: string, fallback: number): number {
 }
 
 
-const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude", "kimchi"]);
+const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude"]);
 function isAgentKind(kind: string): kind is BotKind {
   return AGENT_KINDS.has(kind);
 }
@@ -2863,10 +2862,6 @@ export class BridgeEngine {
       }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
-      } else if (executionKind === "kimchi" && !result.sessionId) {
-        // Kimchi writes native session evidence to its session files for both
-        // synchronous and asynchronous invocations.
-        result.sessionId = resolveKimchiSessionId(cwd);
       }
       result.text = scrubOutputDir(result.text, outDir);
       const stagedResult: StagedCliResult = { ...this._stageResultState(result), continuationProcessObserved, nativeSessionMode };
@@ -3396,7 +3391,6 @@ export class BridgeEngine {
         codex: this.kind === "codex" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
         antigravity: this.kind === "antigravity" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
         claude: this.kind === "claude" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
-        kimchi: this.kind === "kimchi" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
       },
     };
   }

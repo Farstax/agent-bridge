@@ -2,8 +2,7 @@
 
 Agent Bridge is an open-source runtime for the coding-agent CLIs you already
 use. It provides durable Telegram and Discord access to Codex, Claude Code,
-Antigravity/Agy, and Kimchi through provider-native sessions and ordinary
-Runs.
+and Antigravity/Agy through provider-native sessions and ordinary Runs.
 
 ## Architecture
 

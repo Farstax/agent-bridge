@@ -79,7 +79,7 @@ describe("provider qualification routing", () => {
       failedProviders: new Set(["codex", "agy"]),
     });
 
-    expect([...available]).toEqual(["claude", "kimchi"]);
+    expect([...available]).toEqual(["claude"]);
   });
 
   it("skips unavailable providers when advancing the fallback chain", () => {

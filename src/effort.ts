@@ -17,7 +17,6 @@ const ENV_KEYS: Record<BotKind, string> = {
   codex: "CODEX_EFFORT",
   claude: "CLAUDE_EFFORT",
   antigravity: "ANTIGRAVITY_EFFORT",
-  kimchi: "KIMCHI_EFFORT",
 };
 
 export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
@@ -57,7 +56,6 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): stri
   const support =
     kind === "codex" ? "Codex maps effort to model_reasoning_effort." :
     kind === "claude" ? "Claude maps effort to --effort." :
-    kind === "kimchi" ? "Kimchi maps effort to --thinking level." :
     "Agy effort is unsupported by the CLI; this setting is recorded for parity only. Use Agy model labels for low/high variants.";
 
   return [
@@ -73,15 +71,9 @@ export function appendEffortArgs(command: string, args: string[], effort: Effort
   const cmdName = command.split(/[\\/]/).pop()?.toLowerCase() || command.toLowerCase();
   const isCodex = cmdName.includes("codex");
   const isClaude = cmdName.includes("claude");
-  const isKimchi = cmdName.includes("kimchi");
   const isAgy = cmdName.includes("agy") || cmdName.includes("antigravity");
 
   if (isAgy) return args;
-  if (isKimchi) {
-    // kimchi uses --thinking <level> (same scale as effort levels)
-    if (args.includes("--thinking")) return args;
-    return ["--thinking", effort, ...args];
-  }
   if (isClaude) {
     if (args.includes("--effort")) return args;
     return ["--effort", effort, ...args];

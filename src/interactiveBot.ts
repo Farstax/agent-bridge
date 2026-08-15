@@ -14,13 +14,13 @@ import type { CompactConversationResult } from "./compactConversation.js";
 import type { CapacityFallbackCompactionRequest } from "./fallbackCompaction.js";
 import type { ExecutionOutcome, PendingMessage } from "./engine.js";
 
-export type CliKind = "codex" | "claude" | "antigravity" | "kimchi";
+export type CliKind = "codex" | "claude" | "antigravity";
 export type InteractiveCommandRegistration = {
   commands: Array<{ command: string; description: string }>;
   scope?: { type: "all_group_chats" | "all_chat_administrators" } | { type: "chat" | "chat_administrators"; chat_id: number };
 };
 
-const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity", "kimchi"];
+const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const DEFAULT_CLI: CliKind = "codex";
 const DEFAULT_AUTHENTICATED_CLI_KINDS = new Set<CliKind>(VALID_CLI_KINDS);
 
@@ -139,7 +139,7 @@ export function buildInteractiveCommands(pref: CliKind, options: { integratedHea
     { command: "cli", description: "Show active CLI and switch with one tap" },
     ...(options.integratedHealth ? [{ command: "health", description: "Run health checks or show the latest report" }] : []),
   ];
-  const cliKind = pref === "antigravity" ? "antigravity" : pref === "claude" ? "claude" : pref === "kimchi" ? "kimchi" : "codex";
+  const cliKind = pref === "antigravity" ? "antigravity" : pref === "claude" ? "claude" : "codex";
   const cliCmds = buildTelegramCommands(cliKind);
   const seen = new Set(interactiveOnly.map(c => c.command));
   const merged = [...interactiveOnly];

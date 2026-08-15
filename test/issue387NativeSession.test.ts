@@ -42,7 +42,7 @@ describe("Issue #387 native invocation boundary", () => {
   it("reports fresh when a provider has no resumable session", () => {
     const invocation = buildCliInvocation({
       ...base,
-      bot: "kimchi",
+      bot: "antigravity",
       prompt: "start",
       sessionId: null,
     });
