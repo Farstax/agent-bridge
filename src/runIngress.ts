@@ -117,7 +117,12 @@ function terminalResponse(db: BridgeDb, runId: string): RunIngressResponse | nul
   if (!run || run.status === "running") return null;
   if (run.status === "done") {
     const completed = db.getEventsForRun(runId).find((event) => event.type === "run.completed");
-    const payload = completed ? JSON.parse(String(completed.payload_json)) as { text?: unknown } : {};
+    let payload: { text?: unknown } = {};
+    try {
+      payload = completed ? JSON.parse(String(completed.payload_json)) as { text?: unknown } : {};
+    } catch {
+      return { runId, status: "failed", errorClass: "ambiguous" };
+    }
     return { runId, status: "done", result: typeof payload.text === "string" ? bounded(payload.text, MAX_RESULT_CHARS) : "" };
   }
   return {
@@ -138,7 +143,16 @@ export async function executeRunIngressRequest(
   const runId = receipt.run_id;
   const existing = terminalResponse(db, runId);
   if (existing) return existing;
-  const payload = JSON.parse(receipt.payload_json) as { scopeKey: string; prompt: string };
+  let payload: { scopeKey: string; prompt: string };
+  try {
+    const parsed = JSON.parse(receipt.payload_json) as Partial<typeof payload>;
+    if (typeof parsed.scopeKey !== "string" || typeof parsed.prompt !== "string") throw new Error("invalid persisted request");
+    payload = parsed as { scopeKey: string; prompt: string };
+  } catch {
+    db.updateRunFailed(runId, "run ingress request is malformed");
+    db.recordEventReceiptResult(receiptId, { status: "failed", result_reference: runId, error_class: "ambiguous" });
+    return { runId, status: "failed", errorClass: "ambiguous" };
+  }
   const chatKey = runChatKey(payload.scopeKey);
   const lane: ExecutionLaneHandle | null = db.acquireLock(RUN_INGRESS_SURFACE, chatKey);
   if (!lane) return { runId, status: "failed", errorClass: "ambiguous" };

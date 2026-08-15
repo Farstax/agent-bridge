@@ -134,4 +134,15 @@ describe("authenticated ordinary Run ingress", () => {
     expect(JSON.parse(await send(request()))).toMatchObject({ ok: true, response: { status: "done", result: "bounded" } });
     await server.close();
   });
+
+  it("fails closed when durable request or terminal evidence is malformed", async () => {
+    const db = setup();
+    const accepted = acceptRunIngressRequest(db, request(), { expectedToken: TOKEN, runId: () => "run-1" });
+    db.raw.prepare("UPDATE event_receipts SET payload_json = ? WHERE id = ?").run("{}", accepted.receiptId);
+    await expect(executeRunIngressRequest(db, accepted.receiptId, fakeEngine())).resolves.toMatchObject({
+      runId: "run-1", status: "failed", errorClass: "ambiguous",
+    });
+    expect(db.getRun("run-1").status).toBe("failed");
+    db.close();
+  });
 });
