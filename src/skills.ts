@@ -103,7 +103,7 @@ export function resolveSkillPaths(homeDir = getSharedSkillsHomeDir()): SkillPath
     homeDir,
     agentsSkillsDir: join(homeDir, ".agents", "skills"),
     codexSkillsDir: join(homeDir, ".codex", "skills"),
-    geminiSkillsDir: join(homeDir, ".gemini", "antigravity", "skills"),
+    geminiSkillsDir: join(homeDir, ".gemini", "antigravity-cli", "skills"),
     claudeSkillsDir: join(homeDir, ".claude", "skills"),
     lockfilePath: join(homeDir, ".agents", ".skill-lock.json"),
   };
