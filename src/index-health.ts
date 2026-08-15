@@ -28,6 +28,7 @@ import { autoUpdateClis } from "./health/autoRemediate.js";
 import { formatQualificationSummary } from "./providers/qualificationStatus.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } from "./runIngress.js";
+import { applyAuthoritativeHealthReport, pendingOwnerAuthorizedHealthRecoveryGoals, runOwnerAuthorizedHealthRecovery, startOwnerAuthorizedHealthRecovery, type OwnerAuthorizedHealthRecoveryRequest } from "./autonomousGoalRuntime.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
 import type { HealthPlugin, HealthReport } from "./health/types.js";
@@ -222,6 +223,10 @@ async function handleHealthReportEventIngress(report: HealthReport): Promise<voi
   }
 
   await healthBot.handleReport(report);
+  for (const goalId of applyAuthoritativeHealthReport(bridgeDb, report)) {
+    void runOwnerAuthorizedHealthRecovery(bridgeDb, goalId, engine).catch((error) =>
+      console.error(`[health-bot] successor recovery execution failed for ${goalId}`, error));
+  }
 }
 
 const scheduler = new HealthScheduler({
@@ -313,6 +318,11 @@ const runIngress = runIngressSocket && runIngressToken
     expectedToken: runIngressToken,
     accept: (request) => acceptRunIngressRequest(bridgeDb, request, { expectedToken: runIngressToken, bot: cliBot }),
     execute: (receiptId) => executeRunIngressRequest(bridgeDb, receiptId, engine, { bot: cliBot }),
+    ownerAction: async (request) => {
+      const recovery = request.recovery as OwnerAuthorizedHealthRecoveryRequest;
+      const result = await startOwnerAuthorizedHealthRecovery(bridgeDb, recovery, engine);
+      return { runId: result.runId ?? `goal:${result.goalId}`, status: result.status === "cancelled" ? "cancelled" : "done", result: JSON.stringify({ goalId: result.goalId, status: result.status }) };
+    },
   })
   : null;
 if (runIngress) await runIngress.start();
@@ -322,6 +332,10 @@ if (runIngress) await runIngress.start();
 // then dispatched without blocking scheduler startup and are temporarily
 // excluded from generic orphan classification while they acquire that lane.
 await engine.recoverContinuations();
+for (const goalId of pendingOwnerAuthorizedHealthRecoveryGoals(bridgeDb)) {
+  void runOwnerAuthorizedHealthRecovery(bridgeDb, goalId, engine).catch((error) =>
+    console.error(`[health-bot] pending recovery execution failed for ${goalId}`, error));
+}
 reconcileTerminalPendingHealthEvents(bridgeDb);
 const replayableHealthRunIds = replayablePendingHealthRunIds(bridgeDb);
 void resumeDurablePendingHealthEvents(bridgeDb, engine, { bot: cliBot })
