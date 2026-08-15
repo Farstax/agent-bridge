@@ -374,17 +374,17 @@ export function applyAuthoritativeHealthReport(
   report: { pluginName: string; status: "green" | "amber" | "red"; summary: string; timestamp: string },
 ): string[] {
   const correlationId = healthReportCorrelationId(report.pluginName);
-  const rows = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' AND constraints_json LIKE ?")
-    .all(`%${HEALTH_CORRELATION_PREFIX}${correlationId}%`) as Array<{ goal_id: string }>;
   const status = report.status === "green" ? "healthy" : report.status === "red" ? "unhealthy" : "unknown";
-  const successors: string[] = [];
-  for (const row of rows) {
-    const outcome = applyAuthoritativeHealthObservation(db, row.goal_id, {
-      status, evidence: report.summary, correlationId, observedAt: report.timestamp,
-    });
-    if (outcome === "active" && pendingWake(db, row.goal_id)) successors.push(row.goal_id);
+  const goalId = healthRecoveryGoalId(correlationId);
+  try {
+    if (getAutonomousGoal(db, goalId).status !== "active") return [];
+  } catch {
+    return [];
   }
-  return successors;
+  const outcome = applyAuthoritativeHealthObservation(db, goalId, {
+    status, evidence: report.summary, correlationId, observedAt: report.timestamp,
+  });
+  return outcome === "active" && pendingWake(db, goalId) ? [goalId] : [];
 }
 
 export function pendingOwnerAuthorizedHealthRecoveryGoals(db: BridgeDb): string[] {
