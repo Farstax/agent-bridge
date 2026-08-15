@@ -11,6 +11,7 @@ import {
   healthRecoveryGoalId,
   healthReportCorrelationId,
   applyAuthoritativeHealthReport,
+  pendingOwnerAuthorizedHealthRecoveryGoals,
 } from "../src/autonomousGoalRuntime.js";
 import type { RunIngressEngine } from "../src/runIngress.js";
 import { type as eventType } from "../src/events/types.js";
@@ -165,6 +166,7 @@ describe("owner-authorized health recovery loop", () => {
       maxCycles: 2,
     }, engine([]));
     applyAuthoritativeHealthObservation(db, healthRecoveryGoalId("gap-budget"), { status: "unhealthy", evidence: "still unhealthy", correlationId: "gap-budget", observedAt: "2026-08-15T10:01:00Z" });
+    expect(pendingOwnerAuthorizedHealthRecoveryGoals(db)).toEqual([healthRecoveryGoalId("gap-budget")]);
     db.close();
     const reopened = openDb(paths.at(-1)!, { serviceId: "test-health-recovery", runId: "restarted" });
     const prompts: string[] = [];
