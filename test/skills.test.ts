@@ -106,6 +106,7 @@ describe("shared skills install", () => {
     expect(existsSync(join(sharedSkill, "SKILL.md"))).toBe(true);
     expect(existsSync(join(sharedSkill, "skill.json"))).toBe(false);
     expect(readlinkSync(join(paths.codexSkillsDir, "portable-skill"))).toBe("../../.agents/skills/portable-skill");
+    expect(paths.geminiSkillsDir).toBe(join(home, ".gemini", "antigravity-cli", "skills"));
     expect(readlinkSync(join(paths.geminiSkillsDir, "portable-skill"))).toBe("../../../.agents/skills/portable-skill");
     expect(readlinkSync(join(paths.claudeSkillsDir, "portable-skill"))).toBe("../../.agents/skills/portable-skill");
     expect(verifySkillGlobal("portable-skill", { homeDir: home }).ok).toBe(true);
@@ -119,6 +120,7 @@ describe("shared skills install", () => {
     const sharedSkill = join(paths.agentsSkillsDir, "requirements-to-acceptance");
     expect(existsSync(join(sharedSkill, "SKILL.md"))).toBe(true);
     expect(readlinkSync(join(paths.codexSkillsDir, "requirements-to-acceptance"))).toBe("../../.agents/skills/requirements-to-acceptance");
+    expect(paths.geminiSkillsDir).toBe(join(home, ".gemini", "antigravity-cli", "skills"));
     expect(readlinkSync(join(paths.geminiSkillsDir, "requirements-to-acceptance"))).toBe("../../../.agents/skills/requirements-to-acceptance");
     expect(readlinkSync(join(paths.claudeSkillsDir, "requirements-to-acceptance"))).toBe("../../.agents/skills/requirements-to-acceptance");
 
