@@ -294,6 +294,18 @@ export async function runNextAutonomousGoal(
     }
     const currentWake = pendingWake(db, goalId);
     if (!currentWake) return false;
+    if (current.cycle >= current.maxCycles) {
+      // A wake can be scheduled by a concurrent authoritative health
+      // observation before this cycle's own reconcile() commits the
+      // incremented cycle count (see applyAuthoritativeHealthObservation).
+      // Re-check the budget here, at the one place a new Run is actually
+      // claimed, so that race can never start a Run beyond maxCycles.
+      db.runInTransaction(() => {
+        db.raw.prepare("UPDATE autonomous_goals SET status = 'budget_exhausted', updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'").run(goalId);
+        db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'budget_exhausted' WHERE id = ? AND status = 'received'").run(currentWake.id);
+      });
+      return false;
+    }
     const runId = claimWakeAndRun(db, goalId, currentWake.id);
     if (!runId) return false;
     const eventStore = new EventStore(db, runId);
