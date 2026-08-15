@@ -27,6 +27,7 @@ import { getExecutionProcessState } from "./cliSupervisor.js";
 import { autoUpdateClis } from "./health/autoRemediate.js";
 import { formatQualificationSummary } from "./providers/qualificationStatus.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
+import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } from "./runIngress.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
 import type { HealthPlugin, HealthReport } from "./health/types.js";
@@ -304,6 +305,18 @@ engine = new BridgeEngine(
   client,
 );
 
+const runIngressSocket = process.env.BRIDGE_RUN_INGRESS_SOCKET;
+const runIngressToken = process.env.BRIDGE_RUN_INGRESS_TOKEN;
+const runIngress = runIngressSocket && runIngressToken
+  ? new RunIngressServer({
+    socketPath: runIngressSocket,
+    expectedToken: runIngressToken,
+    accept: (request) => acceptRunIngressRequest(bridgeDb, request, { expectedToken: runIngressToken, bot: cliBot }),
+    execute: (receiptId) => executeRunIngressRequest(bridgeDb, receiptId, engine, { bot: cliBot }),
+  })
+  : null;
+if (runIngress) await runIngress.start();
+
 // Continuations recover first and reclaim their normal lane. Terminal receipts
 // are correlated before replay is considered. Never-started pending Runs are
 // then dispatched without blocking scheduler startup and are temporarily
@@ -391,6 +404,7 @@ const shutdown = (signal: string) => {
   if (schedulerOnlyKeepalive) clearInterval(schedulerOnlyKeepalive);
   scheduler.stop();
   shutdownCliProcesses();
+  void runIngress?.close();
   rawDb.close();
   process.exit(0);
 };
