@@ -1,11 +1,11 @@
 ---
 name: delivery-directives
-description: Use when the user says "ship it" or "release it" after scope is agreed, to execute the repository's existing delivery or release workflow without inventing parallel orchestration.
+description: Use when the user says "ship it", "release it", or "hotfix" to execute the repository's existing delivery, release, or emergency-restoration workflow without inventing parallel orchestration.
 ---
 
 # Delivery Directives
 
-Use these directives as authorization shorthands only after the relevant scope is already agreed. Repository-local instructions and required safety/quality gates remain authoritative.
+Use these directives as authorization shorthands only after the relevant scope or emergency failure is understood. Repository-local instructions and required safety/quality gates remain authoritative.
 
 ## `ship it`
 
@@ -28,3 +28,16 @@ Treat `release it` as authorization to release the current qualified candidate t
 - If no concrete blocker remains, proceed without routine additional approval.
 - Verify through existing deployment or acceptance checks; use the established failure or rollback process when checks fail.
 - Never invent deployment machinery when none exists; report the exact missing capability as the blocker.
+
+## `hotfix`
+
+Treat `hotfix` as authorization to restore production or a release-blocking qualification as an emergency. It changes priority, not the required quality or safety gates.
+
+- Confirm the actual failure and impact, and preserve enough concrete evidence to verify restoration and support the later RCA. Evidence capture must not delay restoration.
+- Use the existing `systematic-debugging`, `red-green-refactor-tdd`, `risk-based-test-strategy`, `release-readiness-review`, and repository-local delivery mechanisms as applicable instead of reproducing their procedures here.
+- Make the smallest safe change that resolves the confirmed failure. While unstable, defer unrelated cleanup, refactors, architecture changes, speculative improvements, and broader hardening.
+- Preserve mandatory regression tests, required CI and release gates, exact-head review, rollback safety, and the repository's supported deployment or release path. Emergency status is not permission to bypass them.
+- Verify the original failure is resolved in the real affected environment and prove production or qualification is stable before moving to post-incident work.
+- Do not create the RCA issue until stability is proven. Once stable, create an RCA issue covering the incident or failure summary, impact and timeline, triggering condition, root cause, why existing tests/detection/controls did not prevent it, the hotfix and deployment/verification evidence, residual risk, and any temporary compromises.
+- Recommend a separate long-term fix only when the evidence shows one is warranted. Any long-term implementation returns to the normal issue and `ship it` path.
+- Exit hotfix mode once stability is established and the RCA handoff is complete. Do not keep unrelated follow-up work inside the emergency scope.
