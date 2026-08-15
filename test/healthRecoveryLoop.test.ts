@@ -204,4 +204,43 @@ describe("owner-authorized health recovery loop", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = 'autonomous' AND status = 'received'").get()).toEqual({ count: 0 });
     db.close();
   });
+
+  it("does not permit a successor Run beyond maxCycles when an unhealthy observation arrives while the final permitted Run is still executing", async () => {
+    const db = setup();
+    const prompts: string[] = [];
+    const goalId = healthRecoveryGoalId("gap-race");
+    const raceEngine: RunIngressEngine = {
+      executeSurfaceNeutralTurn: vi.fn().mockImplementation(async (input: any) => {
+        prompts.push(input.prompt);
+        // Simulates an authoritative health observation landing on another
+        // connection while this Run is still in flight, before the current
+        // cycle's reconcile() has committed the incremented cycle count.
+        applyAuthoritativeHealthObservation(db, goalId, {
+          status: "unhealthy", evidence: "still unhealthy mid-flight", correlationId: "gap-race", observedAt: "2026-08-15T10:01:00Z",
+        });
+        const result = { status: "progress", evidence: "investigated", nextWakeReason: "keep investigating" };
+        input.collect(eventType.runCompleted({ runId: input.runId, bot: "claude", chatId: input.chatKey, text: JSON.stringify(result), sessionId: null }));
+        return { text: JSON.stringify(result), sessionId: null, memoryCandidates: [], nativeSessionMode: "fresh" };
+      }),
+    } as RunIngressEngine;
+    await startOwnerAuthorizedHealthRecovery(db, {
+      ownerAction: "investigate",
+      goalId,
+      correlationId: "gap-race",
+      objective: "Investigate",
+      healthEvidence: "initial unhealthy",
+      constraints: ["inspect only"],
+      bot: "claude",
+      maxCycles: 1,
+    }, raceEngine);
+    expect(prompts).toHaveLength(1);
+    expect(getAutonomousGoal(db, goalId).status).toBe("active");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = 'autonomous' AND status = 'received'").get()).toEqual({ count: 1 });
+    const ranSuccessor = await runOwnerAuthorizedHealthRecovery(db, goalId, engine(prompts));
+    expect(ranSuccessor).toBe(false);
+    expect(prompts).toHaveLength(1);
+    expect(getAutonomousGoal(db, goalId).status).toBe("budget_exhausted");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get(`autonomous:${goalId}`)).toEqual({ count: 1 });
+    db.close();
+  });
 });
