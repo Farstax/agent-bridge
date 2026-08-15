@@ -194,6 +194,7 @@ print(json.dumps({"calls": calls}))
       "requirements-to-acceptance",
       "risk-based-test-strategy",
       "release-readiness-review",
+      "systematic-debugging",
       "delivery-directives",
       "git-sandbox",
       "cli-auth-telegram",
