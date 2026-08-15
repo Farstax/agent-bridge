@@ -317,7 +317,7 @@ const runIngress = runIngressSocket && runIngressToken
     ownerAction: async (request) => {
       const recovery = request.recovery as OwnerAuthorizedHealthRecoveryRequest;
       const result = await startOwnerAuthorizedHealthRecovery(bridgeDb, recovery, engine);
-      return { runId: result.runId ?? `goal:${result.goalId}`, status: result.status === "cancelled" ? "cancelled" : result.status === "active" ? "done" : "failed", result: JSON.stringify({ goalId: result.goalId, status: result.status }) };
+      return { runId: result.runId ?? `goal:${result.goalId}`, status: result.status === "cancelled" ? "cancelled" : "done", result: JSON.stringify({ goalId: result.goalId, status: result.status }) };
     },
   })
   : null;

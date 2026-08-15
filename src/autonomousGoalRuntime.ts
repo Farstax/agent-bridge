@@ -375,7 +375,6 @@ function validateHealthRequest(input: OwnerAuthorizedHealthRecoveryRequest, corr
       input.constraints.join("\n").length > MAX_HEALTH_CONSTRAINT_TOTAL) throw new Error("health recovery constraints are not bounded");
   if (!(input.bot === "codex" || input.bot === "claude" || input.bot === "antigravity")) throw new Error("unsupported health recovery provider");
   if (!Number.isInteger(input.maxCycles) || input.maxCycles < 1 || input.maxCycles > MAX_HEALTH_CYCLES) throw new Error("health recovery cycle budget is not bounded");
-  if (!input.constraints.includes(correlationConstraint)) input.constraints.push(correlationConstraint);
 }
 
 /**
