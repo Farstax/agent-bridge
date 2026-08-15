@@ -387,6 +387,12 @@ export function applyAuthoritativeHealthReport(
   return successors;
 }
 
+export function pendingOwnerAuthorizedHealthRecoveryGoals(db: BridgeDb): string[] {
+  const rows = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' AND constraints_json LIKE ?")
+    .all(`%${HEALTH_POLICY_CONSTRAINT}%`) as Array<{ goal_id: string }>;
+  return rows.filter((row) => pendingWake(db, row.goal_id) !== null).map((row) => row.goal_id);
+}
+
 function policyForGoal(goal: AutonomousGoal): AutonomousRunPolicy {
   return goal.constraints.includes(HEALTH_POLICY_CONSTRAINT) ? "external-observation" : "provider";
 }
