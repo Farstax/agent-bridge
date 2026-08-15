@@ -257,7 +257,7 @@ print(json.dumps({"commands": len(commands)}))
         const shared = join(home, ".agents/skills", skill);
         expect(existsSync(join(shared, "SKILL.md"))).toBe(true);
         expect(lockfile.skills[skill]).toMatchObject({ linkMode: "symlink" });
-        for (const native of [".codex/skills", ".gemini/antigravity/skills", ".claude/skills"]) {
+        for (const native of [".codex/skills", ".gemini/antigravity-cli/skills", ".claude/skills"]) {
           const projection = join(home, native, skill);
           expect(lstatSync(projection).isSymbolicLink()).toBe(true);
           expect(resolve(dirname(projection), readlinkSync(projection))).toBe(shared);

@@ -28,7 +28,7 @@ describe("workspace context", () => {
       expect(context).not.toContain(".skill-lock.json");
       expect(context).not.toContain("/home/agentbridge/.codex/skills");
       expect(context).not.toContain("/home/agentbridge/.claude/skills");
-      expect(context).not.toContain("/home/agentbridge/.gemini/antigravity/skills");
+      expect(context).not.toContain("/home/agentbridge/.gemini/antigravity-cli/skills");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -47,7 +47,7 @@ describe("workspace context", () => {
       expect(context).not.toContain(".skill-lock.json");
       expect(context).not.toContain("/.codex/skills");
       expect(context).not.toContain("/.claude/skills");
-      expect(context).not.toContain("/.gemini/antigravity/skills");
+      expect(context).not.toContain("/.gemini/antigravity-cli/skills");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
