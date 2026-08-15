@@ -338,6 +338,13 @@ function boundedHealthEvidence(value: string): string {
   return value;
 }
 
+function boundedHealthObjective(value: string): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_EVIDENCE_CHARS) {
+    throw new Error("health recovery objective must be bounded and non-empty");
+  }
+  return value;
+}
+
 function healthCorrelationConstraint(correlationId: string): string {
   if (!/^[A-Za-z0-9._:-]{1,160}$/.test(correlationId)) throw new Error("invalid health correlation id");
   return `${HEALTH_CORRELATION_PREFIX}${correlationId}`;
@@ -355,6 +362,8 @@ export async function startOwnerAuthorizedHealthRecovery(
   engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
 ): Promise<{ goalId: string; runId: string | null; status: AutonomousGoalStatus }> {
   const correlationConstraint = healthCorrelationConstraint(input.correlationId);
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(input.goalId)) throw new Error("invalid health recovery goal id");
+  boundedHealthObjective(input.objective);
   boundedHealthEvidence(input.healthEvidence);
   let goal: AutonomousGoal;
   try {
@@ -395,7 +404,10 @@ export function applyAuthoritativeHealthObservation(
   observation: AuthoritativeHealthObservation,
 ): AutonomousGoalStatus {
   const correlationConstraint = healthCorrelationConstraint(observation.correlationId);
-  const evidence = boundedHealthEvidence(observation.evidence);
+  const observationEvidence = observation.observedAt
+    ? `observedAt=${observation.observedAt}; ${observation.evidence}`
+    : observation.evidence;
+  const evidence = boundedHealthEvidence(observationEvidence);
   return db.runInTransaction(() => {
     const goal = getAutonomousGoal(db, goalId);
     if (!goal.constraints.includes(correlationConstraint)) throw new Error("health correlation does not match goal");
