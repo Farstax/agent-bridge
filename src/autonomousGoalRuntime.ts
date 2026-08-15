@@ -16,6 +16,7 @@ const MAX_REASON_CHARS = 300;
 
 export type AutonomousGoalStatus = "active" | "complete" | "blocked" | "cancelled" | "budget_exhausted";
 export type AutonomousCycleStatus = "progress" | "complete" | "blocked" | "cancelled";
+export type AutonomousRunPolicy = "provider" | "external-observation";
 
 export interface AutonomousGoal {
   goalId: string;
@@ -32,6 +33,23 @@ export interface AutonomousCycleResult {
   status: AutonomousCycleStatus;
   evidence: string;
   nextWakeReason?: string;
+}
+
+export interface AuthoritativeHealthObservation {
+  status: "healthy" | "unhealthy" | "unknown";
+  evidence: string;
+  correlationId: string;
+  observedAt?: string;
+}
+
+export interface OwnerAuthorizedHealthRecoveryRequest {
+  goalId: string;
+  correlationId: string;
+  objective: string;
+  healthEvidence: string;
+  constraints: string[];
+  bot: BotKind;
+  maxCycles: number;
 }
 
 export class AutonomousGoalLaneUnavailableError extends Error {
@@ -101,14 +119,15 @@ export function createAutonomousGoal(db: BridgeDb, input: {
   constraints: string[];
   bot: BotKind;
   maxCycles: number;
+  initialEvidence?: string[];
 }): AutonomousGoal {
   if (!input.goalId || !input.prompt || !Number.isInteger(input.maxCycles) || input.maxCycles < 1) {
     throw new Error("goalId, prompt, and a positive integer maxCycles are required");
   }
   db.runInTransaction(() => {
     db.raw.prepare(`INSERT INTO autonomous_goals
-      (goal_id, prompt, constraints_json, bot, max_cycles) VALUES (?, ?, ?, ?, ?)`)
-      .run(input.goalId, input.prompt, JSON.stringify(input.constraints), input.bot, input.maxCycles);
+      (goal_id, prompt, constraints_json, bot, max_cycles, evidence_json) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(input.goalId, input.prompt, JSON.stringify(input.constraints), input.bot, input.maxCycles, JSON.stringify((input.initialEvidence ?? []).slice(-8)));
     scheduleWake(db, input.goalId, { key: `${input.goalId}:wake:0`, reason: "initial" });
   });
   return getAutonomousGoal(db, input.goalId);
@@ -138,7 +157,7 @@ export function parseAutonomousCycleResult(text: string): AutonomousCycleResult 
   return { status: value.status as AutonomousCycleStatus, evidence: value.evidence, nextWakeReason: value.nextWakeReason as string | undefined };
 }
 
-function buildPrompt(goal: AutonomousGoal, cycle: number, priorEvidence: string[], wakeReason: string): string {
+function buildPrompt(goal: AutonomousGoal, cycle: number, priorEvidence: string[], wakeReason: string, policy: AutonomousRunPolicy): string {
   return [
     "You are the provider executive for one bounded autonomous cycle.",
     `Original goal: ${goal.prompt}`,
@@ -146,6 +165,7 @@ function buildPrompt(goal: AutonomousGoal, cycle: number, priorEvidence: string[
     `Current cycle: ${cycle}`,
     `Prior evidence: ${priorEvidence.length ? priorEvidence.join(" | ") : "none"}`,
     `Wake reason: ${wakeReason}`,
+    ...(policy === "external-observation" ? ["Provider output is evidence only. Do not claim recovery; later authoritative health observation decides completion."] : []),
     'Return JSON only with exactly: {"status":"progress|complete|blocked|cancelled","evidence":"bounded evidence","nextWakeReason":"reason"}.',
     'The status must be exactly one of "progress", "complete", "blocked", or "cancelled"; omit nextWakeReason for terminal results.',
   ].join("\n");
@@ -208,11 +228,17 @@ function recoverUnreconciledWake(db: BridgeDb, goal: AutonomousGoal, receipt: an
   });
 }
 
-function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: string, result: AutonomousCycleResult | null, error?: string): void {
+function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: string, result: AutonomousCycleResult | null, error: string | undefined, policy: AutonomousRunPolicy): void {
   db.runInTransaction(() => {
     const run = db.getRun(runId);
+    const currentGoal = getAutonomousGoal(db, goal.goalId);
     const evidence = result?.evidence ?? error ?? "malformed provider output";
     const nextEvidence = boundedEvidence(goal, evidence);
+    if (currentGoal.status !== "active") {
+      if (run?.status === "running") db.updateRunCompleted(runId, evidence, null);
+      db.raw.prepare("UPDATE event_receipts SET status = 'completed', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
+      return;
+    }
     if (run?.status === "cancelled") {
       db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?").run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
       db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
@@ -232,13 +258,19 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
       : result.status;
     db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
       .run(goal.cycle + 1, nextStatus, JSON.stringify(nextEvidence), goal.goalId);
-    if (result.status === "progress" && nextStatus === "active") {
+    if (policy === "provider" && result.status === "progress" && nextStatus === "active") {
       scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: result.nextWakeReason! });
     }
   });
 }
 
-export async function runNextAutonomousGoal(db: BridgeDb, goalId: string, engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<boolean> {
+export async function runNextAutonomousGoal(
+  db: BridgeDb,
+  goalId: string,
+  engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+  options: { policy?: AutonomousRunPolicy } = {},
+): Promise<boolean> {
+  const policy = options.policy ?? "provider";
   const goal = getAutonomousGoal(db, goalId);
   if (goal.status !== "active") return false;
   const wake = pendingWake(db, goalId);
@@ -260,7 +292,7 @@ export async function runNextAutonomousGoal(db: BridgeDb, goalId: string, engine
     if (!runId) return false;
     const eventStore = new EventStore(db, runId);
     const input: SurfaceNeutralTurnInput = {
-      prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason),
+      prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason, policy),
       sessionId: null,
       chatId: 0,
       chatKey: goalChatKey(goalId),
@@ -280,7 +312,10 @@ export async function runNextAutonomousGoal(db: BridgeDb, goalId: string, engine
     } finally {
       eventStore.finalize();
     }
-    reconcile(db, current, currentWake, runId, parsed, error);
+    const effectiveResult = policy === "external-observation" && parsed?.status === "complete"
+      ? { ...parsed, status: "progress" as const, nextWakeReason: undefined }
+      : parsed;
+    reconcile(db, current, currentWake, runId, effectiveResult, error, policy);
     return true;
   } finally {
     db.unlock(laneHandle);
@@ -292,6 +327,115 @@ export async function drainAutonomousGoal(db: BridgeDb, goalId: string, engine: 
     const progressed = await runNextAutonomousGoal(db, goalId, engine);
     if (!progressed && getAutonomousGoal(db, goalId).status === "active") throw new AutonomousGoalProgressError(goalId);
   }
+}
+
+const HEALTH_CORRELATION_PREFIX = "health-gap-correlation:";
+
+function boundedHealthEvidence(value: string): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_EVIDENCE_CHARS) {
+    throw new Error("health observation evidence must be bounded and non-empty");
+  }
+  return value;
+}
+
+function healthCorrelationConstraint(correlationId: string): string {
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(correlationId)) throw new Error("invalid health correlation id");
+  return `${HEALTH_CORRELATION_PREFIX}${correlationId}`;
+}
+
+/**
+ * Owner authorization boundary for a health investigation. Health evidence
+ * alone never calls this function. A stable goal id is the existing durable
+ * correlation key, while the ordinary autonomous Run owner executes the first
+ * bounded cycle through BridgeEngine.
+ */
+export async function startOwnerAuthorizedHealthRecovery(
+  db: BridgeDb,
+  input: OwnerAuthorizedHealthRecoveryRequest,
+  engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+): Promise<{ goalId: string; runId: string | null; status: AutonomousGoalStatus }> {
+  const correlationConstraint = healthCorrelationConstraint(input.correlationId);
+  boundedHealthEvidence(input.healthEvidence);
+  let goal: AutonomousGoal;
+  try {
+    goal = getAutonomousGoal(db, input.goalId);
+  } catch {
+    goal = createAutonomousGoal(db, {
+      goalId: input.goalId,
+      prompt: `${input.objective}\nHealth gap correlation: ${input.correlationId}`,
+      constraints: [...input.constraints, correlationConstraint],
+      bot: input.bot,
+      maxCycles: input.maxCycles,
+      initialEvidence: [`authoritative health observation: ${input.healthEvidence}`],
+    });
+  }
+  if (!goal.constraints.includes(correlationConstraint)) throw new Error("health correlation does not match existing goal");
+  await runNextAutonomousGoal(db, input.goalId, engine, { policy: "external-observation" });
+  const latest = db.raw.prepare("SELECT run_id FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(input.goalId)) as { run_id?: string } | undefined;
+  return { goalId: input.goalId, runId: latest?.run_id ?? null, status: getAutonomousGoal(db, input.goalId).status };
+}
+
+/** Runs one already-authorized successor wake through the ordinary Run owner. */
+export async function runOwnerAuthorizedHealthRecovery(
+  db: BridgeDb,
+  goalId: string,
+  engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+): Promise<boolean> {
+  return runNextAutonomousGoal(db, goalId, engine, { policy: "external-observation" });
+}
+
+/**
+ * Applies later authoritative health evidence. Provider prose is never read
+ * here. Healthy completes the goal, unhealthy creates one idempotent successor
+ * wake if budget remains, and unknown stops safely as blocked.
+ */
+export function applyAuthoritativeHealthObservation(
+  db: BridgeDb,
+  goalId: string,
+  observation: AuthoritativeHealthObservation,
+): AutonomousGoalStatus {
+  const correlationConstraint = healthCorrelationConstraint(observation.correlationId);
+  const evidence = boundedHealthEvidence(observation.evidence);
+  return db.runInTransaction(() => {
+    const goal = getAutonomousGoal(db, goalId);
+    if (!goal.constraints.includes(correlationConstraint)) throw new Error("health correlation does not match goal");
+    if (goal.status !== "active") return goal.status;
+    const nextEvidence = boundedEvidence(goal, `authoritative health observation: ${observation.status}; ${evidence}`);
+    const latestRun = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(goalId)) as { status?: string } | undefined;
+    if (latestRun?.status === "cancelled") {
+      db.raw.prepare("UPDATE autonomous_goals SET status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
+        .run(JSON.stringify(nextEvidence), goalId);
+      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'goal_cancelled' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
+        .run(goalId);
+      return "cancelled";
+    }
+    if (observation.status === "healthy") {
+      db.raw.prepare("UPDATE autonomous_goals SET status = 'complete', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
+        .run(JSON.stringify(nextEvidence), goalId);
+      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'health_recovered' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
+        .run(goalId);
+      return "complete";
+    }
+    if (observation.status === "unknown") {
+      db.raw.prepare("UPDATE autonomous_goals SET status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
+        .run(JSON.stringify(nextEvidence), goalId);
+      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'health_unknown' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
+        .run(goalId);
+      return "blocked";
+    }
+    if (goal.cycle >= goal.maxCycles) {
+      db.raw.prepare("UPDATE autonomous_goals SET status = 'budget_exhausted', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
+        .run(JSON.stringify(nextEvidence), goalId);
+      return "budget_exhausted";
+    }
+    db.raw.prepare("UPDATE autonomous_goals SET evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
+      .run(JSON.stringify(nextEvidence), goalId);
+    scheduleWake(db, goalId, {
+      key: `${goalId}:health-wake:${goal.cycle}`,
+      reason: `authoritative health observation: ${evidence}`,
+    });
+    return "active";
+  });
 }
 
 export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], engine?: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<AutonomousGoal> {

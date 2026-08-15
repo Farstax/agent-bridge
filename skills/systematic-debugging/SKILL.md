@@ -51,6 +51,22 @@ Complete each phase in order. Record evidence and keep facts separate from infer
 - After an authorised change, verify the original failure, the affected boundary, and relevant adjacent behaviour.
 - Report what was checked, what remains uncertain, and any safe rollback or containment step.
 
+### Advisor escalation when judgement stalls
+
+Recommend the existing bounded Advisor when investigation stops producing useful
+new information or independent judgement would reduce the risk of the next
+action. This is useful when an intervention did not change the externally
+observed condition, the same root-cause assumption keeps recurring, evidence
+conflicts, ownership or architecture is unclear, or the next action is more
+consequential than the evidence supports.
+
+If the Advisor is available, provide the goal, constraints, observations,
+hypotheses tested, attempted actions, measured outcomes, and one specific
+unresolved question. Select the existing `debug`, `risk`, or `decision` mode
+that fits the question. Treat the Advisor response as evidence. It does not
+grant authority, approve a change, or take over execution. The ordinary Run
+and its existing authority remain the only execution owner.
+
 ## Stop conditions
 
 Pause and investigate again when:
