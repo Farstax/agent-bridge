@@ -10,25 +10,25 @@ import { getAvailableCliKinds, resolveInteractiveCliAuthPaths } from "../src/int
 
 describe("interactive CLI availability filtering", () => {
   it("filters the switch keyboard to available CLIs", () => {
-    const available = new Set<CliKind>(["claude", "kimchi"]);
+    const available = new Set<CliKind>(["claude"]);
     const keyboard = buildCliKeyboard("codex", available);
     const buttons = keyboard.inline_keyboard.flat();
 
-    expect(buttons.map((button) => button.callback_data)).toEqual(["cli:claude", "cli:kimchi"]);
+    expect(buttons.map((button) => button.callback_data)).toEqual(["cli:claude"]);
     expect(buttons.find((button) => button.text.includes("✓"))?.text).toContain("claude");
   });
 
   it("filters status text to available CLIs", () => {
-    const available = new Set<CliKind>(["claude", "kimchi"]);
+    const available = new Set<CliKind>(["claude"]);
     const text = buildCliStatusText("codex", available);
 
     expect(text).toContain("Active CLI: **claude**");
-    expect(text).toContain("Available: claude, kimchi");
+    expect(text).toContain("Available: claude");
     expect(text).not.toContain("Available: codex");
     expect(text).not.toContain("antigravity");
   });
 
-  it("does not keep kimchi available when no runtime check passes", () => {
+  it("does not keep unavailable providers when no runtime check passes", () => {
     const available = getAvailableCliKinds({
       homeDir: "/tmp/no-creds",
       exists: () => false,
@@ -42,27 +42,17 @@ describe("interactive CLI availability filtering", () => {
     expect(buildCliStatusText("codex", available)).toContain("Available: none");
   });
 
-  it("detects kimchi when the executable/runtime check passes", () => {
-    const available = getAvailableCliKinds({
-      homeDir: "/tmp/no-creds",
-      exists: () => false,
-      commandExists: (command) => command === "kimchi",
-    });
-
-    expect(available).toEqual(new Set<CliKind>(["kimchi"]));
-  });
-
-  it("detects provider credential files and kimchi runtime availability", () => {
+  it("detects provider credential files", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const existing = new Set([paths.codex, paths.claude]);
     const available = getAvailableCliKinds({
       homeDir,
       exists: (path) => existing.has(path),
-      commandExists: (command) => command === "kimchi",
+      commandExists: () => false,
     });
 
-    expect(available).toEqual(new Set<CliKind>(["codex", "claude", "kimchi"]));
+    expect(available).toEqual(new Set<CliKind>(["codex", "claude"]));
     expect(paths.codex).toBe("/home/tester/.codex/auth.json");
     expect(paths.claude).toBe("/home/tester/.claude/.credentials.json");
     expect(paths.antigravity).toEqual([

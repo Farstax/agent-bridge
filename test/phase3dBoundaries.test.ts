@@ -30,11 +30,11 @@ describe("Issue #135 Phase 3D: internal ownership boundaries", () => {
     }
   });
 
-  it("internal provider callers import Antigravity and Kimchi state owners directly", () => {
+  it("internal provider callers import Antigravity state owners directly", () => {
     for (const file of ["src/engine.ts", "src/compactConversation.ts", "src/advisor.ts"]) {
       const text = source(file);
       expect(text, `${file} must not import provider state helpers from cli.ts`).not.toMatch(
-        /import[\s\S]{0,700}\b(?:setAntigravityModel|resolveAntigravityConversationId|resolveKimchiSessionId)\b[\s\S]{0,120}from ["'][^"']*cli\.js["']/,
+        /import[\s\S]{0,700}\b(?:setAntigravityModel|resolveAntigravityConversationId)\b[\s\S]{0,120}from ["'][^"']*cli\.js["']/,
       );
     }
   });
@@ -61,7 +61,7 @@ describe("Issue #135 Phase 3D: internal ownership boundaries", () => {
       "buildCliInvocation", "parseCliResult", "runCli", "runCliAsync",
       "buildExecutionOptions", "buildClaudeExcludedPluginSettings",
       "normalizeCliArgs", "abortCliProcess", "shutdownCliProcesses",
-      "resolveAntigravityConversationId", "resolveKimchiSessionId",
+      "resolveAntigravityConversationId",
     ]) {
       expect(typeof cliExports[name], `legacy cli export ${name}`).toBe("function");
     }

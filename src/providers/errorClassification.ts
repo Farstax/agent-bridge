@@ -31,14 +31,6 @@ const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
     /usage limit/i,
     /\bresets\b/i,
   ],
-  kimchi: [
-    /RESOURCE_EXHAUSTED/,
-    /quota (?:reached|exceeded)/i,
-    /hit your (?:session |usage )?limit/i,
-    /usage limit/i,
-    /rate limit/i,
-    /api_error_status"?:\s*429/i,
-  ],
 };
 
 const AUTH_PATTERNS: readonly RegExp[] = [

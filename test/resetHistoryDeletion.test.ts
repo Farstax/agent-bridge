@@ -25,7 +25,6 @@ describe("/reset conversation evidence deletion", () => {
           codex: { command: "codex", modelPreference: [] },
           antigravity: { command: "agy", modelPreference: [] },
           claude: { command: "claude", modelPreference: [] },
-          kimchi: { command: "kimchi", modelPreference: [] },
         },
       } as any;
 

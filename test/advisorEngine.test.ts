@@ -17,7 +17,6 @@ const config = (): BridgeConfig => ({
     codex: { token: undefined, command: "codex", modelPreference: ["cheap"] },
     claude: { token: undefined, command: "claude", modelPreference: [] },
     antigravity: { token: undefined, command: "agy", modelPreference: [] },
-    kimchi: { token: undefined, command: "kimchi", modelPreference: [] },
   },
 });
 

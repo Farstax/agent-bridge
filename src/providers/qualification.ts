@@ -329,7 +329,7 @@ async function executePromptCheck({
     command: executable,
     model: null,
     executionMode: "safe",
-    outputFormat: providerId === "kimchi" ? null : "json",
+    outputFormat: "json",
     soulContext: null,
     includeResponseContract: false,
     attachments: [],

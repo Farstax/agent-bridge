@@ -67,7 +67,7 @@ broker is only the untrusted cross-process adapter for CLI agents, and its
 `requestWithCapability()` merely authenticates a capability and reconstructs
 trusted scope before entering the same path. `tool_free` requires every chain
 target to support verified tool-disabled execution: Claude runs with
-`--tools ""`, while Codex, Agy, and Kimchi fail closed until a verified
+`--tools ""`, while Codex and Agy fail closed until a verified
 tool-disabled adapter exists. A two-model chain may use two Claude models.
 
 ### Configuration source and deployment drift

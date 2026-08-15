@@ -62,11 +62,11 @@ describe("unified advisor service", () => {
   });
 
   it("rejects chains containing providers without tool-free mode before consuming budget", async () => {
-    const { db, runCli, service } = setup("claude:claude-fable-5,kimchi:some-model");
+    const { db, runCli, service } = setup("unsupported:some-model");
     await expect(service.requestTrusted({
       origin: "manual", scopeKey: "chat:1", turnKey: "turn-1", mode: "review", task: "Review it",
       activeProvider: "codex", activeModel: null, cwd: "/repo",
-    })).rejects.toThrow(/tool-free/i);
+    })).rejects.toThrow(/no configured targets/i);
     expect(runCli).not.toHaveBeenCalled();
     expect(db.raw.prepare("SELECT COUNT(*) AS n FROM advisor_calls").get()).toMatchObject({ n: 0 });
     db.close();

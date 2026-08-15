@@ -223,27 +223,6 @@ describe("compactConversation", () => {
     expect(options).toEqual(buildExecutionOptions("antigravity"));
   });
 
-  it("fails closed without spawning or mutating state when Kimchi lacks verified tool-free execution", async () => {
-    db.addConvTurn("chat:1", "user", "keep this turn intact");
-    const runCli = vi.fn().mockResolvedValue(compactJson("must not be used"));
-
-    const result = await compactConversation("chat:1", {
-      ...deps(runCli),
-      botConfig: { command: "kimchi", modelPreference: ["default"] },
-      cliKind: "kimchi",
-    });
-
-    expect(result).toMatchObject({
-      outcome: "failed",
-      trigger: "manual",
-      error: "Kimchi compaction is disabled because verified tool-free execution is not supported",
-    });
-    expect(runCli).not.toHaveBeenCalled();
-    expect(db.getLatestConvSummary("chat:1")).toBeNull();
-    expect(db.getMemoryCount()).toBe(0);
-    expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(1);
-  });
-
   it("returns no_turns when there is nothing to compact", async () => {
     const runCli = vi.fn().mockResolvedValue(compactJson("should not be called"));
     const result = await compactConversation("chat:1", deps(runCli));

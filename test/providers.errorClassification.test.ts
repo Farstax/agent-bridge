@@ -52,7 +52,7 @@ describe("provider error classification", () => {
       "Session abc-123 not found.",
       "ENOENT: no such file or directory, config.json not found",
       "fatal: repository 'origin' does not exist",
-      "command not found: kimchi",
+      "command not found: unsupported-provider",
       "tool not found: shell",
     ];
 

@@ -5,7 +5,7 @@
  * OUTPUTS: The final prompt text to send to a CLI.
  * NEIGHBORS: src/cli.ts, src/providers/codexRuntime.ts, src/providers/claudeRuntime.ts
  * LOGIC: Issue #135 Phase 3B — extracted so codex/claude provider runtime
- * modules and the remaining inline antigravity/kimchi branches in src/cli.ts
+ * modules and the remaining inline antigravity branch in src/cli.ts
  * can share this without a circular import between cli.ts and the new
  * provider modules.
  */

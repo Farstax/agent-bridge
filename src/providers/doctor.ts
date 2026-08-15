@@ -10,14 +10,13 @@ import { getProviderAdapters } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
-const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity", "kimchi"]);
+const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity"]);
 
 /** Chain vocabulary differs from registry ids only for Antigravity (`agy`). */
 const CHAIN_KIND_TO_PROVIDER_ID: Readonly<Record<string, string>> = {
   codex: "codex",
   claude: "claude",
   antigravity: "agy",
-  kimchi: "kimchi",
 };
 
 const CHAIN_ENV_VARS = [
@@ -77,7 +76,7 @@ export function runDoctor({
   const effectiveEntries: Record<(typeof CHAIN_ENV_VARS)[number], string[]> = {
     INTERACTIVE_CLI_CHAIN: parseCliChain(
       env.INTERACTIVE_CLI_CHAIN,
-      { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "kimchi"] },
+      { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity"] },
     ),
   };
 

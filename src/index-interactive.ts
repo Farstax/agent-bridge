@@ -153,7 +153,7 @@ if (!botUsername) {
 // parser; an all-invalid chain falls back to the full default order.
 const cliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
-  { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "kimchi"] },
+  { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity"] },
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
@@ -171,7 +171,7 @@ function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | 
 }
 
 // Build one engine per CLI kind — none polls; we dispatch handleUpdate manually.
-const CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity", "kimchi"];
+const CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const engines = Object.fromEntries(
   CLI_KINDS.map((kind) => {
     const botConfig = config.bots[kind as BotKind];

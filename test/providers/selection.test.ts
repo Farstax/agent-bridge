@@ -26,11 +26,11 @@ describe("shared provider selection", () => {
       .toEqual(["claude"]);
   });
 
-  it("derives interactive kinds from the registry including kimchi", () => {
-    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity", "kimchi"]);
+  it("derives interactive kinds from the registry", () => {
+    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity"]);
   });
 
   it("derives the interactive chain from provider capabilities", () => {
-    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity", "kimchi"]);
+    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity"]);
   });
 });

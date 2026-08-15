@@ -29,7 +29,7 @@ Each runtime opens an explicitly configured SQLite database through the appropri
 - `src/cli.ts` provides provider-neutral invocation/result dispatch and thin adapters over the supervisor.
 - `src/cliSupervisor.ts` is the sole child-process lifecycle owner. It owns process registration, argument and environment preparation, workspace-lock wrapping, timeouts and watches, cancellation, termination, and settlement.
 - `src/providers/registry.ts` owns provider capabilities and policy metadata.
-- `src/providers/codexRuntime.ts`, `claudeRuntime.ts`, `antigravityRuntime.ts`, and `kimchiRuntime.ts` own provider-specific invocation and parsing.
+- `src/providers/codexRuntime.ts`, `claudeRuntime.ts`, and `antigravityRuntime.ts` own provider-specific invocation and parsing.
 - `src/workerFallback.ts` owns cross-CLI companion fallback and conversation handoff.
 - `src/worktreeLock.ts` and the supervisor/workspace boundaries protect shared Git worktrees from concurrent CLI mutation.
 

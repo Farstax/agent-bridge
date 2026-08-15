@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterAll, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, toAntigravityModelLabel, setAntigravityModel, parseCliResult, toUserMessage, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv, resolveKimchiSessionId, normalizeCliArgs } from "../src/cli.js";
+import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, toAntigravityModelLabel, setAntigravityModel, parseCliResult, toUserMessage, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv, normalizeCliArgs } from "../src/cli.js";
 import { isBridgeCommand, handleCommand } from "../src/commands.js";
 import { openDb } from "../src/db.js";
 import type { BridgeConfig } from "../src/types.js";
@@ -105,10 +105,6 @@ describe("CLI Runner", () => {
     });
     expect(codex.args).toEqual(expect.arrayContaining(["--disable", "shell_tool", "--disable", "browser_use"]));
 
-    expect(() => buildCliInvocation({
-      bot: "kimchi", prompt: "advise", sessionId: null, command: "kimchi",
-      model: "some-model", outputFormat: "json", toolMode: "none",
-    })).toThrow(/tool-free mode.*kimchi/i);
   });
 
   it("passes contextEnv into child processes", async () => {
@@ -285,7 +281,7 @@ describe("model fallback", () => {
       new Error("CLI exited with code 1: fatal: repository 'origin' does not exist")
     )).toBe(false);
     expect(isCapacityExhaustedError(
-      new Error("CLI exited with code 1: command not found: kimchi")
+      new Error("CLI exited with code 1: command not found: unsupported-provider")
     )).toBe(false);
   });
 
@@ -1043,96 +1039,6 @@ describe("/context command", () => {
 
     expect(result?.kind).toBe("message");
     expect(result?.text).toContain("Compact: in progress since 2026-06-27T13:35:20.000Z");
-  });
-});
-
-describe("kimchi integration", () => {
-  it("parseCliResult parses kimchi result to return stdout and null sessionId", () => {
-    const result = parseCliResult({ bot: "kimchi", stdout: "  kimchi output text  \n" });
-    expect(result.text).toBe("kimchi output text");
-    expect(result.sessionId).toBeNull();
-  });
-
-  it("parseCliResult strips tool calls and reasoning sections from kimchi result", () => {
-    const stdout = `
-<|thought_section_begin|>
-Thinking about the response.
-<|thought_section_end|>
-Here is the actual response.
-<|tool_calls_section_begin|><|tool_call_begin|>functions.update_todos:60<|tool_call_argument_begin|>{"todos": []}<|tool_call_end|><|tool_calls_section_end|>
-Done.
-    `;
-    const result = parseCliResult({ bot: "kimchi", stdout });
-    expect(result.text).toBe("Here is the actual response.\n\nDone.");
-  });
-
-  it("resolveKimchiSessionId scans directory and extracts newest session UUID", () => {
-    const tempHome = mkdtempSync(join(tmpdir(), "kimchi-test-home-"));
-    const cwd = "/my/project/dir";
-    const escapedCwd = "my-project-dir";
-    
-    // Create the session directory structure
-    const sessionDir = join(tempHome, ".config", "kimchi", "harness", "sessions", escapedCwd);
-    const fs = require("node:fs");
-    fs.mkdirSync(sessionDir, { recursive: true });
-
-    // Create old session file
-    const oldFile = join(sessionDir, "1719912000_11111111-2222-3333-4444-555555555555.jsonl");
-    fs.writeFileSync(oldFile, "{}");
-    const oldTime = 10000;
-    fs.utimesSync(oldFile, oldTime, oldTime);
-
-    // Create new session file
-    const newFile = join(sessionDir, "1719912060_abcdefab-abcd-abcd-abcd-abcdefabcdef.jsonl");
-    fs.writeFileSync(newFile, "{}");
-    const newTime = 20000;
-    fs.utimesSync(newFile, newTime, newTime);
-
-    const resolved = resolveKimchiSessionId(cwd, tempHome);
-    expect(resolved).toBe("abcdefab-abcd-abcd-abcd-abcdefabcdef");
-
-    // Clean up
-    rmSync(tempHome, { recursive: true, force: true });
-  });
-
-  it("resolveKimchiSessionId returns null if no session dir or files exist", () => {
-    const tempHome = mkdtempSync(join(tmpdir(), "kimchi-test-home-"));
-    const resolvedNoDir = resolveKimchiSessionId("/some/path", tempHome);
-    expect(resolvedNoDir).toBeNull();
-
-    // Create dir but no files
-    const fs = require("node:fs");
-    fs.mkdirSync(join(tempHome, ".config", "kimchi", "harness", "sessions", "some-path"), { recursive: true });
-    const resolvedEmpty = resolveKimchiSessionId("/some/path", tempHome);
-    expect(resolvedEmpty).toBeNull();
-
-    rmSync(tempHome, { recursive: true, force: true });
-  });
-
-  it("buildCliInvocation adds --yolo for Kimchi in trusted mode", () => {
-    const { args } = buildCliInvocation({
-      bot: "kimchi",
-      command: "kimchi",
-      prompt: "hello",
-      sessionId: null,
-      model: null,
-      executionMode: "trusted",
-    });
-    expect(args).toContain("--yolo");
-    expect(args).toContain("--print");
-  });
-
-  it("buildCliInvocation omits --yolo for Kimchi in safe mode", () => {
-    const { args } = buildCliInvocation({
-      bot: "kimchi",
-      command: "kimchi",
-      prompt: "hello",
-      sessionId: null,
-      model: null,
-      executionMode: "safe",
-    });
-    expect(args).not.toContain("--yolo");
-    expect(args).toContain("--print");
   });
 });
 

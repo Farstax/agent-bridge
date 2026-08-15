@@ -1,7 +1,7 @@
 /**
  * PURPOSE: Rate-limits the "compact before switching CLI on capacity fallback"
  * step so a cascading capacity exhaustion across the whole fallback chain
- * (e.g. codex -> claude -> antigravity -> kimchi in quick succession) doesn't
+ * (e.g. codex -> claude -> antigravity in quick succession) doesn't
  * trigger a full compaction CLI round-trip before every single hop.
  * NEIGHBORS: src/interactiveBot.ts, src/compactConversation.ts
  */

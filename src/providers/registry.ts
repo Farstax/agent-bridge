@@ -45,18 +45,6 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     },
     processWatch: createPlannerStallWatch,
   },
-  kimchi: {
-    id: "kimchi",
-    displayName: "Kimchi",
-    executable: "kimchi",
-    versionArgs: ["--version"],
-    defaultArgs: ["--print"],
-    capabilities: {
-      interactive: true,
-      fallbackTarget: true,
-      toolFree: false,
-    },
-  },
 };
 
 /**
@@ -71,7 +59,6 @@ const BOT_NAME_TO_PROVIDER_ID: Record<string, ProviderId> = {
   claude: "claude",
   agy: "agy",
   antigravity: "agy",
-  kimchi: "kimchi",
 };
 
 export function supportsToolFreeMode(bot: string): boolean {

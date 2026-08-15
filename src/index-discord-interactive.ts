@@ -46,6 +46,7 @@ import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { discordLaneKey } from "./discordLaneKey.js";
 import { resolveDiscordStartInteraction } from "./discordStart.js";
+import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -104,8 +105,10 @@ const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots
 
 // ── Fallback chain ────────────────────────────────────────────────────────────
 
-const cliChain = (process.env.INTERACTIVE_CLI_CHAIN || "codex,claude,antigravity")
-  .split(",").map((s) => s.trim()).filter(Boolean);
+const cliChain = parseCliChain(
+  process.env.INTERACTIVE_CLI_CHAIN,
+  { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity"] },
+);
 const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();

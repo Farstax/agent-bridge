@@ -27,8 +27,8 @@ describe("healthy capacity-fallback compaction", () => {
     try { rmSync(dbPath); } catch {}
   });
 
-  it("parses a provider-only chain, maps agy, and excludes unsupported Kimchi", () => {
-    expect(parseCompactionProviderChain(" codex, agy, kimchi, invalid, claude, codex ")).toEqual([
+  it("parses a provider-only chain, maps agy, and excludes unsupported providers", () => {
+    expect(parseCompactionProviderChain(" codex, agy, unsupported, invalid, claude, codex ")).toEqual([
       { provider: "codex", model: null },
       { provider: "antigravity", model: null },
       { provider: "claude", model: null },
@@ -37,7 +37,7 @@ describe("healthy capacity-fallback compaction", () => {
 
   it("validates and deduplicates ordered provider:model targets", () => {
     expect(parseCompactionProviderChain(
-      "claude:claude-sonnet-5,claude:claude-sonnet-5,codex:gpt-5.6-sol,claude:bad model,kimchi:any",
+      "claude:claude-sonnet-5,claude:claude-sonnet-5,codex:gpt-5.6-sol,claude:bad model,unsupported:any",
     )).toEqual([
       { provider: "claude", model: "claude-sonnet-5" },
       { provider: "codex", model: "gpt-5.6-sol" },
@@ -57,8 +57,8 @@ describe("healthy capacity-fallback compaction", () => {
 
   it("uses the configured chain when the incoming provider cannot compact tool-free", () => {
     expect(selectCapacityFallbackCompactionTarget({
-      toCli: "kimchi",
-      exhaustedClis: ["codex"],
+      toCli: "claude",
+      exhaustedClis: ["codex", "claude"],
       configuredChain: [
         { provider: "codex", model: null },
         { provider: "antigravity", model: "gemini-high" },
@@ -119,7 +119,7 @@ describe("healthy capacity-fallback compaction", () => {
     const result = await runCapacityFallbackCompaction({
       chatKey: "chat:1",
       fromCli: "codex",
-      toCli: "kimchi",
+      toCli: "claude",
       exhaustedClis: ["codex", "claude", "antigravity"],
     }, {
       db,
@@ -204,7 +204,7 @@ describe("healthy capacity-fallback compaction", () => {
     const result = await runCapacityFallbackCompaction({
       chatKey: "chat:1",
       fromCli: "codex",
-      toCli: "kimchi",
+      toCli: "claude",
       exhaustedClis: ["codex", "claude", "antigravity"],
     }, {
       db,

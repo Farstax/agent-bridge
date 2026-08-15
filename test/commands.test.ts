@@ -16,7 +16,7 @@ function makeConfig(): BridgeConfig {
     executionMode: "safe",
     asyncEnabled: false,
     dbPath: ":memory:",
-    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot, kimchi: emptyBot },
+    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot },
   };
 }
 

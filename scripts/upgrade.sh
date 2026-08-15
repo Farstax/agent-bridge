@@ -62,7 +62,6 @@ cli_command_version() {
     claude) configured="${CLAUDE_COMMAND:-}" ;;
     codex) configured="${CODEX_COMMAND:-}" ;;
     agy) configured="${ANTIGRAVITY_COMMAND:-}" ;;
-    kimchi) configured="${KIMCHI_COMMAND:-}" ;;
   esac
   if [[ -n "${configured}" ]]; then
     command="${configured}"
