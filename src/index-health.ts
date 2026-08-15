@@ -28,6 +28,7 @@ import { autoUpdateClis } from "./health/autoRemediate.js";
 import { formatQualificationSummary } from "./providers/qualificationStatus.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } from "./runIngress.js";
+import { startOwnerAuthorizedHealthRecovery, type OwnerAuthorizedHealthRecoveryRequest } from "./autonomousGoalRuntime.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
 import type { HealthPlugin, HealthReport } from "./health/types.js";
@@ -313,6 +314,11 @@ const runIngress = runIngressSocket && runIngressToken
     expectedToken: runIngressToken,
     accept: (request) => acceptRunIngressRequest(bridgeDb, request, { expectedToken: runIngressToken, bot: cliBot }),
     execute: (receiptId) => executeRunIngressRequest(bridgeDb, receiptId, engine, { bot: cliBot }),
+    ownerAction: async (request) => {
+      const recovery = request.recovery as OwnerAuthorizedHealthRecoveryRequest;
+      const result = await startOwnerAuthorizedHealthRecovery(bridgeDb, recovery, engine);
+      return { runId: result.runId ?? `goal:${result.goalId}`, status: result.status === "cancelled" ? "cancelled" : result.status === "active" ? "done" : "failed", result: JSON.stringify({ goalId: result.goalId, status: result.status }) };
+    },
   })
   : null;
 if (runIngress) await runIngress.start();
