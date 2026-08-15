@@ -80,6 +80,15 @@ function defaultInvestigationsDir(): string {
   return process.env.AGENT_BRIDGE_INVESTIGATIONS_DIR || "/var/lib/agent-bridge/investigations";
 }
 
+// Length-bounding alone doesn't stop a field from forging extra "lines" in
+// the built prompt (e.g. an applicationName containing "\nRegistered
+// application: something-else"). Evidence fields are single-line facts, so
+// strip control characters before they ever reach prompt text.
+function sanitizeEvidenceField(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
+}
+
 /**
  * Reads the small, bounded, non-secret evidence record a control plane
  * already wrote locally (over the existing authenticated appliance channel)
@@ -99,20 +108,16 @@ export function readInvestigationEvidence(
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
+    const clean: Partial<Record<keyof InvestigationEvidence, string>> = {};
     for (const field of EVIDENCE_REQUIRED_STRING_FIELDS) {
       const value = record[field];
       if (typeof value !== "string" || value.length === 0 || value.length > EVIDENCE_FIELD_MAX_LENGTH) return null;
+      const sanitized = sanitizeEvidenceField(value);
+      if (sanitized.length === 0) return null;
+      clean[field] = sanitized;
     }
-    if (record.investigationId !== investigationId) return null;
-    return {
-      investigationId: record.investigationId as string,
-      applicationName: record.applicationName as string,
-      workspaceId: record.workspaceId as string,
-      status: record.status as string,
-      reason: record.reason as string,
-      checkedAt: record.checkedAt as string,
-      correlationId: record.correlationId as string,
-    };
+    if (clean.investigationId !== investigationId) return null;
+    return clean as InvestigationEvidence;
   } catch {
     return null;
   }
