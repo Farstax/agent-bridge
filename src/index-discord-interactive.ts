@@ -45,6 +45,7 @@ import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage } from "./t
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { discordLaneKey } from "./discordLaneKey.js";
+import { resolveDiscordStartInteraction } from "./discordStart.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -279,6 +280,12 @@ function buildDiscordInteractiveCommands() {
     },
     { name: "reset",  description: "Reset session and clear pending work", type: 1 },
     { name: "models", description: "Show available models",            type: 1 },
+    {
+      name: "start",
+      description: "Start a bounded run from explicit context",
+      type: 1,
+      options: [{ name: "payload", description: "URL-safe bounded context", type: 3, required: false }],
+    },
     { name: "stop",   description: "Abort the running CLI execution",  type: 1 },
     { name: "queue_mode", description: "Set busy-message handling", type: 1 },
   ];
@@ -473,6 +480,33 @@ async function handleInteraction(d: any): Promise<void> {
           components: buildCliComponents(pref),
         },
       }).catch((err) => console.warn("[discord-interactive] /cli ACK failed", err));
+      return;
+    }
+
+    if (commandName === "start") {
+      const chatId = rememberSnowflakeAlias(channelId);
+      const numUserId = rememberSnowflakeAlias(userId);
+      const resolution = resolveDiscordStartInteraction(d, {
+        chatId,
+        userId: numUserId,
+        username: d.member?.user?.username ?? d.user?.username,
+        chatType: d.guild_id ? "supergroup" : "private",
+      });
+      if (resolution.kind === "rejected") {
+        await client.answerCallbackQuery({
+          interaction_id: d.id,
+          interaction_token: d.token,
+          type: 4,
+          data: { content: "Invalid /start payload. Use lowercase letters, numbers, and hyphens, up to 64 characters.", flags: 64 },
+        }).catch((err) => console.warn("[discord-interactive] /start rejection ACK failed", err));
+        return;
+      }
+      await client.answerCallbackQuery({
+        interaction_id: d.id,
+        interaction_token: d.token,
+        type: 5,
+      }).catch((err) => console.warn("[discord-interactive] /start ACK failed", err));
+      await engines[getUserCliPreference(db, channelId)].handleUpdate(resolution.update);
       return;
     }
 
