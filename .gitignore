@@ -27,3 +27,4 @@ dist/
 .data-health/
 cache/
 .worktrees/
+__pycache__/
