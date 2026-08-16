@@ -15,6 +15,8 @@ import {
   parseAutonomousCycleResult,
   runNextAutonomousGoal,
   runAutonomousGoalOperator,
+  runAutonomousGoalOperatorStandalone,
+  standaloneBotConfig,
 } from "../src/autonomousGoalRuntime.js";
 
 function makeDb() {
@@ -196,6 +198,59 @@ describe("autonomous goal production runtime", () => {
     expect(await runAutonomousGoalOperator(db, ["run", "operator-goal"], engine)).toMatchObject({ goalId: "operator-goal", status: "complete" });
     expect(await runAutonomousGoalOperator(db, ["status", "operator-goal"])).toMatchObject({ goalId: "operator-goal", status: "complete" });
 
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("defaults to operator-approved constraints and the claude bot when --constraints/--bot are not given (backward compatible)", async () => {
+    const { db, dbPath } = makeDb();
+    const goal = await runAutonomousGoalOperator(db, ["create", "default-goal", "Default goal", "--max-cycles", "1"]);
+    expect(goal).toMatchObject({ goalId: "default-goal", bot: "claude", constraints: ["operator-approved goal authority"] });
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("accepts explicit --constraints (pipe-delimited) and --bot so a caller can create a goal under its own durable constraints and provider", async () => {
+    const { db, dbPath } = makeDb();
+    const goal = await runAutonomousGoalOperator(db, [
+      "create", "company-goal", "Determine the highest-value obstacle and make progress",
+      "--constraints", "preserve production reliability|no new external trust without owner authorisation",
+      "--bot", "codex",
+      "--max-cycles", "2",
+    ]);
+    expect(goal).toMatchObject({
+      goalId: "company-goal",
+      prompt: "Determine the highest-value obstacle and make progress",
+      bot: "codex",
+      maxCycles: 2,
+      constraints: ["preserve production reliability", "no new external trust without owner authorisation"],
+    });
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("carries the operator-created prompt and durable constraints through to the existing executeSurfaceNeutralTurn owner", async () => {
+    const { db, dbPath } = makeDb();
+    await runAutonomousGoalOperator(db, [
+      "create", "company-goal-run", "Grow the beta activation outcome",
+      "--constraints", "preserve production reliability|no new external trust without owner authorisation",
+      "--bot", "codex",
+      "--max-cycles", "1",
+    ]);
+    const inputs: any[] = [];
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+      inputs.push(input);
+      return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+    });
+
+    const result = await runAutonomousGoalOperator(db, ["run", "company-goal-run"], engine);
+
+    expect(result).toMatchObject({ goalId: "company-goal-run", status: "complete", bot: "codex" });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].prompt).toContain("Grow the beta activation outcome");
+    expect(inputs[0].prompt).toContain("preserve production reliability");
+    expect(inputs[0].prompt).toContain("no new external trust without owner authorisation");
     db.close();
     removeDb(dbPath);
   });
@@ -391,6 +446,108 @@ describe("autonomous goal production runtime", () => {
 
     db.close();
     removeDb(dbPath);
+  });
+});
+
+describe("runAutonomousGoalOperatorStandalone", () => {
+  it("is a genuinely runnable single-call seam: opens its own db, creates under custom constraints/bot, and drains via a real (injectable) engine", async () => {
+    const dbPath = join(tmpdir(), `autonomous-goal-standalone-${Date.now()}-${Math.random()}.sqlite`);
+    // runAutonomousGoalOperatorStandalone uses openProductionDb, which fails
+    // closed on a missing file rather than silently creating one — the
+    // database must already exist (as it would on a real running bridge).
+    openDb(dbPath, { serviceId: "test-autonomous-standalone-seed", runId: `seed-${Math.random()}` }).close();
+    const inputs: any[] = [];
+    const factoryBotArgs: string[] = [];
+    const engineFactory = (db: any, bot: string) => {
+      factoryBotArgs.push(bot);
+      const engine = makeEngine(vi.fn(), db);
+      vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+        inputs.push(input);
+        return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+      });
+      return engine;
+    };
+
+    const created = await runAutonomousGoalOperatorStandalone(dbPath, [
+      "create", "standalone-goal", "Do the standalone thing",
+      "--constraints", "preserve production reliability",
+      "--bot", "codex",
+      "--max-cycles", "1",
+    ], { engineFactory });
+    expect(created).toMatchObject({ goalId: "standalone-goal", bot: "codex", status: "active" });
+
+    const drained = await runAutonomousGoalOperatorStandalone(dbPath, ["run", "standalone-goal"], { engineFactory });
+    expect(drained).toMatchObject({ goalId: "standalone-goal", status: "complete" });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].prompt).toContain("Do the standalone thing");
+    expect(inputs[0].prompt).toContain("preserve production reliability");
+    // The durable goal's stored bot ("codex") must reach engine
+    // construction, not just goal metadata.
+    expect(factoryBotArgs).toEqual(["codex"]);
+
+    const status = await runAutonomousGoalOperatorStandalone(dbPath, ["status", "standalone-goal"], { engineFactory });
+    expect(status).toMatchObject({ goalId: "standalone-goal", status: "complete" });
+    // "create" and "status" don't drain anything, so they must not
+    // construct an engine at all.
+    expect(factoryBotArgs).toEqual(["codex"]);
+
+    removeDb(dbPath);
+  });
+
+  it("resolves the real (non-injected) standalone engine's provider from the durable goal's bot, not a hard-coded Claude default", () => {
+    const overrideKeys = ["CODEX_COMMAND", "CLAUDE_COMMAND", "ANTIGRAVITY_COMMAND", "GEMINI_COMMAND"] as const;
+    const previous = Object.fromEntries(overrideKeys.map((key) => [key, process.env[key]]));
+    for (const key of overrideKeys) delete process.env[key];
+    try {
+      expect(standaloneBotConfig("codex").executionKind).toBe("codex");
+      expect(standaloneBotConfig("codex").botConfig.command).toBe("codex");
+      expect(standaloneBotConfig("claude").executionKind).toBe("claude");
+      expect(standaloneBotConfig("claude").botConfig.command).toBe("claude");
+      expect(standaloneBotConfig("antigravity").executionKind).toBe("antigravity");
+      expect(standaloneBotConfig("antigravity").botConfig.command).toBe("agy");
+    } finally {
+      for (const key of overrideKeys) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key] as string;
+      }
+    }
+  });
+
+  it("honors the same per-bot command env overrides the interactive bridge already uses", () => {
+    const previous = process.env.CODEX_COMMAND;
+    process.env.CODEX_COMMAND = "/opt/custom/codex";
+    try {
+      expect(standaloneBotConfig("codex").botConfig.command).toBe("/opt/custom/codex");
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_COMMAND; else process.env.CODEX_COMMAND = previous;
+    }
+  });
+
+  it("resolves executionMode the same way the interactive bridge does (per-bot override, then global, then safe default) rather than hard-coding safe", () => {
+    const keys = ["CODEX_EXECUTION_MODE", "CLAUDE_EXECUTION_MODE", "BRIDGE_EXECUTION_MODE"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    try {
+      // Default: safe.
+      expect(standaloneBotConfig("claude").executionMode).toBe("safe");
+
+      // Global override applies to every bot.
+      process.env.BRIDGE_EXECUTION_MODE = "trusted";
+      expect(standaloneBotConfig("claude").executionMode).toBe("trusted");
+      expect(standaloneBotConfig("codex").executionMode).toBe("trusted");
+
+      // Per-bot override wins over the global one.
+      process.env.CODEX_EXECUTION_MODE = "safe";
+      expect(standaloneBotConfig("codex").executionMode).toBe("safe");
+      expect(standaloneBotConfig("claude").executionMode).toBe("trusted");
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key] as string;
+      }
+    }
+  });
+
+  it("rejects a bot with no launchable provider command rather than silently defaulting to Claude", () => {
+    expect(() => standaloneBotConfig("kimchi" as any)).toThrow(/kimchi/i);
   });
 });
 

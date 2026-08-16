@@ -3,7 +3,8 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
-import type { BotKind } from "./types.js";
+import { loadBotsConfig, resolveExecutionMode } from "./config.js";
+import type { BotConfig, BotKind } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
 export const AUTONOMOUS_EVENT_KIND = "goal_wake" as const;
@@ -525,16 +526,80 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
   const [operation, goalId] = args;
   if (operation === "create") {
     const maxIndex = args.indexOf("--max-cycles");
-    const prompt = args.slice(2, maxIndex === -1 ? args.length : maxIndex).join(" ");
+    const constraintsIndex = args.indexOf("--constraints");
+    const botIndex = args.indexOf("--bot");
+    const promptEnd = Math.min(
+      ...[maxIndex, constraintsIndex, botIndex].filter((index) => index !== -1),
+      args.length,
+    );
+    const prompt = args.slice(2, promptEnd).join(" ");
     const maxCycles = Number(maxIndex === -1 ? 3 : args[maxIndex + 1]);
-    return createAutonomousGoal(db, { goalId, prompt, constraints: ["operator-approved goal authority"], bot: "claude", maxCycles });
+    // Default preserved exactly for backward compatibility. A caller with
+    // its own durable constraints (e.g. a company operating contract) and
+    // provider passes --constraints (pipe-delimited) / --bot explicitly
+    // rather than being forced into the operator-approved default.
+    const constraints = constraintsIndex === -1
+      ? ["operator-approved goal authority"]
+      : args[constraintsIndex + 1].split("|").map((constraint) => constraint.trim()).filter(Boolean);
+    const bot: BotKind = botIndex === -1 ? "claude" : args[botIndex + 1] as BotKind;
+    return createAutonomousGoal(db, { goalId, prompt, constraints, bot, maxCycles });
   }
   if (operation === "status") return getAutonomousGoal(db, goalId);
   if (operation === "run" && engine) {
     await drainAutonomousGoal(db, goalId, engine);
     return getAutonomousGoal(db, goalId);
   }
-  throw new Error("usage: create <goal-id> <prompt> [--max-cycles N] | run <goal-id> | status <goal-id>");
+  throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id>");
+}
+
+// Resolves a durable goal's bot to the same provider command/config the
+// interactive bridge already uses (loadBotsConfig — CODEX_COMMAND,
+// CLAUDE_COMMAND, ANTIGRAVITY_COMMAND/GEMINI_COMMAND env overrides) and the
+// same execution-mode resolution (resolveExecutionMode — per-bot
+// <BOT>_EXECUTION_MODE, then global BRIDGE_EXECUTION_MODE, then "safe").
+// Throws rather than silently defaulting to Claude for a bot with no
+// launchable command (e.g. "kimchi" is a valid BotKind but has no
+// loadBotsConfig entry).
+export function standaloneBotConfig(bot: BotKind): { executionKind: BotKind; botConfig: BotConfig; executionMode: "safe" | "trusted" } {
+  const bots = loadBotsConfig(process.env);
+  const botConfig = (bots as Record<string, BotConfig | undefined>)[bot];
+  if (!botConfig) throw new Error(`no launchable provider command configured for bot "${bot}"`);
+  return { executionKind: bot, botConfig, executionMode: resolveExecutionMode(bot, process.env) };
+}
+
+function defaultStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
+  const { executionKind, botConfig, executionMode } = standaloneBotConfig(bot);
+  const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
+  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig, allowedUserIds: new Set(["operator"]), executionMode, asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+}
+
+/**
+ * Genuinely runnable single-call operator seam over the existing
+ * create/run/status machinery, for a caller (e.g. a company-owned goal
+ * bootstrap script) that is not the interactive bridge process and has no
+ * existing engine to hand in. Opens the given database and, only for "run"
+ * (the only operation that needs one), constructs an engine for the durable
+ * goal's own stored bot — never a hard-coded default — via the same
+ * standalone construction runAutonomousGoalLiveSmoke used (or an injected
+ * override for tests). Delegates to runAutonomousGoalOperator and closes
+ * the database. Not a new executor — engineFactory just parameterizes the
+ * existing live-smoke construction pattern.
+ */
+export async function runAutonomousGoalOperatorStandalone(
+  databasePath: string,
+  args: string[],
+  options?: { engineFactory?: (db: BridgeDb, bot: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn"> },
+): Promise<AutonomousGoal> {
+  const db = openProductionDb(databasePath, { serviceId: "autonomous-goal-operator", runId: randomUUID() });
+  try {
+    const [operation, goalId] = args;
+    const engine = operation === "run"
+      ? (options?.engineFactory ?? defaultStandaloneEngine)(db, getAutonomousGoal(db, goalId).bot)
+      : undefined;
+    return await runAutonomousGoalOperator(db, args, engine);
+  } finally {
+    db.close();
+  }
 }
 
 export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<{ providerBoundaryReached: boolean; status: AutonomousGoalStatus }> {
