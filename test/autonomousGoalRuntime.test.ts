@@ -19,6 +19,7 @@ import {
   standaloneBotConfig,
   standaloneSoulContext,
   buildStandaloneEngine,
+  cancelAutonomousGoal,
 } from "../src/autonomousGoalRuntime.js";
 
 function makeDb() {
@@ -196,6 +197,79 @@ describe("autonomous goal production runtime", () => {
     expect(getAutonomousGoal(db, "cancel-race")).toMatchObject({ status: "cancelled", cycle: 1, evidence: ["late progress"] });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 1 });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("cancels an idle active goal directly (no in-flight run) and cancels its pending wake, through existing cancellation ownership (#326)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "idle-cancel", prompt: "Stop me", constraints: [], bot: "claude", maxCycles: 3 });
+
+    const cancelled = cancelAutonomousGoal(db, "idle-cancel", "owner stop");
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.evidence.at(-1)).toContain("owner stop");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("is idempotent — cancelling an already-terminal goal is a safe no-op", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "already-done", prompt: "Finish", constraints: [], bot: "claude", maxCycles: 1 });
+    await runNextAutonomousGoal(db, "already-done", makeEngine(vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "finished" }) }), db));
+    expect(getAutonomousGoal(db, "already-done").status).toBe("complete");
+
+    const result = cancelAutonomousGoal(db, "already-done", "owner stop");
+
+    expect(result.status).toBe("complete");
+    expect(result.evidence).toEqual(["finished"]);
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("fences an in-flight run through existing cancellation ownership so late provider completion never becomes authoritative", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "inflight-cancel", prompt: "Keep going", constraints: [], bot: "claude", maxCycles: 3 });
+    let started!: (value: unknown) => void;
+    const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async () => {
+      await providerFinished;
+      return { text: claudeOutput({ status: "progress", evidence: "late progress", nextWakeReason: "continue" }) } as any;
+    });
+
+    const attempt = runNextAutonomousGoal(db, "inflight-cancel", engine);
+    while (db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:inflight-cancel").count !== 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const cancelled = cancelAutonomousGoal(db, "inflight-cancel", "emergency stop");
+    // Cancellation of an in-flight run defers finalization to the existing
+    // reconcile() cancellation-race path — Platform must not overwrite goal
+    // state directly while a provider call is still outstanding.
+    expect(cancelled.status).toBe("active");
+
+    started(undefined);
+    await attempt;
+
+    expect(getAutonomousGoal(db, "inflight-cancel")).toMatchObject({ status: "cancelled", evidence: ["late progress"] });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("exposes cancel through the operator seam", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "operator-cancel", prompt: "Stop via operator", constraints: [], bot: "claude", maxCycles: 3 });
+
+    const result = await runAutonomousGoalOperator(db, ["cancel", "operator-cancel", "owner", "requested", "stop"]);
+
+    expect(result.status).toBe("cancelled");
+    expect(result.evidence.at(-1)).toContain("owner requested stop");
 
     db.close();
     removeDb(dbPath);
