@@ -565,22 +565,17 @@ export function applyAuthoritativeHealthObservation(
  * Bridge cancellation/fencing ownership rather than a new company executor
  * (#326). Idempotent: cancelling an already-terminal goal is a safe no-op.
  *
- * If a run is currently in flight, this fences it with the cross-process
- * killRunOwnedDescendants(runId) primitive — the standalone operator's
- * "cancel" runs in a different Node process from the process that owns the
- * live provider child, so a process-local abort map (e.g. abortCliProcess)
- * cannot actually terminate it; killRunOwnedDescendants scans the OS
- * process table for AGENT_BRIDGE_RUN_ID=<runId> (set on every provider
- * child by cliSupervisor.ts) and signals it directly (independent review of
- * agent-bridge-platform#439/agent-bridge#439). It then marks the run
- * cancelled via updateRunCancelled and does not flip goal status directly —
- * the existing reconcile() cancellation-race path (see "does not persist a
- * successor after authoritative cancellation wins a provider race")
- * finalizes the goal to "cancelled" once the outstanding provider call
- * resolves, or restart recovery does if the process crashes first. Late
- * provider completion never becomes authoritative. If no run is currently
- * in flight, there is nothing that will call reconcile() on our behalf, so
- * this cancels the goal and its pending wake directly.
+ * If a run is currently in flight, cancellation first claims the existing
+ * durable Run fence with updateRunCancelled(). Only after that fence wins do
+ * we terminate the cross-process descendants identified by AGENT_BRIDGE_RUN_ID.
+ * This ordering matters: killing the provider can make the separate run
+ * process settle immediately, so the durable cancellation must already be
+ * visible before reconcile() gets a chance to persist progress or a successor.
+ * The existing reconcile() cancellation-race path then finalizes the goal to
+ * cancelled. If the fence loses, another terminal Run transition already won;
+ * return current durable state rather than claiming a stop that did not win.
+ * If no run is currently in flight, there is nothing to kill and the goal plus
+ * any pending wake are cancelled directly.
  */
 export async function cancelAutonomousGoal(
   db: BridgeDb,
@@ -593,8 +588,9 @@ export async function cancelAutonomousGoal(
   const kill = options?.killRunOwnedDescendants ?? killRunOwnedDescendants;
   const latestRun = db.raw.prepare("SELECT run_id, status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(goalId)) as { run_id?: string; status?: string } | undefined;
   if (latestRun?.run_id && latestRun.status === "running") {
+    const fenced = db.updateRunCancelled(latestRun.run_id, reason);
+    if (!fenced) return getAutonomousGoal(db, goalId);
     await kill(latestRun.run_id);
-    db.updateRunCancelled(latestRun.run_id, reason);
     return getAutonomousGoal(db, goalId);
   }
   db.runInTransaction(() => {
