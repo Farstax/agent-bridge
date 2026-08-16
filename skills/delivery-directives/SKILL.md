@@ -1,6 +1,6 @@
 ---
 name: delivery-directives
-description: Use when the user says "ship it", "release it", or "hotfix" to execute the repository's existing delivery, release, or emergency-restoration workflow without inventing parallel orchestration.
+description: Use when the user says "ship it", "release it", "deploy it", or "hotfix" to execute the repository's existing delivery, release-publication, deployment, or emergency-restoration workflow without inventing parallel orchestration.
 ---
 
 # Delivery Directives
@@ -19,15 +19,28 @@ Treat `ship it` as authorization to execute the already-agreed scope end to end.
 
 ## `release it`
 
-Treat `release it` as authorization to release the current qualified candidate through the repository's established release path.
+Treat `release it` as authorization to qualify and publish the current release candidate through the repository's established release-publication path. It does **not** authorize production deployment.
 
 - Identify and use the repository's existing release process and `release-readiness-review` skill.
 - Review changes since the previous release only for concrete release blockers, integration problems, migrations, compatibility concerns, or operational changes. Do not reopen already-reviewed implementation work without a concrete reason.
 - Produce meaningful user/operator release notes and correct required release-facing documentation.
-- Reuse exact-candidate qualification evidence and existing publish, deploy, and verification automation; do not duplicate CI or rebuild a second artifact.
-- If no concrete blocker remains, proceed without routine additional approval.
-- Verify through existing deployment or acceptance checks; use the established failure or rollback process when checks fail.
-- Never invent deployment machinery when none exists; report the exact missing capability as the blocker.
+- Reuse exact-candidate qualification evidence and existing publication automation; do not duplicate CI or rebuild a second artifact.
+- If no concrete blocker remains, publish the qualified candidate without routine additional approval.
+- Verify the published release/tag/assets/provenance through the repository's existing release checks.
+- Stop after publication and release verification. Do not deploy production unless the user separately says `deploy it` or otherwise explicitly authorizes deployment.
+- Never invent release machinery when none exists; report the exact missing capability as the blocker.
+
+## `deploy it`
+
+Treat `deploy it` as authorization to deploy the already-published or otherwise explicitly approved release identity through the repository's established deployment path. It does **not** authorize publishing a new release.
+
+- Resolve the exact release/tag/commit/artifact the user approved or, when the conversation has just produced one unambiguous release, use that release identity.
+- Reuse existing deployment, rollback, migration, health, stability, smoke, and acceptance automation; do not duplicate rollout machinery.
+- Perform the repository's required preflight and fail closed if the deployed target cannot be bound to the approved release identity.
+- Proceed through the complete guarded deployment without asking for routine confirmations already covered by `deploy it`.
+- Run the existing post-deploy verification and acceptance checks, including user-visible smoke checks when the release changes a public surface.
+- If deployment or verification fails, use the established failure/rollback process and report the exact resulting state.
+- Do not create or publish a new release as part of `deploy it`; if no deployable approved release exists, report that as the blocker.
 
 ## `hotfix`
 
