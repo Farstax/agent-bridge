@@ -4,6 +4,7 @@ import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
+import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotConfig, BotKind } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
@@ -567,10 +568,26 @@ export function standaloneBotConfig(bot: BotKind): { executionKind: BotKind; bot
   return { executionKind: bot, botConfig, executionMode: resolveExecutionMode(bot, process.env) };
 }
 
-function defaultStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
+// Resolves Soul context exactly as index-interactive.ts does — same
+// defaultSoulPath/normalizeSoulMode/loadSoulContext functions, same env
+// vars (AGENT_BRIDGE_SOUL_PATH, AGENT_BRIDGE_SOUL_MODE) — so interactive
+// and standalone execution receive the same configured Soul (#326). No new
+// Soul loader; provider-neutral and content-free of any company identity.
+export function standaloneSoulContext(env: NodeJS.ProcessEnv = process.env): string | null {
+  return loadSoulContext({
+    mode: normalizeSoulMode(env.AGENT_BRIDGE_SOUL_MODE),
+    path: env.AGENT_BRIDGE_SOUL_PATH || defaultSoulPath(env.BRIDGE_PROJECT_DIR || process.cwd()),
+  });
+}
+
+export function buildStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
   const { executionKind, botConfig, executionMode } = standaloneBotConfig(bot);
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
-  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig, allowedUserIds: new Set(["operator"]), executionMode, asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+  return new BridgeEngine({
+    surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig,
+    allowedUserIds: new Set(["operator"]), executionMode, asyncEnabled: true, pollIntervalMs: 1000,
+    soulContext: standaloneSoulContext(),
+  }, db, client);
 }
 
 /**
@@ -594,7 +611,7 @@ export async function runAutonomousGoalOperatorStandalone(
   try {
     const [operation, goalId] = args;
     const engine = operation === "run"
-      ? (options?.engineFactory ?? defaultStandaloneEngine)(db, getAutonomousGoal(db, goalId).bot)
+      ? (options?.engineFactory ?? buildStandaloneEngine)(db, getAutonomousGoal(db, goalId).bot)
       : undefined;
     return await runAutonomousGoalOperator(db, args, engine);
   } finally {
