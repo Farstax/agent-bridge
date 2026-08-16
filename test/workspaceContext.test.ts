@@ -75,4 +75,30 @@ describe("workspace context", () => {
       expect(prompt).not.toContain("secret");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it("uses a neutral wrapper label rather than falsely calling every managed context a selected repository (#326)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "workspace-context-"));
+    const file = join(dir, "workspace-context.md");
+    // A company briefing has no repository at all — the old
+    // "[Selected workspace repository]" wrapper would be false for it and
+    // could bias reasoning toward repository work.
+    writeFileSync(file, "# Company briefing\n\nMission: ...\n");
+    try {
+      const prompt = prependWorkspaceContext("Execute the episode", { AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: file });
+      expect(prompt).not.toContain("[Selected workspace repository]");
+      expect(prompt).toMatch(/^\[Managed workspace context\]/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("keeps customer repository context content unchanged apart from the neutral wrapper label", () => {
+    const dir = mkdtempSync(join(tmpdir(), "workspace-context-"));
+    const file = join(dir, "workspace-context.md");
+    writeFileSync(file, "Repository: owner/repo\nDefault branch: main\n");
+    try {
+      const prompt = prependWorkspaceContext("Please inspect the repository", { AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: file });
+      expect(prompt).toContain("Repository: owner/repo");
+      expect(prompt).toContain("Default branch: main");
+      expect(prompt).toMatch(/^\[Managed workspace context\]\nRepository: owner\/repo/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });

@@ -81,7 +81,7 @@ describe("fresh-session execution contract", () => {
       });
       const resumedPrompt = wrapPromptContext(workspacePrompt, null, false);
 
-      expect(resumedPrompt).toContain("[Selected workspace repository]");
+      expect(resumedPrompt).toContain("[Managed workspace context]");
       expect(resumedPrompt).toContain("Repository: farstax/example");
       expect(resumedPrompt).toContain("## Agent Bridge skills");
       expect(resumedPrompt).not.toContain(EXECUTION_CONTRACT_MARKER);
