@@ -3,6 +3,7 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
+import { abortCliProcess } from "./cliSupervisor.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotConfig, BotKind } from "./types.js";
@@ -559,8 +560,46 @@ export function applyAuthoritativeHealthObservation(
   });
 }
 
+/**
+ * Emergency stop for an active autonomous goal, through existing Agent
+ * Bridge cancellation/fencing ownership rather than a new company executor
+ * (#326). Idempotent: cancelling an already-terminal goal is a safe no-op.
+ *
+ * If a run is currently in flight, this only fences it
+ * (abortCliProcess + updateRunCancelled) and does not flip goal status
+ * directly — the existing reconcile() cancellation-race path (see
+ * "does not persist a successor after authoritative cancellation wins a
+ * provider race") already finalizes the goal to "cancelled" once the
+ * outstanding provider call resolves, or restart recovery does if the
+ * process crashes first. Late provider completion never becomes
+ * authoritative. If no run is currently in flight, there is nothing that
+ * will call reconcile() on our behalf, so this cancels the goal and its
+ * pending wake directly.
+ */
+export function cancelAutonomousGoal(db: BridgeDb, goalId: string, reason: string): AutonomousGoal {
+  const goal = getAutonomousGoal(db, goalId);
+  if (goal.status !== "active") return goal;
+  abortCliProcess(goalChatKey(goalId));
+  db.runInTransaction(() => {
+    const latestRun = db.raw.prepare("SELECT run_id, status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(goalId)) as { run_id?: string; status?: string } | undefined;
+    if (latestRun?.run_id && latestRun.status === "running") {
+      db.updateRunCancelled(latestRun.run_id, reason);
+      return;
+    }
+    const nextEvidence = boundedEvidence(goal, `cancelled: ${reason}`);
+    const result = db.raw.prepare("UPDATE autonomous_goals SET status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
+      .run(JSON.stringify(nextEvidence), goalId);
+    if (result.changes === 1) {
+      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'owner_stopped' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
+        .run(goalId);
+    }
+  });
+  return getAutonomousGoal(db, goalId);
+}
+
 export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], engine?: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<AutonomousGoal> {
   const [operation, goalId] = args;
+  if (operation === "cancel") return cancelAutonomousGoal(db, goalId, args.slice(2).join(" ") || "owner stop");
   if (operation === "create") {
     const maxIndex = args.indexOf("--max-cycles");
     const constraintsIndex = args.indexOf("--constraints");
@@ -586,7 +625,7 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
     await drainAutonomousGoal(db, goalId, engine);
     return getAutonomousGoal(db, goalId);
   }
-  throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id>");
+  throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id> | cancel <goal-id> [reason...]");
 }
 
 // Resolves a durable goal's bot to the same provider command/config the
