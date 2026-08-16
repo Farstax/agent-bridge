@@ -206,7 +206,7 @@ describe("autonomous goal production runtime", () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "idle-cancel", prompt: "Stop me", constraints: [], bot: "claude", maxCycles: 3 });
 
-    const cancelled = cancelAutonomousGoal(db, "idle-cancel", "owner stop");
+    const cancelled = await cancelAutonomousGoal(db, "idle-cancel", "owner stop");
 
     expect(cancelled.status).toBe("cancelled");
     expect(cancelled.evidence.at(-1)).toContain("owner stop");
@@ -222,7 +222,7 @@ describe("autonomous goal production runtime", () => {
     await runNextAutonomousGoal(db, "already-done", makeEngine(vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "finished" }) }), db));
     expect(getAutonomousGoal(db, "already-done").status).toBe("complete");
 
-    const result = cancelAutonomousGoal(db, "already-done", "owner stop");
+    const result = await cancelAutonomousGoal(db, "already-done", "owner stop");
 
     expect(result.status).toBe("complete");
     expect(result.evidence).toEqual(["finished"]);
@@ -247,7 +247,7 @@ describe("autonomous goal production runtime", () => {
       await new Promise((resolve) => setImmediate(resolve));
     }
 
-    const cancelled = cancelAutonomousGoal(db, "inflight-cancel", "emergency stop");
+    const cancelled = await cancelAutonomousGoal(db, "inflight-cancel", "emergency stop", { killRunOwnedDescendants: async () => {} });
     // Cancellation of an in-flight run defers finalization to the existing
     // reconcile() cancellation-race path — Platform must not overwrite goal
     // state directly while a provider call is still outstanding.
@@ -258,6 +258,35 @@ describe("autonomous goal production runtime", () => {
 
     expect(getAutonomousGoal(db, "inflight-cancel")).toMatchObject({ status: "cancelled", evidence: ["late progress"] });
 
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("kills the run's actual OS-owned processes via the cross-process AGENT_BRIDGE_RUN_ID primitive, not the process-local abort map (#439 review)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "cross-process-cancel", prompt: "Keep going", constraints: [], bot: "claude", maxCycles: 3 });
+    let started!: (value: unknown) => void;
+    const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async () => {
+      await providerFinished;
+      return { text: claudeOutput({ status: "progress", evidence: "late", nextWakeReason: "continue" }) } as any;
+    });
+    const attempt = runNextAutonomousGoal(db, "cross-process-cancel", engine);
+    while (db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:cross-process-cancel").count !== 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const run = db.raw.prepare("SELECT run_id FROM bridge_runs WHERE chat_id = ?").get("autonomous:cross-process-cancel") as { run_id: string };
+    const killCalls: string[] = [];
+
+    await cancelAutonomousGoal(db, "cross-process-cancel", "emergency stop", {
+      killRunOwnedDescendants: async (runId) => { killCalls.push(runId); },
+    });
+
+    expect(killCalls).toEqual([run.run_id]);
+
+    started(undefined);
+    await attempt;
     db.close();
     removeDb(dbPath);
   });
