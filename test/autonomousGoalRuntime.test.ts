@@ -128,6 +128,51 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
+  it("invokes an optional onCycleReconciled observer after each cycle reconciles, exposing only existing bounded fields (#326)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "observed", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 3 });
+    const runCliAsync = vi.fn()
+      .mockResolvedValueOnce({ text: claudeOutput({ status: "progress", evidence: "cycle one", nextWakeReason: "continue" }) })
+      .mockResolvedValueOnce({ text: claudeOutput({ status: "complete", evidence: "cycle two done" }) });
+    const events: any[] = [];
+
+    await drainAutonomousGoal(db, "observed", makeEngine(runCliAsync, db), (event) => events.push(event));
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 1, goalStatus: "active", cycleStatus: "progress", evidence: "cycle one" });
+    expect(events[1]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 2, goalStatus: "complete", cycleStatus: "complete", evidence: "cycle two done" });
+    expect(typeof events[0].runId).toBe("string");
+    // No raw provider stdout, transcript, hidden reasoning, or tool logs.
+    expect(Object.keys(events[0]).sort()).toEqual(["cycle", "cycleStatus", "evidence", "goalId", "goalStatus", "runId", "type"]);
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("observer absence does not change cycle ownership or outcome", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "unobserved", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+
+    await drainAutonomousGoal(db, "unobserved", makeEngine(runCliAsync, db));
+
+    expect(getAutonomousGoal(db, "unobserved")).toMatchObject({ status: "complete" });
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("an observer that throws does not break cycle reconciliation or goal state", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "observer-throws", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+
+    await drainAutonomousGoal(db, "observer-throws", makeEngine(runCliAsync, db), () => { throw new Error("observer boom"); });
+
+    expect(getAutonomousGoal(db, "observer-throws")).toMatchObject({ status: "complete" });
+    db.close();
+    removeDb(dbPath);
+  });
+
   it("does not persist a successor after authoritative cancellation wins a provider race", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "cancel-race", prompt: "Do not revive", constraints: [], bot: "claude", maxCycles: 3 });
