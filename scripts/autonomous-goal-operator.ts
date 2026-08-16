@@ -6,7 +6,17 @@
  * goals today; this is the smallest existing seam an operator (or another
  * process on the same host, e.g. a company goal bootstrap script) uses to
  * create and drain one under its own durable constraints/provider.
+ *
+ * Run as a fresh `npx tsx` process outside the agent-bridge-local systemd
+ * unit, this does NOT automatically inherit that unit's
+ * EnvironmentFile=/etc/agent-bridge-local/env the way the running bridge
+ * process does — so without loading it explicitly, "run" would build its
+ * standalone engine (and workspace-context delivery) without
+ * AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE or the CODEX_COMMAND/CLAUDE_COMMAND/
+ * ANTIGRAVITY_COMMAND overrides the running bridge already has.
  */
+import { existsSync } from "node:fs";
+import { config as loadDotenv } from "dotenv";
 import { runAutonomousGoalOperatorStandalone } from "../src/autonomousGoalRuntime.js";
 
 function usage(): never {
@@ -20,6 +30,9 @@ function usage(): never {
 }
 
 async function main(): Promise<void> {
+  const envFile = process.env.LOCAL_BRIDGE_ENV_FILE || "/etc/agent-bridge-local/env";
+  if (existsSync(envFile)) loadDotenv({ path: envFile, override: false, quiet: true });
+
   const [databasePath, ...operatorArgs] = process.argv.slice(2);
   if (!databasePath || operatorArgs.length === 0) usage();
   const goal = await runAutonomousGoalOperatorStandalone(databasePath, operatorArgs);

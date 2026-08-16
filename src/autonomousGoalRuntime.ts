@@ -3,7 +3,8 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
-import type { BotKind } from "./types.js";
+import { loadBotsConfig } from "./config.js";
+import type { BotConfig, BotKind } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
 export const AUTONOMOUS_EVENT_KIND = "goal_wake" as const;
@@ -551,30 +552,47 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
   throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id>");
 }
 
-function defaultStandaloneEngine(db: BridgeDb): BridgeEngine {
-  const command = process.env.AGENT_BRIDGE_AUTONOMOUS_PROVIDER_COMMAND ?? "claude";
+// Resolves a durable goal's bot to the same provider command/config the
+// interactive bridge already uses (loadBotsConfig — CODEX_COMMAND,
+// CLAUDE_COMMAND, ANTIGRAVITY_COMMAND/GEMINI_COMMAND env overrides). Throws
+// rather than silently defaulting to Claude for a bot with no launchable
+// command (e.g. "kimchi" is a valid BotKind but has no loadBotsConfig entry).
+export function standaloneBotConfig(bot: BotKind): { executionKind: BotKind; botConfig: BotConfig } {
+  const bots = loadBotsConfig(process.env);
+  const botConfig = (bots as Record<string, BotConfig | undefined>)[bot];
+  if (!botConfig) throw new Error(`no launchable provider command configured for bot "${bot}"`);
+  return { executionKind: bot, botConfig };
+}
+
+function defaultStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
+  const { executionKind, botConfig } = standaloneBotConfig(bot);
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
-  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig, allowedUserIds: new Set(["operator"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
 }
 
 /**
  * Genuinely runnable single-call operator seam over the existing
  * create/run/status machinery, for a caller (e.g. a company-owned goal
  * bootstrap script) that is not the interactive bridge process and has no
- * existing engine to hand in. Opens the given database, constructs the same
- * minimal standalone engine runAutonomousGoalLiveSmoke uses (or an injected
- * override for tests), delegates to runAutonomousGoalOperator, and closes
+ * existing engine to hand in. Opens the given database and, only for "run"
+ * (the only operation that needs one), constructs an engine for the durable
+ * goal's own stored bot — never a hard-coded default — via the same
+ * standalone construction runAutonomousGoalLiveSmoke used (or an injected
+ * override for tests). Delegates to runAutonomousGoalOperator and closes
  * the database. Not a new executor — engineFactory just parameterizes the
  * existing live-smoke construction pattern.
  */
 export async function runAutonomousGoalOperatorStandalone(
   databasePath: string,
   args: string[],
-  options?: { engineFactory?: (db: BridgeDb) => Pick<BridgeEngine, "executeSurfaceNeutralTurn"> },
+  options?: { engineFactory?: (db: BridgeDb, bot: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn"> },
 ): Promise<AutonomousGoal> {
   const db = openProductionDb(databasePath, { serviceId: "autonomous-goal-operator", runId: randomUUID() });
   try {
-    const engine = (options?.engineFactory ?? defaultStandaloneEngine)(db);
+    const [operation, goalId] = args;
+    const engine = operation === "run"
+      ? (options?.engineFactory ?? defaultStandaloneEngine)(db, getAutonomousGoal(db, goalId).bot)
+      : undefined;
     return await runAutonomousGoalOperator(db, args, engine);
   } finally {
     db.close();

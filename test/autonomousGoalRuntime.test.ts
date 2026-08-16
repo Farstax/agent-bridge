@@ -16,6 +16,7 @@ import {
   runNextAutonomousGoal,
   runAutonomousGoalOperator,
   runAutonomousGoalOperatorStandalone,
+  standaloneBotConfig,
 } from "../src/autonomousGoalRuntime.js";
 
 function makeDb() {
@@ -456,7 +457,9 @@ describe("runAutonomousGoalOperatorStandalone", () => {
     // database must already exist (as it would on a real running bridge).
     openDb(dbPath, { serviceId: "test-autonomous-standalone-seed", runId: `seed-${Math.random()}` }).close();
     const inputs: any[] = [];
-    const engineFactory = (db: any) => {
+    const factoryBotArgs: string[] = [];
+    const engineFactory = (db: any, bot: string) => {
+      factoryBotArgs.push(bot);
       const engine = makeEngine(vi.fn(), db);
       vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
         inputs.push(input);
@@ -478,11 +481,49 @@ describe("runAutonomousGoalOperatorStandalone", () => {
     expect(inputs).toHaveLength(1);
     expect(inputs[0].prompt).toContain("Do the standalone thing");
     expect(inputs[0].prompt).toContain("preserve production reliability");
+    // The durable goal's stored bot ("codex") must reach engine
+    // construction, not just goal metadata.
+    expect(factoryBotArgs).toEqual(["codex"]);
 
     const status = await runAutonomousGoalOperatorStandalone(dbPath, ["status", "standalone-goal"], { engineFactory });
     expect(status).toMatchObject({ goalId: "standalone-goal", status: "complete" });
+    // "create" and "status" don't drain anything, so they must not
+    // construct an engine at all.
+    expect(factoryBotArgs).toEqual(["codex"]);
 
     removeDb(dbPath);
+  });
+
+  it("resolves the real (non-injected) standalone engine's provider from the durable goal's bot, not a hard-coded Claude default", () => {
+    const overrideKeys = ["CODEX_COMMAND", "CLAUDE_COMMAND", "ANTIGRAVITY_COMMAND", "GEMINI_COMMAND"] as const;
+    const previous = Object.fromEntries(overrideKeys.map((key) => [key, process.env[key]]));
+    for (const key of overrideKeys) delete process.env[key];
+    try {
+      expect(standaloneBotConfig("codex").executionKind).toBe("codex");
+      expect(standaloneBotConfig("codex").botConfig.command).toBe("codex");
+      expect(standaloneBotConfig("claude").executionKind).toBe("claude");
+      expect(standaloneBotConfig("claude").botConfig.command).toBe("claude");
+      expect(standaloneBotConfig("antigravity").executionKind).toBe("antigravity");
+      expect(standaloneBotConfig("antigravity").botConfig.command).toBe("agy");
+    } finally {
+      for (const key of overrideKeys) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key] as string;
+      }
+    }
+  });
+
+  it("honors the same per-bot command env overrides the interactive bridge already uses", () => {
+    const previous = process.env.CODEX_COMMAND;
+    process.env.CODEX_COMMAND = "/opt/custom/codex";
+    try {
+      expect(standaloneBotConfig("codex").botConfig.command).toBe("/opt/custom/codex");
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_COMMAND; else process.env.CODEX_COMMAND = previous;
+    }
+  });
+
+  it("rejects a bot with no launchable provider command rather than silently defaulting to Claude", () => {
+    expect(() => standaloneBotConfig("kimchi" as any)).toThrow(/kimchi/i);
   });
 });
 
