@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import {
@@ -17,6 +17,9 @@ import {
   runAutonomousGoalOperator,
   runAutonomousGoalOperatorStandalone,
   standaloneBotConfig,
+  standaloneSoulContext,
+  buildStandaloneEngine,
+  cancelAutonomousGoal,
 } from "../src/autonomousGoalRuntime.js";
 
 function makeDb() {
@@ -126,6 +129,51 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
+  it("invokes an optional onCycleReconciled observer after each cycle reconciles, exposing only existing bounded fields (#326)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "observed", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 3 });
+    const runCliAsync = vi.fn()
+      .mockResolvedValueOnce({ text: claudeOutput({ status: "progress", evidence: "cycle one", nextWakeReason: "continue" }) })
+      .mockResolvedValueOnce({ text: claudeOutput({ status: "complete", evidence: "cycle two done" }) });
+    const events: any[] = [];
+
+    await drainAutonomousGoal(db, "observed", makeEngine(runCliAsync, db), (event) => events.push(event));
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 1, goalStatus: "active", cycleStatus: "progress", evidence: "cycle one" });
+    expect(events[1]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 2, goalStatus: "complete", cycleStatus: "complete", evidence: "cycle two done" });
+    expect(typeof events[0].runId).toBe("string");
+    // No raw provider stdout, transcript, hidden reasoning, or tool logs.
+    expect(Object.keys(events[0]).sort()).toEqual(["cycle", "cycleStatus", "evidence", "goalId", "goalStatus", "runId", "type"]);
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("observer absence does not change cycle ownership or outcome", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "unobserved", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+
+    await drainAutonomousGoal(db, "unobserved", makeEngine(runCliAsync, db));
+
+    expect(getAutonomousGoal(db, "unobserved")).toMatchObject({ status: "complete" });
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("an observer that throws does not break cycle reconciliation or goal state", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "observer-throws", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+
+    await drainAutonomousGoal(db, "observer-throws", makeEngine(runCliAsync, db), () => { throw new Error("observer boom"); });
+
+    expect(getAutonomousGoal(db, "observer-throws")).toMatchObject({ status: "complete" });
+    db.close();
+    removeDb(dbPath);
+  });
+
   it("does not persist a successor after authoritative cancellation wins a provider race", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "cancel-race", prompt: "Do not revive", constraints: [], bot: "claude", maxCycles: 3 });
@@ -151,6 +199,142 @@ describe("autonomous goal production runtime", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
 
     db.close();
+    removeDb(dbPath);
+  });
+
+  it("cancels an idle active goal directly (no in-flight run) and cancels its pending wake, through existing cancellation ownership (#326)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "idle-cancel", prompt: "Stop me", constraints: [], bot: "claude", maxCycles: 3 });
+
+    const cancelled = await cancelAutonomousGoal(db, "idle-cancel", "owner stop");
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.evidence.at(-1)).toContain("owner stop");
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("is idempotent — cancelling an already-terminal goal is a safe no-op", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "already-done", prompt: "Finish", constraints: [], bot: "claude", maxCycles: 1 });
+    await runNextAutonomousGoal(db, "already-done", makeEngine(vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "finished" }) }), db));
+    expect(getAutonomousGoal(db, "already-done").status).toBe("complete");
+
+    const result = await cancelAutonomousGoal(db, "already-done", "owner stop");
+
+    expect(result.status).toBe("complete");
+    expect(result.evidence).toEqual(["finished"]);
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("fences an in-flight run through existing cancellation ownership so late provider completion never becomes authoritative", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "inflight-cancel", prompt: "Keep going", constraints: [], bot: "claude", maxCycles: 3 });
+    let started!: (value: unknown) => void;
+    const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async () => {
+      await providerFinished;
+      return { text: claudeOutput({ status: "progress", evidence: "late progress", nextWakeReason: "continue" }) } as any;
+    });
+
+    const attempt = runNextAutonomousGoal(db, "inflight-cancel", engine);
+    while (db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:inflight-cancel").count !== 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const cancelled = await cancelAutonomousGoal(db, "inflight-cancel", "emergency stop", { killRunOwnedDescendants: async () => {} });
+    // Cancellation of an in-flight run defers finalization to the existing
+    // reconcile() cancellation-race path — Platform must not overwrite goal
+    // state directly while a provider call is still outstanding.
+    expect(cancelled.status).toBe("active");
+
+    started(undefined);
+    await attempt;
+
+    expect(getAutonomousGoal(db, "inflight-cancel")).toMatchObject({ status: "cancelled", evidence: ["late progress"] });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("kills the run's actual OS-owned processes via the cross-process AGENT_BRIDGE_RUN_ID primitive, not the process-local abort map (#439 review)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "cross-process-cancel", prompt: "Keep going", constraints: [], bot: "claude", maxCycles: 3 });
+    let started!: (value: unknown) => void;
+    const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async () => {
+      await providerFinished;
+      return { text: claudeOutput({ status: "progress", evidence: "late", nextWakeReason: "continue" }) } as any;
+    });
+    const attempt = runNextAutonomousGoal(db, "cross-process-cancel", engine);
+    while (db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:cross-process-cancel").count !== 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const run = db.raw.prepare("SELECT run_id FROM bridge_runs WHERE chat_id = ?").get("autonomous:cross-process-cancel") as { run_id: string };
+    const killCalls: string[] = [];
+
+    await cancelAutonomousGoal(db, "cross-process-cancel", "emergency stop", {
+      killRunOwnedDescendants: async (runId) => { killCalls.push(runId); },
+    });
+
+    expect(killCalls).toEqual([run.run_id]);
+
+    started(undefined);
+    await attempt;
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("exposes cancel through the operator seam", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "operator-cancel", prompt: "Stop via operator", constraints: [], bot: "claude", maxCycles: 3 });
+
+    const result = await runAutonomousGoalOperator(db, ["cancel", "operator-cancel", "owner", "requested", "stop"]);
+
+    expect(result.status).toBe("cancelled");
+    expect(result.evidence.at(-1)).toContain("owner requested stop");
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("forwards onCycleReconciled through runAutonomousGoalOperator's run operation (#326)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "operator-observed", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done via operator" }) });
+    const events: any[] = [];
+
+    await runAutonomousGoalOperator(db, ["run", "operator-observed"], makeEngine(runCliAsync, db), (event) => events.push(event));
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ goalId: "operator-observed", evidence: "done via operator" });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("forwards onCycleReconciled through the standalone operator seam (#326)", async () => {
+    const dbPath = join(tmpdir(), `autonomous-goal-standalone-observed-${Date.now()}-${Math.random()}.sqlite`);
+    openDb(dbPath, { serviceId: "test-standalone-observed-seed", runId: `seed-${Math.random()}` }).close();
+    const events: any[] = [];
+    const engineFactory = (db: any) => {
+      const engine = makeEngine(vi.fn(), db);
+      vi.spyOn(engine, "executeSurfaceNeutralTurn").mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "standalone observed" }) } as any);
+      return engine;
+    };
+
+    await runAutonomousGoalOperatorStandalone(dbPath, ["create", "standalone-observed", "Do work", "--max-cycles", "1"], { engineFactory });
+    await runAutonomousGoalOperatorStandalone(dbPath, ["run", "standalone-observed"], { engineFactory, onCycleReconciled: (event) => events.push(event) });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ goalId: "standalone-observed", evidence: "standalone observed" });
+
     removeDb(dbPath);
   });
 
@@ -548,6 +732,59 @@ describe("runAutonomousGoalOperatorStandalone", () => {
 
   it("rejects a bot with no launchable provider command rather than silently defaulting to Claude", () => {
     expect(() => standaloneBotConfig("kimchi" as any)).toThrow(/kimchi/i);
+  });
+
+  it("loads the configured Soul exactly as the interactive bridge does — same functions, same env vars (#326)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "standalone-soul-"));
+    const soulPath = join(dir, "company-soul.md");
+    writeFileSync(soulPath, [
+      "# SOUL.md — Company Agent",
+      "",
+      "## Identity",
+      "",
+      "Do smart things.",
+      "",
+      "## Values",
+      "",
+      "Outcome over activity.",
+      "",
+      "## Boundaries",
+      "",
+      "Initiative is not new authority.",
+    ].join("\n"));
+    try {
+      const context = standaloneSoulContext({ AGENT_BRIDGE_SOUL_PATH: soulPath, AGENT_BRIDGE_SOUL_MODE: "summary" } as any);
+      expect(context).toContain("Do smart things.");
+      expect(context).toContain("Outcome over activity.");
+      expect(context).toContain("Initiative is not new authority.");
+      expect(context).not.toContain("[truncated]");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when the configured Soul path does not exist, matching loadSoulContext's own fail-open behavior", () => {
+    expect(standaloneSoulContext({ AGENT_BRIDGE_SOUL_PATH: "/nonexistent/company-soul.md" } as any)).toBeNull();
+  });
+
+  it("passes the resolved Soul context into the real (non-injected) standalone engine construction", () => {
+    const dir = mkdtempSync(join(tmpdir(), "standalone-soul-engine-"));
+    const soulPath = join(dir, "company-soul.md");
+    writeFileSync(soulPath, ["# SOUL.md", "", "## Identity", "", "Do smart things."].join("\n"));
+    const dbPath = join(dir, "standalone-soul.sqlite");
+    const db = openDb(dbPath, { serviceId: "test-standalone-soul-seed", runId: `seed-${Math.random()}` });
+    const previous = { AGENT_BRIDGE_SOUL_PATH: process.env.AGENT_BRIDGE_SOUL_PATH, AGENT_BRIDGE_SOUL_MODE: process.env.AGENT_BRIDGE_SOUL_MODE };
+    process.env.AGENT_BRIDGE_SOUL_PATH = soulPath;
+    process.env.AGENT_BRIDGE_SOUL_MODE = "summary";
+    try {
+      const engine = buildStandaloneEngine(db, "claude");
+      expect((engine as any).opts.soulContext).toContain("Do smart things.");
+    } finally {
+      if (previous.AGENT_BRIDGE_SOUL_PATH === undefined) delete process.env.AGENT_BRIDGE_SOUL_PATH; else process.env.AGENT_BRIDGE_SOUL_PATH = previous.AGENT_BRIDGE_SOUL_PATH;
+      if (previous.AGENT_BRIDGE_SOUL_MODE === undefined) delete process.env.AGENT_BRIDGE_SOUL_MODE; else process.env.AGENT_BRIDGE_SOUL_MODE = previous.AGENT_BRIDGE_SOUL_MODE;
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

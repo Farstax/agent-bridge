@@ -3,7 +3,9 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
+import { killRunOwnedDescendants } from "./turnContinuationProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
+import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotConfig, BotKind } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
@@ -271,10 +273,24 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
   });
 }
 
+// Provider-neutral observation point after a cycle has already been parsed
+// and reconciled (#326) — no raw provider stdout, transcript, hidden
+// reasoning, or tool logs, only existing bounded autonomous-goal fields.
+export interface CycleReconciledEvent {
+  type: "autonomous_cycle_reconciled";
+  goalId: string;
+  cycle: number;
+  runId: string;
+  goalStatus: AutonomousGoalStatus;
+  cycleStatus: AutonomousCycleStatus;
+  evidence: string;
+}
+
 export async function runNextAutonomousGoal(
   db: BridgeDb,
   goalId: string,
   engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+  onCycleReconciled?: (event: CycleReconciledEvent) => void,
 ): Promise<boolean> {
   const goal = getAutonomousGoal(db, goalId);
   const policy = policyForGoal(goal);
@@ -335,15 +351,37 @@ export async function runNextAutonomousGoal(
       ? { ...parsed, status: "progress" as const, nextWakeReason: undefined }
       : parsed;
     reconcile(db, current, currentWake, runId, effectiveResult, error, currentPolicy);
+    if (onCycleReconciled) {
+      try {
+        const after = getAutonomousGoal(db, goalId);
+        onCycleReconciled({
+          type: "autonomous_cycle_reconciled",
+          goalId,
+          cycle: after.cycle,
+          runId,
+          goalStatus: after.status,
+          cycleStatus: effectiveResult?.status ?? "blocked",
+          evidence: effectiveResult?.evidence ?? error ?? "malformed provider output",
+        });
+      } catch {
+        // Observer failures must never affect cycle ownership or reconciled
+        // state — reconciliation above has already committed successfully.
+      }
+    }
     return true;
   } finally {
     db.unlock(laneHandle);
   }
 }
 
-export async function drainAutonomousGoal(db: BridgeDb, goalId: string, engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<void> {
+export async function drainAutonomousGoal(
+  db: BridgeDb,
+  goalId: string,
+  engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+  onCycleReconciled?: (event: CycleReconciledEvent) => void,
+): Promise<void> {
   while (getAutonomousGoal(db, goalId).status === "active") {
-    const progressed = await runNextAutonomousGoal(db, goalId, engine);
+    const progressed = await runNextAutonomousGoal(db, goalId, engine, onCycleReconciled);
     if (!progressed && getAutonomousGoal(db, goalId).status === "active") throw new AutonomousGoalProgressError(goalId);
   }
 }
@@ -522,8 +560,63 @@ export function applyAuthoritativeHealthObservation(
   });
 }
 
-export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], engine?: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<AutonomousGoal> {
+/**
+ * Emergency stop for an active autonomous goal, through existing Agent
+ * Bridge cancellation/fencing ownership rather than a new company executor
+ * (#326). Idempotent: cancelling an already-terminal goal is a safe no-op.
+ *
+ * If a run is currently in flight, this fences it with the cross-process
+ * killRunOwnedDescendants(runId) primitive — the standalone operator's
+ * "cancel" runs in a different Node process from the process that owns the
+ * live provider child, so a process-local abort map (e.g. abortCliProcess)
+ * cannot actually terminate it; killRunOwnedDescendants scans the OS
+ * process table for AGENT_BRIDGE_RUN_ID=<runId> (set on every provider
+ * child by cliSupervisor.ts) and signals it directly (independent review of
+ * agent-bridge-platform#439/agent-bridge#439). It then marks the run
+ * cancelled via updateRunCancelled and does not flip goal status directly —
+ * the existing reconcile() cancellation-race path (see "does not persist a
+ * successor after authoritative cancellation wins a provider race")
+ * finalizes the goal to "cancelled" once the outstanding provider call
+ * resolves, or restart recovery does if the process crashes first. Late
+ * provider completion never becomes authoritative. If no run is currently
+ * in flight, there is nothing that will call reconcile() on our behalf, so
+ * this cancels the goal and its pending wake directly.
+ */
+export async function cancelAutonomousGoal(
+  db: BridgeDb,
+  goalId: string,
+  reason: string,
+  options?: { killRunOwnedDescendants?: (runId: string) => Promise<void> },
+): Promise<AutonomousGoal> {
+  const goal = getAutonomousGoal(db, goalId);
+  if (goal.status !== "active") return goal;
+  const kill = options?.killRunOwnedDescendants ?? killRunOwnedDescendants;
+  const latestRun = db.raw.prepare("SELECT run_id, status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(goalId)) as { run_id?: string; status?: string } | undefined;
+  if (latestRun?.run_id && latestRun.status === "running") {
+    await kill(latestRun.run_id);
+    db.updateRunCancelled(latestRun.run_id, reason);
+    return getAutonomousGoal(db, goalId);
+  }
+  db.runInTransaction(() => {
+    const nextEvidence = boundedEvidence(goal, `cancelled: ${reason}`);
+    const result = db.raw.prepare("UPDATE autonomous_goals SET status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
+      .run(JSON.stringify(nextEvidence), goalId);
+    if (result.changes === 1) {
+      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'owner_stopped' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
+        .run(goalId);
+    }
+  });
+  return getAutonomousGoal(db, goalId);
+}
+
+export async function runAutonomousGoalOperator(
+  db: BridgeDb,
+  args: string[],
+  engine?: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+  onCycleReconciled?: (event: CycleReconciledEvent) => void,
+): Promise<AutonomousGoal> {
   const [operation, goalId] = args;
+  if (operation === "cancel") return cancelAutonomousGoal(db, goalId, args.slice(2).join(" ") || "owner stop");
   if (operation === "create") {
     const maxIndex = args.indexOf("--max-cycles");
     const constraintsIndex = args.indexOf("--constraints");
@@ -546,10 +639,10 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
   }
   if (operation === "status") return getAutonomousGoal(db, goalId);
   if (operation === "run" && engine) {
-    await drainAutonomousGoal(db, goalId, engine);
+    await drainAutonomousGoal(db, goalId, engine, onCycleReconciled);
     return getAutonomousGoal(db, goalId);
   }
-  throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id>");
+  throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id> | cancel <goal-id> [reason...]");
 }
 
 // Resolves a durable goal's bot to the same provider command/config the
@@ -567,10 +660,26 @@ export function standaloneBotConfig(bot: BotKind): { executionKind: BotKind; bot
   return { executionKind: bot, botConfig, executionMode: resolveExecutionMode(bot, process.env) };
 }
 
-function defaultStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
+// Resolves Soul context exactly as index-interactive.ts does — same
+// defaultSoulPath/normalizeSoulMode/loadSoulContext functions, same env
+// vars (AGENT_BRIDGE_SOUL_PATH, AGENT_BRIDGE_SOUL_MODE) — so interactive
+// and standalone execution receive the same configured Soul (#326). No new
+// Soul loader; provider-neutral and content-free of any company identity.
+export function standaloneSoulContext(env: NodeJS.ProcessEnv = process.env): string | null {
+  return loadSoulContext({
+    mode: normalizeSoulMode(env.AGENT_BRIDGE_SOUL_MODE),
+    path: env.AGENT_BRIDGE_SOUL_PATH || defaultSoulPath(env.BRIDGE_PROJECT_DIR || process.cwd()),
+  });
+}
+
+export function buildStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
   const { executionKind, botConfig, executionMode } = standaloneBotConfig(bot);
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
-  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig, allowedUserIds: new Set(["operator"]), executionMode, asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+  return new BridgeEngine({
+    surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig,
+    allowedUserIds: new Set(["operator"]), executionMode, asyncEnabled: true, pollIntervalMs: 1000,
+    soulContext: standaloneSoulContext(),
+  }, db, client);
 }
 
 /**
@@ -588,15 +697,18 @@ function defaultStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
 export async function runAutonomousGoalOperatorStandalone(
   databasePath: string,
   args: string[],
-  options?: { engineFactory?: (db: BridgeDb, bot: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn"> },
+  options?: {
+    engineFactory?: (db: BridgeDb, bot: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
+    onCycleReconciled?: (event: CycleReconciledEvent) => void;
+  },
 ): Promise<AutonomousGoal> {
   const db = openProductionDb(databasePath, { serviceId: "autonomous-goal-operator", runId: randomUUID() });
   try {
     const [operation, goalId] = args;
     const engine = operation === "run"
-      ? (options?.engineFactory ?? defaultStandaloneEngine)(db, getAutonomousGoal(db, goalId).bot)
+      ? (options?.engineFactory ?? buildStandaloneEngine)(db, getAutonomousGoal(db, goalId).bot)
       : undefined;
-    return await runAutonomousGoalOperator(db, args, engine);
+    return await runAutonomousGoalOperator(db, args, engine, options?.onCycleReconciled);
   } finally {
     db.close();
   }

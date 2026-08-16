@@ -25,18 +25,44 @@ function usage(): never {
     "  npx tsx scripts/autonomous-goal-operator.ts <db-path> create <goal-id> <prompt...> [--constraints c1|c2] [--bot name] [--max-cycles N]",
     "  npx tsx scripts/autonomous-goal-operator.ts <db-path> run <goal-id>",
     "  npx tsx scripts/autonomous-goal-operator.ts <db-path> status <goal-id>",
+    "  npx tsx scripts/autonomous-goal-operator.ts <db-path> cancel <goal-id> [reason...]",
   ].join("\n"));
   process.exit(1);
 }
 
+/**
+ * "run" emits one JSONL line per reconciled cycle to stdout as it drains
+ * (type: "autonomous_cycle_reconciled"), then one final line
+ * (type: "goal_result") once the episode is terminal or budget-exhausted.
+ * A caller that only shells out and waits for the process to exit (not a
+ * live stream) can still recover per-cycle narrative by parsing stdout
+ * line-by-line after the process returns.
+ */
 async function main(): Promise<void> {
   const envFile = process.env.LOCAL_BRIDGE_ENV_FILE || "/etc/agent-bridge-local/env";
   if (existsSync(envFile)) loadDotenv({ path: envFile, override: false, quiet: true });
 
   const [databasePath, ...operatorArgs] = process.argv.slice(2);
   if (!databasePath || operatorArgs.length === 0) usage();
-  const goal = await runAutonomousGoalOperatorStandalone(databasePath, operatorArgs);
-  console.log(JSON.stringify(goal, null, 2));
+  const goal = await runAutonomousGoalOperatorStandalone(databasePath, operatorArgs, {
+    onCycleReconciled: (event) => console.log(JSON.stringify(event)),
+  });
+  // goal.evidence is the retained *array* of bounded cycle evidence
+  // (boundedEvidence() in src/autonomousGoalRuntime.ts), not a single
+  // terminal string — spreading it directly under "evidence" is ambiguous
+  // for a caller that expects one terminal post-mortem/team-review string.
+  // terminalEvidence is the single canonical field: the most recent
+  // (terminal) cycle's evidence only.
+  console.log(JSON.stringify({
+    type: "goal_result",
+    goalId: goal.goalId,
+    status: goal.status,
+    bot: goal.bot,
+    cycle: goal.cycle,
+    maxCycles: goal.maxCycles,
+    constraints: goal.constraints,
+    terminalEvidence: goal.evidence.at(-1) ?? "",
+  }));
 }
 
 main().catch((error) => {

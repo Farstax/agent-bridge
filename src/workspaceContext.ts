@@ -29,5 +29,5 @@ export function loadWorkspaceContext(env: NodeJS.ProcessEnv = process.env): stri
 
 export function prependWorkspaceContext(prompt: string, env: NodeJS.ProcessEnv = process.env): string {
   const context = loadWorkspaceContext(env);
-  return context ? `[Selected workspace repository]\n${context}\n\n${prompt}` : prompt;
+  return context ? `[Managed workspace context]\n${context}\n\n${prompt}` : prompt;
 }
