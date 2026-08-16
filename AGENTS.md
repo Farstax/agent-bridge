@@ -155,19 +155,33 @@ Update documentation that the shipped change makes inaccurate or incomplete. Do 
 
 ## Owner release shorthand — "release it"
 
-When the repository owner says **"release it"**, treat that as authorization to qualify, publish, deploy, and verify the current `main` without another routine approval.
+When the repository owner says **"release it"**, treat that as authorization to qualify and publish the current release candidate through the repository's established release-publication path. "release it" does **not** authorize production deployment.
 
 Unless the owner explicitly narrows or extends it, "release it" means:
 
-`current main → release-delta review → release notes + release-facing documentation → existing exact-SHA qualification → publish existing qualified artifact → established deployment path → existing post-deploy verification → compact completion report`
+`current main → release-delta review → release notes + release-facing documentation → existing exact-SHA qualification → publish existing qualified artifact → verify published release identity/assets/provenance → compact completion report`
 
 Review the merged delta since the previous release for concrete integration, migration, compatibility, or operational blockers. Do not reopen already-reviewed implementation work without a concrete release risk.
 
-Reuse existing GitHub Actions, release-artifact qualification, publication, deployment, rollback, and acceptance automation. Do not duplicate tests, builds, checksums, or rollout mechanics unless required evidence is missing or failing.
+Reuse existing GitHub Actions, release-artifact qualification, and publication automation. Do not duplicate tests, builds, checksums, artifacts, or release mechanics unless required evidence is missing or failing.
 
 Release notes should summarize meaningful user- or operator-visible features, fixes, and operational changes rather than list commits. Update release-facing documentation when the combined release makes it inaccurate or incomplete; change-specific documentation belongs in the originating `ship it` work.
 
-If the exact candidate SHA has the required green qualification evidence and no concrete release blocker remains, publish and deploy it through the established paths. If qualification or verification fails, follow the existing fail-closed deployment and rollback rules rather than weakening the release gate.
+If the exact candidate SHA has the required green qualification evidence and no concrete release blocker remains, publish it through the established release path and verify the resulting tag/release/assets/provenance. Stop after publication verification unless deployment is separately authorized.
+
+## Owner deployment shorthand — "deploy it"
+
+When the repository owner says **"deploy it"**, treat that as authorization to deploy the already-published or otherwise explicitly approved release identity through the repository's established deployment path. "deploy it" does **not** authorize publishing a new release.
+
+Unless the owner explicitly narrows or extends it, "deploy it" means:
+
+`approved release identity → deployment preflight → established guarded deployment path → existing post-deploy health/stability/smoke/acceptance verification → rollback on failed verification when required → compact completion report`
+
+Resolve and bind the deployment to the exact approved release/tag/commit/artifact before mutation. Reuse existing deployment, migration, rollback, health, stability, smoke, and acceptance automation; do not invent a parallel rollout path.
+
+Proceed through the complete guarded deployment without asking for routine confirmations already covered by the directive. If deployment or verification fails, preserve the evidence and use the established fail-closed/rollback process rather than weakening the deployment gate.
+
+If no deployable approved release exists, stop and report that exact blocker instead of publishing one implicitly.
 
 ## Approval 1 — exact-head merge approval
 
