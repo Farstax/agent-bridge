@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import {
@@ -17,6 +17,8 @@ import {
   runAutonomousGoalOperator,
   runAutonomousGoalOperatorStandalone,
   standaloneBotConfig,
+  standaloneSoulContext,
+  buildStandaloneEngine,
 } from "../src/autonomousGoalRuntime.js";
 
 function makeDb() {
@@ -548,6 +550,59 @@ describe("runAutonomousGoalOperatorStandalone", () => {
 
   it("rejects a bot with no launchable provider command rather than silently defaulting to Claude", () => {
     expect(() => standaloneBotConfig("kimchi" as any)).toThrow(/kimchi/i);
+  });
+
+  it("loads the configured Soul exactly as the interactive bridge does — same functions, same env vars (#326)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "standalone-soul-"));
+    const soulPath = join(dir, "company-soul.md");
+    writeFileSync(soulPath, [
+      "# SOUL.md — Company Agent",
+      "",
+      "## Identity",
+      "",
+      "Do smart things.",
+      "",
+      "## Values",
+      "",
+      "Outcome over activity.",
+      "",
+      "## Boundaries",
+      "",
+      "Initiative is not new authority.",
+    ].join("\n"));
+    try {
+      const context = standaloneSoulContext({ AGENT_BRIDGE_SOUL_PATH: soulPath, AGENT_BRIDGE_SOUL_MODE: "summary" } as any);
+      expect(context).toContain("Do smart things.");
+      expect(context).toContain("Outcome over activity.");
+      expect(context).toContain("Initiative is not new authority.");
+      expect(context).not.toContain("[truncated]");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when the configured Soul path does not exist, matching loadSoulContext's own fail-open behavior", () => {
+    expect(standaloneSoulContext({ AGENT_BRIDGE_SOUL_PATH: "/nonexistent/company-soul.md" } as any)).toBeNull();
+  });
+
+  it("passes the resolved Soul context into the real (non-injected) standalone engine construction", () => {
+    const dir = mkdtempSync(join(tmpdir(), "standalone-soul-engine-"));
+    const soulPath = join(dir, "company-soul.md");
+    writeFileSync(soulPath, ["# SOUL.md", "", "## Identity", "", "Do smart things."].join("\n"));
+    const dbPath = join(dir, "standalone-soul.sqlite");
+    const db = openDb(dbPath, { serviceId: "test-standalone-soul-seed", runId: `seed-${Math.random()}` });
+    const previous = { AGENT_BRIDGE_SOUL_PATH: process.env.AGENT_BRIDGE_SOUL_PATH, AGENT_BRIDGE_SOUL_MODE: process.env.AGENT_BRIDGE_SOUL_MODE };
+    process.env.AGENT_BRIDGE_SOUL_PATH = soulPath;
+    process.env.AGENT_BRIDGE_SOUL_MODE = "summary";
+    try {
+      const engine = buildStandaloneEngine(db, "claude");
+      expect((engine as any).opts.soulContext).toContain("Do smart things.");
+    } finally {
+      if (previous.AGENT_BRIDGE_SOUL_PATH === undefined) delete process.env.AGENT_BRIDGE_SOUL_PATH; else process.env.AGENT_BRIDGE_SOUL_PATH = previous.AGENT_BRIDGE_SOUL_PATH;
+      if (previous.AGENT_BRIDGE_SOUL_MODE === undefined) delete process.env.AGENT_BRIDGE_SOUL_MODE; else process.env.AGENT_BRIDGE_SOUL_MODE = previous.AGENT_BRIDGE_SOUL_MODE;
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
