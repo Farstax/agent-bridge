@@ -551,6 +551,36 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
   throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id>");
 }
 
+function defaultStandaloneEngine(db: BridgeDb): BridgeEngine {
+  const command = process.env.AGENT_BRIDGE_AUTONOMOUS_PROVIDER_COMMAND ?? "claude";
+  const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
+  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+}
+
+/**
+ * Genuinely runnable single-call operator seam over the existing
+ * create/run/status machinery, for a caller (e.g. a company-owned goal
+ * bootstrap script) that is not the interactive bridge process and has no
+ * existing engine to hand in. Opens the given database, constructs the same
+ * minimal standalone engine runAutonomousGoalLiveSmoke uses (or an injected
+ * override for tests), delegates to runAutonomousGoalOperator, and closes
+ * the database. Not a new executor — engineFactory just parameterizes the
+ * existing live-smoke construction pattern.
+ */
+export async function runAutonomousGoalOperatorStandalone(
+  databasePath: string,
+  args: string[],
+  options?: { engineFactory?: (db: BridgeDb) => Pick<BridgeEngine, "executeSurfaceNeutralTurn"> },
+): Promise<AutonomousGoal> {
+  const db = openProductionDb(databasePath, { serviceId: "autonomous-goal-operator", runId: randomUUID() });
+  try {
+    const engine = (options?.engineFactory ?? defaultStandaloneEngine)(db);
+    return await runAutonomousGoalOperator(db, args, engine);
+  } finally {
+    db.close();
+  }
+}
+
 export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<{ providerBoundaryReached: boolean; status: AutonomousGoalStatus }> {
   const db = openProductionDb(databasePath, { serviceId: "autonomous-live-smoke", runId: randomUUID() });
   const command = process.env.AGENT_BRIDGE_AUTONOMOUS_PROVIDER_COMMAND ?? "claude";

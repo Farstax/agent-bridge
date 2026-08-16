@@ -15,6 +15,7 @@ import {
   parseAutonomousCycleResult,
   runNextAutonomousGoal,
   runAutonomousGoalOperator,
+  runAutonomousGoalOperatorStandalone,
 } from "../src/autonomousGoalRuntime.js";
 
 function makeDb() {
@@ -443,6 +444,44 @@ describe("autonomous goal production runtime", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 2 });
 
     db.close();
+    removeDb(dbPath);
+  });
+});
+
+describe("runAutonomousGoalOperatorStandalone", () => {
+  it("is a genuinely runnable single-call seam: opens its own db, creates under custom constraints/bot, and drains via a real (injectable) engine", async () => {
+    const dbPath = join(tmpdir(), `autonomous-goal-standalone-${Date.now()}-${Math.random()}.sqlite`);
+    // runAutonomousGoalOperatorStandalone uses openProductionDb, which fails
+    // closed on a missing file rather than silently creating one — the
+    // database must already exist (as it would on a real running bridge).
+    openDb(dbPath, { serviceId: "test-autonomous-standalone-seed", runId: `seed-${Math.random()}` }).close();
+    const inputs: any[] = [];
+    const engineFactory = (db: any) => {
+      const engine = makeEngine(vi.fn(), db);
+      vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+        inputs.push(input);
+        return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+      });
+      return engine;
+    };
+
+    const created = await runAutonomousGoalOperatorStandalone(dbPath, [
+      "create", "standalone-goal", "Do the standalone thing",
+      "--constraints", "preserve production reliability",
+      "--bot", "codex",
+      "--max-cycles", "1",
+    ], { engineFactory });
+    expect(created).toMatchObject({ goalId: "standalone-goal", bot: "codex", status: "active" });
+
+    const drained = await runAutonomousGoalOperatorStandalone(dbPath, ["run", "standalone-goal"], { engineFactory });
+    expect(drained).toMatchObject({ goalId: "standalone-goal", status: "complete" });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].prompt).toContain("Do the standalone thing");
+    expect(inputs[0].prompt).toContain("preserve production reliability");
+
+    const status = await runAutonomousGoalOperatorStandalone(dbPath, ["status", "standalone-goal"], { engineFactory });
+    expect(status).toMatchObject({ goalId: "standalone-goal", status: "complete" });
+
     removeDb(dbPath);
   });
 });
