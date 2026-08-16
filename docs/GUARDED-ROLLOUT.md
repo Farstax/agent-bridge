@@ -125,20 +125,33 @@ sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local
 "deployed" merely because it exists in the released commit.** After the
 release archive and its approval/owner-request have been fully verified and
 staged into an immutable, commit-addressed release directory,
-`agent-bridge-deploy` atomically overwrites the installed copy of each of
-those six helpers with the exact bytes from that verified release directory
-(preserving the existing root ownership and permission mode), verifies the
-write by re-reading and re-hashing the installed file, and records the
-resulting SHA-256 of each installed helper as the corresponding
-`*_sha256` pin (`rollout_helper_sha256`, `release_stage_sha256`,
-`activation_helper_sha256`, `rollout_restore_sha256`,
-`authorization_validator_sha256`, `acceptance_validator_sha256`) in
-`/etc/agent-bridge/rollout.conf`, in the same guarded operation — all of this
-happens before `rollout-agent-bridge` is invoked, so no service is contained,
-no database is touched and no pointer moves against a helper that has not just
-been proven to match the release. If refreshing any one helper or updating its
-pin cannot be completed and verified, the deployment aborts before that
-invocation; the previously installed helpers are left exactly as they were.
+`agent-bridge-deploy` refreshes the installed copy of each of those six
+helpers from the exact bytes in that verified release directory (preserving
+the existing root ownership and permission mode) and records the resulting
+SHA-256 of each installed helper as the corresponding `*_sha256` pin
+(`rollout_helper_sha256`, `release_stage_sha256`, `activation_helper_sha256`,
+`rollout_restore_sha256`, `authorization_validator_sha256`,
+`acceptance_validator_sha256`) in `/etc/agent-bridge/rollout.conf` — all of
+this happens before `rollout-agent-bridge` is invoked, so no service is
+contained, no database is touched and no pointer moves against a helper that
+has not just been proven to match the release.
+
+This refresh is staged in two passes so it is atomic across all six helpers,
+not just atomic per helper: every helper's release-side source is first
+validated, read and written to a verified sibling tmpfile of its destination
+without touching any live installed helper, and only once all six tmpfiles
+exist and verify does a second pass rename each of them into place and write
+the combined pin update. If a problem with any one helper's release-side
+source is discovered — missing file, unreadable, wrong bytes on re-verify —
+the deployment aborts before any live helper is touched and the previously
+installed helpers and pins are left exactly as they were; there is no
+in-between state where some helpers have been upgraded but their pins still
+describe the old bytes. (The renames themselves, once all six tmpfiles are
+verified, are same-filesystem atomic operations on paths whose parent
+directories and permissions were already confirmed writable during staging;
+a rename failing at that point is an exceptional host-level condition, not
+one this mechanism is designed to roll back.)
+
 There is no second path that can install or invoke a different version of
 these six files: `agent-bridge-deploy` remains the sole operator-facing
 privileged deployment entry point, and it is now also the only thing that

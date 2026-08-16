@@ -63,7 +63,7 @@ const PRIVILEGED_HELPERS = [
 
 /** Embeds the real, current repo bytes of every privileged helper into the
  * release archive/manifest, as the actual reviewed release would. */
-function makeReleaseWithHelpers(commit = COMMIT): { archive: string; approval: string; root: string; releaseSha: string } {
+function makeReleaseWithHelpers(commit = COMMIT, options: { omit?: string[] } = {}): { archive: string; approval: string; root: string; releaseSha: string } {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-release-helpers-"));
   const payload = Buffer.from("runtime\n");
   const lock = Buffer.from("lock\n");
@@ -75,7 +75,9 @@ function makeReleaseWithHelpers(commit = COMMIT): { archive: string; approval: s
     { path: "qualification-evidence.json", sha256: sha256(qualification), size: qualification.length },
     { path: "runtime.js", sha256: sha256(payload), size: payload.length },
   ];
+  const omit = new Set(options.omit ?? []);
   for (const helper of PRIVILEGED_HELPERS) {
+    if (omit.has(helper.relative)) continue;
     const content = readFileSync(helper.relative);
     mkdirSync(join(root, "scripts"), { recursive: true });
     writeFileSync(join(root, helper.relative), content);
@@ -571,6 +573,40 @@ describe("privileged helper lifecycle (release-to-installed drift)", () => {
       expect(readFileSync(join(installedRoot, helper.installed), "utf8")).toContain("stale-pre-release-helper");
     }
     expect(readFileSync(configFile, "utf8")).not.toContain("_sha256=");
+  }, 15_000);
+
+  it("leaves every earlier-processed helper untouched and unpinned when only the last helper in the refresh order is missing", () => {
+    // Regression for a real cross-helper atomicity bug: refreshing helpers
+    // one at a time and only writing pins after the whole loop meant the
+    // first five could already be live-overwritten by the time the sixth
+    // helper's problem was discovered, leaving those five installed with new
+    // bytes but still pinned to their old SHA-256 — the exact stale-pin drift
+    // this mechanism exists to prevent, just inverted. All six must be
+    // staged and verified before any one of them is committed to disk.
+    const lastHelper = PRIVILEGED_HELPERS[PRIVILEGED_HELPERS.length - 1];
+    const release = makeReleaseWithHelpers(COMMIT, { omit: [lastHelper.relative] });
+    const releaseRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-helper-stage-"));
+    const installedRoot = mkdtempSync(join(tmpdir(), "agent-bridge-deploy-helper-installed-"));
+    installStaleHelpers(installedRoot);
+    const configFile = join(installedRoot, "rollout.conf");
+    const originalConfig = "runtime_user=content-crawler\nenvironment=production-content-crawler\n";
+    writeFileSync(configFile, originalConfig);
+    const result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--approval", release.approval], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_DEPLOY_TEST: "1",
+        AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: releaseRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT: installedRoot,
+        AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG: configFile,
+      },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/release helper source is missing/i);
+    for (const helper of PRIVILEGED_HELPERS) {
+      expect(readFileSync(join(installedRoot, helper.installed), "utf8")).toContain("stale-pre-release-helper");
+    }
+    expect(readFileSync(configFile, "utf8")).toBe(originalConfig);
   }, 15_000);
 
   it("keeps a subsequent rollout converged: a second deploy of the same release leaves helpers correctly refreshed and pinned", () => {

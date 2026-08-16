@@ -235,10 +235,12 @@ def validate_private_helper(path: Path) -> None:
     validate_private_file(path, True)
 
 
-def refresh_installed_helper(source: Path, destination: Path, chown_root: bool) -> str:
-    """Atomically overwrite `destination` with `source`'s bytes, preserving
-    destination's existing permission bits. Fails closed: any error leaves the
-    previously installed helper in place and no temporary file behind."""
+def stage_installed_helper(source: Path, destination: Path, chown_root: bool) -> tuple[Path, str]:
+    """Verify `source` and `destination`, then write source's bytes to a
+    verified sibling tmpfile of `destination` (not yet renamed into place).
+    Preserves destination's existing permission bits. Raises without touching
+    `destination` if the source is invalid, so this can be called for every
+    helper before any live destination is mutated."""
     if source.is_symlink() or not source.is_file():
         fail(f"release helper source is missing or not a regular file: {source}")
     if destination.is_symlink() or not destination.is_file():
@@ -256,11 +258,17 @@ def refresh_installed_helper(source: Path, destination: Path, chown_root: bool) 
             os.chown(tmp_path, 0, 0)
         if digest(tmp_path) != expected_sha256:
             fail(f"helper refresh write verification failed: {destination}")
-        os.rename(tmp_path, destination)
     except Exception:
         if tmp_path.exists():
             tmp_path.unlink()
         raise
+    return tmp_path, expected_sha256
+
+
+def commit_installed_helper(tmp_path: Path, destination: Path, expected_sha256: str) -> str:
+    """Atomically publish an already-staged, verified tmpfile as `destination`,
+    then re-verify the installed bytes."""
+    os.rename(tmp_path, destination)
     installed_sha256 = digest(destination)
     if installed_sha256 != expected_sha256:
         fail(f"installed helper hash mismatch after refresh: {destination}")
@@ -304,19 +312,37 @@ def update_config_pins(config: Path, pins: dict[str, str]) -> None:
 def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Path | None = None) -> dict[str, str]:
     """Refresh every privileged helper in HELPER_REFRESH_MAP from the given
     verified, staged release directory, then pin their installed SHA-256s in
-    `config` in the same operation. Raises (fails closed) before updating any
-    pin if any single helper cannot be refreshed and verified, so a partial
-    refresh can never leave the pin file describing helpers that were not
-    actually installed."""
+    `config` in the same operation.
+
+    This is staged in two passes specifically so that a problem with any one
+    helper (missing/unreadable source, write failure, ...) is discovered
+    before any live installed helper is touched: first every helper's source
+    is validated and written to a verified sibling tmpfile of its destination
+    (no destination is mutated yet), and only once all six tmpfiles exist and
+    verify does the second pass atomically rename each of them into place and
+    write the combined pin update. A single-loop write-then-verify-per-helper
+    would let earlier helpers in the list be live-overwritten before a later
+    helper's problem is discovered, leaving those already-overwritten helpers
+    both unpinned and inconsistent with the (unwritten) config -- that is the
+    exact stale-pin drift this function exists to prevent, just inverted."""
     chown_root = install_root is None
-    pins: dict[str, str] = {}
-    for relative_source, destination_str, pin_key in HELPER_REFRESH_MAP:
-        source = release_dir / relative_source
-        destination = Path(destination_str)
-        if install_root is not None:
-            destination = install_root / destination.relative_to("/")
-        pins[pin_key] = refresh_installed_helper(source, destination, chown_root)
-    update_config_pins(config, pins)
+    staged: list[tuple[Path, Path, str, str]] = []  # (tmp_path, destination, pin_key, expected_sha256)
+    try:
+        for relative_source, destination_str, pin_key in HELPER_REFRESH_MAP:
+            source = release_dir / relative_source
+            destination = Path(destination_str)
+            if install_root is not None:
+                destination = install_root / destination.relative_to("/")
+            tmp_path, expected_sha256 = stage_installed_helper(source, destination, chown_root)
+            staged.append((tmp_path, destination, pin_key, expected_sha256))
+        pins: dict[str, str] = {}
+        for tmp_path, destination, pin_key, expected_sha256 in staged:
+            pins[pin_key] = commit_installed_helper(tmp_path, destination, expected_sha256)
+        update_config_pins(config, pins)
+    finally:
+        for tmp_path, _destination, _pin_key, _expected_sha256 in staged:
+            if tmp_path.exists():
+                tmp_path.unlink()
     return pins
 
 
