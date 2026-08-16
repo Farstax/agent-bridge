@@ -3,7 +3,7 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
-import { abortCliProcess } from "./cliSupervisor.js";
+import { killRunOwnedDescendants } from "./turnContinuationProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotConfig, BotKind } from "./types.js";
@@ -565,27 +565,39 @@ export function applyAuthoritativeHealthObservation(
  * Bridge cancellation/fencing ownership rather than a new company executor
  * (#326). Idempotent: cancelling an already-terminal goal is a safe no-op.
  *
- * If a run is currently in flight, this only fences it
- * (abortCliProcess + updateRunCancelled) and does not flip goal status
- * directly — the existing reconcile() cancellation-race path (see
- * "does not persist a successor after authoritative cancellation wins a
- * provider race") already finalizes the goal to "cancelled" once the
- * outstanding provider call resolves, or restart recovery does if the
- * process crashes first. Late provider completion never becomes
- * authoritative. If no run is currently in flight, there is nothing that
- * will call reconcile() on our behalf, so this cancels the goal and its
- * pending wake directly.
+ * If a run is currently in flight, this fences it with the cross-process
+ * killRunOwnedDescendants(runId) primitive — the standalone operator's
+ * "cancel" runs in a different Node process from the process that owns the
+ * live provider child, so a process-local abort map (e.g. abortCliProcess)
+ * cannot actually terminate it; killRunOwnedDescendants scans the OS
+ * process table for AGENT_BRIDGE_RUN_ID=<runId> (set on every provider
+ * child by cliSupervisor.ts) and signals it directly (independent review of
+ * agent-bridge-platform#439/agent-bridge#439). It then marks the run
+ * cancelled via updateRunCancelled and does not flip goal status directly —
+ * the existing reconcile() cancellation-race path (see "does not persist a
+ * successor after authoritative cancellation wins a provider race")
+ * finalizes the goal to "cancelled" once the outstanding provider call
+ * resolves, or restart recovery does if the process crashes first. Late
+ * provider completion never becomes authoritative. If no run is currently
+ * in flight, there is nothing that will call reconcile() on our behalf, so
+ * this cancels the goal and its pending wake directly.
  */
-export function cancelAutonomousGoal(db: BridgeDb, goalId: string, reason: string): AutonomousGoal {
+export async function cancelAutonomousGoal(
+  db: BridgeDb,
+  goalId: string,
+  reason: string,
+  options?: { killRunOwnedDescendants?: (runId: string) => Promise<void> },
+): Promise<AutonomousGoal> {
   const goal = getAutonomousGoal(db, goalId);
   if (goal.status !== "active") return goal;
-  abortCliProcess(goalChatKey(goalId));
+  const kill = options?.killRunOwnedDescendants ?? killRunOwnedDescendants;
+  const latestRun = db.raw.prepare("SELECT run_id, status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(goalId)) as { run_id?: string; status?: string } | undefined;
+  if (latestRun?.run_id && latestRun.status === "running") {
+    await kill(latestRun.run_id);
+    db.updateRunCancelled(latestRun.run_id, reason);
+    return getAutonomousGoal(db, goalId);
+  }
   db.runInTransaction(() => {
-    const latestRun = db.raw.prepare("SELECT run_id, status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(goalId)) as { run_id?: string; status?: string } | undefined;
-    if (latestRun?.run_id && latestRun.status === "running") {
-      db.updateRunCancelled(latestRun.run_id, reason);
-      return;
-    }
     const nextEvidence = boundedEvidence(goal, `cancelled: ${reason}`);
     const result = db.raw.prepare("UPDATE autonomous_goals SET status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
       .run(JSON.stringify(nextEvidence), goalId);
