@@ -110,6 +110,17 @@ describe("GitHub release promotion", () => {
     expect(workflow).not.toMatch(/\bnpm\s+run\s+build\b/);
   });
 
+  it("generates release notes with a changelog via the release notes script", () => {
+    const workflow = readFileSync(
+      fileURLToPath(new URL("../.github/workflows/publish-release.yml", import.meta.url)),
+      "utf8",
+    );
+
+    expect(workflow).toContain("scripts/generate-release-notes.sh");
+    expect(workflow).toContain("--previous-tag");
+    expect(workflow).toMatch(/fetch-depth:\s*0/);
+  });
+
   it("accepts an exact qualified archive and reports its identity", () => {
     const fixture = buildArtifact();
     const result = runVerifier(fixture.artifactDir, fixture.commit, fixture.workflowRun);
