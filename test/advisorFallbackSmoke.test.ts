@@ -57,9 +57,9 @@ describe("isolated advisor fallback smoke", () => {
 
     expect(result.logicalCalls).toBe(1);
     expect(result.attempts).toEqual([
-      expect.objectContaining({ ordinal: 1, provider: "claude", model: "claude-fable-5", status: "failed", error_kind: "capacity_exhausted" }),
+      expect.objectContaining({ ordinal: 1, provider: "claude", model: "claude-opus-5", status: "failed", error_kind: "capacity_exhausted" }),
       expect.objectContaining({ ordinal: 2, provider: "codex", model: "gpt-5.6-sol", status: "succeeded" }),
-      expect.objectContaining({ ordinal: 3, provider: "claude", model: "claude-fable-5", status: "failed", error_kind: "capacity_exhausted" }),
+      expect.objectContaining({ ordinal: 3, provider: "claude", model: "claude-opus-5", status: "failed", error_kind: "capacity_exhausted" }),
       expect.objectContaining({ ordinal: 4, provider: "codex", model: "gpt-5.6-sol", status: "succeeded" }),
     ]);
     expect(result.selectedProvider).toBe("codex");
