@@ -29,6 +29,20 @@ RUNUSER = "/usr/sbin/runuser"
 SUDO = "/usr/bin/sudo"
 SUDO_CHECK_TIMEOUT_SECONDS = 5
 
+# Each release-relative privileged helper source, its fixed production install
+# path, and the rollout.conf pin field that must track its installed SHA-256.
+# This is the single source of truth for which helpers the deployer refreshes
+# from the verified release before invoking any of them; do not special-case
+# rollout-agent-bridge separately from its siblings.
+HELPER_REFRESH_MAP = (
+    ("scripts/rollout-agent-bridge.sh", "/usr/local/sbin/rollout-agent-bridge", "rollout_helper_sha256"),
+    ("scripts/release-stage.py", "/usr/local/libexec/agent-bridge-release-stage", "release_stage_sha256"),
+    ("scripts/release-activate.py", "/usr/local/libexec/agent-bridge-release-activate", "activation_helper_sha256"),
+    ("scripts/rollout-restore.py", "/usr/local/libexec/agent-bridge-rollout-restore", "rollout_restore_sha256"),
+    ("scripts/rollout-authorization.py", "/usr/local/libexec/agent-bridge-rollout-authorization.py", "authorization_validator_sha256"),
+    ("scripts/rollout-acceptance.py", "/usr/local/libexec/agent-bridge-rollout-acceptance.py", "acceptance_validator_sha256"),
+)
+
 
 def staging_module(helper: Path):
     loader = importlib.machinery.SourceFileLoader("agent_bridge_release_stage", str(helper))
@@ -221,6 +235,91 @@ def validate_private_helper(path: Path) -> None:
     validate_private_file(path, True)
 
 
+def refresh_installed_helper(source: Path, destination: Path, chown_root: bool) -> str:
+    """Atomically overwrite `destination` with `source`'s bytes, preserving
+    destination's existing permission bits. Fails closed: any error leaves the
+    previously installed helper in place and no temporary file behind."""
+    if source.is_symlink() or not source.is_file():
+        fail(f"release helper source is missing or not a regular file: {source}")
+    if destination.is_symlink() or not destination.is_file():
+        fail(f"privileged helper destination is missing or not a regular file: {destination}")
+    existing_mode = destination.stat().st_mode & 0o777
+    data = source.read_bytes()
+    expected_sha256 = hashlib.sha256(data).hexdigest()
+    descriptor, tmp_name = tempfile.mkstemp(dir=str(destination.parent), prefix=f".{destination.name}.")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+        os.chmod(tmp_path, existing_mode)
+        if chown_root:
+            os.chown(tmp_path, 0, 0)
+        if digest(tmp_path) != expected_sha256:
+            fail(f"helper refresh write verification failed: {destination}")
+        os.rename(tmp_path, destination)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    installed_sha256 = digest(destination)
+    if installed_sha256 != expected_sha256:
+        fail(f"installed helper hash mismatch after refresh: {destination}")
+    return installed_sha256
+
+
+def update_config_pins(config: Path, pins: dict[str, str]) -> None:
+    """Atomically rewrite `config`'s pin fields, preserving every other line
+    and its order. Adds a pin line if the key was not already present."""
+    lines = config.read_text(encoding="utf-8").splitlines()
+    seen: set[str] = set()
+    updated: list[str] = []
+    for line in lines:
+        key, separator, _value = line.partition("=")
+        if separator and key in pins:
+            updated.append(f"{key}={pins[key]}")
+            seen.add(key)
+        else:
+            updated.append(line)
+    for key, value in pins.items():
+        if key not in seen:
+            updated.append(f"{key}={value}")
+    content = ("\n".join(updated) + "\n").encode("utf-8")
+    mode = config.stat().st_mode & 0o777
+    owner_uid = config.stat().st_uid
+    descriptor, tmp_name = tempfile.mkstemp(dir=str(config.parent), prefix=f".{config.name}.")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+        os.chmod(tmp_path, mode)
+        if owner_uid == 0:
+            os.chown(tmp_path, 0, 0)
+        os.rename(tmp_path, config)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
+def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Path | None = None) -> dict[str, str]:
+    """Refresh every privileged helper in HELPER_REFRESH_MAP from the given
+    verified, staged release directory, then pin their installed SHA-256s in
+    `config` in the same operation. Raises (fails closed) before updating any
+    pin if any single helper cannot be refreshed and verified, so a partial
+    refresh can never leave the pin file describing helpers that were not
+    actually installed."""
+    chown_root = install_root is None
+    pins: dict[str, str] = {}
+    for relative_source, destination_str, pin_key in HELPER_REFRESH_MAP:
+        source = release_dir / relative_source
+        destination = Path(destination_str)
+        if install_root is not None:
+            destination = install_root / destination.relative_to("/")
+        pins[pin_key] = refresh_installed_helper(source, destination, chown_root)
+    update_config_pins(config, pins)
+    return pins
+
+
 def reject_root_test_overrides() -> None:
     test_override_keys = sorted(key for key in os.environ if key.startswith("AGENT_BRIDGE_DEPLOY_TEST"))
     if os.geteuid() == 0 and test_override_keys:
@@ -322,6 +421,10 @@ def run_deployment(archive: Path, approval: Path | None, owner_request: Path | N
                 "--release-root", str(release_root), "--expected-commit", commit,
                 "--archive-sha256", archive_sha256,
             ], check=True, env=environment)
+            test_helper_root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT")
+            test_rollout_config = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG")
+            if test_helper_root and test_rollout_config:
+                refresh_privileged_helpers(release_root / commit, Path(test_rollout_config), Path(test_helper_root))
             runner = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RUNNER")
             if runner:
                 runner_environment = os.environ.copy()
@@ -343,6 +446,7 @@ def run_deployment(archive: Path, approval: Path | None, owner_request: Path | N
         "--release-root", str(release_root), "--expected-commit", commit,
         "--archive-sha256", archive_sha256,
     ], check=True)
+    refresh_privileged_helpers(release_root / commit, config)
     environment = os.environ.copy()
     environment["AGENT_BRIDGE_DEPLOYER_MODE"] = "1"
     environment["AGENT_BRIDGE_DEPLOY_ARTIFACT_SHA256"] = archive_sha256
