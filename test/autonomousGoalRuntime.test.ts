@@ -522,6 +522,30 @@ describe("runAutonomousGoalOperatorStandalone", () => {
     }
   });
 
+  it("resolves executionMode the same way the interactive bridge does (per-bot override, then global, then safe default) rather than hard-coding safe", () => {
+    const keys = ["CODEX_EXECUTION_MODE", "CLAUDE_EXECUTION_MODE", "BRIDGE_EXECUTION_MODE"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    try {
+      // Default: safe.
+      expect(standaloneBotConfig("claude").executionMode).toBe("safe");
+
+      // Global override applies to every bot.
+      process.env.BRIDGE_EXECUTION_MODE = "trusted";
+      expect(standaloneBotConfig("claude").executionMode).toBe("trusted");
+      expect(standaloneBotConfig("codex").executionMode).toBe("trusted");
+
+      // Per-bot override wins over the global one.
+      process.env.CODEX_EXECUTION_MODE = "safe";
+      expect(standaloneBotConfig("codex").executionMode).toBe("safe");
+      expect(standaloneBotConfig("claude").executionMode).toBe("trusted");
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key] as string;
+      }
+    }
+  });
+
   it("rejects a bot with no launchable provider command rather than silently defaulting to Claude", () => {
     expect(() => standaloneBotConfig("kimchi" as any)).toThrow(/kimchi/i);
   });

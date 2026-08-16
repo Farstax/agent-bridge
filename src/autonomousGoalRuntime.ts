@@ -3,7 +3,7 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
-import { loadBotsConfig } from "./config.js";
+import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import type { BotConfig, BotKind } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
@@ -554,20 +554,23 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
 
 // Resolves a durable goal's bot to the same provider command/config the
 // interactive bridge already uses (loadBotsConfig — CODEX_COMMAND,
-// CLAUDE_COMMAND, ANTIGRAVITY_COMMAND/GEMINI_COMMAND env overrides). Throws
-// rather than silently defaulting to Claude for a bot with no launchable
-// command (e.g. "kimchi" is a valid BotKind but has no loadBotsConfig entry).
-export function standaloneBotConfig(bot: BotKind): { executionKind: BotKind; botConfig: BotConfig } {
+// CLAUDE_COMMAND, ANTIGRAVITY_COMMAND/GEMINI_COMMAND env overrides) and the
+// same execution-mode resolution (resolveExecutionMode — per-bot
+// <BOT>_EXECUTION_MODE, then global BRIDGE_EXECUTION_MODE, then "safe").
+// Throws rather than silently defaulting to Claude for a bot with no
+// launchable command (e.g. "kimchi" is a valid BotKind but has no
+// loadBotsConfig entry).
+export function standaloneBotConfig(bot: BotKind): { executionKind: BotKind; botConfig: BotConfig; executionMode: "safe" | "trusted" } {
   const bots = loadBotsConfig(process.env);
   const botConfig = (bots as Record<string, BotConfig | undefined>)[bot];
   if (!botConfig) throw new Error(`no launchable provider command configured for bot "${bot}"`);
-  return { executionKind: bot, botConfig };
+  return { executionKind: bot, botConfig, executionMode: resolveExecutionMode(bot, process.env) };
 }
 
 function defaultStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine {
-  const { executionKind, botConfig } = standaloneBotConfig(bot);
+  const { executionKind, botConfig, executionMode } = standaloneBotConfig(bot);
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
-  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig, allowedUserIds: new Set(["operator"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+  return new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig, allowedUserIds: new Set(["operator"]), executionMode, asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
 }
 
 /**
