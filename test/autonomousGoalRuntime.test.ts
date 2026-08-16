@@ -200,6 +200,33 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
+  it("defaults to operator-approved constraints and the claude bot when --constraints/--bot are not given (backward compatible)", async () => {
+    const { db, dbPath } = makeDb();
+    const goal = await runAutonomousGoalOperator(db, ["create", "default-goal", "Default goal", "--max-cycles", "1"]);
+    expect(goal).toMatchObject({ goalId: "default-goal", bot: "claude", constraints: ["operator-approved goal authority"] });
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("accepts explicit --constraints (pipe-delimited) and --bot so a caller can create a goal under its own durable constraints and provider", async () => {
+    const { db, dbPath } = makeDb();
+    const goal = await runAutonomousGoalOperator(db, [
+      "create", "company-goal", "Determine the highest-value obstacle and make progress",
+      "--constraints", "preserve production reliability|no new external trust without owner authorisation",
+      "--bot", "codex",
+      "--max-cycles", "2",
+    ]);
+    expect(goal).toMatchObject({
+      goalId: "company-goal",
+      prompt: "Determine the highest-value obstacle and make progress",
+      bot: "codex",
+      maxCycles: 2,
+      constraints: ["preserve production reliability", "no new external trust without owner authorisation"],
+    });
+    db.close();
+    removeDb(dbPath);
+  });
+
   it("persists one goal and drives three real surface-neutral Runs from the original instruction", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {

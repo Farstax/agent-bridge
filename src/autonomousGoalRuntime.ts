@@ -525,16 +525,30 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
   const [operation, goalId] = args;
   if (operation === "create") {
     const maxIndex = args.indexOf("--max-cycles");
-    const prompt = args.slice(2, maxIndex === -1 ? args.length : maxIndex).join(" ");
+    const constraintsIndex = args.indexOf("--constraints");
+    const botIndex = args.indexOf("--bot");
+    const promptEnd = Math.min(
+      ...[maxIndex, constraintsIndex, botIndex].filter((index) => index !== -1),
+      args.length,
+    );
+    const prompt = args.slice(2, promptEnd).join(" ");
     const maxCycles = Number(maxIndex === -1 ? 3 : args[maxIndex + 1]);
-    return createAutonomousGoal(db, { goalId, prompt, constraints: ["operator-approved goal authority"], bot: "claude", maxCycles });
+    // Default preserved exactly for backward compatibility. A caller with
+    // its own durable constraints (e.g. a company operating contract) and
+    // provider passes --constraints (pipe-delimited) / --bot explicitly
+    // rather than being forced into the operator-approved default.
+    const constraints = constraintsIndex === -1
+      ? ["operator-approved goal authority"]
+      : args[constraintsIndex + 1].split("|").map((constraint) => constraint.trim()).filter(Boolean);
+    const bot: BotKind = botIndex === -1 ? "claude" : args[botIndex + 1] as BotKind;
+    return createAutonomousGoal(db, { goalId, prompt, constraints, bot, maxCycles });
   }
   if (operation === "status") return getAutonomousGoal(db, goalId);
   if (operation === "run" && engine) {
     await drainAutonomousGoal(db, goalId, engine);
     return getAutonomousGoal(db, goalId);
   }
-  throw new Error("usage: create <goal-id> <prompt> [--max-cycles N] | run <goal-id> | status <goal-id>");
+  throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id>");
 }
 
 export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<{ providerBoundaryReached: boolean; status: AutonomousGoalStatus }> {
