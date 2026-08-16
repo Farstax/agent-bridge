@@ -44,26 +44,42 @@ fi
 echo "### Changes since \`${previous_tag}\`"
 echo
 
-changes="$(git log --merges --format='%H|%s' "${previous_tag}..${commit}" 2>/dev/null || true)"
+# PRs land on main in two shapes: an ordinary merge commit (2+ parents, subject
+# "Merge pull request #NNN from ..."), or a GitHub squash merge (1 parent,
+# subject ending "(#NNN)"). --first-parent walks only main's own lineage, so it
+# visits exactly one entry per PR landing point and skips the individual
+# commits folded into a merge's second parent — those can carry their own
+# "(#NNN)" issue references and would otherwise be misread as separate PRs.
+changes="$(git log --first-parent --format='%H|%s' "${previous_tag}..${commit}" 2>/dev/null || true)"
 
 if [[ -z "$changes" ]]; then
   echo "No merged pull requests since \`${previous_tag}\`."
   exit 0
 fi
 
+found=0
 while IFS='|' read -r sha subject; do
   [[ -n "$sha" ]] || continue
   pr_number=""
+  title=""
   if [[ "$subject" =~ ^Merge\ pull\ request\ \#([0-9]+)\  ]]; then
     pr_number="${BASH_REMATCH[1]}"
-  fi
-  title="$(git log -1 --format='%b' "$sha" | sed '/^$/d' | head -n1)"
-  short_sha="${sha:0:8}"
-  if [[ -n "$pr_number" && -n "$title" ]]; then
-    echo "- #${pr_number} — ${title} (\`${short_sha}\`)"
-  elif [[ -n "$pr_number" ]]; then
-    echo "- #${pr_number} (\`${short_sha}\`)"
+    title="$(git log -1 --format='%b' "$sha" | sed '/^$/d' | head -n1)"
+  elif [[ "$subject" =~ ^(.*)\ \(\#([0-9]+)\)$ ]]; then
+    title="${BASH_REMATCH[1]}"
+    pr_number="${BASH_REMATCH[2]}"
   else
-    echo "- ${subject} (\`${short_sha}\`)"
+    continue
+  fi
+  found=1
+  short_sha="${sha:0:8}"
+  if [[ -n "$title" ]]; then
+    echo "- #${pr_number} — ${title} (\`${short_sha}\`)"
+  else
+    echo "- #${pr_number} (\`${short_sha}\`)"
   fi
 done <<< "$changes"
+
+if [[ "$found" == "0" ]]; then
+  echo "No merged pull requests since \`${previous_tag}\`."
+fi

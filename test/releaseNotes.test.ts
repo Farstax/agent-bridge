@@ -86,6 +86,65 @@ describe("release notes generator", () => {
     expect(result.stdout).toContain("Add widget support");
   });
 
+  it("lists squash-merged pull requests, which land as single-parent commits", () => {
+    const repo = buildRepo();
+    commit(repo, "a.txt", "chore: seed");
+    git(repo, "tag", "release-2026.08.01-1");
+
+    commit(repo, "b.txt", "Add gadget support (#202)");
+
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const parentCount = execFileSync("git", ["rev-list", "--count", "--merges", `${head}~1..${head}`], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim();
+    expect(parentCount).toBe("0");
+
+    const result = runGenerator(repo, [
+      "--commit",
+      head,
+      "--workflow-run",
+      "1",
+      "--checksum",
+      "d".repeat(64),
+      "--previous-tag",
+      "release-2026.08.01-1",
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("#202");
+    expect(result.stdout).toContain("Add gadget support");
+  });
+
+  it("does not list a branch's internal commits as separate pull requests", () => {
+    const repo = buildRepo();
+    commit(repo, "a.txt", "chore: seed");
+    git(repo, "tag", "release-2026.08.01-1");
+
+    git(repo, "checkout", "--quiet", "-b", "feature/two");
+    commit(repo, "b.txt", "test: red — widget support (#303)");
+    commit(repo, "c.txt", "feat: widget support (#303)");
+    git(repo, "checkout", "--quiet", "main");
+    git(repo, "merge", "--no-ff", "--no-gpg-sign", "-m", "Merge pull request #303 from org/feature-two\n\nWidget support", "feature/two");
+
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+
+    const result = runGenerator(repo, [
+      "--commit",
+      head,
+      "--workflow-run",
+      "1",
+      "--checksum",
+      "e".repeat(64),
+      "--previous-tag",
+      "release-2026.08.01-1",
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    const occurrences = (result.stdout.match(/#303/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
   it("states there is no prior release when no previous tag is given", () => {
     const repo = buildRepo();
     commit(repo, "a.txt", "chore: seed");
