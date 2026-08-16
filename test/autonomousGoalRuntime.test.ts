@@ -227,6 +227,32 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
+  it("carries the operator-created prompt and durable constraints through to the existing executeSurfaceNeutralTurn owner", async () => {
+    const { db, dbPath } = makeDb();
+    await runAutonomousGoalOperator(db, [
+      "create", "company-goal-run", "Grow the beta activation outcome",
+      "--constraints", "preserve production reliability|no new external trust without owner authorisation",
+      "--bot", "codex",
+      "--max-cycles", "1",
+    ]);
+    const inputs: any[] = [];
+    const engine = makeEngine(vi.fn(), db);
+    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+      inputs.push(input);
+      return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+    });
+
+    const result = await runAutonomousGoalOperator(db, ["run", "company-goal-run"], engine);
+
+    expect(result).toMatchObject({ goalId: "company-goal-run", status: "complete", bot: "codex" });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].prompt).toContain("Grow the beta activation outcome");
+    expect(inputs[0].prompt).toContain("preserve production reliability");
+    expect(inputs[0].prompt).toContain("no new external trust without owner authorisation");
+    db.close();
+    removeDb(dbPath);
+  });
+
   it("persists one goal and drives three real surface-neutral Runs from the original instruction", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {
