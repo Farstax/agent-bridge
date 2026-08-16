@@ -47,7 +47,22 @@ async function main(): Promise<void> {
   const goal = await runAutonomousGoalOperatorStandalone(databasePath, operatorArgs, {
     onCycleReconciled: (event) => console.log(JSON.stringify(event)),
   });
-  console.log(JSON.stringify({ type: "goal_result", ...goal }));
+  // goal.evidence is the retained *array* of bounded cycle evidence
+  // (boundedEvidence() in src/autonomousGoalRuntime.ts), not a single
+  // terminal string — spreading it directly under "evidence" is ambiguous
+  // for a caller that expects one terminal post-mortem/team-review string.
+  // terminalEvidence is the single canonical field: the most recent
+  // (terminal) cycle's evidence only.
+  console.log(JSON.stringify({
+    type: "goal_result",
+    goalId: goal.goalId,
+    status: goal.status,
+    bot: goal.bot,
+    cycle: goal.cycle,
+    maxCycles: goal.maxCycles,
+    constraints: goal.constraints,
+    terminalEvidence: goal.evidence.at(-1) ?? "",
+  }));
 }
 
 main().catch((error) => {
