@@ -14,6 +14,18 @@ describe("delivery directives skill", () => {
     expect(upgradeScript).toContain("delivery-directives");
   });
 
+  it("keeps release publication separate from deployment", () => {
+    const skill = readFileSync("skills/delivery-directives/SKILL.md", "utf8");
+
+    expect(skill).toContain("## `release it`");
+    expect(skill).toContain("## `deploy it`");
+    expect(skill).toContain("It does **not** authorize production deployment");
+    expect(skill).toContain("Stop after publication and release verification");
+    expect(skill).toContain("It does **not** authorize publishing a new release");
+    expect(skill).toContain("already-published or otherwise explicitly approved release identity");
+    expect(skill).toContain("post-deploy verification and acceptance checks");
+  });
+
   it("keeps hotfix distinct from normal delivery and gates RCA on proven stability", () => {
     const skill = readFileSync("skills/delivery-directives/SKILL.md", "utf8");
 
