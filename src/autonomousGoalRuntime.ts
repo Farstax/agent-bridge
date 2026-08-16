@@ -272,10 +272,24 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
   });
 }
 
+// Provider-neutral observation point after a cycle has already been parsed
+// and reconciled (#326) — no raw provider stdout, transcript, hidden
+// reasoning, or tool logs, only existing bounded autonomous-goal fields.
+export interface CycleReconciledEvent {
+  type: "autonomous_cycle_reconciled";
+  goalId: string;
+  cycle: number;
+  runId: string;
+  goalStatus: AutonomousGoalStatus;
+  cycleStatus: AutonomousCycleStatus;
+  evidence: string;
+}
+
 export async function runNextAutonomousGoal(
   db: BridgeDb,
   goalId: string,
   engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+  onCycleReconciled?: (event: CycleReconciledEvent) => void,
 ): Promise<boolean> {
   const goal = getAutonomousGoal(db, goalId);
   const policy = policyForGoal(goal);
@@ -336,15 +350,37 @@ export async function runNextAutonomousGoal(
       ? { ...parsed, status: "progress" as const, nextWakeReason: undefined }
       : parsed;
     reconcile(db, current, currentWake, runId, effectiveResult, error, currentPolicy);
+    if (onCycleReconciled) {
+      try {
+        const after = getAutonomousGoal(db, goalId);
+        onCycleReconciled({
+          type: "autonomous_cycle_reconciled",
+          goalId,
+          cycle: after.cycle,
+          runId,
+          goalStatus: after.status,
+          cycleStatus: effectiveResult?.status ?? "blocked",
+          evidence: effectiveResult?.evidence ?? error ?? "malformed provider output",
+        });
+      } catch {
+        // Observer failures must never affect cycle ownership or reconciled
+        // state — reconciliation above has already committed successfully.
+      }
+    }
     return true;
   } finally {
     db.unlock(laneHandle);
   }
 }
 
-export async function drainAutonomousGoal(db: BridgeDb, goalId: string, engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<void> {
+export async function drainAutonomousGoal(
+  db: BridgeDb,
+  goalId: string,
+  engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+  onCycleReconciled?: (event: CycleReconciledEvent) => void,
+): Promise<void> {
   while (getAutonomousGoal(db, goalId).status === "active") {
-    const progressed = await runNextAutonomousGoal(db, goalId, engine);
+    const progressed = await runNextAutonomousGoal(db, goalId, engine, onCycleReconciled);
     if (!progressed && getAutonomousGoal(db, goalId).status === "active") throw new AutonomousGoalProgressError(goalId);
   }
 }
