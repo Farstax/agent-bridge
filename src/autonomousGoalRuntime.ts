@@ -597,7 +597,12 @@ export function cancelAutonomousGoal(db: BridgeDb, goalId: string, reason: strin
   return getAutonomousGoal(db, goalId);
 }
 
-export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], engine?: Pick<BridgeEngine, "executeSurfaceNeutralTurn">): Promise<AutonomousGoal> {
+export async function runAutonomousGoalOperator(
+  db: BridgeDb,
+  args: string[],
+  engine?: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
+  onCycleReconciled?: (event: CycleReconciledEvent) => void,
+): Promise<AutonomousGoal> {
   const [operation, goalId] = args;
   if (operation === "cancel") return cancelAutonomousGoal(db, goalId, args.slice(2).join(" ") || "owner stop");
   if (operation === "create") {
@@ -622,7 +627,7 @@ export async function runAutonomousGoalOperator(db: BridgeDb, args: string[], en
   }
   if (operation === "status") return getAutonomousGoal(db, goalId);
   if (operation === "run" && engine) {
-    await drainAutonomousGoal(db, goalId, engine);
+    await drainAutonomousGoal(db, goalId, engine, onCycleReconciled);
     return getAutonomousGoal(db, goalId);
   }
   throw new Error("usage: create <goal-id> <prompt> [--constraints c1|c2] [--bot name] [--max-cycles N] | run <goal-id> | status <goal-id> | cancel <goal-id> [reason...]");
@@ -680,7 +685,10 @@ export function buildStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine 
 export async function runAutonomousGoalOperatorStandalone(
   databasePath: string,
   args: string[],
-  options?: { engineFactory?: (db: BridgeDb, bot: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn"> },
+  options?: {
+    engineFactory?: (db: BridgeDb, bot: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
+    onCycleReconciled?: (event: CycleReconciledEvent) => void;
+  },
 ): Promise<AutonomousGoal> {
   const db = openProductionDb(databasePath, { serviceId: "autonomous-goal-operator", runId: randomUUID() });
   try {
@@ -688,7 +696,7 @@ export async function runAutonomousGoalOperatorStandalone(
     const engine = operation === "run"
       ? (options?.engineFactory ?? buildStandaloneEngine)(db, getAutonomousGoal(db, goalId).bot)
       : undefined;
-    return await runAutonomousGoalOperator(db, args, engine);
+    return await runAutonomousGoalOperator(db, args, engine, options?.onCycleReconciled);
   } finally {
     db.close();
   }
