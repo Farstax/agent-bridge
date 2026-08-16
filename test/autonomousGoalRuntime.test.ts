@@ -275,6 +275,40 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
+  it("forwards onCycleReconciled through runAutonomousGoalOperator's run operation (#326)", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, { goalId: "operator-observed", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done via operator" }) });
+    const events: any[] = [];
+
+    await runAutonomousGoalOperator(db, ["run", "operator-observed"], makeEngine(runCliAsync, db), (event) => events.push(event));
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ goalId: "operator-observed", evidence: "done via operator" });
+
+    db.close();
+    removeDb(dbPath);
+  });
+
+  it("forwards onCycleReconciled through the standalone operator seam (#326)", async () => {
+    const dbPath = join(tmpdir(), `autonomous-goal-standalone-observed-${Date.now()}-${Math.random()}.sqlite`);
+    openDb(dbPath, { serviceId: "test-standalone-observed-seed", runId: `seed-${Math.random()}` }).close();
+    const events: any[] = [];
+    const engineFactory = (db: any) => {
+      const engine = makeEngine(vi.fn(), db);
+      vi.spyOn(engine, "executeSurfaceNeutralTurn").mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "standalone observed" }) } as any);
+      return engine;
+    };
+
+    await runAutonomousGoalOperatorStandalone(dbPath, ["create", "standalone-observed", "Do work", "--max-cycles", "1"], { engineFactory });
+    await runAutonomousGoalOperatorStandalone(dbPath, ["run", "standalone-observed"], { engineFactory, onCycleReconciled: (event) => events.push(event) });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ goalId: "standalone-observed", evidence: "standalone observed" });
+
+    removeDb(dbPath);
+  });
+
   it("lets two real concurrent attempts race and only one owns a Run and reaches the provider", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "concurrent", prompt: "One run", constraints: [], bot: "claude", maxCycles: 1 });
