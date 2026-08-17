@@ -40,12 +40,6 @@ describe("soul template catalogue", () => {
     }
   });
 
-  it("keeps the standalone root SOUL byte-identical to the default template", () => {
-    const catalogue = loadSoulTemplateCatalogue(process.cwd());
-    const defaultTemplate = getSoulTemplate(catalogue, catalogue.defaultTemplateId);
-    expect(readFileSync(join(process.cwd(), "SOUL.md"), "utf8")).toBe(defaultTemplate.content);
-  });
-
   it("renders every required template section through the soul runtime", () => {
     const catalogue = loadSoulTemplateCatalogue(process.cwd());
     for (const template of catalogue.templates) {

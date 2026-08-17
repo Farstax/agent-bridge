@@ -56,12 +56,12 @@ describe("CI full-suite ownership policy", () => {
     const agents = readRepoFile("AGENTS.md");
     const claude = readRepoFile("CLAUDE.md");
 
-    for (const guidance of [agents, claude]) {
-      expect(guidance).toContain("focused red/green");
-      expect(guidance).toContain("exact-head GitHub CI");
-      expect(guidance).toContain("Do not rerun the full suite locally by default");
-    }
-
+    expect(agents).toContain("focused red/green");
+    expect(agents).toContain("exact-head GitHub CI");
+    expect(agents).toContain("Do not rerun the full suite locally by default");
     expect(agents).toContain("Independent review must not duplicate a current green full-suite run without a concrete investigation reason");
+    expect(agents).not.toContain("The full TDD rules are in `CLAUDE.md`");
+
+    expect(claude).toContain("`AGENTS.md` is authoritative");
   });
 });

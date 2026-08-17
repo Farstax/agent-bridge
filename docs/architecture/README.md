@@ -4,14 +4,13 @@ The current architecture is documented in [overview.md](overview.md). It
 defines ordinary Runs as the execution boundary and provider-native agents as
 the owner of engineering workflow.
 
-Historical architecture and roadmap documents remain available for decision
-history. They are not implementation instructions. In particular, the former
-Engineering Worker and role-orchestration documents were retired when the
-simplification from issue #347 was completed.
+Current supporting architecture contracts:
 
-Read with:
+- [Target architecture](03-target-architecture.md)
+- [Architecture decisions](04-adrs.md)
+- [Data and event model](07-data-and-event-model.md)
+- [Production readiness](10-production-readiness.md)
 
-- [07-data-and-event-model.md](07-data-and-event-model.md)
-- [08-testing-strategy.md](08-testing-strategy.md)
-- [10-production-readiness.md](10-production-readiness.md)
-- [../GUARDED-ROLLOUT.md](../GUARDED-ROLLOUT.md)
+Historical Worker gap analyses, roadmap epics, interface sketches, testing plans,
+and risk registers are intentionally not kept in the active architecture tree.
+Git history and the issues that produced them remain the historical record.
