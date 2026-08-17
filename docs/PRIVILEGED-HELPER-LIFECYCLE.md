@@ -25,9 +25,19 @@ After the bootstrap `release-stage` helper has validated the archive and staged 
 
 Their corresponding `rollout.conf` SHA-256 pins are updated in the same rollback transaction.
 
+## Deployment serialization
+
+The detached `agent-bridge-deploy` worker acquires the fixed root-owned `/run/lock/agent-bridge-deploy.lock` before validating or staging a mutating deployment. It holds that lock through helper convergence and until `rollout-agent-bridge` returns.
+
+This is a separate lock from the rollout helper's own lock. The deployer must not acquire the rollout helper lock itself because the child rollout process acquires that lock and would deadlock against its parent.
+
+Only one mutating deployment can therefore own the installed helper cohort and `rollout.conf` at a time. A second deployment may be started, but it cannot validate against, replace, or execute a helper cohort until the first deployment has finished its guarded rollout and released the deployer lock.
+
+Read-only `--validate-only` operations do not acquire the deployer lock because they cannot change the staged release, helper cohort, config, databases, services, or current pointer.
+
 ## Transaction boundary
 
-Before the first live helper path changes, the deployer stages:
+Before the first live helper path changes, the serialized deployer stages:
 
 1. all five replacement helper files;
 2. a byte-exact rollback snapshot of all five currently installed helpers;
@@ -38,7 +48,7 @@ Only after all of that succeeds does publication begin.
 
 If any helper publication, post-publication hash check, or config-pin publication fails, the deployer restores all five old helpers and the old config from the staged rollback snapshots and verifies the restored hashes before returning the error. `rollout-agent-bridge` is never invoked after a failed refresh transaction.
 
-This gives the deployment only two valid observable states at the rollout boundary:
+This gives each serialized deployment only two valid observable states at the rollout boundary:
 
 - the complete previous helper cohort with the previous config; or
 - the complete new helper cohort with matching new pins.
