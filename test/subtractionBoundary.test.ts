@@ -19,6 +19,7 @@ const removedPaths = [
   "scripts/research/issue-347-memory-benchmark.mjs",
   "docs/research/issue-347-runtime-simplification.md",
   "docs/DOCUMENTATION-AUDIT.md",
+  "docs/autonomous-agent-bridge-research.md",
   "tests/ciPolicy.test.ts",
 ] as const;
 
