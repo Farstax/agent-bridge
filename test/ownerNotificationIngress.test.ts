@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
+import { spawn } from "node:child_process";
 import {
   startOwnerNotificationIngress,
   type OwnerNotificationIngress,
@@ -107,13 +108,23 @@ describe("interactive owner notification ingress (#453)", () => {
     })).rejects.toThrow(/non-socket/i);
     expect(existsSync(nonSocket)).toBe(true);
 
+    // A graceful server.close() unlinks its own Unix socket file on Node 24,
+    // so it can't reproduce a stale socket. Simulate the real scenario this
+    // guards against instead: a prior process that died without cleanup
+    // (crash, OOM-kill) leaves its socket file orphaned on disk.
     const staleSocket = tempSocket("stale.sock");
-    const stale = http.createServer();
+    const holderProc = spawn(process.execPath, ["-e", `
+      const http = require("http");
+      const server = http.createServer();
+      server.listen(process.argv[1], () => { process.stdout.write("ready\\n"); });
+    `, staleSocket], { stdio: ["ignore", "pipe", "inherit"] });
     await new Promise<void>((resolve, reject) => {
-      stale.once("error", reject);
-      stale.listen(staleSocket, resolve);
+      const timer = setTimeout(() => reject(new Error("holder process did not report ready")), 5000);
+      holderProc.stdout!.once("data", () => { clearTimeout(timer); resolve(); });
+      holderProc.once("error", reject);
     });
-    await new Promise<void>((resolve) => stale.close(() => resolve()));
+    holderProc.kill("SIGKILL");
+    await new Promise<void>((resolve) => holderProc.once("exit", () => resolve()));
     expect(existsSync(staleSocket)).toBe(true);
     expect(lstatSync(staleSocket).isSocket()).toBe(true);
 
