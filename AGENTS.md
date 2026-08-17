@@ -46,7 +46,7 @@ Claude cannot SSH to Aruba — the user must pull and restart the control plane 
 
 **All implementation work uses red-green-refactor TDD. No exceptions.**
 
-The full TDD rules are in `CLAUDE.md`. The critical agent-specific requirements are:
+The repository-wide TDD rules and critical requirements are:
 
 ## Provider continuation and fallback invariant
 
@@ -544,9 +544,7 @@ sudo -n /usr/local/sbin/restart-agent-bridge
 
 The helper must be root-owned and granted via a narrow sudoers rule for only
 `/usr/local/sbin/restart-agent-bridge`. Do not grant `NOPASSWD: ALL` or raw
-passwordless `systemctl`. Do not use the helper for destructive operations or
-worker deploys that need drain semantics; worker restarts that may interrupt
-active jobs still require the worker-specific drain flow.
+passwordless `systemctl`. Do not use the helper for destructive operations.
 
 If the bot becomes unresponsive after a bad restart, send `/reset` to the
 affected bot on Telegram to clear any stale execution lock.
@@ -563,39 +561,7 @@ default is `medium`. Users can change interactive bot effort with `/effort`.
 - Antigravity/Agy: no separate effort CLI flag exists. Keep the setting visible
   as unsupported/no-op and use Agy model labels for low/high variants.
 
-Worker jobs choose effort by task: scribe/read-only jobs use `medium`, while
-`tdd_implementation` and `orchestrated_task` use `high`. Do not route Agy into
-code-writing chains.
-
 ---
-
-# Autonomous Worker Loop — invariants
-
-When working on the worker lane (`src/index-worker.ts`, `src/jobExecutor*.ts`,
-`src/handlers/`, `src/workspace.ts`, `src/prMergeGate.ts`, `src/workCallbacks.ts`):
-
-- Implementation jobs run **only in per-job workspace clones** (`src/workspace.ts`),
-  never in live checkouts or the worker's cwd. Workspace cleanup must stay
-  restricted to `$WORKER_WORKSPACE_DIR`.
-- The TDD handler enforces the red/green split mechanically: red commits stage
-  test files only and the red run must fail; green commits must not touch test
-  files and verification must pass. Do not weaken these guards. Configure local
-  red/green verification around the focused affected tests; the merge gate and
-  exact-head GitHub CI own the mandatory full-suite proof.
-- The merge gate verifies head SHA and CI checks via `gh pr view` before any
-  merge. Never add a merge path that skips it. Approvals stay pending on every
-  blocked path, and every Telegram callback must be answered.
-- Jobs with unregistered task types fail permanently — never leave them
-  pending (head-of-line blocking).
-- `cancelWorkJob` is final; complete/fail must not overwrite `cancelled`.
-- Child processes in the worker use the async runner (`src/runCommandAsync.ts`)
-  — no `execFileSync` in the polling process.
-- New job-queue Telegram output: messages go through `sendTelegramMessage`,
-  message edits through the entity-converting helper in `src/workCallbacks.ts`
-  (raw `**`/backticks must not reach Telegram).
-
-User guide: `docs/WORKER-GUIDE.md`. Phase 9 plan:
-`docs/autonomous-agent-bridge-research.md`.
 
 # Health bot conventions
 
@@ -646,7 +612,7 @@ mode-`0600` target-bound approval record itself and continues through the
 existing staging, guarded rollout and acceptance path.
 
 The release archive is self-contained and carries the exact commit/tree
-manifest, runtime, migration code and embedded CI qualification evidence. The
+manifest, package-lock, migration code and embedded CI qualification evidence. The
 minimal approval binds only environment, target commit, release SHA-256,
 approval reference and expiry. Do not introduce external evidence files,
 secondary bundles, per-helper approval hashes or a second operator workflow.
