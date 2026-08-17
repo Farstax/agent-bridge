@@ -1,138 +1,238 @@
 # Issue #466 — first-class autonomous Agent Bridge implementation plan
 
-Status: implementation plan only. No production behavior changes in this PR.
+Status: architecture/implementation plan only. No production behavior changes in this PR.
 
 ## Decision
 
-Promote the autonomous-goal runtime already in Agent Bridge into a first-class capability of the existing interactive service.
+Promote the autonomous runtime we already built into a first-class capability of the existing interactive Agent Bridge service.
 
-This is **reuse + composition + subtraction**, not a new autonomy stack.
+This is **reuse + small composition seams + subtraction**, not a new autonomous system.
 
-Use **Option 2: in-process first-class autonomy** unless the explicit cwd/context isolation proof requires invasive provider/global-environment changes. In that case use the minimal dedicated generic OSS autonomous service from Option 3.
+Agent Bridge owns the mechanical safety boundaries. The provider agent owns judgement, observation, planning, communication and domain behaviour.
 
-Do not build a Company model, sensor framework, scheduler, worker, second Telegram poller, second provider stack, profile framework, episode-series model or legacy Company migration.
+Do not build a Company runtime, Company sensor framework, narrative generator, second scheduler, worker, second provider stack or legacy Company migration in OSS.
 
-## Reuse what already exists
+## Reuse first
 
-Keep the current hard runtime authoritative unless a red test proves a defect.
+Reuse the existing shipped primitives unless a red test proves a defect.
 
-`src/autonomousGoalRuntime.ts` already provides:
+`src/autonomousGoalRuntime.ts` already owns:
 
-- durable `autonomous_goals` state;
+- durable `autonomous_goals` rows;
 - atomic goal + initial wake creation;
-- `initialEvidence`;
-- durable wakes/idempotency through existing event receipts;
+- bounded prior evidence;
+- durable wakes/idempotency through event receipts;
 - one ordinary `bridge_runs` Run per cycle;
-- `autonomous:<goalId>` lane ownership;
-- original episode prompt + prior bounded evidence + wake reason on every cycle;
+- `autonomous:<goalId>` execution ownership;
+- original prompt + prior evidence + wake reason on each cycle;
 - `progress|complete|blocked|cancelled` reconciliation;
-- one successor wake for `progress` while budget remains;
-- `budget_exhausted` on the final permitted progress cycle;
-- restart fail-closed behavior for claimed provider boundaries;
+- exactly one successor wake while budget remains;
+- `budget_exhausted` on final permitted progress;
+- restart fail-closed behaviour for claimed provider boundaries;
 - ordinary Run cancellation/descendant fencing;
-- bounded `CycleReconciledEvent` output.
+- bounded `CycleReconciledEvent` observer data.
 
-Also reuse:
+Reuse the existing:
 
-- `BridgeEngine`;
+- `BridgeEngine` provider execution path;
 - CLI supervisor/process spawning;
-- normal provider configuration, credentials and execution modes;
-- interactive provider preference resolution;
-- existing authenticated Telegram poller and delivery;
+- provider configuration, credentials and preference resolution;
+- authenticated interactive Telegram poller;
+- normal Telegram delivery path;
 - workspace-context loader;
 - Soul loader;
-- shared Skill catalogue/install/verify/native projection machinery;
-- normal release/install/upgrade mechanisms.
+- shared Skill catalogue/install/verify/native projection;
+- event-receipt/idempotency primitives;
+- release/install/upgrade machinery.
 
-The standalone autonomous-goal operator may remain as a diagnostic/manual CLI. Production Farstax execution stops depending on Platform spawning it.
+The standalone autonomous-goal operator may remain a diagnostic/manual tool. Platform production should stop spawning it after qualification.
 
-## Shared model
+### Expected new OSS surface
 
-```text
-Persistent Goal
-      ↓
-Bounded Episode
-      ↓
-Cycle → ordinary Run → reconcile
-  ↑                       │
-  └────── progress ───────┘
-```
+Keep additions narrow:
 
-- **Goal** — persistent domain/business outcome; not an OSS runtime entity.
-- **Episode** — one bounded autonomous attempt. Existing `autonomous_goals` row represents this operationally.
-- **Cycle** — one durable wake + one ordinary Run + reconciliation.
-- **Run** — existing Agent Bridge provider execution primitive.
+1. explicit per-engine execution cwd/static-context options if required;
+2. one atomic create-if-none-active helper;
+3. one thin policy-neutral autonomy controller;
+4. one generic max-cycle setting;
+5. one provider-neutral `autonomous-work` Skill;
+6. existing Skill-install convergence for the new Skill;
+7. small Telegram experiment wiring;
+8. the smallest bounded owner-input correlation needed for two-way supervised dialogue.
+
+No new schema is expected unless implementation proves existing durable receipt primitives cannot safely represent owner input.
+
+## Shared model: Goal -> Episode -> Cycle -> Run
+
+- **Goal** — persistent domain/business outcome, outside OSS runtime semantics.
+- **Episode** — one bounded autonomous attempt toward that goal.
+- **Cycle** — one autonomy-control iteration: claim a wake, execute one ordinary Run, reconcile, then terminate or create the next wake.
+- **Run** — the existing Agent Bridge provider execution primitive.
+
+The existing `autonomous_goals` row operationally represents one bounded episode. Do not rename schema merely to perfect terminology.
 
 There is no separate cycle goal.
 
+Existing runtime already gives each cycle:
+
+- the frozen episode prompt;
+- retained bounded prior evidence;
+- current cycle number;
+- wake reason.
+
+Do not add another cycle-state model.
+
 ## Freeze episode authority at start
 
-The existing goal row already has the correct durable place for the episode objective: `autonomous_goals.prompt`.
+An episode is bounded authorized work. Its objective must not drift because workspace files change later.
 
 At `start()`:
 
 1. read bounded non-empty `AUTONOMY.md`;
-2. append any separately bounded instruction supplied by the currently authorized start policy;
-3. freeze those exact bytes into the existing goal prompt when goal + first wake commit;
-4. all cycles use that stored prompt.
+2. combine any bounded instruction supplied by the currently authorized start policy;
+3. persist the exact resulting episode prompt in existing `autonomous_goals.prompt` with the goal/initial-wake transaction;
+4. every cycle uses that stored prompt.
 
-An active episode never re-reads `AUTONOMY.md` to discover a new objective.
+After creation, the active episode never re-reads `AUTONOMY.md` to obtain a different objective.
 
-Later workspace edits may change observable working material, but they cannot silently rewrite the already-authorized episode.
+Workspace files remain live working/observation material, but they cannot silently rewrite active episode authority.
 
-For a domain pack, `AUTONOMY.md` therefore contains the **active persistent outcome + episode entry mandate**. `goals.md` may contain roadmap/background but is not mutable active-episode authority.
+`initialEvidence` remains previous **execution evidence** only.
 
-### Evidence is not policy
+Owner/current-policy correction is instruction, not evidence. If present at episode start, pass it separately as bounded `policyInstruction` and freeze it into the episode prompt.
 
-Keep semantic roles separate:
+Keep these concepts distinct:
 
 ```text
-episode prompt = objective + authorized policy instruction
-prior evidence = what previous execution observed/did
-current truth  = what the provider verifies now
+episode prompt = frozen objective + authorized start-policy instruction
+prior evidence = what previous work observed/did
+owner input     = current supervised dialogue within existing authority
+current reality = what the provider verifies now
 ```
 
-`initialEvidence` remains bounded previous execution evidence only.
+Owner input during an active episode does not expand the frozen objective or authority. If the requested action exceeds existing authority, the agent must not reinterpret the message as implicit authorization.
 
-Do not put owner correction, changed authority or new instructions into `initialEvidence`.
+## Intelligence boundary: the agent chooses what to observe
 
-If the current start policy supplies a correction, pass it through an optional bounded `policyInstruction`; composition freezes it into the episode prompt.
+The framework must not prescribe a fixed observation pipeline.
 
-No schema change is needed.
+Before a material decision, the provider decides what it needs to know and chooses the cheapest reliable permitted source, for example:
 
-## Agent-owned observation strategy
-
-Agent Bridge teaches the operating method; it does not prescribe the observations.
-
-Before a material decision, the provider decides what it needs to know or verify and chooses the cheapest reliable permitted source, such as:
-
-- safe database/report/API/CLI access;
+- safe authoritative database/report access;
 - filesystem/repository/git inspection;
-- logs or service/runtime inspection;
+- logs/service/runtime inspection;
+- existing CLI/API;
 - projected Skills/domain tools;
-- web/search capability when available and relevant;
-- an existing domain-owned deterministic helper.
+- web/search capability when external reality matters;
+- an existing domain-owned mechanical helper.
 
-Prior cycle evidence is continuity, not automatically current truth.
+Prior evidence is continuity, not automatically current truth.
 
-A new cycle does not mean “run every sensor.” It means observe what matters, reason, act, reconcile.
+A new cycle does **not** mean “run all sensors”. It means another opportunity to observe, reason and act toward the frozen objective.
 
-## Mechanical sensors emerge in the domain
+### Mechanical sensors are emergent domain work
 
-If repeated observation becomes materially cheaper, faster or more reliable when mechanised, the provider may create a reusable query/script/report/check/Skill.
-
-Those are ordinary domain work products.
+If repeated observation is materially cheaper/faster/more reliable to mechanise, the domain agent may create a query/script/report/check/Skill in its own writable workspace.
 
 OSS must not gain:
 
-- sensor registry/schema;
+- Company/domain sensor registry;
+- sensor schema;
 - mirrored domain-state tables;
 - sensor scheduler/poller;
 - mandatory context-refresh service;
 - Farstax-specific observation APIs;
-- a rule requiring a particular sensor each cycle.
+- a rule that every cycle invokes a particular sensor.
 
-## Teach the loop through one OSS Skill
+## Owner communication is agent behaviour, not controller narration
+
+The supervised experiment needs the owner to understand meaningful Company progress and be able to question or steer it.
+
+Do **not** implement this as a controller-generated narrative such as a templated “cycle N did X, next Y”. The runtime does not know which decision matters or how it should be explained.
+
+The Company/provider agent authors the communication.
+
+### Smallest initial contract
+
+Extend the autonomous cycle result with one optional bounded agent-authored field:
+
+```ts
+interface AutonomousCycleResult {
+  status: "progress" | "complete" | "blocked" | "cancelled";
+  evidence: string;
+  nextWakeReason?: string;
+  ownerMessage?: string;
+}
+```
+
+Semantics:
+
+- `evidence` remains durable execution evidence for runtime continuity;
+- `nextWakeReason` remains mechanical successor intent;
+- `ownerMessage` is optional human communication authored by the provider;
+- Agent Bridge validates/bounds/transports `ownerMessage`; it does not synthesize, summarize or rewrite it;
+- no owner message is required merely because a cycle ended.
+
+The `autonomous-work` Skill decides when communication is useful. Typical reasons include:
+
+- a material decision or change of direction;
+- meaningful progress or a result the owner should know;
+- a surprising discovery or changed understanding;
+- material risk/uncertainty;
+- a question where owner judgement would help;
+- terminal outcome or a useful episode review.
+
+Avoid ceremonial updates, tool-call narration, mechanical cycle summaries and spam.
+
+For the first implementation, **do not build a mid-Run messaging broker**. A cycle boundary is already a durable reasoning checkpoint. If real qualification shows individual cycles are too long for useful supervision, add a later generic provider-side owner-message capability using existing scoped-capability/broker patterns. Do not prebuild it now.
+
+### Telegram delivery
+
+When `ownerMessage` is present after successful cycle reconciliation, the existing interactive process sends the provider-authored text through the existing Telegram delivery path.
+
+`CycleReconciledEvent` may carry the optional bounded `ownerMessage` for this transport. It remains an observation/delivery seam, not a narrative generator.
+
+Delivery must not expose raw provider stdout, hidden reasoning, tool logs or credentials.
+
+There is still one bot token and one Telegram poller.
+
+## Owner questions and steering
+
+Two-way supervision should remain equally small.
+
+The preferred interaction is natural Telegram reply-to semantics:
+
+1. Company agent authors an `ownerMessage`;
+2. interactive bot sends it;
+3. owner replies to that Company message;
+4. the adapter correlates the reply to the one active autonomous episode;
+5. the bounded owner text is durably/idempotently recorded as **owner input**, separate from evidence and policy instruction;
+6. the next available cycle receives bounded owner input in a distinct prompt section.
+
+If owner input arrives while a cycle Run is already executing, do not interrupt/restart the provider merely to inject it. Make it available to the next cycle. `/autonomy stop` remains the immediate intervention path.
+
+Do not add NLP routing to guess whether arbitrary chat messages are Company steering. Prefer explicit Telegram reply correlation. Add a command fallback only if real Telegram behaviour proves reply correlation insufficient.
+
+The runtime/controller does not interpret owner input. The provider agent decides whether it is:
+
+- a question to answer;
+- useful context;
+- tactical steering within the frozen objective/authority;
+- a request that would exceed current authority and therefore cannot simply be followed.
+
+A genuinely blocking request for new authority may end the episode as `blocked`; a later authorized episode can include the new instruction through the normal start-policy boundary.
+
+Do not add `awaiting_owner`, pause, owner-conversation or approval-series lifecycle states.
+
+### Reuse durable receipt primitives
+
+Prefer the existing event-receipt/idempotency machinery for Telegram owner-input correlation rather than adding an autonomy message table.
+
+The implementation needs only enough durable state to ensure a reply is not lost/duplicated and is consumed into the appropriate next cycle once.
+
+If existing receipt semantics cannot represent this safely without distortion, prove that with a red test before adding any new persistence.
+
+## Teach autonomous work through one OSS Skill
 
 Add:
 
@@ -140,189 +240,175 @@ Add:
 skills/autonomous-work/SKILL.md
 ```
 
-Use the existing portable Skill contract and existing shared/native projection system.
+Use the existing Skills system. No autonomy-specific Skill loader.
 
-The Skill teaches:
+The Skill teaches the provider to:
 
-- `Goal -> Episode -> Cycle -> Run`;
-- frozen episode objective vs prior evidence vs current truth;
-- dynamic observation selection;
-- authoritative verification when a decision depends on a fact;
-- act rather than merely report;
-- existing bounded `progress|complete|blocked|cancelled` result semantics;
-- concrete `nextWakeReason` for progress;
-- budget exhaustion semantics;
-- mechanise repeated observations only when justified;
-- keep domain tooling in the domain workspace.
+1. understand `Goal -> Episode -> Cycle -> Run`;
+2. treat the current Run as one bounded cycle, not the whole persistent goal;
+3. distinguish frozen objective, prior evidence, owner input and current truth;
+4. decide dynamically what must be observed before material decisions;
+5. prefer authoritative verification where a claim matters;
+6. act rather than merely report;
+7. use normal provider/Skill/tool capabilities;
+8. return the bounded autonomous result contract correctly;
+9. provide a concrete `nextWakeReason` for `progress`;
+10. communicate intelligently with the owner when something materially useful should be surfaced;
+11. write owner messages in its own judgement/voice rather than filling a mechanical template;
+12. answer owner questions and incorporate tactical steering when it stays within current authority;
+13. never treat conversational steering as implicit expansion of authority;
+14. mechanise repeated observations only when justified;
+15. understand that budget exhaustion ends the episode, not the persistent domain goal.
 
-It contains no Farstax/Company semantics.
+The Skill is provider-neutral and contains no Farstax/Company semantics.
 
-### Reuse Skill installation; guarantee convergence
+## The Skill must actually be installed
 
-Adding a folder to `skills/` is not sufficient.
+Adding a folder under `skills/` is insufficient.
 
-Current Agent Bridge already owns default Skill installation and native projections. Reuse those paths and add `autonomous-work` to the current canonical bundled/default lists rather than creating another registry.
+Reuse/update the canonical bundled/default install paths and parity tests so `autonomous-work` converges like other default Skills on:
 
-At implementation time inspect the actual current owners, including the equivalents of:
+- fresh install;
+- exact-release install;
+- existing deployed appliance upgrade;
+- Codex native projection;
+- Claude native projection;
+- Agy native projection;
+- `skill-manager verify`.
 
-- `scripts/install.sh`;
-- `scripts/upgrade.sh`;
-- `scripts/agent-bridge-install.py`;
-- existing default-list parity/Skill verification tests.
+If guarded rollout currently does not reconcile newly-added default Skills on existing hosts, add the smallest generic reconciliation at the existing install/upgrade/deploy boundary. Do not solve this inside the autonomy controller.
 
-Qualification must prove:
+## Workspace contract: immutable authority, writable learning
 
-- shared Skill store contains `autonomous-work`;
-- Codex, Claude and Agy native projections resolve correctly;
-- `skill-manager verify` passes;
-- fresh and resumed real provider sessions can use the Skill;
-- an **existing deployed runtime upgraded to the new release** receives and verifies it.
-
-If guarded release rollout does not currently converge newly-added default Skills on existing hosts, add the smallest generic reconciliation at the existing install/upgrade/deploy boundary. Do not put Skill installation in the autonomy controller or provider path.
-
-## Domain workspace contract
-
-Representative layout:
+Representative domain workspace:
 
 ```text
-company/
+company-workspace/
   AGENTS.md
   AUTONOMY.md
-  CONTEXT.md          # optional static managed context
+  CONTEXT.md          # optional static context only
   mission.md
-  goals.md             # optional roadmap/background
+  goals.md            # optional roadmap/background
   operating-model.md
   constraints.md
   SOUL.md
-  skills/              # canonical domain Skills
-  work/                # durable runtime-writable Company work
+  skills/
+  work/               # durable runtime-writable learned work
 ```
 
-`tools/`, `reports/`, learned Skills, saved queries, etc. may emerge under `work/`; no sensor-specific structure is required.
+Canonical control/pack files must be runtime-readable but should not be runtime-replaceable by the autonomous runtime identity.
 
-### Authority vs learning filesystem boundary
+This includes at least:
 
-The runtime must **not require the workspace root/control files to be writable**.
-
-Canonical pack/control files are expected to be installed read-only to the runtime identity:
-
-- `AGENTS.md`;
 - `AUTONOMY.md`;
-- mission/goals/operating-model/constraints;
+- `constraints.md`;
 - `SOUL.md`;
-- canonical `skills/`.
+- canonical Company Skills/instructions.
 
-The domain gets a separate persistent writable area such as `work/` for learned tools and ordinary Company artifacts.
+A runtime user that owns a parent directory can replace/delete root-owned children even if child file mode is read-only. Platform installation must therefore provide a real directory ownership boundary, not only root-owned file modes beneath an agent-owned parent.
 
-Why this matters: file mode on a root-owned file is not enough if the runtime user owns the parent directory; a writable parent can permit replacement/deletion. The owning installer must enforce the directory ownership boundary, not just file modes.
-
-This preserves both properties:
-
-- the agent can learn/build durable tooling;
-- the agent cannot silently rewrite its own future episode objective, canonical constraints, Soul or canonical Skills outside normal reviewed/domain authority.
-
-Generic autonomy lifecycle/restart/cleanup must not delete arbitrary files in the writable domain work area.
-
-If a learned artifact should become canonical pack content, promote it through the domain's normal reviewed process.
+`work/` is durable writable Company/domain working state for learned tools, reports, queries and ordinary artifacts. Generic lifecycle/restart/cleanup must not erase it.
 
 ## Smallest generic runtime contract
 
-Support one configured autonomous workspace per interactive service instance initially.
-
-Generic configuration:
+Initial configuration:
 
 ```text
 AGENT_BRIDGE_AUTONOMY_DIR=/absolute/path/to/workspace
 AGENT_BRIDGE_AUTONOMY_DB_PATH=/absolute/path/to/autonomy.sqlite
-AGENT_BRIDGE_AUTONOMY_MAX_CYCLES=3   # optional generic default
+AGENT_BRIDGE_AUTONOMY_MAX_CYCLES=3   # generic default
 ```
 
 Farstax explicitly sets `AGENT_BRIDGE_AUTONOMY_MAX_CYCLES=20`.
 
-Do not add autonomy-specific provider, credential, Soul path, Skills path, HOME, PATH or arbitrary env-overlay configuration.
+Do not add autonomy-specific provider, credential, HOME, PATH, Skill path, arbitrary env-overlay or sensor settings.
 
 Rules:
 
 - both required path settings absent -> autonomy disabled;
 - exactly one required path set -> startup error;
-- canonicalize paths and reject autonomy DB == interactive DB;
-- missing/unreadable/empty `AUTONOMY.md` -> start fails closed;
-- optional context/Soul absence is explicit; do not inherit interactive globals;
+- autonomy DB canonical path must differ from interactive DB;
+- missing/unreadable/empty `AUTONOMY.md` -> fail before start;
+- optional context/Soul absence is explicit, never inherited accidentally;
 - invalid max-cycle setting -> startup error.
 
-## Policy-neutral controller
+## Policy-neutral mechanical controller
 
-Add one thin generic `src/autonomyControl.ts` adapter over existing primitives.
+Add one thin `src/autonomyControl.ts` adapter.
 
-Conceptual API:
+Conceptually:
 
 ```ts
-start({
-  bot,
-  maxCycles,
-  initialEvidence?,
-  policyInstruction?,
-})
+start({ bot, maxCycles, initialEvidence?, policyInstruction? })
 status()
 stop()
+recordOwnerInput({ idempotencyKey, text, correlation })
 ```
 
-Responsibilities:
+The controller owns only mechanical concerns:
 
-- own dedicated autonomy DB connection lifecycle;
-- validate config/DB isolation;
-- read/freeze episode prompt;
-- load static workspace context/Soul through existing loaders;
-- create/drain/cancel through existing autonomous runtime;
-- perform one bounded startup recovery pass;
-- surface bounded cycle events;
-- close second DB on service shutdown.
+- autonomy DB lifecycle/isolation;
+- prompt freezing;
+- atomic single-active creation;
+- start/drain/cancel/restart delegation;
+- bounded status;
+- bounded owner-input persistence/correlation;
+- cycle-event plumbing;
+- shutdown cleanup.
 
-It must not own domain state, sensors, credentials, another worker loop, socket, scheduler, command framework or lifecycle model.
+It does **not** decide:
+
+- what the domain should observe;
+- whether a business fact matters;
+- what progress deserves telling the owner;
+- how to explain a decision;
+- how to answer an owner question;
+- whether steering is strategically good;
+- domain policy or Company semantics.
+
+A useful design test is:
+
+> Could this controller run a research project, software team, personal assistant or Company without knowing which one it is?
+
+If not, behaviour has leaked out of the agent/Skill and into mechanics.
 
 ### Atomic start
 
-Add one narrow helper beside `createAutonomousGoal()`:
+Add one narrow create-if-none-active helper beside existing `createAutonomousGoal()`.
 
-```ts
-createAutonomousGoalIfNoneActive(db, input)
-  -> { created: boolean; goal: AutonomousGoal }
-```
-
-One SQLite transaction owns active-row check + episode insert + first wake.
+One SQLite transaction owns active-row check + episode row + initial wake.
 
 - zero active -> create;
 - one active -> return existing with `created:false`;
-- more than one -> invariant failure;
-- no new table/index/series identifier.
+- >1 active -> invariant failure/fail closed;
+- no new series identifier or owner-gate persistence.
 
 The prompt passed to it is already frozen.
 
-### Status/stop/restart
+### Status / stop / restart
 
 Generic status is execution state only: `idle`, `running`, latest terminal bounded status/evidence.
 
 Do not persist `idle` or `awaiting_owner`.
 
-`stop()` delegates to existing `cancelAutonomousGoal()`.
+`stop()` delegates to existing cancellation/fencing.
 
-Startup recovery:
+Startup recovery reuses existing unclaimed/claimed wake semantics and stored provider. No timer/poller.
 
-- zero active -> no action;
-- one active -> reconstruct engine from stored `goal.bot` and use existing drain/recovery once;
-- >1 active -> fail closed;
-- claimed wake -> existing no-blind-replay behavior;
-- no timer/poller.
+## Owner approval remains temporary experiment policy
 
-## Owner approval is temporary policy
-
-Today's authenticated `/autonomy approve` adapter is the policy currently allowed to call `start()`.
+Today authenticated `/autonomy approve` is the current policy allowed to call `start()`.
 
 It is not a permanent runtime concept.
 
-Do not persist owner approval/gate/series state. Terminal episode does not auto-start a successor while today's experiment policy is enabled, but this is a thin adapter rule.
+Do not persist:
 
-A later explicitly-authorized start policy must replace this without schema/lifecycle migration.
+- `owner_approved`;
+- `awaiting_owner`;
+- owner-gate rows;
+- episode-series rows.
+
+A later explicitly-authorized start policy must replace the current human gate without schema/lifecycle migration.
 
 ## Provider selection
 
@@ -330,15 +416,16 @@ Reuse normal interactive provider preference/availability resolution.
 
 At start:
 
-1. authenticated surface resolves normal available `BotKind`;
-2. fail before creation if none launchable;
-3. store existing `autonomous_goals.bot`.
+1. authenticate through the existing owner boundary;
+2. resolve normal available `BotKind`;
+3. fail before creation if none launchable;
+4. store existing `autonomous_goals.bot`.
 
-Restart uses stored provider. Do not silently switch provider or add an autonomy provider registry/fallback.
+Restart uses stored provider. No autonomy provider registry/fallback.
 
 ## Option 2 isolation proof
 
-Before adding owner UX, prove `BridgeEngine` can receive explicit autonomous execution context with only narrow options such as:
+Before owner UX, prove `BridgeEngine` can receive explicit autonomous execution context with narrow options such as:
 
 ```ts
 executionCwd?: string
@@ -347,19 +434,19 @@ workspaceContext?: string | null
 
 Required:
 
-- absent options preserve existing behavior;
-- explicit cwd survives every provider invocation/retry/fallback/continuation;
-- explicit/empty workspace context cannot bleed from interactive globals;
-- existing Soul behavior remains;
+- absent options preserve existing behaviour;
+- explicit cwd survives invocation/retry/fallback/continuation;
+- explicit/empty context cannot bleed from interactive globals;
+- existing Soul behaviour remains;
 - process cwd/env remain unchanged.
 
-Kill Option 2 and use the minimal generic second service if this requires `process.chdir()`, temporary `process.env`, full env virtualization, another provider-launch abstraction or provider-specific autonomy code.
+If this needs `process.chdir()`, temporary `process.env`, full env virtualization, another provider-launch abstraction or provider-specific autonomy code, use the minimal dedicated generic OSS service instead.
 
 ## Implementation slices
 
 ### A — execution-context isolation
 
-Red then green for cwd/context isolation and no process-global mutation.
+Red then green for cwd/context isolation and no global mutation.
 
 ### B — policy-neutral controller
 
@@ -368,90 +455,106 @@ Red then green for:
 - atomic create-if-none-active;
 - frozen prompt bytes;
 - later `AUTONOMY.md` edit cannot alter active episode;
-- `initialEvidence` evidence-only;
-- optional `policyInstruction` instruction-only;
+- evidence/policy distinction;
 - maxCycles;
 - status/stop;
 - restart/stored provider;
 - >1 active fail closed.
 
-No schema migration.
+### C — `autonomous-work` Skill + deployment convergence
 
-### C — `autonomous-work` Skill + existing deployment convergence
+Add Skill through existing machinery; prove fresh/resumed use, Codex/Claude/Agy projection and existing-host upgrade convergence.
 
-Add Skill; update existing default install paths; preserve parity tests; prove Codex/Claude/Agy projection, fresh/resumed use, and existing-host upgrade convergence.
-
-### D — current Telegram experiment adapter
+### D — intelligent owner dialogue on the existing Telegram surface
 
 Red then green for:
 
-- authenticated `/autonomy approve|status|stop`;
-- normal provider selection;
-- maxCycles reaches `start()`;
-- previous terminal evidence uses `initialEvidence`;
-- optional correction uses `policyInstruction`;
-- immediate approve response;
-- status/stop during drain;
-- bounded async delivery;
-- no second poller/socket.
+- optional bounded `ownerMessage` in cycle result;
+- runtime never fabricates/summarizes owner narrative;
+- absent `ownerMessage` sends nothing;
+- present `ownerMessage` is delivered unchanged after successful reconciliation;
+- no raw stdout/hidden reasoning/tool logs leak;
+- owner reply to a Company-authored Telegram message is correlated to the one active episode;
+- duplicate Telegram update does not duplicate owner input;
+- owner input remains separate from evidence and policy instruction;
+- input arriving during cycle N is available to the next cycle, not injected into the running provider;
+- next cycle prompt clearly labels bounded owner input;
+- tactical steering cannot mechanically expand frozen episode authority;
+- `/autonomy stop` remains immediate intervention;
+- no second bot/poller, narrative engine, pause lifecycle or owner-conversation state machine.
 
-### E — Platform pack/access cutover
+Do not add a mid-Run owner broker in this slice.
 
-Tracked in Platform #352. Platform extracts the current Company pack, creates the immutable-control/writable-work filesystem boundary, supplies safe authoritative access, provisions fresh autonomy DB/config and qualifies Farstax at 20 cycles.
+### E — current experiment start/status/stop adapter
 
-### F — Platform subtraction
+Keep `/autonomy approve|status|stop` as current experiment controls using normal provider preference and generic controller.
 
-After qualification delete Platform Company execution socket/process/operator/briefing/JSONL/lifecycle machinery.
+`/autonomy status` may expose bounded mechanical status; it is not the primary progress narrative. Intelligent progress comes from provider-authored Company messages.
+
+### F — Platform pack/access cutover
+
+Tracked by Platform #352.
+
+### G — Platform execution subtraction
+
+After qualification delete old Platform Company socket/process/operator/briefing/JSONL/lifecycle machinery.
 
 ## Real qualification
 
 Prove at minimum:
 
-1. only existing interactive Telegram process polls the token;
-2. one start creates one bounded episode;
-3. controller contains no owner/domain semantics;
-4. episode objective/policy instruction is frozen at start;
-5. later control-file edit cannot alter active episode;
-6. canonical pack/control files are not writable/replacable by runtime identity;
-7. durable writable `work/` artifacts survive later cycles/episodes;
-8. prior evidence and policy instruction stay semantically distinct;
-9. provider choice uses existing interactive policy and stored `goal.bot`;
-10. provider runs as normal non-root runtime user;
-11. cwd/context/Soul isolation works without process-global mutation;
-12. `autonomous-work` is installed/projected/verified and used;
-13. existing deployed-host upgrade converges the new Skill;
-14. autonomy DB and interactive DB are distinct;
-15. status/stop work during an active Run;
-16. restart before claim resumes once; restart after claim never blindly replays;
-17. each continuing cycle receives frozen prompt + prior evidence + wake reason;
-18. provider decides what current reality requires observation;
-19. no predefined Company sensor is required;
-20. `progress` creates one successor while budget remains;
+1. only the existing interactive Telegram process polls the token;
+2. one authorized start creates one durable bounded episode;
+3. controller contains no owner/domain judgement semantics;
+4. episode prompt is frozen at start;
+5. canonical pack controls cannot be replaced/deleted by runtime identity;
+6. writable `work/` persists across cycles/episodes/upgrades;
+7. provider uses normal stored provider/configuration;
+8. cwd/context/Soul isolation works without global mutation;
+9. `autonomous-work` is installed/projected/verified and actually used;
+10. existing deployed-host upgrade converges the new Skill;
+11. autonomy DB and interactive DB are distinct;
+12. each cycle receives frozen prompt + prior evidence + wake reason + any bounded owner input since the previous cycle;
+13. provider decides what current reality requires observation;
+14. no predefined Company sensor is required;
+15. provider itself authors useful owner communication when material;
+16. no mechanical message is emitted merely because a cycle completes;
+17. owner can reply to a Company update and that input reaches a later cycle exactly once;
+18. provider can answer questions or use tactical steering within current authority;
+19. urgent owner stop still fences execution;
+20. `progress` creates exactly one successor wake while budget remains;
 21. Farstax explicitly uses 20 cycles; cycle-20 progress becomes `budget_exhausted`; no cycle 21;
 22. no successor episode starts without current start-policy authorization;
 23. no legacy Company execution state is imported.
 
-Optional only if naturally useful: Company creates/reuses a mechanical observation helper under writable domain work without OSS runtime/schema change.
+A useful live proof should show the Company making a real decision, authoring a meaningful Telegram update in its own voice, receiving an owner reply, incorporating that reply in a later cycle, and continuing without Platform orchestration.
 
 ## No legacy migration
 
 Start with a fresh current-schema autonomy Bridge DB.
 
-Do not copy/migrate/map/replay/dual-write old Company execution state or build reverse/compatibility migration logic.
+Do not copy/migrate/map/replay/dual-write old Company execution state or build compatibility/reverse migration logic.
 
 ## Acceptance
 
-- existing autonomous lifecycle/provider/Skill machinery is reused;
-- new OSS surface stays narrow;
-- `Goal -> Episode -> Cycle -> Run` is the shared model;
+The plan is correct only if:
+
+- existing autonomous lifecycle/provider/Skill primitives are reused;
+- `Goal -> Episode -> Cycle -> Run` remains the shared model;
 - episode authority is frozen at start;
-- evidence, policy instruction and current truth remain distinct;
-- `autonomous-work` uses existing Skill machinery and is guaranteed on upgraded hosts;
-- immutable canonical pack vs durable writable domain work is explicit;
-- provider chooses observations dynamically;
-- mechanical sensors are optional domain-owned artifacts;
+- evidence, owner input, policy instruction and current truth stay semantically distinct;
+- Agent Bridge remains mechanically reliable and domain-neutral;
+- the provider/Skill owns observation, judgement and owner communication;
+- progress messages are intelligent agent-authored communication, never controller-generated narrative;
+- two-way owner dialogue uses the existing interactive bot with minimal durable correlation;
+- no mid-Run broker is added without evidence that cycle-boundary dialogue is insufficient;
+- `autonomous-work` is guaranteed on fresh/upgraded runtimes through existing Skill machinery;
+- canonical controls are immutable to runtime while learned `work/` persists;
+- sensors remain optional domain-owned work;
 - owner approval remains temporary policy;
 - maxCycles remains generic; Farstax sets 20;
-- no Company/sensor/scheduler/worker/orchestrator framework;
-- no legacy Company execution migration;
+- no Company/sensor/scheduler/worker/second-poller/narrative/orchestrator framework is introduced;
+- no legacy execution migration is introduced;
 - Platform execution machinery is deleted after real qualification.
+
+The objective is subtraction: keep the controller boring and trustworthy; teach the agent how to use that framework intelligently.
