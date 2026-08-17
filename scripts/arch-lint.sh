@@ -60,6 +60,12 @@ if [ -n "$topology_violations" ]; then
   exit 1
 fi
 
+if [ -e "$TARGET_DIR/index-worker.ts" ]; then
+  echo "arch-lint: Engineering Worker execution path must not be reintroduced" >&2
+  echo "$TARGET_DIR/index-worker.ts" >&2
+  exit 1
+fi
+
 worker_violations=$(grep -rnE \
   -e 'WORKER_CLI_CHAIN' \
   -e 'WorkerFallbackChain' \
