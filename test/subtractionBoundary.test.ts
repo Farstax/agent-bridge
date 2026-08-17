@@ -31,6 +31,12 @@ const removedPaths = [
   "docs/spike-file-exchange-telegram.md",
   "docs/token-optimization-research.md",
   "docs/xurl-spike.md",
+  "docs/architecture/01-current-architecture.md",
+  "docs/architecture/02-gap-analysis.md",
+  "docs/architecture/05-epics.md",
+  "docs/architecture/06-interface-specs.md",
+  "docs/architecture/08-testing-strategy.md",
+  "docs/architecture/09-risk-register.md",
   "tests/ciPolicy.test.ts",
 ] as const;
 
@@ -65,5 +71,14 @@ describe("obsolete repository residue boundary", () => {
 
     expect(rollout).toMatch(/stop-all.*migrate.*start-all/is);
     expect(rollout).not.toMatch(/Worker jobs|worker workspaces|worker lock/i);
+  });
+
+  it("does not treat all scripts or tests as Knip entry points", () => {
+    const knip = JSON.parse(readFileSync(resolve(root, "knip.json"), "utf8")) as { entry?: string[] };
+    const entries = knip.entry ?? [];
+
+    expect(entries).not.toContain("scripts/**/*.ts");
+    expect(entries).not.toContain("test/**/*.test.ts");
+    expect(entries.some((entry) => entry.startsWith("scripts/") && entry.includes("*"))).toBe(false);
   });
 });
