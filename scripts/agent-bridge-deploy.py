@@ -29,14 +29,14 @@ RUNUSER = "/usr/sbin/runuser"
 SUDO = "/usr/bin/sudo"
 SUDO_CHECK_TIMEOUT_SECONDS = 5
 
-# Each release-relative privileged helper source, its fixed production install
-# path, and the rollout.conf pin field that must track its installed SHA-256.
-# This is the single source of truth for which helpers the deployer refreshes
-# from the verified release before invoking any of them; do not special-case
-# rollout-agent-bridge separately from its siblings.
+# These helpers are safe to converge only after the release archive has been
+# verified and staged by the bootstrap trust base. release-stage.py is
+# intentionally absent: the installed release-stage helper is what verifies
+# and stages the release before any release-owned helper bytes are trusted, so
+# a change to release-stage itself requires the same explicit bootstrap action
+# as a change to agent-bridge-deploy.py.
 HELPER_REFRESH_MAP = (
     ("scripts/rollout-agent-bridge.sh", "/usr/local/sbin/rollout-agent-bridge", "rollout_helper_sha256"),
-    ("scripts/release-stage.py", "/usr/local/libexec/agent-bridge-release-stage", "release_stage_sha256"),
     ("scripts/release-activate.py", "/usr/local/libexec/agent-bridge-release-activate", "activation_helper_sha256"),
     ("scripts/rollout-restore.py", "/usr/local/libexec/agent-bridge-rollout-restore", "rollout_restore_sha256"),
     ("scripts/rollout-authorization.py", "/usr/local/libexec/agent-bridge-rollout-authorization.py", "authorization_validator_sha256"),
@@ -235,29 +235,23 @@ def validate_private_helper(path: Path) -> None:
     validate_private_file(path, True)
 
 
-def stage_installed_helper(source: Path, destination: Path, chown_root: bool) -> tuple[Path, str]:
-    """Verify `source` and `destination`, then write source's bytes to a
-    verified sibling tmpfile of `destination` (not yet renamed into place).
-    Preserves destination's existing permission bits. Raises without touching
-    `destination` if the source is invalid, so this can be called for every
-    helper before any live destination is mutated."""
-    if source.is_symlink() or not source.is_file():
-        fail(f"release helper source is missing or not a regular file: {source}")
-    if destination.is_symlink() or not destination.is_file():
-        fail(f"privileged helper destination is missing or not a regular file: {destination}")
-    existing_mode = destination.stat().st_mode & 0o777
-    data = source.read_bytes()
-    expected_sha256 = hashlib.sha256(data).hexdigest()
-    descriptor, tmp_name = tempfile.mkstemp(dir=str(destination.parent), prefix=f".{destination.name}.")
+def preserve_metadata(tmp_path: Path, destination: Path) -> None:
+    metadata = destination.stat()
+    os.chmod(tmp_path, metadata.st_mode & 0o777)
+    if os.geteuid() == 0:
+        os.chown(tmp_path, metadata.st_uid, metadata.st_gid)
+
+
+def stage_bytes_for_destination(data: bytes, destination: Path, prefix: str) -> tuple[Path, str]:
+    descriptor, tmp_name = tempfile.mkstemp(dir=str(destination.parent), prefix=prefix)
     tmp_path = Path(tmp_name)
+    expected_sha256 = hashlib.sha256(data).hexdigest()
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(data)
-        os.chmod(tmp_path, existing_mode)
-        if chown_root:
-            os.chown(tmp_path, 0, 0)
+        preserve_metadata(tmp_path, destination)
         if digest(tmp_path) != expected_sha256:
-            fail(f"helper refresh write verification failed: {destination}")
+            fail(f"staged file hash mismatch: {destination}")
     except Exception:
         if tmp_path.exists():
             tmp_path.unlink()
@@ -265,19 +259,21 @@ def stage_installed_helper(source: Path, destination: Path, chown_root: bool) ->
     return tmp_path, expected_sha256
 
 
-def commit_installed_helper(tmp_path: Path, destination: Path, expected_sha256: str) -> str:
-    """Atomically publish an already-staged, verified tmpfile as `destination`,
-    then re-verify the installed bytes."""
-    os.rename(tmp_path, destination)
-    installed_sha256 = digest(destination)
-    if installed_sha256 != expected_sha256:
-        fail(f"installed helper hash mismatch after refresh: {destination}")
-    return installed_sha256
+def stage_installed_helper(source: Path, destination: Path) -> tuple[Path, str]:
+    if source.is_symlink() or not source.is_file():
+        fail(f"release helper source is missing or not a regular file: {source}")
+    if destination.is_symlink() or not destination.is_file():
+        fail(f"privileged helper destination is missing or not a regular file: {destination}")
+    return stage_bytes_for_destination(source.read_bytes(), destination, f".{destination.name}.new-")
 
 
-def update_config_pins(config: Path, pins: dict[str, str]) -> None:
-    """Atomically rewrite `config`'s pin fields, preserving every other line
-    and its order. Adds a pin line if the key was not already present."""
+def stage_snapshot(path: Path) -> tuple[Path, str]:
+    if path.is_symlink() or not path.is_file():
+        fail(f"cannot snapshot non-regular file: {path}")
+    return stage_bytes_for_destination(path.read_bytes(), path, f".{path.name}.rollback-")
+
+
+def staged_config_with_pins(config: Path, pins: dict[str, str]) -> tuple[Path, str]:
     lines = config.read_text(encoding="utf-8").splitlines()
     seen: set[str] = set()
     updated: list[str] = []
@@ -291,59 +287,124 @@ def update_config_pins(config: Path, pins: dict[str, str]) -> None:
     for key, value in pins.items():
         if key not in seen:
             updated.append(f"{key}={value}")
-    content = ("\n".join(updated) + "\n").encode("utf-8")
-    mode = config.stat().st_mode & 0o777
-    owner_uid = config.stat().st_uid
-    descriptor, tmp_name = tempfile.mkstemp(dir=str(config.parent), prefix=f".{config.name}.")
-    tmp_path = Path(tmp_name)
+    return stage_bytes_for_destination(("\n".join(updated) + "\n").encode("utf-8"), config, f".{config.name}.new-")
+
+
+def publish_staged_file(tmp_path: Path, destination: Path, expected_sha256: str) -> None:
+    os.replace(tmp_path, destination)
+    if digest(destination) != expected_sha256:
+        fail(f"published file hash mismatch: {destination}")
+
+
+def helper_commit_fail_after() -> int:
+    if os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1":
+        return 0
+    raw = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_COMMIT_FAIL_AFTER", "0")
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-        os.chmod(tmp_path, mode)
-        if owner_uid == 0:
-            os.chown(tmp_path, 0, 0)
-        os.rename(tmp_path, config)
-    except Exception:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise
+        value = int(raw)
+    except ValueError:
+        fail("invalid helper commit failpoint")
+    if value < 0:
+        fail("invalid helper commit failpoint")
+    return value
 
 
 def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Path | None = None) -> dict[str, str]:
-    """Refresh every privileged helper in HELPER_REFRESH_MAP from the given
-    verified, staged release directory, then pin their installed SHA-256s in
-    `config` in the same operation.
+    """Publish the release-owned helper cohort and its pins as one rollback
+    transaction.
 
-    This is staged in two passes specifically so that a problem with any one
-    helper (missing/unreadable source, write failure, ...) is discovered
-    before any live installed helper is touched: first every helper's source
-    is validated and written to a verified sibling tmpfile of its destination
-    (no destination is mutated yet), and only once all six tmpfiles exist and
-    verify does the second pass atomically rename each of them into place and
-    write the combined pin update. A single-loop write-then-verify-per-helper
-    would let earlier helpers in the list be live-overwritten before a later
-    helper's problem is discovered, leaving those already-overwritten helpers
-    both unpinned and inconsistent with the (unwritten) config -- that is the
-    exact stale-pin drift this function exists to prevent, just inverted."""
-    chown_root = install_root is None
-    staged: list[tuple[Path, Path, str, str]] = []  # (tmp_path, destination, pin_key, expected_sha256)
+    All new helpers, old-helper rollback snapshots, the old config snapshot and
+    the new config are staged before the first live path is replaced. If any
+    helper publication, hash verification or config publication then fails, the
+    complete old helper cohort and old config are restored and re-verified
+    before the error escapes. rollout-agent-bridge is therefore never invoked
+    against a mixed helper/pin cohort.
+    """
+    staged: list[dict[str, object]] = []
+    config_backup: Path | None = None
+    config_backup_sha256 = ""
+    config_new: Path | None = None
+    config_new_sha256 = ""
+    mutation_started = False
+    original_error: Exception | None = None
     try:
         for relative_source, destination_str, pin_key in HELPER_REFRESH_MAP:
             source = release_dir / relative_source
             destination = Path(destination_str)
             if install_root is not None:
                 destination = install_root / destination.relative_to("/")
-            tmp_path, expected_sha256 = stage_installed_helper(source, destination, chown_root)
-            staged.append((tmp_path, destination, pin_key, expected_sha256))
-        pins: dict[str, str] = {}
-        for tmp_path, destination, pin_key, expected_sha256 in staged:
-            pins[pin_key] = commit_installed_helper(tmp_path, destination, expected_sha256)
-        update_config_pins(config, pins)
+            replacement, replacement_sha256 = stage_installed_helper(source, destination)
+            backup, backup_sha256 = stage_snapshot(destination)
+            staged.append({
+                "replacement": replacement,
+                "replacement_sha256": replacement_sha256,
+                "backup": backup,
+                "backup_sha256": backup_sha256,
+                "destination": destination,
+                "pin_key": pin_key,
+            })
+
+        pins = {str(item["pin_key"]): str(item["replacement_sha256"]) for item in staged}
+        config_backup, config_backup_sha256 = stage_snapshot(config)
+        config_new, config_new_sha256 = staged_config_with_pins(config, pins)
+
+        fail_after = helper_commit_fail_after()
+        mutation_started = True
+        for index, item in enumerate(staged, start=1):
+            publish_staged_file(
+                item["replacement"],  # type: ignore[arg-type]
+                item["destination"],  # type: ignore[arg-type]
+                str(item["replacement_sha256"]),
+            )
+            if fail_after and index == fail_after:
+                fail(f"test failpoint after helper commit {index}")
+
+        if os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") == "1" and os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_PIN_PUBLISH_FAIL") == "1":
+            fail("test failpoint before pin publication")
+
+        assert config_new is not None
+        publish_staged_file(config_new, config, config_new_sha256)
+        for item in staged:
+            if digest(item["destination"]) != item["replacement_sha256"]:  # type: ignore[arg-type]
+                fail(f"helper cohort verification failed: {item['destination']}")
+        if digest(config) != config_new_sha256:
+            fail("rollout config verification failed after helper refresh")
+        return pins
+    except Exception as error:
+        original_error = error
+        if mutation_started:
+            rollback_errors: list[str] = []
+            for item in staged:
+                backup = item["backup"]
+                destination = item["destination"]
+                try:
+                    if not isinstance(backup, Path) or not backup.exists():
+                        raise RuntimeError("rollback snapshot is missing")
+                    publish_staged_file(backup, destination, str(item["backup_sha256"]))  # type: ignore[arg-type]
+                except Exception as rollback_error:
+                    rollback_errors.append(f"{destination}: {rollback_error}")
+            if config_backup is not None:
+                try:
+                    if not config_backup.exists():
+                        raise RuntimeError("rollout config rollback snapshot is missing")
+                    publish_staged_file(config_backup, config, config_backup_sha256)
+                except Exception as rollback_error:
+                    rollback_errors.append(f"{config}: {rollback_error}")
+            if rollback_errors:
+                raise RuntimeError(
+                    f"privileged helper refresh failed ({error}); rollback also failed: {'; '.join(rollback_errors)}"
+                ) from error
+        raise
     finally:
-        for tmp_path, _destination, _pin_key, _expected_sha256 in staged:
-            if tmp_path.exists():
-                tmp_path.unlink()
-    return pins
+        for item in staged:
+            for key in ("replacement", "backup"):
+                path = item.get(key)
+                if isinstance(path, Path) and path.exists():
+                    path.unlink()
+        for path in (config_backup, config_new):
+            if path is not None and path.exists():
+                path.unlink()
+        _ = original_error
 
 
 def reject_root_test_overrides() -> None:
