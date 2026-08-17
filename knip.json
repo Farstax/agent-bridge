@@ -10,8 +10,7 @@
     "scripts/rollout-db.ts",
     "scripts/scan-token-savings.ts",
     "scripts/skill-manager.ts",
-    "scripts/smoke-advisor-fallback.ts",
-    "test/**/*.test.ts"
+    "scripts/smoke-advisor-fallback.ts"
   ],
   "project": [
     "src/**/*.ts",
