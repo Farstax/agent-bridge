@@ -92,8 +92,6 @@ describe("unknown authenticated slash commands", () => {
     await engine.handleMessages([makeMessage("/reset")]);
 
     expect(runCli).not.toHaveBeenCalled();
-    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      text: expect.stringContaining("session reset"),
-    }));
+    expect(client.sendMessage).toHaveBeenCalledWith(100, expect.stringContaining("session reset"));
   });
 });
