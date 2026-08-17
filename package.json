@@ -13,6 +13,7 @@
     "doctor": "tsx src/doctorCli.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
+    "typecheck:unused": "tsc --noEmit -p tsconfig.unused.json",
     "cleanup:check": "knip",
     "skills": "tsx scripts/skill-manager.ts",
     "qualify:provider": "tsx scripts/provider-qualification.ts",
