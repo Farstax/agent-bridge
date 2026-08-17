@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { existsSync, lstatSync, unlinkSync } from "node:fs";
+import { createConnection } from "node:net";
 import { isAbsolute } from "node:path";
 
 export interface OwnerNotificationClient {
@@ -12,6 +13,33 @@ export interface OwnerNotificationIngress {
 
 const MAX_TEXT_CHARS = 4096;
 const MAX_BODY_BYTES = 16384;
+const SOCKET_PROBE_TIMEOUT_MS = 500;
+
+async function isLiveSocket(socketPath: string): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    let settled = false;
+    const socket = createConnection({ path: socketPath });
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      fn();
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`Timed out probing owner notification socket: ${socketPath}`)));
+    }, SOCKET_PROBE_TIMEOUT_MS);
+
+    socket.once("connect", () => finish(() => resolve(true)));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ECONNREFUSED" || error.code === "ENOENT") {
+        finish(() => resolve(false));
+        return;
+      }
+      finish(() => reject(error));
+    });
+  });
+}
 
 /**
  * Bounded local ingress for delivering owner-facing notifications through
@@ -34,14 +62,19 @@ export async function startOwnerNotificationIngress(options: {
   }
   const [ownerIdText] = allowedUserIds;
   const ownerId = Number(ownerIdText);
+  if (!Number.isSafeInteger(ownerId) || ownerId <= 0) {
+    throw new Error("Owner notification ingress requires a numeric Telegram owner id");
+  }
 
   if (existsSync(socketPath)) {
     const stat = lstatSync(socketPath);
     if (!stat.isSocket()) {
       throw new Error(`Refusing to bind owner notification ingress over a non-socket path: ${socketPath}`);
     }
-    // A prior process's stale socket file; nothing is listening on it. Safe to unlink and rebind.
-    unlinkSync(socketPath);
+    if (await isLiveSocket(socketPath)) {
+      throw new Error(`Refusing to replace an active owner notification socket: ${socketPath}`);
+    }
+    if (existsSync(socketPath)) unlinkSync(socketPath);
   }
 
   const server: Server = createServer((req, res) => {
@@ -73,8 +106,6 @@ export async function startOwnerNotificationIngress(options: {
         res.writeHead(400).end();
         return;
       }
-      // The ingress delivers only to the sole configured owner; it does not
-      // accept a target field of any kind.
       const keys = Object.keys(parsed as Record<string, unknown>);
       if (keys.some((key) => key !== "text")) {
         res.writeHead(400).end();
