@@ -25,7 +25,6 @@ const removedPaths = [
   "docs/claude-agent-view-spike.md",
   "docs/cursor-agent-spike-research.md",
   "docs/cursor-sdk-spike-research.md",
-  "docs/execution-lane-rollout.md",
   "docs/health-monitor-rectification.md",
   "docs/oss-product-split-plan.md",
   "docs/research/issue-388-provider-stream-contract.md",
