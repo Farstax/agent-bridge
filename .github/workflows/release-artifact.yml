@@ -83,8 +83,9 @@ jobs:
           cp -a systemd/agent-bridge-tmp-cleanup.service systemd/agent-bridge-tmp-cleanup.timer "$root/systemd/"
           cp -a bin/agent-bridge-context bin/agent-bridge-advisor "$root/bin/"
           cp -a skills/. "$root/skills/"
-          cp -a tsconfig.json SOUL.md "$root/"
+          cp -a tsconfig.json "$root/"
           cp -a soul-templates "$root/"
+          cp -a soul-templates/operations-engineer.md "$root/SOUL.md"
           cat > "$root/qualification-evidence.json" <<EOF
           {
             "commit": "${commit}",
