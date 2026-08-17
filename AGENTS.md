@@ -14,6 +14,18 @@ When designing, implementing, or reviewing changes:
 
 Add Bridge-owned machinery only when a concrete cross-provider, durability, lifecycle, or safety requirement cannot be met at the native CLI boundary.
 
+## Prefer agent instructions over machinery
+
+Before writing new runtime code, state what boundary requires code rather than an existing Agent Bridge capability, Skill, or instruction. If there is no such boundary, do not build it. Code is justified for real boundaries such as durable state ownership, authentication/authorization, isolation, concurrency, idempotency, lifecycle recovery, external protocols, or deterministic safety enforcement.
+
+- Put repeatable operational procedures, diagnostics, release steps, and verification in Skills; put durable architecture, ownership, and engineering judgement in `AGENTS.md`.
+- Reuse authoritative scripts and mechanisms; do not reimplement them behind bots, APIs, wrappers, commands, schedulers, daemons, approval systems, or orchestration layers for convenience.
+- Keep transports thin: Telegram, Discord, HTTP, CLI, and UI carry intent and results rather than duplicate domain logic.
+- Prefer subtraction: when an agent-native path replaces machinery, remove obsolete code, config, services, tokens, tests, docs, and compatibility paths. Before completing a change, ask: **what can now be deleted?**
+- Add an abstraction only for a concrete boundary or a second real use case.
+
+Agent Bridge should provide reusable capabilities and primitives, not product- or operator-specific procedures. A built-in command should exist only when it requires Bridge-owned semantics or state.
+
 ---
 
 # Platform Infrastructure Ownership
