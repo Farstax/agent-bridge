@@ -1,0 +1,51 @@
+name: Apply instruction first rule
+on:
+  push:
+    branches: ["agent/issue-449-instruction-first-agents"]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Edit branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init work
+          cd work
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_REF_NAME}"
+          git checkout -B "${GITHUB_REF_NAME}" FETCH_HEAD
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("AGENTS.md")
+          text = path.read_text()
+          heading = "## Prefer agent instructions over machinery"
+          anchor = "Add Bridge-owned machinery only when a concrete cross-provider, durability, lifecycle, or safety requirement cannot be met at the native CLI boundary.\n\n---"
+          section = """## Prefer agent instructions over machinery
+
+Before writing new runtime code, state what boundary requires code rather than an existing Agent Bridge capability, Skill, or instruction. If there is no such boundary, do not build it. Code is justified for real boundaries such as durable state ownership, authentication/authorization, isolation, concurrency, idempotency, lifecycle recovery, external protocols, or deterministic safety enforcement.
+
+- Put repeatable operational procedures, diagnostics, release steps, and verification in Skills; put durable architecture, ownership, and engineering judgement in `AGENTS.md`.
+- Reuse authoritative scripts and mechanisms; do not reimplement them behind bots, APIs, wrappers, commands, schedulers, daemons, approval systems, or orchestration layers for convenience.
+- Keep transports thin: Telegram, Discord, HTTP, CLI, and UI carry intent and results rather than duplicate domain logic.
+- Prefer subtraction: when an agent-native path replaces machinery, remove obsolete code, config, services, tokens, tests, docs, and compatibility paths. Before completing a change, ask: **what can now be deleted?**
+- Add an abstraction only for a concrete boundary or a second real use case.
+
+Agent Bridge should provide reusable capabilities and primitives, not product- or operator-specific procedures. A built-in command should exist only when it requires Bridge-owned semantics or state.
+"""
+          if heading not in text:
+              if anchor not in text:
+                  raise SystemExit("expected AGENTS.md anchor not found")
+              text = text.replace(anchor, anchor[:-3] + section + "\n---", 1)
+              path.write_text(text)
+          PY
+          rm -f .github/workflows/apply-instruction-first-rule.yml .github/workflows/apply-instruction-first-rule-v2.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "docs: prefer agent instructions over machinery"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
