@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -98,7 +98,7 @@ describe("interactive owner notification ingress (#453)", () => {
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("refuses to replace a non-socket path and removes a stale socket safely", async () => {
+  it("refuses to replace a non-socket or live socket path and removes a stale socket safely", async () => {
     const nonSocket = tempSocket("not-a-socket");
     writeFileSync(nonSocket, "keep me");
     await expect(startOwnerNotificationIngress({
@@ -108,10 +108,6 @@ describe("interactive owner notification ingress (#453)", () => {
     })).rejects.toThrow(/non-socket/i);
     expect(existsSync(nonSocket)).toBe(true);
 
-    // A graceful server.close() unlinks its own Unix socket file on Node 24,
-    // so it can't reproduce a stale socket. Simulate the real scenario this
-    // guards against instead: a prior process that died without cleanup
-    // (crash, OOM-kill) leaves its socket file orphaned on disk.
     const staleSocket = tempSocket("stale.sock");
     const holderProc = spawn(process.execPath, ["-e", `
       const http = require("http");
@@ -123,6 +119,14 @@ describe("interactive owner notification ingress (#453)", () => {
       holderProc.stdout!.once("data", () => { clearTimeout(timer); resolve(); });
       holderProc.once("error", reject);
     });
+
+    await expect(startOwnerNotificationIngress({
+      socketPath: staleSocket,
+      allowedUserIds: new Set(["42"]),
+      client: fakeClient(),
+    })).rejects.toThrow(/active|listening/i);
+    expect(existsSync(staleSocket)).toBe(true);
+
     holderProc.kill("SIGKILL");
     await new Promise<void>((resolve) => holderProc.once("exit", () => resolve()));
     expect(existsSync(staleSocket)).toBe(true);
@@ -153,5 +157,11 @@ describe("interactive owner notification ingress (#453)", () => {
     expect(existsSync(socketPath)).toBe(true);
     await ingress.stop();
     expect(existsSync(socketPath)).toBe(false);
+  });
+
+  it("is opt-in wired into the interactive process", () => {
+    const source = readFileSync(join(process.cwd(), "src/index-interactive.ts"), "utf8");
+    expect(source).toContain("startOwnerNotificationIngress");
+    expect(source).toContain("BRIDGE_OWNER_NOTIFICATION_SOCKET");
   });
 });
