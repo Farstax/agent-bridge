@@ -59,4 +59,11 @@ describe("obsolete repository residue boundary", () => {
     expect(agents).not.toMatch(/worker deploys|worker-specific drain flow/i);
     expect(agents).not.toMatch(/Worker jobs choose effort/i);
   });
+
+  it("keeps rollout safety without describing a current Worker runtime", () => {
+    const rollout = readFileSync(resolve(root, "docs/execution-lane-rollout.md"), "utf8");
+
+    expect(rollout).toMatch(/stop-all.*migrate.*start-all/is);
+    expect(rollout).not.toMatch(/Worker jobs|worker workspaces|worker lock/i);
+  });
 });
