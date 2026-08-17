@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeTelegramMarkdownV2, toTelegramEntitiesText, renderTelegramEntitiesFromIR } from "../src/render.js";
+import { escapeTelegramMarkdownV2, renderTelegramEntitiesFromIR, splitTelegramText, toTelegramEntitiesText } from "../src/render.js";
 import { parseMarkdownToIR } from "../src/markdownIR.js";
 
 describe("escapeTelegramMarkdownV2", () => {
@@ -24,6 +24,30 @@ describe("escapeTelegramMarkdownV2", () => {
     expect(escapeTelegramMarkdownV2("This is *orphaned")).toBe("This is \\*orphaned");
     expect(escapeTelegramMarkdownV2("*bold* and *balanced*")).toBe("*bold* and *balanced*");
     expect(escapeTelegramMarkdownV2("*bold* and _italic and *bold")).toBe("*bold* and \\_italic and \\*bold");
+  });
+});
+
+describe("splitTelegramText", () => {
+  it("preserves short and empty messages", () => {
+    expect(splitTelegramText("Short message")).toEqual(["Short message"]);
+    expect(splitTelegramText("")).toEqual([""]);
+  });
+
+  it("splits long messages within the Telegram limit without losing content", () => {
+    const text = ("word ".repeat(900)).trimEnd();
+    const chunks = splitTelegramText(text);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.length <= 3500)).toBe(true);
+    expect(chunks.join(" ").replace(/\s+/g, " ").trim()).toBe(text.replace(/\s+/g, " ").trim());
+  });
+
+  it("prefers paragraph boundaries when splitting", () => {
+    const text = "Line of text.\n\n".repeat(300);
+    const chunks = splitTelegramText(text);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.trimEnd().endsWith("Line of text."))).toBe(true);
   });
 });
 
