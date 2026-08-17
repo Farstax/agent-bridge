@@ -43,8 +43,20 @@ describe("execution topology architecture lint", () => {
     }
   });
 
-  it("rejects a second Engineering Worker execution path", () => {
-    const dir = mkdtempSync(join(tmpdir(), "archlint-topology-worker-"));
+  it("rejects a Worker runtime entrypoint", () => {
+    const dir = mkdtempSync(join(tmpdir(), "archlint-topology-worker-entry-"));
+    try {
+      writeFileSync(join(dir, "index-worker.ts"), "export {};\n");
+      const result = runLint(dir);
+      expect(result.code).toBe(1);
+      expect(result.output).toContain("Engineering Worker execution path must not be reintroduced");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects legacy Worker execution APIs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "archlint-topology-worker-api-"));
     try {
       writeFileSync(join(dir, "worker.ts"), "export const chain = process.env.WORKER_CLI_CHAIN;\n");
       const result = runLint(dir);
