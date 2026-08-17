@@ -49,6 +49,7 @@ import { createHealthRuntime } from "./health/runtime.js";
 import { handleIntegratedHealthCommand } from "./health/integrated.js";
 import { recoverCancelledContinuationContainment } from "./continuationRecovery.js";
 import { ContinuationRepository } from "./repositories/continuationRepository.js";
+import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
@@ -99,6 +100,27 @@ const db = openProductionDb(dbPath, {
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const continuationStore = new ContinuationRepository(db.raw);
 const client = new TelegramClient(token, fetch, 45_000);
+const ownerNotificationSocketPath = process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
+const ownerNotificationIngress = ownerNotificationSocketPath
+  ? await startOwnerNotificationIngress({
+      socketPath: ownerNotificationSocketPath,
+      allowedUserIds,
+      client: {
+        sendMessage: (chatId, text) => client.sendMessage({ chat_id: chatId, text }),
+      },
+    })
+  : null;
+if (ownerNotificationIngress) {
+  console.log(`[interactive] owner notification ingress listening on ${ownerNotificationSocketPath}`);
+  let stopping = false;
+  const stopOwnerNotificationIngress = () => {
+    if (stopping) return;
+    stopping = true;
+    void ownerNotificationIngress.stop().finally(() => process.exit(0));
+  };
+  process.once("SIGINT", stopOwnerNotificationIngress);
+  process.once("SIGTERM", stopOwnerNotificationIngress);
+}
 const healthDbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 const healthDb = integratedHealth ? openProductionDb(healthDbPath, {
   serviceId: "telegram:interactive-health",
