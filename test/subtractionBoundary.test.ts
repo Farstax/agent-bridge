@@ -39,4 +39,12 @@ describe("obsolete repository residue boundary", () => {
       expect(content.length).toBeLessThan(2500);
     }
   });
+
+  it("removes current Worker runtime guidance from AGENTS.md", () => {
+    const agents = readFileSync(resolve(root, "AGENTS.md"), "utf8");
+
+    expect(agents).not.toContain("# Autonomous Worker Loop — invariants");
+    expect(agents).not.toMatch(/worker deploys|worker-specific drain flow/i);
+    expect(agents).not.toMatch(/Worker jobs choose effort/i);
+  });
 });
