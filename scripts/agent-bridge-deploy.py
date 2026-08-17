@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib.machinery
 import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +27,7 @@ REPOSITORY = "nickconstantinou/agent-bridge"
 REPOSITORY_OWNER = "nickconstantinou"
 DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
 DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
+DEPLOY_LOCK = Path("/run/lock/agent-bridge-deploy.lock")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 RUNUSER = "/usr/sbin/runuser"
 SUDO = "/usr/bin/sudo"
@@ -431,6 +435,59 @@ def current_cgroup_has_unit(unit: str, cgroup_text: str | None = None) -> bool:
     return False
 
 
+def deployment_lock_path(production: bool) -> Path:
+    if production:
+        return DEPLOY_LOCK
+    override = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_LOCK_FILE")
+    if override:
+        path = Path(override)
+    else:
+        root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT") or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT")
+        if not root:
+            fail("mutating test deployment requires a deploy lock root")
+        path = Path(root) / ".agent-bridge-deploy.lock"
+    if not path.is_absolute():
+        fail("deployment lock path must be absolute")
+    return path
+
+
+@contextmanager
+def exclusive_deployment_lock(production: bool):
+    path = deployment_lock_path(production)
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        fail(f"unable to open deployment lock safely: {error}")
+    locked = False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail("deployment lock must be a regular file")
+        if production and metadata.st_uid != 0:
+            fail("deployment lock must be root-owned")
+        if metadata.st_mode & 0o022:
+            fail("deployment lock must not be group/world writable")
+        marker = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_LOCK_ATTEMPT_MARKER") if not production else None
+        if marker:
+            Path(marker).touch()
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = True
+        yield
+    finally:
+        if locked:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def mutating_deployment(production: bool) -> bool:
+    if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") == "1":
+        return False
+    if production:
+        return True
+    return bool(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT"))
+
+
 def detached_command(release: Path, approval: Path | None, owner_request: Path | None, unit: str, script: Path | None = None) -> list[str]:
     if not DEPLOY_UNIT.fullmatch(unit):
         fail("invalid transient deployment unit")
@@ -465,6 +522,14 @@ def launch_detached(release: Path, approval: Path | None, owner_request: Path | 
 
 
 def run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
+    production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
+    if not mutating_deployment(production):
+        return _run_deployment(archive, approval, owner_request)
+    with exclusive_deployment_lock(production):
+        return _run_deployment(archive, approval, owner_request)
+
+
+def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
     reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     config = Path("/etc/agent-bridge/rollout.conf") if production else None
