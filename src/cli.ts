@@ -101,7 +101,11 @@ function seedFreshExecutionContract(
 ): string {
   if (includeResponseContract) return prompt;
   const startsFresh = !sessionId || (bot === "codex" && attachments.length > 0);
-  return startsFresh ? wrapPromptContext(prompt, null, false, true) : prompt;
+  if (startsFresh) return wrapPromptContext(prompt, null, false, true);
+  // Resumed turns intentionally stay otherwise raw so the native session owns
+  // continuity. A leading slash is the one exception: native CLIs may consume
+  // it as their own command before the model or installed Skills can see it.
+  return prompt.startsWith("/") ? `User request:\n${prompt}` : prompt;
 }
 
 /** Builds the CLI invocation for a bot. */
