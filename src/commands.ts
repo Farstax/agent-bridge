@@ -399,6 +399,9 @@ export function handleCommand(
     return { kind: "message", text: lines.join("\n") };
   }
 
+  if (String(prompt || "").trim().startsWith("/") && text !== "/stop" && text !== "/cancel") {
+    return { kind: "execute", prompt: String(prompt || "").trim() };
+  }
   return null;
 }
 
