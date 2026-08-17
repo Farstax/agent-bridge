@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -135,6 +135,24 @@ function expectOldCohort(originals: Map<string, Buffer>, configFile: string, ori
   expect(readFileSync(configFile, "utf8")).toBe(originalConfig);
 }
 
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function waitForExit(child: ChildProcessWithoutNullStreams): Promise<{ code: number | null; output: string }> {
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += String(chunk); });
+  child.stderr.on("data", (chunk) => { output += String(chunk); });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => resolve({ code, output }));
+  });
+}
+
 describe("privileged helper lifecycle", () => {
   it("rolls back every helper and rollout.conf when publication fails after multiple live renames", () => {
     const release = makeRelease();
@@ -221,5 +239,64 @@ describe("privileged helper lifecycle", () => {
       expect(installed.equals(released), helper.relative).toBe(true);
       expect(config).toContain(`${helper.pinKey}=${sha256(released)}`);
     }
+  }, 20_000);
+
+  it("serializes concurrent deployments from helper convergence through rollout completion", async () => {
+    const release = makeRelease();
+    const installedRoot = mkdtempSync(join(tmpdir(), "agent-bridge-helper-lifecycle-installed-"));
+    installOldCohort(installedRoot);
+    const configFile = join(installedRoot, "rollout.conf");
+    writeFileSync(configFile, "runtime_user=content-crawler\nenvironment=production-content-crawler\nrelease_stage_sha256=bootstrap-trust-anchor\n");
+
+    const lockFile = join(installedRoot, "deployer.lock");
+    const firstStarted = join(installedRoot, "first-runner-started");
+    const releaseFirst = join(installedRoot, "release-first-runner");
+    const secondAttempted = join(installedRoot, "second-lock-attempted");
+    const secondStarted = join(installedRoot, "second-runner-started");
+    const firstRunner = join(installedRoot, "runner-first.sh");
+    const secondRunner = join(installedRoot, "runner-second.sh");
+    writeFileSync(firstRunner, `#!/usr/bin/env bash\nset -euo pipefail\ntouch ${JSON.stringify(firstStarted)}\nwhile [[ ! -e ${JSON.stringify(releaseFirst)} ]]; do sleep 0.02; done\n`);
+    writeFileSync(secondRunner, `#!/usr/bin/env bash\nset -euo pipefail\ntouch ${JSON.stringify(secondStarted)}\n`);
+    chmodSync(firstRunner, 0o755);
+    chmodSync(secondRunner, 0o755);
+
+    const spawnDeploy = (runner: string, attemptMarker?: string): ChildProcessWithoutNullStreams => spawn(
+      "python3",
+      [DEPLOYER, "--release", release.archive, "--approval", release.approval],
+      {
+        env: {
+          ...process.env,
+          AGENT_BRIDGE_DEPLOY_TEST: "1",
+          AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT: mkdtempSync(join(tmpdir(), "agent-bridge-helper-lifecycle-stage-")),
+          AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT: installedRoot,
+          AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG: configFile,
+          AGENT_BRIDGE_DEPLOY_TEST_RUNNER: runner,
+          AGENT_BRIDGE_DEPLOY_TEST_LOCK_FILE: lockFile,
+          ...(attemptMarker ? { AGENT_BRIDGE_DEPLOY_TEST_LOCK_ATTEMPT_MARKER: attemptMarker } : {}),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+
+    const first = spawnDeploy(firstRunner);
+    await waitForFile(firstStarted);
+    const probe = spawnSync("flock", ["-n", lockFile, "true"]);
+    expect(probe.status).not.toBe(0);
+
+    const second = spawnDeploy(secondRunner, secondAttempted);
+    let secondWasBlocked = false;
+    try {
+      await waitForFile(secondAttempted);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      secondWasBlocked = !existsSync(secondStarted);
+    } finally {
+      writeFileSync(releaseFirst, "go\n");
+    }
+
+    const [firstResult, secondResult] = await Promise.all([waitForExit(first), waitForExit(second)]);
+    expect(firstResult.code, firstResult.output).toBe(0);
+    expect(secondResult.code, secondResult.output).toBe(0);
+    expect(secondWasBlocked).toBe(true);
+    expect(existsSync(secondStarted)).toBe(true);
   }, 20_000);
 });
