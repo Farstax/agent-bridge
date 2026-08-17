@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import importlib.machinery
 import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,10 +27,25 @@ REPOSITORY = "nickconstantinou/agent-bridge"
 REPOSITORY_OWNER = "nickconstantinou"
 DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
 DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
+DEPLOY_LOCK = Path("/run/lock/agent-bridge-deploy.lock")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 RUNUSER = "/usr/sbin/runuser"
 SUDO = "/usr/bin/sudo"
 SUDO_CHECK_TIMEOUT_SECONDS = 5
+
+# These helpers are safe to converge only after the release archive has been
+# verified and staged by the bootstrap trust base. release-stage.py is
+# intentionally absent: the installed release-stage helper is what verifies
+# and stages the release before any release-owned helper bytes are trusted, so
+# a change to release-stage itself requires the same explicit bootstrap action
+# as a change to agent-bridge-deploy.py.
+HELPER_REFRESH_MAP = (
+    ("scripts/rollout-agent-bridge.sh", "/usr/local/sbin/rollout-agent-bridge", "rollout_helper_sha256"),
+    ("scripts/release-activate.py", "/usr/local/libexec/agent-bridge-release-activate", "activation_helper_sha256"),
+    ("scripts/rollout-restore.py", "/usr/local/libexec/agent-bridge-rollout-restore", "rollout_restore_sha256"),
+    ("scripts/rollout-authorization.py", "/usr/local/libexec/agent-bridge-rollout-authorization.py", "authorization_validator_sha256"),
+    ("scripts/rollout-acceptance.py", "/usr/local/libexec/agent-bridge-rollout-acceptance.py", "acceptance_validator_sha256"),
+)
 
 
 def staging_module(helper: Path):
@@ -221,6 +239,178 @@ def validate_private_helper(path: Path) -> None:
     validate_private_file(path, True)
 
 
+def preserve_metadata(tmp_path: Path, destination: Path) -> None:
+    metadata = destination.stat()
+    os.chmod(tmp_path, metadata.st_mode & 0o777)
+    if os.geteuid() == 0:
+        os.chown(tmp_path, metadata.st_uid, metadata.st_gid)
+
+
+def stage_bytes_for_destination(data: bytes, destination: Path, prefix: str) -> tuple[Path, str]:
+    descriptor, tmp_name = tempfile.mkstemp(dir=str(destination.parent), prefix=prefix)
+    tmp_path = Path(tmp_name)
+    expected_sha256 = hashlib.sha256(data).hexdigest()
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+        preserve_metadata(tmp_path, destination)
+        if digest(tmp_path) != expected_sha256:
+            fail(f"staged file hash mismatch: {destination}")
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    return tmp_path, expected_sha256
+
+
+def stage_installed_helper(source: Path, destination: Path) -> tuple[Path, str]:
+    if source.is_symlink() or not source.is_file():
+        fail(f"release helper source is missing or not a regular file: {source}")
+    if destination.is_symlink() or not destination.is_file():
+        fail(f"privileged helper destination is missing or not a regular file: {destination}")
+    return stage_bytes_for_destination(source.read_bytes(), destination, f".{destination.name}.new-")
+
+
+def stage_snapshot(path: Path) -> tuple[Path, str]:
+    if path.is_symlink() or not path.is_file():
+        fail(f"cannot snapshot non-regular file: {path}")
+    return stage_bytes_for_destination(path.read_bytes(), path, f".{path.name}.rollback-")
+
+
+def staged_config_with_pins(config: Path, pins: dict[str, str]) -> tuple[Path, str]:
+    lines = config.read_text(encoding="utf-8").splitlines()
+    seen: set[str] = set()
+    updated: list[str] = []
+    for line in lines:
+        key, separator, _value = line.partition("=")
+        if separator and key in pins:
+            updated.append(f"{key}={pins[key]}")
+            seen.add(key)
+        else:
+            updated.append(line)
+    for key, value in pins.items():
+        if key not in seen:
+            updated.append(f"{key}={value}")
+    return stage_bytes_for_destination(("\n".join(updated) + "\n").encode("utf-8"), config, f".{config.name}.new-")
+
+
+def publish_staged_file(tmp_path: Path, destination: Path, expected_sha256: str) -> None:
+    os.replace(tmp_path, destination)
+    if digest(destination) != expected_sha256:
+        fail(f"published file hash mismatch: {destination}")
+
+
+def helper_commit_fail_after() -> int:
+    if os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1":
+        return 0
+    raw = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_COMMIT_FAIL_AFTER", "0")
+    try:
+        value = int(raw)
+    except ValueError:
+        fail("invalid helper commit failpoint")
+    if value < 0:
+        fail("invalid helper commit failpoint")
+    return value
+
+
+def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Path | None = None) -> dict[str, str]:
+    """Publish the release-owned helper cohort and its pins as one rollback
+    transaction.
+
+    All new helpers, old-helper rollback snapshots, the old config snapshot and
+    the new config are staged before the first live path is replaced. If any
+    helper publication, hash verification or config publication then fails, the
+    complete old helper cohort and old config are restored and re-verified
+    before the error escapes. rollout-agent-bridge is therefore never invoked
+    against a mixed helper/pin cohort.
+    """
+    staged: list[dict[str, object]] = []
+    config_backup: Path | None = None
+    config_backup_sha256 = ""
+    config_new: Path | None = None
+    config_new_sha256 = ""
+    mutation_started = False
+    original_error: Exception | None = None
+    try:
+        for relative_source, destination_str, pin_key in HELPER_REFRESH_MAP:
+            source = release_dir / relative_source
+            destination = Path(destination_str)
+            if install_root is not None:
+                destination = install_root / destination.relative_to("/")
+            replacement, replacement_sha256 = stage_installed_helper(source, destination)
+            backup, backup_sha256 = stage_snapshot(destination)
+            staged.append({
+                "replacement": replacement,
+                "replacement_sha256": replacement_sha256,
+                "backup": backup,
+                "backup_sha256": backup_sha256,
+                "destination": destination,
+                "pin_key": pin_key,
+            })
+
+        pins = {str(item["pin_key"]): str(item["replacement_sha256"]) for item in staged}
+        config_backup, config_backup_sha256 = stage_snapshot(config)
+        config_new, config_new_sha256 = staged_config_with_pins(config, pins)
+
+        fail_after = helper_commit_fail_after()
+        mutation_started = True
+        for index, item in enumerate(staged, start=1):
+            publish_staged_file(
+                item["replacement"],  # type: ignore[arg-type]
+                item["destination"],  # type: ignore[arg-type]
+                str(item["replacement_sha256"]),
+            )
+            if fail_after and index == fail_after:
+                fail(f"test failpoint after helper commit {index}")
+
+        if os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") == "1" and os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_PIN_PUBLISH_FAIL") == "1":
+            fail("test failpoint before pin publication")
+
+        assert config_new is not None
+        publish_staged_file(config_new, config, config_new_sha256)
+        for item in staged:
+            if digest(item["destination"]) != item["replacement_sha256"]:  # type: ignore[arg-type]
+                fail(f"helper cohort verification failed: {item['destination']}")
+        if digest(config) != config_new_sha256:
+            fail("rollout config verification failed after helper refresh")
+        return pins
+    except Exception as error:
+        original_error = error
+        if mutation_started:
+            rollback_errors: list[str] = []
+            for item in staged:
+                backup = item["backup"]
+                destination = item["destination"]
+                try:
+                    if not isinstance(backup, Path) or not backup.exists():
+                        raise RuntimeError("rollback snapshot is missing")
+                    publish_staged_file(backup, destination, str(item["backup_sha256"]))  # type: ignore[arg-type]
+                except Exception as rollback_error:
+                    rollback_errors.append(f"{destination}: {rollback_error}")
+            if config_backup is not None:
+                try:
+                    if not config_backup.exists():
+                        raise RuntimeError("rollout config rollback snapshot is missing")
+                    publish_staged_file(config_backup, config, config_backup_sha256)
+                except Exception as rollback_error:
+                    rollback_errors.append(f"{config}: {rollback_error}")
+            if rollback_errors:
+                raise RuntimeError(
+                    f"privileged helper refresh failed ({error}); rollback also failed: {'; '.join(rollback_errors)}"
+                ) from error
+        raise
+    finally:
+        for item in staged:
+            for key in ("replacement", "backup"):
+                path = item.get(key)
+                if isinstance(path, Path) and path.exists():
+                    path.unlink()
+        for path in (config_backup, config_new):
+            if path is not None and path.exists():
+                path.unlink()
+        _ = original_error
+
+
 def reject_root_test_overrides() -> None:
     test_override_keys = sorted(key for key in os.environ if key.startswith("AGENT_BRIDGE_DEPLOY_TEST"))
     if os.geteuid() == 0 and test_override_keys:
@@ -243,6 +433,59 @@ def current_cgroup_has_unit(unit: str, cgroup_text: str | None = None) -> bool:
         if unit in cgroup_path.split("/"):
             return True
     return False
+
+
+def deployment_lock_path(production: bool) -> Path:
+    if production:
+        return DEPLOY_LOCK
+    override = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_LOCK_FILE")
+    if override:
+        path = Path(override)
+    else:
+        root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT") or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT")
+        if not root:
+            fail("mutating test deployment requires a deploy lock root")
+        path = Path(root) / ".agent-bridge-deploy.lock"
+    if not path.is_absolute():
+        fail("deployment lock path must be absolute")
+    return path
+
+
+@contextmanager
+def exclusive_deployment_lock(production: bool):
+    path = deployment_lock_path(production)
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        fail(f"unable to open deployment lock safely: {error}")
+    locked = False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail("deployment lock must be a regular file")
+        if production and metadata.st_uid != 0:
+            fail("deployment lock must be root-owned")
+        if metadata.st_mode & 0o022:
+            fail("deployment lock must not be group/world writable")
+        marker = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_LOCK_ATTEMPT_MARKER") if not production else None
+        if marker:
+            Path(marker).touch()
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        locked = True
+        yield
+    finally:
+        if locked:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def mutating_deployment(production: bool) -> bool:
+    if os.environ.get("AGENT_BRIDGE_DEPLOY_VALIDATE_ONLY") == "1":
+        return False
+    if production:
+        return True
+    return bool(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT"))
 
 
 def detached_command(release: Path, approval: Path | None, owner_request: Path | None, unit: str, script: Path | None = None) -> list[str]:
@@ -279,6 +522,14 @@ def launch_detached(release: Path, approval: Path | None, owner_request: Path | 
 
 
 def run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
+    production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
+    if not mutating_deployment(production):
+        return _run_deployment(archive, approval, owner_request)
+    with exclusive_deployment_lock(production):
+        return _run_deployment(archive, approval, owner_request)
+
+
+def _run_deployment(archive: Path, approval: Path | None, owner_request: Path | None = None) -> str:
     reject_root_test_overrides()
     production = os.geteuid() == 0 or os.environ.get("AGENT_BRIDGE_DEPLOY_TEST") != "1"
     config = Path("/etc/agent-bridge/rollout.conf") if production else None
@@ -322,6 +573,10 @@ def run_deployment(archive: Path, approval: Path | None, owner_request: Path | N
                 "--release-root", str(release_root), "--expected-commit", commit,
                 "--archive-sha256", archive_sha256,
             ], check=True, env=environment)
+            test_helper_root = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_HELPER_ROOT")
+            test_rollout_config = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_ROLLOUT_CONFIG")
+            if test_helper_root and test_rollout_config:
+                refresh_privileged_helpers(release_root / commit, Path(test_rollout_config), Path(test_helper_root))
             runner = os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RUNNER")
             if runner:
                 runner_environment = os.environ.copy()
@@ -343,6 +598,7 @@ def run_deployment(archive: Path, approval: Path | None, owner_request: Path | N
         "--release-root", str(release_root), "--expected-commit", commit,
         "--archive-sha256", archive_sha256,
     ], check=True)
+    refresh_privileged_helpers(release_root / commit, config)
     environment = os.environ.copy()
     environment["AGENT_BRIDGE_DEPLOYER_MODE"] = "1"
     environment["AGENT_BRIDGE_DEPLOY_ARTIFACT_SHA256"] = archive_sha256
