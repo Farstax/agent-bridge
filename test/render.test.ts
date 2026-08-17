@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeTelegramMarkdownV2, toTelegramEntitiesText, renderTelegramEntitiesFromIR } from "../src/render.js";
+import { escapeTelegramMarkdownV2, renderTelegramEntitiesFromIR, splitTelegramText, toTelegramEntitiesText } from "../src/render.js";
 import { parseMarkdownToIR } from "../src/markdownIR.js";
 
 describe("escapeTelegramMarkdownV2", () => {
@@ -17,22 +17,37 @@ describe("escapeTelegramMarkdownV2", () => {
   });
 
   it("preserves bold and italic syntax while escaping content", () => {
-    // This is the tricky one. "Smart" escaping.
-    // *bold* -> *bold* (if we want to keep it bold)
-    // But if the user says "I have * star", it should be "I have \* star"
-    // Since we are bridging an agent, the agent likely uses *bold* intentionally.
     expect(escapeTelegramMarkdownV2("*bold text*")).toBe("*bold text*");
   });
 
   it("escapes orphaned markers that would cause Telegram parsing errors", () => {
-    // Unbalanced * should be escaped
     expect(escapeTelegramMarkdownV2("This is *orphaned")).toBe("This is \\*orphaned");
-    
-    // Balanced should be kept
     expect(escapeTelegramMarkdownV2("*bold* and *balanced*")).toBe("*bold* and *balanced*");
-
-    // Multiple orphaned
     expect(escapeTelegramMarkdownV2("*bold* and _italic and *bold")).toBe("*bold* and \\_italic and \\*bold");
+  });
+});
+
+describe("splitTelegramText", () => {
+  it("preserves short and empty messages", () => {
+    expect(splitTelegramText("Short message")).toEqual(["Short message"]);
+    expect(splitTelegramText("")).toEqual([""]);
+  });
+
+  it("splits long messages within the Telegram limit without losing content", () => {
+    const text = ("word ".repeat(900)).trimEnd();
+    const chunks = splitTelegramText(text);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.length <= 3500)).toBe(true);
+    expect(chunks.join(" ").replace(/\s+/g, " ").trim()).toBe(text.replace(/\s+/g, " ").trim());
+  });
+
+  it("prefers paragraph boundaries when splitting", () => {
+    const text = "Line of text.\n\n".repeat(300);
+    const chunks = splitTelegramText(text);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.trimEnd().endsWith("Line of text."))).toBe(true);
   });
 });
 
@@ -47,6 +62,16 @@ describe("toTelegramEntitiesText", () => {
     const result = toTelegramEntitiesText("```\nconst x = 1;\n```");
     expect(result.text).toBe("const x = 1;\n");
     expect(result.entities).toEqual([{ type: "pre", offset: 0, length: 13 }]);
+  });
+
+  it.each([
+    ["# Title", "Title"],
+    ["## Section", "Section"],
+    ["### Hello World", "Hello World"],
+  ])("renders %s as bold heading text", (input, expectedText) => {
+    const result = toTelegramEntitiesText(input);
+    expect(result.text).toContain(expectedText);
+    expect(result.entities).toContainEqual({ type: "bold", offset: 0, length: expectedText.length });
   });
 });
 

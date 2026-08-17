@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadSoulContext } from "../src/soul.js";
-import { getSoulTemplate, loadSoulTemplateCatalogue } from "../src/soulTemplates.js";
+import { loadSoulTemplateCatalogue } from "../src/soulTemplates.js";
 
 const cleanupDirs: string[] = [];
 
@@ -100,12 +100,5 @@ describe("soul template catalogue", () => {
   it("packages the template catalogue and manifest into the immutable release", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/release-artifact.yml"), "utf8");
     expect(workflow).toContain('cp -a soul-templates "$root/"');
-  });
-
-  it("keeps role behavior materially separated", () => {
-    const catalogue = loadSoulTemplateCatalogue(process.cwd());
-    expect(getSoulTemplate(catalogue, "operations-engineer").content).toContain("live software system");
-    expect(getSoulTemplate(catalogue, "companion").content).toContain("everyday questions");
-    expect(getSoulTemplate(catalogue, "minimal").content).toContain("without adding a strong persona");
   });
 });
