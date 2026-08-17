@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - agent/issue-466-first-class-autonomy-runtime
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
@@ -16,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: agent/issue-466-first-class-autonomy-runtime
           fetch-depth: 0
       - name: Mark runner start
         run: |
@@ -24,7 +29,7 @@ jobs:
           printf '%s\n' "runner started for $GITHUB_SHA" > issue466-runner-started.txt
           git add issue466-runner-started.txt
           git commit -m 'chore: mark issue 466 runner start'
-          git push origin HEAD
+          git push origin HEAD:agent/issue-466-first-class-autonomy-runtime
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -37,7 +42,7 @@ jobs:
             cp /tmp/issue466-patch.log ISSUE466_PATCH_FAILURE.txt
             git add ISSUE466_PATCH_FAILURE.txt
             git commit -m 'chore: record issue 466 patch failure'
-            git push origin HEAD
+            git push origin HEAD:agent/issue-466-first-class-autonomy-runtime
             exit 1
           fi
       - name: Install dependencies
@@ -60,4 +65,4 @@ jobs:
           git add -A
           git diff --cached --check
           git commit -m 'feat: make autonomous runtime first class'
-          git push origin HEAD
+          git push origin HEAD:agent/issue-466-first-class-autonomy-runtime
