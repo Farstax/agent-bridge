@@ -612,7 +612,7 @@ mode-`0600` target-bound approval record itself and continues through the
 existing staging, guarded rollout and acceptance path.
 
 The release archive is self-contained and carries the exact commit/tree
-manifest, package-lock, migration code and embedded CI qualification evidence. The
+manifest, runtime, migration code and embedded CI qualification evidence. The
 minimal approval binds only environment, target commit, release SHA-256,
 approval reference and expiry. Do not introduce external evidence files,
 secondary bundles, per-helper approval hashes or a second operator workflow.
