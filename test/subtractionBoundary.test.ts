@@ -30,6 +30,7 @@ const removedPaths = [
   "docs/oss-product-split-plan.md",
   "docs/research/issue-388-provider-stream-contract.md",
   "docs/spike-file-exchange-telegram.md",
+  "docs/token-optimization-research.md",
   "docs/xurl-spike.md",
   "tests/ciPolicy.test.ts",
 ] as const;
