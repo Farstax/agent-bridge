@@ -347,6 +347,7 @@ with tempfile.TemporaryDirectory() as directory:
 
   it("stops production before archive staging when the sudo gate fails", () => {
     const probe = String.raw`
+import contextlib
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -358,6 +359,7 @@ module.validate_private_file = lambda *args: None
 module.validate_private_helper = lambda *args: None
 module.configured_value = lambda config, name: "production-content-crawler" if name == "environment" else "/tmp/release-root"
 module.verify_runtime_sudo = lambda config: (_ for _ in ()).throw(RuntimeError("passwordless sudo check failed"))
+module.exclusive_deployment_lock = lambda production: contextlib.nullcontext()
 module.validate_archive = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("archive staging reached"))
 try:
     module.run_deployment(Path("release.tar.gz"), Path("approval.json"))
