@@ -13,7 +13,7 @@ import { openDb } from "../src/db.js";
 
 const execFileAsync = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const CHAIN = "claude:claude-fable-5,codex:gpt-5.6-sol";
+const CHAIN = "claude:claude-opus-5,codex:gpt-5.6-sol";
 const FORBIDDEN_ENV_KEY = /^(?:AGENT_BRIDGE_ADVISOR_|BRIDGE_ADVISOR_|TELEGRAM_.*(?:TOKEN|SECRET)|(?:AGENT_)?BRIDGE_.*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|CREDENTIAL))/i;
 
 export interface AdvisorFallbackSmokeResult {
