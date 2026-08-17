@@ -97,22 +97,11 @@ aborts the installation before any service or rollout action.
 
 ## Installation
 
-Bootstrap the deployer itself as a root-owned file. This is the one
-installation step that is not self-updating, because a running process cannot
-safely rewrite its own on-disk bytes mid-deployment:
+Install the stable deployer and its private implementation primitives as
+root-owned files. Operators invoke only the first installed command:
 
 ```bash
 sudo install -D -m 0750 -o root -g root scripts/agent-bridge-deploy.py /usr/local/sbin/agent-bridge-deploy
-```
-
-Its six private implementation primitives (`rollout-agent-bridge`,
-`agent-bridge-release-stage`, `agent-bridge-release-activate`,
-`agent-bridge-rollout-restore`, `agent-bridge-rollout-authorization.py`,
-`agent-bridge-rollout-acceptance.py`) only need this same `install -D` bootstrap
-once, to create the destination files `agent-bridge-deploy` refreshes into on
-every deployment thereafter:
-
-```bash
 sudo install -D -m 0750 -o root -g root scripts/rollout-agent-bridge.sh /usr/local/sbin/rollout-agent-bridge
 sudo install -D -m 0750 -o root -g root scripts/release-stage.py /usr/local/libexec/agent-bridge-release-stage
 sudo install -D -m 0750 -o root -g root scripts/release-activate.py /usr/local/libexec/agent-bridge-release-activate
@@ -120,42 +109,6 @@ sudo install -D -m 0750 -o root -g root scripts/rollout-restore.py /usr/local/li
 sudo install -D -m 0750 -o root -g root scripts/rollout-authorization.py /usr/local/libexec/agent-bridge-rollout-authorization.py
 sudo install -D -m 0750 -o root -g root scripts/rollout-acceptance.py /usr/local/libexec/agent-bridge-rollout-acceptance.py
 ```
-
-**A source change to any of those six files, merged and released, is not
-"deployed" merely because it exists in the released commit.** After the
-release archive and its approval/owner-request have been fully verified and
-staged into an immutable, commit-addressed release directory,
-`agent-bridge-deploy` refreshes the installed copy of each of those six
-helpers from the exact bytes in that verified release directory (preserving
-the existing root ownership and permission mode) and records the resulting
-SHA-256 of each installed helper as the corresponding `*_sha256` pin
-(`rollout_helper_sha256`, `release_stage_sha256`, `activation_helper_sha256`,
-`rollout_restore_sha256`, `authorization_validator_sha256`,
-`acceptance_validator_sha256`) in `/etc/agent-bridge/rollout.conf` — all of
-this happens before `rollout-agent-bridge` is invoked, so no service is
-contained, no database is touched and no pointer moves against a helper that
-has not just been proven to match the release.
-
-This refresh is staged in two passes so it is atomic across all six helpers,
-not just atomic per helper: every helper's release-side source is first
-validated, read and written to a verified sibling tmpfile of its destination
-without touching any live installed helper, and only once all six tmpfiles
-exist and verify does a second pass rename each of them into place and write
-the combined pin update. If a problem with any one helper's release-side
-source is discovered — missing file, unreadable, wrong bytes on re-verify —
-the deployment aborts before any live helper is touched and the previously
-installed helpers and pins are left exactly as they were; there is no
-in-between state where some helpers have been upgraded but their pins still
-describe the old bytes. (The renames themselves, once all six tmpfiles are
-verified, are same-filesystem atomic operations on paths whose parent
-directories and permissions were already confirmed writable during staging;
-a rename failing at that point is an exceptional host-level condition, not
-one this mechanism is designed to roll back.)
-
-There is no second path that can install or invoke a different version of
-these six files: `agent-bridge-deploy` remains the sole operator-facing
-privileged deployment entry point, and it is now also the only thing that
-writes to their installed locations.
 
 Install `/etc/agent-bridge/rollout.conf` root-owned and non-writable by
 group/other. The private primitives are deployed at these fixed paths and are
@@ -167,9 +120,7 @@ Agent Bridge runtime account remains present and effective.
 The private helpers are not normal operator commands. Their paths, service
 inventory and database inventory remain root-owned and fixed in configuration.
 The deployer is the sole owner of staging, preflight, containment, backup,
-migration, pointer activation, restart, acceptance and rollback sequencing —
-and, as of the automatic helper refresh above, of keeping its own six private
-helpers converged with every deployed release.
+migration, pointer activation, restart, acceptance and rollback sequencing.
 
 ## Safety sequence
 
@@ -180,28 +131,23 @@ helpers converged with every deployed release.
 2. Move the production worker into its dedicated transient systemd service.
 3. Validate the archive and minimal approval before mutation.
 4. Stage into an immutable commit-addressed directory and verify the manifest.
-5. Refresh the six installed privileged helpers from that staged, verified
-   release directory and update their SHA-256 pins in
-   `/etc/agent-bridge/rollout.conf`, atomically, before invoking any of them.
-   Abort here, before any subsequent step, if a helper cannot be refreshed and
-   verified.
-6. Validate effective systemd safety properties: exact units, fragment paths,
+5. Validate effective systemd safety properties: exact units, fragment paths,
    drop-ins, environment files, active states and the fixed database inventory.
-7. Acquire the exclusive rollout lock and capture durable preflight evidence.
-8. Stop the configured services and prove `MainPID=0`, `ControlPID=0` and empty
+6. Acquire the exclusive rollout lock and capture durable preflight evidence.
+7. Stop the configured services and prove `MainPID=0`, `ControlPID=0` and empty
    service cgroups. No provider-CLI process classification is required after
    containment.
-9. Checkpoint WALs, verify integrity/foreign keys/schema, and create complete
+8. Checkpoint WALs, verify integrity/foreign keys/schema, and create complete
    byte-exact verified backups of all five databases. Never delete a non-empty
    WAL.
-10. Migrate the full offline database cohort to the target schema.
-11. After migration, transactionally mark remaining running runs failed with
+9. Migrate the full offline database cohort to the target schema.
+10. After migration, transactionally mark remaining running runs failed with
     `interrupted_by_controlled_rollout`, release execution locks, and return
     claimed pending messages to `queued` while preserving their content and
     attachments. Append bounded audit evidence and validate the full cohort.
-12. Atomically switch the `current` pointer, restart services, and verify
+11. Atomically switch the `current` pointer, restart services, and verify
     stable healthy startup.
-13. Write durable `deployment-result.json` and supporting evidence.
+12. Write durable `deployment-result.json` and supporting evidence.
 
 Health and worker services perform the same bounded orphan reconciliation at
 startup as interactive services; they may log the result without notifying a
