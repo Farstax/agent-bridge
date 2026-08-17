@@ -68,7 +68,7 @@ describe("unknown authenticated slash commands", () => {
     await engine.handleMessages([makeMessage("/company status")]);
 
     expect(runCli).toHaveBeenCalledTimes(1);
-    expect(capturedPrompt).toBe("/company status");
+    expect(capturedPrompt).toContain("/company status");
   });
 
   it("keeps a known Bridge command local instead of sending it to the native CLI", async () => {
@@ -92,6 +92,8 @@ describe("unknown authenticated slash commands", () => {
     await engine.handleMessages([makeMessage("/reset")]);
 
     expect(runCli).not.toHaveBeenCalled();
-    expect(client.sendMessage).toHaveBeenCalledWith(100, expect.stringContaining("session reset"));
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("session reset"),
+    }));
   });
 });

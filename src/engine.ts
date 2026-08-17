@@ -44,7 +44,7 @@ import {
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { PreviewCleanupError, sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
-import { handleCommand, isBridgeCommand, buildTelegramCommands, isAntigravityNarrationVisible, compactInProgressSettingKey } from "./commands.js";
+import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible, compactInProgressSettingKey } from "./commands.js";
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel } from "./effort.js";
 import { getCodexUsageText } from "./codexUsage.js";
@@ -633,8 +633,11 @@ export class BridgeEngine {
         }
       }
 
-      // Built-in handler for known agent kinds
-      if (isAgentKind(this.kind) && isBridgeCommand(commandText)) {
+      // Built-in handler for known agent kinds. Route every slash command
+      // through handleCommand, not just recognized ones: handleCommand's own
+      // fallback sends unrecognized slash commands to the native CLI as a
+      // normal prompt (isBridgeCommand alone only identifies built-ins).
+      if (isAgentKind(this.kind) && isSlashCmd) {
         let resetHandle: ExecutionLaneHandle | null = null;
         if (commandText === "/reset") {
           const executionLane = this._executionLane(chatKey);
