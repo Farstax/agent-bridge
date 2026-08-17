@@ -27,7 +27,7 @@ function sha256(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function makeRelease(options: { omit?: string[]; releaseStageContent?: Buffer } = {}): {
+function makeRelease(options: { omit?: string[]; releaseStageContent?: Buffer; helperTag?: string } = {}): {
   archive: string;
   approval: string;
   root: string;
@@ -49,7 +49,10 @@ function makeRelease(options: { omit?: string[]; releaseStageContent?: Buffer } 
   const omit = new Set(options.omit ?? []);
   for (const helper of AUTO_REFRESH_HELPERS) {
     if (omit.has(helper.relative)) continue;
-    const content = readFileSync(helper.relative);
+    const source = readFileSync(helper.relative);
+    const content = options.helperTag
+      ? Buffer.concat([source, Buffer.from(`\n# cohort:${options.helperTag}\n`)])
+      : source;
     writeFileSync(join(root, helper.relative), content);
     files.push({ path: helper.relative, sha256: sha256(content), size: content.length });
   }
@@ -133,6 +136,14 @@ function expectOldCohort(originals: Map<string, Buffer>, configFile: string, ori
     expect(readFileSync(path).equals(expected), path).toBe(true);
   }
   expect(readFileSync(configFile, "utf8")).toBe(originalConfig);
+}
+
+function expectInstalledCohort(installedRoot: string, releaseRoot: string): void {
+  for (const helper of AUTO_REFRESH_HELPERS) {
+    const installed = readFileSync(join(installedRoot, helper.installed));
+    const released = readFileSync(join(releaseRoot, helper.relative));
+    expect(installed.equals(released), helper.relative).toBe(true);
+  }
 }
 
 async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
@@ -241,8 +252,9 @@ describe("privileged helper lifecycle", () => {
     }
   }, 20_000);
 
-  it("serializes concurrent deployments from helper convergence through rollout completion", async () => {
-    const release = makeRelease();
+  it("serializes distinct helper cohorts from convergence through rollout completion", async () => {
+    const firstRelease = makeRelease({ helperTag: "first" });
+    const secondRelease = makeRelease({ helperTag: "second" });
     const installedRoot = mkdtempSync(join(tmpdir(), "agent-bridge-helper-lifecycle-installed-"));
     installOldCohort(installedRoot);
     const configFile = join(installedRoot, "rollout.conf");
@@ -260,7 +272,11 @@ describe("privileged helper lifecycle", () => {
     chmodSync(firstRunner, 0o755);
     chmodSync(secondRunner, 0o755);
 
-    const spawnDeploy = (runner: string, attemptMarker?: string): ChildProcessWithoutNullStreams => spawn(
+    const spawnDeploy = (
+      release: ReturnType<typeof makeRelease>,
+      runner: string,
+      attemptMarker?: string,
+    ): ChildProcessWithoutNullStreams => spawn(
       "python3",
       [DEPLOYER, "--release", release.archive, "--approval", release.approval],
       {
@@ -274,21 +290,22 @@ describe("privileged helper lifecycle", () => {
           AGENT_BRIDGE_DEPLOY_TEST_LOCK_FILE: lockFile,
           ...(attemptMarker ? { AGENT_BRIDGE_DEPLOY_TEST_LOCK_ATTEMPT_MARKER: attemptMarker } : {}),
         },
-        stdio: ["ignore", "pipe", "pipe"],
       },
     );
 
-    const first = spawnDeploy(firstRunner);
+    const first = spawnDeploy(firstRelease, firstRunner);
     await waitForFile(firstStarted);
+    expectInstalledCohort(installedRoot, firstRelease.root);
     const probe = spawnSync("flock", ["-n", lockFile, "true"]);
     expect(probe.status).not.toBe(0);
 
-    const second = spawnDeploy(secondRunner, secondAttempted);
+    const second = spawnDeploy(secondRelease, secondRunner, secondAttempted);
     let secondWasBlocked = false;
     try {
       await waitForFile(secondAttempted);
       await new Promise((resolve) => setTimeout(resolve, 150));
       secondWasBlocked = !existsSync(secondStarted);
+      expectInstalledCohort(installedRoot, firstRelease.root);
     } finally {
       writeFileSync(releaseFirst, "go\n");
     }
@@ -298,5 +315,6 @@ describe("privileged helper lifecycle", () => {
     expect(secondResult.code, secondResult.output).toBe(0);
     expect(secondWasBlocked).toBe(true);
     expect(existsSync(secondStarted)).toBe(true);
+    expectInstalledCohort(installedRoot, secondRelease.root);
   }, 20_000);
 });
