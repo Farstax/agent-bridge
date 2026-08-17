@@ -155,7 +155,9 @@ function startPayloadExecution(prompt: string): CommandResult | null {
 }
 
 export function isBridgeCommand(text: string): boolean {
-  return bridgeCommands.has(normalizeCommand(text));
+  const command = normalizeCommand(text);
+  if (command === "/stop" || command === "/cancel") return false;
+  return bridgeCommands.has(command) || command.startsWith("/");
 }
 
 export function antigravityNarrationSettingKey(chatId: string): string {
@@ -399,6 +401,9 @@ export function handleCommand(
     return { kind: "message", text: lines.join("\n") };
   }
 
+  if (String(prompt || "").trim().startsWith("/") && text !== "/stop" && text !== "/cancel") {
+    return { kind: "execute", prompt: String(prompt || "").trim() };
+  }
   return null;
 }
 
