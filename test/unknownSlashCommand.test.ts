@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { buildCliInvocation } from "../src/cli.js";
 import type { TelegramMessage } from "../src/types.js";
 
 function makeMessage(text: string): TelegramMessage {
@@ -69,6 +70,41 @@ describe("unknown authenticated slash commands", () => {
 
     expect(runCli).toHaveBeenCalledTimes(1);
     expect(capturedPrompt).toContain("/company status");
+  });
+
+  it.each([
+    { bot: "claude", command: "claude", sessionId: "sess-claude" },
+    { bot: "codex", command: "codex", sessionId: "sess-codex" },
+    { bot: "antigravity", command: "agy", sessionId: "sess-agy" },
+  ])("keeps resumed unclaimed slash requests out of native $bot slash parsing", ({ bot, command, sessionId }) => {
+    for (const prompt of ["/company", "/company status", "/company approve", "/company stop"]) {
+      const invocation = buildCliInvocation({
+        bot,
+        prompt,
+        sessionId,
+        command,
+        includeResponseContract: false,
+      });
+      const providerPrompt = invocation.args.at(-1) ?? invocation.stdin ?? "";
+
+      expect(providerPrompt).toContain(prompt);
+      expect(providerPrompt.startsWith("/")).toBe(false);
+    }
+  });
+
+  it.each([
+    { bot: "claude", command: "claude", sessionId: "sess-claude" },
+    { bot: "codex", command: "codex", sessionId: "sess-codex" },
+  ])("leaves ordinary resumed $bot prompts unchanged", ({ bot, command, sessionId }) => {
+    const invocation = buildCliInvocation({
+      bot,
+      prompt: "status please",
+      sessionId,
+      command,
+      includeResponseContract: false,
+    });
+
+    expect(invocation.args.at(-1)).toBe("status please");
   });
 
   it("keeps a known Bridge command local instead of sending it to the native CLI", async () => {
