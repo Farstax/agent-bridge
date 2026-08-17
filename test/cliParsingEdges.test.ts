@@ -1,24 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseCliResult } from "../src/cli.js";
 
-describe("parseCliResult", () => {
-  it("parses Codex session and completed agent text", () => {
-    const stdout = [
-      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
-      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Final answer" } }),
-    ].join("\n");
-
-    expect(parseCliResult({ bot: "codex", stdout })).toMatchObject({
-      sessionId: "thread-1",
-      text: "Final answer",
-    });
-  });
-
-  it("accepts Codex response.completed output text", () => {
-    const stdout = JSON.stringify({ type: "response.completed", output_text: "Completed response" });
-    expect(parseCliResult({ bot: "codex", stdout }).text).toBe("Completed response");
-  });
-
+describe("parseCliResult edge cases", () => {
   it("uses Codex deltas only when no final text event is present", () => {
     const deltas = [
       JSON.stringify({ type: "response.output_text.delta", delta: "Hello " }),
@@ -37,8 +20,9 @@ describe("parseCliResult", () => {
     expect(parseCliResult({ bot: "codex", stdout: "" })).toMatchObject({ text: "", sessionId: null });
   });
 
-  it("parses the final Claude result line, session, and trimmed text", () => {
+  it("uses the final Claude result line and trims its text", () => {
     const stdout = [
+      JSON.stringify({ type: "result", result: "first", session_id: "session-0" }),
       JSON.stringify({ type: "assistant", content: "interim" }),
       JSON.stringify({ type: "result", result: "  Final answer  ", session_id: "session-1" }),
     ].join("\n");
@@ -46,13 +30,6 @@ describe("parseCliResult", () => {
     expect(parseCliResult({ bot: "claude", stdout })).toMatchObject({
       text: "Final answer",
       sessionId: "session-1",
-    });
-  });
-
-  it("falls back to raw Claude stdout when there is no JSON result", () => {
-    expect(parseCliResult({ bot: "claude", stdout: "Plain text response" })).toMatchObject({
-      text: "Plain text response",
-      sessionId: null,
     });
   });
 });
