@@ -18,13 +18,10 @@
     "scripts/**/*.ts",
     "test/**/*.ts"
   ],
-  "ignore": [
-    "test/fixtures/**",
-    "docs/**",
-    "skills/**",
-    "soul-templates/**",
-    "systemd/**",
-    ".github/**"
-  ],
-  "ignoreDependencies": []
+  "ignoreBinaries": [
+    "journalctl",
+    "agy",
+    "ps",
+    "which"
+  ]
 }
