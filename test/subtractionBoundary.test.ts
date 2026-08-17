@@ -20,6 +20,17 @@ const removedPaths = [
   "docs/research/issue-347-runtime-simplification.md",
   "docs/DOCUMENTATION-AUDIT.md",
   "docs/autonomous-agent-bridge-research.md",
+  "docs/agent-driven-memory-research.md",
+  "docs/antigravity-agent-view-spike.md",
+  "docs/claude-agent-view-spike.md",
+  "docs/cursor-agent-spike-research.md",
+  "docs/cursor-sdk-spike-research.md",
+  "docs/execution-lane-rollout.md",
+  "docs/health-monitor-rectification.md",
+  "docs/oss-product-split-plan.md",
+  "docs/research/issue-388-provider-stream-contract.md",
+  "docs/spike-file-exchange-telegram.md",
+  "docs/xurl-spike.md",
   "tests/ciPolicy.test.ts",
 ] as const;
 
