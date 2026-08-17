@@ -17,6 +17,13 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
         raise RuntimeError(f"{label}: expected 1 occurrence, found {count}")
     return text.replace(old, new, 1)
 
+# Preserve the existing bounded prompt contract while clarifying that evidence
+# is execution continuity rather than current truth.
+path = "src/autonomousGoalRuntime.ts"
+s = read(path)
+s = replace_once(s, "`Prior execution evidence: ${priorEvidence.length ? priorEvidence.join(\" | \") : \"none\"}`", "`Prior evidence: ${priorEvidence.length ? priorEvidence.join(\" | \") : \"none\"}`", "prior evidence prompt compatibility")
+write(path, s)
+
 # /autonomy commands, especially stop, must win over supervisor-reply capture.
 path = "src/index-interactive.ts"
 s = read(path)
