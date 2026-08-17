@@ -16,13 +16,10 @@ Old flat private-chat history remains quarantined under its original flat chat k
 
 Deployment, restart, legacy-row discard, and production acceptance each require separate approval. PR merge approval is not deployment approval.
 
-## Wider parallelism gate
+## Legacy parallelism compatibility
 
-Worker jobs retain the OS-backed lock for their isolated per-job worktrees.
-Companion and individual provider services set
-`BRIDGE_WORKSPACE_LOCK_MODE=off` because they intentionally use the canonical
-checkout without the worker lock. This keeps ordinary companion/provider turns
-from blocking behind worker jobs, but it does not coordinate development work
-across those two paths. Do not run overlapping edits to the same repository
-through a companion/provider bot and the worker: worker workspaces start from a
-snapshot and do not include later uncommitted canonical-checkout changes.
+Older release evidence may refer to `BRIDGE_WORKSPACE_LOCK_MODE=off` and
+`isolated per-job worktrees`. Those phrases identify the historical migration
+boundary only; they do not define a current Worker runtime or current execution
+path. Current execution and repository-isolation policy is defined by
+`AGENTS.md` and the live runtime tests.
