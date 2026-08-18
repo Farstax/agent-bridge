@@ -288,9 +288,22 @@ function parseEnvelope(text: string): string {
   return text;
 }
 
+function extractAutonomousResultJson(text: string): string {
+  const candidate = parseEnvelope(text).trim();
+  try {
+    JSON.parse(candidate);
+    return candidate;
+  } catch {
+    // Fall through only to the explicitly supported fenced form.
+  }
+  const fences = [...candidate.matchAll(/```json[ \t]*\r?\n([\s\S]*?)\r?\n?```/gi)];
+  if (fences.length !== 1) throw new Error("malformed autonomous cycle result");
+  return fences[0][1].trim();
+}
+
 export function parseAutonomousCycleResult(text: string): AutonomousCycleResult {
   let parsed: unknown;
-  try { parsed = JSON.parse(parseEnvelope(text)); } catch { throw new Error("malformed autonomous cycle result"); }
+  try { parsed = JSON.parse(extractAutonomousResultJson(text)); } catch { throw new Error("malformed autonomous cycle result"); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("malformed autonomous cycle result");
   const value = parsed as Record<string, unknown>;
   const keys = Object.keys(value).sort();
