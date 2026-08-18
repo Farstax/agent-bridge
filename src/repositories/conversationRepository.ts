@@ -1,4 +1,8 @@
 import type Database from "better-sqlite3";
+import {
+  TURN_HISTORY_CONTEXT_MAX_CHARS,
+  legacyMemoryCompactionEnabled,
+} from "../legacyMemoryCompaction.js";
 
 export const DEFAULT_CONTEXT_MAX_CHARS = 8_000;
 export const DEFAULT_CONTEXT_RECENT_TURN_LIMIT = 200;
@@ -101,7 +105,13 @@ export class ConversationRepository {
   }
 
   buildConvContext(chatKey: string, maxChars = DEFAULT_CONTEXT_MAX_CHARS): string {
-    const summary = this.getLatestConvSummary(chatKey);
+    const legacyEnabled = legacyMemoryCompactionEnabled();
+    const effectiveMaxChars = !legacyEnabled
+      && !process.env.BRIDGE_CONTEXT_MAX_CHARS
+      && maxChars === DEFAULT_CONTEXT_MAX_CHARS
+      ? TURN_HISTORY_CONTEXT_MAX_CHARS
+      : maxChars;
+    const summary = legacyEnabled ? this.getLatestConvSummary(chatKey) : null;
     const sinceId = summary?.range_end_turn_id;
     // Fetch the newest N candidates (configurable via BRIDGE_CONTEXT_RECENT_TURN_LIMIT);
     // char budget below further culls them. This is a prompt-context cap only —
@@ -110,7 +120,7 @@ export class ConversationRepository {
     if (!summary && candidates.length === 0) return "";
 
     // Walk newest-first, accumulate until char budget is exhausted
-    let budget = maxChars - (summary ? summary.summary_md.length : 0);
+    let budget = effectiveMaxChars - (summary ? summary.summary_md.length : 0);
     const selected: Array<{ role: string; text: string }> = [];
     for (let i = candidates.length - 1; i >= 0; i--) {
       const t = candidates[i];
