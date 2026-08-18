@@ -40,6 +40,11 @@ jobs:
           git apply --check /tmp/issue461.patch
           git apply /tmp/issue461.patch
           rm -f src/health/suggest.ts src/health/bot.ts src/health/context.ts
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('test/health.test.ts')
+          p.write_text(p.read_text().rstrip() + '\n')
+          PY
           rm -rf .github/issue461
           rm -f .github/workflows/issue-461-source-handoff.yml
           git config user.name "github-actions[bot]"
