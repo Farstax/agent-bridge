@@ -23,7 +23,6 @@ export interface AdvisorCapabilityBinding {
   turnKey: string;
   taskKey: string;
   repoPath: string;
-  activeModel?: string | null;
 }
 export interface AdvisorCapabilityIssuer { issue(binding: AdvisorCapabilityBinding): string }
 interface CapabilityRecord extends AdvisorCapabilityBinding { expiresAt: number }
@@ -32,9 +31,6 @@ interface BrokerRequest {
   question?: string;
   context?: string;
   provider?: string;
-  /** Legacy spellings accepted only so old installed helpers fail soft during rollout. */
-  task?: string;
-  mode?: string;
 }
 interface BrokerResponse { ok: boolean; output?: string; error?: string }
 
@@ -124,7 +120,7 @@ export class AdvisorBroker implements AdvisorCapabilityIssuer {
         taskKey: binding.taskKey,
         activeProvider: binding.cliKind,
         provider: input.provider,
-        question: input.question ?? input.task ?? "",
+        question: input.question ?? "",
         context: input.context,
         cwd: binding.repoPath,
         executionId,

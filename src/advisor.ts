@@ -5,7 +5,7 @@ import { buildCliInvocation, parseCliResult } from "./cli.js";
 import { setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
 import type { ProviderId } from "./providers/types.js";
-import type { AdvisorConfig, AdvisorRequest, AdvisorResult, AdvisorTarget } from "./advisorTypes.js";
+import type { AdvisorConfig, AdvisorTarget } from "./advisorTypes.js";
 
 type RunCli = (command: string, args: string[], cwd: string, options: Record<string, unknown>) => Promise<string>;
 const botKindFor = (provider: ProviderId): BotKind => provider === "agy" ? "antigravity" : provider;
@@ -62,7 +62,7 @@ export async function executeFrontierAdvice(deps: {
   const { db, config, bots, runCli, request } = deps;
   if (!config.enabled) throw new Error("Advisor disabled");
   if (config.chain.length === 0) throw new Error("Advisor unavailable: no configured targets");
-  const question = boundedText(request.question, "question", config.questionMaxChars, true);
+  const question = boundedText(request.question, "question", Math.min(config.contextMaxChars, 4_000), true);
   const context = boundedText(request.context ?? "", "context", config.contextMaxChars, false);
   const target = chooseTarget(config, request.activeProvider, request.provider);
   const bot = botKindFor(target.provider);
@@ -140,42 +140,4 @@ export async function executeFrontierAdvice(deps: {
     db.failAdvisorCall(requestId, /timeout/i.test(error.message) ? "timeout" : "provider_error");
     throw error;
   }
-}
-
-/** Compatibility adapter for the old manual engine entry point; it uses the same one-call primitive. */
-export async function executeAdvisorRequest(deps: {
-  db: BridgeDb;
-  config: AdvisorConfig;
-  request: AdvisorRequest;
-  bots: Partial<Record<BotKind, Pick<BotConfig, "command" | "modelPreference">>>;
-  runCli: RunCli;
-  cwd: string;
-}): Promise<AdvisorResult> {
-  const result = await executeFrontierAdvice({
-    db: deps.db,
-    config: deps.config,
-    bots: deps.bots,
-    runCli: deps.runCli,
-    request: {
-      scopeKey: deps.request.scopeKey,
-      turnKey: deps.request.turnKey,
-      taskKey: deps.request.taskKey,
-      activeProvider: deps.request.activeProvider,
-      question: deps.request.task,
-      cwd: deps.cwd,
-    },
-  });
-  return {
-    adviceMd: result.text,
-    risks: [],
-    suggestedNextSteps: [],
-    confidence: "medium",
-    provider: result.provider,
-    model: result.model,
-    requestId: result.requestId,
-  };
-}
-
-export function formatAdvisorResult(result: AdvisorResult): string {
-  return [result.adviceMd, "", `Advisor: ${result.provider}:${result.model}`].join("\n");
 }

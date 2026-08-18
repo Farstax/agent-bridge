@@ -16,7 +16,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,systematic-debugging,delivery-directives,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,systematic-debugging,delivery-directives,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting,advisor"
 
 # Parse flags
 NON_INTERACTIVE=0
@@ -93,7 +93,7 @@ seed_from_env_file() {
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
               BRIDGE_EXECUTION_MODE POLL_INTERVAL_MS FETCH_TIMEOUT_MS \
-              BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_MODE BRIDGE_ADVISOR_CHAIN \
+              BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_CHAIN \
               BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK \
               BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS \
               AGENT_BRIDGE_SOUL_PATH AGENT_BRIDGE_SOUL_MODE \
@@ -235,6 +235,9 @@ install_shared_skills() {
   if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then
     skills_csv="${skills_csv},autonomous-work"
   fi
+  if [[ ",${skills_csv}," != *",advisor,"* ]]; then
+    skills_csv="${skills_csv},advisor"
+  fi
   if [[ "${link_mode}" != "symlink" && "${link_mode}" != "copy" ]]; then
     echo "Invalid AGENT_BRIDGE_SKILL_LINK_MODE: ${link_mode}" >&2
     exit 1
@@ -351,7 +354,7 @@ _write_shared_defaults() {
     echo "BRIDGE_ASYNC_ENABLED=true"
     echo "POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-1000}"
     echo "FETCH_TIMEOUT_MS=${FETCH_TIMEOUT_MS:-45000}"
-    for key in BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_MODE BRIDGE_ADVISOR_CHAIN \
+    for key in BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_CHAIN \
                BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK \
                BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS; do
       write_optional_env "${key}"
