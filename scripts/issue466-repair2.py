@@ -52,4 +52,29 @@ describe("autonomous-work skill convergence (#466)", () => {
 });
 ''')
 
+# /autonomy commands are control-plane commands even when sent as replies to a
+# supervisor message. They must fall through correlation so /autonomy stop stays
+# an immediate intervention rather than becoming next-cycle supervisor input.
+path = "src/autonomyTelegram.ts"
+s = read(path)
+s = replace_once(s,
+'''  const text = (message.text ?? message.caption ?? "").trim();
+  if (!replyId || senderId == null || !text) return null;''',
+'''  const text = (message.text ?? message.caption ?? "").trim();
+  if (!replyId || senderId == null || !text) return null;
+  if (/^\\/autonomy(?:@[A-Za-z0-9_]+)?(?:\\s|$)/i.test(text)) return null;''',
+"autonomy command reply precedence")
+write(path, s)
+
+path = "test/autonomyFirstClass.test.ts"
+s = read(path)
+s = replace_once(s,
+'''    expect(matchAutonomousTelegramSupervisorReply(db, message)).toMatchObject({ goalId: "reply", text: "use option B" });
+    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, from: { id: 43 } })).toBeNull();''',
+'''    expect(matchAutonomousTelegramSupervisorReply(db, message)).toMatchObject({ goalId: "reply", text: "use option B" });
+    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, text: "/autonomy stop" })).toBeNull();
+    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, from: { id: 43 } })).toBeNull();''',
+"autonomy stop reply regression")
+write(path, s)
+
 print("issue #466 repair 2 applied")
