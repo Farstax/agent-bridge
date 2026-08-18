@@ -8,6 +8,10 @@
 import { createHash } from "node:crypto";
 import { cwd } from "node:process";
 import type { BridgeDb } from "./db.js";
+import {
+  LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
+  legacyMemoryCompactionEnabled,
+} from "./legacyMemoryCompaction.js";
 
 export type ProjectMemoryCandidate = {
   type?: unknown;
@@ -60,6 +64,10 @@ export function storeProjectMemoryCandidate(
   rawCandidate: ProjectMemoryCandidate,
   provenance: ProjectMemoryProvenance,
 ): ProjectMemoryStoreResult {
+  if (!legacyMemoryCompactionEnabled()) {
+    return { status: "rejected", reason: LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE };
+  }
+
   const type = typeof rawCandidate.type === "string" ? rawCandidate.type.trim() : "decision";
   const scope = typeof rawCandidate.scope === "string" ? rawCandidate.scope.trim() : "project";
   const text = typeof rawCandidate.text === "string" ? rawCandidate.text.replace(/\s+/g, " ").trim() : "";

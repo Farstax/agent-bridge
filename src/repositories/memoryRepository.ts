@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { buildMemoryFtsQuery } from "../db.js";
+import { legacyMemoryCompactionEnabled } from "../legacyMemoryCompaction.js";
 
 export class MemoryRepository {
   constructor(private readonly db: Database.Database) {}
@@ -32,6 +33,7 @@ export class MemoryRepository {
   }
 
   searchMemories(query: string, limit = 5, chatKey?: string): Array<{ id: string; type: string; text: string; score: number; snippet: string }> {
+    if (!legacyMemoryCompactionEnabled()) return [];
     if (!query.trim()) return [];
     const ftsQuery = buildMemoryFtsQuery(query);
     if (!ftsQuery) return [];
@@ -68,6 +70,7 @@ export class MemoryRepository {
   }
 
   getMemoryCount(): number {
+    if (!legacyMemoryCompactionEnabled()) return 0;
     return (this.db.prepare("SELECT COUNT(*) AS n FROM project_memories").get() as { n: number }).n;
   }
 

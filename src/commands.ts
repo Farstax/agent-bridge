@@ -15,6 +15,10 @@ import { listLocalCatalog } from "./skills.js";
 import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js";
 import { preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
 import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
+import {
+  LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
+  legacyMemoryCompactionEnabled,
+} from "./legacyMemoryCompaction.js";
 
 const CONTEXT_COMPACT_NUDGE_TURNS = 100;
 
@@ -294,6 +298,9 @@ export function handleCommand(
   }
 
   if (text === "/compact") {
+    if (!legacyMemoryCompactionEnabled()) {
+      return { kind: "message", text: LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE };
+    }
     return { kind: "compact", chatKey: chatId };
   }
 
@@ -306,6 +313,7 @@ export function handleCommand(
   }
 
   if (text === "/context") {
+    const legacyEnabled = legacyMemoryCompactionEnabled();
     const status = db.getConvStatus(chatId, surfaceIdentity);
     const summary = db.getLatestConvSummary(chatId);
     const latestAttempt = db.getLatestCompactionAttempt(chatId);
@@ -316,6 +324,7 @@ export function handleCommand(
       `Stored: ${turnWord}`,
       `Pending queue: ${status.pendingCount}`,
       `Latest turn: ${status.latestTurnAt ?? "none"}`,
+      `Legacy memory/compaction: ${legacyEnabled ? "enabled" : "disabled"}`,
       `Latest successful compact: ${status.latestSummaryAt ?? "never"}`,
       `Latest compact attempt: ${latestAttempt?.ended_at ?? "never"}`,
     ];
@@ -336,7 +345,7 @@ export function handleCommand(
       const turnsSince = db.getRecentConvTurns(chatId, 1000, summary.range_end_turn_id).length;
       lines.push(`Turns since last compact: ${turnsSince}`);
     }
-    if (status.turnCount > CONTEXT_COMPACT_NUDGE_TURNS) {
+    if (legacyEnabled && status.turnCount > CONTEXT_COMPACT_NUDGE_TURNS) {
       lines.push("High turn count - consider /compact");
     }
 

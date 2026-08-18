@@ -30,6 +30,10 @@ import { storeProjectMemoryCandidate } from "./projectMemory.js";
 import type { CompactionErrorCategory } from "./repositories/compactionRepository.js";
 import { classifyProviderError } from "./providers/errorClassification.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
+import {
+  LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
+  legacyMemoryCompactionEnabled,
+} from "./legacyMemoryCompaction.js";
 
 const DEFAULT_COMPACTION_MAX_ATTEMPTS = 3;
 const MAX_COMPACTION_MAX_ATTEMPTS = 8;
@@ -109,6 +113,14 @@ export async function compactConversation(
   chatKey: string,
   deps: CompactConversationDeps,
 ): Promise<CompactConversationResult> {
+  if (!legacyMemoryCompactionEnabled()) {
+    return {
+      outcome: "failed",
+      trigger: deps.trigger,
+      error: LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
+    };
+  }
+
   const { db, runCli, botConfig, cliKind, trigger, compactProfile = "engineering", now = () => new Date() } = deps;
   const startedAt = now();
   const initialModel = deps.model !== undefined

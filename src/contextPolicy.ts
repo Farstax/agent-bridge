@@ -4,11 +4,14 @@
  * NEIGHBORS: src/engine.ts, src/commands.ts
  */
 
+import { legacyMemoryCompactionEnabled } from "./legacyMemoryCompaction.js";
+
 export const PRESEED_COMPACT_CHARS_DEFAULT = 30_000;
 
 /** BRIDGE_PRESEED_COMPACT_MODE=auto enables minimal pre-seed compaction ahead of a
  * fresh-seed handoff_once turn; default "off" leaves fresh-seed context untouched. */
 export function preseedCompactMode(): "off" | "auto" {
+  if (!legacyMemoryCompactionEnabled()) return "off";
   return process.env.BRIDGE_PRESEED_COMPACT_MODE === "auto" ? "auto" : "off";
 }
 
