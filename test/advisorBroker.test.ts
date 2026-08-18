@@ -46,13 +46,13 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn-1",
       taskKey: "task-1",
       repoPath: "/trusted/repo",
-    } as any);
+    });
 
     const output = await broker.requestWithCapability({
       capability,
       question: "What risk am I missing?",
       context: "The change removes an orchestration layer.",
-    } as any);
+    });
 
     expect(output).toBe("Independent view");
     expect(runCli).toHaveBeenCalledTimes(1);
@@ -76,6 +76,33 @@ describe("bounded cross-provider frontier advice", () => {
     db.close();
   });
 
+  it.each([
+    { active: "claude", provider: "codex", command: "/trusted/codex", model: "gpt-5.6-sol" },
+    { active: "agy", provider: "claude", command: "/trusted/claude", model: "claude-opus-5" },
+  ])("returns one configured independent result to an active $active run", async ({ active, provider, command, model }) => {
+    const { broker, db, runCli } = setup();
+    const capability = broker.issue({
+      chatKey: `chat:${active}`,
+      cliKind: active,
+      turnKey: `turn:${active}`,
+      taskKey: `task:${active}`,
+      repoPath: "/repo",
+    });
+
+    await expect(broker.requestWithCapability({
+      capability,
+      provider,
+      question: "Give one independent view",
+    })).resolves.toBe("Independent view");
+
+    expect(runCli).toHaveBeenCalledTimes(1);
+    expect(runCli.mock.calls[0][0]).toBe(command);
+    expect(runCli.mock.calls[0][1]).toEqual(expect.arrayContaining(["--model", model]));
+    const call = db.raw.prepare("SELECT selected_provider, selected_model, status FROM advisor_calls").get() as any;
+    expect(call).toMatchObject({ selected_provider: provider, selected_model: model, status: "succeeded" });
+    db.close();
+  });
+
   it("accepts only a configured independent provider and never lets the caller choose its own provider", async () => {
     const { broker, db, runCli } = setup();
     const capability = broker.issue({
@@ -84,18 +111,28 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn",
       taskKey: "task",
       repoPath: "/repo",
-    } as any);
+    });
 
     await expect(broker.requestWithCapability({
       capability,
       provider: "claude",
       question: "Review this",
-    } as any)).rejects.toThrow(/independent provider/i);
+    })).rejects.toThrow(/independent provider/i);
     await expect(broker.requestWithCapability({
       capability,
       provider: "agy",
       question: "Review this",
-    } as any)).rejects.toThrow(/allowed advisor provider/i);
+    })).rejects.toThrow(/allowed advisor provider/i);
+    expect(runCli).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("rejects an untrusted capability before invoking a provider", async () => {
+    const { broker, db, runCli } = setup();
+    await expect(broker.requestWithCapability({
+      capability: "not-a-capability",
+      question: "Review this",
+    })).rejects.toThrow(/invalid capability/i);
     expect(runCli).not.toHaveBeenCalled();
     db.close();
   });
@@ -109,13 +146,13 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn",
       taskKey: "task",
       repoPath: "/repo",
-    } as any);
+    });
 
     await expect(broker.requestWithCapability({
       capability,
       provider: "claude",
       question: "One opinion only",
-    } as any)).rejects.toThrow(/provider unavailable/i);
+    })).rejects.toThrow(/provider unavailable/i);
     expect(runCli).toHaveBeenCalledTimes(1);
     expect(runCli.mock.calls[0][3]).toEqual(expect.objectContaining({ timeoutMs: 1234, advisorChild: true }));
     const attempts = db.raw.prepare("SELECT provider, status FROM advisor_attempts ORDER BY ordinal").all() as any[];
@@ -124,10 +161,9 @@ describe("bounded cross-provider frontier advice", () => {
   });
 
   it("bounds caller context, output and per-turn invocation budget", async () => {
-    const oversizedOutput = vi.fn().mockResolvedValue(JSON.stringify({ result: "x".repeat(65) }));
+    const oversizedOutput = vi.fn().mockResolvedValue(JSON.stringify({ result: "x".repeat(16_001) }));
     const { broker, db } = setup({
       BRIDGE_ADVISOR_CONTEXT_MAX_CHARS: "32",
-      BRIDGE_ADVISOR_OUTPUT_MAX_CHARS: "64",
       BRIDGE_ADVISOR_MAX_CALLS_PER_TURN: "1",
     }, oversizedOutput);
     const capability = broker.issue({
@@ -136,20 +172,20 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn",
       taskKey: "task",
       repoPath: "/repo",
-    } as any);
+    });
 
     await expect(broker.requestWithCapability({
       capability,
       question: "Review",
       context: "c".repeat(33),
-    } as any)).rejects.toThrow(/context.*bound/i);
+    })).rejects.toThrow(/context.*bound/i);
     expect(oversizedOutput).not.toHaveBeenCalled();
 
-    await expect(broker.requestWithCapability({ capability, question: "Review" } as any))
+    await expect(broker.requestWithCapability({ capability, question: "Review" }))
       .rejects.toThrow(/output.*bound/i);
     expect(oversizedOutput).toHaveBeenCalledTimes(1);
 
-    await expect(broker.requestWithCapability({ capability, question: "Again" } as any))
+    await expect(broker.requestWithCapability({ capability, question: "Again" }))
       .rejects.toThrow(/budget exhausted/i);
     expect(oversizedOutput).toHaveBeenCalledTimes(1);
     db.close();
@@ -170,10 +206,10 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn",
       taskKey: "task",
       repoPath: "/repo",
-    } as any);
+    });
     const controller = new AbortController();
     const pending = requestAdvisorViaBroker(
-      { capability, question: "Review" } as any,
+      { capability, question: "Review" },
       process.env,
       dir,
       controller.signal,
