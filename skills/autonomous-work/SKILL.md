@@ -25,7 +25,7 @@ Use this skill when an Agent Bridge Run is one Cycle of a bounded autonomous Epi
 
 Choose the cheapest reliable permitted source that answers the current question: repository/filesystem state, safe data or reports, APIs/CLIs, logs/runtime state, web/search, projected Skills, or domain-owned helpers. Verify current truth before an irreversible or authority-sensitive action.
 
-Act when the evidence supports an action. Do not replace work with status narration. Build a durable helper in the domain `work/` area only when repeated observation makes that cheaper or safer; do not create a generic sensor framework.
+Act when the evidence supports an action. Do not replace work with status narration. Build a durable helper in the domain `work/` area only when repeated observation makes that cheaper or safer; do not create a generic sensor framework. Treat canonical controls and instructions outside `work/` as read-only runtime inputs.
 
 Return bounded evidence that another Cycle can use. If more work is justified, return `progress` with a precise `nextWakeReason`. If the goal is reached, blocked, cancelled, or the runtime budget ends, say so through the result contract. Budget exhaustion ends this Episode; it does not authorize another Cycle.
 
