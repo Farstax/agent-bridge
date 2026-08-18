@@ -41,6 +41,7 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "delivery-directives",
     "git-sandbox",
     "cli-auth-telegram",
+    "autonomous-work",
 )
 
 # unit, defaults file, enabling token(s), persistent database directory
@@ -81,6 +82,8 @@ SHARED_KEYS = (
     "BRIDGE_EXECUTION_MODE", "BRIDGE_BUSY_MESSAGE_MODE", "BRIDGE_ASYNC_ENABLED",
     "POLL_INTERVAL_MS", "FETCH_TIMEOUT_MS", "AGENT_BRIDGE_INSTALLATION_ID",
     "AGENT_BRIDGE_SOUL_PATH", "AGENT_BRIDGE_SOUL_MODE",
+    "AGENT_BRIDGE_AUTONOMY_DIR", "AGENT_BRIDGE_AUTONOMY_DB_PATH",
+    "AGENT_BRIDGE_AUTONOMY_MAX_CYCLES",
     "BRIDGE_ADVISOR_ENABLED", "BRIDGE_ADVISOR_MODE", "BRIDGE_ADVISOR_CHAIN",
     "BRIDGE_ADVISOR_MAX_CALLS_PER_TURN", "BRIDGE_ADVISOR_MAX_CALLS_PER_TASK",
     "BRIDGE_ADVISOR_TIMEOUT_MS", "BRIDGE_ADVISOR_CONTEXT_MAX_CHARS",
@@ -195,6 +198,8 @@ def install_shared_skills(
     skills = [name.strip() for name in configured.split(",") if name.strip()]
     if not skills:
         fail("AGENT_BRIDGE_SKILLS must name at least one skill, none, or skip")
+    if "autonomous-work" not in skills:
+        skills.append("autonomous-work")
     link_mode = env.get("AGENT_BRIDGE_SKILL_LINK_MODE", "symlink")
     if link_mode not in {"symlink", "copy"}:
         fail("AGENT_BRIDGE_SKILL_LINK_MODE must be symlink or copy")

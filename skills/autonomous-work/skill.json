@@ -1,0 +1,5 @@
+{
+  "name": "autonomous-work",
+  "version": "1.0.0",
+  "description": "Runs bounded autonomous Goal to Episode to Cycle to Run work with evidence, current-truth checks, supervisor dialogue, and budget discipline"
+}

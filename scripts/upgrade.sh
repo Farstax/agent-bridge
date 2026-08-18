@@ -15,7 +15,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,systematic-debugging,delivery-directives"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,systematic-debugging,delivery-directives,autonomous-work"
 
 if [[ -z "${NODE_BIN}" ]]; then
   echo "node not found on PATH" >&2
@@ -174,6 +174,9 @@ install_shared_skills() {
   if [[ -z "${skills_csv}" || "${skills_csv}" == "none" || "${skills_csv}" == "skip" ]]; then
     return
   fi
+  if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then
+    skills_csv="${skills_csv},autonomous-work"
+  fi
   if [[ -z "${TARGET_HOME}" ]]; then
     echo "Unable to resolve target home for ${TARGET_USER}" >&2
     exit 1
@@ -236,6 +239,9 @@ if [[ "${1:-}" == "--update" ]]; then
   fi
   after_agy="$(cli_command_version agy)"
   [[ -z "${after_agy}" ]] || qualify_provider_if_needed agy "${before_agy}" "${after_agy}"
+
+  echo "[update] Converging shared skills..."
+  install_shared_skills
 
   if (cd "${REPO_DIR}" && npm run | grep -q '^  build$'); then
     echo "[update] Building bridge..."

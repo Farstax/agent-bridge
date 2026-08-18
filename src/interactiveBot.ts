@@ -134,10 +134,11 @@ export function buildCliKeyboard(
 // ── Telegram command registration ─────────────────────────────────────────────
 
 /** Returns the merged command list for setMyCommands: interactive commands + active CLI commands. */
-export function buildInteractiveCommands(pref: CliKind, options: { integratedHealth?: boolean } = {}): Array<{ command: string; description: string }> {
+export function buildInteractiveCommands(pref: CliKind, options: { integratedHealth?: boolean; autonomy?: boolean } = {}): Array<{ command: string; description: string }> {
   const interactiveOnly = [
     { command: "cli", description: "Show active CLI and switch with one tap" },
     ...(options.integratedHealth ? [{ command: "health", description: "Run health checks or show the latest report" }] : []),
+    ...(options.autonomy ? [{ command: "autonomy", description: "Approve, inspect, or stop autonomy" }] : []),
   ];
   const cliKind = pref === "antigravity" ? "antigravity" : pref === "claude" ? "claude" : "codex";
   const cliCmds = buildTelegramCommands(cliKind);
@@ -152,7 +153,7 @@ export function buildInteractiveCommands(pref: CliKind, options: { integratedHea
   return merged;
 }
 
-export function buildGlobalInteractiveCommandRegistrations(pref: CliKind, options: { integratedHealth?: boolean } = {}): InteractiveCommandRegistration[] {
+export function buildGlobalInteractiveCommandRegistrations(pref: CliKind, options: { integratedHealth?: boolean; autonomy?: boolean } = {}): InteractiveCommandRegistration[] {
   const commands = buildInteractiveCommands(pref, options);
   return [
     { commands },
@@ -161,7 +162,7 @@ export function buildGlobalInteractiveCommandRegistrations(pref: CliKind, option
   ];
 }
 
-export function buildChatInteractiveCommandRegistrations(pref: CliKind, chatId: number, options: { integratedHealth?: boolean } = {}): InteractiveCommandRegistration[] {
+export function buildChatInteractiveCommandRegistrations(pref: CliKind, chatId: number, options: { integratedHealth?: boolean; autonomy?: boolean } = {}): InteractiveCommandRegistration[] {
   const commands = buildInteractiveCommands(pref, options);
   return [
     { commands, scope: { type: "chat", chat_id: chatId } },

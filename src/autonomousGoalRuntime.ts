@@ -10,12 +10,20 @@ import type { BotConfig, BotKind } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
 export const AUTONOMOUS_EVENT_KIND = "goal_wake" as const;
+export const AUTONOMOUS_SUPERVISOR_INPUT_KIND = "supervisor_input" as const;
 export const AUTONOMOUS_RUN_SURFACE = "autonomous" as const;
 export const AUTONOMOUS_RUN_AUTHORITY_SCOPE = "goal-constraints-only" as const;
 export const AUTONOMOUS_RUN_CHAT_KEY_PREFIX = "autonomous:";
 const MAX_EVIDENCE_CHARS = 2_000;
 const MAX_TOTAL_EVIDENCE_CHARS = 8_000;
 const MAX_REASON_CHARS = 300;
+const MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_CHARS = 3_000;
+const MAX_AUTONOMOUS_SUPERVISOR_INPUT_CHARS = 3_000;
+const MAX_AUTONOMOUS_SUPERVISOR_INPUT_TOTAL_CHARS = 6_000;
+const MAX_AUTONOMOUS_SUPERVISOR_INPUTS_PER_CYCLE = 8;
+const MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_IDS = 32;
+const MAX_AUTONOMOUS_SUPERVISOR_ROUTE_FIELD_CHARS = 256;
+const AUTONOMOUS_SUPERVISOR_SETTING_PREFIX = "autonomy:supervisor:";
 const MAX_HEALTH_CONSTRAINTS = 8;
 const MAX_HEALTH_CONSTRAINT_CHARS = 300;
 const MAX_HEALTH_CONSTRAINT_TOTAL = 2_000;
@@ -41,6 +49,25 @@ export interface AutonomousCycleResult {
   status: AutonomousCycleStatus;
   evidence: string;
   nextWakeReason?: string;
+  /** Optional provider-authored supervisor prose. The controller transports it unchanged. */
+  supervisorMessage?: string;
+}
+
+export interface AutonomousSupervisorRoute {
+  surface: string;
+  address: string;
+  identity?: string;
+  thread?: string;
+}
+
+export interface AutonomousSupervisorState {
+  route: AutonomousSupervisorRoute;
+  messageIds: number[];
+}
+
+export interface CreateAutonomousGoalIfNoneActiveResult {
+  goal: AutonomousGoal;
+  created: boolean;
 }
 
 export interface AuthoritativeHealthObservation {
@@ -142,6 +169,115 @@ export function createAutonomousGoal(db: BridgeDb, input: {
   return getAutonomousGoal(db, input.goalId);
 }
 
+function supervisorSettingKey(goalId: string): string {
+  return `${AUTONOMOUS_SUPERVISOR_SETTING_PREFIX}${goalId}`;
+}
+
+function boundedSupervisorRoute(route: AutonomousSupervisorRoute): AutonomousSupervisorRoute {
+  const boundedField = (name: string, value: string | undefined, required = false): string | undefined => {
+    if (value === undefined && !required) return undefined;
+    if (typeof value !== "string" || !value.trim() || value.length > MAX_AUTONOMOUS_SUPERVISOR_ROUTE_FIELD_CHARS) {
+      throw new Error(`invalid autonomous supervisor ${name}`);
+    }
+    return value;
+  };
+  return {
+    surface: boundedField("surface", route.surface, true)!,
+    address: boundedField("address", route.address, true)!,
+    ...(route.identity === undefined ? {} : { identity: boundedField("identity", route.identity)! }),
+    ...(route.thread === undefined ? {} : { thread: boundedField("thread", route.thread)! }),
+  };
+}
+
+function parseSupervisorState(raw: string | null): AutonomousSupervisorState | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as AutonomousSupervisorState;
+    if (!value || typeof value !== "object" || !Array.isArray(value.messageIds)) return null;
+    return {
+      route: boundedSupervisorRoute(value.route),
+      messageIds: value.messageIds.filter((id) => Number.isSafeInteger(id) && id > 0).slice(-MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_IDS),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function getAutonomousSupervisorState(db: BridgeDb, goalId: string): AutonomousSupervisorState | null {
+  return parseSupervisorState(db.getSetting(supervisorSettingKey(goalId)));
+}
+
+export function recordAutonomousSupervisorMessageId(db: BridgeDb, goalId: string, messageId: number): void {
+  if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("invalid autonomous supervisor message id");
+  db.runInTransaction(() => {
+    const state = getAutonomousSupervisorState(db, goalId);
+    if (!state) return;
+    const messageIds = [...state.messageIds.filter((id) => id !== messageId), messageId].slice(-MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_IDS);
+    db.setSetting(supervisorSettingKey(goalId), JSON.stringify({ ...state, messageIds }));
+  });
+}
+
+export function createAutonomousGoalIfNoneActive(db: BridgeDb, input: {
+  goalId: string;
+  prompt: string;
+  constraints: string[];
+  bot: BotKind;
+  maxCycles: number;
+  initialEvidence?: string[];
+  supervisorRoute?: AutonomousSupervisorRoute;
+}): CreateAutonomousGoalIfNoneActiveResult {
+  if (!input.goalId || !input.prompt || !Number.isInteger(input.maxCycles) || input.maxCycles < 1) {
+    throw new Error("goalId, prompt, and a positive integer maxCycles are required");
+  }
+  let existingGoalId: string | null = null;
+  let created = false;
+  db.runInTransaction(() => {
+    const active = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' ORDER BY created_at DESC, goal_id DESC").all() as Array<{ goal_id: string }>;
+    if (active.length > 1) throw new Error("multiple active autonomous Episodes; refusing ambiguous start");
+    if (active.length === 1) {
+      existingGoalId = active[0].goal_id;
+      return;
+    }
+    const route = input.supervisorRoute ? boundedSupervisorRoute(input.supervisorRoute) : null;
+    db.raw.prepare(`INSERT INTO autonomous_goals
+      (goal_id, prompt, constraints_json, bot, max_cycles, evidence_json) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(input.goalId, input.prompt, JSON.stringify(input.constraints), input.bot, input.maxCycles, JSON.stringify((input.initialEvidence ?? []).slice(-8)));
+    scheduleWake(db, input.goalId, { key: `${input.goalId}:wake:0`, reason: "initial" });
+    if (route) {
+      db.setSetting(supervisorSettingKey(input.goalId), JSON.stringify({ route, messageIds: [] } satisfies AutonomousSupervisorState));
+    }
+    created = true;
+  });
+  const goal = getAutonomousGoal(db, existingGoalId ?? input.goalId);
+  return { goal, created };
+}
+
+export function recordAutonomousSupervisorInput(db: BridgeDb, input: {
+  goalId: string;
+  text: string;
+  idempotencyKey: string;
+}): boolean {
+  const text = input.text.trim();
+  if (!text || text.length > MAX_AUTONOMOUS_SUPERVISOR_INPUT_CHARS) throw new Error("autonomous supervisor input must be bounded and non-empty");
+  if (!input.idempotencyKey || input.idempotencyKey.length > 512) throw new Error("invalid autonomous supervisor input idempotency key");
+  return db.runInTransaction(() => {
+    const goal = getAutonomousGoal(db, input.goalId);
+    if (goal.status !== "active") return false;
+    if (db.getEventReceiptByIdempotencyKey(input.idempotencyKey)) return true;
+    db.createEventReceipt({
+      event_id: input.idempotencyKey,
+      source: AUTONOMOUS_EVENT_SOURCE,
+      event_kind: AUTONOMOUS_SUPERVISOR_INPUT_KIND,
+      idempotency_key: input.idempotencyKey,
+      received_at: new Date().toISOString(),
+      occurred_at: new Date().toISOString(),
+      payload_json: JSON.stringify({ goalId: input.goalId, text }),
+      authority_scope: AUTONOMOUS_RUN_AUTHORITY_SCOPE,
+    });
+    return true;
+  });
+}
+
 function parseEnvelope(text: string): string {
   try {
     const outer = JSON.parse(text) as any;
@@ -158,52 +294,107 @@ export function parseAutonomousCycleResult(text: string): AutonomousCycleResult 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("malformed autonomous cycle result");
   const value = parsed as Record<string, unknown>;
   const keys = Object.keys(value).sort();
-  if (keys.some((key) => !["evidence", "nextWakeReason", "status"].includes(key))) throw new Error("unknown autonomous cycle result field");
+  if (keys.some((key) => !["evidence", "nextWakeReason", "status", "supervisorMessage"].includes(key))) throw new Error("unknown autonomous cycle result field");
   if (!["progress", "complete", "blocked", "cancelled"].includes(value.status as string)) throw new Error("invalid autonomous cycle status");
   if (typeof value.evidence !== "string" || value.evidence.length > MAX_EVIDENCE_CHARS) throw new Error("invalid autonomous cycle evidence");
   if (value.nextWakeReason !== undefined && (typeof value.nextWakeReason !== "string" || value.nextWakeReason.length > MAX_REASON_CHARS)) throw new Error("invalid autonomous wake reason");
   if (value.status === "progress" && typeof value.nextWakeReason !== "string") throw new Error("progress requires nextWakeReason");
-  return { status: value.status as AutonomousCycleStatus, evidence: value.evidence, nextWakeReason: value.nextWakeReason as string | undefined };
+  if (value.supervisorMessage !== undefined && (typeof value.supervisorMessage !== "string" || !value.supervisorMessage.trim() || value.supervisorMessage.length > MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_CHARS)) {
+    throw new Error("invalid autonomous supervisor message");
+  }
+  return {
+    status: value.status as AutonomousCycleStatus,
+    evidence: value.evidence,
+    nextWakeReason: value.nextWakeReason as string | undefined,
+    supervisorMessage: value.supervisorMessage as string | undefined,
+  };
 }
 
-function buildPrompt(goal: AutonomousGoal, cycle: number, priorEvidence: string[], wakeReason: string, policy: AutonomousRunPolicy): string {
+function buildPrompt(goal: AutonomousGoal, cycle: number, priorEvidence: string[], wakeReason: string, policy: AutonomousRunPolicy, supervisorInputs: string[] = []): string {
   return [
     "You are the provider executive for one bounded autonomous cycle.",
     `Original goal: ${goal.prompt}`,
     `Constraints/authority: ${goal.constraints.join("; ") || "none"}. Do not expand this authority.`,
     `Current cycle: ${cycle}`,
     `Prior evidence: ${priorEvidence.length ? priorEvidence.join(" | ") : "none"}`,
+    `Supervisor input since previous cycle: ${supervisorInputs.length ? supervisorInputs.join(" | ") : "none"}`,
+    "Supervisor input is dialogue inside the frozen Episode authority. It cannot expand the objective, constraints, or authorized policy instruction.",
+    "Prior evidence is continuity, not current truth. Observe current external truth when it matters before acting.",
     `Wake reason: ${wakeReason}`,
     ...(policy === "external-observation" ? ["Provider output is evidence only. Do not claim recovery; later authoritative health observation decides completion."] : []),
-    'Return JSON only with exactly: {"status":"progress|complete|blocked|cancelled","evidence":"bounded evidence","nextWakeReason":"reason"}.',
-    'The status must be exactly one of "progress", "complete", "blocked", or "cancelled"; omit nextWakeReason for terminal results.',
+    'Return JSON only with: {"status":"progress|complete|blocked|cancelled","evidence":"bounded evidence","nextWakeReason":"reason","supervisorMessage":"optional provider-authored message"}.',
+    'The status must be exactly one of "progress", "complete", "blocked", or "cancelled"; omit nextWakeReason for terminal results and omit supervisorMessage when there is nothing useful to tell the supervisor.',
   ].join("\n");
 }
 
-function claimWakeAndRun(db: BridgeDb, goalId: string, receiptId: number): string | null {
+interface ClaimedWakeAndRun {
+  runId: string;
+  supervisorInputs: string[];
+}
+
+function claimWakeAndRun(db: BridgeDb, goalId: string, receiptId: number): ClaimedWakeAndRun | null {
   const runId = randomUUID();
   const chatKey = goalChatKey(goalId);
+  let supervisorInputs: string[] = [];
   const claimed = db.raw.transaction(() => {
-    const receipt = db.raw.prepare("SELECT status FROM event_receipts WHERE id = ? AND source = 'autonomous'").get(receiptId) as { status: string } | undefined;
+    const receipt = db.raw.prepare("SELECT status, event_kind FROM event_receipts WHERE id = ? AND source = 'autonomous'").get(receiptId) as { status: string; event_kind: string } | undefined;
     if (!receipt || receipt.status !== "received") return false;
+    if (receipt.event_kind !== AUTONOMOUS_EVENT_KIND) throw new Error("refusing to claim non-wake autonomous receipt as a Run");
     db.insertRun(runId, chatKey, getAutonomousGoal(db, goalId).bot);
-    const result = db.raw.prepare("UPDATE event_receipts SET status = 'run_created', run_id = ? WHERE id = ? AND status = 'received'").run(runId, receiptId);
+    const result = db.raw.prepare("UPDATE event_receipts SET status = 'run_created', run_id = ? WHERE id = ? AND status = 'received' AND event_kind = ?").run(runId, receiptId, AUTONOMOUS_EVENT_KIND);
     if (result.changes !== 1) throw new Error("autonomous wake claim lost");
+
+    const pending = db.raw.prepare(`SELECT id, payload_json FROM event_receipts
+      WHERE source = 'autonomous' AND event_kind = ? AND status = 'received'
+        AND json_extract(payload_json, '$.goalId') = ? ORDER BY id LIMIT ?`)
+      .all(AUTONOMOUS_SUPERVISOR_INPUT_KIND, goalId, MAX_AUTONOMOUS_SUPERVISOR_INPUTS_PER_CYCLE) as Array<{ id: number; payload_json: string }>;
+    let total = 0;
+    const claimInput = db.raw.prepare("UPDATE event_receipts SET status = 'run_created', run_id = ? WHERE id = ? AND status = 'received' AND event_kind = ?");
+    for (const row of pending) {
+      let text = "";
+      try {
+        const payload = JSON.parse(row.payload_json) as { text?: unknown };
+        text = typeof payload.text === "string" ? payload.text.trim() : "";
+      } catch {
+        // handled below as malformed input
+      }
+      if (!text || text.length > MAX_AUTONOMOUS_SUPERVISOR_INPUT_CHARS) {
+        db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = 'malformed_supervisor_input' WHERE id = ? AND status = 'received'").run(row.id);
+        continue;
+      }
+      if (total + text.length > MAX_AUTONOMOUS_SUPERVISOR_INPUT_TOTAL_CHARS) break;
+      if (claimInput.run(runId, row.id, AUTONOMOUS_SUPERVISOR_INPUT_KIND).changes !== 1) throw new Error("autonomous supervisor input claim lost");
+      supervisorInputs.push(text);
+      total += text.length;
+    }
     return true;
   })();
-  return claimed ? runId : null;
+  return claimed ? { runId, supervisorInputs } : null;
 }
 
 function pendingWake(db: BridgeDb, goalId: string): any | null {
   return db.raw.prepare(`SELECT * FROM event_receipts
-    WHERE source = 'autonomous' AND status = 'received'
+    WHERE source = 'autonomous' AND event_kind = 'goal_wake' AND status = 'received'
       AND json_extract(payload_json, '$.goalId') = ? ORDER BY id LIMIT 1`).get(goalId) ?? null;
 }
 
 function recoverableWake(db: BridgeDb, goalId: string): any | null {
   return db.raw.prepare(`SELECT * FROM event_receipts
-    WHERE source = 'autonomous' AND status = 'run_created'
+    WHERE source = 'autonomous' AND event_kind = 'goal_wake' AND status = 'run_created'
       AND json_extract(payload_json, '$.goalId') = ? ORDER BY id LIMIT 1`).get(goalId) ?? null;
+}
+
+function settleSupervisorInputsForRun(db: BridgeDb, runId: string, status: "completed" | "failed" | "cancelled", errorClass?: string): void {
+  db.raw.prepare(`UPDATE event_receipts SET status = ?, error_class = ?, result_reference = ?
+    WHERE source = 'autonomous' AND event_kind = ? AND status = 'run_created' AND run_id = ?`)
+    .run(status, errorClass ?? null, runId, AUTONOMOUS_SUPERVISOR_INPUT_KIND, runId);
+}
+
+function retirePendingSupervisorInputs(db: BridgeDb, goalId: string, errorClass: string): void {
+  db.raw.prepare(`UPDATE event_receipts SET status = 'cancelled', error_class = ?
+    WHERE source = 'autonomous' AND event_kind = ? AND status = 'received'
+      AND json_extract(payload_json, '$.goalId') = ?`)
+    .run(errorClass, AUTONOMOUS_SUPERVISOR_INPUT_KIND, goalId);
 }
 
 function boundedEvidence(goal: AutonomousGoal, evidence: string): string[] {
@@ -234,6 +425,8 @@ function recoverUnreconciledWake(db: BridgeDb, goal: AutonomousGoal, receipt: an
       .run(status === "cancelled" ? "cancelled" : "failed", "restart_recovery", receipt.run_id ?? null, receipt.id);
     db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
       .run(goal.cycle + 1, status, JSON.stringify(boundedEvidence(goal, evidence)), goal.goalId);
+    settleSupervisorInputsForRun(db, receipt.run_id ?? "", status === "cancelled" ? "cancelled" : "failed", "restart_recovery");
+    retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
   });
 }
 
@@ -246,11 +439,15 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
     if (currentGoal.status !== "active") {
       if (run?.status === "running") db.updateRunCompleted(runId, evidence, null);
       db.raw.prepare("UPDATE event_receipts SET status = 'completed', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
+      settleSupervisorInputsForRun(db, runId, "completed");
+      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
       return;
     }
     if (run?.status === "cancelled") {
       db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?").run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
       db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
+      settleSupervisorInputsForRun(db, runId, "cancelled", "goal_cancelled");
+      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
       return;
     }
     if (!result) {
@@ -258,10 +455,13 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
         .run(error ?? "malformed autonomous cycle result", runId);
       db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?").run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
       db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run("malformed_result", runId, receipt.id);
+      settleSupervisorInputsForRun(db, runId, "failed", "malformed_result");
+      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
       return;
     }
     db.updateRunCompleted(runId, result.evidence, null);
     db.raw.prepare("UPDATE event_receipts SET status = 'completed', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
+    settleSupervisorInputsForRun(db, runId, "completed");
     const nextStatus: AutonomousGoalStatus = result.status === "progress"
       ? (goal.cycle + 1 >= goal.maxCycles && policy === "provider" ? "budget_exhausted" : "active")
       : result.status;
@@ -269,6 +469,8 @@ function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: stri
       .run(goal.cycle + 1, nextStatus, JSON.stringify(nextEvidence), goal.goalId);
     if (policy === "provider" && result.status === "progress" && nextStatus === "active") {
       scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: result.nextWakeReason! });
+    } else if (nextStatus !== "active") {
+      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
     }
   });
 }
@@ -284,6 +486,7 @@ export interface CycleReconciledEvent {
   goalStatus: AutonomousGoalStatus;
   cycleStatus: AutonomousCycleStatus;
   evidence: string;
+  supervisorMessage?: string;
 }
 
 export async function runNextAutonomousGoal(
@@ -319,15 +522,17 @@ export async function runNextAutonomousGoal(
       // claimed, so that race can never start a Run beyond maxCycles.
       db.runInTransaction(() => {
         db.raw.prepare("UPDATE autonomous_goals SET status = 'budget_exhausted', updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'").run(goalId);
-        db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'budget_exhausted' WHERE id = ? AND status = 'received'").run(currentWake.id);
+        db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'budget_exhausted' WHERE id = ? AND status = 'received' AND event_kind = ?").run(currentWake.id, AUTONOMOUS_EVENT_KIND);
+        retirePendingSupervisorInputs(db, goalId, "budget_exhausted");
       });
       return false;
     }
-    const runId = claimWakeAndRun(db, goalId, currentWake.id);
-    if (!runId) return false;
+    const claim = claimWakeAndRun(db, goalId, currentWake.id);
+    if (!claim) return false;
+    const { runId, supervisorInputs } = claim;
     const eventStore = new EventStore(db, runId);
     const input: SurfaceNeutralTurnInput = {
-      prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason, currentPolicy),
+      prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason, currentPolicy, supervisorInputs),
       sessionId: null,
       chatId: 0,
       chatKey: goalChatKey(goalId),
@@ -362,6 +567,7 @@ export async function runNextAutonomousGoal(
           goalStatus: after.status,
           cycleStatus: effectiveResult?.status ?? "blocked",
           evidence: effectiveResult?.evidence ?? error ?? "malformed provider output",
+          ...(effectiveResult?.supervisorMessage ? { supervisorMessage: effectiveResult.supervisorMessage } : {}),
         });
       } catch {
         // Observer failures must never affect cycle ownership or reconciled
@@ -547,6 +753,7 @@ export function applyAuthoritativeHealthObservation(
     if (goal.cycle >= goal.maxCycles) {
       db.raw.prepare("UPDATE autonomous_goals SET status = 'budget_exhausted', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
         .run(JSON.stringify(nextEvidence), goalId);
+      retirePendingSupervisorInputs(db, goalId, "budget_exhausted");
       return "budget_exhausted";
     }
     db.raw.prepare("UPDATE autonomous_goals SET evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")

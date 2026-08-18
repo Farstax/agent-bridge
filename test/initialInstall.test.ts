@@ -198,6 +198,7 @@ print(json.dumps({"calls": calls}))
       "delivery-directives",
       "git-sandbox",
       "cli-auth-telegram",
+      "autonomous-work",
     ];
     expect(result.calls).toHaveLength(defaults.length * 2);
     for (const [index, skill] of defaults.entries()) {

@@ -16,7 +16,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,systematic-debugging,delivery-directives,git-sandbox,cli-auth-telegram"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,systematic-debugging,delivery-directives,git-sandbox,cli-auth-telegram,autonomous-work"
 
 # Parse flags
 NON_INTERACTIVE=0
@@ -97,6 +97,7 @@ seed_from_env_file() {
               BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK \
               BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS \
               AGENT_BRIDGE_SOUL_PATH AGENT_BRIDGE_SOUL_MODE \
+              AGENT_BRIDGE_AUTONOMY_DIR AGENT_BRIDGE_AUTONOMY_DB_PATH AGENT_BRIDGE_AUTONOMY_MAX_CYCLES \
                HEALTH_BOT_MODE HEALTH_MONITOR_ENABLED HEALTH_MONITOR_CADENCE_SECONDS HEALTH_MONITOR_AUTONOMY \
               HEALTH_MONITOR_CHAT_ID HEALTH_SUGGEST_BOT \
               HEALTH_CONTENT_CRAWLER_ENABLED HEALTH_CONTENT_CRAWLER_SCRIPT \
@@ -231,6 +232,9 @@ install_shared_skills() {
   if [[ -z "${skills_csv}" || "${skills_csv}" == "none" || "${skills_csv}" == "skip" ]]; then
     return
   fi
+  if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then
+    skills_csv="${skills_csv},autonomous-work"
+  fi
   if [[ "${link_mode}" != "symlink" && "${link_mode}" != "copy" ]]; then
     echo "Invalid AGENT_BRIDGE_SKILL_LINK_MODE: ${link_mode}" >&2
     exit 1
@@ -354,6 +358,9 @@ _write_shared_defaults() {
     done
     [[ -n "${AGENT_BRIDGE_SOUL_PATH:-}" ]]  && echo "AGENT_BRIDGE_SOUL_PATH=${AGENT_BRIDGE_SOUL_PATH}"
     [[ -n "${AGENT_BRIDGE_SOUL_MODE:-}" ]]  && echo "AGENT_BRIDGE_SOUL_MODE=${AGENT_BRIDGE_SOUL_MODE}"
+    [[ -n "${AGENT_BRIDGE_AUTONOMY_DIR:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_DIR=${AGENT_BRIDGE_AUTONOMY_DIR}"
+    [[ -n "${AGENT_BRIDGE_AUTONOMY_DB_PATH:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_DB_PATH=${AGENT_BRIDGE_AUTONOMY_DB_PATH}"
+    [[ -n "${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_MAX_CYCLES=${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES}"
     echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
     echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
     echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
