@@ -124,7 +124,7 @@ export async function executeFrontierAdvice(deps: {
       status: "succeeded",
       durationMs: Date.now() - startedAt,
     });
-    db.completeAdvisorCall(requestId, target.provider, target.model, null);
+    db.completeAdvisorCall(requestId, target.provider, target.model, "medium");
     return { text, provider: target.provider, model: target.model, requestId };
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error(String(caught));
