@@ -152,6 +152,10 @@ export interface BridgeEngineOptions {
   asyncEnabled: boolean;
   pollIntervalMs: number;
   soulContext?: string | null;
+  /** Optional explicit cwd for this engine instance. Never mutates process.cwd(). */
+  workingDir?: string;
+  /** Optional frozen/static managed workspace context for this engine instance. */
+  workspaceContext?: string | null;
   /** Required for built-in /models command on agent bot kinds */
   fullConfig?: BridgeConfig;
   hooks?: BridgeEngineHooks;
@@ -383,6 +387,10 @@ export class BridgeEngine {
         });
       },
     });
+  }
+
+  private _workingDir(executionKind: BotKind = this._executionKind()): string {
+    return this.opts.workingDir ?? getCliWorkingDir(executionKind);
   }
 
   async run(): Promise<void> {
@@ -708,7 +716,7 @@ export class BridgeEngine {
                 task: commandResponse.task,
                 activeProvider: this.kind,
                 activeModel: this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null,
-                cwd: getCliWorkingDir(this._executionKind()),
+                cwd: this._workingDir(this._executionKind()),
               });
               await this.sendText(chatId, { text: formatAdvisorResult(result), message_thread_id: threadId });
             } catch (error) {
@@ -887,7 +895,7 @@ export class BridgeEngine {
       origin, scopeKey: chatKey, turnKey, approved, mode, task,
       activeProvider: this.kind,
       activeModel: this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null,
-      cwd: getCliWorkingDir(this._executionKind()),
+      cwd: this._workingDir(this._executionKind()),
     });
   }
 
@@ -911,7 +919,7 @@ export class BridgeEngine {
     const model = isAgentKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
-    const cwd = getCliWorkingDir(executionKind);
+    const cwd = this._workingDir(executionKind);
 
     const invocation = buildCliInvocation({
       bot: executionKind,
@@ -2510,7 +2518,7 @@ export class BridgeEngine {
           cliKind: this.kind,
           turnKey,
           taskKey: turnKey,
-          repoPath: getCliWorkingDir(this._executionKind()),
+          repoPath: this._workingDir(this._executionKind()),
           activeModel: this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null,
         });
       } catch (error) {
@@ -2606,7 +2614,12 @@ export class BridgeEngine {
     const shouldInject = this._shouldInjectContext(chatKey, nativeSessionMode);
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, nativeSessionMode);
     const access = this._buildContextAccess(chatKey);
-    const workspacePrompt = prependWorkspaceContext(contextPrompt);
+    const workspacePrompt = this.opts.workspaceContext === undefined
+      ? prependWorkspaceContext(contextPrompt)
+      : (this.opts.workspaceContext ? `[Managed workspace context]
+${this.opts.workspaceContext}
+
+${contextPrompt}` : contextPrompt);
     const handoffPrompt = shouldInject ? prependHandoffModel(workspacePrompt, model) : workspacePrompt;
     const soulContext = shouldInject ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: shouldInject };
@@ -2763,7 +2776,7 @@ export class BridgeEngine {
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
     const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
-    const cwd = getCliWorkingDir(executionKind);
+    const cwd = this._workingDir(executionKind);
     const startedAtMs = Date.now();
     if (executionKind === "antigravity") setAntigravityModel(model);
     const nativeSessionMode = buildCliInvocation({
@@ -2948,7 +2961,7 @@ export class BridgeEngine {
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
     const retryLogFile = join(tmpdir(), `antigravity-${randomUUID()}.log`);
-    const retryCwd = getCliWorkingDir(executionKind);
+    const retryCwd = this._workingDir(executionKind);
     const retryStartedAtMs = Date.now();
     setAntigravityModel(model);
     const retryInvocation = buildCliInvocation({
@@ -3133,7 +3146,7 @@ export class BridgeEngine {
       && fallbackInvocation.args.includes("stream-json");
 
     try {
-      const fallbackCwd = getCliWorkingDir(executionKind);
+      const fallbackCwd = this._workingDir(executionKind);
       const fallbackStartedAtMs = Date.now();
       const rawResult = mode === "async"
         ? (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
