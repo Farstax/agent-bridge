@@ -17,14 +17,10 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new, 1))
 
 
-# Idempotent after the repair commits have landed.
 if '"version": "1.0.0"' in Path("skills/advisor/skill.json").read_text():
     print("issue 458 repair already applied")
     raise SystemExit(0)
 
-# Test-maintenance commit: remove assertions for intentionally deleted Bridge-owned
-# Advisor orchestration and align fixtures/default-skill expectations with the
-# surviving native Skill + bounded primitive.
 p = Path("test/commands.test.ts")
 text = p.read_text()
 imports = (
@@ -68,9 +64,6 @@ run("git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.g
 run("git", "add", "test/commands.test.ts", "test/engine.test.ts", "test/initialInstall.test.ts", "test/advisorBroker.test.ts")
 run("git", "commit", "-m", "test: align advisor subtraction regressions")
 
-# Production repair commit: valid native Skill metadata and a request protocol that
-# keeps the broker connection open while the provider call runs, so disconnect /
-# owner cancellation can fence the one child execution.
 replace_once(
     "skills/advisor/skill.json",
     '  "version": 1\n',
@@ -109,7 +102,14 @@ replacement = '''  private accept(socket: Socket): void {
       });
     });
     socket.on("end", () => {
-      if (started || socket.destroyed) return;
+      if (started) {
+        if (!settled && executionId) void this.abortCli(executionId);
+        settled = true;
+        socket.off("close", cancel);
+        if (!socket.destroyed) socket.destroy();
+        return;
+      }
+      if (socket.destroyed) return;
       settled = true;
       socket.off("close", cancel);
       socket.end(`${JSON.stringify({ ok: false, error: "Invalid advisor broker request" })}\\n`);
