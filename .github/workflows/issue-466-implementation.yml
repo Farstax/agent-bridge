@@ -54,14 +54,28 @@ jobs:
             exit $status
           fi
       - name: Unused exports
-        run: npm run unused
+        shell: bash
+        run: |
+          set +e
+          npm run unused > /tmp/issue466-unused.log 2>&1
+          status=$?
+          cat /tmp/issue466-unused.log
+          if [[ $status -ne 0 ]]; then
+            cp /tmp/issue466-unused.log ISSUE466_UNUSED_FAILURE.txt
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add ISSUE466_UNUSED_FAILURE.txt
+            git commit -m 'chore: record issue 466 unused-export failure'
+            git push origin HEAD:agent/issue-466-first-class-autonomy-runtime
+            exit $status
+          fi
       - name: Architecture lint
         run: npm run arch:lint
       - name: Diff check
         run: git diff --check
       - name: Commit verified implementation
         run: |
-          rm -f .github/workflows/issue-466-implementation.yml scripts/issue466-implement.py scripts/issue466-repair.py scripts/issue466-repair2.py issue466-runner-started.txt ISSUE466_TEST_FAILURE.txt ISSUE466_PATCH_FAILURE.txt
+          rm -f .github/workflows/issue-466-implementation.yml scripts/issue466-implement.py scripts/issue466-repair.py scripts/issue466-repair2.py issue466-runner-started.txt ISSUE466_TEST_FAILURE.txt ISSUE466_UNUSED_FAILURE.txt ISSUE466_PATCH_FAILURE.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
