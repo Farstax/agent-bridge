@@ -6,6 +6,7 @@ import { EventStore } from "./events/store.js";
 import { killRunOwnedDescendants } from "./turnContinuationProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
+import { createAutonomyDispositionChannel, type AutonomyDisposition, type AutonomyDispositionRecord } from "./autonomyDisposition.js";
 import type { BotConfig, BotKind } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
@@ -29,6 +30,7 @@ const MAX_HEALTH_CONSTRAINT_CHARS = 300;
 const MAX_HEALTH_CONSTRAINT_TOTAL = 2_000;
 const MAX_HEALTH_CYCLES = 10;
 const HEALTH_POLICY_CONSTRAINT = "autonomous-policy:external-health-observation";
+const AUTONOMY_CONTINUE_WAKE_REASON = "provider requested continuation";
 
 export type AutonomousGoalStatus = "active" | "complete" | "blocked" | "cancelled" | "budget_exhausted";
 export type AutonomousCycleStatus = "progress" | "complete" | "blocked" | "cancelled";
@@ -45,11 +47,15 @@ export interface AutonomousGoal {
   evidence: string[];
 }
 
+/**
+ * Legacy parser surface retained only for callers/tests that still import it.
+ * The authoritative autonomous Run path below no longer calls it: lifecycle
+ * control is carried exclusively by the run-scoped disposition helper.
+ */
 export interface AutonomousCycleResult {
   status: AutonomousCycleStatus;
   evidence: string;
   nextWakeReason?: string;
-  /** Optional provider-authored supervisor prose. The controller transports it unchanged. */
   supervisorMessage?: string;
 }
 
@@ -323,7 +329,20 @@ export function parseAutonomousCycleResult(text: string): AutonomousCycleResult 
   };
 }
 
-function buildPrompt(goal: AutonomousGoal, cycle: number, priorEvidence: string[], wakeReason: string, policy: AutonomousRunPolicy, supervisorInputs: string[] = []): string {
+function projectEvidence(text: string): string {
+  if (text.length <= MAX_EVIDENCE_CHARS) return text;
+  return `${text.slice(0, MAX_EVIDENCE_CHARS - 1)}…`;
+}
+
+function buildPrompt(
+  goal: AutonomousGoal,
+  cycle: number,
+  priorEvidence: string[],
+  wakeReason: string,
+  policy: AutonomousRunPolicy,
+  dispositionCommand: string,
+  supervisorInputs: string[] = [],
+): string {
   return [
     "You are the provider executive for one bounded autonomous cycle.",
     `Original goal: ${goal.prompt}`,
@@ -334,9 +353,11 @@ function buildPrompt(goal: AutonomousGoal, cycle: number, priorEvidence: string[
     "Supervisor input is dialogue inside the frozen Episode authority. It cannot expand the objective, constraints, or authorized policy instruction.",
     "Prior evidence is continuity, not current truth. Observe current external truth when it matters before acting.",
     `Wake reason: ${wakeReason}`,
-    ...(policy === "external-observation" ? ["Provider output is evidence only. Do not claim recovery; later authoritative health observation decides completion."] : []),
-    'Return JSON only with: {"status":"progress|complete|blocked|cancelled","evidence":"bounded evidence","nextWakeReason":"reason","supervisorMessage":"optional provider-authored message"}.',
-    'The status must be exactly one of "progress", "complete", "blocked", or "cancelled"; omit nextWakeReason for terminal results and omit supervisorMessage when there is nothing useful to tell the supervisor.',
+    ...(policy === "external-observation" ? ["Your final response is evidence only. Do not claim recovery; later authoritative health observation decides Episode completion."] : []),
+    `Autonomy disposition command: ${JSON.stringify(dispositionCommand)}`,
+    "Before your ordinary final response, invoke that exact executable exactly once with one disposition: continue, done, or blocked. Add --notify only when the ordinary final response should also be sent to the supervisor route.",
+    "Use continue when another provider Run is needed, done when your bounded work is finished, and blocked when the Run succeeded but cannot safely continue. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself.",
+    "Return a normal final response describing what you did and verified. That response is durable execution evidence and continuity context; it is not a control envelope.",
   ].join("\n");
 }
 
@@ -443,63 +464,113 @@ function recoverUnreconciledWake(db: BridgeDb, goal: AutonomousGoal, receipt: an
   });
 }
 
-function reconcile(db: BridgeDb, goal: AutonomousGoal, receipt: any, runId: string, result: AutonomousCycleResult | null, error: string | undefined, policy: AutonomousRunPolicy): void {
-  db.runInTransaction(() => {
+interface ReconcileOutcome {
+  goalStatus: AutonomousGoalStatus;
+  disposition: AutonomyDisposition | null;
+  evidence: string;
+  notify: boolean;
+}
+
+function reconcile(
+  db: BridgeDb,
+  goal: AutonomousGoal,
+  receipt: any,
+  runId: string,
+  responseText: string | undefined,
+  disposition: AutonomyDispositionRecord | null,
+  error: string | undefined,
+  policy: AutonomousRunPolicy,
+): ReconcileOutcome {
+  return db.runInTransaction(() => {
     const run = db.getRun(runId);
     const currentGoal = getAutonomousGoal(db, goal.goalId);
-    const evidence = result?.evidence ?? error ?? "malformed provider output";
-    const nextEvidence = boundedEvidence(goal, evidence);
-    if (currentGoal.status !== "active") {
-      if (run?.status === "running") db.updateRunCompleted(runId, evidence, null);
-      db.raw.prepare("UPDATE event_receipts SET status = 'completed', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
-      settleSupervisorInputsForRun(db, runId, "completed");
-      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
-      return;
-    }
+    const continuityEvidence = projectEvidence(responseText ?? error ?? "autonomous Run did not return evidence");
+    const nextEvidence = boundedEvidence(currentGoal, continuityEvidence);
+
     if (run?.status === "cancelled") {
-      db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?").run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
+      if (currentGoal.status === "active") {
+        db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
+          .run(goal.cycle + 1, JSON.stringify(boundedEvidence(currentGoal, `cancelled: ${run.error ?? "owner stop"}`)), goal.goalId);
+      }
       db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
       settleSupervisorInputsForRun(db, runId, "cancelled", "goal_cancelled");
       retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
-      return;
+      return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: responseText ?? "", notify: false };
     }
-    if (!result) {
-      db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ? WHERE run_id = ? AND status IN ('running', 'done')")
-        .run(error ?? "malformed autonomous cycle result", runId);
-      db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?").run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
-      db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run("malformed_result", runId, receipt.id);
-      settleSupervisorInputsForRun(db, runId, "failed", "malformed_result");
-      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
-      return;
+
+    if (error) {
+      db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ?, final_text_preview = COALESCE(?, final_text_preview) WHERE run_id = ? AND status IN ('running', 'done')")
+        .run(error, responseText ?? null, runId);
+      if (currentGoal.status === "active") {
+        db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
+          .run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
+      }
+      db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run("provider_failure", runId, receipt.id);
+      settleSupervisorInputsForRun(db, runId, "failed", "provider_failure");
+      if (getAutonomousGoal(db, goal.goalId).status !== "active") retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
+      return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: responseText ?? error, notify: false };
     }
-    db.updateRunCompleted(runId, result.evidence, null);
-    db.raw.prepare("UPDATE event_receipts SET status = 'completed', result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
+
+    if (responseText === undefined) {
+      throw new Error("autonomous Run reconciled without provider response or provider error");
+    }
+
+    if (!disposition) {
+      const missing = "missing_autonomy_disposition";
+      db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ?, final_text_preview = ? WHERE run_id = ? AND status IN ('running', 'done')")
+        .run(missing, responseText, runId);
+      if (currentGoal.status === "active") {
+        db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
+          .run(goal.cycle + 1, JSON.stringify(nextEvidence), goal.goalId);
+      }
+      db.raw.prepare("UPDATE event_receipts SET status = 'failed', error_class = ?, result_reference = ? WHERE id = ? AND status = 'run_created'").run(missing, runId, receipt.id);
+      settleSupervisorInputsForRun(db, runId, "failed", missing);
+      if (getAutonomousGoal(db, goal.goalId).status !== "active") retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
+      return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: responseText, notify: false };
+    }
+
+    db.updateRunCompleted(runId, responseText, null);
+    db.raw.prepare("UPDATE event_receipts SET status = 'completed', error_class = NULL, result_reference = ? WHERE id = ? AND status = 'run_created'").run(runId, receipt.id);
     settleSupervisorInputsForRun(db, runId, "completed");
-    const nextStatus: AutonomousGoalStatus = result.status === "progress"
-      ? (goal.cycle + 1 >= goal.maxCycles && policy === "provider" ? "budget_exhausted" : "active")
-      : result.status;
+
+    if (currentGoal.status !== "active") {
+      retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
+      return { goalStatus: currentGoal.status, disposition: disposition.disposition, evidence: responseText, notify: disposition.notify };
+    }
+
+    let nextStatus: AutonomousGoalStatus;
+    if (disposition.disposition === "blocked") {
+      nextStatus = "blocked";
+    } else if (disposition.disposition === "done") {
+      nextStatus = policy === "provider" ? "complete" : "active";
+    } else {
+      nextStatus = goal.cycle + 1 >= goal.maxCycles && policy === "provider" ? "budget_exhausted" : "active";
+    }
+
     db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
       .run(goal.cycle + 1, nextStatus, JSON.stringify(nextEvidence), goal.goalId);
-    if (policy === "provider" && result.status === "progress" && nextStatus === "active") {
-      scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: result.nextWakeReason! });
+    if (policy === "provider" && disposition.disposition === "continue" && nextStatus === "active") {
+      scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: AUTONOMY_CONTINUE_WAKE_REASON });
     } else if (nextStatus !== "active") {
       retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
     }
+    return { goalStatus: nextStatus, disposition: disposition.disposition, evidence: responseText, notify: disposition.notify };
   });
 }
 
-// Provider-neutral observation point after a cycle has already been parsed
-// and reconciled (#326) — no raw provider stdout, transcript, hidden
-// reasoning, or tool logs, only existing bounded autonomous-goal fields.
+// Provider-neutral observation point after a cycle has reconciled. It carries
+// only the ordinary final response plus controller-owned lifecycle projection;
+// no raw stdout, transcript, hidden reasoning, tool logs, or model-authored
+// event metadata cross this boundary.
 export interface CycleReconciledEvent {
   type: "autonomous_cycle_reconciled";
   goalId: string;
   cycle: number;
   runId: string;
   goalStatus: AutonomousGoalStatus;
-  cycleStatus: AutonomousCycleStatus;
+  disposition: AutonomyDisposition | null;
   evidence: string;
-  supervisorMessage?: string;
+  notify: boolean;
 }
 
 export async function runNextAutonomousGoal(
@@ -544,31 +615,35 @@ export async function runNextAutonomousGoal(
     if (!claim) return false;
     const { runId, supervisorInputs } = claim;
     const eventStore = new EventStore(db, runId);
-    const input: SurfaceNeutralTurnInput = {
-      prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason, currentPolicy, supervisorInputs),
-      sessionId: null,
-      chatId: 0,
-      chatKey: goalChatKey(goalId),
-      laneHandle,
-      runId,
-      eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },
-      collect: (event) => event.type === "run.completed" ? eventStore.queueCompleted(event) : eventStore.collect(event),
-      finalize: () => eventStore.finalize(),
-    };
-    let parsed: AutonomousCycleResult | null = null;
+    const dispositionChannel = createAutonomyDispositionChannel(runId);
+    let responseText: string | undefined;
+    let disposition: AutonomyDispositionRecord | null = null;
     let error: string | undefined;
     try {
-      const result = await engine.executeSurfaceNeutralTurn(input);
-      parsed = parseAutonomousCycleResult(result.text);
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+      const input: SurfaceNeutralTurnInput = {
+        prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason, currentPolicy, dispositionChannel.commandPath, supervisorInputs),
+        sessionId: null,
+        chatId: 0,
+        chatKey: goalChatKey(goalId),
+        laneHandle,
+        runId,
+        eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },
+        collect: (event) => event.type === "run.completed" ? eventStore.queueCompleted(event) : eventStore.collect(event),
+        finalize: () => eventStore.finalize(),
+      };
+      try {
+        const result = await engine.executeSurfaceNeutralTurn(input);
+        responseText = result.text;
+        disposition = dispositionChannel.read();
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+      } finally {
+        eventStore.finalize();
+      }
     } finally {
-      eventStore.finalize();
+      dispositionChannel.cleanup();
     }
-    const effectiveResult = currentPolicy === "external-observation" && parsed?.status === "complete"
-      ? { ...parsed, status: "progress" as const, nextWakeReason: undefined }
-      : parsed;
-    reconcile(db, current, currentWake, runId, effectiveResult, error, currentPolicy);
+    const outcome = reconcile(db, current, currentWake, runId, responseText, disposition, error, currentPolicy);
     if (onCycleReconciled) {
       try {
         const after = getAutonomousGoal(db, goalId);
@@ -577,10 +652,10 @@ export async function runNextAutonomousGoal(
           goalId,
           cycle: after.cycle,
           runId,
-          goalStatus: after.status,
-          cycleStatus: effectiveResult?.status ?? "blocked",
-          evidence: effectiveResult?.evidence ?? error ?? "malformed provider output",
-          ...(effectiveResult?.supervisorMessage ? { supervisorMessage: effectiveResult.supervisorMessage } : {}),
+          goalStatus: outcome.goalStatus,
+          disposition: outcome.disposition,
+          evidence: outcome.evidence,
+          notify: outcome.notify,
         });
       } catch {
         // Observer failures must never affect cycle ownership or reconciled
@@ -942,7 +1017,7 @@ export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<
     return executeSurfaceNeutralTurn(input);
   };
   const goalId = `live-smoke-${randomUUID()}`;
-  createAutonomousGoal(db, { goalId, prompt: "Return a bounded JSON result only; do not modify files or contact external systems.", constraints: ["non-destructive smoke only"], bot: "claude", maxCycles: 1 });
+  createAutonomousGoal(db, { goalId, prompt: "Perform a non-destructive smoke check, declare done with the run-scoped disposition helper, and return a concise ordinary final response. Do not modify files or contact external systems.", constraints: ["non-destructive smoke only"], bot: "claude", maxCycles: 1 });
   await drainAutonomousGoal(db, goalId, engine);
   const status = getAutonomousGoal(db, goalId).status;
   db.close();
