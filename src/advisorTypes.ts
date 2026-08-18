@@ -1,5 +1,6 @@
 import type { ProviderId } from "./providers/types.js";
 
+/** Compatibility surface retained for the manual slash-command adapter. */
 export type AdvisorPolicyMode = "manual" | "suggest" | "auto";
 export type AdvisorRequestMode = "plan" | "review" | "debug" | "risk" | "decision" | "pr_ready";
 export type AdvisorOrigin = "manual" | "suggest" | "auto";
@@ -9,8 +10,17 @@ export type AdvisorCheckpointDecision = "approve" | "reject";
 
 export interface AdvisorTarget { provider: ProviderId; model: string }
 export interface AdvisorConfig {
-  enabled: boolean; mode: AdvisorPolicyMode; chain: AdvisorTarget[];
-  maxCallsPerTurn: number; maxCallsPerTask: number; timeoutMs: number; contextMaxChars: number;
+  enabled: boolean;
+  /** Always manual. Bridge no longer suggests or automatically invokes Advisor. */
+  mode: AdvisorPolicyMode;
+  /** Allowed independent frontier targets. One target is selected per invocation; this is not a fallback chain. */
+  chain: AdvisorTarget[];
+  maxCallsPerTurn: number;
+  maxCallsPerTask: number;
+  timeoutMs: number;
+  questionMaxChars: number;
+  contextMaxChars: number;
+  outputMaxChars: number;
 }
 export interface AdvisorEvidenceInput {
   diffSummary?: string;
@@ -27,10 +37,7 @@ export interface AdvisorRequest {
   activeProvider: string; activeModel: string | null;
   evidence?: AdvisorEvidenceInput;
 }
-export interface AdvisorEvidenceBasis {
-  claim: string;
-  evidenceIds: string[];
-}
+export interface AdvisorEvidenceBasis { claim: string; evidenceIds: string[] }
 export interface AdvisorResult {
   adviceMd: string; risks: string[]; suggestedNextSteps: string[]; confidence: AdvisorConfidence;
   decision?: AdvisorCheckpointDecision;
