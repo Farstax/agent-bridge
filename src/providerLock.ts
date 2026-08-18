@@ -9,6 +9,8 @@ export interface TelegramRuntimePolicy {
   surfaceIdentity: string;
   pollKind: CliKind;
   cliSwitchingEnabled: boolean;
+  databaseRole: "shared" | "interactive";
+  databaseServiceId: "telegram:standalone" | "telegram:interactive";
 }
 
 const PROVIDERS = new Set<CliKind>(["codex", "claude", "antigravity"]);
@@ -43,6 +45,8 @@ export function resolveTelegramRuntimePolicy(
       surfaceIdentity: "telegram:interactive",
       pollKind: "codex",
       cliSwitchingEnabled: true,
+      databaseRole: "interactive",
+      databaseServiceId: "telegram:interactive",
     };
   }
 
@@ -53,5 +57,7 @@ export function resolveTelegramRuntimePolicy(
     surfaceIdentity: `telegram:${providerLock}`,
     pollKind: providerLock,
     cliSwitchingEnabled: false,
+    databaseRole: "shared",
+    databaseServiceId: "telegram:standalone",
   };
 }
