@@ -1,16 +1,13 @@
 /**
- * PURPOSE: Entry point for the unified interactive bot.
- * One Telegram bot polls for messages; each message is routed to the user's
- * preferred CLI engine (codex | claude | antigravity). /cli shows the active
- * CLI and an inline keyboard for one-tap switching.
- * NEIGHBORS: src/interactiveBot.ts, src/engine.ts, src/bridge.ts, src/db.ts
+ * PURPOSE: Entry point for the unified Telegram runtime.
+ * One Telegram bot polls for messages. It is either switchable across providers
+ * or fixed to one provider by BRIDGE_PROVIDER_LOCK for dedicated bot units.
+ * NEIGHBORS: src/providerLock.ts, src/interactiveBot.ts, src/engine.ts, src/db.ts
  */
 
 import dotenv from "dotenv";
 import { isAbsolute, join } from "node:path";
-import {
-  getBridgeProjectDir,
-} from "./bridge.js";
+import { getBridgeProjectDir } from "./bridge.js";
 import { openProductionDb } from "./db.js";
 import { TelegramClient } from "./telegram.js";
 import { BridgeEngine } from "./engine.js";
@@ -40,8 +37,10 @@ import {
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
+import { resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
+import { resolveTimeoutsForKind } from "./timeouts.js";
 import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
@@ -61,9 +60,20 @@ dotenv.config({
   override: false,
 });
 
-
-const token = process.env.TELEGRAM_BOT_TOKEN_INTERACTIVE;
-if (!token) throw new Error("TELEGRAM_BOT_TOKEN_INTERACTIVE is required");
+const supportedCliKinds = interactiveChainKinds();
+const configuredCliChain = parseCliChain(
+  process.env.INTERACTIVE_CLI_CHAIN,
+  { allowed: supportedCliKinds, fallback: ["codex", "claude", "antigravity"] },
+);
+const runtimePolicy = resolveTelegramRuntimePolicy(process.env, supportedCliKinds);
+const { providerLock, token } = runtimePolicy;
+if (!token) {
+  throw new Error(
+    providerLock
+      ? `Telegram bot token is required for locked provider ${providerLock}`
+      : "TELEGRAM_BOT_TOKEN_INTERACTIVE is required",
+  );
+}
 
 const allowedUserIds = new Set(
   (process.env.TELEGRAM_ALLOWED_USER_IDS || process.env.TELEGRAM_ALLOWED_USER_ID || "")
@@ -72,11 +82,11 @@ const allowedUserIds = new Set(
 
 const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/bridge.sqlite`;
 const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS || 1000);
-const executionMode = resolveExecutionMode("codex", process.env);
+const executionMode = resolveExecutionMode(providerLock ?? "codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
 const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
-const integratedHealth = parseHealthBotMode(process.env) === "integrated";
+const integratedHealth = !providerLock && parseHealthBotMode(process.env) === "integrated";
 const autonomyDir = process.env.AGENT_BRIDGE_AUTONOMY_DIR?.trim() || null;
 const autonomyDbPath = process.env.AGENT_BRIDGE_AUTONOMY_DB_PATH?.trim() || null;
 if (Boolean(autonomyDir) !== Boolean(autonomyDbPath)) throw new Error("AGENT_BRIDGE_AUTONOMY_DIR and AGENT_BRIDGE_AUTONOMY_DB_PATH must be configured together");
@@ -89,7 +99,7 @@ const autonomyEnabled = Boolean(autonomyDir && autonomyDbPath);
 const config: BridgeConfig = {
   allowedUserIds,
   serviceEnvFile: process.env.BRIDGE_ENV_FILE || null,
-  serviceKind: null,
+  serviceKind: providerLock,
   pollIntervalMs,
   executionMode,
   busyMessageMode,
@@ -105,21 +115,27 @@ const soulContext = loadSoulContext({
 if (soulContext) console.log(`[interactive] loaded SOUL.md context (${soulContext.length} chars)`);
 
 const db = openProductionDb(dbPath, {
-  serviceId: "telegram:interactive",
+  serviceId: runtimePolicy.databaseServiceId,
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: "interactive",
+  databaseRole: runtimePolicy.databaseRole,
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const continuationStore = new ContinuationRepository(db.raw);
-const client = new TelegramClient(token, fetch, 45_000);
+const client = new TelegramClient(
+  token,
+  fetch,
+  resolveTimeoutsForKind(providerLock ?? "codex").fetchTimeoutMs,
+);
 const autonomyDb = autonomyDbPath ? openProductionDb(autonomyDbPath, {
   serviceId: "telegram:interactive-autonomy",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "interactive",
 }) : null;
-const ownerNotificationSocketPath = process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
+const ownerNotificationSocketPath = providerLock
+  ? undefined
+  : process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
 const ownerNotificationIngress = ownerNotificationSocketPath
   ? await startOwnerNotificationIngress({
       socketPath: ownerNotificationSocketPath,
@@ -158,9 +174,6 @@ const integratedHealthRuntime = healthDb ? createHealthRuntime({
 await recoverCancelledContinuationContainment(db, continuationStore);
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
-  // Durable continuation records own restart reconciliation. Keep their runs
-  // out of generic orphan cleanup until the provider-specific engine has
-  // safely resumed or terminally fenced the continuation.
   processState: (run) => continuationStore.hasActiveRun(run.run_id) ? "live" : getExecutionProcessState(run.run_id),
   containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
   onReconciled: async (run) => {
@@ -190,38 +203,38 @@ if (!botUsername) {
   }
 }
 
-// Fallback chain state. Unknown chain entries are dropped by the shared
-// parser; an all-invalid chain falls back to the full default order.
-const cliChain = parseCliChain(
-  process.env.INTERACTIVE_CLI_CHAIN,
-  { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity"] },
+const fallbackChain = new ProviderFallbackChain(
+  providerLock ? runtimePolicy.cliKinds : configuredCliChain,
+  db,
 );
-const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
-  const available = getAvailableCliKinds();
+  const detected = getAvailableCliKinds();
+  if (providerLock) {
+    const available = new Set<CliKind>(detected.has(providerLock) ? [providerLock] : []);
+    return { pref: available.has(providerLock) ? providerLock : null, available, stored: providerLock };
+  }
+
   const stored = getUserCliPreference(db, chatKey);
-  const pref = resolveAvailableCliPreference(stored, available);
+  const pref = resolveAvailableCliPreference(stored, detected);
   if (pref && pref !== stored) {
     setUserCliPreference(db, chatKey, pref);
     fallbackChain.setActiveCli(chatKey, pref);
   }
-  return { pref, available, stored };
+  return { pref, available: detected, stored };
 }
 
-// Build one engine per CLI kind — none polls; we dispatch handleUpdate manually.
-const CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const engines = Object.fromEntries(
-  CLI_KINDS.map((kind) => {
+  runtimePolicy.cliKinds.map((kind) => {
     const botConfig = config.bots[kind as BotKind];
     return [
       kind,
       new BridgeEngine(
         {
           kind,
-          surfaceIdentity: "telegram:interactive",
+          surfaceIdentity: runtimePolicy.surfaceIdentity,
           botConfig: { ...botConfig, token },
           allowedUserIds,
           executionMode: resolveExecutionMode(kind as BotKind, process.env),
@@ -245,6 +258,12 @@ const engines = Object.fromEntries(
   }),
 ) as Record<CliKind, BridgeEngine>;
 
+const defaultPref = providerLock
+  ?? resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds())
+  ?? "codex";
+
+// Autonomy engines run all providers regardless of any interactive provider lock.
+const AUTONOMY_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const autonomyWorkspaceContext = autonomyDir
   ? loadWorkspaceContext({ ...process.env, AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: join(autonomyDir, "CONTEXT.md") })
   : "";
@@ -252,7 +271,7 @@ const autonomySoulContext = autonomyDir
   ? loadSoulContext({ mode: "summary", path: join(autonomyDir, "SOUL.md") })
   : null;
 const autonomyEngines = autonomyDb && autonomyDir ? Object.fromEntries(
-  CLI_KINDS.map((kind) => [kind, new BridgeEngine({
+  AUTONOMY_CLI_KINDS.map((kind) => [kind, new BridgeEngine({
     kind: "autonomous",
     surfaceIdentity: AUTONOMOUS_RUN_SURFACE,
     executionKind: kind as BotKind,
@@ -290,7 +309,6 @@ const autonomyController = autonomyDb && autonomyDir && autonomyEngines ? new Au
 }) : null;
 autonomyController?.resumeActive();
 
-const defaultPref = resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds()) ?? "codex";
 async function registerGlobalCommands(pref: CliKind, label: string): Promise<void> {
   for (const body of buildGlobalInteractiveCommandRegistrations(pref, { integratedHealth, autonomy: autonomyEnabled })) {
     const scopeName = body.scope?.type ?? "default";
@@ -326,22 +344,16 @@ for (const engine of Object.values(engines)) {
   });
 }
 
-// The interactive process owns one shared delivery surface but provider
-// continuations are provider-specific, so recover each provider's durable
-// records before allowing generic queue recovery or starting Telegram polling.
 await Promise.all(Object.values(engines).map((engine) => engine.recoverContinuations()));
 await engines[defaultPref].recoverPendingQueues();
 
 await registerGlobalCommands(defaultPref, "");
-// Tracks which group chat IDs have had per-chat commands registered this session.
-// Telegram requires a chat-specific scope registration for commands to appear reliably
-// in individual groups, even when global scope alone is not always picked up.
 const registeredGroupChats = new Set<number>();
 
-console.log("[interactive] starting polling...");
+console.log(`[interactive] starting polling${providerLock ? ` locked to ${providerLock}` : ""}...`);
 
-let offset = db.getLastUpdateId("codex");
-const POLL_KIND = "codex" as const;
+let offset = db.getLastUpdateId(runtimePolicy.pollKind);
+const POLL_KIND = runtimePolicy.pollKind;
 
 for (;;) {
   try {
@@ -365,7 +377,7 @@ for (;;) {
         if (groupChatId != null && !registeredGroupChats.has(groupChatId)) {
           registeredGroupChats.add(groupChatId);
           const { pref: groupPref } = resolveCredentialCheckedPreference(String(groupChatId));
-          registerGroupChatCommands(groupPref ?? "codex", groupChatId);
+          registerGroupChatCommands(groupPref ?? defaultPref, groupChatId);
         }
 
         if (!isAuthorizedInteractiveUpdate(typedUpdate, allowedUserIds)) {
@@ -428,6 +440,13 @@ for (;;) {
           }
 
           if (isCliCommandText(rawText, botUsername)) {
+            if (providerLock) {
+              await sendTelegramMessage({ client, kind: "interactive", chatId, body: {
+                text: `Provider is fixed to **${providerLock}** for this bot.`,
+                message_thread_id: message.message_thread_id,
+              } });
+              continue;
+            }
             const { pref, available, stored } = resolveCredentialCheckedPreference(chatKey);
             await sendTelegramMessage({ client, kind: "interactive", chatId, body: {
               text: buildCliStatusText(pref ?? stored, available),
@@ -459,6 +478,13 @@ for (;;) {
         if (cbq?.data) {
           const newCli = handleCliSwitchCallback(cbq.data);
           if (newCli !== null) {
+            if (providerLock) {
+              await client.answerCallbackQuery({
+                callback_query_id: cbq.id,
+                text: `Provider is fixed to ${providerLock}`,
+              });
+              continue;
+            }
             const available = getAvailableCliKinds();
             if (!available.has(newCli)) {
               await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `${newCli} is not available on this box` });
@@ -537,7 +563,9 @@ for (;;) {
               .catch((err: unknown) => console.error("[interactive] handleUpdate error", err));
           }
         } else {
-          const pref = resolveAvailableCliPreference("codex", getAvailableCliKinds());
+          const pref = providerLock
+            ? (getAvailableCliKinds().has(providerLock) ? providerLock : null)
+            : resolveAvailableCliPreference("codex", getAvailableCliKinds());
           if (pref) {
             await engines[pref].handleUpdate(typedUpdate);
           }

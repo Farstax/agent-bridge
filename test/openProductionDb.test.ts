@@ -205,7 +205,6 @@ describe("Issue #135 Phase 4C.2: openProductionDb()", () => {
 describe("Issue #135 Phase 4C.2: production entrypoints use openProductionDb()", () => {
   it("each of the five service entrypoints calls openProductionDb, not openDb", () => {
     for (const file of [
-      "src/index.ts",
       "src/index-interactive.ts",
       "src/index-discord-interactive.ts",
       "src/index-health.ts",

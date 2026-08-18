@@ -1,11 +1,10 @@
 /**
- * PURPOSE: Single source of truth for bot configuration across all entry points.
- * Replaces the four previously-duplicated inline bots blocks (index.ts,
- * index-interactive.ts and index-discord-interactive.ts) whose
- * drift shipped live configuration defects. Epic 1, ADR-006.
+ * PURPOSE: Single source of truth for bot configuration across runtime entry points.
+ * Replaces previously-duplicated inline bot config blocks whose drift shipped
+ * live configuration defects. Epic 1, ADR-006.
  * INPUTS: process-env-shaped record.
  * OUTPUTS: BridgeConfig.bots map and token-uniqueness validation.
- * NEIGHBORS: src/index*.ts, src/types.ts
+ * NEIGHBORS: src/index-interactive.ts, src/index-discord-interactive.ts, src/types.ts
  */
 
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
@@ -18,8 +17,8 @@ export function parseModelPreference(raw: string | undefined): string[] {
 
 /**
  * Build the three bot configs from env. Tokens are omitted by default because
- * most surfaces (interactive and discord) construct engines without
- * per-bot Telegram tokens; only src/index.ts runs one polling bot per token.
+ * interactive surfaces construct engines around one surface token. Callers
+ * that validate configured per-provider tokens may opt in with withTokens.
  */
 export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): Record<BotKind, BotConfig> {
   const token = (v: string | undefined) => (opts.withTokens ? v : undefined);
@@ -83,10 +82,8 @@ export function validateBusyMessageModeEnv(env: Env): void {
  */
 /**
  * Config shape validateBridgeConfig() actually inspects: allowedUserIds is
- * required, everything else BridgeConfig defines is optional here (bot
- * validation is intentionally skipped — each service validates its own bot
- * in index.ts, allowing e.g. the antigravity service to run without a
- * codex token and vice versa).
+ * required, everything else BridgeConfig defines is optional here. Runtime
+ * entry points validate the token needed by their own surface.
  */
 export type ValidatableBridgeConfig = Pick<BridgeConfig, "allowedUserIds"> & Partial<Omit<BridgeConfig, "allowedUserIds">>;
 

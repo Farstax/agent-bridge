@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
 
 const REQUIRED_ENTRYPOINTS = [
-  "src/index.ts",
   "src/index-interactive.ts",
   "src/index-discord-interactive.ts",
   "src/index-health.ts",
