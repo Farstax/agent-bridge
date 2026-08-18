@@ -25,12 +25,20 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           parts = sorted(Path('.github/issue461').glob('part*.patch'))
-          with Path('/tmp/issue461.patch').open('wb') as out:
-              for part in parts:
-                  data = part.read_bytes()
-                  out.write(data)
-                  if not data.endswith(b'\n'):
-                      out.write(b'\n')
+          data = b''.join(part.read_bytes() + (b'' if part.read_bytes().endswith(b'\n') else b'\n') for part in parts)
+          text = data.decode()
+          old = '''-    const { runCli } = await import("../src/cli.js");
+-    try {
+-      const mockRunCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Error: timed out waiting for response" }));'''
+          new = '''-    // Mock runCli/parseCliResult behavior by testing with a command that outputs an error/timeout string
+-    const { runCli } = await import("../src/cli.js");
+-    const originalRunCli = runCli;
+-    try {
+-      // Mock runCli to return an error string in stdout
+-      const mockRunCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Error: timed out waiting for response" }));'''
+          if old not in text:
+              raise SystemExit('expected staged patch repair target missing')
+          Path('/tmp/issue461.patch').write_text(text.replace(old, new, 1))
           PY
           git apply --check /tmp/issue461.patch
           git apply /tmp/issue461.patch
