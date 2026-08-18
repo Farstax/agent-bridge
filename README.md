@@ -40,12 +40,18 @@ the installed Skills.
 
 ## Services
 
+All Telegram conversation services use the same production runtime. The three
+dedicated provider units set `BRIDGE_PROVIDER_LOCK` and keep their existing
+provider-specific tokens and persistent databases. The interactive unit leaves
+the lock unset so `/cli` switching and configured provider fallback remain
+available.
+
 | Service | Entry point | Surface |
 |---|---|---|
-| `agent-bridge-codex.service` | `src/index.ts` | Telegram |
-| `agent-bridge-antigravity.service` | `src/index.ts` | Telegram |
-| `agent-bridge-claude.service` | `src/index.ts` | Telegram |
-| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram |
+| `agent-bridge-codex.service` | `src/index-interactive.ts` | Telegram, locked to Codex |
+| `agent-bridge-antigravity.service` | `src/index-interactive.ts` | Telegram, locked to Antigravity |
+| `agent-bridge-claude.service` | `src/index-interactive.ts` | Telegram, locked to Claude |
+| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable |
 | `agent-bridge-health.service` | `src/index-health.ts` | Telegram |
 | `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord |
 
@@ -59,13 +65,15 @@ npm install
 ```
 
 Copy the relevant `.env.*.example` file, set the provider command and token,
-then run the matching entry point. The systemd installer and guarded rollout
-helpers are documented in [docs/INITIAL-INSTALL.md](docs/INITIAL-INSTALL.md)
+then run the matching service or `npm start`. The systemd installer and guarded
+rollout helpers are documented in [docs/INITIAL-INSTALL.md](docs/INITIAL-INSTALL.md)
 and [docs/GUARDED-ROLLOUT.md](docs/GUARDED-ROLLOUT.md).
 
 The interactive fallback order is configured with
-`INTERACTIVE_CLI_CHAIN`. Explicit `AGENT_BRIDGE_SKILLS` overrides keep their
-existing behaviour.
+`INTERACTIVE_CLI_CHAIN`. `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity`
+turns the same Telegram runtime into a fixed-provider instance; the shipped
+dedicated systemd units set this automatically. Explicit `AGENT_BRIDGE_SKILLS`
+overrides keep their existing behaviour.
 
 ## Data compatibility
 
@@ -73,6 +81,10 @@ Schema version 9 removes the obsolete Engineering Worker tables, including
 `work_items`, `work_jobs`, approvals, GitHub links, feature plans, and
 role-assignment rows. The migration accepts populated legacy tables because
 their data is obsolete by design. Active runtime state remains intact.
+
+Provider-lock convergence does not move or change existing dedicated provider
+databases. Locked units keep the `shared` database role; the switchable
+interactive unit keeps the `interactive` role.
 
 ## Development
 
