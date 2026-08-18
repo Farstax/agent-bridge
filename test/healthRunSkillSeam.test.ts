@@ -56,5 +56,6 @@ describe("health investigation uses ordinary Run + native skill", () => {
     expect(source("src/health/scheduler.ts")).not.toMatch(/generateSuggestion|suggestFn|formatSuggestion/);
     expect(source("src/health/config.ts")).not.toMatch(/HEALTH_SUGGEST_|HEALTH_CLI_|parseHealthCliConfig|resolveHealthEngineExecutionMode/);
     expect(source("src/index-health.ts")).not.toMatch(/HEALTH_MONITOR_AUTONOMY|HEALTH_SESSION_TTL|HealthBridgeBot|HealthContextStore/);
+    expect(source("scripts/agent-bridge-install.py")).not.toMatch(/HEALTH_MONITOR_AUTONOMY|HEALTH_SUGGEST_BOT/);
   });
 });
