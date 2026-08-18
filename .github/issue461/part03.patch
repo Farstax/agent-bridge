@@ -1,0 +1,323 @@
+-// ── HealthScheduler — suggest mode (runPlugin called directly) ────────────────
+-
+-describe("HealthScheduler suggest mode", () => {
+-  it("sends a second suggestion message for amber report when autonomy=suggest", async () => {
+-    const { HealthScheduler } = await import("../src/health/scheduler.js");
+-    const mockReport = {
+-      pluginName: "content-crawler",
+-      status: "amber" as const,
+-      checks: [{ name: "queue-depth", status: "amber" as const, message: "381 items" }],
+-      summary: "Warning: queue-depth",
+-      timestamp: new Date().toISOString(),
+-    };
+-    const mockPlugin = { name: "content-crawler", check: vi.fn().mockResolvedValue(mockReport) };
+-    const reports: string[] = [];
+-    const scheduler = new HealthScheduler({
+-      plugins: [mockPlugin],
+-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest", suggestBot: "claude" as const, suggestBotConfig: { command: "claude", modelPreference: [] } },
+-      sendReport: async (text) => { reports.push(text); },
+-      _suggestFn: async () => "Drain the queue by restarting the worker",
+-    });
+-    await scheduler.runPlugin(mockPlugin);
+-    expect(reports).toHaveLength(2);
+-    expect(reports[1]).toContain("Suggested actions");
+-    expect(reports[1]).toContain("Drain the queue");
+-  });
+-
+-  it("normalizes suggestion messages to one heading and command code blocks", async () => {
+-    const { HealthScheduler } = await import("../src/health/scheduler.js");
+-    const mockReport = {
+-      pluginName: "agent-bridge-health",
+-      status: "red" as const,
+-      checks: [{ name: "heap-usage", status: "red" as const, message: "Heap high" }],
+-      summary: "Critical: heap-usage",
+-      timestamp: new Date().toISOString(),
+-    };
+-    const mockPlugin = { name: "agent-bridge-health", check: vi.fn().mockResolvedValue(mockReport) };
+-    const reports: string[] = [];
+-    const scheduler = new HealthScheduler({
+-      plugins: [mockPlugin],
+-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest", suggestBot: "claude" as const, suggestBotConfig: { command: "claude", modelPreference: [] } },
+-      sendReport: async (text) => { reports.push(text); },
+-      _suggestFn: async () => [
+-        "💡 *Suggested actions:*",
+-        "",
+-        "1. Releases accumulated memory and resets the process heap.",
+-        "Restart the failing health monitor service:",
+-        "sudo systemctl restart agent-bridge-health",
+-      ].join("\n"),
+-    });
+-    await scheduler.runPlugin(mockPlugin);
+-    expect(reports).toHaveLength(2);
+-    expect(reports[1].match(/Suggested actions/g)).toHaveLength(1);
+-    expect(reports[1]).toContain("```bash\nsudo systemctl restart agent-bridge-health\n```");
+-  });
+-
+-  it("does NOT send suggestion for green report in suggest mode", async () => {
+-    const { HealthScheduler } = await import("../src/health/scheduler.js");
+-    const mockReport = {
+-      pluginName: "test",
+-      status: "green" as const,
+-      checks: [],
+-      summary: "All good",
+-      timestamp: new Date().toISOString(),
+-    };
+-    const mockPlugin = { name: "test", check: vi.fn().mockResolvedValue(mockReport) };
+-    const reports: string[] = [];
+-    const scheduler = new HealthScheduler({
+-      plugins: [mockPlugin],
+-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest", suggestBot: "claude" as const, suggestBotConfig: { command: "claude", modelPreference: [] } },
+-      sendReport: async (text) => { reports.push(text); },
+-      _suggestFn: async () => "should not appear",
+-    });
+-    await scheduler.runPlugin(mockPlugin);
+-    expect(reports).toHaveLength(1);
+-  });
+-
+-  it("does NOT send suggestion when autonomy=report even for red", async () => {
+-    const { HealthScheduler } = await import("../src/health/scheduler.js");
+-    const mockReport = {
+-      pluginName: "test",
+-      status: "red" as const,
+-      checks: [{ name: "db-file", status: "red" as const, message: "missing" }],
+-      summary: "Critical",
+-      timestamp: new Date().toISOString(),
+-    };
+-    const mockPlugin = { name: "test", check: vi.fn().mockResolvedValue(mockReport) };
+-    const reports: string[] = [];
+-    const scheduler = new HealthScheduler({
+-      plugins: [mockPlugin],
+-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report" },
+-      sendReport: async (text) => { reports.push(text); },
+-      _suggestFn: async () => "should not appear",
+-    });
+-    await scheduler.runPlugin(mockPlugin);
+-    expect(reports).toHaveLength(1);
+-  });
+-
+-  it("does NOT send suggestion when suggestBot is not configured", async () => {
+-    const { HealthScheduler } = await import("../src/health/scheduler.js");
+-    const mockReport = {
+-      pluginName: "test",
+-      status: "red" as const,
+-      checks: [],
+-      summary: "Critical",
+-      timestamp: new Date().toISOString(),
+-    };
+-    const mockPlugin = { name: "test", check: vi.fn().mockResolvedValue(mockReport) };
+-    const reports: string[] = [];
+-    const scheduler = new HealthScheduler({
+-      plugins: [mockPlugin],
+-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest" },
+-      sendReport: async (text) => { reports.push(text); },
+-      _suggestFn: async () => "should not appear",
+-    });
+-    await scheduler.runPlugin(mockPlugin);
+-  });
++// ── HealthScheduler — overlap protection ────────────────────────────────────
+ 
++describe("HealthScheduler overlap protection", () => {
+   it("skips running a plugin if a previous run is still in flight", async () => {
+     const { HealthScheduler } = await import("../src/health/scheduler.js");
+     const mockReport = {
+@@ -1541,7 +1234,7 @@
+     const reports: string[] = [];
+     const scheduler = new HealthScheduler({
+       plugins: [mockPlugin],
+-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report" },
++      config: { enabled: true, cadenceSeconds: 60 },
+       sendReport: async (text) => { reports.push(text); },
+     });
+ 
+@@ -1585,53 +1278,6 @@
+   });
+ });
+ 
+-// ── parseHealthCliConfig — env alias precedence ───────────────────────────────
+-
+-describe("parseHealthCliConfig", () => {
+-  it("prefers HEALTH_SUGGEST_BOT over HEALTH_CLI_BOT", async () => {
+-    const { parseHealthCliConfig } = await import("../src/health/config.js");
+-    const config = parseHealthCliConfig({ HEALTH_SUGGEST_BOT: "codex", HEALTH_CLI_BOT: "antigravity" });
+-    expect(config.bot).toBe("codex");
+-  });
+-
+-  it("falls back to HEALTH_CLI_BOT when HEALTH_SUGGEST_BOT is absent", async () => {
+-    const { parseHealthCliConfig } = await import("../src/health/config.js");
+-    const config = parseHealthCliConfig({ HEALTH_CLI_BOT: "antigravity" });
+-    expect(config.bot).toBe("antigravity");
+-  });
+-
+-  it("defaults bot to claude when neither env var is set", async () => {
+-    const { parseHealthCliConfig } = await import("../src/health/config.js");
+-    const config = parseHealthCliConfig({});
+-    expect(config.bot).toBe("claude");
+-  });
+-
+-  it("prefers HEALTH_SUGGEST_COMMAND over HEALTH_CLI_COMMAND", async () => {
+-    const { parseHealthCliConfig } = await import("../src/health/config.js");
+-    const config = parseHealthCliConfig({
+-      HEALTH_SUGGEST_COMMAND: "/usr/bin/claude",
+-      HEALTH_CLI_COMMAND: "/old/claude",
+-    });
+-    expect(config.command).toBe("/usr/bin/claude");
+-  });
+-
+-  it("falls back to HEALTH_CLI_COMMAND when HEALTH_SUGGEST_COMMAND is absent", async () => {
+-    const { parseHealthCliConfig } = await import("../src/health/config.js");
+-    const config = parseHealthCliConfig({ HEALTH_CLI_COMMAND: "/opt/claude" });
+-    expect(config.command).toBe("/opt/claude");
+-  });
+-
+-  it("prefers HEALTH_SUGGEST_MODEL_PREFERENCE over HEALTH_CLI_MODEL_PREFERENCE", async () => {
+-    const { parseHealthCliConfig } = await import("../src/health/config.js");
+-    const config = parseHealthCliConfig({
+-      HEALTH_SUGGEST_MODEL_PREFERENCE: "claude-opus-4-8,claude-sonnet-4-6",
+-      HEALTH_CLI_MODEL_PREFERENCE: "claude-haiku-4-5",
+-    });
+-    expect(config.modelPreference[0]).toBe("claude-opus-4-8");
+-    expect(config.modelPreference).toHaveLength(2);
+-  });
+-});
+-
+ // ── ServerPlugin — heavy lane CPU suppression ────────────────────────────────
+ 
+ describe("ServerPlugin — heavy lane CPU suppression", () => {
+@@ -1758,48 +1404,3 @@
+   });
+ });
+ 
+-// ── resolveHealthEngineExecutionMode — engine chat path honors env ────────────
+-
+-describe("resolveHealthEngineExecutionMode", () => {
+-  it("defaults to safe when env sets no execution mode", async () => {
+-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+-    expect(resolveHealthEngineExecutionMode({}, "codex")).toBe("safe");
+-  });
+-
+-  it("returns trusted when BRIDGE_EXECUTION_MODE=trusted", async () => {
+-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+-    expect(resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "trusted" }, "codex")).toBe("trusted");
+-  });
+-
+-  it("per-bot execution mode overrides the global setting", async () => {
+-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+-    expect(
+-      resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "trusted", CODEX_EXECUTION_MODE: "safe" }, "codex"),
+-    ).toBe("safe");
+-  });
+-
+-  it("ignores invalid values and stays safe", async () => {
+-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
+-    expect(resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "yolo" }, "codex")).toBe("safe");
+-  });
+-
+-  it("index-health wires the engine through resolveHealthEngineExecutionMode, not a hardcoded mode", async () => {
+-    const { readFileSync } = await import("node:fs");
+-    const text = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
+-    expect(text).not.toMatch(/executionMode:\s*"safe"/);
+-    expect(text).toMatch(/resolveHealthEngineExecutionMode/);
+-  });
+-
+-  it("autonomous suggestion invocations stay safe regardless of env", async () => {
+-    const oldEnv = process.env.BRIDGE_EXECUTION_MODE;
+-    process.env.BRIDGE_EXECUTION_MODE = "trusted";
+-    try {
+-      const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
+-      const inv = buildSuggestionInvocation("codex", { command: "codex", modelPreference: [] }, "analyze");
+-      expect(inv.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+-    } finally {
+-      if (oldEnv === undefined) delete process.env.BRIDGE_EXECUTION_MODE;
+-      else process.env.BRIDGE_EXECUTION_MODE = oldEnv;
+-    }
+-  });
+-});
+--- a/test/healthReports.test.ts
++++ b/test/healthReports.test.ts
+@@ -0,0 +1,86 @@
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import { rmSync } from "node:fs";
++import Database from "better-sqlite3";
++import { applyMigrations } from "../src/db/schema.js";
++import { HealthReportStore } from "../src/health/reports.js";
++
++describe("HealthReportStore", () => {
++  let db: Database.Database;
++  let dbPath: string;
++
++  beforeEach(() => {
++    dbPath = join(tmpdir(), `health-reports-test-${Date.now()}-${Math.random()}.sqlite`);
++    db = new Database(dbPath);
++    applyMigrations(db, undefined, "health");
++  });
++
++  afterEach(() => {
++    db.close();
++    try { rmSync(dbPath); } catch {}
++  });
++
++  it("excludes a previously persisted disabled plugin from the aggregate", () => {
++    const reports = new HealthReportStore(db);
++    const timestamp = new Date().toISOString();
++    reports.saveReport({ pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp });
++    reports.saveReport({ pluginName: "server", status: "red", checks: [], summary: "Disk full", timestamp });
++
++    const aggregate = reports.getAggregate({ activePluginNames: ["agent-bridge"], freshnessSeconds: 300 });
++
++    expect(aggregate.status).toBe("green");
++    expect(aggregate.evidence).toEqual({ missingPluginNames: [], stalePluginNames: [] });
++    expect(aggregate.nonGreenReports).toEqual([]);
++  });
++
++  it("derives the worst current status without losing another plugin report", () => {
++    const reports = new HealthReportStore(db);
++    const timestamp = new Date().toISOString();
++    reports.saveReport({ pluginName: "agent-bridge", status: "amber", checks: [], summary: "Updates", timestamp });
++    reports.saveReport({ pluginName: "server", status: "red", checks: [], summary: "Disk full", timestamp });
++    reports.saveReport({ pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp });
++
++    const aggregate = reports.getAggregate({ activePluginNames: ["agent-bridge", "server"], freshnessSeconds: 300 });
++
++    expect(aggregate.status).toBe("red");
++    expect(aggregate.reports.map((report) => report.pluginName)).toEqual(["agent-bridge", "server"]);
++    expect(aggregate.nonGreenReports.map((report) => report.pluginName)).toEqual(["server"]);
++  });
++
++  it("marks missing and stale evidence separately from HealthStatus", () => {
++    const reports = new HealthReportStore(db);
++    reports.saveReport({ pluginName: "agent-bridge", status: "green", checks: [], summary: "Healthy", timestamp: new Date().toISOString() });
++    const nowSeconds = Math.floor(Date.now() / 1000);
++
++    const aggregate = reports.getAggregate({
++      activePluginNames: ["agent-bridge", "server", "content-crawler"],
++      freshnessSeconds: 10,
++      nowSeconds: nowSeconds + 11,
++    });
++
++    expect(aggregate.status).toBeNull();
++    expect(aggregate.evidence).toEqual({
++      missingPluginNames: ["server", "content-crawler"],
++      stalePluginNames: ["agent-bridge"],
++    });
++  });
++
++  it("imports a valid legacy last report without inventing other plugin reports", () => {
++    const report = { pluginName: "agent-bridge", status: "green" as const, checks: [], summary: "Healthy", timestamp: new Date().toISOString() };
++    db.exec(`CREATE TABLE IF NOT EXISTS health_context (
++      id INTEGER PRIMARY KEY CHECK (id = 1),
++      last_report_json TEXT,
++      updated_at INTEGER
++    )`);
++    db.prepare("INSERT INTO health_context (id, last_report_json, updated_at) VALUES (1, ?, unixepoch())").run(JSON.stringify(report));
++
++    const aggregate = new HealthReportStore(db).getAggregate({
++      activePluginNames: ["agent-bridge", "server"],
++      freshnessSeconds: 300,
++    });
++
++    expect(aggregate.status).toBe("green");
++    expect(aggregate.evidence).toEqual({ missingPluginNames: ["server"], stalePluginNames: [] });
++  });
++});
