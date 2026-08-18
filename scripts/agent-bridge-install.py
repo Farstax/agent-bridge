@@ -42,6 +42,7 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "git-sandbox",
     "cli-auth-telegram",
     "autonomous-work",
+    "health-troubleshooting",
 )
 
 # unit, defaults file, enabling token(s), persistent database directory
