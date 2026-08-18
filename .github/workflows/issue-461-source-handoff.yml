@@ -27,8 +27,8 @@ jobs:
           parts = sorted(Path('.github/issue461').glob('part*.patch'))
           data = b''.join(part.read_bytes() + (b'' if part.read_bytes().endswith(b'\n') else b'\n') for part in parts)
           text = data.decode()
-          old = '-    const { runCli } = await import("../src/cli.js");\n-    try {\n-      const mockRunCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Error: timed out waiting for response" }));'
-          new = '-    // Mock runCli/parseCliResult behavior by testing with a command that outputs an error/timeout string\n-    const { runCli } = await import("../src/cli.js");\n-    const originalRunCli = runCli;\n-    try {\n-      // Mock runCli to return an error string in stdout\n-      const mockRunCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Error: timed out waiting for response" }));'
+          old = '-    const { runCli } = await import("../src/cli.js");\n-    const originalRunCli = runCli;'
+          new = '-    // Mock runCli/parseCliResult behavior by testing with a command that outputs an error/timeout string\n-    const { runCli } = await import("../src/cli.js");\n-    const originalRunCli = runCli;'
           if old not in text:
               raise SystemExit('expected staged patch repair target missing')
           Path('/tmp/issue461.patch').write_text(text.replace(old, new, 1))
