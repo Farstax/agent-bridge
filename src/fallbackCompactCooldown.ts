@@ -7,6 +7,7 @@
  */
 
 import type { BridgeDb } from "./db.js";
+import { legacyMemoryCompactionEnabled } from "./legacyMemoryCompaction.js";
 
 type CooldownDb = Pick<BridgeDb, "getSetting" | "setSetting">;
 
@@ -24,6 +25,7 @@ function cooldownSettingKey(chatKey: string): string {
 }
 
 export function shouldCompactBeforeFallback(db: CooldownDb, chatKey: string): boolean {
+  if (!legacyMemoryCompactionEnabled()) return false;
   const raw = db.getSetting(cooldownSettingKey(chatKey));
   if (!raw) return true;
   const lastAt = Date.parse(raw);
