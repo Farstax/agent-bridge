@@ -64,17 +64,31 @@ s = replace_once(s,
   if (!replyId || senderId == null || !text) return null;
   if (/^\\/autonomy(?:@[A-Za-z0-9_]+)?(?:\\s|$)/i.test(text)) return null;''',
 "autonomy command reply precedence")
+s = replace_once(s,
+'''  const threadId = message.message_thread_id === undefined ? undefined : String(message.message_thread_id);
+  if (state.route.thread !== undefined && state.route.thread !== threadId) return null;''',
+'''  const threadId = message.message_thread_id === undefined ? undefined : String(message.message_thread_id);
+  if (state.route.thread !== threadId) return null;''',
+"exact autonomy supervisor thread correlation")
 write(path, s)
 
 path = "test/autonomyFirstClass.test.ts"
 s = read(path)
 s = replace_once(s,
 '''    expect(matchAutonomousTelegramSupervisorReply(db, message)).toMatchObject({ goalId: "reply", text: "use option B" });
-    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, from: { id: 43 } })).toBeNull();''',
+    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, from: { id: 43 } })).toBeNull();
+    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, reply_to_message: { message_id: 899 } })).toBeNull();
+    db.raw.prepare("UPDATE autonomous_goals SET status = 'complete' WHERE goal_id = 'reply'").run();''',
 '''    expect(matchAutonomousTelegramSupervisorReply(db, message)).toMatchObject({ goalId: "reply", text: "use option B" });
     expect(matchAutonomousTelegramSupervisorReply(db, { ...message, text: "/autonomy stop" })).toBeNull();
-    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, from: { id: 43 } })).toBeNull();''',
-"autonomy stop reply regression")
+    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, from: { id: 43 } })).toBeNull();
+    expect(matchAutonomousTelegramSupervisorReply(db, { ...message, reply_to_message: { message_id: 899 } })).toBeNull();
+    db.setSetting("autonomy:supervisor:reply", JSON.stringify({
+      route: { surface: "telegram", address: "123", identity: "42" }, messageIds: [900],
+    }));
+    expect(matchAutonomousTelegramSupervisorReply(db, message)).toBeNull();
+    db.raw.prepare("UPDATE autonomous_goals SET status = 'complete' WHERE goal_id = 'reply'").run();''',
+"autonomy reply correlation regressions")
 write(path, s)
 
 print("issue #466 repair 2 applied")
