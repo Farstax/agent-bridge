@@ -131,20 +131,39 @@ export class AdvisorBroker implements AdvisorCapabilityIssuer {
 
   private accept(socket: Socket): void {
     let input = "";
+    let started = false;
+    let settled = false;
+    let executionId: string | null = null;
+    const cancel = () => {
+      if (!settled && executionId) void this.abortCli(executionId);
+    };
+    socket.once("close", cancel);
     socket.setEncoding("utf8");
-    socket.on("data", (chunk) => { input += chunk; });
-    socket.on("end", () => {
-      let settled = false;
-      let executionId: string | null = null;
-      const cancel = () => {
-        if (!settled && executionId) void this.abortCli(executionId);
-      };
-      socket.once("close", cancel);
-      void this.handleWireRequest(input, (id) => { executionId = id; }).then((response) => {
+    socket.on("data", (chunk) => {
+      if (started) return;
+      input += chunk;
+      const newline = input.indexOf("\n");
+      if (newline === -1) return;
+      started = true;
+      const raw = input.slice(0, newline);
+      void this.handleWireRequest(raw, (id) => { executionId = id; }).then((response) => {
         settled = true;
         socket.off("close", cancel);
         if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
       });
+    });
+    socket.on("end", () => {
+      if (started) {
+        if (!settled && executionId) void this.abortCli(executionId);
+        settled = true;
+        socket.off("close", cancel);
+        if (!socket.destroyed) socket.destroy();
+        return;
+      }
+      if (socket.destroyed) return;
+      settled = true;
+      socket.off("close", cancel);
+      socket.end(`${JSON.stringify({ ok: false, error: "Invalid advisor broker request" })}\n`);
     });
   }
 
@@ -181,7 +200,7 @@ export async function requestAdvisorViaBroker(
       try { resolve(JSON.parse(output) as BrokerResponse); }
       catch { reject(new Error("Invalid advisor broker response")); }
     });
-    socket.end(JSON.stringify(input));
+    socket.write(`${JSON.stringify(input)}\n`);
   });
   if (!response.ok) throw new Error(response.error || "Advisor broker request failed");
   return response.output ?? "";
