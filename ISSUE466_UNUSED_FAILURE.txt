@@ -1,5 +1,36 @@
-npm error Missing script: "unused"
-npm error
-npm error To see a list of scripts, run:
-npm error   npm run
-npm error A complete log of this run can be found in: /home/runner/.npm/_logs/2026-08-18T07_09_39_223Z-debug-0.log
+
+> agent-bridge@0.1.0 typecheck:unused
+> tsc --noEmit -p tsconfig.unused.json
+
+src/advisorBroker.ts(14,1): error TS6192: All imports in import declaration are unused.
+src/advisorBroker.ts(17,50): error TS6196: 'AdvisorResult' is declared but never used.
+src/autonomousGoalRuntime.ts(499,9): error TS6133: 'policy' is declared but its value is never read.
+src/autonomousGoalRuntime.ts(657,77): error TS6133: 'correlationConstraint' is declared but its value is never read.
+src/cliArgNormalization.ts(35,7): error TS6133: 'hasDoubleDash' is declared but its value is never read.
+src/db.ts(59,1): error TS6133: 'classifyLifecycleState' is declared but its value is never read.
+src/db.ts(62,7): error TS6133: 'pollingKey' is declared but its value is never read.
+src/engine.ts(11,20): error TS6133: 'dirname' is declared but its value is never read.
+src/engine.ts(59,38): error TS6196: 'BotConfig' is declared but never used.
+src/engine.ts(62,1): error TS6133: 'resolveTimeoutsForKind' is declared but its value is never read.
+src/engine.ts(249,39): error TS6133: 'chatType' is declared but its value is never read.
+src/engine.ts(299,73): error TS6133: 'kind' is declared but its value is never read.
+src/engine.ts(978,5): error TS6133: 'attachmentLocalPath' is declared but its value is never read.
+src/engine.ts(1030,17): error TS6133: 'executionLane' is declared but its value is never read.
+src/engine.ts(2946,5): error TS6133: 'chatId' is declared but its value is never read.
+src/engine.ts(3097,5): error TS6133: 'sessionId' is declared but its value is never read.
+src/engine.ts(3102,5): error TS6133: 'cwd' is declared but its value is never read.
+src/health/bot.ts(28,11): error TS6133: 'chatId' is declared but its value is never read.
+src/health/eventRecovery.ts(192,24): error TS6133: 'run' is declared but its value is never read.
+src/health/plugins/self.ts(2,1): error TS6133: 'https' is declared but its value is never read.
+src/index-discord-interactive.ts(147,68): error TS6133: 'options' is declared but its value is never read.
+src/index-discord-interactive.ts(151,65): error TS6133: 'options' is declared but its value is never read.
+src/index-health.ts(9,1): error TS6133: 'mkdirSync' is declared but its value is never read.
+src/index-health.ts(10,1): error TS6133: 'dirname' is declared but its value is never read.
+src/index-health.ts(11,1): error TS6133: 'Database' is declared but its value is never read.
+src/index-health.ts(78,10): error TS6133: 'parseHealthCliBot' is declared but its value is never read.
+src/interactiveCliAuth.ts(45,9): error TS6133: 'commandExists' is declared but its value is never read.
+src/messageDelivery.ts(53,3): error TS6133: 'kind' is declared but its value is never read.
+src/messageDelivery.ts(207,3): error TS6133: 'onEvent' is declared but its value is never read.
+src/providerFallback.ts(27,20): error TS6133: 'db' is declared but its value is never read.
+src/providers/antigravityRuntime.ts(27,15): error TS6196: 'CliOptions' is declared but never used.
+src/providers/antigravityRuntime.ts(248,3): error TS6133: 'model' is declared but its value is never read.
