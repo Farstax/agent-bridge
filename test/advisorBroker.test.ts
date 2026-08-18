@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AdvisorBroker } from "../src/advisorBroker.js";
+import { AdvisorBroker, requestAdvisorViaBroker } from "../src/advisorBroker.js";
 import { parseAdvisorConfig } from "../src/advisorConfig.js";
 import { openDb } from "../src/db.js";
 
@@ -14,6 +14,7 @@ afterEach(() => {
 function setup(
   overrides: Record<string, string> = {},
   runCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Independent view" })),
+  abortCli?: (executionId: string) => Promise<boolean>,
 ) {
   const dir = mkdtempSync(join(tmpdir(), "advisor-broker-"));
   dirs.push(dir);
@@ -31,8 +32,9 @@ function setup(
     },
     runCli,
     socketDir: dir,
-  });
-  return { broker, db, runCli };
+    ...(abortCli ? { abortCli } : {}),
+  } as any);
+  return { broker, db, runCli, dir };
 }
 
 describe("bounded cross-provider frontier advice", () => {
@@ -44,8 +46,7 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn-1",
       taskKey: "task-1",
       repoPath: "/trusted/repo",
-      activeModel: "gpt-5.6-sol",
-    });
+    } as any);
 
     const output = await broker.requestWithCapability({
       capability,
@@ -83,8 +84,7 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn",
       taskKey: "task",
       repoPath: "/repo",
-      activeModel: "claude-opus-5",
-    });
+    } as any);
 
     await expect(broker.requestWithCapability({
       capability,
@@ -109,8 +109,7 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn",
       taskKey: "task",
       repoPath: "/repo",
-      activeModel: null,
-    });
+    } as any);
 
     await expect(broker.requestWithCapability({
       capability,
@@ -137,8 +136,7 @@ describe("bounded cross-provider frontier advice", () => {
       turnKey: "turn",
       taskKey: "task",
       repoPath: "/repo",
-      activeModel: null,
-    });
+    } as any);
 
     await expect(broker.requestWithCapability({
       capability,
@@ -154,6 +152,40 @@ describe("bounded cross-provider frontier advice", () => {
     await expect(broker.requestWithCapability({ capability, question: "Again" } as any))
       .rejects.toThrow(/budget exhausted/i);
     expect(oversizedOutput).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it("aborts the one advisor subprocess when its provider-side client disconnects", async () => {
+    let rejectRun: ((error: Error) => void) | null = null;
+    const runCli = vi.fn(() => new Promise<string>((_resolve, reject) => { rejectRun = reject; }));
+    const abortCli = vi.fn(async () => {
+      rejectRun?.(new Error("advisor cancelled"));
+      return true;
+    });
+    const { broker, db, dir } = setup({}, runCli, abortCli);
+    await broker.start();
+    const capability = broker.issue({
+      chatKey: "chat",
+      cliKind: "codex",
+      turnKey: "turn",
+      taskKey: "task",
+      repoPath: "/repo",
+    } as any);
+    const controller = new AbortController();
+    const pending = requestAdvisorViaBroker(
+      { capability, question: "Review" } as any,
+      process.env,
+      dir,
+      controller.signal,
+    );
+
+    await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await expect(pending).rejects.toThrow(/abort|cancel/i);
+    await vi.waitFor(() => expect(abortCli).toHaveBeenCalledTimes(1));
+    expect(abortCli.mock.calls[0][0]).toMatch(/^advisor:/);
+
+    await broker.close();
     db.close();
   });
 });
