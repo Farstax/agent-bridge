@@ -31,7 +31,7 @@ describe("health event production wiring", () => {
     const handler = source.slice(start, end);
     expect(handler).toContain("healthRedEpisodeIdempotencyKey");
     expect(handler.indexOf("acceptHealthOpsEvent")).toBeGreaterThan(-1);
-    expect(handler.indexOf("await healthBot.handleReport(report)")).toBeGreaterThan(handler.indexOf("acceptHealthOpsEvent"));
+    expect(handler.indexOf("healthReportStore.saveReport(report)")).toBeGreaterThan(handler.indexOf("acceptHealthOpsEvent"));
   });
 
   it("detaches event execution from the scheduler report callback", () => {

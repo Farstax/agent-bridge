@@ -42,6 +42,7 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "git-sandbox",
     "cli-auth-telegram",
     "autonomous-work",
+    "health-troubleshooting",
 )
 
 # unit, defaults file, enabling token(s), persistent database directory
@@ -88,7 +89,7 @@ SHARED_KEYS = (
     "BRIDGE_ADVISOR_MAX_CALLS_PER_TURN", "BRIDGE_ADVISOR_MAX_CALLS_PER_TASK",
     "BRIDGE_ADVISOR_TIMEOUT_MS", "BRIDGE_ADVISOR_CONTEXT_MAX_CHARS",
     "HEALTH_MONITOR_ENABLED", "HEALTH_MONITOR_CADENCE_SECONDS",
-    "HEALTH_MONITOR_AUTONOMY", "HEALTH_MONITOR_CHAT_ID", "HEALTH_SUGGEST_BOT",
+    "HEALTH_MONITOR_CHAT_ID",
     "HEALTH_BOT_MODE",
     "HEALTH_CONTENT_CRAWLER_ENABLED", "HEALTH_CONTENT_CRAWLER_SCRIPT",
 )

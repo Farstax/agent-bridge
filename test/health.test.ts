@@ -205,41 +205,6 @@ describe("formatAggregateReport", () => {
   });
 });
 
-// ── formatSuggestion ────────────────────────────────────────────────────────
-
-describe("formatSuggestion", () => {
-  it("strips duplicate Suggested actions heading and fences shell commands", async () => {
-    const { formatSuggestion } = await import("../src/health/reporter.js");
-    const text = formatSuggestion([
-      "💡 *Suggested actions:*",
-      "",
-      "1. Fixes the false-positive health check logic.",
-      "Restart the health monitor service to apply the applied fix:",
-      "sudo systemctl restart agent-bridge-health",
-      "2. Increases the Node process heap limit if the process genuinely requires more memory.",
-      "Append the NODE_OPTIONS environment variable to the service default configuration:",
-      "echo 'NODE_OPTIONS=\"--max-old-space-size=512\"' | sudo tee -a /etc/default/agent-bridge-health && sudo systemctl restart agent-bridge-health",
-    ].join("\n"));
-
-    expect(text.match(/Suggested actions/g)).toHaveLength(1);
-    expect(text).toContain("```bash\nsudo systemctl restart agent-bridge-health\n```");
-    expect(text).toContain("```bash\necho 'NODE_OPTIONS=\"--max-old-space-size=512\"' | sudo tee -a /etc/default/agent-bridge-health && sudo systemctl restart agent-bridge-health\n```");
-  });
-
-  it("does not wrap commands that are already fenced", async () => {
-    const { formatSuggestion } = await import("../src/health/reporter.js");
-    const text = formatSuggestion([
-      "1. Restart the service.",
-      "```bash",
-      "sudo systemctl restart agent-bridge-health",
-      "```",
-    ].join("\n"));
-
-    expect(text.match(/```bash/g)).toHaveLength(1);
-    expect(text.match(/sudo systemctl restart/g)).toHaveLength(1);
-  });
-});
-
 // ── ExternalPlugin ────────────────────────────────────────────────────────────
 
 describe("ExternalPlugin", () => {
@@ -641,7 +606,7 @@ describe("HealthScheduler", () => {
     const reports: string[] = [];
     const scheduler = new HealthScheduler({
       plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report" },
+      config: { enabled: true, cadenceSeconds: 60 },
       sendReport: async (text) => { reports.push(text); },
     });
     scheduler.start();
@@ -656,7 +621,7 @@ describe("HealthScheduler", () => {
     const mockPlugin = { name: "test", check: vi.fn() };
     const scheduler = new HealthScheduler({
       plugins: [mockPlugin],
-      config: { enabled: false, cadenceSeconds: 10, autonomy: "report" },
+      config: { enabled: false, cadenceSeconds: 10 },
       sendReport: async () => {},
     });
     scheduler.start();
@@ -680,7 +645,7 @@ describe("HealthScheduler", () => {
     };
     const scheduler = new HealthScheduler({
       plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report" },
+      config: { enabled: true, cadenceSeconds: 60 },
       sendReport: async () => {},
     });
     scheduler.start();
@@ -707,7 +672,7 @@ describe("HealthScheduler", () => {
     const reports: string[] = [];
     const scheduler = new HealthScheduler({
       plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report" },
+      config: { enabled: true, cadenceSeconds: 60 },
       sendReport: async (text) => { reports.push(text); },
     });
     scheduler.start();
@@ -733,7 +698,7 @@ describe("HealthScheduler", () => {
     const reports: string[] = [];
     const scheduler = new HealthScheduler({
       plugins: [greenPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report", silenceOnGreen: true },
+      config: { enabled: true, cadenceSeconds: 60, silenceOnGreen: true },
       sendReport: async (text) => { reports.push(text); },
     });
     await scheduler.runPlugin(greenPlugin);
@@ -755,91 +720,11 @@ describe("HealthScheduler", () => {
     const reports: string[] = [];
     const scheduler = new HealthScheduler({
       plugins: [amberPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report", silenceOnGreen: true },
+      config: { enabled: true, cadenceSeconds: 60, silenceOnGreen: true },
       sendReport: async (text) => { reports.push(text); },
     });
     await scheduler.runPlugin(amberPlugin);
     expect(reports).toHaveLength(1);
-  });
-});
-
-// ── buildSuggestionPrompt ─────────────────────────────────────────────────────
-
-describe("buildSuggestionPrompt", () => {
-  it("includes plugin name and summary", async () => {
-    const { buildSuggestionPrompt } = await import("../src/health/suggest.js");
-    const report = {
-      pluginName: "content-crawler",
-      status: "amber" as const,
-      checks: [{ name: "queue-depth", status: "amber" as const, message: "381 items" }],
-      summary: "Warning: queue-depth",
-      timestamp: new Date().toISOString(),
-    };
-    const prompt = buildSuggestionPrompt(report);
-    expect(prompt).toContain("content-crawler");
-    expect(prompt).toContain("Warning: queue-depth");
-  });
-
-  it("includes failing check names and messages", async () => {
-    const { buildSuggestionPrompt } = await import("../src/health/suggest.js");
-    const report = {
-      pluginName: "test",
-      status: "red" as const,
-      checks: [
-        { name: "queue-depth", status: "red" as const, message: "600 items" },
-        { name: "failed-items", status: "green" as const, message: "0 failed" },
-      ],
-      summary: "Critical: queue-depth",
-      timestamp: new Date().toISOString(),
-    };
-    const prompt = buildSuggestionPrompt(report);
-    expect(prompt).toContain("queue-depth");
-    expect(prompt).toContain("600 items");
-  });
-
-  it("asks for numbered remediation options ordered by likelihood", async () => {
-    const { buildSuggestionPrompt } = await import("../src/health/suggest.js");
-    const report = {
-      pluginName: "test",
-      status: "red" as const,
-      checks: [{ name: "stale-workers", status: "red" as const, message: "no activity for 2h" }],
-      summary: "Critical: stale-workers",
-      timestamp: new Date().toISOString(),
-    };
-    const prompt = buildSuggestionPrompt(report);
-    expect(prompt).toMatch(/numbered|number/i);
-    expect(prompt).toMatch(/option|remediat/i);
-    expect(prompt).toMatch(/order|priorit|likelihood/i);
-  });
-
-  it("asks for a recommended option with rationale", async () => {
-    const { buildSuggestionPrompt } = await import("../src/health/suggest.js");
-    const report = {
-      pluginName: "test",
-      status: "red" as const,
-      checks: [{ name: "stale-workers", status: "red" as const, message: "no activity for 2h" }],
-      summary: "Critical: stale-workers",
-      timestamp: new Date().toISOString(),
-    };
-    const prompt = buildSuggestionPrompt(report);
-    expect(prompt).toMatch(/recommend/i);
-    expect(prompt).toMatch(/rationale|why/i);
-  });
-
-  it("excludes green checks", async () => {
-    const { buildSuggestionPrompt } = await import("../src/health/suggest.js");
-    const report = {
-      pluginName: "test",
-      status: "amber" as const,
-      checks: [
-        { name: "disk-space", status: "amber" as const, message: "1.5 GB free" },
-        { name: "queue-depth", status: "green" as const, message: "5 items" },
-      ],
-      summary: "Warning: disk-space",
-      timestamp: new Date().toISOString(),
-    };
-    const prompt = buildSuggestionPrompt(report);
-    expect(prompt).not.toContain("5 items");
   });
 });
 
@@ -912,84 +797,6 @@ describe("integrated health bot mode", () => {
   it("rejects an unknown health bot mode", async () => {
     const { parseHealthBotMode } = await import("../src/health/config.js");
     expect(() => parseHealthBotMode({ HEALTH_BOT_MODE: "shared" })).toThrow(/HEALTH_BOT_MODE/);
-  });
-});
-
-// ── buildSuggestionInvocation ─────────────────────────────────────────────────
-
-describe("buildSuggestionInvocation", () => {
-  it("never includes --dangerously-skip-permissions for claude bot", async () => {
-    const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
-    const inv = buildSuggestionInvocation("claude", { command: "claude", modelPreference: ["claude-sonnet-4-6"] }, "analyze this");
-    expect(inv.args).not.toContain("--dangerously-skip-permissions");
-  });
-
-  it("never includes --dangerously-bypass-approvals-and-sandbox for codex bot", async () => {
-    const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
-    const inv = buildSuggestionInvocation("codex", { command: "codex", modelPreference: [] }, "analyze this");
-    expect(inv.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-  });
-
-  it("uses json output format for claude", async () => {
-    const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
-    const inv = buildSuggestionInvocation("claude", { command: "claude", modelPreference: [] }, "test");
-    expect(inv.args).toContain("--output-format");
-  });
-
-  it("does not use json output format for antigravity", async () => {
-    const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
-    const previous = process.env.ANTIGRAVITY_OUTPUT_MODE;
-    process.env.ANTIGRAVITY_OUTPUT_MODE = "text";
-    try {
-      const inv = buildSuggestionInvocation("antigravity", { command: "agy", modelPreference: [] }, "test");
-      expect(inv.args).not.toContain("--json");
-      expect(inv.args).not.toContain("--output-format");
-    } finally {
-      if (previous === undefined) delete process.env.ANTIGRAVITY_OUTPUT_MODE;
-      else process.env.ANTIGRAVITY_OUTPUT_MODE = previous;
-    }
-  });
-});
-
-// ── generateSuggestion ────────────────────────────────────────────────────────
-
-describe("generateSuggestion", () => {
-  it("returns null when the bot command binary is not found", async () => {
-    const { generateSuggestion } = await import("../src/health/suggest.js");
-    const report = {
-      pluginName: "test",
-      status: "red" as const,
-      checks: [{ name: "db-file", status: "red" as const, message: "not found" }],
-      summary: "Critical",
-      timestamp: new Date().toISOString(),
-    };
-    const fakeBotConfig = { command: "no-such-cli-xyz", modelPreference: [] };
-    const result = await generateSuggestion(report, "claude", fakeBotConfig);
-    expect(result).toBeNull();
-  });
-
-  it("returns null when the bot returns an error-shaped response", async () => {
-    const { generateSuggestion } = await import("../src/health/suggest.js");
-    const report = {
-      pluginName: "test",
-      status: "red" as const,
-      checks: [],
-      summary: "Critical",
-      timestamp: new Date().toISOString(),
-    };
-    // Mock runCli/parseCliResult behavior by testing with a command that outputs an error/timeout string
-    const { runCli } = await import("../src/cli.js");
-    const originalRunCli = runCli;
-    try {
-      // Mock runCli to return an error string in stdout
-      const mockRunCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Error: timed out waiting for response" }));
-      vi.spyOn(await import("../src/cli.js"), "runCli").mockImplementation(mockRunCli);
-      
-      const result = await generateSuggestion(report, "claude", { command: "claude", modelPreference: [] });
-      expect(result).toBeNull();
-    } finally {
-      vi.restoreAllMocks();
-    }
   });
 });
 
@@ -1401,123 +1208,9 @@ describe("ServerPlugin — extended checks", () => {
 });
 
 
-// ── HealthScheduler — suggest mode (runPlugin called directly) ────────────────
+// ── HealthScheduler — overlap protection ────────────────────────────────────
 
-describe("HealthScheduler suggest mode", () => {
-  it("sends a second suggestion message for amber report when autonomy=suggest", async () => {
-    const { HealthScheduler } = await import("../src/health/scheduler.js");
-    const mockReport = {
-      pluginName: "content-crawler",
-      status: "amber" as const,
-      checks: [{ name: "queue-depth", status: "amber" as const, message: "381 items" }],
-      summary: "Warning: queue-depth",
-      timestamp: new Date().toISOString(),
-    };
-    const mockPlugin = { name: "content-crawler", check: vi.fn().mockResolvedValue(mockReport) };
-    const reports: string[] = [];
-    const scheduler = new HealthScheduler({
-      plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest", suggestBot: "claude" as const, suggestBotConfig: { command: "claude", modelPreference: [] } },
-      sendReport: async (text) => { reports.push(text); },
-      _suggestFn: async () => "Drain the queue by restarting the worker",
-    });
-    await scheduler.runPlugin(mockPlugin);
-    expect(reports).toHaveLength(2);
-    expect(reports[1]).toContain("Suggested actions");
-    expect(reports[1]).toContain("Drain the queue");
-  });
-
-  it("normalizes suggestion messages to one heading and command code blocks", async () => {
-    const { HealthScheduler } = await import("../src/health/scheduler.js");
-    const mockReport = {
-      pluginName: "agent-bridge-health",
-      status: "red" as const,
-      checks: [{ name: "heap-usage", status: "red" as const, message: "Heap high" }],
-      summary: "Critical: heap-usage",
-      timestamp: new Date().toISOString(),
-    };
-    const mockPlugin = { name: "agent-bridge-health", check: vi.fn().mockResolvedValue(mockReport) };
-    const reports: string[] = [];
-    const scheduler = new HealthScheduler({
-      plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest", suggestBot: "claude" as const, suggestBotConfig: { command: "claude", modelPreference: [] } },
-      sendReport: async (text) => { reports.push(text); },
-      _suggestFn: async () => [
-        "💡 *Suggested actions:*",
-        "",
-        "1. Releases accumulated memory and resets the process heap.",
-        "Restart the failing health monitor service:",
-        "sudo systemctl restart agent-bridge-health",
-      ].join("\n"),
-    });
-    await scheduler.runPlugin(mockPlugin);
-    expect(reports).toHaveLength(2);
-    expect(reports[1].match(/Suggested actions/g)).toHaveLength(1);
-    expect(reports[1]).toContain("```bash\nsudo systemctl restart agent-bridge-health\n```");
-  });
-
-  it("does NOT send suggestion for green report in suggest mode", async () => {
-    const { HealthScheduler } = await import("../src/health/scheduler.js");
-    const mockReport = {
-      pluginName: "test",
-      status: "green" as const,
-      checks: [],
-      summary: "All good",
-      timestamp: new Date().toISOString(),
-    };
-    const mockPlugin = { name: "test", check: vi.fn().mockResolvedValue(mockReport) };
-    const reports: string[] = [];
-    const scheduler = new HealthScheduler({
-      plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest", suggestBot: "claude" as const, suggestBotConfig: { command: "claude", modelPreference: [] } },
-      sendReport: async (text) => { reports.push(text); },
-      _suggestFn: async () => "should not appear",
-    });
-    await scheduler.runPlugin(mockPlugin);
-    expect(reports).toHaveLength(1);
-  });
-
-  it("does NOT send suggestion when autonomy=report even for red", async () => {
-    const { HealthScheduler } = await import("../src/health/scheduler.js");
-    const mockReport = {
-      pluginName: "test",
-      status: "red" as const,
-      checks: [{ name: "db-file", status: "red" as const, message: "missing" }],
-      summary: "Critical",
-      timestamp: new Date().toISOString(),
-    };
-    const mockPlugin = { name: "test", check: vi.fn().mockResolvedValue(mockReport) };
-    const reports: string[] = [];
-    const scheduler = new HealthScheduler({
-      plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report" },
-      sendReport: async (text) => { reports.push(text); },
-      _suggestFn: async () => "should not appear",
-    });
-    await scheduler.runPlugin(mockPlugin);
-    expect(reports).toHaveLength(1);
-  });
-
-  it("does NOT send suggestion when suggestBot is not configured", async () => {
-    const { HealthScheduler } = await import("../src/health/scheduler.js");
-    const mockReport = {
-      pluginName: "test",
-      status: "red" as const,
-      checks: [],
-      summary: "Critical",
-      timestamp: new Date().toISOString(),
-    };
-    const mockPlugin = { name: "test", check: vi.fn().mockResolvedValue(mockReport) };
-    const reports: string[] = [];
-    const scheduler = new HealthScheduler({
-      plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "suggest" },
-      sendReport: async (text) => { reports.push(text); },
-      _suggestFn: async () => "should not appear",
-    });
-    await scheduler.runPlugin(mockPlugin);
-  });
-
+describe("HealthScheduler overlap protection", () => {
   it("skips running a plugin if a previous run is still in flight", async () => {
     const { HealthScheduler } = await import("../src/health/scheduler.js");
     const mockReport = {
@@ -1541,7 +1234,7 @@ describe("HealthScheduler suggest mode", () => {
     const reports: string[] = [];
     const scheduler = new HealthScheduler({
       plugins: [mockPlugin],
-      config: { enabled: true, cadenceSeconds: 60, autonomy: "report" },
+      config: { enabled: true, cadenceSeconds: 60 },
       sendReport: async (text) => { reports.push(text); },
     });
 
@@ -1582,53 +1275,6 @@ describe("health bot scheduled delivery", () => {
     expect(client.sendMessage).toHaveBeenCalledOnce();
     expect(sent[0].body.parse_mode).toBe("HTML");
     expect(sent[0].body.text).toContain("<pre");
-  });
-});
-
-// ── parseHealthCliConfig — env alias precedence ───────────────────────────────
-
-describe("parseHealthCliConfig", () => {
-  it("prefers HEALTH_SUGGEST_BOT over HEALTH_CLI_BOT", async () => {
-    const { parseHealthCliConfig } = await import("../src/health/config.js");
-    const config = parseHealthCliConfig({ HEALTH_SUGGEST_BOT: "codex", HEALTH_CLI_BOT: "antigravity" });
-    expect(config.bot).toBe("codex");
-  });
-
-  it("falls back to HEALTH_CLI_BOT when HEALTH_SUGGEST_BOT is absent", async () => {
-    const { parseHealthCliConfig } = await import("../src/health/config.js");
-    const config = parseHealthCliConfig({ HEALTH_CLI_BOT: "antigravity" });
-    expect(config.bot).toBe("antigravity");
-  });
-
-  it("defaults bot to claude when neither env var is set", async () => {
-    const { parseHealthCliConfig } = await import("../src/health/config.js");
-    const config = parseHealthCliConfig({});
-    expect(config.bot).toBe("claude");
-  });
-
-  it("prefers HEALTH_SUGGEST_COMMAND over HEALTH_CLI_COMMAND", async () => {
-    const { parseHealthCliConfig } = await import("../src/health/config.js");
-    const config = parseHealthCliConfig({
-      HEALTH_SUGGEST_COMMAND: "/usr/bin/claude",
-      HEALTH_CLI_COMMAND: "/old/claude",
-    });
-    expect(config.command).toBe("/usr/bin/claude");
-  });
-
-  it("falls back to HEALTH_CLI_COMMAND when HEALTH_SUGGEST_COMMAND is absent", async () => {
-    const { parseHealthCliConfig } = await import("../src/health/config.js");
-    const config = parseHealthCliConfig({ HEALTH_CLI_COMMAND: "/opt/claude" });
-    expect(config.command).toBe("/opt/claude");
-  });
-
-  it("prefers HEALTH_SUGGEST_MODEL_PREFERENCE over HEALTH_CLI_MODEL_PREFERENCE", async () => {
-    const { parseHealthCliConfig } = await import("../src/health/config.js");
-    const config = parseHealthCliConfig({
-      HEALTH_SUGGEST_MODEL_PREFERENCE: "claude-opus-4-8,claude-sonnet-4-6",
-      HEALTH_CLI_MODEL_PREFERENCE: "claude-haiku-4-5",
-    });
-    expect(config.modelPreference[0]).toBe("claude-opus-4-8");
-    expect(config.modelPreference).toHaveLength(2);
   });
 });
 
@@ -1754,52 +1400,6 @@ describe("ServerPlugin — heavy lane CPU suppression", () => {
       (globalThis as any).__mockExistsSync = oldMockExists;
       (globalThis as any).__mockExecSync = oldMockExec;
       try { rmSync(dbPath); } catch {}
-    }
-  });
-});
-
-// ── resolveHealthEngineExecutionMode — engine chat path honors env ────────────
-
-describe("resolveHealthEngineExecutionMode", () => {
-  it("defaults to safe when env sets no execution mode", async () => {
-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
-    expect(resolveHealthEngineExecutionMode({}, "codex")).toBe("safe");
-  });
-
-  it("returns trusted when BRIDGE_EXECUTION_MODE=trusted", async () => {
-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
-    expect(resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "trusted" }, "codex")).toBe("trusted");
-  });
-
-  it("per-bot execution mode overrides the global setting", async () => {
-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
-    expect(
-      resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "trusted", CODEX_EXECUTION_MODE: "safe" }, "codex"),
-    ).toBe("safe");
-  });
-
-  it("ignores invalid values and stays safe", async () => {
-    const { resolveHealthEngineExecutionMode } = await import("../src/health/config.js");
-    expect(resolveHealthEngineExecutionMode({ BRIDGE_EXECUTION_MODE: "yolo" }, "codex")).toBe("safe");
-  });
-
-  it("index-health wires the engine through resolveHealthEngineExecutionMode, not a hardcoded mode", async () => {
-    const { readFileSync } = await import("node:fs");
-    const text = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
-    expect(text).not.toMatch(/executionMode:\s*"safe"/);
-    expect(text).toMatch(/resolveHealthEngineExecutionMode/);
-  });
-
-  it("autonomous suggestion invocations stay safe regardless of env", async () => {
-    const oldEnv = process.env.BRIDGE_EXECUTION_MODE;
-    process.env.BRIDGE_EXECUTION_MODE = "trusted";
-    try {
-      const { buildSuggestionInvocation } = await import("../src/health/suggest.js");
-      const inv = buildSuggestionInvocation("codex", { command: "codex", modelPreference: [] }, "analyze");
-      expect(inv.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-    } finally {
-      if (oldEnv === undefined) delete process.env.BRIDGE_EXECUTION_MODE;
-      else process.env.BRIDGE_EXECUTION_MODE = oldEnv;
     }
   });
 });
