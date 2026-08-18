@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-artifact-${{ github.ref }}
@@ -27,21 +27,6 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Apply issue 458 subtraction
-        if: github.event_name == 'pull_request' && github.head_ref == 'agent/issue-458-advisor-skill'
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          python scripts/issue458-transform.py
-          sed -i -e '${/^$/d;}' src/advisor.ts
-          rm -f .github/workflows/issue-458-subtraction.yml scripts/issue458-transform.py
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git diff --cached --check
-          git commit -m "refactor: remove legacy Advisor orchestration paths"
-          git push origin HEAD:${{ github.head_ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
