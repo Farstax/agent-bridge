@@ -13,6 +13,10 @@ import {
 } from "./compactConversation.js";
 import type { CompactProfile } from "./compactSummary.js";
 import type { BotConfig, BotKind } from "./types.js";
+import {
+  LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
+  legacyMemoryCompactionEnabled,
+} from "./legacyMemoryCompaction.js";
 
 const TOOL_FREE_COMPACTION_PROVIDERS = new Set<BotKind>(["codex", "claude", "antigravity"]);
 
@@ -116,6 +120,14 @@ export async function runCapacityFallbackCompaction(
     compactProfile: CompactProfile;
   },
 ): Promise<CompactConversationResult> {
+  if (!legacyMemoryCompactionEnabled()) {
+    return {
+      outcome: "failed",
+      trigger: "capacity_fallback",
+      error: LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
+    };
+  }
+
   const exhausted = [...request.exhaustedClis, request.fromCli];
   const runtimeTargets = resolveCompactionRecoveryTargets({
     db: deps.db,
