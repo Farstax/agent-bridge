@@ -1,6 +1,9 @@
 name: Issue 458 CI repair
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - agent/issue-458-advisor-skill
