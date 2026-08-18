@@ -805,7 +805,13 @@ describe("parseAutonomousCycleResult", () => {
     expect(parseAutonomousCycleResult(claudeOutput(fencedResult))).toEqual(completeResult);
   });
 
-  it("rejects ambiguous fences, garbage, or unknown fields", () => {
+  it("does not treat backticks inside JSON string values as a closing fence", () => {
+  const result = { status: "complete", evidence: "saw ``` marker" } as const;
+  const fenced = ["```json", JSON.stringify(result), "```"].join("\n");
+  expect(parseAutonomousCycleResult(fenced)).toEqual(result);
+});
+
+it("rejects ambiguous fences, garbage, or unknown fields", () => {
     const secondFence = ["```json", JSON.stringify({ status: "blocked", evidence: "other" }), "```"].join("\n");
     expect(() => parseAutonomousCycleResult(`${fencedResult}\n${secondFence}`)).toThrow("malformed autonomous cycle result");
     expect(() => parseAutonomousCycleResult("not-json")).toThrow("malformed autonomous cycle result");
