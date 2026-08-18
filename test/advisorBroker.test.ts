@@ -162,6 +162,33 @@ describe("bounded cross-provider frontier advice", () => {
     db.close();
   });
 
+  it("redacts secret-shaped question and context before invoking the second provider", async () => {
+    const { broker, db, runCli } = setup();
+    const capability = broker.issue({
+      chatKey: "chat:secret-boundary",
+      cliKind: "codex",
+      turnKey: "turn:secret-boundary",
+      taskKey: "task:secret-boundary",
+      repoPath: "/repo",
+    });
+    const githubToken = `ghp_${"A".repeat(24)}`;
+
+    await broker.requestWithCapability({
+      capability,
+      question: `Review token=question-secret ${githubToken}`,
+      context: "password=context-secret\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----",
+    });
+
+    expect(runCli).toHaveBeenCalledTimes(1);
+    const providerArgs = JSON.stringify(runCli.mock.calls[0][1]);
+    expect(providerArgs).not.toContain("question-secret");
+    expect(providerArgs).not.toContain("context-secret");
+    expect(providerArgs).not.toContain(githubToken);
+    expect(providerArgs).not.toContain("private-material");
+    expect(providerArgs).toContain("[REDACTED");
+    db.close();
+  });
+
   it("bounds caller context, output and per-turn invocation budget", async () => {
     const oversizedOutput = vi.fn().mockResolvedValue(JSON.stringify({ result: "x".repeat(16_001) }));
     const { broker, db } = setup({
