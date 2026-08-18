@@ -57,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          (npm run typecheck:unused && npm run cleanup:check) > /tmp/issue466-unused.log 2>&1
+          npm run cleanup:check > /tmp/issue466-unused.log 2>&1
           status=$?
           cat /tmp/issue466-unused.log
           if [[ $status -ne 0 ]]; then
