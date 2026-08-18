@@ -278,4 +278,147 @@ exit 1
       message: expect.stringMatching(/9\.9\.10.*unqualified/i),
     });
   });
+
+  it("accepts native Codex result/session evidence without semantic marker prose", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-codex-"));
+    const fake = executable(join(root, "codex"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "codex-cli 9.9.9"; exit 0; fi
+printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
+printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"native protocol response"}}'
+`);
+
+    const result = await qualifyProvider({
+      providerId: "codex",
+      executable: fake,
+      evidencePath: join(root, "qualification.json"),
+      bridgeCommit: "4".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("pass");
+    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
+  });
+
+  it("accepts native Claude result/session evidence without semantic marker prose", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-claude-"));
+    const fake = executable(join(root, "claude"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "Claude Code 2.3.4"; exit 0; fi
+printf '%s\\n' '{"result":"native protocol response","session_id":"11111111-2222-3333-4444-555555555555"}'
+`);
+
+    const result = await qualifyProvider({
+      providerId: "claude",
+      executable: fake,
+      evidencePath: join(root, "qualification.json"),
+      bridgeCommit: "4".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("pass");
+    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
+  });
+
+  it("accepts strict Agy stream-json conversation evidence without semantic marker prose", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-agy-"));
+    const fake = executable(join(root, "agy"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.1.12"; exit 0; fi
+printf '%s\\n' '{"event":"result","result":{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"SUCCESS","response":"native protocol response"}}'
+`);
+
+    const result = await qualifyProvider({
+      providerId: "agy",
+      executable: fake,
+      evidencePath: join(root, "qualification.json"),
+      bridgeCommit: "4".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("pass");
+    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
+  });
+
+  it("fails resume compatibility when native session identity contradicts the resumed session", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-resume-"));
+    const fake = executable(join(root, "codex"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "codex-cli 9.9.9"; exit 0; fi
+if [[ " $* " == *" exec resume "* ]]; then
+  printf '%s\\n' '{"type":"thread.started","thread_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}'
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed native response"}}'
+else
+  printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"fresh native response"}}'
+fi
+`);
+
+    const result = await qualifyProvider({
+      providerId: "codex",
+      executable: fake,
+      evidencePath: join(root, "qualification.json"),
+      bridgeCommit: "4".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("fail");
+    expect(result.checks.find((check) => check.name === "session_resume")).toMatchObject({
+      status: "fail",
+      diagnostic: expect.stringMatching(/resume compatibility.*session identity/i),
+    });
+  });
+
+  it("fails closed when a required native session identity is missing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-missing-session-"));
+    const fake = executable(join(root, "claude"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "Claude Code 2.3.4"; exit 0; fi
+printf '%s\\n' '{"result":"native protocol response"}'
+`);
+
+    const result = await qualifyProvider({
+      providerId: "claude",
+      executable: fake,
+      evidencePath: join(root, "qualification.json"),
+      bridgeCommit: "4".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("fail");
+    expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
+      status: "fail",
+      diagnostic: expect.stringMatching(/session identity/i),
+    });
+    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
+  });
+
+  it("fails closed on malformed provider-native envelopes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-malformed-"));
+    const fake = executable(join(root, "agy"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.1.12"; exit 0; fi
+printf '%s\\n' '{not-json'
+`);
+
+    const result = await qualifyProvider({
+      providerId: "agy",
+      executable: fake,
+      evidencePath: join(root, "qualification.json"),
+      bridgeCommit: "4".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+
+    expect(result.overall).toBe("fail");
+    expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
+      status: "fail",
+      diagnostic: expect.stringMatching(/native result parsing|stream JSON parse failed/i),
+    });
+  });
 });
