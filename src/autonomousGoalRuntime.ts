@@ -296,7 +296,7 @@ function extractAutonomousResultJson(text: string): string {
   } catch {
     // Fall through only to the explicitly supported fenced form.
   }
-  const fences = [...candidate.matchAll(/```json[ \t]*\r?\n([\s\S]*?)\r?\n?```/gi)];
+  const fences = [...candidate.matchAll(/(?:^|\r?\n)[ \t]*```json[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```[ \t]*(?=\r?\n|$)/gi)];
   if (fences.length !== 1) throw new Error("malformed autonomous cycle result");
   return fences[0][1].trim();
 }
