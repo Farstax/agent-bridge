@@ -10,6 +10,10 @@ import Database from "better-sqlite3";
 import { BridgeDb, buildMemoryFtsQuery } from "./db.js";
 import { ConversationRepository } from "./repositories/conversationRepository.js";
 import { formatProjectMemoryStoreResult, storeProjectMemoryCandidateJson } from "./projectMemory.js";
+import {
+  LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
+  legacyMemoryCompactionEnabled,
+} from "./legacyMemoryCompaction.js";
 
 type EnvLike = Record<string, string | undefined>;
 
@@ -198,6 +202,11 @@ function searchTurns(db: Database.Database, chatKey: string, query: string): str
 export function renderAgentBridgeContext(args: string[], env: EnvLike = process.env): string {
   const dbPath = requireEnv(env, "AGENT_BRIDGE_CONTEXT_DB");
   const chatKey = requireEnv(env, "AGENT_BRIDGE_CHAT_KEY");
+  const turnHistoryRead = args.includes("--recent") || args.includes("--search");
+  if (!legacyMemoryCompactionEnabled() && !turnHistoryRead) {
+    return `${LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE} Use --recent 20 or --search <query> for retained conversation turns.`;
+  }
+
   if (args.includes("--memory-add-json")) {
     const idx = args.indexOf("--memory-add-json");
     const db = openReadWrite(dbPath);
