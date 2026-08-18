@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: architecture-lint-${{ github.event.pull_request.number || github.run_id }}
@@ -21,7 +21,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
 
       - name: Verify the exact event head
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
@@ -30,14 +29,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24.15.0
+          node-version: 22
           cache: npm
 
+      # scripts/migrationOwnershipLint.mjs (Phase 4C.2, issue #135) parses
+      # source with the TypeScript compiler API, so this job now needs
+      # node_modules — sqlOwnershipLint.mjs previously used only Node
+      # built-ins, which is why this step wasn't here before.
       - run: npm ci
 
       - name: Run architecture lint guard
         run: bash scripts/arch-lint.sh src
-
-      - name: Repair issue 458 branch and verify focused regressions
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/issue-458-advisor-skill'
-        run: python3 scripts/issue-458-ci-repair.py
