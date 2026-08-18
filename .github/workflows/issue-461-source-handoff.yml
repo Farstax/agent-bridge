@@ -22,7 +22,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .github/issue461/part*.patch > /tmp/issue461.patch
+          python - <<'PY'
+          from pathlib import Path
+          parts = sorted(Path('.github/issue461').glob('part*.patch'))
+          with Path('/tmp/issue461.patch').open('wb') as out:
+              for part in parts:
+                  data = part.read_bytes()
+                  out.write(data)
+                  if not data.endswith(b'\n'):
+                      out.write(b'\n')
+          PY
           git apply --check /tmp/issue461.patch
           git apply /tmp/issue461.patch
           rm -f src/health/suggest.ts src/health/bot.ts src/health/context.ts
