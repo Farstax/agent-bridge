@@ -199,6 +199,10 @@ If no deployable approved release exists, stop and report that exact blocker ins
 
 One independent review approves one exact PR head SHA after required exact-head tests and checks pass. GitHub `CI` is the authoritative full-suite regression proof for that head; independent review adds code/contract scrutiny and focused investigation rather than another routine full-suite execution.
 
+Review independence is a property of the **review phase**, not necessarily of reviewer identity. The final review must be a fresh, read-only, adversarial evaluation of the pinned exact head after required checks pass. A different reviewer identity is preferred when readily available, but the same capable agent/model that previously implemented or repaired the PR may perform the final review if it explicitly ends implementation first, enters a no-mutation review phase, re-derives the judgement from the issue/acceptance contract and current diff rather than implementation intent, and records findings before making any change. Model or human diversity is metadata, not a merge gate.
+
+If that review finds a change is required, the review phase ends before mutation. Resume implementation, repair the candidate, refresh every invalidated exact-head check, then start a new fresh read-only review phase. A reviewer must never modify the candidate while simultaneously treating its own judgement as the final approval.
+
 The implementer's job is to produce the strongest valid solution; the reviewer's job is adversarial, not confirmatory — actively look for reasons the exact head should not be accepted, including unmet acceptance criteria, wrong ownership, regressions, lifecycle/restart/concurrency defects, weak evidence, scope drift, or stale exact-head evidence, and reject when found. Route any rejection through the existing repair → reverify → re-review path (see "Owner delivery shorthand" above) and replan when the finding invalidates the agreed scope; do not impose a fixed retry count.
 
 Before merge approval, agents may perform without additional approval:
@@ -447,7 +451,7 @@ Self-improvement changes must:
 - be durable, actionable, and verifiable
 - generalize across future work without overfitting one incident
 - avoid duplicating or conflicting with existing rules or skills; consolidate instead
-- preserve human review: never silently edit `AGENTS.md` on `main`
+- preserve the explicit review gate: never silently edit `AGENTS.md` on `main`
 - remove or revise stale rules when the codebase or architecture changes
 
 Include the retrospective result in final evidence: `no new systemic pattern`, `existing rule covers it`, or a link to the proposed `AGENTS.md` or skill follow-up. A retrospective is required, but an `AGENTS.md` change is not: update rules only when the evidence meets the criteria above.
