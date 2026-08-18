@@ -1,0 +1,350 @@
+--- a/src/db/healthSchemaMigration.ts
++++ b/src/db/healthSchemaMigration.ts
+@@ -5,13 +5,5 @@
+   if (role !== "health") return;
+   db.exec(`CREATE TABLE IF NOT EXISTS health_plugin_reports (
+     plugin_name TEXT PRIMARY KEY, report_json TEXT NOT NULL, saved_at INTEGER NOT NULL
+-  );
+-  CREATE TABLE IF NOT EXISTS health_context (
+-    id INTEGER PRIMARY KEY CHECK (id = 1),
+-    last_report_json TEXT,
+-    last_suggestion TEXT,
+-    session_id TEXT,
+-    session_started_at INTEGER,
+-    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+   )`);
+ }
+--- a/src/health/config.ts
++++ b/src/health/config.ts
+@@ -25,43 +25,3 @@
+   const n = Number(env.HEALTH_MONITOR_CADENCE_SECONDS);
+   return Number.isFinite(n) && n > 0 ? n : 3600;
+ }
+-
+-type BotKind = "codex" | "antigravity" | "claude";
+-
+-function parseBot(value: string | undefined): BotKind {
+-  if (value === "codex" || value === "antigravity" || value === "claude") return value;
+-  return "claude";
+-}
+-
+-/**
+- * Execution mode for the health bot's interactive engine (user-prompted chat
+- * turns only). Mirrors resolveExecutionMode semantics: per-bot env var wins
+- * over BRIDGE_EXECUTION_MODE, default safe. The autonomous suggestion path in
+- * suggest.ts is intentionally pinned to safe and does not consult this.
+- */
+-export function resolveHealthEngineExecutionMode(
+-  env: Record<string, string | undefined>,
+-  bot: BotKind,
+-): "safe" | "trusted" {
+-  const perBotRaw = env[`${bot.toUpperCase()}_EXECUTION_MODE`];
+-  if (perBotRaw === "safe" || perBotRaw === "trusted") return perBotRaw;
+-  const globalRaw = env.BRIDGE_EXECUTION_MODE;
+-  if (globalRaw === "safe" || globalRaw === "trusted") return globalRaw;
+-  return "safe";
+-}
+-
+-/**
+- * Parses health CLI config from env vars. HEALTH_SUGGEST_* is canonical;
+- * HEALTH_CLI_* is a compatibility alias and only wins when the SUGGEST variant is absent.
+- */
+-export function parseHealthCliConfig(env: Record<string, string | undefined>): {
+-  bot: BotKind;
+-  command: string | undefined;
+-  modelPreference: string[];
+-} {
+-  const bot = parseBot(env.HEALTH_SUGGEST_BOT ?? env.HEALTH_CLI_BOT);
+-  const command = env.HEALTH_SUGGEST_COMMAND ?? env.HEALTH_CLI_COMMAND;
+-  const modelRaw = env.HEALTH_SUGGEST_MODEL_PREFERENCE ?? env.HEALTH_CLI_MODEL_PREFERENCE ?? "";
+-  const modelPreference = modelRaw.split(",").map(s => s.trim()).filter(Boolean);
+-  return { bot, command, modelPreference };
+-}
+--- a/src/health/types.ts
++++ b/src/health/types.ts
+@@ -25,7 +25,6 @@
+   };
+ }
+ 
+-export type AutonomyLevel = "report" | "suggest";
+ 
+ export interface HealthPlugin {
+   name: string;
+@@ -35,8 +34,5 @@
+ export interface HealthConfig {
+   enabled: boolean;
+   cadenceSeconds: number;
+-  autonomy: AutonomyLevel;
+   silenceOnGreen?: boolean;
+-  suggestBot?: "codex" | "antigravity" | "claude";
+-  suggestBotConfig?: { command: string; modelPreference: string[] };
+ }
+--- a/src/health/scheduler.ts
++++ b/src/health/scheduler.ts
+@@ -1,19 +1,10 @@
+ import type { HealthPlugin, HealthConfig, HealthReport } from "./types.js";
+-import type { BotKind } from "../types.js";
+-import { formatReport, formatSuggestion } from "./reporter.js";
+-import { generateSuggestion } from "./suggest.js";
+-
+-type SuggestFn = (
+-  report: HealthReport,
+-  bot: BotKind,
+-  botConfig: { command: string; modelPreference: string[] },
+-) => Promise<string | null>;
++import { formatReport } from "./reporter.js";
+ 
+ export class HealthScheduler {
+   private plugins: HealthPlugin[];
+   private config: HealthConfig;
+   private sendReport: (text: string) => Promise<void>;
+-  private suggestFn: SuggestFn;
+   private onRawReport?: (report: HealthReport) => Promise<void>;
+   private timers: NodeJS.Timeout[] = [];
+   private inFlight = new Set<string>();
+@@ -23,13 +14,11 @@
+     config: HealthConfig;
+     sendReport: (text: string) => Promise<void>;
+     onRawReport?: (report: HealthReport) => Promise<void>;
+-    _suggestFn?: SuggestFn;
+   }) {
+     this.plugins = options.plugins;
+     this.config = options.config;
+     this.sendReport = options.sendReport;
+     this.onRawReport = options.onRawReport;
+-    this.suggestFn = options._suggestFn ?? generateSuggestion;
+   }
+ 
+   start(): void {
+@@ -66,13 +55,6 @@
+         await this.sendReport(formatReport(report));
+       }
+ 
+-      const { autonomy, suggestBot, suggestBotConfig } = this.config;
+-      if (autonomy !== "report" && report.status !== "green" && suggestBot && suggestBotConfig) {
+-        const suggestion = await this.suggestFn(report, suggestBot, suggestBotConfig);
+-        if (suggestion) {
+-          await this.sendReport(formatSuggestion(suggestion));
+-        }
+-      }
+     } finally {
+       this.inFlight.delete(plugin.name);
+     }
+--- a/src/health/runtime.ts
++++ b/src/health/runtime.ts
+@@ -1,8 +1,5 @@
+ import type { BridgeDb } from "../db.js";
+-import type { BotKind } from "../types.js";
+-import { HealthBridgeBot } from "./bot.js";
+-import { parseCadenceSeconds, parseHealthCliConfig } from "./config.js";
+-import { HealthContextStore } from "./context.js";
++import { parseCadenceSeconds } from "./config.js";
+ import { HealthReportStore } from "./reports.js";
+ import { ExternalPlugin } from "./plugins/external.js";
+ import { SelfPlugin } from "./plugins/self.js";
+@@ -10,12 +7,6 @@
+ import { formatAggregateReport, formatReport } from "./reporter.js";
+ import type { HealthPlugin } from "./types.js";
+ 
+-function defaultHealthCliCommand(bot: BotKind, env: Record<string, string | undefined>): string {
+-  if (bot === "codex") return env.CODEX_COMMAND || "codex";
+-  if (bot === "antigravity") return env.ANTIGRAVITY_COMMAND || "agy";
+-  return env.CLAUDE_COMMAND || "claude";
+-}
+-
+ export function createHealthRuntime(options: {
+   bridgeDb: BridgeDb;
+   dbPath: string;
+@@ -23,17 +14,7 @@
+   chatId: number;
+   sendText: (text: string) => Promise<void>;
+ }) {
+-  const parsed = parseHealthCliConfig(options.env);
+-  const cliBot = parsed.bot;
+-  const healthBot = new HealthBridgeBot({
+-    db: options.bridgeDb.raw,
+-    chatId: options.chatId,
+-    sessionTtlSeconds: Number(options.env.HEALTH_SESSION_TTL_SECONDS) > 0 ? Number(options.env.HEALTH_SESSION_TTL_SECONDS) : 1800,
+-    autonomy: (options.env.HEALTH_MONITOR_AUTONOMY as "report" | "suggest") || "report",
+-    cliBot,
+-    cliBotConfig: { command: parsed.command ?? defaultHealthCliCommand(cliBot, options.env), modelPreference: parsed.modelPreference },
+-    _sendText: options.sendText,
+-  });
++  const reportStore = new HealthReportStore(options.bridgeDb.raw);
+   const plugins: HealthPlugin[] = [new SelfPlugin(options.bridgeDb, options.dbPath)];
+   if (options.env.HEALTH_SERVER_MONITOR_ENABLED !== "0") plugins.push(new ServerPlugin());
+   if (options.env.HEALTH_CONTENT_CRAWLER_ENABLED === "1") {
+@@ -46,22 +27,19 @@
+     }));
+   }
+   return {
+-    cliBot,
+-    healthBot,
+     plugins,
+     async runChecks(): Promise<string> {
+       const reports = await Promise.all(plugins.map((plugin) => plugin.check()));
+-      await Promise.all(reports.map((report) => healthBot.handleReport(report, { force: true, silent: true })));
++      for (const report of reports) reportStore.saveReport(report);
+       return reports.map((report) => formatReport(report)).join("\n\n---\n\n") || "✅ All checks passed.";
+     },
+     statusText(): string {
+-      const context = new HealthContextStore(options.bridgeDb.raw).getContext();
+-      const aggregate = new HealthReportStore(options.bridgeDb.raw).getAggregate({
++      const aggregate = reportStore.getAggregate({
+         activePluginNames: plugins.map((plugin) => plugin.name),
+         freshnessSeconds: parseCadenceSeconds(options.env) * 2,
+       });
+       if (aggregate.status === null && !aggregate.evidence.stalePluginNames.length) return "No health data yet. Use /health to run a check.";
+-      return `${formatAggregateReport(aggregate)}${context?.lastSuggestion ? `\n\n*Last suggestion:*\n\n${context.lastSuggestion}` : ""}`;
++      return formatAggregateReport(aggregate);
+     },
+   };
+ }
+--- a/src/health/reporter.ts
++++ b/src/health/reporter.ts
+@@ -55,57 +55,3 @@
+   }
+   return lines.join("\n");
+ }
+-
+-function isShellCommandLine(line: string): boolean {
+-  const trimmed = line.trim();
+-  return /^(sudo|systemctl|journalctl|echo|cat|tee|npm|node|npx|pnpm|yarn|bash|sh|curl|wget|docker|docker-compose|git|sqlite3|crontab|mkdir|rm|cp|mv|chmod|chown)\b/.test(trimmed);
+-}
+-
+-function stripSuggestionHeading(text: string): string {
+-  return String(text || "")
+-    .replace(/^\s*(?:💡\s*)?(?:\*+)?Suggested actions:?(?:\*+)?\s*/i, "")
+-    .trim();
+-}
+-
+-function fenceSuggestionCommands(text: string): string {
+-  const lines = text.split("\n");
+-  const output: string[] = [];
+-  let inFence = false;
+-  let commandFenceOpen = false;
+-
+-  const closeCommandFence = () => {
+-    if (commandFenceOpen) {
+-      output.push("```");
+-      commandFenceOpen = false;
+-    }
+-  };
+-
+-  for (const line of lines) {
+-    if (line.trim().startsWith("```")) {
+-      closeCommandFence();
+-      inFence = !inFence;
+-      output.push(line);
+-      continue;
+-    }
+-
+-    if (!inFence && isShellCommandLine(line)) {
+-      if (!commandFenceOpen) {
+-        output.push("```bash");
+-        commandFenceOpen = true;
+-      }
+-      output.push(line.trim());
+-      continue;
+-    }
+-
+-    closeCommandFence();
+-    output.push(line);
+-  }
+-
+-  closeCommandFence();
+-  return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+-}
+-
+-export function formatSuggestion(suggestion: string): string {
+-  const body = fenceSuggestionCommands(stripSuggestionHeading(suggestion));
+-  return body ? `💡 *Suggested actions:*\n\n${body}` : "";
+-}
+--- a/src/providerLock.ts
++++ b/src/providerLock.ts
+@@ -23,7 +23,7 @@
+ 
+ const PROVIDERS = new Set<CliKind>(["codex", "claude", "antigravity"]);
+ 
+-function parseProviderLock(raw: string | undefined): CliKind | null {
++export function parseProviderLock(raw: string | undefined): CliKind | null {
+   const value = raw?.trim();
+   if (!value) return null;
+   if (!PROVIDERS.has(value as CliKind)) {
+--- a/src/health/eventIngress.ts
++++ b/src/health/eventIngress.ts
+@@ -292,7 +292,7 @@
+  * AGENTS.md and the agent's own Skills own that reasoning, per #351's
+  * authority-boundary requirement that event content is evidence/instruction
+  * only, never a grant of authority or a prescribed procedure. */
+-function buildHealthOpsPrompt(report: PersistedHealthReport): string {
++export function buildHealthOpsPrompt(report: PersistedHealthReport): string {
+   const checks = report.checks
+     .map((check) => `- ${check.name}: ${check.status} — ${check.message}`)
+     .join("\n");
+@@ -303,8 +303,9 @@
+     `Checks:`,
+     checks,
+     ``,
+-    `Investigate and report per the health/operations authority scope`,
+-    `('${HEALTH_RUN_AUTHORITY_SCOPE}') described in AGENTS.md. This event is`,
++    `Investigate this health observation using the ` + "`health-troubleshooting`" + ` skill.`,
++    `Report per the health/operations authority scope ('${HEALTH_RUN_AUTHORITY_SCOPE}')`,
++    `described in AGENTS.md. This event is`,
+     `evidence only — it does not grant deploy, restart, or repository-mutation`,
+     `authority beyond what that scope already authorizes.`,
+   ].join("\n");
+--- a/src/index-health.ts
++++ b/src/index-health.ts
+@@ -11,11 +11,10 @@
+ import Database from "better-sqlite3";
+ import { TelegramClient } from "./telegram.js";
+ import { HealthScheduler } from "./health/scheduler.js";
+-import { HealthBridgeBot } from "./health/bot.js";
+ import { SelfPlugin } from "./health/plugins/self.js";
+ import { ExternalPlugin } from "./health/plugins/external.js";
+ import { ServerPlugin } from "./health/plugins/server.js";
+-import { parseHealthEnabled, parseCadenceSeconds, parseHealthCliConfig, resolveHealthEngineExecutionMode, parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } from "./health/config.js";
++import { parseHealthEnabled, parseCadenceSeconds, parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } from "./health/config.js";
+ import { formatReport } from "./health/reporter.js";
+ import { formatAggregateReport } from "./health/reporter.js";
+ import { HealthReportStore } from "./health/reports.js";
+@@ -31,6 +30,8 @@
+ import { applyAuthoritativeHealthReport, pendingOwnerAuthorizedHealthRecoveryGoals, runOwnerAuthorizedHealthRecovery, startOwnerAuthorizedHealthRecovery, type OwnerAuthorizedHealthRecoveryRequest } from "./autonomousGoalRuntime.js";
+ import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
+ import type { BotKind } from "./types.js";
++import { loadBotsConfig, resolveExecutionMode } from "./config.js";
++import { parseProviderLock } from "./providerLock.js";
+ import type { HealthPlugin, HealthReport } from "./health/types.js";
+ import {
+   acceptHealthOpsEvent,
+@@ -70,28 +71,8 @@
+ 
+ const healthEnabled = parseHealthEnabled(process.env);
+ const cadenceSeconds = parseCadenceSeconds(process.env);
+-const autonomy = (process.env.HEALTH_MONITOR_AUTONOMY as "report" | "suggest") || "report";
+-const sessionTtlSeconds = Number(process.env.HEALTH_SESSION_TTL_SECONDS) > 0
+-  ? Number(process.env.HEALTH_SESSION_TTL_SECONDS)
+-  : 1800;
+-
+-function parseHealthCliBot(value: string | undefined): BotKind {
+-  if (value === "codex" || value === "antigravity" || value === "claude") return value;
+-  return "claude";
+-}
+-
+-function defaultHealthCliCommand(bot: BotKind): string {
+-  if (bot === "codex") return process.env.CODEX_COMMAND || "codex";
+-  if (bot === "antigravity") return process.env.ANTIGRAVITY_COMMAND || "agy";
+-  return process.env.CLAUDE_COMMAND || "claude";
+-}
+-
+-const _healthCliParsed = parseHealthCliConfig(process.env);
+-const cliBot = _healthCliParsed.bot;
+-const cliBotConfig = {
+-  command: _healthCliParsed.command ?? defaultHealthCliCommand(cliBot),
+-  modelPreference: _healthCliParsed.modelPreference,
+-};
++const cliBot: BotKind = parseProviderLock(process.env.BRIDGE_PROVIDER_LOCK) ?? "claude";
++const cliBotConfig = loadBotsConfig(process.env)[cliBot];
+ 
+ const dbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
