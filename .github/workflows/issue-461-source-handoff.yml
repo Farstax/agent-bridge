@@ -1,0 +1,23 @@
+name: Issue 461 source handoff
+
+on:
+  pull_request:
+    paths:
+      - "test/health.test.ts"
+      - "test/healthRunSkillSeam.test.ts"
+      - ".github/workflows/issue-461-source-handoff.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue-461-health-test-source
+          path: test/health.test.ts
+          if-no-files-found: error
+          retention-days: 1
