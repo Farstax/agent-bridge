@@ -54,11 +54,12 @@ dotenv.config({
   override: false,
 });
 
+const supportedCliKinds = interactiveChainKinds();
 const configuredCliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
-  { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity"] },
+  { allowed: supportedCliKinds, fallback: ["codex", "claude", "antigravity"] },
 );
-const runtimePolicy = resolveTelegramRuntimePolicy(process.env, configuredCliChain);
+const runtimePolicy = resolveTelegramRuntimePolicy(process.env, supportedCliKinds);
 const { providerLock, token } = runtimePolicy;
 if (!token) {
   throw new Error(
@@ -100,10 +101,10 @@ const soulContext = loadSoulContext({
 if (soulContext) console.log(`[interactive] loaded SOUL.md context (${soulContext.length} chars)`);
 
 const db = openProductionDb(dbPath, {
-  serviceId: runtimePolicy.surfaceIdentity,
+  serviceId: runtimePolicy.databaseServiceId,
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: "interactive",
+  databaseRole: runtimePolicy.databaseRole,
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const continuationStore = new ContinuationRepository(db.raw);
@@ -176,7 +177,10 @@ if (!botUsername) {
   }
 }
 
-const fallbackChain = new ProviderFallbackChain(runtimePolicy.cliKinds, db);
+const fallbackChain = new ProviderFallbackChain(
+  providerLock ? runtimePolicy.cliKinds : configuredCliChain,
+  db,
+);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();
 
