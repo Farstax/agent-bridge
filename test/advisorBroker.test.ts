@@ -13,7 +13,9 @@ afterEach(() => {
 
 function setup(
   overrides: Record<string, string> = {},
-  runCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Independent view" })),
+  runCli = vi.fn().mockImplementation(async (command: string) => command.includes("codex")
+    ? JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Independent view" } })
+    : JSON.stringify({ result: "Independent view" })),
   abortCli?: (executionId: string) => Promise<boolean>,
 ) {
   const dir = mkdtempSync(join(tmpdir(), "advisor-broker-"));

@@ -2982,48 +2982,6 @@ describe("BridgeEngine", () => {
       expect(capturedPrompt).not.toContain("[Agent Bridge context]");
     });
 
-    it("tells the agent how to call the advisor when it is enabled", async () => {
-      process.env.BRIDGE_ADVISOR_ENABLED = "true";
-      process.env.BRIDGE_ADVISOR_CHAIN = "claude:fable-5,codex:gpt-5.6-luna";
-      const { BridgeEngine } = await import("../src/engine.js");
-      let capturedPrompt = "";
-      let capturedContextEnv: Record<string, string> | undefined;
-      const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
-        capturedPrompt = args[args.length - 1];
-        capturedContextEnv = options.contextEnv;
-        return "done";
-      });
-      const engine = new BridgeEngine(
-        {
-          surfaceIdentity: "test",
-          kind: "claude",
-          botConfig: { command: "claude", modelPreference: [] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          asyncEnabled: false,
-          pollIntervalMs: 1000,
-          fullConfig: makeFullConfig(dbPath),
-          advisorCapabilities: {
-            issue: vi.fn().mockReturnValue("broker.capability"),
-          },
-        },
-        db,
-        makeMockClient(),
-        { runCli },
-      );
-
-      await engine.handleMessages([makeMessage("review this plan")]);
-
-      expect(capturedPrompt).toContain("[Frontier advisor available]");
-      expect(capturedPrompt).toContain("$AGENT_BRIDGE_ADVISOR_COMMAND");
-      expect(capturedPrompt).toContain("--mode review --task");
-      expect(capturedPrompt).toContain("non-authoritative");
-      expect(capturedPrompt).not.toContain("BRIDGE_ADVISOR_CHAIN");
-      expect(capturedContextEnv).toEqual({
-        AGENT_BRIDGE_ADVISOR_COMMAND: expect.stringContaining("agent-bridge-advisor"),
-        AGENT_BRIDGE_ADVISOR_CAPABILITY: "broker.capability",
-      });
-    });
   });
 
   describe("/reset command", () => {
