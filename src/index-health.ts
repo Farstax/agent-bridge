@@ -11,11 +11,10 @@ import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { TelegramClient } from "./telegram.js";
 import { HealthScheduler } from "./health/scheduler.js";
-import { HealthBridgeBot } from "./health/bot.js";
 import { SelfPlugin } from "./health/plugins/self.js";
 import { ExternalPlugin } from "./health/plugins/external.js";
 import { ServerPlugin } from "./health/plugins/server.js";
-import { parseHealthEnabled, parseCadenceSeconds, parseHealthCliConfig, resolveHealthEngineExecutionMode, parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } from "./health/config.js";
+import { parseHealthEnabled, parseCadenceSeconds, parseHealthBotMode, resolveHealthTelegramToken, shouldHealthServicePoll } from "./health/config.js";
 import { formatReport } from "./health/reporter.js";
 import { formatAggregateReport } from "./health/reporter.js";
 import { HealthReportStore } from "./health/reports.js";
@@ -31,6 +30,8 @@ import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } f
 import { applyAuthoritativeHealthReport, pendingOwnerAuthorizedHealthRecoveryGoals, runOwnerAuthorizedHealthRecovery, startOwnerAuthorizedHealthRecovery, type OwnerAuthorizedHealthRecoveryRequest } from "./autonomousGoalRuntime.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotKind } from "./types.js";
+import { loadBotsConfig, resolveExecutionMode } from "./config.js";
+import { parseProviderLock } from "./providerLock.js";
 import type { HealthPlugin, HealthReport } from "./health/types.js";
 import {
   acceptHealthOpsEvent,
@@ -70,28 +71,8 @@ const chatId = process.env.HEALTH_MONITOR_CHAT_ID
 
 const healthEnabled = parseHealthEnabled(process.env);
 const cadenceSeconds = parseCadenceSeconds(process.env);
-const autonomy = (process.env.HEALTH_MONITOR_AUTONOMY as "report" | "suggest") || "report";
-const sessionTtlSeconds = Number(process.env.HEALTH_SESSION_TTL_SECONDS) > 0
-  ? Number(process.env.HEALTH_SESSION_TTL_SECONDS)
-  : 1800;
-
-function parseHealthCliBot(value: string | undefined): BotKind {
-  if (value === "codex" || value === "antigravity" || value === "claude") return value;
-  return "claude";
-}
-
-function defaultHealthCliCommand(bot: BotKind): string {
-  if (bot === "codex") return process.env.CODEX_COMMAND || "codex";
-  if (bot === "antigravity") return process.env.ANTIGRAVITY_COMMAND || "agy";
-  return process.env.CLAUDE_COMMAND || "claude";
-}
-
-const _healthCliParsed = parseHealthCliConfig(process.env);
-const cliBot = _healthCliParsed.bot;
-const cliBotConfig = {
-  command: _healthCliParsed.command ?? defaultHealthCliCommand(cliBot),
-  modelPreference: _healthCliParsed.modelPreference,
-};
+const cliBot: BotKind = parseProviderLock(process.env.BRIDGE_PROVIDER_LOCK) ?? "claude";
+const cliBotConfig = loadBotsConfig(process.env)[cliBot];
 
 const dbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 
@@ -119,17 +100,6 @@ const sendText = async (text: string): Promise<void> => {
   }
   await sendTelegramMessage({ client, kind: cliBot, chatId, body: { text } });
 };
-
-// ── Health bot ───────────────────────────────────────────────────────────────
-const healthBot = new HealthBridgeBot({
-  db: rawDb,
-  chatId: chatId ?? 0,
-  sessionTtlSeconds,
-  autonomy,
-  cliBot,
-  cliBotConfig,
-  _sendText: sendText,
-});
 
 // ── Health plugins ───────────────────────────────────────────────────────────
 const plugins: HealthPlugin[] = [new SelfPlugin(bridgeDb, dbPath)];
@@ -222,7 +192,11 @@ async function handleHealthReportEventIngress(report: HealthReport): Promise<voi
     }
   }
 
-  await healthBot.handleReport(report);
+  healthReportStore.saveReport(report);
+  const statusChanged = previousReport?.status !== report.status;
+  const shouldNotify = statusChanged && (report.status !== "green" || previousReport !== null);
+  if (shouldNotify) await sendText(formatReport(report));
+
   for (const goalId of applyAuthoritativeHealthReport(bridgeDb, report)) {
     void runOwnerAuthorizedHealthRecovery(bridgeDb, goalId, engine).catch((error) =>
       console.error(`[health-bot] successor recovery execution failed for ${goalId}`, error));
@@ -234,13 +208,9 @@ const scheduler = new HealthScheduler({
   config: {
     enabled: healthEnabled,
     cadenceSeconds,
-    autonomy: "report",
+    silenceOnGreen: true,
   },
-  sendReport: async (text) => {
-    if (!chatId) {
-      console.log(`[health-bot] report (no chatId):\n${text}`);
-    }
-  },
+  sendReport: async () => {},
   onRawReport: async (report) => {
     await handleHealthReportEventIngress(report);
     const _repoRoot = process.env.BRIDGE_PROJECT_DIR
@@ -261,7 +231,7 @@ engine = new BridgeEngine(
     executionKind: cliBot,
     botConfig: { command: cliBotConfig.command, modelPreference: cliBotConfig.modelPreference },
     allowedUserIds,
-    executionMode: resolveHealthEngineExecutionMode(process.env, cliBot),
+    executionMode: resolveExecutionMode(cliBot, process.env),
     asyncEnabled: false,
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 1000),
     soulContext,
@@ -275,34 +245,22 @@ engine = new BridgeEngine(
             ...results.map(r => formatReport(r)),
             qualificationStatus,
           ].join("\n\n---\n\n");
-          // Persist reports through healthBot for context store without sending duplicates.
-          await Promise.all(results.map(r => healthBot.handleReport(r, { force: true, silent: true })));
+          for (const report of results) healthReportStore.saveReport(report);
           return { text: combined || "✅ All checks passed." };
         }
 
         if (cmd === "/status") {
-          const { HealthContextStore } = await import("./health/context.js");
-          const store = new HealthContextStore(rawDb);
-          const context = store.getContext();
-          const aggregate = new HealthReportStore(rawDb).getAggregate({
+          const aggregate = healthReportStore.getAggregate({
             activePluginNames: plugins.map((plugin) => plugin.name),
             freshnessSeconds: cadenceSeconds * 2,
           });
           if (aggregate.status === null && !aggregate.evidence.stalePluginNames.length) {
             return { text: `No health data yet. Use /health to run a check.\n\n${formatQualificationSummary()}` };
           }
-          let statusText = `${formatAggregateReport(aggregate)}\n\n${formatQualificationSummary()}`;
-          if (context?.lastSuggestion) {
-            statusText += `\n\n*Last suggestion:*\n\n${context.lastSuggestion}`;
-          }
-          return { text: statusText };
+          return { text: `${formatAggregateReport(aggregate)}\n\n${formatQualificationSummary()}` };
         }
 
         return null;
-      },
-
-      onBeforeExecute: async (prompt) => {
-        return healthBot.buildOnDemandPrompt(prompt);
       },
     },
   },
@@ -395,9 +353,7 @@ if (shouldHealthServicePoll(process.env)) {
   await client.setMyCommands({
     commands: [
       { command: "health", description: "Run health checks immediately" },
-      { command: "status", description: "Show last health report and suggestions" },
-      { command: "models", description: "Switch model for CLI suggestions" },
-      { command: "reset", description: "Clear current session" },
+      { command: "status", description: "Show current health status" },
       { command: "stop", description: "Abort running execution" },
     ],
   }).catch((err) => console.warn(`[health-bot] setMyCommands failed`, err));
@@ -410,7 +366,7 @@ if (healthEnabled) {
       console.error("[health-bot] startup check error", err)
     );
   }
-  console.log(`[health-bot] scheduler started — cadence ${cadenceSeconds}s, autonomy=${autonomy}`);
+  console.log(`[health-bot] scheduler started — cadence ${cadenceSeconds}s`);
 }
 
 const shutdown = (signal: string) => {

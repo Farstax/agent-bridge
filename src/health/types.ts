@@ -25,7 +25,6 @@ export interface HealthAggregate {
   };
 }
 
-export type AutonomyLevel = "report" | "suggest";
 
 export interface HealthPlugin {
   name: string;
@@ -35,8 +34,5 @@ export interface HealthPlugin {
 export interface HealthConfig {
   enabled: boolean;
   cadenceSeconds: number;
-  autonomy: AutonomyLevel;
   silenceOnGreen?: boolean;
-  suggestBot?: "codex" | "antigravity" | "claude";
-  suggestBotConfig?: { command: string; modelPreference: string[] };
 }

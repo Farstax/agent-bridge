@@ -1,19 +1,10 @@
 import type { HealthPlugin, HealthConfig, HealthReport } from "./types.js";
-import type { BotKind } from "../types.js";
-import { formatReport, formatSuggestion } from "./reporter.js";
-import { generateSuggestion } from "./suggest.js";
-
-type SuggestFn = (
-  report: HealthReport,
-  bot: BotKind,
-  botConfig: { command: string; modelPreference: string[] },
-) => Promise<string | null>;
+import { formatReport } from "./reporter.js";
 
 export class HealthScheduler {
   private plugins: HealthPlugin[];
   private config: HealthConfig;
   private sendReport: (text: string) => Promise<void>;
-  private suggestFn: SuggestFn;
   private onRawReport?: (report: HealthReport) => Promise<void>;
   private timers: NodeJS.Timeout[] = [];
   private inFlight = new Set<string>();
@@ -23,13 +14,11 @@ export class HealthScheduler {
     config: HealthConfig;
     sendReport: (text: string) => Promise<void>;
     onRawReport?: (report: HealthReport) => Promise<void>;
-    _suggestFn?: SuggestFn;
   }) {
     this.plugins = options.plugins;
     this.config = options.config;
     this.sendReport = options.sendReport;
     this.onRawReport = options.onRawReport;
-    this.suggestFn = options._suggestFn ?? generateSuggestion;
   }
 
   start(): void {
@@ -66,13 +55,6 @@ export class HealthScheduler {
         await this.sendReport(formatReport(report));
       }
 
-      const { autonomy, suggestBot, suggestBotConfig } = this.config;
-      if (autonomy !== "report" && report.status !== "green" && suggestBot && suggestBotConfig) {
-        const suggestion = await this.suggestFn(report, suggestBot, suggestBotConfig);
-        if (suggestion) {
-          await this.sendReport(formatSuggestion(suggestion));
-        }
-      }
     } finally {
       this.inFlight.delete(plugin.name);
     }

@@ -23,7 +23,7 @@ export interface AutonomyRuntimeConfig {
 
 const PROVIDERS = new Set<CliKind>(["codex", "claude", "antigravity"]);
 
-function parseProviderLock(raw: string | undefined): CliKind | null {
+export function parseProviderLock(raw: string | undefined): CliKind | null {
   const value = raw?.trim();
   if (!value) return null;
   if (!PROVIDERS.has(value as CliKind)) {
