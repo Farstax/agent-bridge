@@ -14,8 +14,6 @@ import { buildModelKeyboard, buildModelsText } from "./bridge.js";
 import { listLocalCatalog } from "./skills.js";
 import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js";
 import { preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
-import { parseAdvisorConfig } from "./advisorConfig.js";
-import { inspectAdvisorConfigSources } from "./advisorConfigSource.js";
 import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 
 const CONTEXT_COMPACT_NUDGE_TURNS = 100;
@@ -26,10 +24,9 @@ export type CommandResult =
   | { kind: "execute"; prompt: string }
   | { kind: "codex_usage" }
   | { kind: "compact"; chatKey: string }
-  | { kind: "advisor"; action: "ask" | "review" | "plan" | "debug"; task: string; chatKey: string }
   | { kind: "btw"; prompt: string };
 
-const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/queue_mode", "/skills", "/usage", "/narration", "/compact", "/context", "/advisor", "/btw"]);
+const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/queue_mode", "/skills", "/usage", "/narration", "/compact", "/context", "/btw"]);
 export const START_PAYLOAD_MAX_LENGTH = 64;
 export const START_PAYLOAD_PATTERN = /^[a-z0-9-]+$/;
 
@@ -300,49 +297,6 @@ export function handleCommand(
     return { kind: "compact", chatKey: chatId };
   }
 
-  if (text === "/advisor") {
-    const [, rawAction = "status", ...rest] = String(prompt || "").trim().split(/\s+/);
-    const action = rawAction.toLowerCase();
-    const advisor = parseAdvisorConfig();
-    if (action === "status") {
-      const chain = advisor.chain.length
-        ? advisor.chain.map((target) => `${target.provider}:${target.model}`).join(" -> ")
-        : "not configured";
-      const diagnostics = inspectAdvisorConfigSources();
-      const matches = diagnostics.effectiveChainMatches.length > 0
-        ? diagnostics.effectiveChainMatches.join(" and ")
-        : "no readable configured file";
-      const lines = [
-        `Advisor: ${advisor.enabled ? "enabled" : "disabled"}`,
-        `Mode: ${advisor.mode}`,
-        `Chain: ${chain}`,
-        `Effective source: ${diagnostics.effectiveChainSource}`,
-        `Effective chain matches: ${matches}`,
-        `Budgets: ${advisor.maxCallsPerTurn}/turn, ${advisor.maxCallsPerTask}/task`,
-      ];
-      if (diagnostics.driftKeys.length > 0) {
-        lines.push(
-          `Configuration drift: ${diagnostics.driftKeys.join(", ")} differ between ${diagnostics.repoEnvPath} and ${diagnostics.systemdEnvPath}.`,
-          "Update the authoritative systemd defaults and restart the affected Agent Bridge services.",
-        );
-      } else if (diagnostics.repoReadable && diagnostics.systemdReadable) {
-        lines.push("Configuration drift: none detected.");
-      } else {
-        lines.push("Configuration drift: not evaluated because both configuration files are not readable.");
-      }
-      return { kind: "message", text: lines.join("\n") };
-    }
-    if (!["ask", "review", "plan", "debug"].includes(action)) {
-      return { kind: "message", text: "Usage: /advisor status|ask <question>|review|plan <goal>|debug <problem>" };
-    }
-    const supplied = rest.join(" ").trim();
-    if (["ask", "plan", "debug"].includes(action) && !supplied) {
-      return { kind: "message", text: `Usage: /advisor ${action} <text>` };
-    }
-    const task = supplied || "Review the current conversation and identify missed risks, weak assumptions, and next steps.";
-    return { kind: "advisor", action: action as "ask" | "review" | "plan" | "debug", task, chatKey: chatId };
-  }
-
   if (text === "/btw") {
     const btwPrompt = String(prompt || "").trim().replace(/^\/btw\S*\s*/i, "").trim();
     if (!btwPrompt) {
@@ -414,7 +368,6 @@ export function buildTelegramCommands(kind: "codex" | "antigravity" | "claude"):
     { command: "stop",     description: "Abort running execution" },
     { command: "compact",  description: "Compact conversation context" },
     { command: "context",  description: "Show context status" },
-    { command: "advisor",  description: "Ask frontier advisor" },
     { command: "btw",      description: "Fresh read-only side question" },
   ];
 

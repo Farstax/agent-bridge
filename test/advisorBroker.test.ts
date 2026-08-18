@@ -11,108 +11,245 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function setup(overrides: Record<string, string> = {}) {
+function setup(
+  overrides: Record<string, string> = {},
+  runCli = vi.fn().mockImplementation(async (command: string) => command.includes("codex")
+    ? JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Independent view" } })
+    : JSON.stringify({ result: "Independent view" })),
+  abortCli?: (executionId: string) => Promise<boolean>,
+) {
   const dir = mkdtempSync(join(tmpdir(), "advisor-broker-"));
   dirs.push(dir);
   const db = openDb(join(dir, "bridge.sqlite"));
-  const runCli = vi.fn().mockResolvedValue(JSON.stringify({
-    advice_md: "Use the broker.", risks: [], suggested_next_steps: ["Verify"], confidence: "high",
-  }));
   const broker = new AdvisorBroker({
     db,
     config: parseAdvisorConfig({
       BRIDGE_ADVISOR_ENABLED: "true",
-      BRIDGE_ADVISOR_CHAIN: "claude:claude-fable-5,claude:claude-opus-4-8",
+      BRIDGE_ADVISOR_CHAIN: "claude:claude-opus-5,codex:gpt-5.6-sol",
       ...overrides,
     }),
-    bots: { claude: { command: "/trusted/claude", modelPreference: [] } },
+    bots: {
+      claude: { command: "/trusted/claude", modelPreference: [] },
+      codex: { command: "/trusted/codex", modelPreference: [] },
+    },
     runCli,
     socketDir: dir,
-  });
-  return { broker, db, runCli };
+    ...(abortCli ? { abortCli } : {}),
+  } as any);
+  return { broker, db, runCli, dir };
 }
 
-describe("bridge-owned advisor broker", () => {
-  it("binds trusted scope, identity, repository and budgets server-side", async () => {
+describe("bounded cross-provider frontier advice", () => {
+  it("uses one allowed provider different from the active provider and records minimal audit", async () => {
     const { broker, db, runCli } = setup();
-    await broker.start();
     const capability = broker.issue({
-      chatKey: "chat:7", cliKind: "codex", turnKey: "turn-1", taskKey: "task-1",
-      repoPath: "/trusted/repo", activeModel: "gpt-5.6-sol",
+      chatKey: "chat:7",
+      cliKind: "codex",
+      turnKey: "turn-1",
+      taskKey: "task-1",
+      repoPath: "/trusted/repo",
     });
 
-    const output = await requestAdvisorViaBroker({ capability, mode: "review", task: "Review it" });
+    const output = await broker.requestWithCapability({
+      capability,
+      question: "What risk am I missing?",
+      context: "The change removes an orchestration layer.",
+    });
 
-    expect(output).toContain("Use the broker.");
+    expect(output).toBe("Independent view");
+    expect(runCli).toHaveBeenCalledTimes(1);
     expect(runCli).toHaveBeenCalledWith(
       "/trusted/claude",
-      expect.arrayContaining(["--tools", ""]),
+      expect.arrayContaining(["--model", "claude-opus-5", "--tools", ""]),
       "/trusted/repo",
-      expect.objectContaining({ advisorChild: true }),
+      expect.objectContaining({ advisorChild: true, timeoutMs: expect.any(Number), chatId: expect.stringMatching(/^advisor:/) }),
     );
-    const call = db.raw.prepare("SELECT scope_key, turn_key, task_key, selected_provider FROM advisor_calls").get() as any;
-    expect(call).toMatchObject({ scope_key: "chat:7", turn_key: "turn-1", task_key: "task-1", selected_provider: "claude" });
-    const attempt = db.raw.prepare("SELECT provider, model, status FROM advisor_attempts").get() as any;
-    expect(attempt).toMatchObject({ provider: "claude", model: "claude-fable-5", status: "succeeded" });
-    await broker.close();
+    const call = db.raw.prepare("SELECT scope_key, turn_key, task_key, selected_provider, selected_model, status FROM advisor_calls").get() as any;
+    expect(call).toMatchObject({
+      scope_key: "chat:7",
+      turn_key: "turn-1",
+      task_key: "task-1",
+      selected_provider: "claude",
+      selected_model: "claude-opus-5",
+      status: "succeeded",
+    });
+    const attempts = db.raw.prepare("SELECT provider, model, status FROM advisor_attempts ORDER BY ordinal").all() as any[];
+    expect(attempts).toEqual([{ provider: "claude", model: "claude-opus-5", status: "succeeded" }]);
     db.close();
   });
 
-  it("ignores forged agent environment because the client sends only capability, mode and task", async () => {
-    const { broker, db, runCli } = setup({ BRIDGE_ADVISOR_MAX_CALLS_PER_TURN: "1" });
+  it.each([
+    { active: "claude", provider: "codex", command: "/trusted/codex", model: "gpt-5.6-sol" },
+    { active: "agy", provider: "claude", command: "/trusted/claude", model: "claude-opus-5" },
+  ])("returns one configured independent result to an active $active run", async ({ active, provider, command, model }) => {
+    const { broker, db, runCli } = setup();
+    const capability = broker.issue({
+      chatKey: `chat:${active}`,
+      cliKind: active,
+      turnKey: `turn:${active}`,
+      taskKey: `task:${active}`,
+      repoPath: "/repo",
+    });
+
+    await expect(broker.requestWithCapability({
+      capability,
+      provider,
+      question: "Give one independent view",
+    })).resolves.toBe("Independent view");
+
+    expect(runCli).toHaveBeenCalledTimes(1);
+    expect(runCli.mock.calls[0][0]).toBe(command);
+    expect(runCli.mock.calls[0][1]).toEqual(expect.arrayContaining(["--model", model]));
+    const call = db.raw.prepare("SELECT selected_provider, selected_model, status FROM advisor_calls").get() as any;
+    expect(call).toMatchObject({ selected_provider: provider, selected_model: model, status: "succeeded" });
+    db.close();
+  });
+
+  it("accepts only a configured independent provider and never lets the caller choose its own provider", async () => {
+    const { broker, db, runCli } = setup();
+    const capability = broker.issue({
+      chatKey: "chat",
+      cliKind: "claude",
+      turnKey: "turn",
+      taskKey: "task",
+      repoPath: "/repo",
+    });
+
+    await expect(broker.requestWithCapability({
+      capability,
+      provider: "claude",
+      question: "Review this",
+    })).rejects.toThrow(/independent provider/i);
+    await expect(broker.requestWithCapability({
+      capability,
+      provider: "agy",
+      question: "Review this",
+    })).rejects.toThrow(/allowed advisor provider/i);
+    expect(runCli).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("rejects an untrusted capability before invoking a provider", async () => {
+    const { broker, db, runCli } = setup();
+    await expect(broker.requestWithCapability({
+      capability: "not-a-capability",
+      question: "Review this",
+    })).rejects.toThrow(/invalid capability/i);
+    expect(runCli).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("makes exactly one provider call with the configured timeout and does not fall back on failure", async () => {
+    const runCli = vi.fn().mockRejectedValue(new Error("provider unavailable"));
+    const { broker, db } = setup({ BRIDGE_ADVISOR_TIMEOUT_MS: "1234" }, runCli);
+    const capability = broker.issue({
+      chatKey: "chat",
+      cliKind: "agy",
+      turnKey: "turn",
+      taskKey: "task",
+      repoPath: "/repo",
+    });
+
+    await expect(broker.requestWithCapability({
+      capability,
+      provider: "claude",
+      question: "One opinion only",
+    })).rejects.toThrow(/provider unavailable/i);
+    expect(runCli).toHaveBeenCalledTimes(1);
+    expect(runCli.mock.calls[0][3]).toEqual(expect.objectContaining({ timeoutMs: 1234, advisorChild: true }));
+    const attempts = db.raw.prepare("SELECT provider, status FROM advisor_attempts ORDER BY ordinal").all() as any[];
+    expect(attempts).toEqual([{ provider: "claude", status: "failed" }]);
+    db.close();
+  });
+
+  it("redacts secret-shaped question and context before invoking the second provider", async () => {
+    const { broker, db, runCli } = setup();
+    const capability = broker.issue({
+      chatKey: "chat:secret-boundary",
+      cliKind: "codex",
+      turnKey: "turn:secret-boundary",
+      taskKey: "task:secret-boundary",
+      repoPath: "/repo",
+    });
+    const githubToken = `ghp_${"A".repeat(24)}`;
+
+    await broker.requestWithCapability({
+      capability,
+      question: `Review token=question-secret ${githubToken}`,
+      context: "password=context-secret\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----",
+    });
+
+    expect(runCli).toHaveBeenCalledTimes(1);
+    const providerArgs = JSON.stringify(runCli.mock.calls[0][1]);
+    expect(providerArgs).not.toContain("question-secret");
+    expect(providerArgs).not.toContain("context-secret");
+    expect(providerArgs).not.toContain(githubToken);
+    expect(providerArgs).not.toContain("private-material");
+    expect(providerArgs).toContain("[REDACTED");
+    db.close();
+  });
+
+  it("bounds caller context, output and per-turn invocation budget", async () => {
+    const oversizedOutput = vi.fn().mockResolvedValue(JSON.stringify({ result: "x".repeat(16_001) }));
+    const { broker, db } = setup({
+      BRIDGE_ADVISOR_CONTEXT_MAX_CHARS: "32",
+      BRIDGE_ADVISOR_MAX_CALLS_PER_TURN: "1",
+    }, oversizedOutput);
+    const capability = broker.issue({
+      chatKey: "chat",
+      cliKind: "codex",
+      turnKey: "turn",
+      taskKey: "task",
+      repoPath: "/repo",
+    });
+
+    await expect(broker.requestWithCapability({
+      capability,
+      question: "Review",
+      context: "c".repeat(33),
+    })).rejects.toThrow(/context.*bound/i);
+    expect(oversizedOutput).not.toHaveBeenCalled();
+
+    await expect(broker.requestWithCapability({ capability, question: "Review" }))
+      .rejects.toThrow(/output.*bound/i);
+    expect(oversizedOutput).toHaveBeenCalledTimes(1);
+
+    await expect(broker.requestWithCapability({ capability, question: "Again" }))
+      .rejects.toThrow(/budget exhausted/i);
+    expect(oversizedOutput).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it("aborts the one advisor subprocess when its provider-side client disconnects", async () => {
+    let rejectRun: ((error: Error) => void) | null = null;
+    const runCli = vi.fn(() => new Promise<string>((_resolve, reject) => { rejectRun = reject; }));
+    const abortCli = vi.fn(async () => {
+      rejectRun?.(new Error("advisor cancelled"));
+      return true;
+    });
+    const { broker, db, dir } = setup({}, runCli, abortCli);
     await broker.start();
     const capability = broker.issue({
-      chatKey: "trusted-chat", cliKind: "codex", turnKey: "trusted-turn", taskKey: "trusted-task",
-      repoPath: "/trusted/repo", activeModel: null,
+      chatKey: "chat",
+      cliKind: "codex",
+      turnKey: "turn",
+      taskKey: "task",
+      repoPath: "/repo",
     });
-    const forged = {
-      BRIDGE_ADVISOR_ENABLED: "true",
-      BRIDGE_ADVISOR_CHAIN: "codex:attacker-model",
-      BRIDGE_ADVISOR_MAX_CALLS_PER_TURN: "999",
-      CODEX_COMMAND: "/attacker/codex",
-      AGENT_BRIDGE_CHAT_KEY: "other-chat",
-      AGENT_BRIDGE_CLI_KIND: "claude",
-      AGENT_BRIDGE_ADVISOR_TURN_KEY: "fresh-turn",
-    };
+    const controller = new AbortController();
+    const pending = requestAdvisorViaBroker(
+      { capability, question: "Review" },
+      process.env,
+      dir,
+      controller.signal,
+    );
 
-    await requestAdvisorViaBroker({ capability, mode: "review", task: "First" }, forged);
-    await expect(requestAdvisorViaBroker({ capability, mode: "review", task: "Second" }, forged))
-      .rejects.toThrow(/budget exhausted/i);
-    expect(runCli).toHaveBeenCalledTimes(1);
-    expect(runCli.mock.calls[0][0]).toBe("/trusted/claude");
-    const call = db.raw.prepare("SELECT scope_key, turn_key FROM advisor_calls WHERE status='succeeded'").get() as any;
-    expect(call).toMatchObject({ scope_key: "trusted-chat", turn_key: "trusted-turn" });
-    await broker.close();
-    db.close();
-  });
+    await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(1));
+    controller.abort();
+    await expect(pending).rejects.toThrow(/abort|cancel/i);
+    await vi.waitFor(() => expect(abortCli).toHaveBeenCalledTimes(1));
+    expect(abortCli.mock.calls[0][0]).toMatch(/^advisor:/);
 
-  it("rejects altered, expired and previous-turn capabilities", async () => {
-    let now = 1_000;
-    const { broker, db, runCli } = setup();
-    broker.setClockForTest(() => now);
-    await broker.start();
-    const first = broker.issue({
-      chatKey: "chat", cliKind: "codex", turnKey: "turn-1", taskKey: "task-1", repoPath: "/repo", activeModel: null,
-    });
-    await expect(requestAdvisorViaBroker({ capability: `${first}x`, mode: "review", task: "x" })).rejects.toThrow(/invalid capability/i);
-    const second = broker.issue({
-      chatKey: "chat", cliKind: "codex", turnKey: "turn-2", taskKey: "task-2", repoPath: "/repo", activeModel: null,
-    });
-    await expect(requestAdvisorViaBroker({ capability: first, mode: "review", task: "x" })).rejects.toThrow(/invalid capability/i);
-    now += 10 * 60_000 + 1;
-    await expect(requestAdvisorViaBroker({ capability: second, mode: "review", task: "x" })).rejects.toThrow(/expired capability/i);
-    expect(runCli).not.toHaveBeenCalled();
-    await broker.close();
-    db.close();
-  });
-
-  it("fails closed when the trusted chain contains a provider without tool-free mode", async () => {
-    const { broker, db, runCli } = setup({ BRIDGE_ADVISOR_CHAIN: "unsupported:some-model" });
-    await broker.start();
-    expect(() => broker.issue({
-      chatKey: "chat", cliKind: "claude", turnKey: "turn", taskKey: "task", repoPath: "/repo", activeModel: null,
-    })).toThrow(/Advisor disabled or misconfigured/i);
-    expect(runCli).not.toHaveBeenCalled();
     await broker.close();
     db.close();
   });
