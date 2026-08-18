@@ -7,6 +7,7 @@
  */
 
 import dotenv from "dotenv";
+import { isAbsolute, join } from "node:path";
 import {
   getBridgeProjectDir,
 } from "./bridge.js";
@@ -50,6 +51,10 @@ import { handleIntegratedHealthCommand } from "./health/integrated.js";
 import { recoverCancelledContinuationContainment } from "./continuationRecovery.js";
 import { ContinuationRepository } from "./repositories/continuationRepository.js";
 import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
+import { loadWorkspaceContext } from "./workspaceContext.js";
+import { AutonomyController } from "./autonomyController.js";
+import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } from "./autonomyTelegram.js";
+import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
@@ -72,6 +77,14 @@ validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
 const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
 const integratedHealth = parseHealthBotMode(process.env) === "integrated";
+const autonomyDir = process.env.AGENT_BRIDGE_AUTONOMY_DIR?.trim() || null;
+const autonomyDbPath = process.env.AGENT_BRIDGE_AUTONOMY_DB_PATH?.trim() || null;
+if (Boolean(autonomyDir) !== Boolean(autonomyDbPath)) throw new Error("AGENT_BRIDGE_AUTONOMY_DIR and AGENT_BRIDGE_AUTONOMY_DB_PATH must be configured together");
+if (autonomyDir && !isAbsolute(autonomyDir)) throw new Error("AGENT_BRIDGE_AUTONOMY_DIR must be absolute");
+if (autonomyDbPath && !isAbsolute(autonomyDbPath)) throw new Error("AGENT_BRIDGE_AUTONOMY_DB_PATH must be absolute");
+const autonomyMaxCycles = Number(process.env.AGENT_BRIDGE_AUTONOMY_MAX_CYCLES || 3);
+if (!Number.isInteger(autonomyMaxCycles) || autonomyMaxCycles < 1) throw new Error("AGENT_BRIDGE_AUTONOMY_MAX_CYCLES must be a positive integer");
+const autonomyEnabled = Boolean(autonomyDir && autonomyDbPath);
 
 const config: BridgeConfig = {
   allowedUserIds,
@@ -100,6 +113,12 @@ const db = openProductionDb(dbPath, {
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const continuationStore = new ContinuationRepository(db.raw);
 const client = new TelegramClient(token, fetch, 45_000);
+const autonomyDb = autonomyDbPath ? openProductionDb(autonomyDbPath, {
+  serviceId: "telegram:interactive-autonomy",
+  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
+  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
+  databaseRole: "interactive",
+}) : null;
 const ownerNotificationSocketPath = process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
 const ownerNotificationIngress = ownerNotificationSocketPath
   ? await startOwnerNotificationIngress({
@@ -226,9 +245,54 @@ const engines = Object.fromEntries(
   }),
 ) as Record<CliKind, BridgeEngine>;
 
+const autonomyWorkspaceContext = autonomyDir
+  ? loadWorkspaceContext({ ...process.env, AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: join(autonomyDir, "CONTEXT.md") })
+  : "";
+const autonomySoulContext = autonomyDir
+  ? loadSoulContext({ mode: "summary", path: join(autonomyDir, "SOUL.md") })
+  : null;
+const autonomyEngines = autonomyDb && autonomyDir ? Object.fromEntries(
+  CLI_KINDS.map((kind) => [kind, new BridgeEngine({
+    kind: "autonomous",
+    surfaceIdentity: AUTONOMOUS_RUN_SURFACE,
+    executionKind: kind as BotKind,
+    botConfig: config.bots[kind as BotKind],
+    allowedUserIds,
+    executionMode: resolveExecutionMode(kind as BotKind, process.env),
+    asyncEnabled: true,
+    pollIntervalMs,
+    soulContext: autonomySoulContext,
+    workingDir: join(autonomyDir, "work"),
+    workspaceContext: autonomyWorkspaceContext,
+  }, autonomyDb, client)]),
+) as Record<CliKind, BridgeEngine> : null;
+const autonomyController = autonomyDb && autonomyDir && autonomyEngines ? new AutonomyController({
+  db: autonomyDb,
+  autonomyDir,
+  maxCycles: autonomyMaxCycles,
+  engineForBot: (bot) => {
+    const engine = autonomyEngines[bot as CliKind];
+    if (!engine) throw new Error(`provider ${bot} is not available for first-class autonomy`);
+    return engine;
+  },
+  deliverSupervisorMessage: async (route, text) => {
+    if (route.surface !== "telegram") throw new Error(`unsupported autonomy supervisor surface: ${route.surface}`);
+    const chatId = Number(route.address);
+    if (!Number.isSafeInteger(chatId)) throw new Error("invalid Telegram autonomy supervisor chat");
+    const thread = route.thread === undefined ? undefined : Number(route.thread);
+    if (thread !== undefined && !Number.isSafeInteger(thread)) throw new Error("invalid Telegram autonomy supervisor thread");
+    const sent = await client.sendMessage({ chat_id: chatId, text, ...(thread === undefined ? {} : { message_thread_id: thread }) });
+    const messageId = sent.result?.message_id;
+    if (!Number.isSafeInteger(messageId)) throw new Error("Telegram supervisor message did not return message_id");
+    return messageId!;
+  },
+  log: console,
+}) : null;
+autonomyController?.resumeActive();
+
 const defaultPref = resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds()) ?? "codex";
 async function registerGlobalCommands(pref: CliKind, label: string): Promise<void> {
-  for (const body of buildGlobalInteractiveCommandRegistrations(pref, { integratedHealth })) {
+  for (const body of buildGlobalInteractiveCommandRegistrations(pref, { integratedHealth, autonomy: autonomyEnabled })) {
     const scopeName = body.scope?.type ?? "default";
     await client.setMyCommands(body)
       .catch((err: unknown) => console.warn(`[interactive] setMyCommands (${scopeName}) failed${label}`, err));
@@ -236,7 +300,7 @@ async function registerGlobalCommands(pref: CliKind, label: string): Promise<voi
 }
 
 async function registerGroupChatCommands(pref: CliKind, chatId: number): Promise<void> {
-  for (const body of buildChatInteractiveCommandRegistrations(pref, chatId, { integratedHealth })) {
+  for (const body of buildChatInteractiveCommandRegistrations(pref, chatId, { integratedHealth, autonomy: autonomyEnabled })) {
     const scopeName = body.scope?.type ?? "chat";
     await client.setMyCommands(body)
       .catch((err: unknown) => console.warn(`[interactive] setMyCommands (${scopeName} ${chatId}) failed`, err));
@@ -319,6 +383,49 @@ for (;;) {
           const rawText = (message.text || "").trim();
           const chatId = message.chat.id;
           const chatKey = resolveUpdateChatKey(typedUpdate) ?? String(chatId);
+
+          const autonomyCommand = parseAutonomyTelegramCommand(rawText, botUsername);
+          if (autonomyCommand) {
+            if (!autonomyController) {
+              await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: "Autonomy is not configured on this runtime.", message_thread_id: message.message_thread_id } });
+              continue;
+            }
+            if (autonomyCommand === "status") {
+              await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: autonomyController.statusText(), message_thread_id: message.message_thread_id } });
+              continue;
+            }
+            if (autonomyCommand === "stop") {
+              await autonomyController.stop("authenticated owner /autonomy stop");
+              await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: autonomyController.statusText(), message_thread_id: message.message_thread_id } });
+              continue;
+            }
+            const { pref } = resolveCredentialCheckedPreference(chatKey);
+            if (!pref) {
+              await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: "No authenticated CLI is available to start autonomy.", message_thread_id: message.message_thread_id } });
+              continue;
+            }
+            const started = await autonomyController.start({
+              bot: pref as BotKind,
+              policyInstruction: "Authenticated owner approved this Episode via /autonomy approve.",
+              supervisorRoute: {
+                surface: "telegram",
+                address: String(chatId),
+                identity: String(message.from!.id),
+                ...(message.message_thread_id === undefined ? {} : { thread: String(message.message_thread_id) }),
+              },
+            });
+            const text = started.created ? `Autonomy started: ${started.goal.goalId}.` : `Autonomy already running: ${started.goal.goalId}.`;
+            await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text, message_thread_id: message.message_thread_id } });
+            continue;
+          }
+
+
+          if (autonomyController && autonomyDb) {
+            const supervisorReply = matchAutonomousTelegramSupervisorReply(autonomyDb, message);
+            if (supervisorReply && autonomyController.recordSupervisorInput(supervisorReply)) {
+              continue;
+            }
+          }
 
           if (isCliCommandText(rawText, botUsername)) {
             const { pref, available, stored } = resolveCredentialCheckedPreference(chatKey);

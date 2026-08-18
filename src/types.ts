@@ -92,6 +92,12 @@ export interface TelegramMessage {
   document?: TelegramDocument;
   media_group_id?: string;
   message_thread_id?: number;
+  reply_to_message?: {
+    message_id: number;
+    chat?: { id: number; type?: string };
+    from?: { id: number; is_bot?: boolean; username?: string };
+    message_thread_id?: number;
+  };
   reply_markup?: any;
 }
 
