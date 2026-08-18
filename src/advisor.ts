@@ -11,6 +11,31 @@ type RunCli = (command: string, args: string[], cwd: string, options: Record<str
 const botKindFor = (provider: ProviderId): BotKind => provider === "agy" ? "antigravity" : provider;
 const normalizeProvider = (provider: string): string => provider === "antigravity" ? "agy" : provider;
 
+const ADVISOR_SECRET_KEYS = [
+  "access[_-]?key", "api[_-]?key", "auth[_-]?token", "bearer[_-]?token",
+  "client[_-]?secret", "connection[_-]?string", "credential", "database[_-]?url",
+  "db[_-]?url", "github[_-]?token", "gh[_-]?token", "oauth[_-]?token", "password",
+  "private[_-]?key", "refresh[_-]?token", "secret", "secret[_-]?access[_-]?key",
+  "secret[_-]?key", "session[_-]?token", "token",
+].join("|");
+const ADVISOR_SECRET_ASSIGNMENT_RE = new RegExp(
+  `(["']?(?:${ADVISOR_SECRET_KEYS})["']?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\s,;]+)`,
+  "gi",
+);
+
+/** Mechanical cross-provider boundary: scrub common credential shapes before payload leaves Bridge ownership. */
+function redactAdvisorSecretText(text: string): string {
+  return text
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
+    .replace(ADVISOR_SECRET_ASSIGNMENT_RE, "$1[REDACTED]")
+    .replace(/\b((?:proxy-)?authorization\s*:\s*)(?:bearer|basic)\s+[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\/\s:@]+):([^@\s\/]+)@/gi, "$1[REDACTED]@")
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[REDACTED JWT]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED AWS ACCESS KEY]")
+    .replace(/\b(?:gh[opsu]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[REDACTED GITHUB TOKEN]")
+    .replace(/\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/g, "[REDACTED TOKEN]");
+}
+
 function chooseTarget(config: AdvisorConfig, activeProvider: string, requestedProvider?: string): AdvisorTarget {
   const active = normalizeProvider(activeProvider);
   if (requestedProvider) {
@@ -62,8 +87,8 @@ export async function executeFrontierAdvice(deps: {
   const { db, config, bots, runCli, request } = deps;
   if (!config.enabled) throw new Error("Advisor disabled");
   if (config.chain.length === 0) throw new Error("Advisor unavailable: no configured targets");
-  const question = boundedText(request.question, "question", Math.min(config.contextMaxChars, 4_000), true);
-  const context = boundedText(request.context ?? "", "context", config.contextMaxChars, false);
+  const question = redactAdvisorSecretText(boundedText(request.question, "question", Math.min(config.contextMaxChars, 4_000), true));
+  const context = redactAdvisorSecretText(boundedText(request.context ?? "", "context", config.contextMaxChars, false));
   const target = chooseTarget(config, request.activeProvider, request.provider);
   const bot = botKindFor(target.provider);
   if (!supportsToolFreeMode(bot)) throw new Error(`Advisor provider does not support tool-free mode: ${target.provider}`);
