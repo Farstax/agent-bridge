@@ -52,6 +52,17 @@ describe("autonomous-work skill convergence (#466)", () => {
 });
 ''')
 
+# Keep implementation-only bounds private rather than widening the public API.
+path = "src/autonomousGoalRuntime.ts"
+s = read(path)
+s = replace_once(s,
+'''export const MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_CHARS = 3_000;
+export const MAX_AUTONOMOUS_SUPERVISOR_INPUT_CHARS = 3_000;''',
+'''const MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_CHARS = 3_000;
+const MAX_AUTONOMOUS_SUPERVISOR_INPUT_CHARS = 3_000;''',
+"private autonomy supervisor bounds")
+write(path, s)
+
 # /autonomy commands are control-plane commands even when sent as replies to a
 # supervisor message. They must fall through correlation so /autonomy stop stays
 # an immediate intervention rather than becoming next-cycle supervisor input.
@@ -89,6 +100,41 @@ s = replace_once(s,
     expect(matchAutonomousTelegramSupervisorReply(db, message)).toBeNull();
     db.raw.prepare("UPDATE autonomous_goals SET status = 'complete' WHERE goal_id = 'reply'").run();''',
 "autonomy reply correlation regressions")
+s = replace_once(s,
+'''  it("keeps unclaimed supervisor input out of wake recovery", async () => {''',
+'''  it("deduplicates repeated supervisor input by its durable idempotency key", () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoalIfNoneActive(db, { goalId: "duplicate-input", prompt: "frozen", constraints: [], bot: "claude", maxCycles: 2 });
+    const input = { goalId: "duplicate-input", text: "same Telegram update", idempotencyKey: "duplicate-key" };
+    expect(recordAutonomousSupervisorInput(db, input)).toBe(true);
+    expect(recordAutonomousSupervisorInput(db, input)).toBe(true);
+    const row = db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE event_kind = ? AND idempotency_key = ?")
+      .get(AUTONOMOUS_SUPERVISOR_INPUT_KIND, input.idempotencyKey) as { count: number };
+    expect(row.count).toBe(1);
+    cleanup(db, dbPath);
+  });
+
+  it("does not inject input arriving after claim into the running cycle and retires it at terminal", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoalIfNoneActive(db, { goalId: "late-input", prompt: "frozen", constraints: [], bot: "claude", maxCycles: 1 });
+    const seen: string[] = [];
+    const engine = mockEngine(db, async (input) => {
+      seen.push(input.prompt);
+      expect(recordAutonomousSupervisorInput(db, {
+        goalId: "late-input", text: "arrived after claim", idempotencyKey: "late-input-1",
+      })).toBe(true);
+      return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+    });
+    expect(await runNextAutonomousGoal(db, "late-input", engine)).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toContain("arrived after claim");
+    expect(db.raw.prepare("SELECT status FROM event_receipts WHERE idempotency_key = ?").get("late-input-1"))
+      .toEqual({ status: "cancelled" });
+    cleanup(db, dbPath);
+  });
+
+  it("keeps unclaimed supervisor input out of wake recovery", async () => {''',
+"autonomy supervisor input idempotency and late-input regressions")
 write(path, s)
 
 print("issue #466 repair 2 applied")
