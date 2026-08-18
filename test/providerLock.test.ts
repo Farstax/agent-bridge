@@ -18,6 +18,8 @@ describe("Telegram provider lock", () => {
       surfaceIdentity: "telegram:interactive",
       pollKind: "codex",
       cliSwitchingEnabled: true,
+      databaseRole: "interactive",
+      databaseServiceId: "telegram:interactive",
     });
   });
 
@@ -42,6 +44,8 @@ describe("Telegram provider lock", () => {
       surfaceIdentity: `telegram:${provider}`,
       pollKind: provider,
       cliSwitchingEnabled: false,
+      databaseRole: "shared",
+      databaseServiceId: "telegram:standalone",
     });
   });
 
