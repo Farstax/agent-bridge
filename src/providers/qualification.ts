@@ -10,7 +10,7 @@ import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
-export const PROVIDER_CONTRACT_VERSION = 1;
+export const PROVIDER_CONTRACT_VERSION = 2;
 
 export type QualificationCheckStatus =
   | "pass"
@@ -62,8 +62,8 @@ export interface QualificationHealthResult {
   message: string;
 }
 
-const FRESH_MARKER = "AGENT_BRIDGE_QUALIFICATION_OK";
-const RESUME_MARKER = "AGENT_BRIDGE_QUALIFICATION_RESUME_OK";
+const FRESH_PROBE = "Agent Bridge provider qualification probe.";
+const RESUME_PROBE = "Agent Bridge provider qualification resume probe.";
 
 function providerBotKind(providerId: ProviderId): BotKind {
   return providerId === "agy" ? "antigravity" : providerId;
@@ -303,14 +303,13 @@ async function runQualificationInvocation({
   });
 }
 
-async function executePromptCheck({
+async function executeNativeQualificationCheck({
   providerId,
   executable,
   cwd,
   homeDir,
   timeoutMs,
   sessionId,
-  marker,
 }: {
   providerId: ProviderId;
   executable: string;
@@ -318,13 +317,12 @@ async function executePromptCheck({
   homeDir: string;
   timeoutMs: number;
   sessionId: string | null;
-  marker: string;
-}): Promise<{ sessionId: string | null }> {
+}): Promise<{ sessionId: string }> {
   const bot = providerBotKind(providerId);
   const adapter = getProviderAdapter(providerId);
   const invocation = buildCliInvocation({
     bot,
-    prompt: `Reply with exactly ${marker} and nothing else.`,
+    prompt: sessionId ? RESUME_PROBE : FRESH_PROBE,
     sessionId,
     command: executable,
     model: null,
@@ -338,6 +336,14 @@ async function executePromptCheck({
     homeDir,
     toolMode: adapter.capabilities.toolFree ? "none" : "default",
   });
+
+  if (sessionId && invocation.nativeSessionMode !== "resume") {
+    throw new Error(`provider resume compatibility failed: invocation did not enter native resume mode for session ${sessionId}`);
+  }
+  if (!sessionId && invocation.nativeSessionMode !== "fresh") {
+    throw new Error("provider invocation compatibility failed: fresh qualification did not enter native fresh mode");
+  }
+
   const stdout = await runQualificationInvocation({
     providerId,
     command: invocation.command,
@@ -346,10 +352,25 @@ async function executePromptCheck({
     homeDir,
     timeoutMs,
   });
-  const parsed = parseCliResult({ bot, stdout });
-  if (!parsed.text.includes(marker)) {
-    throw new Error(`provider response did not contain qualification marker ${marker}`);
+
+  let parsed;
+  try {
+    parsed = parseCliResult({ bot, stdout });
+  } catch (caught) {
+    const error = caught instanceof Error ? caught : new Error(String(caught));
+    throw new Error(`provider native result parsing failed: ${error.message}`);
   }
+
+  if (!parsed.text.trim()) {
+    throw new Error("provider native result parsing failed: native result did not contain a non-empty response");
+  }
+  if (!parsed.sessionId?.trim()) {
+    throw new Error("provider session identity missing from native result");
+  }
+  if (sessionId && parsed.sessionId !== sessionId) {
+    throw new Error(`provider resume compatibility failed: native session identity expected ${sessionId}, observed ${parsed.sessionId}`);
+  }
+
   return { sessionId: parsed.sessionId };
 }
 
@@ -404,14 +425,13 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
 
     let freshSessionId: string | null = null;
     try {
-      const fresh = await executePromptCheck({
+      const fresh = await executeNativeQualificationCheck({
         providerId: options.providerId,
         executable,
         cwd,
         homeDir,
         timeoutMs,
         sessionId: null,
-        marker: FRESH_MARKER,
       });
       freshSessionId = fresh.sessionId;
       checks.push({ name: "fresh_prompt", status: "pass" });
@@ -424,34 +444,29 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
     }
 
     if (checks.some((check) => check.name === "fresh_prompt" && check.status === "pass")) {
-      if (!freshSessionId) {
-        checks.push({ name: "session_resume", status: "not_applicable", diagnostic: "provider did not expose an invocation-attributable session id" });
-      } else {
-        try {
-          await executePromptCheck({
-            providerId: options.providerId,
-            executable,
-            cwd,
-            homeDir,
-            timeoutMs,
-            sessionId: freshSessionId,
-            marker: RESUME_MARKER,
-          });
-          checks.push({ name: "session_resume", status: "pass" });
-        } catch (caught) {
-          const error = caught instanceof Error ? caught : new Error(String(caught));
-          const classification = classifyProviderError(options.providerId, error);
-          if (classification.kind === "auth_required") {
-            checks.push({ name: "session_resume", status: "not_authenticated", diagnostic: error.message.slice(0, 500) });
-            overall = "degraded";
-          } else {
-            checks.push({ name: "session_resume", status: "fail", diagnostic: error.message.slice(0, 500) });
-            overall = classification.kind === "capacity_exhausted"
-              || classification.kind === "model_unavailable"
-              || classification.kind === "transient"
-              ? "degraded"
-              : "fail";
-          }
+      try {
+        await executeNativeQualificationCheck({
+          providerId: options.providerId,
+          executable,
+          cwd,
+          homeDir,
+          timeoutMs,
+          sessionId: freshSessionId,
+        });
+        checks.push({ name: "session_resume", status: "pass" });
+      } catch (caught) {
+        const error = caught instanceof Error ? caught : new Error(String(caught));
+        const classification = classifyProviderError(options.providerId, error);
+        if (classification.kind === "auth_required") {
+          checks.push({ name: "session_resume", status: "not_authenticated", diagnostic: error.message.slice(0, 500) });
+          overall = "degraded";
+        } else {
+          checks.push({ name: "session_resume", status: "fail", diagnostic: error.message.slice(0, 500) });
+          overall = classification.kind === "capacity_exhausted"
+            || classification.kind === "model_unavailable"
+            || classification.kind === "transient"
+            ? "degraded"
+            : "fail";
         }
       }
     }
