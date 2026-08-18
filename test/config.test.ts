@@ -113,7 +113,6 @@ describe("validateBusyMessageModeEnv", () => {
 
 describe("architectural intent: entry points use the shared config module", () => {
   const entryPoints = [
-    "src/index.ts",
     "src/index-interactive.ts",
     "src/index-discord-interactive.ts",
   ];

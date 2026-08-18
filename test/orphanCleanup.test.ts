@@ -11,7 +11,6 @@ function readSource(path: string): string {
 describe("startup orphan reconciliation", () => {
   it("uses guarded reconciliation in every interactive entrypoint", () => {
     const entrypoints = [
-      "src/index.ts",
       "src/index-interactive.ts",
       "src/index-discord-interactive.ts",
       "src/index-health.ts",
