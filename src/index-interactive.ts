@@ -6,7 +6,7 @@
  */
 
 import dotenv from "dotenv";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { getBridgeProjectDir } from "./bridge.js";
 import { openProductionDb } from "./db.js";
 import { TelegramClient } from "./telegram.js";
@@ -37,7 +37,7 @@ import {
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
-import { resolveTelegramRuntimePolicy } from "./providerLock.js";
+import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
@@ -87,14 +87,12 @@ validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
 const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
 const integratedHealth = !providerLock && parseHealthBotMode(process.env) === "integrated";
-const autonomyDir = process.env.AGENT_BRIDGE_AUTONOMY_DIR?.trim() || null;
-const autonomyDbPath = process.env.AGENT_BRIDGE_AUTONOMY_DB_PATH?.trim() || null;
-if (Boolean(autonomyDir) !== Boolean(autonomyDbPath)) throw new Error("AGENT_BRIDGE_AUTONOMY_DIR and AGENT_BRIDGE_AUTONOMY_DB_PATH must be configured together");
-if (autonomyDir && !isAbsolute(autonomyDir)) throw new Error("AGENT_BRIDGE_AUTONOMY_DIR must be absolute");
-if (autonomyDbPath && !isAbsolute(autonomyDbPath)) throw new Error("AGENT_BRIDGE_AUTONOMY_DB_PATH must be absolute");
-const autonomyMaxCycles = Number(process.env.AGENT_BRIDGE_AUTONOMY_MAX_CYCLES || 3);
-if (!Number.isInteger(autonomyMaxCycles) || autonomyMaxCycles < 1) throw new Error("AGENT_BRIDGE_AUTONOMY_MAX_CYCLES must be a positive integer");
-const autonomyEnabled = Boolean(autonomyDir && autonomyDbPath);
+const {
+  enabled: autonomyEnabled,
+  dir: autonomyDir,
+  dbPath: autonomyDbPath,
+  maxCycles: autonomyMaxCycles,
+} = resolveAutonomyRuntimeConfig(process.env, providerLock);
 
 const config: BridgeConfig = {
   allowedUserIds,
@@ -262,7 +260,7 @@ const defaultPref = providerLock
   ?? resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds())
   ?? "codex";
 
-// Autonomy engines run all providers regardless of any interactive provider lock.
+// Autonomy engines run all providers on the unlocked interactive runtime.
 const AUTONOMY_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const autonomyWorkspaceContext = autonomyDir
   ? loadWorkspaceContext({ ...process.env, AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: join(autonomyDir, "CONTEXT.md") })
