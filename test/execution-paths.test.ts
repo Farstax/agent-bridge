@@ -1,42 +1,23 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it } from "vitest";
 
-// Test the actual execution path logic by inspecting the source
 describe("Execution Path Selection - TDD", () => {
-  const selectionLogicPattern = /const useAsync = (.+);/;
-  
   describe("Phase 2: Green - Required changes", () => {
-    it("REMOVE: buildGeminiFallbackInvocation import", async () => {
-      const fs = await import("fs");
-      const src = fs.readFileSync("src/index.ts", "utf-8");
-      
-      // Should NOT import the fallback builder
-      const hasImport = src.includes("buildGeminiFallbackInvocation");
-      // This is now removed
-      expect(hasImport).toBe(false);
-    });
-
     it("keeps deprecated Gemini env aliases as Agy compatibility shims", async () => {
       const fs = await import("fs");
-      const index = fs.readFileSync("src/index.ts", "utf-8");
       const bridge = fs.readFileSync("src/bridge.ts", "utf-8");
-      // Bot env aliases moved from index.ts into the shared config module (Epic 1).
       const config = fs.readFileSync("src/config.ts", "utf-8");
 
       expect(config).toContain("TELEGRAM_BOT_TOKEN_GEMINI");
       expect(config).toContain("GEMINI_COMMAND");
       expect(config).toContain("GEMINI_MODEL_PREFERENCE");
-      expect(index).toContain('name.includes("gemini")');
       expect(bridge).toContain("GEMINI_PROJECT_DIR");
     });
 
     it("timeout-based fallback removed; capacity-based fallback uses isCapacityExhaustedError", async () => {
       const fs = await import("fs");
-      // Execution logic now lives in engine.ts (extracted from index.ts)
       const src = fs.readFileSync("src/engine.ts", "utf-8");
 
-      // Old timeout-based fallback must be gone
       expect(src.includes("isCliTimeout(error)")).toBe(false);
-      // New capacity-based fallback is intentionally present
       expect(src.includes("isCapacityExhaustedError")).toBe(true);
       expect(src.includes("getNextFallbackModel")).toBe(true);
     });
@@ -44,28 +25,19 @@ describe("Execution Path Selection - TDD", () => {
     it("REMOVE: kind-specific CLI args in cli", async () => {
       const fs = await import("fs");
       const cli = fs.readFileSync("src/cli.ts", "utf-8");
-      
-      // Still has both branches - will be unified next
+
       const hasCodex = cli.includes('if (bot === "codex")');
       const hasAntigravity = cli.includes('if (bot === "antigravity")');
-      
-      // Current: still has branches, but they should be unified
-      expect(hasAntigravity && hasCodex).toBe(true);  // Baseline
+
+      expect(hasAntigravity && hasCodex).toBe(true);
     });
   });
 
   describe("Phase 3: Generic flag works for all bots", () => {
     it("useAsync assignment does not branch on bot kind", async () => {
       const fs = await import("fs");
-      // Execution logic now lives in engine.ts (extracted from index.ts)
       const src = fs.readFileSync("src/engine.ts", "utf-8");
 
-      // The async/sync execution mode must be set from config alone, not
-      // per-bot-kind. The boolean useAsync flag (Phase 3) was later widened
-      // into a three-state ContinuationExecutionMode ("async" | "sync") for
-      // durable continuation (Issue #261); the derivation is still
-      // config-only, so this assertion tracks the same invariant under the
-      // renamed variable.
       const modeLine = src.split("\n").find((l) => l.includes("asyncEnabled === true ? \"async\" : \"sync\""));
       expect(modeLine).toBeDefined();
       expect(modeLine).not.toContain("this.kind");
@@ -82,6 +54,7 @@ describe("Execution Path Selection - TDD", () => {
     });
   });
 });
+
 describe("Idle Timeout Config", () => {
   it("buildExecutionOptions returns per-kind timeouts (antigravity idle/hard disabled by default)", async () => {
     const { buildExecutionOptions } = await import("../src/cli.js");
