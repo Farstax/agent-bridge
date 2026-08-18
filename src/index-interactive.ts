@@ -39,6 +39,7 @@ import {
 import { resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
+import { resolveTimeoutsForKind } from "./timeouts.js";
 import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
@@ -80,7 +81,7 @@ const executionMode = resolveExecutionMode(providerLock ?? "codex", process.env)
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
 const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
-const integratedHealth = parseHealthBotMode(process.env) === "integrated";
+const integratedHealth = !providerLock && parseHealthBotMode(process.env) === "integrated";
 
 const config: BridgeConfig = {
   allowedUserIds,
@@ -108,8 +109,14 @@ const db = openProductionDb(dbPath, {
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
 const continuationStore = new ContinuationRepository(db.raw);
-const client = new TelegramClient(token, fetch, 45_000);
-const ownerNotificationSocketPath = process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
+const client = new TelegramClient(
+  token,
+  fetch,
+  resolveTimeoutsForKind(providerLock ?? "codex").fetchTimeoutMs,
+);
+const ownerNotificationSocketPath = providerLock
+  ? undefined
+  : process.env.BRIDGE_OWNER_NOTIFICATION_SOCKET?.trim();
 const ownerNotificationIngress = ownerNotificationSocketPath
   ? await startOwnerNotificationIngress({
       socketPath: ownerNotificationSocketPath,
@@ -132,7 +139,7 @@ if (ownerNotificationIngress) {
 }
 const healthDbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 const healthDb = integratedHealth ? openProductionDb(healthDbPath, {
-  serviceId: `${runtimePolicy.surfaceIdentity}-health`,
+  serviceId: "telegram:interactive-health",
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
   requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
   databaseRole: "health",
