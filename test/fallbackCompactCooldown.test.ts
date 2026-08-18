@@ -13,12 +13,18 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.BRIDGE_FALLBACK_COMPACT_COOLDOWN_MS;
+  delete process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED;
   vi.useRealTimers();
 });
 
 describe("fallback compact cooldown", () => {
   it("allows compaction when no prior attempt has been recorded", () => {
     expect(shouldCompactBeforeFallback(db, "chat:1")).toBe(true);
+  });
+
+  it("blocks the fallback compaction entrypoint when legacy memory/compaction is disabled", () => {
+    process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "false";
+    expect(shouldCompactBeforeFallback(db, "chat:1")).toBe(false);
   });
 
   it("blocks compaction immediately after a success is recorded", () => {
