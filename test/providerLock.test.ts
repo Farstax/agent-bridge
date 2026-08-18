@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { resolveTelegramRuntimePolicy } from "../src/providerLock.js";
+import { buildGlobalInteractiveCommandRegistrations } from "../src/interactiveBot.js";
+import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "../src/providerLock.js";
 
 const cliChain = ["claude", "codex", "antigravity"] as const;
 
@@ -68,6 +69,51 @@ describe("Telegram provider lock", () => {
         [...cliChain],
       ),
     ).toThrow(/BRIDGE_PROVIDER_LOCK/);
+  });
+
+  it("keeps configured autonomy on the unlocked interactive runtime", () => {
+    const config = resolveAutonomyRuntimeConfig(
+      {
+        AGENT_BRIDGE_AUTONOMY_DIR: "/var/lib/agent-bridge/autonomy",
+        AGENT_BRIDGE_AUTONOMY_DB_PATH: "/var/lib/agent-bridge/autonomy/autonomy.sqlite",
+        AGENT_BRIDGE_AUTONOMY_MAX_CYCLES: "20",
+      },
+      null,
+    );
+
+    expect(config).toEqual({
+      enabled: true,
+      dir: "/var/lib/agent-bridge/autonomy",
+      dbPath: "/var/lib/agent-bridge/autonomy/autonomy.sqlite",
+      maxCycles: 20,
+    });
+    expect(
+      buildGlobalInteractiveCommandRegistrations("codex", { autonomy: config.enabled })
+        .every((registration) => registration.commands.some((command) => command.command === "autonomy")),
+    ).toBe(true);
+  });
+
+  it.each(cliChain)("ignores inherited autonomy config for locked %s runtimes", (provider) => {
+    const config = resolveAutonomyRuntimeConfig(
+      {
+        AGENT_BRIDGE_AUTONOMY_DIR: "relative-and-unpaired",
+        AGENT_BRIDGE_AUTONOMY_MAX_CYCLES: "not-a-number",
+      },
+      provider,
+    );
+
+    expect(config).toEqual({ enabled: false, dir: null, dbPath: null, maxCycles: 3 });
+    expect(
+      buildGlobalInteractiveCommandRegistrations(provider, { autonomy: config.enabled })
+        .every((registration) => registration.commands.every((command) => command.command !== "autonomy")),
+    ).toBe(true);
+  });
+
+  it("preserves autonomy validation for the unlocked interactive runtime", () => {
+    expect(() => resolveAutonomyRuntimeConfig(
+      { AGENT_BRIDGE_AUTONOMY_DIR: "/var/lib/agent-bridge/autonomy" },
+      null,
+    )).toThrow(/configured together/);
   });
 
   it("routes every Telegram systemd unit through the unified runtime with explicit locks", () => {
