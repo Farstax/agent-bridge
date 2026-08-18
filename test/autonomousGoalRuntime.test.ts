@@ -789,13 +789,32 @@ describe("runAutonomousGoalOperatorStandalone", () => {
 });
 
 describe("parseAutonomousCycleResult", () => {
-  it("accepts the narrow structured result and rejects prose or unknown fields", () => {
+  const completeResult = { status: "complete", evidence: "done" } as const;
+  const fencedResult = ["```json", JSON.stringify(completeResult), "```", "", "The episode is complete."].join("\n");
+
+  it("accepts the narrow bare result and one unambiguous fenced result with surrounding prose", () => {
     expect(parseAutonomousCycleResult(JSON.stringify({ status: "progress", evidence: "made progress", nextWakeReason: "continue" }))).toEqual({
       status: "progress",
       evidence: "made progress",
       nextWakeReason: "continue",
     });
-    expect(() => parseAutonomousCycleResult("```json\n{\"status\":\"complete\",\"evidence\":\"done\"}\n```")).toThrow();
-    expect(() => parseAutonomousCycleResult(JSON.stringify({ status: "complete", evidence: "done", command: "deploy" }))).toThrow();
+    expect(parseAutonomousCycleResult(fencedResult)).toEqual(completeResult);
+  });
+
+  it("accepts one fenced result inside the native result envelope", () => {
+    expect(parseAutonomousCycleResult(claudeOutput(fencedResult))).toEqual(completeResult);
+  });
+
+  it("does not treat backticks inside JSON string values as a closing fence", () => {
+  const result = { status: "complete", evidence: "saw ``` marker" } as const;
+  const fenced = ["```json", JSON.stringify(result), "```"].join("\n");
+  expect(parseAutonomousCycleResult(fenced)).toEqual(result);
+});
+
+it("rejects ambiguous fences, garbage, or unknown fields", () => {
+    const secondFence = ["```json", JSON.stringify({ status: "blocked", evidence: "other" }), "```"].join("\n");
+    expect(() => parseAutonomousCycleResult(`${fencedResult}\n${secondFence}`)).toThrow("malformed autonomous cycle result");
+    expect(() => parseAutonomousCycleResult("not-json")).toThrow("malformed autonomous cycle result");
+    expect(() => parseAutonomousCycleResult(JSON.stringify({ status: "complete", evidence: "done", command: "deploy" }))).toThrow("unknown autonomous cycle result field");
   });
 });
