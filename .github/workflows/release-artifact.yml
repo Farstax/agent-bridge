@@ -34,6 +34,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           python scripts/issue458-transform.py
+          sed -i -e '${/^$/d;}' src/advisor.ts
           rm -f .github/workflows/issue-458-subtraction.yml scripts/issue458-transform.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
