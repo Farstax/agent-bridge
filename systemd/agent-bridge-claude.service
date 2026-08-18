@@ -9,10 +9,11 @@ User=BRIDGE_USER
 EnvironmentFile=-/etc/default/agent-bridge-shared
 EnvironmentFile=/etc/default/agent-bridge-release
 EnvironmentFile=/etc/default/agent-bridge-claude
-ExecStart=/usr/bin/env bash -lc 'set -euo pipefail; export PATH="$(dirname "${NODE_BIN:?}"):$PATH"; [[ -L "${BRIDGE_CURRENT_RELEASE_DIR:?}" ]] || { echo "active release pointer is not a symlink" >&2; exit 78; }; cd "${BRIDGE_CURRENT_RELEASE_DIR:?}"; [[ -f manifest.json && ! -L manifest.json ]] || { echo "active release manifest is missing" >&2; exit 78; }; export BRIDGE_PROJECT_DIR="${BRIDGE_CURRENT_RELEASE_DIR:?}"; exec "${NODE_BIN:?}" ./node_modules/tsx/dist/cli.mjs src/index.ts'
+ExecStart=/usr/bin/env bash -lc 'set -euo pipefail; export PATH="$(dirname "${NODE_BIN:?}"):$PATH"; [[ -L "${BRIDGE_CURRENT_RELEASE_DIR:?}" ]] || { echo "active release pointer is not a symlink" >&2; exit 78; }; cd "${BRIDGE_CURRENT_RELEASE_DIR:?}"; [[ -f manifest.json && ! -L manifest.json ]] || { echo "active release manifest is missing" >&2; exit 78; }; export BRIDGE_PROJECT_DIR="${BRIDGE_CURRENT_RELEASE_DIR:?}"; exec "${NODE_BIN:?}" ./node_modules/tsx/dist/cli.mjs src/index-interactive.ts'
 Restart=always
 RestartSec=5
 KillMode=control-group
+Environment=BRIDGE_PROVIDER_LOCK=claude
 Environment=BRIDGE_WORKSPACE_LOCK_MODE=off
 Environment=NODE_ENV=production
 
