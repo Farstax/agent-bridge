@@ -17,8 +17,7 @@
     "cleanup:check": "knip",
     "skills": "tsx scripts/skill-manager.ts",
     "qualify:provider": "tsx scripts/provider-qualification.ts",
-    "scan-token-savings": "tsx scripts/scan-token-savings.ts",
-    "smoke:advisor-fallback": "tsx scripts/smoke-advisor-fallback.ts"
+    "scan-token-savings": "tsx scripts/scan-token-savings.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
