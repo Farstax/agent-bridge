@@ -55,10 +55,10 @@ if [[ "\${1:-}" == "--version" ]]; then
 fi
 if [[ " $* " == *" exec resume "* ]]; then
   printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
-  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"AGENT_BRIDGE_QUALIFICATION_RESUME_OK"}}'
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed native response"}}'
 else
   printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
-  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"AGENT_BRIDGE_QUALIFICATION_OK"}}'
+  printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"fresh native response"}}'
 fi
 `);
 

@@ -553,7 +553,6 @@ export async function runNextAutonomousGoal(
       runId,
       eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },
       collect: (event) => event.type === "run.completed" ? eventStore.queueCompleted(event) : eventStore.collect(event),
-      finalize: () => eventStore.finalize(),
     };
     let parsed: AutonomousCycleResult | null = null;
     let error: string | undefined;
