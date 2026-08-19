@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,10 +25,23 @@ function setup() {
   return openDb(path, { serviceId: "test-health-recovery", runId: `process-${Math.random()}` });
 }
 
+function dispositionCommand(prompt: string): string {
+  const prefix = "Autonomy disposition command: ";
+  const line = prompt.split("\n").find((candidate) => candidate.startsWith(prefix));
+  if (!line) throw new Error("missing run-scoped autonomy disposition command");
+  return JSON.parse(line.slice(prefix.length)) as string;
+}
+
+function declareDisposition(prompt: string, status: string): void {
+  const disposition = status === "complete" ? "done" : status === "progress" ? "continue" : "blocked";
+  execFileSync(dispositionCommand(prompt), [disposition], { stdio: "pipe" });
+}
+
 function engine(prompts: string[], result: unknown = { status: "complete", evidence: "provider says fixed" }): RunIngressEngine {
   return {
     executeSurfaceNeutralTurn: vi.fn().mockImplementation(async (input: any) => {
       prompts.push(input.prompt);
+      declareDisposition(input.prompt, (result as { status: string }).status);
       input.collect(eventType.runCompleted({
         runId: input.runId,
         bot: "claude",
@@ -219,6 +233,7 @@ describe("owner-authorized health recovery loop", () => {
           status: "unhealthy", evidence: "still unhealthy mid-flight", correlationId: "gap-race", observedAt: "2026-08-15T10:01:00Z",
         });
         const result = { status: "progress", evidence: "investigated", nextWakeReason: "keep investigating" };
+        declareDisposition(input.prompt, result.status);
         input.collect(eventType.runCompleted({ runId: input.runId, bot: "claude", chatId: input.chatKey, text: JSON.stringify(result), sessionId: null }));
         return { text: JSON.stringify(result), sessionId: null, memoryCandidates: [], nativeSessionMode: "fresh" };
       }),
