@@ -195,17 +195,19 @@ export function parseCliResult({
   bot,
   stdout,
   logContent = null,
+  outputFormat = null,
 }: {
   bot: string;
   stdout: string;
   logContent?: string | null;
+  outputFormat?: "text" | "json" | "stream-json" | null;
 }): CliResult {
   if (bot === "codex") {
     return codexRuntime.parseResult(stdout);
   } else if (bot === "claude") {
     return claudeRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
-    return antigravityRuntime.parseResult(stdout, logContent);
+    return antigravityRuntime.parseResult(stdout, logContent, outputFormat);
   }
   throw new Error(`Unknown bot type: ${bot}`);
 }

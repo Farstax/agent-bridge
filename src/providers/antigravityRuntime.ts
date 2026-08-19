@@ -753,11 +753,12 @@ export function extractAntigravityStreamJsonError(stdout: string): Error | null 
   return result.status === "ERROR" ? streamJsonProviderError(result) : null;
 }
 
-export function parseResult(stdout: string, logContent?: string | null): CliResult {
-  let outputMode = resolveAntigravityOutputMode();
-  if (outputMode === "text" && (stdout.trim().startsWith('{"event"') || stdout.trim().includes('\n{"event"'))) {
-    outputMode = "stream-json";
-  }
+export function parseResult(
+  stdout: string,
+  logContent?: string | null,
+  outputFormat?: "text" | "json" | "stream-json" | null,
+): CliResult {
+  const outputMode = outputFormat || resolveAntigravityOutputMode();
   if (outputMode === "json") return parseAntigravityNativeJsonResult(stdout);
   if (outputMode === "stream-json") return parseAntigravityStreamJsonResult(stdout);
 

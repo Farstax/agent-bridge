@@ -1609,7 +1609,10 @@ ${contextPrompt}` : contextPrompt);
         const parsed = parseClaudeStreamJsonOutput(stdout);
         result = parsed ?? { text: stdout.trim(), sessionId: null };
       } else {
-        result = parseCliResult({ bot: executionKind, stdout, logContent });
+        const outputFormat = executionKind === "antigravity"
+          ? (invocation.args.includes("stream-json") ? "stream-json" : (invocation.args.includes("json") ? "json" : "text"))
+          : undefined;
+        result = parseCliResult({ bot: executionKind, stdout, logContent, outputFormat });
       }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
@@ -1914,7 +1917,10 @@ ${contextPrompt}` : contextPrompt);
         const parsed = parseClaudeStreamJsonOutput(rawResult);
         result = parsed ?? { text: rawResult.trim(), sessionId: null };
       } else {
-        result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: fallbackLogContent });
+        const outputFormat = executionKind === "antigravity"
+          ? (fallbackInvocation.args.includes("stream-json") ? "stream-json" : (fallbackInvocation.args.includes("json") ? "json" : "text"))
+          : undefined;
+        result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: fallbackLogContent, outputFormat });
       }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd: fallbackCwd, sinceMs: fallbackStartedAtMs, explicitLogContent: fallbackLogContent });

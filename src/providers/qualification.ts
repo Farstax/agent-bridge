@@ -296,7 +296,11 @@ async function runQualificationInvocation({
         // A valid ERROR result throws a classifiable provider error here; a
         // contradictory ERROR + response result throws the stricter contract
         // error before runtime recovery can normalize it.
-        parseCliResult({ bot, stdout });
+        parseCliResult({
+          bot,
+          stdout,
+          outputFormat: args.includes("stream-json") ? "stream-json" : (args.includes("json") ? "json" : "text"),
+        });
       }
       throw error;
     }
@@ -359,7 +363,11 @@ async function executeNativeQualificationCheck({
 
   let parsed;
   try {
-    parsed = parseCliResult({ bot, stdout });
+    parsed = parseCliResult({
+      bot,
+      stdout,
+      outputFormat: invocation.args.includes("stream-json") ? "stream-json" : (invocation.args.includes("json") ? "json" : "text"),
+    });
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error(String(caught));
     throw new Error(`provider native result parsing failed: ${error.message}`);
