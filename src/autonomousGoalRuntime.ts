@@ -18,7 +18,6 @@ export const AUTONOMOUS_RUN_CHAT_KEY_PREFIX = "autonomous:";
 const MAX_EVIDENCE_CHARS = 2_000;
 const MAX_TOTAL_EVIDENCE_CHARS = 8_000;
 const MAX_REASON_CHARS = 300;
-const MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_CHARS = 3_000;
 const MAX_AUTONOMOUS_SUPERVISOR_INPUT_CHARS = 3_000;
 const MAX_AUTONOMOUS_SUPERVISOR_INPUT_TOTAL_CHARS = 6_000;
 const MAX_AUTONOMOUS_SUPERVISOR_INPUTS_PER_CYCLE = 8;
@@ -33,7 +32,6 @@ const HEALTH_POLICY_CONSTRAINT = "autonomous-policy:external-health-observation"
 const AUTONOMY_CONTINUE_WAKE_REASON = "provider requested continuation";
 
 export type AutonomousGoalStatus = "active" | "complete" | "blocked" | "cancelled" | "budget_exhausted";
-export type AutonomousCycleStatus = "progress" | "complete" | "blocked" | "cancelled";
 export type AutonomousRunPolicy = "provider" | "external-observation";
 
 export interface AutonomousGoal {
@@ -52,13 +50,6 @@ export interface AutonomousGoal {
  * The authoritative autonomous Run path below no longer calls it: lifecycle
  * control is carried exclusively by the run-scoped disposition helper.
  */
-export interface AutonomousCycleResult {
-  status: AutonomousCycleStatus;
-  evidence: string;
-  nextWakeReason?: string;
-  supervisorMessage?: string;
-}
-
 export interface AutonomousSupervisorRoute {
   surface: string;
   address: string;
@@ -282,51 +273,6 @@ export function recordAutonomousSupervisorInput(db: BridgeDb, input: {
     });
     return true;
   });
-}
-
-function parseEnvelope(text: string): string {
-  try {
-    const outer = JSON.parse(text) as any;
-    if (outer && outer.type === "result" && typeof outer.result === "string") return outer.result;
-  } catch {
-    // Some injected seams return the provider text directly.
-  }
-  return text;
-}
-
-function extractAutonomousResultJson(text: string): string {
-  const candidate = parseEnvelope(text).trim();
-  try {
-    JSON.parse(candidate);
-    return candidate;
-  } catch {
-    // Fall through only to the explicitly supported fenced form.
-  }
-  const fences = [...candidate.matchAll(/(?:^|\r?\n)[ \t]*```json[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```[ \t]*(?=\r?\n|$)/gi)];
-  if (fences.length !== 1) throw new Error("malformed autonomous cycle result");
-  return fences[0][1].trim();
-}
-
-export function parseAutonomousCycleResult(text: string): AutonomousCycleResult {
-  let parsed: unknown;
-  try { parsed = JSON.parse(extractAutonomousResultJson(text)); } catch { throw new Error("malformed autonomous cycle result"); }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("malformed autonomous cycle result");
-  const value = parsed as Record<string, unknown>;
-  const keys = Object.keys(value).sort();
-  if (keys.some((key) => !["evidence", "nextWakeReason", "status", "supervisorMessage"].includes(key))) throw new Error("unknown autonomous cycle result field");
-  if (!["progress", "complete", "blocked", "cancelled"].includes(value.status as string)) throw new Error("invalid autonomous cycle status");
-  if (typeof value.evidence !== "string" || value.evidence.length > MAX_EVIDENCE_CHARS) throw new Error("invalid autonomous cycle evidence");
-  if (value.nextWakeReason !== undefined && (typeof value.nextWakeReason !== "string" || value.nextWakeReason.length > MAX_REASON_CHARS)) throw new Error("invalid autonomous wake reason");
-  if (value.status === "progress" && typeof value.nextWakeReason !== "string") throw new Error("progress requires nextWakeReason");
-  if (value.supervisorMessage !== undefined && (typeof value.supervisorMessage !== "string" || !value.supervisorMessage.trim() || value.supervisorMessage.length > MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_CHARS)) {
-    throw new Error("invalid autonomous supervisor message");
-  }
-  return {
-    status: value.status as AutonomousCycleStatus,
-    evidence: value.evidence,
-    nextWakeReason: value.nextWakeReason as string | undefined,
-    supervisorMessage: value.supervisorMessage as string | undefined,
-  };
 }
 
 function projectEvidence(text: string): string {

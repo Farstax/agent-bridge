@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,7 +13,6 @@ import {
   createAutonomousGoal,
   drainAutonomousGoal,
   getAutonomousGoal,
-  parseAutonomousCycleResult,
   runNextAutonomousGoal,
   runAutonomousGoalOperator,
   runAutonomousGoalOperatorStandalone,
@@ -50,7 +50,57 @@ function claudeOutput(value: unknown, sessionId = "session-1"): string {
   });
 }
 
+
+type TestDisposition = "continue" | "done" | "blocked";
+
+type DispositionCliResult = {
+  text: string;
+  autonomyDisposition: TestDisposition;
+  autonomyNotify?: boolean;
+};
+
+function dispositionCommand(prompt: string): string {
+  const prefix = "Autonomy disposition command: ";
+  const line = prompt.split("\n").find((candidate) => candidate.startsWith(prefix));
+  if (!line) throw new Error("missing run-scoped autonomy disposition command");
+  return JSON.parse(line.slice(prefix.length)) as string;
+}
+
+function invokeDisposition(prompt: string, disposition: TestDisposition, notify = false): void {
+  execFileSync(dispositionCommand(prompt), [disposition, ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
+}
+
+function cycleOutput(disposition: TestDisposition, evidence: string, notify = false): DispositionCliResult {
+  return {
+    text: claudeOutput(evidence),
+    autonomyDisposition: disposition,
+    ...(notify ? { autonomyNotify: true } : {}),
+  };
+}
+
+function adaptSurfaceResult(input: any, result: any): any {
+  if (!result?.autonomyDisposition) return result;
+  invokeDisposition(input.prompt, result.autonomyDisposition, result.autonomyNotify === true);
+  const envelope = JSON.parse(result.text) as { result?: unknown };
+  if (typeof envelope.result !== "string") throw new Error("invalid test provider result envelope");
+  return { text: envelope.result } as any;
+}
+
+function mockSurfaceNeutral(engine: BridgeEngine, implementation: (input: any) => Promise<any>) {
+  return vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) =>
+    adaptSurfaceResult(input, await implementation(input)));
+}
+
 function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, db: ReturnType<typeof openDb>) {
+  const dispositionAwareRunCliAsync = async (...args: any[]) => {
+    const result = await runCliAsync(...args) as { text: string; autonomyDisposition?: TestDisposition; autonomyNotify?: boolean };
+    if (!result.autonomyDisposition) return result;
+    const cliArgs = Array.isArray(args[1]) ? args[1] : [];
+    const prompt = cliArgs.find((arg: unknown) => typeof arg === "string" && arg.includes("Autonomy disposition command: "));
+    if (typeof prompt !== "string") throw new Error("autonomous prompt not found in test CLI invocation");
+    invokeDisposition(prompt, result.autonomyDisposition, result.autonomyNotify === true);
+    return { text: result.text };
+  };
   return new BridgeEngine(
     {
       surfaceIdentity: AUTONOMOUS_RUN_SURFACE,
@@ -64,7 +114,7 @@ function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, 
     },
     db,
     makeMockClient(),
-    { runCliAsync },
+    { runCliAsync: dispositionAwareRunCliAsync as any },
   );
 }
 
@@ -84,9 +134,9 @@ describe("autonomous goal production runtime", () => {
     });
     const inputs: any[] = [];
     const engine = makeEngine(vi.fn(), db);
-    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+    mockSurfaceNeutral(engine, async (input: any) => {
       inputs.push(input);
-      return { text: claudeOutput({ status: inputs.length === 1 ? "progress" : "complete", evidence: `cycle-${inputs.length}`, nextWakeReason: "continue" }) } as any;
+      return cycleOutput(inputs.length === 1 ? "continue" : "done", `cycle-${inputs.length}`) as any;
     });
 
     await drainAutonomousGoal(db, "context", engine);
@@ -101,8 +151,10 @@ describe("autonomous goal production runtime", () => {
       expect(input.prompt).toContain("read-only evidence");
       expect(input.prompt).toContain(`Current cycle: ${index + 1}`);
       expect(input.prompt).toContain(index === 0 ? "Prior evidence: none" : "cycle-1");
-      expect(input.prompt).toContain(index === 0 ? "Wake reason: initial" : "Wake reason: continue");
-      expect(input.prompt).toContain('status must be exactly one of "progress", "complete", "blocked", or "cancelled"');
+      expect(input.prompt).toContain(index === 0 ? "Wake reason: initial" : "Wake reason: provider requested continuation");
+      expect(input.prompt).toContain("Autonomy disposition command: ");
+      expect(input.prompt).toContain("continue, done, or blocked");
+      expect(input.prompt).not.toContain("Return JSON only");
       expect(input.prompt).toContain("authority");
     }
 
@@ -111,17 +163,16 @@ describe("autonomous goal production runtime", () => {
   });
 
   it.each([
-    ["complete", "complete"],
+    ["done", "complete"],
     ["blocked", "blocked"],
-    ["cancelled", "cancelled"],
-  ] as const)("treats a valid %s provider result as terminal", async (providerStatus, expectedStatus) => {
+  ] as const)("treats a valid %s disposition as terminal", async (providerDisposition, expectedStatus) => {
     const { db, dbPath } = makeDb();
-    createAutonomousGoal(db, { goalId: `terminal-${providerStatus}`, prompt: "Stop", constraints: [], bot: "claude", maxCycles: 3 });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: providerStatus, evidence: providerStatus }) });
+    createAutonomousGoal(db, { goalId: `terminal-${providerDisposition}`, prompt: "Stop", constraints: [], bot: "claude", maxCycles: 3 });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput(providerDisposition, providerDisposition));
 
-    await runNextAutonomousGoal(db, `terminal-${providerStatus}`, makeEngine(runCliAsync, db));
+    await runNextAutonomousGoal(db, `terminal-${providerDisposition}`, makeEngine(runCliAsync, db));
 
-    expect(getAutonomousGoal(db, `terminal-${providerStatus}`)).toMatchObject({ status: expectedStatus, cycle: 1, evidence: [providerStatus] });
+    expect(getAutonomousGoal(db, `terminal-${providerDisposition}`)).toMatchObject({ status: expectedStatus, cycle: 1, evidence: [providerDisposition] });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 1 });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
 
@@ -133,18 +184,18 @@ describe("autonomous goal production runtime", () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "observed", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 3 });
     const runCliAsync = vi.fn()
-      .mockResolvedValueOnce({ text: claudeOutput({ status: "progress", evidence: "cycle one", nextWakeReason: "continue" }) })
-      .mockResolvedValueOnce({ text: claudeOutput({ status: "complete", evidence: "cycle two done" }) });
+      .mockResolvedValueOnce(cycleOutput("continue", "cycle one"))
+      .mockResolvedValueOnce(cycleOutput("done", "cycle two done"));
     const events: any[] = [];
 
     await drainAutonomousGoal(db, "observed", makeEngine(runCliAsync, db), (event) => events.push(event));
 
     expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 1, goalStatus: "active", cycleStatus: "progress", evidence: "cycle one" });
-    expect(events[1]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 2, goalStatus: "complete", cycleStatus: "complete", evidence: "cycle two done" });
+    expect(events[0]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 1, goalStatus: "active", disposition: "continue", evidence: "cycle one", notify: false });
+    expect(events[1]).toMatchObject({ type: "autonomous_cycle_reconciled", goalId: "observed", cycle: 2, goalStatus: "complete", disposition: "done", evidence: "cycle two done", notify: false });
     expect(typeof events[0].runId).toBe("string");
     // No raw provider stdout, transcript, hidden reasoning, or tool logs.
-    expect(Object.keys(events[0]).sort()).toEqual(["cycle", "cycleStatus", "evidence", "goalId", "goalStatus", "runId", "type"]);
+    expect(Object.keys(events[0]).sort()).toEqual(["cycle", "disposition", "evidence", "goalId", "goalStatus", "notify", "runId", "type"]);
 
     db.close();
     removeDb(dbPath);
@@ -153,7 +204,7 @@ describe("autonomous goal production runtime", () => {
   it("observer absence does not change cycle ownership or outcome", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "unobserved", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("done", "done"));
 
     await drainAutonomousGoal(db, "unobserved", makeEngine(runCliAsync, db));
 
@@ -165,7 +216,7 @@ describe("autonomous goal production runtime", () => {
   it("an observer that throws does not break cycle reconciliation or goal state", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "observer-throws", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("done", "done"));
 
     await drainAutonomousGoal(db, "observer-throws", makeEngine(runCliAsync, db), () => { throw new Error("observer boom"); });
 
@@ -180,9 +231,9 @@ describe("autonomous goal production runtime", () => {
     let started!: (value: unknown) => void;
     const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
     const engine = makeEngine(vi.fn(), db);
-    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+    mockSurfaceNeutral(engine, async (input: any) => {
       await providerFinished;
-      return { text: claudeOutput({ status: "progress", evidence: "late progress", nextWakeReason: "continue" }) } as any;
+      return cycleOutput("continue", "late progress") as any;
     });
 
     const attempt = runNextAutonomousGoal(db, "cancel-race", engine);
@@ -194,7 +245,8 @@ describe("autonomous goal production runtime", () => {
     started(undefined);
     await attempt;
 
-    expect(getAutonomousGoal(db, "cancel-race")).toMatchObject({ status: "cancelled", cycle: 1, evidence: ["late progress"] });
+    expect(getAutonomousGoal(db, "cancel-race")).toMatchObject({ status: "cancelled", cycle: 1 });
+    expect(getAutonomousGoal(db, "cancel-race").evidence.at(-1)).toContain("operator fence");
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 1 });
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = ? AND status = 'received'").get(AUTONOMOUS_EVENT_SOURCE)).toEqual({ count: 0 });
 
@@ -219,7 +271,7 @@ describe("autonomous goal production runtime", () => {
   it("is idempotent — cancelling an already-terminal goal is a safe no-op", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "already-done", prompt: "Finish", constraints: [], bot: "claude", maxCycles: 1 });
-    await runNextAutonomousGoal(db, "already-done", makeEngine(vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "finished" }) }), db));
+    await runNextAutonomousGoal(db, "already-done", makeEngine(vi.fn().mockResolvedValue(cycleOutput("done", "finished")), db));
     expect(getAutonomousGoal(db, "already-done").status).toBe("complete");
 
     const result = await cancelAutonomousGoal(db, "already-done", "owner stop");
@@ -237,9 +289,9 @@ describe("autonomous goal production runtime", () => {
     let started!: (value: unknown) => void;
     const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
     const engine = makeEngine(vi.fn(), db);
-    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async () => {
+    mockSurfaceNeutral(engine, async () => {
       await providerFinished;
-      return { text: claudeOutput({ status: "progress", evidence: "late progress", nextWakeReason: "continue" }) } as any;
+      return cycleOutput("continue", "late progress") as any;
     });
 
     const attempt = runNextAutonomousGoal(db, "inflight-cancel", engine);
@@ -256,7 +308,8 @@ describe("autonomous goal production runtime", () => {
     started(undefined);
     await attempt;
 
-    expect(getAutonomousGoal(db, "inflight-cancel")).toMatchObject({ status: "cancelled", evidence: ["late progress"] });
+    expect(getAutonomousGoal(db, "inflight-cancel").status).toBe("cancelled");
+    expect(getAutonomousGoal(db, "inflight-cancel").evidence.at(-1)).toContain("emergency stop");
 
     db.close();
     removeDb(dbPath);
@@ -268,9 +321,9 @@ describe("autonomous goal production runtime", () => {
     let started!: (value: unknown) => void;
     const providerFinished = new Promise<unknown>((resolve) => { started = resolve; });
     const engine = makeEngine(vi.fn(), db);
-    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async () => {
+    mockSurfaceNeutral(engine, async () => {
       await providerFinished;
-      return { text: claudeOutput({ status: "progress", evidence: "late", nextWakeReason: "continue" }) } as any;
+      return cycleOutput("continue", "late") as any;
     });
     const attempt = runNextAutonomousGoal(db, "cross-process-cancel", engine);
     while (db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:cross-process-cancel").count !== 1) {
@@ -307,7 +360,7 @@ describe("autonomous goal production runtime", () => {
   it("forwards onCycleReconciled through runAutonomousGoalOperator's run operation (#326)", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "operator-observed", prompt: "Do work", constraints: [], bot: "claude", maxCycles: 1 });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done via operator" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("done", "done via operator"));
     const events: any[] = [];
 
     await runAutonomousGoalOperator(db, ["run", "operator-observed"], makeEngine(runCliAsync, db), (event) => events.push(event));
@@ -325,7 +378,7 @@ describe("autonomous goal production runtime", () => {
     const events: any[] = [];
     const engineFactory = (db: any) => {
       const engine = makeEngine(vi.fn(), db);
-      vi.spyOn(engine, "executeSurfaceNeutralTurn").mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "standalone observed" }) } as any);
+      mockSurfaceNeutral(engine, async () => cycleOutput("done", "standalone observed") as any);
       return engine;
     };
 
@@ -341,7 +394,7 @@ describe("autonomous goal production runtime", () => {
   it("lets two real concurrent attempts race and only one owns a Run and reaches the provider", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, { goalId: "concurrent", prompt: "One run", constraints: [], bot: "claude", maxCycles: 1 });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("done", "done"));
 
     const results = await Promise.allSettled([
       runNextAutonomousGoal(db, "concurrent", makeEngine(runCliAsync, db)),
@@ -362,7 +415,7 @@ describe("autonomous goal production runtime", () => {
     createAutonomousGoal(db, { goalId: "seam", prompt: "Use the seam", constraints: [], bot: "claude", maxCycles: 1 });
     const directCli = vi.fn().mockRejectedValue(new Error("direct provider invocation is forbidden"));
     const engine = makeEngine(directCli, db);
-    const surfaceNeutral = vi.spyOn(engine, "executeSurfaceNeutralTurn").mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "seam reached" }) } as any);
+    const surfaceNeutral = mockSurfaceNeutral(engine, async () => cycleOutput("done", "seam reached") as any);
 
     await runNextAutonomousGoal(db, "seam", engine);
 
@@ -375,7 +428,7 @@ describe("autonomous goal production runtime", () => {
 
   it("provides a controlled create, drain, and status operator surface", async () => {
     const { db, dbPath } = makeDb();
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "operator done" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("done", "operator done"));
     const engine = makeEngine(runCliAsync, db);
 
     expect(await runAutonomousGoalOperator(db, ["create", "operator-goal", "Operator goal", "--max-cycles", "1"])).toMatchObject({ goalId: "operator-goal", status: "active" });
@@ -423,9 +476,9 @@ describe("autonomous goal production runtime", () => {
     ]);
     const inputs: any[] = [];
     const engine = makeEngine(vi.fn(), db);
-    vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+    mockSurfaceNeutral(engine, async (input: any) => {
       inputs.push(input);
-      return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+      return cycleOutput("done", "done") as any;
     });
 
     const result = await runAutonomousGoalOperator(db, ["run", "company-goal-run"], engine);
@@ -452,9 +505,9 @@ describe("autonomous goal production runtime", () => {
 
     const reopened = openDb(dbPath, { serviceId: "test-autonomous", runId: "process-restarted" });
     const runCliAsync = vi.fn()
-      .mockResolvedValueOnce({ text: claudeOutput({ status: "progress", evidence: "cycle one", nextWakeReason: "continue" }) })
-      .mockResolvedValueOnce({ text: claudeOutput({ status: "progress", evidence: "cycle two", nextWakeReason: "continue" }) })
-      .mockResolvedValueOnce({ text: claudeOutput({ status: "complete", evidence: "release ready" }) });
+      .mockResolvedValueOnce(cycleOutput("continue", "cycle one"))
+      .mockResolvedValueOnce(cycleOutput("continue", "cycle two"))
+      .mockResolvedValueOnce(cycleOutput("done", "release ready"));
 
     await drainAutonomousGoal(reopened, "release-readiness", makeEngine(runCliAsync, reopened));
 
@@ -486,7 +539,7 @@ describe("autonomous goal production runtime", () => {
     const store = new SqliteAutonomousGoalStore(db);
     expect(store.scheduleWake("dedupe", { key: "dedupe:wake:0", reason: "duplicate" })).toBe(false);
 
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("done", "done"));
     await runNextAutonomousGoal(db, "dedupe", makeEngine(runCliAsync, db));
     await runNextAutonomousGoal(db, "dedupe", makeEngine(runCliAsync, db));
 
@@ -507,13 +560,13 @@ describe("autonomous goal production runtime", () => {
       bot: "claude",
       maxCycles: 2,
     });
-    const firstCli = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "progress", evidence: "first", nextWakeReason: "finish" }) });
+    const firstCli = vi.fn().mockResolvedValue(cycleOutput("continue", "first"));
     await runNextAutonomousGoal(db, "restart", makeEngine(firstCli, db));
     expect(getAutonomousGoal(db, "restart").cycle).toBe(1);
     db.close();
 
     const reopened = openDb(dbPath, { serviceId: "test-autonomous", runId: "process-after-successor" });
-    const secondCli = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "second" }) });
+    const secondCli = vi.fn().mockResolvedValue(cycleOutput("done", "second"));
     await drainAutonomousGoal(reopened, "restart", makeEngine(secondCli, reopened));
 
     expect(firstCli).toHaveBeenCalledTimes(1);
@@ -575,7 +628,7 @@ describe("autonomous goal production runtime", () => {
     });
     const held = db.acquireLock(AUTONOMOUS_RUN_SURFACE, "autonomous:fenced");
     expect(held).not.toBeNull();
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "complete", evidence: "done" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("done", "done"));
 
     await expect(runNextAutonomousGoal(db, "fenced", makeEngine(runCliAsync, db))).rejects.toBeInstanceOf(AutonomousGoalLaneUnavailableError);
     expect(runCliAsync).not.toHaveBeenCalled();
@@ -589,7 +642,7 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
-  it("fails malformed provider cycle output closed with no successor wake", async () => {
+  it("fails a successful provider response with no disposition closed with no successor wake", async () => {
     const { db, dbPath } = makeDb();
     createAutonomousGoal(db, {
       goalId: "malformed",
@@ -598,7 +651,7 @@ describe("autonomous goal production runtime", () => {
       bot: "claude",
       maxCycles: 3,
     });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput("not-json") });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput("ordinary response without a disposition") });
 
     await runNextAutonomousGoal(db, "malformed", makeEngine(runCliAsync, db));
 
@@ -620,7 +673,7 @@ describe("autonomous goal production runtime", () => {
       bot: "claude",
       maxCycles: 2,
     });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeOutput({ status: "progress", evidence: "still working", nextWakeReason: "continue" }) });
+    const runCliAsync = vi.fn().mockResolvedValue(cycleOutput("continue", "still working"));
 
     await drainAutonomousGoal(db, "budget", makeEngine(runCliAsync, db));
 
@@ -645,9 +698,9 @@ describe("runAutonomousGoalOperatorStandalone", () => {
     const engineFactory = (db: any, bot: string) => {
       factoryBotArgs.push(bot);
       const engine = makeEngine(vi.fn(), db);
-      vi.spyOn(engine, "executeSurfaceNeutralTurn").mockImplementation(async (input: any) => {
+      mockSurfaceNeutral(engine, async (input: any) => {
         inputs.push(input);
-        return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+        return cycleOutput("done", "done") as any;
       });
       return engine;
     };
@@ -785,36 +838,5 @@ describe("runAutonomousGoalOperatorStandalone", () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("parseAutonomousCycleResult", () => {
-  const completeResult = { status: "complete", evidence: "done" } as const;
-  const fencedResult = ["```json", JSON.stringify(completeResult), "```", "", "The episode is complete."].join("\n");
-
-  it("accepts the narrow bare result and one unambiguous fenced result with surrounding prose", () => {
-    expect(parseAutonomousCycleResult(JSON.stringify({ status: "progress", evidence: "made progress", nextWakeReason: "continue" }))).toEqual({
-      status: "progress",
-      evidence: "made progress",
-      nextWakeReason: "continue",
-    });
-    expect(parseAutonomousCycleResult(fencedResult)).toEqual(completeResult);
-  });
-
-  it("accepts one fenced result inside the native result envelope", () => {
-    expect(parseAutonomousCycleResult(claudeOutput(fencedResult))).toEqual(completeResult);
-  });
-
-  it("does not treat backticks inside JSON string values as a closing fence", () => {
-  const result = { status: "complete", evidence: "saw ``` marker" } as const;
-  const fenced = ["```json", JSON.stringify(result), "```"].join("\n");
-  expect(parseAutonomousCycleResult(fenced)).toEqual(result);
-});
-
-it("rejects ambiguous fences, garbage, or unknown fields", () => {
-    const secondFence = ["```json", JSON.stringify({ status: "blocked", evidence: "other" }), "```"].join("\n");
-    expect(() => parseAutonomousCycleResult(`${fencedResult}\n${secondFence}`)).toThrow("malformed autonomous cycle result");
-    expect(() => parseAutonomousCycleResult("not-json")).toThrow("malformed autonomous cycle result");
-    expect(() => parseAutonomousCycleResult(JSON.stringify({ status: "complete", evidence: "done", command: "deploy" }))).toThrow("unknown autonomous cycle result field");
   });
 });
