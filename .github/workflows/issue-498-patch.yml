@@ -30,27 +30,14 @@ jobs:
                   raise SystemExit(f"{path}: expected one match, found {count}")
               p.write_text(text.replace(old, new, 1))
 
-          replace_once(
-              "scripts/rollout-db-impl.ts",
-              'const VALID_ROLES = new Set(["shared", "discord", "health", "interactive"]);',
-              'const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "autonomy"]);',
-          )
-          replace_once(
-              "scripts/rollout-db-impl.ts",
-              'if (separator <= 0 || !["shared", "discord", "health", "interactive"].includes(role)) {\n        throw new Error(`--database-role must be PATH=shared|discord|health|interactive, got: ${value}`);',
-              'if (separator <= 0 || !["shared", "discord", "health", "interactive", "autonomy"].includes(role)) {\n        throw new Error(`--database-role must be PATH=shared|discord|health|interactive|autonomy, got: ${value}`);',
-          )
-
           discovery_anchor = '''done
 
 declare -A canonical_databases=()
 '''
           discovery_block = '''done
 
-# The interactive service may own a second, first-class autonomy database.
-# Its path comes from the same validated EnvironmentFile chain as the primary
-# DB, so it is part of the guarded rollout inventory even though rollout.conf
-# predates secondary per-unit databases.
+# The interactive service may own a second production database for autonomy.
+# Resolve it from the same validated EnvironmentFile chain as its primary DB.
 autonomy_database=""
 autonomy_database_missing=0
 autonomy_unit="agent-bridge-interactive.service"
@@ -91,7 +78,7 @@ declare -A canonical_databases=()
           db_args_block = '''  for unit in "${!unit_databases[@]}"; do db_args+=(--database-role "${unit_databases[$unit]}=${unit_roles[$unit]}"); done
   if [[ -n "$autonomy_database" && "$autonomy_database_missing" == 0 ]]; then
     db_args+=(--resolving-unit "$autonomy_database=$autonomy_unit")
-    db_args+=(--database-role "$autonomy_database=autonomy")
+    db_args+=(--database-role "$autonomy_database=interactive")
   fi
 }
 '''
@@ -107,7 +94,7 @@ run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-eviden
 code_check
 if (( autonomy_database_missing == 1 )); then
   echo "bootstrapping configured autonomy database before release activation path=$autonomy_database"
-  run_db_tool bootstrap --db "$autonomy_database" --role autonomy --confirm-new-role "$autonomy_database" --evidence "$artifact_dir/autonomy-bootstrap-evidence.json"
+  run_db_tool bootstrap --db "$autonomy_database" --role interactive --confirm-new-role "$autonomy_database" --evidence "$artifact_dir/autonomy-bootstrap-evidence.json"
   hash_evidence_file "$artifact_dir/autonomy-bootstrap-evidence.json"
   [[ -f "$autonomy_database" && ! -L "$autonomy_database" ]] || die "autonomy database bootstrap did not create a regular database: $autonomy_database"
   autonomy_canonical="$(/usr/bin/realpath -e "$autonomy_database")"
@@ -115,9 +102,8 @@ if (( autonomy_database_missing == 1 )); then
   databases+=("$autonomy_database")
   autonomy_database_missing=0
   build_db_args
-  # Refresh the before-state evidence now that the intentionally missing role
-  # exists, still before migration or release activation. Acceptance therefore
-  # compares the same complete database inventory on both sides.
+  # Refresh before-state evidence with the complete inventory while services
+  # are contained and before any schema migration or release activation.
   run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/preflight-evidence.json"
   hash_evidence_file "$artifact_dir/preflight-evidence.json"
 fi
@@ -161,6 +147,6 @@ run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-eviden
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git rm .github/workflows/issue-498-patch.yml
-          git add scripts/rollout-db-impl.ts scripts/rollout-agent-bridge.sh test/rolloutHelper.test.ts
+          git add scripts/rollout-agent-bridge.sh test/rolloutHelper.test.ts
           git commit -m "Fix autonomy database rollout provisioning (#498)"
           git push origin HEAD:fix/issue-498-autonomy-db-rollout
