@@ -53,6 +53,11 @@ function codexCompactEvents(text: string): string {
   ].join("\n");
 }
 
+/** A successful Agy stream-json terminal result line, as engine.ts now requires for antigravity CLI output. */
+function agyStreamJsonResult(responseText: string, sessionId = "11111111-1111-4111-8111-111111111111"): string {
+  return JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: responseText } });
+}
+
 function makeFullConfig(dbPath: string): BridgeConfig {
   return {
     allowedUserIds: new Set(["42"]),
@@ -827,7 +832,7 @@ describe("BridgeEngine", () => {
     it("uses executionKind for non-agent CLI invocation and parsing", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
 
-      const runCli = vi.fn().mockResolvedValue("***\nUse the Agy-specific response.");
+      const runCli = vi.fn().mockResolvedValue(agyStreamJsonResult("Use the Agy-specific response."));
       const client = makeMockClient();
       const engine = new BridgeEngine(
         {
@@ -854,7 +859,9 @@ describe("BridgeEngine", () => {
       const [command, args] = runCli.mock.calls[0];
       expect(command).toBe("agy");
       expect(args).toContain("--print");
-      expect(args).not.toContain("--output-format");
+      const formatIdx = args.indexOf("--output-format");
+      expect(formatIdx).not.toBe(-1);
+      expect(args[formatIdx + 1]).toBe("stream-json");
       expect(client.sendMessage).toHaveBeenCalledOnce();
       expect(client.sendMessage.mock.calls[0][0].text).toBe("Use the Agy-specific response.");
     });
@@ -867,9 +874,9 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedArgs.push(args);
         capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return "***\nPrior answer from Agy";
-        if (runCli.mock.calls.length === 2) return "Error: timed out waiting for response";
-        return "***\nRecovered answer";
+        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer from Agy");
+        if (runCli.mock.calls.length === 2) throw new Error("Agy execution timed out waiting for response");
+        return agyStreamJsonResult("Recovered answer");
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -911,11 +918,11 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedArgs.push(args);
         capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return "***\nPrior answer from Agy";
+        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer from Agy");
         if (runCli.mock.calls.length === 2) {
           throw new Error('{"type":"error","message":"error executing cascade step: CORTEX_STEP_TYPE_GREP_SEARCH: grep: -r: No such file or directory: exit status 2"}');
         }
-        return "***\nRecovered after reset";
+        return agyStreamJsonResult("Recovered after reset");
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -955,11 +962,11 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedArgs.push(args);
         capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return "***\nPrior answer from Agy";
+        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer from Agy");
         if (runCli.mock.calls.length === 2) {
           throw new Error("Agy stalled in planner loop without usable output");
         }
-        return "***\nRecovered from stall";
+        return agyStreamJsonResult("Recovered from stall");
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -999,11 +1006,11 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedArgs.push(args);
         capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return "***\nPrior answer";
+        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer");
         if (runCli.mock.calls.length === 2) {
           throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command abc/task-22 not Found");
         }
-        return "***\nRecovered command status error";
+        return agyStreamJsonResult("Recovered command status error");
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -1036,11 +1043,11 @@ describe("BridgeEngine", () => {
       const { BridgeEngine } = await import("../src/engine.js");
 
       const runCli = vi.fn().mockImplementation(async () => {
-        if (runCli.mock.calls.length === 1) return "***\nPrior answer";
+        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer");
         if (runCli.mock.calls.length <= 3) {
           throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command abc/task-18 not found");
         }
-        return "***\nRecovered on second fresh retry";
+        return agyStreamJsonResult("Recovered on second fresh retry");
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -1078,9 +1085,9 @@ describe("BridgeEngine", () => {
       let calls = 0;
       const execute = vi.fn().mockImplementation(async () => {
         calls += 1;
-        if (calls === 1) return "***\nPrior answer";
+        if (calls === 1) return agyStreamJsonResult("Prior answer");
         if (calls === 2) throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command retry/task not found");
-        return `***\n${memorySidecar}`;
+        return agyStreamJsonResult(memorySidecar);
       });
       const onAfterExecute = vi.fn();
       const client = makeMockClient();
@@ -3207,14 +3214,14 @@ describe("BridgeEngine", () => {
       expect(capturedArgs).toContain("--json");
     });
 
-    it("does NOT pass --output-format to antigravity bot in sync path", async () => {
+    it("passes --output-format stream-json to antigravity bot in sync path", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
       const capturedArgs: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedArgs.push(...args);
-        return "***\nAgy response";
+        return agyStreamJsonResult("Agy response");
       });
 
       const engine = new BridgeEngine(
@@ -3235,7 +3242,9 @@ describe("BridgeEngine", () => {
       await engine.handleMessages([makeMessage("hello")]);
 
       expect(runCli).toHaveBeenCalledOnce();
-      expect(capturedArgs).not.toContain("--output-format");
+      const formatIdx = capturedArgs.indexOf("--output-format");
+      expect(formatIdx).not.toBe(-1);
+      expect(capturedArgs[formatIdx + 1]).toBe("stream-json");
     });
 
     it("captures session ID from structured JSON output in sync Claude path", async () => {

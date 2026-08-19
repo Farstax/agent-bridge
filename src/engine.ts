@@ -1710,7 +1710,10 @@ ${contextPrompt}` : contextPrompt);
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      outputFormat: undefined,
+      // Keep the same answer-streaming format as the primary attempt and its fallback.
+      outputFormat: executionKind === "antigravity" || executionKind === "claude"
+        ? "stream-json"
+        : "json",
       logFile: retryLogFile,
       soulContext,
       includeResponseContract,
@@ -1742,7 +1745,10 @@ ${contextPrompt}` : contextPrompt);
       try { retryLogContent = readFileSync(retryLogFile, "utf8"); } catch {}
       finally { try { rmSync(retryLogFile); } catch {} }
 
-      const result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: retryLogContent });
+      const outputFormat = executionKind === "antigravity"
+        ? (retryInvocation.args.includes("stream-json") ? "stream-json" : (retryInvocation.args.includes("json") ? "json" : "text"))
+        : undefined;
+      const result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: retryLogContent, outputFormat });
       if (!result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd: retryCwd, sinceMs: retryStartedAtMs, explicitLogContent: retryLogContent });
       }
