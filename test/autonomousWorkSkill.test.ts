@@ -8,9 +8,12 @@ describe("autonomous-work skill convergence (#466)", () => {
     const manifest = JSON.parse(readFileSync(join(root, "skills", "autonomous-work", "skill.json"), "utf8"));
     expect(manifest.name).toBe("autonomous-work");
     const text = readFileSync(join(root, "skills", "autonomous-work", "SKILL.md"), "utf8");
-    for (const term of ["Goal", "Episode", "Cycle", "Run", "current truth", "supervisorMessage", "frozen authority"]) expect(text).toContain(term);
+    for (const term of ["Goal", "Episode", "Cycle", "Run", "current truth", "frozen authority", "--notify", "continue", "done", "blocked"]) expect(text).toContain(term);
     expect(text).not.toContain("Farstax");
     expect(text).not.toContain("Company runtime");
+    expect(text).not.toContain("supervisorMessage");
+    expect(text).not.toContain("nextWakeReason");
+    expect(text).not.toContain("Return JSON only");
   });
 
   it("converges the required skill on fresh install and --update even with a custom list", () => {
