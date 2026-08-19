@@ -155,6 +155,8 @@ describe("autonomous goal production runtime", () => {
       expect(input.prompt).toContain("Autonomy disposition command: ");
       expect(input.prompt).toContain("continue, done, or blocked");
       expect(input.prompt).not.toContain("Return JSON only");
+      expect(input.prompt).not.toContain("exactly once");
+      expect(input.prompt).toContain("final valid call wins");
       expect(input.prompt).toContain("authority");
     }
 

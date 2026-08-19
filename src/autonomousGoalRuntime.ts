@@ -45,11 +45,6 @@ export interface AutonomousGoal {
   evidence: string[];
 }
 
-/**
- * Legacy parser surface retained only for callers/tests that still import it.
- * The authoritative autonomous Run path below no longer calls it: lifecycle
- * control is carried exclusively by the run-scoped disposition helper.
- */
 export interface AutonomousSupervisorRoute {
   surface: string;
   address: string;
@@ -301,7 +296,7 @@ function buildPrompt(
     `Wake reason: ${wakeReason}`,
     ...(policy === "external-observation" ? ["Your final response is evidence only. Do not claim recovery; later authoritative health observation decides Episode completion."] : []),
     `Autonomy disposition command: ${JSON.stringify(dispositionCommand)}`,
-    "Before your ordinary final response, invoke that exact executable exactly once with one disposition: continue, done, or blocked. Add --notify only when the ordinary final response should also be sent to the supervisor route.",
+    "Before your ordinary final response, invoke that exact executable with one disposition: continue, done, or blocked. Add --notify only when the ordinary final response should also be sent to the supervisor route. If your conclusion changes later in this Run, invoke it again with the new disposition; the final valid call wins.",
     "Use continue when another provider Run is needed, done when your bounded work is finished, and blocked when the Run succeeded but cannot safely continue. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself.",
     "Return a normal final response describing what you did and verified. That response is durable execution evidence and continuity context; it is not a control envelope.",
   ].join("\n");

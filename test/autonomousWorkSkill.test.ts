@@ -14,6 +14,9 @@ describe("autonomous-work skill convergence (#466)", () => {
     expect(text).not.toContain("supervisorMessage");
     expect(text).not.toContain("nextWakeReason");
     expect(text).not.toContain("Return JSON only");
+    expect(text).not.toContain("exactly once");
+    expect(text).not.toContain("AUTONOMY_DISPOSITION_COMMAND");
+    expect(text).toContain("final valid call wins");
   });
 
   it("converges the required skill on fresh install and --update even with a custom list", () => {
