@@ -14,6 +14,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  issue-480-migration-artifact:
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 487
+    name: Issue 480 migration artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the exact event head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Apply migration in workspace only
+        run: python3 .github/issue-480-migrate.py
+      - name: Upload migrated files
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-480-migrated-files
+          path: |
+            src/autonomousGoalRuntime.ts
+            test/autonomousGoalRuntime.test.ts
+
   test:
     name: Test & Typecheck
     runs-on: ubuntu-latest
@@ -37,13 +56,6 @@ jobs:
 
       - run: npm test
         env:
-          # vitest.config.ts caps the forks pool to maxForks: 1 (serial),
-          # removing concurrent-process memory competition. 8192MB was not
-          # enough for a branch with a larger test suite (PR #330's durable
-          # continuation work): the single process grew to exactly that
-          # ceiling and OOM'd, confirming genuine (not concurrency-driven)
-          # memory need above 8GB for a bigger suite. Raise toward the
-          # runner's actual ceiling, leaving headroom for the OS/coordinator.
           NODE_OPTIONS: "--max-old-space-size=14336"
 
       - run: npm run typecheck
