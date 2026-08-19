@@ -24,27 +24,23 @@ describe("execution lane coordinator ownership", () => {
     expect(executionLaneCoordinator(otherDb, "telegram:interactive")).not.toBe(coordinator);
   });
 
-  it("owns shared continuation, fence, and augment state", () => {
+  it("owns shared fence and augment state", () => {
     const db = {} as BridgeDb;
     const coordinator = executionLaneCoordinator(db, "telegram:interactive");
     const sharedView = executionLaneCoordinator(db, "telegram:interactive");
 
-    coordinator.markContinuationActive(LANE);
     coordinator.markAborted(LANE);
     coordinator.markResetting(LANE);
     coordinator.setAugmentedTask(LANE, { prompt: "work", attachments: ["/tmp/a"] });
 
-    expect(sharedView.isContinuationActive(LANE)).toBe(true);
     expect(sharedView.isAborted(LANE)).toBe(true);
     expect(sharedView.isResetting(LANE)).toBe(true);
     expect(sharedView.hasAugmentedTask(LANE)).toBe(true);
 
-    sharedView.clearContinuation(LANE);
     sharedView.clearAborted(LANE);
     sharedView.clearResetting(LANE);
     sharedView.clearAugmentedTask(LANE);
 
-    expect(coordinator.isContinuationActive(LANE)).toBe(false);
     expect(coordinator.isAborted(LANE)).toBe(false);
     expect(coordinator.isResetting(LANE)).toBe(false);
     expect(coordinator.hasAugmentedTask(LANE)).toBe(false);

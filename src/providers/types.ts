@@ -50,7 +50,7 @@ export interface ProviderInvocationRequest {
   effort: import("../effort.js").EffortLevel | null;
   toolMode: "default" | "none";
   /** Keep provider-owned native background/task work inside this CLI turn until terminal completion. */
-  nativeCompletion: boolean;
+  nativeCompletion?: boolean;
 }
 
 export interface ProviderInvocation {

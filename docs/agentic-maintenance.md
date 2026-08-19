@@ -13,7 +13,8 @@ tools, and native subagents.
 conversation
   -> turns and history
   -> provider-native session
-  -> ordinary Run and continuation
+  -> ordinary Run
+  -> provider-native terminal completion
   -> provider agent + AGENTS.md + Skills + tools
   -> result or external artifact
 ```
@@ -38,12 +39,13 @@ created, claimed, or executed.
 ## Safety boundary
 
 Agent Bridge retains provider selection, process supervision, session and Run
-durability, continuation recovery, fencing, cancellation, fallback, and
-delivery completion. Repository instructions and Skills own engineering
+durability, fencing, cancellation, fallback, restart reconciliation, and
+delivery completion. Provider-native background work stays inside the owning
+provider invocation. Repository instructions and Skills own engineering
 workflow policy. Provider-native subagents remain inside the provider process.
 
 The final parsed provider result is authoritative for persistence, session
-state, continuation, terminal events, attachments, and delivery. Preview or
+state, terminal events, attachments, and delivery. Preview or
 diagnostic data cannot complete a Run.
 
 ## Review and release

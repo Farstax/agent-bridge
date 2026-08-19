@@ -1,7 +1,7 @@
 /**
  * Authenticated, provider-neutral ingress for one ordinary surface-neutral Run.
  * This module owns request validation and durable deduplication only. Provider
- * execution, locking, continuation, fencing, and terminal Run state remain in
+ * execution, locking, provider lifecycle, fencing, and terminal Run state remain in
  * BridgeEngine and EventStore.
  */
 import { randomUUID } from "node:crypto";
@@ -183,7 +183,6 @@ export async function executeRunIngressRequest(
       runId,
       eventContext,
       collect,
-      finalize: () => eventStore.finalize(),
       onProviderExecutionStarted: () => undefined,
     });
     eventStore.finalize();

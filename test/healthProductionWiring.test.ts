@@ -12,16 +12,13 @@ describe("health event production wiring", () => {
     expect(source).toContain("onRawReport: async (report)");
   });
 
-  it("recovers continuations before non-blocking receipt replay and generic orphan reconciliation", () => {
-    const source = readFileSync(new URL("../src/index-health.ts", import.meta.url), "utf8");
-    const continuations = source.indexOf("await engine.recoverContinuations();");
-    const pending = source.indexOf("void resumeDurablePendingHealthEvents");
-    const orphans = source.indexOf("await bridgeDb.reconcileOrphanedRuns");
-    expect(continuations).toBeGreaterThan(-1);
-    expect(pending).toBeGreaterThan(continuations);
-    expect(orphans).toBeGreaterThan(pending);
-    expect(source).not.toContain("await resumeDurablePendingHealthEvents");
-    expect(source).not.toContain("lastReportStatus");
+  it("replays pending health receipts before generic orphan reconciliation", () => {
+    const source = readFileSync(join(process.cwd(), "src/index-health.ts"), "utf8");
+    const pending = source.indexOf("resumeDurablePendingHealthEvents");
+    const orphan = source.indexOf("await bridgeDb.reconcileOrphanedRuns");
+    expect(pending).toBeGreaterThan(-1);
+    expect(orphan).toBeGreaterThan(pending);
+    expect(source).not.toContain("recoverContinuations");
   });
 
   it("accepts a red episode before persisting the incoming red report", () => {

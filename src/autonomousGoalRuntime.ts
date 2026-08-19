@@ -3,7 +3,7 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
-import { killRunOwnedDescendants } from "./turnContinuationProcesses.js";
+import { killRunOwnedDescendants } from "./runOwnedProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import type { BotConfig, BotKind } from "./types.js";

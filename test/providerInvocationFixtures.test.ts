@@ -152,7 +152,7 @@ describe("provider invocation fixtures — claude", () => {
     expect(inv.args.slice(3)).toEqual(["--output-format", "json", anyPrompt()]);
   });
 
-  it("stream-json output exposes assistant tool-use records for continuation detection", () => {
+  it("stream-json output ignores provider background bookkeeping", () => {
     const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: "sess-9", command: "claude", outputFormat: "stream-json" });
     expect(inv.args[0]).toBe("--print");
     expect(inv.args[1]).toBe("--settings");
@@ -171,7 +171,6 @@ describe("provider invocation fixtures — claude", () => {
     })).toEqual({
       text: "Tests are running.",
       sessionId: "sess-9",
-      continuationHint: "background-process",
     });
   });
 });

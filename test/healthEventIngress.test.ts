@@ -20,7 +20,6 @@ import {
 } from "../src/health/eventIngress.js";
 import { reconcileAbandonedHealthLeases } from "../src/health/eventRecovery.js";
 import type { HealthReport } from "../src/health/types.js";
-import { ContinuationRepository } from "../src/repositories/continuationRepository.js";
 
 /**
  * Issue #351 (corrected architecture, see issue body + PR #356 review
@@ -253,7 +252,7 @@ describe("acceptHealthOpsEvent", () => {
 // must reach the SAME provider-turn execution owner ordinary Telegram-driven
 // turns use, not a parallel reimplementation of buildCliInvocation/runCli.
 // These tests construct a real BridgeEngine (the established test pattern
-// used throughout test/*.test.ts, e.g. test/durableContinuationLifecycle.test.ts)
+// used throughout test/*.test.ts, e.g. ordinary BridgeEngine execution tests)
 // with a fake Telegram client and an injected runCliAsync, so a spy on
 // engine.executePromptAsync proves executeHealthOpsRun literally calls it,
 // and the fake client proves no Telegram delivery happens along the way.
@@ -275,17 +274,9 @@ function claudeStreamJsonOutput(text: string, sessionId: string | null): string 
   return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId });
 }
 
-function claudeBackgroundOutput(text: string, sessionId: string): string {
-  return [
-    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "npm test", run_in_background: true } }] } }),
-    JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId }),
-  ].join("\n");
-}
-
 function makeEngine(
   runCliAsync: (...args: any[]) => Promise<{ text: string }>,
   db: ReturnType<typeof openDb>,
-  continuation: ConstructorParameters<typeof BridgeEngine>[4] = {},
 ) {
   const client = makeMockClient();
   const engine = new BridgeEngine(
@@ -302,7 +293,6 @@ function makeEngine(
     db,
     client,
     { runCliAsync },
-    continuation,
   );
   return { engine, client };
 }
@@ -370,11 +360,10 @@ describe("executeHealthOpsRun", () => {
     expect(db.getRun(accepted.runId).status).toBe("done");
   });
 
-  it("derives the execution prompt from the durable receipt and keeps continuation ownership in the engine", async () => {
+  it("derives the execution prompt from the durable receipt and keeps one provider-owned turn alive until terminal completion", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent({
       report: redReport({ summary: "accepted summary", checks: [{ name: "accepted-check", status: "red", message: "accepted message" }] }),
     }), { expectedToken: EXPECTED_TOKEN });
-    let callCount = 0;
     let heartbeatCount = 0;
     const originalHeartbeat = db.heartbeatLock.bind(db);
     (db as unknown as { heartbeatLock: typeof db.heartbeatLock }).heartbeatLock = ((handle) => {
@@ -382,25 +371,18 @@ describe("executeHealthOpsRun", () => {
       return originalHeartbeat(handle);
     }) as typeof db.heartbeatLock;
     const runCliAsync = vi.fn(async (_command: string, args: string[], _cwd: string, options: any) => {
-      callCount += 1;
       const prompt = options.stdin ? JSON.parse(String(options.stdin)).message.content : args.join(" ");
-      if (callCount === 1) expect(prompt).toContain("accepted summary");
+      expect(prompt).toContain("accepted summary");
       expect(prompt).not.toContain("untrusted replacement");
       await new Promise((resolve) => setTimeout(resolve, 150));
-      return { text: callCount === 1 ? claudeBackgroundOutput("started background work", "sess-1") : claudeStreamJsonOutput("finished", "sess-1") };
+      return { text: claudeStreamJsonOutput("finished", "sess-1") };
     });
-    const { engine } = makeEngine(runCliAsync, db, {
-      hasLiveRunOwnedDescendants: vi.fn().mockReturnValueOnce(true).mockReturnValue(false),
-      getRunOwnedProcessState: vi.fn().mockReturnValueOnce("live").mockReturnValue("absent"),
-      killRunOwnedDescendants: vi.fn().mockResolvedValue(undefined),
-      sleep: vi.fn().mockResolvedValue(undefined),
-      now: () => Date.now(),
-    });
+    const { engine } = makeEngine(runCliAsync, db);
 
     const outcome = await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(outcome.status).toBe("done");
-    expect(runCliAsync).toHaveBeenCalledTimes(2);
+    expect(runCliAsync).toHaveBeenCalledTimes(1);
     expect(heartbeatCount).toBeGreaterThan(0);
   });
 
@@ -585,38 +567,6 @@ describe("executeHealthOpsRun", () => {
       HealthOpsRunLaneUnavailableError,
     );
     expect(runCliAsync).not.toHaveBeenCalled();
-  });
-
-  it("recovers a surface-neutral continuation on a health engine after restart", async () => {
-    const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const repo = new ContinuationRepository(db.raw);
-    repo.saveWaiting({
-      runId: accepted.runId,
-      surface: HEALTH_RUN_SURFACE,
-      chatKey: HEALTH_RUN_CHAT_KEY,
-      chatId: 0,
-      threadId: null,
-      bot: "claude",
-      sessionId: "session-1",
-      executionMode: "async",
-      triggerKind: "run-owned-background-process",
-      triggerId: accepted.runId,
-      resumptionCount: 0,
-      pendingIds: [],
-      startedAt: new Date().toISOString(),
-      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
-      deliveryState: "none",
-    });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("recovered", "session-2") });
-    const { engine } = makeEngine(runCliAsync, db, { getRunOwnedProcessState: () => "absent" });
-
-    await engine.recoverContinuations();
-    for (let i = 0; i < 50 && db.getRun(accepted.runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    expect(runCliAsync).toHaveBeenCalled();
-    expect(db.getRun(accepted.runId)?.status).toBe("done");
   });
 
   // ── Result correlation ────────────────────────────────────────────────────

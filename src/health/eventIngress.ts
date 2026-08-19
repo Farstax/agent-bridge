@@ -23,7 +23,7 @@
  * CLI invocation via buildCliInvocation/runCli directly. Instead
  * executeHealthOpsRun calls the engine's surface-neutral wrapper. That
  * wrapper keeps the ordinary provider-attempt owner plus its outer lock
- * heartbeat and continuation lifecycle.
+ * heartbeat and provider lifecycle.
  *
  * The wrapper requires a numeric sentinel chat id, a synthetic chat key, an
  * execution-lane handle, and the existing BridgeEvent collector. Those are
@@ -421,8 +421,7 @@ export async function executeHealthOpsRun(
         runId,
         eventContext,
         collect,
-        finalize: () => eventStore.finalize(),
-        onProviderExecutionStarted: () => {
+          onProviderExecutionStarted: () => {
           db.setSetting(healthEventExecutionStartedKey(receiptId), serializeHealthEventExecutionStartedMarker({
             runId,
             lane: { serviceId: laneHandle.serviceId, runId: laneHandle.runId, acquisitionId: laneHandle.acquisitionId },

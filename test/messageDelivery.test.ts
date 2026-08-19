@@ -691,6 +691,33 @@ describe("isAborted suppression", () => {
   });
 });
 
+describe("provider-native pending completion typing", () => {
+  it("keeps typing refreshed until the provider invocation settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = createMockClient();
+      let finish!: (value: CliResult) => void;
+      const execution = new Promise<CliResult>((resolve) => { finish = resolve; });
+
+      const pending = sendMessageWithProgress({ client, kind: "claude", chatId: 123, execution });
+      await vi.advanceTimersByTimeAsync(0);
+      const initialCalls = (client.sendChatAction as any).mock.calls.length;
+      expect(initialCalls).toBeGreaterThanOrEqual(1);
+
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect((client.sendChatAction as any).mock.calls.length).toBeGreaterThan(initialCalls);
+      const callsWhilePending = (client.sendChatAction as any).mock.calls.length;
+
+      finish({ text: "terminal result", sessionId: "session-1" });
+      await pending;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((client.sendChatAction as any).mock.calls.length).toBe(callsWhilePending);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("typingInterval cleanup on isAborted early return", () => {
   it("does not refresh typing after the abort predicate flips while execution is pending", async () => {
     vi.useFakeTimers();

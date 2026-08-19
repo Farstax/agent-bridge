@@ -20,6 +20,7 @@ describe("provider-native terminal completion", () => {
       prompt: "run the tests",
       sessionId: null,
       command: "claude",
+      model: null,
       nativeCompletion: true,
     });
     const bounded = buildCliInvocation({
@@ -27,6 +28,7 @@ describe("provider-native terminal completion", () => {
       prompt: "one bounded probe",
       sessionId: null,
       command: "claude",
+      model: null,
       nativeCompletion: false,
     });
 
@@ -47,6 +49,7 @@ describe("provider-native terminal completion", () => {
       prompt: "run the tests",
       sessionId: null,
       command: "agy",
+      model: null,
       nativeCompletion: true,
     });
     const bounded = buildCliInvocation({
@@ -54,6 +57,7 @@ describe("provider-native terminal completion", () => {
       prompt: "one bounded probe",
       sessionId: null,
       command: "agy",
+      model: null,
       nativeCompletion: false,
     });
 
@@ -67,6 +71,7 @@ describe("provider-native terminal completion", () => {
       prompt: "run the tests",
       sessionId: null,
       command: "codex",
+      model: null,
       nativeCompletion: true,
     });
     const bounded = buildCliInvocation({
@@ -74,6 +79,7 @@ describe("provider-native terminal completion", () => {
       prompt: "run the tests",
       sessionId: null,
       command: "codex",
+      model: null,
       nativeCompletion: false,
     });
 

@@ -1,7 +1,7 @@
 /**
  * PURPOSE: Own transient execution-lane coordination shared across provider engines.
  * INPUTS: BridgeDb identity, stable surface identity, and lane-scoped state transitions.
- * OUTPUTS: Shared in-process coordination for cancellation, drainers, delivery, continuation, augment, and fences.
+ * OUTPUTS: Shared in-process coordination for cancellation, drainers, delivery, augment, and fences.
  * NEIGHBORS: src/engine.ts, src/db.ts
  */
 
@@ -30,7 +30,6 @@ export class ExecutionLaneCoordinator {
   private readonly cancellationOperations = new Map<string, LaneCancellation>();
   private readonly laneDrainers = new Map<string, LaneDrainer>();
   private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
-  private readonly activeContinuations = new Set<string>();
   private readonly activeAugmentedTasks = new Map<string, AugmentedTask>();
   private readonly transferredAugmentedLanes = new Set<string>();
   private readonly abortedChats = new Set<string>();
@@ -56,10 +55,6 @@ export class ExecutionLaneCoordinator {
   clearFinalDelivery(lane: string, expected?: FinalDeliveryPhase): void {
     if (!expected || this.finalDeliveryPhases.get(lane) === expected) this.finalDeliveryPhases.delete(lane);
   }
-
-  markContinuationActive(lane: string): void { this.activeContinuations.add(lane); }
-  clearContinuation(lane: string): void { this.activeContinuations.delete(lane); }
-  isContinuationActive(lane: string): boolean { return this.activeContinuations.has(lane); }
 
   setAugmentedTask(lane: string, task: AugmentedTask): void { this.activeAugmentedTasks.set(lane, task); }
   hasAugmentedTask(lane: string): boolean { return this.activeAugmentedTasks.has(lane); }

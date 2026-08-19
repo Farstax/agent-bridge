@@ -285,11 +285,9 @@ const runIngress = runIngressSocket && runIngressToken
   : null;
 if (runIngress) await runIngress.start();
 
-// Continuations recover first and reclaim their normal lane. Terminal receipts
-// are correlated before replay is considered. Never-started pending Runs are
+// Correlate terminal receipts before replay. Never-started pending Runs are
 // then dispatched without blocking scheduler startup and are temporarily
 // excluded from generic orphan classification while they acquire that lane.
-await engine.recoverContinuations();
 for (const goalId of pendingOwnerAuthorizedHealthRecoveryGoals(bridgeDb)) {
   void runOwnerAuthorizedHealthRecovery(bridgeDb, goalId, engine).catch((error) =>
     console.error(`[health-bot] pending recovery execution failed for ${goalId}`, error));

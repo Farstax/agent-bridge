@@ -47,8 +47,6 @@ import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseHealthBotMode } from "./health/config.js";
 import { createHealthRuntime } from "./health/runtime.js";
 import { handleIntegratedHealthCommand } from "./health/integrated.js";
-import { recoverCancelledContinuationContainment } from "./continuationRecovery.js";
-import { ContinuationRepository } from "./repositories/continuationRepository.js";
 import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 import { loadWorkspaceContext } from "./workspaceContext.js";
 import { AutonomyController } from "./autonomyController.js";
@@ -119,7 +117,6 @@ const db = openProductionDb(dbPath, {
   databaseRole: runtimePolicy.databaseRole,
 });
 const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots, runCli });
-const continuationStore = new ContinuationRepository(db.raw);
 const client = new TelegramClient(
   token,
   fetch,
@@ -169,10 +166,9 @@ const integratedHealthRuntime = healthDb ? createHealthRuntime({
   sendText: async () => {},
 }) : null;
 
-await recoverCancelledContinuationContainment(db, continuationStore);
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
-  processState: (run) => continuationStore.hasActiveRun(run.run_id) ? "live" : getExecutionProcessState(run.run_id),
+  processState: (run) => getExecutionProcessState(run.run_id),
   containmentState: (_run, processState) => processState === "absent" ? "proven" : "ambiguous",
   onReconciled: async (run) => {
     const parts = run.chat_id.split(":");
@@ -342,7 +338,6 @@ for (const engine of Object.values(engines)) {
   });
 }
 
-await Promise.all(Object.values(engines).map((engine) => engine.recoverContinuations()));
 await engines[defaultPref].recoverPendingQueues();
 
 await registerGlobalCommands(defaultPref, "");

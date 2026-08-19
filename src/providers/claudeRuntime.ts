@@ -55,7 +55,7 @@ export function buildInvocation({
   outputDir,
   effort,
   toolMode,
-  nativeCompletion,
+  nativeCompletion = false,
 }: ProviderInvocationRequest): ProviderInvocation {
   const args: string[] = [];
   const finalPrompt = appendOutputDirInstruction(wrapPromptContext(prompt, soulContext, includeResponseContract), outputDir);
