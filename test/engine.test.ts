@@ -110,7 +110,7 @@ describe("BridgeEngine", () => {
   describe("handoff consumption", () => {
     it("clears a pending handoff mark after the first turn for that chat+CLI", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const runCli = vi.fn().mockResolvedValue(JSON.stringify({ result: "Hello there!", session_id: "handoff-session" }));
+      const runCli = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "Hello there!", session_id: "handoff-session" }));
       const client = makeMockClient();
 
       const engine = new BridgeEngine(
@@ -237,7 +237,7 @@ describe("BridgeEngine", () => {
       const capturedPrompts: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedPrompts.push(args[args.length - 1]);
-        return JSON.stringify({ result: "ok", session_id: "handoff-session" });
+        return JSON.stringify({ type: "result", result: "ok", session_id: "handoff-session" });
       });
       const engine = new BridgeEngine(
         {
@@ -275,7 +275,7 @@ describe("BridgeEngine", () => {
       const capturedPrompts: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedPrompts.push(args[args.length - 1]);
-        return JSON.stringify({ result: "ok", session_id: "sync-session-abc" });
+        return JSON.stringify({ type: "result", result: "ok", session_id: "sync-session-abc" });
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -299,7 +299,7 @@ describe("BridgeEngine", () => {
       const capturedPrompts: string[] = [];
       const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
         capturedPrompts.push(args[args.length - 1]);
-        const rawOutput = JSON.stringify({ result: "ok", session_id: "async-session-abc" });
+        const rawOutput = JSON.stringify({ type: "result", result: "ok", session_id: "async-session-abc" });
         const ctx = options.eventContext;
         options.onEvent?.(eventType.runCompleted({ ...ctx, text: rawOutput, sessionId: null }));
         return { text: rawOutput };
@@ -394,7 +394,7 @@ describe("BridgeEngine", () => {
       const capturedPrompts: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedPrompts.push(args[args.length - 1]);
-        return JSON.stringify({ result: "ok", session_id: "fresh-after-suppression" });
+        return JSON.stringify({ type: "result", result: "ok", session_id: "fresh-after-suppression" });
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
@@ -1962,7 +1962,7 @@ describe("BridgeEngine", () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
-      const rawOutput = JSON.stringify({ result: "done", session_id: "private-session-xyz" });
+      const rawOutput = JSON.stringify({ type: "result", result: "done", session_id: "private-session-xyz" });
 
       const runCliAsync = vi.fn().mockImplementation(async (
         _command: string,
@@ -2137,7 +2137,7 @@ describe("BridgeEngine", () => {
       const client = makeMockClient();
 
       // Claude --output-format json produces { result, session_id }
-      const rawOutput = JSON.stringify({ result: "done", session_id: "thread-session-abc" });
+      const rawOutput = JSON.stringify({ type: "result", result: "done", session_id: "thread-session-abc" });
 
       const runCliAsync = vi.fn().mockImplementation(async (
         _command: string,
@@ -2179,7 +2179,7 @@ describe("BridgeEngine", () => {
     it("drains queued supergroup topic messages with the original topic key", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      const rawOutput = JSON.stringify({ result: "done", session_id: "queued-topic-session" });
+      const rawOutput = JSON.stringify({ type: "result", result: "done", session_id: "queued-topic-session" });
       const runCliAsync = vi.fn().mockImplementation(async (
         _command: string,
         _args: string[],
@@ -3243,7 +3243,7 @@ describe("BridgeEngine", () => {
       const client = makeMockClient();
 
       // Claude --output-format json outputs a JSON object with result and session_id.
-      const rawOutput = JSON.stringify({ result: "Here is my answer", session_id: "sync-session-xyz" });
+      const rawOutput = JSON.stringify({ type: "result", result: "Here is my answer", session_id: "sync-session-xyz" });
       const runCli = vi.fn().mockResolvedValue(rawOutput);
 
       const engine = new BridgeEngine(

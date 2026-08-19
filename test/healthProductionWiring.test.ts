@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 describe("health event production wiring", () => {
   it("routes raw scheduler reports through authenticated receipt, Run execution, and reconciliation", () => {

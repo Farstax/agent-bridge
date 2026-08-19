@@ -132,8 +132,8 @@ describe("Issue #229: silent queue/augment admission", () => {
       prompt: "orphaned older message", chatId: 100, threadId: 7, chatType: "private",
     });
     const mockRunCli = vi.fn()
-      .mockResolvedValueOnce('{"result":"older answer","session_id":"older-session"}')
-      .mockResolvedValueOnce('{"result":"newer answer","session_id":"newer-session"}');
+      .mockResolvedValueOnce('{"type":"result","result":"older answer","session_id":"older-session"}')
+      .mockResolvedValueOnce('{"type":"result","result":"newer answer","session_id":"newer-session"}');
 
     const engine = new BridgeEngine(options("queue"), db, c, { runCli: mockRunCli });
     await engine.handleMessages([message("newer message")]);
@@ -148,7 +148,7 @@ describe("Issue #229: silent queue/augment admission", () => {
   it("4. final answers and actionable failures are still delivered", async () => {
     const db = openDb(":memory:");
     const c = client();
-    const mockRunCli = vi.fn().mockResolvedValueOnce('{"result":"solo answer","session_id":"solo-session"}');
+    const mockRunCli = vi.fn().mockResolvedValueOnce('{"type":"result","result":"solo answer","session_id":"solo-session"}');
     const engine = new BridgeEngine(options("queue"), db, c, { runCli: mockRunCli });
     await engine.handleMessages([message("solo request")]);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "solo answer")).toBe(true);
@@ -180,7 +180,7 @@ describe("Issue #229: silent queue/augment admission", () => {
     const firstCli = new Promise<string>((resolve) => { resolveFirst = resolve; });
     const mockRunCli = vi.fn()
       .mockImplementationOnce(async () => { firstStarted.release(); return firstCli; })
-      .mockResolvedValueOnce('{"result":"merged answer","session_id":"merged-session"}');
+      .mockResolvedValueOnce('{"type":"result","result":"merged answer","session_id":"merged-session"}');
 
     const engine = new BridgeEngine(
       options("augment", { hooks: { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } } }),
@@ -190,7 +190,7 @@ describe("Issue #229: silent queue/augment admission", () => {
     const first = engine.handleMessages([message("first ask")]);
     await firstStarted.promise;
     const second = engine.handleMessages([message("second ask")]);
-    resolveFirst('{"result":"first final","session_id":"first-session"}');
+    resolveFirst('{"type":"result","result":"first final","session_id":"first-session"}');
     await Promise.all([first, second]);
 
     // Coalescing behaviour unchanged: the merged execution receives both

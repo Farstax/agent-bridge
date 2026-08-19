@@ -50,7 +50,7 @@ export function parseClaudeStreamJsonOutput(stdout: string): { text: string; ses
     try {
       const obj = JSON.parse(trimmed);
       if (obj.type === "result" && typeof obj.result === "string") {
-        last = { text: obj.result, sessionId: obj.session_id ?? null };
+        last = { text: obj.result.trim(), sessionId: obj.session_id ?? null };
       }
     } catch { /* skip non-JSON */ }
   }

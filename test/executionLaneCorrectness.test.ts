@@ -237,7 +237,7 @@ describe("execution lane correctness", () => {
     const childReady = join(tmpdir(), `interrupt-ready-${Date.now()}-${Math.random()}`);
     const db = openDb(path);
     const c = client();
-    const secondTurnRun = vi.fn().mockResolvedValue('{"result":"second turn done","session_id":"s2"}');
+    const secondTurnRun = vi.fn().mockResolvedValue('{"type":"result","result":"second turn done","session_id":"s2"}');
     const engine = new BridgeEngine({ ...options("claude"), busyMessageMode: "interrupt" }, db, c, {
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
@@ -274,8 +274,8 @@ describe("execution lane correctness", () => {
     const childReady = join(tmpdir(), `interrupt-coalesce-ready-${Date.now()}-${Math.random()}`);
     const db = openDb(path);
     const c = client();
-    const secondRun = vi.fn().mockResolvedValue('{"result":"second done","session_id":"s2"}');
-    const thirdRun = vi.fn().mockResolvedValue('{"result":"third done","session_id":"s3"}');
+    const secondRun = vi.fn().mockResolvedValue('{"type":"result","result":"second done","session_id":"s2"}');
+    const thirdRun = vi.fn().mockResolvedValue('{"type":"result","result":"third done","session_id":"s3"}');
     const engine = new BridgeEngine({ ...options("claude"), busyMessageMode: "interrupt" }, db, c, {
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
@@ -339,7 +339,7 @@ describe("execution lane correctness", () => {
     const successorReady = join(tmpdir(), `successor-interrupt-successor-${Date.now()}-${Math.random()}`);
     const db = openDb(path);
     const c = client();
-    const newestRun = vi.fn().mockResolvedValue('{"result":"newest done","session_id":"newest"}');
+    const newestRun = vi.fn().mockResolvedValue('{"type":"result","result":"newest done","session_id":"newest"}');
     const engine = new BridgeEngine({ ...options("claude"), busyMessageMode: "interrupt" }, db, c, {
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
@@ -415,7 +415,7 @@ describe("execution lane correctness", () => {
     const childReady = join(tmpdir(), `stop-race-ready-${Date.now()}-${Math.random()}`);
     const db = openDb(path);
     const c = client();
-    const afterStop = vi.fn().mockResolvedValue('{"result":"after stop","session_id":"after-stop"}');
+    const afterStop = vi.fn().mockResolvedValue('{"type":"result","result":"after stop","session_id":"after-stop"}');
     const engine = new BridgeEngine({ ...options("claude"), busyMessageMode: "interrupt" }, db, c, {
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
@@ -559,7 +559,7 @@ describe("execution lane correctness", () => {
       ["-e", "setTimeout(()=>{},10000)"],
       cwd,
       cliOptions,
-    )).mockResolvedValueOnce('{"result":"augmented result","session_id":"augmented-session"}');
+    )).mockResolvedValueOnce('{"type":"result","result":"augmented result","session_id":"augmented-session"}');
     const engine = new BridgeEngine({
       ...options("claude", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }), busyMessageMode: "augment",
     }, db, c, { runCli: mockRunCli });
@@ -608,7 +608,7 @@ describe("execution lane correctness", () => {
     const successorReady = join(tmpdir(), `augment-successor-next-${Date.now()}-${Math.random()}`);
     const db = openDb(path);
     const c = client();
-    const finalRun = vi.fn().mockResolvedValue('{"result":"augmented final","session_id":"augmented-final"}');
+    const finalRun = vi.fn().mockResolvedValue('{"type":"result","result":"augmented final","session_id":"augmented-final"}');
     const engine = new BridgeEngine({ ...options("claude"), busyMessageMode: "augment" }, db, c, {
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(process.execPath, ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", firstReady], cwd, cliOptions))
@@ -687,7 +687,7 @@ describe("execution lane correctness", () => {
       result: `cancelled ${mode} result\n<!-- agent-bridge-memory [{"type":"decision","scope":"project","text":"must not persist ${mode}"}] -->`,
       session_id: nextSession,
     });
-    const nextRun = vi.fn().mockResolvedValue(JSON.stringify({ result: "next result", session_id: "after-cancel" }));
+    const nextRun = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "next result", session_id: "after-cancel" }));
     const hooks = {
       onAfterExecute: async (prompt: string) => {
         if (prompt === `cancelled ${mode}`) {
@@ -737,7 +737,7 @@ describe("execution lane correctness", () => {
       return { ok: true, result: { message_id: 1 } };
     });
     db.setSession("100:7", "claude", "previous-session");
-    const result = JSON.stringify({ result: `delivery winner ${mode}`, session_id: "delivered-session" });
+    const result = JSON.stringify({ type: "result", result: `delivery winner ${mode}`, session_id: "delivered-session" });
     const engine = new BridgeEngine({ ...options("claude"), asyncEnabled }, db, c, {
       runCli: vi.fn().mockResolvedValue(result),
       runCliAsync: vi.fn().mockResolvedValue({ text: result }),
@@ -797,8 +797,8 @@ describe("execution lane correctness", () => {
       return { ok: true, result: { message_id: 1 } };
     });
     const executed: string[] = [];
-    const firstResult = JSON.stringify({ result: `first final ${mode}`, session_id: "first-final" });
-    const secondResult = JSON.stringify({ result: `second turn ${mode}`, session_id: "second-turn" });
+    const firstResult = JSON.stringify({ type: "result", result: `first final ${mode}`, session_id: "first-final" });
+    const secondResult = JSON.stringify({ type: "result", result: `second turn ${mode}`, session_id: "second-turn" });
     const engine = new BridgeEngine({
       ...options("claude"), busyMessageMode: "augment", asyncEnabled,
       hooks: { onAfterExecute: async (prompt: string) => { executed.push(prompt); } },
@@ -837,8 +837,8 @@ describe("execution lane correctness", () => {
       uploadEntered();
       await uploadBarrier;
     });
-    const firstResult = JSON.stringify({ result: "cancelled during upload", session_id: "cancelled-session" });
-    const nextRun = vi.fn().mockResolvedValue({ text: JSON.stringify({ result: "resumed", session_id: "resumed-session" }) });
+    const firstResult = JSON.stringify({ type: "result", result: "cancelled during upload", session_id: "cancelled-session" });
+    const nextRun = vi.fn().mockResolvedValue({ text: JSON.stringify({ type: "result", result: "resumed", session_id: "resumed-session" }) });
     const engine = new BridgeEngine({ ...options("claude"), asyncEnabled: true }, db, c, {
       runCliAsync: vi.fn().mockResolvedValueOnce({ text: firstResult }).mockImplementationOnce(nextRun),
     });

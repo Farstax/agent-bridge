@@ -115,7 +115,7 @@ describe("turn-history canary production handoff boundaries", () => {
     const prompts: string[] = [];
     const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
       prompts.push(args[args.length - 1]);
-      return JSON.stringify({ result: "ok", session_id: "claude-fresh-after-manual-switch" });
+      return JSON.stringify({ type: "result", result: "ok", session_id: "claude-fresh-after-manual-switch" });
     });
 
     try {
@@ -159,7 +159,7 @@ describe("turn-history canary production handoff boundaries", () => {
     const codexRun = vi.fn().mockRejectedValue(new Error("rate limit capacity exhausted"));
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
       claudePrompts.push(args[args.length - 1]);
-      return JSON.stringify({ result: "fallback complete", session_id: "claude-fallback-session" });
+      return JSON.stringify({ type: "result", result: "fallback complete", session_id: "claude-fallback-session" });
     });
     const compactBeforeSwitch = vi.fn(async () => ({
       outcome: "failed" as const,
