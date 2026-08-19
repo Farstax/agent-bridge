@@ -37,15 +37,15 @@ A supervisor reply is dialogue, not new authority. Answer questions and use tact
 
 ## Disposition contract
 
-Before your ordinary final response, invoke the run-scoped autonomy disposition command given to you in the prompt exactly once with one disposition — `continue`, `done`, or `blocked` — and `--notify` when the response above should also reach the supervisor:
+Before your ordinary final response, invoke the exact executable path given to you in the prompt under "Autonomy disposition command:" with one disposition — `continue`, `done`, or `blocked` — and `--notify` when the response above should also reach the supervisor:
 
 ```sh
-"$AUTONOMY_DISPOSITION_COMMAND" continue
-"$AUTONOMY_DISPOSITION_COMMAND" done
-"$AUTONOMY_DISPOSITION_COMMAND" blocked
-"$AUTONOMY_DISPOSITION_COMMAND" done --notify
+<the exact path from the prompt> continue
+<the exact path from the prompt> done
+<the exact path from the prompt> blocked
+<the exact path from the prompt> done --notify
 ```
 
-Use `continue` when another provider Run is needed, `done` when your bounded work is finished, and `blocked` when the Run succeeded but cannot safely continue. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself — the helper and the controller own that.
+Use `continue` when another provider Run is needed, `done` when your bounded work is finished, and `blocked` when the Run succeeded but cannot safely continue. If your conclusion changes later in the same Run, invoke it again with the new disposition; the final valid call wins. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself — the helper and the controller own that.
 
 Do not add hidden lifecycle states, approval waits, narrative fields, sensors, schedulers, workers, or provider stacks.
