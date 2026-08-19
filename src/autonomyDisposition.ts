@@ -51,15 +51,10 @@ if (args.length !== 1 || !["continue", "done", "blocked"].includes(args[0])) {
   console.error("usage: autonomy continue|done|blocked [--notify]");
   process.exit(2);
 }
-try {
-  fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ disposition: args[0], notify }), { flag: "wx", mode: 0o600 });
-} catch (error) {
-  if (error && error.code === "EEXIST") {
-    console.error("autonomy disposition already declared for this Run");
-    process.exit(3);
-  }
-  throw error;
-}
+const recordPath = ${JSON.stringify(recordPath)};
+const tmpPath = \`\${recordPath}.\${process.pid}.\${Date.now()}.\${Math.random().toString(36).slice(2)}.tmp\`;
+fs.writeFileSync(tmpPath, JSON.stringify({ disposition: args[0], notify }), { flag: "wx", mode: 0o600 });
+fs.renameSync(tmpPath, recordPath);
 `;
   writeFileSync(commandPath, script, { mode: 0o700 });
   chmodSync(commandPath, 0o700);
