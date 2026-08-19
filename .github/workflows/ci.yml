@@ -22,16 +22,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
 
-      - name: Upload issue 489 source snapshot
+      - name: Build issue 489 history bundle
+        run: git bundle create /tmp/issue489-history.bundle --all
+
+      - name: Upload issue 489 history bundle
         uses: actions/upload-artifact@v4
         with:
-          name: issue489-source-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            .
-            !node_modules
-            !.git
-          include-hidden-files: true
+          name: issue489-history-${{ github.event.pull_request.head.sha || github.sha }}
+          path: /tmp/issue489-history.bundle
 
       - name: Verify the exact event head
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
