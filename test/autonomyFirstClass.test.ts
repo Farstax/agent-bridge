@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -10,7 +11,6 @@ import {
   createAutonomousGoalIfNoneActive,
   getAutonomousGoal,
   getAutonomousSupervisorState,
-  parseAutonomousCycleResult,
   recordAutonomousSupervisorInput,
   recordAutonomousSupervisorMessageId,
   runNextAutonomousGoal,
@@ -24,7 +24,15 @@ function makeDb() {
   return { db, dbPath };
 }
 function cleanup(db: ReturnType<typeof openDb>, dbPath: string) { db.close(); try { rmSync(dbPath); } catch {} }
-function claudeOutput(value: unknown) { return JSON.stringify({ type: "result", subtype: "success", result: JSON.stringify(value), session_id: "session" }); }
+function dispositionCommand(prompt: string): string {
+  const prefix = "Autonomy disposition command: ";
+  const line = prompt.split("\n").find((candidate) => candidate.startsWith(prefix));
+  if (!line) throw new Error("missing run-scoped autonomy disposition command");
+  return JSON.parse(line.slice(prefix.length)) as string;
+}
+function declareDisposition(prompt: string, disposition: "continue" | "done" | "blocked", notify = false): void {
+  execFileSync(dispositionCommand(prompt), [disposition, ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
+}
 function mockEngine(db: ReturnType<typeof openDb>, run: (input: any) => Promise<any>) {
   const engine = new BridgeEngine({
     surfaceIdentity: "autonomous", kind: "autonomous", executionKind: "claude",
@@ -64,7 +72,8 @@ describe("first-class autonomy (#466)", () => {
     const seen: string[] = [];
     const engine = mockEngine(db, async (input) => {
       seen.push(input.prompt);
-      return { text: claudeOutput({ status: "complete", evidence: "verified" }) } as any;
+      declareDisposition(input.prompt, "done");
+      return { text: "verified" } as any;
     });
     await runNextAutonomousGoal(db, "input", engine);
     expect(seen[0]).toContain("Supervisor input since previous cycle: check the current deployment first");
@@ -99,7 +108,8 @@ describe("first-class autonomy (#466)", () => {
       expect(recordAutonomousSupervisorInput(db, {
         goalId: "late-input", text: "arrived after claim", idempotencyKey: "late-input-1",
       })).toBe(true);
-      return { text: claudeOutput({ status: "complete", evidence: "done" }) } as any;
+      declareDisposition(input.prompt, "done");
+      return { text: "done" } as any;
     });
     expect(await runNextAutonomousGoal(db, "late-input", engine)).toBe(true);
     expect(seen).toHaveLength(1);
@@ -119,11 +129,6 @@ describe("first-class autonomy (#466)", () => {
     expect(called).not.toHaveBeenCalled();
     expect(db.raw.prepare("SELECT status FROM event_receipts WHERE event_kind = ?").get(AUTONOMOUS_SUPERVISOR_INPUT_KIND)).toEqual({ status: "received" });
     cleanup(db, dbPath);
-  });
-
-  it("accepts bounded provider-authored supervisorMessage and rejects oversized prose", () => {
-    expect(parseAutonomousCycleResult(JSON.stringify({ status: "complete", evidence: "done", supervisorMessage: "Material result." }))).toMatchObject({ supervisorMessage: "Material result." });
-    expect(() => parseAutonomousCycleResult(JSON.stringify({ status: "complete", evidence: "done", supervisorMessage: "x".repeat(3001) }))).toThrow(/supervisor message/);
   });
 
   it("matches only an authenticated reply to a message emitted by the same active Episode", () => {
