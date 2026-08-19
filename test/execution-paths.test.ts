@@ -43,15 +43,6 @@ describe("Execution Path Selection - TDD", () => {
       expect(modeLine).not.toContain("this.kind");
       expect(modeLine).not.toContain('"gemini"');
     });
-
-    it("documents the live Claude continuation output contract", async () => {
-      const fs = await import("fs");
-      const src = fs.readFileSync("src/engine.ts", "utf-8");
-
-      expect(src).toContain("Claude continuation-capable turns request transcript-bearing stream JSON");
-      expect(src).not.toContain("provider argv still requests JSON");
-      expect(src).not.toContain("stream-json discriminator is bridge-internal");
-    });
   });
 });
 

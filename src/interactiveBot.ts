@@ -274,7 +274,6 @@ function isResetUpdate(update: TelegramUpdate): boolean {
 export interface InteractiveDispatchEngine {
   handleUpdate(update: TelegramUpdate): Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
-  handoffActiveContinuationForFallback?: (chatKey: string) => Promise<"queued" | "blocked" | "none">;
   /** Recovers durable work for one chat after ordinary admission yields to fallback. */
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
@@ -332,7 +331,7 @@ function clearPendingFallbackResume(chain: ProviderFallbackChain, chatKey: strin
   if (pending.size === 0) pendingFallbackTries.delete(chain);
 }
 
-/** Invalidates one lane's process-local capacity-fallback continuation state. */
+/** Invalidates one lane's process-local capacity-fallback resume state. */
 export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chatKey: string): void {
   clearPendingFallbackResume(chain, chatKey);
 }
@@ -408,29 +407,6 @@ export async function dispatchInteractiveWithFallback(
       await notify(`Switching to ${next} (${activeCli} at capacity)`);
       if (onCliSwitched) {
         await onCliSwitched(next);
-      }
-
-      if (engines[activeCli].handoffActiveContinuationForFallback) {
-        const handoff = await engines[activeCli].handoffActiveContinuationForFallback(chatKey);
-        if (handoff === "blocked") {
-          // The source engine retires any row attached to the blocked
-          // continuation. Do not re-enter generic queue recovery here.
-          if (claimedMessage && claimedMessage.laneHandle) {
-            const pendingIds = claimedMessage.pendingIds ?? [claimedMessage.id];
-            const partitions = db.getClaimedPendingAttachmentPartitions(claimedMessage.laneHandle, pendingIds);
-            if (!partitions) return "fenced";
-            claimedMessage.attachmentPartitions = partitions;
-            claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...partitions.flat());
-          }
-          return claimedMessage ? "committed" : "failed";
-        }
-        if (claimedMessage && handoff === "queued" && claimedMessage.laneHandle) {
-          const pendingIds = claimedMessage.pendingIds ?? [claimedMessage.id];
-          const partitions = db.getClaimedPendingAttachmentPartitions(claimedMessage.laneHandle, pendingIds);
-          if (!partitions) return "fenced";
-          claimedMessage.attachmentPartitions = partitions;
-          claimedMessage.attachments.splice(0, claimedMessage.attachments.length, ...partitions.flat());
-        }
       }
 
       if (!claimedMessage && engines[next].recoverPendingQueue) {

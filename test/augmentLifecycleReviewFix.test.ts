@@ -84,7 +84,7 @@ describe("augment lifecycle review regressions", () => {
         cwd,
         cliOptions,
       ))
-      .mockResolvedValueOnce('{"result":"latest result","session_id":"latest-session"}');
+      .mockResolvedValueOnce('{"type":"result","result":"latest result","session_id":"latest-session"}');
     const engine = new BridgeEngine(
       options("interrupt", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }),
       db,
@@ -132,8 +132,8 @@ describe("augment lifecycle review regressions", () => {
         firstCliStarted.release();
         return firstCli;
       })
-      .mockResolvedValueOnce('{"result":"second final","session_id":"second-session"}')
-      .mockResolvedValueOnce('{"result":"third final","session_id":"third-session"}');
+      .mockResolvedValueOnce('{"type":"result","result":"second final","session_id":"second-session"}')
+      .mockResolvedValueOnce('{"type":"result","result":"third final","session_id":"third-session"}');
     const engine = new BridgeEngine(
       options("augment", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }),
       db,
@@ -158,7 +158,7 @@ describe("augment lifecycle review regressions", () => {
     await firstCliStarted.promise;
     const second = engine.handleMessages([message("second request")]);
     await noticeEntered.promise;
-    resolveFirstCli('{"result":"first final","session_id":"first-session"}');
+    resolveFirstCli('{"type":"result","result":"first final","session_id":"first-session"}');
     await finalEntered.promise;
     noticeGate.release();
     await waitForCondition(() => (engine as any).laneCoordinator.cancellationCount() === 1);

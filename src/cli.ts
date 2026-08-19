@@ -126,6 +126,7 @@ export function buildCliInvocation({
   effort = null,
   homeDir = homedir(),
   toolMode = "default",
+  nativeCompletion = false,
 }: {
   bot: string;
   prompt: string;
@@ -143,6 +144,7 @@ export function buildCliInvocation({
   effort?: EffortLevel | null;
   homeDir?: string;
   toolMode?: "default" | "none";
+  nativeCompletion?: boolean;
 }): ProviderInvocation {
   void sessionMode;
   if (toolMode === "none" && !supportsToolFreeMode(bot)) {
@@ -153,17 +155,17 @@ export function buildCliInvocation({
 
   if (bot === "codex") {
     return codexRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
     });
   }
   if (bot === "claude") {
     return claudeRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
     });
   }
   if (bot === "antigravity") {
     const invocation = antigravityRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, logFile, homeDir,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion, logFile, homeDir,
     });
     antigravityInvocationMetadata.set(invocation.args, {
       homeDir,

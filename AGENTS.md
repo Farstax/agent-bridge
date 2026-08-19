@@ -5,7 +5,7 @@ Agent Bridge coordinates capable native agent CLIs. It is **not** a competing ag
 When designing, implementing, or reviewing changes:
 
 - Prefer provider-native capabilities for reasoning, tools, skills, subagents, and provider-specific execution.
-- Keep Agent Bridge focused on cross-provider or durable coordination the CLIs cannot provide themselves: Run identity and ownership, routing/failover, continuation and restart recovery, cancellation/fencing, delivery, idempotency, and hard mechanical safety boundaries.
+- Keep Agent Bridge focused on cross-provider or durable coordination the CLIs cannot provide themselves: Run identity and ownership, routing/failover, Run restart reconciliation, cancellation/fencing, delivery, idempotency, and hard mechanical safety boundaries.
 - Before adding Bridge-side orchestration, scheduling, agent hierarchies, tool frameworks, or execution logic, ask: **can the native CLI already do this?**
 - If yes, expose, configure, or stitch together that native capability instead of duplicating it.
 - New abstractions should make native agents more capable together, not make Agent Bridge a competing agent framework.
@@ -48,18 +48,9 @@ Claude cannot SSH to Aruba — the user must pull and restart the control plane 
 
 The repository-wide TDD rules and critical requirements are:
 
-## Provider continuation and fallback invariant
+## Provider-native terminal completion invariant
 
-Provider-native delegated work and background processes belong to the owning
-provider Run. The main conversational agent remains responsible for exactly
-one user-visible terminal closure. If a provider is exhausted during
-continuation, the admitted logical turn must recover through the existing
-durable queue/capacity-fallback/fresh-session handoff path or close with one
-concrete blocker. Fallback transfers responsibility for the logical turn; it
-does not migrate or resume provider-native subagents in another provider.
-Regression tests should cover meaningful interactions between lifecycle
-boundaries, rather than only testing continuation and capacity fallback in
-isolation.
+Ordinary Claude and Agy Runs delegate provider-owned background/task completion to the provider CLI itself. Bridge owns the Run, lane, cancellation/process fence, fallback, delivery, and restart reconciliation; it must not parse provider task internals or persist a second continuation lifecycle. Codex remains unchanged until it exposes an equivalent native completion boundary. While an ordinary provider invocation is still alive, messaging surfaces must keep the typing indicator refreshed until that invocation settles or is fenced.
 
 ## Verification — mandatory each cycle
 
@@ -95,8 +86,7 @@ package/PATH/runtime disagreement must be diagnosed explicitly.
 
 Qualification should cover concrete provider behavior Agent Bridge relies on:
 startup and version reporting, invocation and output envelopes, session/resume
-identity, error classification, and provider-specific continuation/background
-protocols where applicable. Keep live checks bounded, deterministic,
+identity, error classification, and provider-native terminal-completion/background protocols where applicable. Keep live checks bounded, deterministic,
 non-destructive, and safe for a controlled authenticated environment. Telegram,
 Discord, queues, lanes, typing indicators, persistence, restart recovery,
 stop/interrupt fencing, routing, fallback policy, and final message delivery

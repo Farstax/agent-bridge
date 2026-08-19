@@ -16,6 +16,32 @@ import { buildClaudeSettingsArg } from "../claudeSettings.js";
 import { buildClaudeStreamJsonInput, parseClaudeStreamJsonOutput } from "../claudeStreamJson.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 
+const NATIVE_COMPLETION_STOP_PROMPT = [
+  "Decide whether this Agent Bridge turn is genuinely complete.",
+  "Return ok=false when any provider-owned background command, asynchronous task, subagent, Monitor, or promised verification is still outstanding or its completion result has not yet been consumed.",
+  "Return ok=true only when the requested work is terminally complete or a concrete blocker has been reported.",
+  "Evaluate the Stop event input: $ARGUMENTS",
+].join(" ");
+
+function buildRuntimeSettingsArg(nativeCompletion: boolean): string[] {
+  const base = buildClaudeSettingsArg();
+  if (!nativeCompletion) return base;
+  const settings = base.length === 2 ? JSON.parse(base[1]) as Record<string, unknown> : {};
+  return ["--settings", JSON.stringify({
+    ...settings,
+    hooks: {
+      ...((settings.hooks as Record<string, unknown> | undefined) ?? {}),
+      Stop: [{
+        hooks: [{
+          type: "prompt",
+          prompt: NATIVE_COMPLETION_STOP_PROMPT,
+          timeout: 30,
+        }],
+      }],
+    },
+  })];
+}
+
 export function buildInvocation({
   prompt,
   sessionId,
@@ -29,12 +55,13 @@ export function buildInvocation({
   outputDir,
   effort,
   toolMode,
+  nativeCompletion = false,
 }: ProviderInvocationRequest): ProviderInvocation {
   const args: string[] = [];
   const finalPrompt = appendOutputDirInstruction(wrapPromptContext(prompt, soulContext, includeResponseContract), outputDir);
   if (attachments.length > 0) {
     // Multimodal path: pipe stream-json with base64 images to stdin.
-    args.push(...buildClaudeSettingsArg());
+    args.push(...buildRuntimeSettingsArg(nativeCompletion));
     if (model) args.push("--model", model);
     if (sessionId) args.push("--resume", sessionId);
     if (executionMode === "trusted") args.push("--dangerously-skip-permissions");
@@ -46,7 +73,7 @@ export function buildInvocation({
   if (toolMode === "none") {
     args.push("--tools", "", "--disable-slash-commands", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}');
   }
-  args.push(...buildClaudeSettingsArg());
+  args.push(...buildRuntimeSettingsArg(nativeCompletion));
   if (model) args.push("--model", model);
   if (sessionId) args.push("--resume", sessionId);
   if (executionMode === "trusted") args.push("--dangerously-skip-permissions");

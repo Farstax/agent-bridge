@@ -8,9 +8,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { readFileSync, rmSync, unlinkSync } from "node:fs";
 import {
   buildCliInvocation,
   buildExecutionOptions,
@@ -35,12 +35,6 @@ import { downloadTelegramAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 import { createClaudeAnswerPresentationDecoder } from "./providers/claudeAnswerPresentation.js";
-import {
-  getRunOwnedProcessState,
-  hasLiveRunOwnedDescendants,
-  killRunOwnedDescendants,
-  type RunOwnedProcessState,
-} from "./turnContinuationProcesses.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { PreviewCleanupError, sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
@@ -54,7 +48,7 @@ import { parseCompactionProviderChain, resolveCompactionRecoveryTargets } from "
 import { clearHandoffRequired } from "./handoffState.js";
 import { preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
-import { type as eventType, type BridgeEvent } from "./events/types.js";
+import type { BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, BotConfig, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
@@ -71,12 +65,6 @@ import {
   type LaneDrainer,
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
-import {
-  ContinuationRepository,
-  type ContinuationExecutionMode,
-  type ContinuationRecord,
-} from "./repositories/continuationRepository.js";
-import { cleanupAttachmentPaths } from "./attachmentCleanup.js";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -108,7 +96,6 @@ export interface BridgeEngineHooks {
 export interface PendingMessage {
   id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
   pendingIds?: number[];
-  attachmentPartitions?: string[][];
   queueRecoveryAttempt?: number;
   laneHandle?: ExecutionLaneHandle;
   laneLifecycleManaged?: boolean;
@@ -118,7 +105,6 @@ export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
 
 type StagedCliResult = CliResult & {
   memoryCandidates: ProjectMemoryCandidate[];
-  continuationProcessObserved?: boolean;
   nativeSessionMode?: "fresh" | "resume";
 };
 
@@ -128,11 +114,6 @@ class LostExecutionLeaseError extends Error {
   constructor() { super("execution lane ownership lost"); }
 }
 
-class PendingContinuationDeliveryError extends Error {
-  constructor(cause: unknown) {
-    super("checkpointed continuation response delivery failed", { cause });
-  }
-}
 
 export interface BridgeEngineOptions {
   kind: string;
@@ -167,16 +148,6 @@ export interface ExecFns {
   runCliAsync: typeof _runCliAsync;
 }
 
-/** Narrow continuation seams for deterministic engine tests. */
-export interface ContinuationFns {
-  hasLiveRunOwnedDescendants: (runId: string) => boolean;
-  /** Optional so existing tests that inject the older boolean seam stay source-compatible. */
-  getRunOwnedProcessState?: (runId: string) => RunOwnedProcessState;
-  killRunOwnedDescendants: (runId: string) => Promise<void>;
-  sleep: (ms: number) => Promise<void>;
-  now: () => number;
-}
-
 export interface SurfaceNeutralTurnInput {
   prompt: string;
   sessionId: string | null;
@@ -186,48 +157,15 @@ export interface SurfaceNeutralTurnInput {
   runId: string;
   eventContext: NonNullable<CliOptions["eventContext"]>;
   collect: (event: BridgeEvent) => void;
-  finalize: () => void;
   /** Called at the exact provider-attempt boundary, after lifecycle setup. */
   onProviderExecutionStarted?: () => void;
 }
-
-type ResolvedContinuationFns = Omit<ContinuationFns, "getRunOwnedProcessState"> & {
-  getRunOwnedProcessState: (runId: string) => RunOwnedProcessState;
-};
 
 // ── Internals ────────────────────────────────────────────────────────────────
 
 const MAX_QUEUE_DEPTH = 5;
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
 const ENGINE_TURN_TEXT_LIMIT = 1_200;
-const CONTINUATION_POLL_MS = 250;
-const DEFAULT_CONTINUATION_MAX_RESUMPTIONS = 5;
-const DEFAULT_CONTINUATION_MAX_LIFETIME_MS = 30 * 60_000;
-const CONTINUATION_INSTRUCTION = [
-  "The background work from the current task has finished.",
-  "Inspect its result, continue the original task, and return the next genuine response.",
-  "Do not treat this as a new user request or repeat already completed work.",
-].join(" ");
-const CONTINUATION_SAFETY_NOTICE =
-  "Background continuation stopped after reaching its safety limit. The last provider response is preserved; send another message to continue.";
-const CONTINUATION_SESSION_NOTICE =
-  "Background continuation stopped because the provider session could not be resumed. The last provider response is preserved; send another message to continue.";
-const CONTINUATION_RECOVERY_NOTICE =
-  "Background continuation stopped after restart because a previously claimed resume could not be replayed safely. Send another message to continue.";
-
-function continuationFailureNotice(error: unknown): string {
-  const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
-  return `Background continuation could not finish the task: ${detail}`;
-}
-
-function positiveIntegerEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) return fallback;
-  const value = Number(raw);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
-}
-
-
 const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude"]);
 function isAgentKind(kind: string): kind is BotKind {
   return AGENT_KINDS.has(kind);
@@ -302,8 +240,6 @@ export class BridgeEngine {
   private readonly db: BridgeDb;
   private readonly hooks: BridgeEngineHooks;
   private readonly exec: ExecFns;
-  private readonly continuation: ResolvedContinuationFns;
-  private readonly continuationStore: ContinuationRepository;
   private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
@@ -315,7 +251,6 @@ export class BridgeEngine {
     db: BridgeDb,
     client: MessagingPlatform,
     exec: Partial<ExecFns> = {},
-    continuation: Partial<ContinuationFns> = {},
   ) {
     if (!opts.surfaceIdentity?.trim()) throw new Error("BridgeEngine surfaceIdentity is required");
     this.opts = opts;
@@ -323,22 +258,12 @@ export class BridgeEngine {
     this.surfaceIdentity = opts.surfaceIdentity;
     this.db = db;
     this.laneCoordinator = executionLaneCoordinator(db, this.surfaceIdentity);
-    this.continuationStore = new ContinuationRepository(db.raw);
     this.client = client;
     this.hooks = opts.hooks ?? {};
     this.queuedMessageHandler = this.hooks.onQueuedMessage;
     this.exec = {
       runCli: exec.runCli ?? _runCli,
       runCliAsync: exec.runCliAsync ?? _runCliAsync,
-    };
-    const injectedHasLive = continuation.hasLiveRunOwnedDescendants;
-    this.continuation = {
-      hasLiveRunOwnedDescendants: injectedHasLive ?? hasLiveRunOwnedDescendants,
-      getRunOwnedProcessState: continuation.getRunOwnedProcessState
-        ?? (injectedHasLive ? ((runId) => injectedHasLive(runId) ? "live" : "absent") : getRunOwnedProcessState),
-      killRunOwnedDescendants: continuation.killRunOwnedDescendants ?? ((runId) => killRunOwnedDescendants(runId)),
-      sleep: continuation.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
-      now: continuation.now ?? (() => Date.now()),
     };
     this.mediaBuffer = new MediaGroupBuffer({
       timeoutMs: 1500,
@@ -360,7 +285,6 @@ export class BridgeEngine {
         commands: buildTelegramCommands(this.kind),
       }).catch((err) => console.warn(`[${this.kind}] setMyCommands failed`, err));
     }
-    await this.recoverContinuations();
     await this.recoverPendingQueues();
 
     let offset = isAgentKind(this.kind) ? this.db.getLastUpdateId(this.kind) + 1 : 0;
@@ -407,37 +331,10 @@ export class BridgeEngine {
     this.queuedMessageHandler = handler;
   }
 
-  async recoverContinuations(): Promise<void> {
-    // Event-owned turns use kind=health but persist continuations under the
-    // selected provider kind. Recovery must cover both messaging and
-    // surface-neutral engines.
-    for (const record of this.continuationStore.listActive(this.surfaceIdentity, this._executionKind())) {
-      let handle: ExecutionLaneHandle | null = null;
-      while (this.continuationStore.hasActiveRun(record.runId) && !handle) {
-        handle = this.db.acquireLock(this.surfaceIdentity, record.chatKey);
-        if (handle) break;
-        await this.continuation.sleep(Math.min(this.db.lockHeartbeatMs, CONTINUATION_POLL_MS));
-      }
-      if (!handle) continue;
-      if (!this.continuationStore.reclaimPendingIds(handle, record.pendingIds)) {
-        this.continuationStore.markAmbiguous(record.runId, "pending-message ownership could not be recovered");
-        this._cleanupContinuationAttachments(record.attachments ?? []);
-        this.db.unlock(handle);
-        continue;
-      }
-      this._startRecoveredContinuation(record, handle);
-    }
-  }
-
   async recoverPendingQueues(): Promise<void> {
     await Promise.all(this.db.getPendingLaneKeys(this.surfaceIdentity).map(async (chatKey) => {
-      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return;
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
       if (handle) {
-        if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
-          this.db.unlock(handle);
-          return;
-        }
         await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
         return;
       }
@@ -447,64 +344,13 @@ export class BridgeEngine {
 
   async recoverPendingQueue(chatKey: string): Promise<boolean> {
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
-    if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
     if (handle) {
-      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
-        this.db.unlock(handle);
-        return true;
-      }
       await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
       return true;
     }
     this._scheduleStartupQueueRecovery(chatKey);
     return true;
-  }
-
-  /**
-   * Converts an active provider continuation into one durable queue turn for
-   * cross-provider fallback. Native descendants remain owned by this Run and
-   * are fenced before another provider is allowed to execute.
-   */
-  async handoffActiveContinuationForFallback(chatKey: string): Promise<"queued" | "blocked" | "none"> {
-    const record = this.continuationStore.listActive(this.surfaceIdentity, this.kind)
-      .find((candidate) => candidate.chatKey === chatKey);
-    if (!record || !record.prompt) return "none";
-
-    let processState = this.continuation.getRunOwnedProcessState(record.runId);
-    if (processState === "live") {
-      try {
-        await this.continuation.killRunOwnedDescendants(record.runId);
-        processState = this.continuation.getRunOwnedProcessState(record.runId);
-      } catch {
-        processState = "ambiguous";
-      }
-    }
-    this.continuationStore.markCancelled(record.runId, "provider capacity fallback");
-    if (processState !== "absent") {
-      if (record.pendingIds.length > 0) {
-        this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, record.pendingIds);
-      }
-      this.db.updateRunFailed(record.runId, "provider capacity fallback could not contain provider work");
-      await this.sendText(record.chatId, {
-        text: "Background continuation could not be safely handed to another provider because the original provider work could not be contained. Please try again later.",
-        message_thread_id: record.threadId ?? undefined,
-      });
-      this._cleanupContinuationAttachments(record.attachments ?? []);
-      return "blocked";
-    }
-    this.db.updateRunFailed(record.runId, "provider capacity fallback");
-    if (record.pendingIds.length === 0) {
-      this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
-        prompt: record.prompt,
-        chatId: record.chatId,
-        threadId: record.threadId ?? undefined,
-        chatType: record.chatType ?? "private",
-        userId: record.userId ?? undefined,
-        attachments: [...(record.attachments ?? [])],
-      });
-    }
-    return "queued";
   }
 
   async handleUpdate(update: TelegramUpdate): Promise<void> {
@@ -610,7 +456,6 @@ export class BridgeEngine {
         let resetHandle: ExecutionLaneHandle | null = null;
         if (commandText === "/reset") {
           const executionLane = this._executionLane(chatKey);
-          this.continuationStore.cancelActiveForLane(this.surfaceIdentity, chatKey, "reset");
           this.laneCoordinator.markResetting(executionLane);
           this.laneCoordinator.markAborted(executionLane);
           resetHandle = await abortExecutionAndWait(executionLane);
@@ -870,58 +715,31 @@ export class BridgeEngine {
     honorBusyMode = false,
     ownsActiveTask = false,
     notifyCapacityFailure = true,
-    continuationPendingIds: number[] = [],
-    continuationAttachmentPartitions?: string[][],
+    claimedPendingIds: number[] = [],
   ): Promise<ExecutionOutcome> {
-    // Apply onBeforeExecute hook
     let prompt = rawPrompt;
-    if (this.hooks.onBeforeExecute) {
-      prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
-    }
+    if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
 
-    const sessionId = isAgentKind(this.kind)
-      ? this.db.getSession(chatKey, this.kind)
-      : null;
-    const mode: ContinuationExecutionMode = this.opts.asyncEnabled === true ? "async" : "sync";
+    const sessionId = isAgentKind(this.kind) ? this.db.getSession(chatKey, this.kind) : null;
+    const mode: "async" | "sync" = this.opts.asyncEnabled === true ? "async" : "sync";
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
 
     if (!laneHandle) {
-      const continuationOwnsLane = this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey);
       const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
         prompt, chatId, threadId, chatType, userId, attachments,
-      }, MAX_QUEUE_DEPTH, continuationOwnsLane
-        || (honorBusyMode && !ownsActiveTask && this.laneCoordinator.hasAugmentedTask(this._executionLane(chatKey))));
+      }, MAX_QUEUE_DEPTH, honorBusyMode && !ownsActiveTask && this.laneCoordinator.hasAugmentedTask(this._executionLane(chatKey)));
       if (admission.kind === "full") {
-        await this.sendText(chatId, {
-          text: `⏳ Queue is full (max ${MAX_QUEUE_DEPTH}). Please wait.`,
-          message_thread_id: threadId,
-        });
+        await this.sendText(chatId, { text: `⏳ Queue is full (max ${MAX_QUEUE_DEPTH}). Please wait.`, message_thread_id: threadId });
         return "failed";
       }
       if (admission.kind === "queued") {
-        // Commands and internal call sites keep durable FIFO regardless of
-        // BRIDGE_BUSY_MESSAGE_MODE (Issue #217); only the ordinary-prompt
-        // path opts in via honorBusyMode.
         const busyMode = honorBusyMode ? this._busyMessageMode(chatKey) : "queue";
         if (busyMode === "interrupt" || busyMode === "augment") {
-          // Only "interrupt" mode gets user-facing feedback here; "augment"
-          // folds silently into the active task (Issue #229) and must not
-          // wait on a network round-trip before cancelling — start the
-          // cancel immediately.
           if (busyMode === "interrupt") {
-            await this.sendText(chatId, {
-              text: `⏹️ Interrupting current work...`,
-              message_thread_id: threadId,
-            }).catch((error) => console.warn(`[${this.kind}] interrupt notice failed`, error));
+            await this.sendText(chatId, { text: `⏹️ Interrupting current work...`, message_thread_id: threadId })
+              .catch((error) => console.warn(`[${this.kind}] interrupt notice failed`, error));
           }
-          const executionLane = this._executionLane(chatKey);
-          // The message is already durably enqueued above. Suppress the
-          // active turn's own completion-drain (same mechanism /reset uses)
-          // so it can't attempt to hand off this message to itself while
-          // still fenced by abortedChats — that would leave the row claimed
-          // and the lane locked forever. Once the abort fully settles and the
-          // fence is cleared, drain the lane ourselves under a clean check.
           await this._cancelLane(chatKey, busyMode);
           return "queued";
         }
@@ -933,15 +751,15 @@ export class BridgeEngine {
       }
       laneHandle = admission.handle;
     }
+
     this._assertLaneOwned(laneHandle);
     if (ownsActiveTask && honorBusyMode) {
-      this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
-        prompt, chatId, threadId, chatType, userId, attachments,
-      });
+      this.db.enqueueMsg(this.surfaceIdentity, chatKey, { prompt, chatId, threadId, chatType, userId, attachments });
       const persisted = this.db.claimNextPendingMsg(laneHandle);
       if (!persisted) throw new Error("failed to persist and claim active augmented task");
       activePendingIds.push(persisted.id);
     }
+
     const executionLane = this._executionLane(chatKey);
     const lifecycleToken = manageLifecycle ? beginExecutionLifecycle(executionLane, laneHandle) : null;
     const lockHeartbeat = manageLifecycle ? setInterval(() => {
@@ -958,30 +776,13 @@ export class BridgeEngine {
     lockHeartbeat?.unref();
 
     try {
-      const execution = await this._executeTurnWithContinuations({
-        mode,
-        prompt,
-        sessionId,
-        chatId,
-        chatKey,
-        chatType,
-        userId,
-        threadId,
-        attachments,
-        laneHandle: laneHandle!,
-        pendingIds: [...activePendingIds, ...continuationPendingIds],
-        attachmentPartitions: continuationAttachmentPartitions,
+      const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, threadId, laneHandle);
+      const result = await this._executeAndDeliverTurn({
+        mode, prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
-      if (!execution.completed) return "fenced";
-      if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle!, activePendingIds)) {
-        throw new LostExecutionLeaseError();
-      }
-      if (activePendingIds.length > 0) {
-        this._cleanupContinuationAttachments(execution.continuationAttachments);
-      }
-      if (execution.continuationAttachments.length > 0) {
-        attachments.splice(0, attachments.length, ...execution.continuationAttachments);
-      }
+      if (!result) return "fenced";
+      finalize();
+      if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
       activeTaskCommitted = true;
       return "committed";
     } catch (error) {
@@ -992,25 +793,17 @@ export class BridgeEngine {
       console.error(`[${this.kind}] prompt execution failed`, error);
       if (error instanceof PreviewCleanupError) {
         console.error(`[${this.kind}] abandoned preview cleanup failed; suppressing terminal output`, error.cause);
-        const terminalPendingIds = [...new Set([...activePendingIds, ...continuationPendingIds])];
+        const terminalPendingIds = [...new Set([...activePendingIds, ...claimedPendingIds])];
         if (terminalPendingIds.length > 0) {
-          const claimedRetired = this.db.completePendingMsgs(laneHandle!, terminalPendingIds);
+          const claimedRetired = this.db.completePendingMsgs(laneHandle, terminalPendingIds);
           if (!claimedRetired && !this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds)) {
             console.error(`[${this.kind}] abandoned preview cleanup could not retire owned pending rows`);
             return "fenced";
           }
         }
-        // The provider turn failed, but its admitted queue row was handled
-        // terminally: never let durable recovery replay a turn whose visible
-        // preview can no longer be reconciled.
         return "committed";
       }
       if (error instanceof CliTimeoutError) {
-        // A configured timeout follows the /stop cancellation path: discard
-        // pending work for this lane rather than letting the completion-drain
-        // process it (Issue #177). The timed-out turn itself never reaches
-        // _commitResultState — it rejected, so no session/history is
-        // persisted regardless.
         const pendingTimeout = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
         for (const queued of pendingTimeout) {
           this._deleteQueuedAttachments(queued.attachments);
@@ -1022,9 +815,7 @@ export class BridgeEngine {
         await this.hooks.onCapacityExhausted(chatKey);
       } else if (!capacityExhausted || notifyCapacityFailure) {
         let userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
-        if (capacityExhausted) {
-          userText += `\n\n💡 All models for ${this.kind} are currently exhausted. Please try again later.`;
-        }
+        if (capacityExhausted) userText += `\n\n💡 All models for ${this.kind} are currently exhausted. Please try again later.`;
         await sendTelegramMessage({
           client: this.client,
           kind: this._deliveryKind(),
@@ -1036,14 +827,14 @@ export class BridgeEngine {
     } finally {
       if (lockHeartbeat) clearInterval(lockHeartbeat);
       if (!activeTaskCommitted) {
-        for (const id of activePendingIds) this.db.releasePendingClaim(laneHandle!, id);
+        for (const id of activePendingIds) this.db.releasePendingClaim(laneHandle, id);
       }
       try {
         if (drainOnCompletion && !this.laneCoordinator.isResetting(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
-          await this._drainQueueAndUnlock(laneHandle!, undefined, 0, true);
+          await this._drainQueueAndUnlock(laneHandle, undefined, 0, true);
         }
-        if (!activeTaskCommitted && activePendingIds.length && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(laneHandle!)) {
-          this.db.unlock(laneHandle!);
+        if (!activeTaskCommitted && activePendingIds.length && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(laneHandle)) {
+          this.db.unlock(laneHandle);
         }
       } finally {
         if (lifecycleToken) completeExecutionLifecycle(executionLane, lifecycleToken);
@@ -1051,134 +842,20 @@ export class BridgeEngine {
     }
   }
 
-  private async _executeTurnWithContinuations(input: {
-    mode: ContinuationExecutionMode;
+  private async _executeAndDeliverTurn(input: {
+    mode: "async" | "sync";
     prompt: string;
     sessionId: string | null;
     chatId: number;
     chatKey: string;
-    chatType: string;
-    userId?: number;
     threadId: number | undefined;
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
-    pendingIds: number[];
-    attachmentPartitions?: string[][];
-  }): Promise<{ completed: boolean; continuationAttachments: string[] }> {
-    const { runId, eventContext, collect, finalize } = this._createEventContext(input.chatId, input.threadId, input.laneHandle);
-    const result = await this._executeAndDeliverTurnAttempt({
-      ...input,
-      runId,
-      eventContext,
-      collect,
-      prompt: input.prompt,
-      sessionId: input.sessionId,
-      isInitialResult: true,
-      continuationStartedAtMs: null,
-      resumptionCount: 0,
-    });
-    if (!result) return { completed: false, continuationAttachments: [] };
-    const completed = await this._continueFromDeliveredResult({
-      ...input,
-      runId,
-      eventContext,
-      collect,
-      finalize,
-      result,
-      continuationStartedAtMs: null,
-      resumptionCount: 0,
-    });
-    return { completed, continuationAttachments: this.continuationStore.get(runId)?.attachments ?? [] };
-  }
-
-  private async _executeAndDeliverTurnAttempt(input: {
-    mode: ContinuationExecutionMode;
-    prompt: string;
-    sessionId: string | null;
-    isInitialResult: boolean;
-    chatId: number;
-    chatKey: string;
-    chatType?: string;
-    userId?: number;
-    threadId: number | undefined;
-    attachments: string[];
-    laneHandle: ExecutionLaneHandle;
-    pendingIds: number[];
-    attachmentPartitions?: string[][];
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (event: BridgeEvent) => void;
-    continuationStartedAtMs: number | null;
-    resumptionCount: number;
   }): Promise<StagedCliResult | null> {
-    if (input.mode === "async") {
-      let stagedResult: StagedCliResult | null = null;
-      let finalDeliveryPhase: FinalDeliveryPhase | null = null;
-      let continuationCheckpointPending = false;
-      try {
-        const delivered = await sendMessageWithProgress({
-          client: this.client,
-          kind: this._deliveryKind(),
-          chatId: input.chatId,
-          body: { message_thread_id: input.threadId },
-          showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
-          isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
-          beforeFinalDelivery: () => {
-            if (!stagedResult) return false;
-            continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, stagedResult);
-            finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
-            return finalDeliveryPhase !== null;
-          },
-          runId: input.runId,
-          onEvent: input.collect,
-          execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
-            const answerDecoder = this._executionKind() === "claude"
-              ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
-              : null;
-            stagedResult = await this.executePromptAsync(
-              input.prompt,
-              input.sessionId,
-              input.chatId,
-              {
-                message_thread_id: input.threadId,
-                onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
-                onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
-              },
-              onProgress,
-              input.attachments,
-              input.eventContext,
-              input.runId,
-              input.collect,
-              input.chatKey,
-              input.laneHandle,
-            );
-            return stagedResult;
-          },
-          afterFinalDelivery: () => {
-            if (!stagedResult) throw new Error("missing staged CLI result at final delivery");
-            const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
-            if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, stagedResult, continuationRunId);
-            else this._commitContinuationResultState(input.laneHandle, stagedResult, continuationRunId);
-          },
-        });
-        if (!delivered || !stagedResult) {
-          await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery aborted");
-          return null;
-        }
-        return stagedResult;
-      } catch (error) {
-        // Leave capacity failures to the interactive fallback router. It will
-        // fence this Run and re-admit the same logical turn on the next CLI.
-        if (isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)))) throw error;
-        await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
-        throw error;
-      } finally {
-        this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
-      }
-    }
-
     let result: StagedCliResult | null = null;
-    let continuationCheckpointPending = false;
     let finalDeliveryPhase: FinalDeliveryPhase | null = null;
     try {
       const delivered = await sendMessageWithProgress({
@@ -1186,753 +863,39 @@ export class BridgeEngine {
         kind: this._deliveryKind(),
         chatId: input.chatId,
         body: { message_thread_id: input.threadId },
+        showProgressNarration: input.mode === "async" && this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
         isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
         beforeFinalDelivery: () => {
-          if (!result) return false;
-          continuationCheckpointPending = this._checkpointContinuationBeforeDelivery(input, result);
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
-        propagateExecutionErrors: true,
+        propagateExecutionErrors: input.mode === "sync",
         runId: input.runId,
         onEvent: input.collect,
-        execution: async (_onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
-          const answerDecoder = this._executionKind() === "claude"
-            ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
-            : null;
-          result = await this.executePrompt(
-            input.prompt,
-            input.sessionId,
-            input.chatId,
-            {
-              message_thread_id: input.threadId,
-              skipProviderTyping: true,
-              onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
-              onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
-            },
-            input.attachments,
-            input.eventContext,
-            input.runId,
-            input.collect,
-            input.chatKey,
-            input.laneHandle,
-          );
+        execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
+          const answerDecoder = this._executionKind() === "claude" ? createClaudeAnswerPresentationDecoder(onAnswerDelta) : null;
+          const body = {
+            message_thread_id: input.threadId,
+            ...(input.mode === "sync" ? { skipProviderTyping: true } : {}),
+            onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
+            onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
+          };
+          result = input.mode === "async"
+            ? await this.executePromptAsync(input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments, input.eventContext, input.runId, input.collect, input.chatKey, input.laneHandle)
+            : await this.executePrompt(input.prompt, input.sessionId, input.chatId, body, input.attachments, input.eventContext, input.runId, input.collect, input.chatKey, input.laneHandle);
           return result;
         },
         afterFinalDelivery: () => {
           if (!result) throw new Error("missing staged CLI result at final delivery");
-          const continuationRunId = continuationCheckpointPending ? input.runId : undefined;
-          if (input.isInitialResult) this._commitResultState(input.laneHandle, input.prompt, result, continuationRunId);
-          else this._commitContinuationResultState(input.laneHandle, result, continuationRunId);
+          this._commitResultState(input.laneHandle, input.prompt, result);
         },
       });
-      if (!delivered || !result) {
-        await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery fenced");
-        return null;
-      }
-      return result;
-    } catch (error) {
-      await this._cancelUndeliveredContinuation(input.runId, "continuation response delivery failed");
-      throw error;
+      return delivered ? result : null;
     } finally {
       this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
     }
   }
 
-  private _checkpointContinuationBeforeDelivery(input: {
-    mode: ContinuationExecutionMode;
-    prompt: string;
-    isInitialResult: boolean;
-    chatId: number;
-    chatKey: string;
-    chatType?: string;
-    userId?: number;
-    threadId: number | undefined;
-    attachments: string[];
-    laneHandle: ExecutionLaneHandle;
-    pendingIds: number[];
-    attachmentPartitions?: string[][];
-    runId: string;
-    continuationStartedAtMs: number | null;
-    resumptionCount: number;
-  }, result: StagedCliResult): boolean {
-    const shouldContinue = isAgentKind(this._executionKind())
-      && result.continuationHint === "background-process"
-      && result.continuationProcessObserved === true;
-    if (!shouldContinue || !result.sessionId) return false;
-
-    const maxResumptions = positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS);
-    if (input.resumptionCount >= maxResumptions) return false;
-    const now = this.continuation.now();
-    const startedAtMs = input.continuationStartedAtMs ?? now;
-    const deadlineAtMs = startedAtMs + positiveIntegerEnv("CONTINUATION_MAX_LIFETIME_MS", DEFAULT_CONTINUATION_MAX_LIFETIME_MS);
-    if (now >= deadlineAtMs) return false;
-
-    this._assertLaneOwned(input.laneHandle);
-    let continuationAttachments: string[] = [];
-    let pendingRowOwnsContinuationAttachments = false;
-    try {
-      continuationAttachments = this._persistContinuationAttachments(input.runId, input.attachments);
-      const partitions = input.pendingIds.length > 0
-        ? this.db.getClaimedPendingAttachmentPartitions(input.laneHandle, input.pendingIds)
-        : undefined;
-      if (input.pendingIds.length > 0 && !partitions) throw new LostExecutionLeaseError();
-      let partitionOffset = 0;
-      const stagedPartitions = partitions?.map((partition) => {
-        const staged = continuationAttachments.slice(partitionOffset, partitionOffset + partition.length);
-        partitionOffset += partition.length;
-        return staged;
-      });
-      if (!this.db.replaceClaimedPendingAttachments(input.laneHandle, input.pendingIds, continuationAttachments, stagedPartitions)) {
-        throw new LostExecutionLeaseError();
-      }
-      pendingRowOwnsContinuationAttachments = input.pendingIds.length > 0;
-      const saved = this.continuationStore.saveWaiting({
-        runId: input.runId,
-        surface: this.surfaceIdentity,
-        chatKey: input.chatKey,
-        chatId: input.chatId,
-        threadId: input.threadId ?? null,
-        bot: this.kind,
-        sessionId: result.sessionId,
-        prompt: input.prompt,
-        chatType: input.chatType,
-        userId: input.userId,
-        attachments: continuationAttachments,
-        executionMode: input.mode,
-        triggerKind: "run-owned-background-process",
-        triggerId: input.runId,
-        resumptionCount: input.resumptionCount,
-        pendingIds: [...input.pendingIds],
-        startedAt: new Date(startedAtMs).toISOString(),
-        deadlineAt: new Date(deadlineAtMs).toISOString(),
-        deliveryState: "pending",
-        pendingAttempt: {
-          prompt: input.prompt,
-          isInitialResult: input.isInitialResult,
-          result: {
-            text: result.text,
-            sessionId: result.sessionId,
-            memoryCandidates: result.memoryCandidates,
-            continuationHint: result.continuationHint,
-            continuationProcessObserved: result.continuationProcessObserved,
-            nativeSessionMode: result.nativeSessionMode,
-          },
-        },
-      });
-      if (!saved) throw new LostExecutionLeaseError();
-      this._deleteQueuedAttachments(input.attachments.filter((attachment) => !continuationAttachments.includes(attachment)));
-    } catch (error) {
-      if (!pendingRowOwnsContinuationAttachments) this._cleanupContinuationAttachments(continuationAttachments);
-      throw error;
-    }
-    return true;
-  }
-
-  private _persistContinuationAttachments(runId: string, attachments: string[]): string[] {
-    const directory = join(tmpdir(), `bridge-continuation-attachments-${runId}`);
-    const directoryExisted = existsSync(directory);
-    const persisted: string[] = [];
-    const createdTargets: string[] = [];
-    try {
-      for (const [index, attachment] of attachments.entries()) {
-        const target = join(directory, `${index}-${basename(attachment)}`);
-        if (attachment.startsWith(`${directory}${sep}`)) {
-          persisted.push(attachment);
-          continue;
-        }
-        if (!existsSync(attachment)) {
-          throw new Error("source attachment is missing");
-        }
-        const targetExisted = existsSync(target);
-        mkdirSync(directory, { recursive: true });
-        if (!targetExisted) createdTargets.push(target);
-        cpSync(attachment, target, { force: true });
-        persisted.push(target);
-      }
-    } catch {
-      for (const target of createdTargets) {
-        try { unlinkSync(target); } catch {}
-      }
-      if (!directoryExisted) rmSync(directory, { recursive: true, force: true });
-      throw new Error("continuation attachment could not be persisted");
-    }
-    return persisted;
-  }
-
-  private async _cancelUndeliveredContinuation(runId: string, reason: string): Promise<void> {
-    const checkpoint = this.continuationStore.get(runId);
-    if (checkpoint?.state === "waiting") {
-      this.continuationStore.markCancelled(runId, reason);
-      if (!this.db.pendingMessagesOwnAttachments(checkpoint.surface, checkpoint.chatKey, checkpoint.pendingIds, checkpoint.attachments ?? [])) {
-        this._cleanupContinuationAttachments(checkpoint.attachments ?? []);
-      }
-    }
-    if (this.continuation.getRunOwnedProcessState(runId) === "live") {
-      await this.continuation.killRunOwnedDescendants(runId);
-    }
-  }
-
-  private _cleanupContinuationAttachments(attachments: string[]): void {
-    if (!this.db.pendingMessagesOwnAnyAttachments(attachments)) cleanupAttachmentPaths(attachments);
-  }
-
-  private async _continueFromDeliveredResult(input: {
-    mode: ContinuationExecutionMode;
-    result: StagedCliResult;
-    chatId: number;
-    chatKey: string;
-    chatType: string;
-    userId?: number;
-    attachments: string[];
-    threadId: number | undefined;
-    laneHandle: ExecutionLaneHandle;
-    pendingIds: number[];
-    attachmentPartitions?: string[][];
-    runId: string;
-    eventContext: CliOptions["eventContext"];
-    collect: (event: BridgeEvent) => void;
-    finalize: () => void;
-    continuationStartedAtMs: number | null;
-    resumptionCount: number;
-    surfaceNeutral?: boolean;
-  }): Promise<boolean> {
-    const executionLane = this._executionLane(input.chatKey);
-    const maxResumptions = positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS);
-    const maxLifetimeMs = positiveIntegerEnv("CONTINUATION_MAX_LIFETIME_MS", DEFAULT_CONTINUATION_MAX_LIFETIME_MS);
-    let result = input.result;
-    let continuationStartedAtMs = input.continuationStartedAtMs;
-    let resumptionCount = input.resumptionCount;
-
-    try {
-      for (;;) {
-        const shouldContinue = isAgentKind(this._executionKind())
-          && result.continuationHint === "background-process"
-          && result.continuationProcessObserved === true;
-        if (shouldContinue) this.laneCoordinator.markContinuationActive(executionLane);
-        else this.laneCoordinator.clearContinuation(executionLane);
-
-        if (!shouldContinue) {
-          this.continuationStore.markCompleted(input.runId);
-          this._cleanupContinuationAttachments(this.continuationStore.get(input.runId)?.attachments ?? []);
-          input.finalize();
-          return true;
-        }
-
-        let checkpoint = this.continuationStore.get(input.runId);
-        if (checkpoint?.state === "waiting") {
-          const persistedStartedAt = Date.parse(checkpoint.startedAt);
-          if (Number.isFinite(persistedStartedAt)) continuationStartedAtMs = persistedStartedAt;
-          resumptionCount = checkpoint.resumptionCount;
-        }
-        continuationStartedAtMs ??= this.continuation.now();
-
-        if (input.surfaceNeutral && (!checkpoint || checkpoint.state === "running")) {
-          checkpoint = this.continuationStore.saveWaiting({
-            runId: input.runId,
-            surface: this.surfaceIdentity,
-            chatKey: input.chatKey,
-            chatId: input.chatId,
-            threadId: null,
-            bot: this._executionKind(),
-            sessionId: result.sessionId ?? "",
-            executionMode: input.mode,
-            triggerKind: "run-owned-background-process",
-            triggerId: input.runId,
-            resumptionCount,
-            pendingIds: [],
-            startedAt: new Date(continuationStartedAtMs).toISOString(),
-            deadlineAt: new Date(continuationStartedAtMs + maxLifetimeMs).toISOString(),
-            deliveryState: "none",
-          });
-          if (!checkpoint) throw new LostExecutionLeaseError();
-        }
-
-        if (!result.sessionId) {
-          if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
-            await this.continuation.killRunOwnedDescendants(input.runId);
-          }
-          this.continuationStore.markCancelled(input.runId, "provider session unavailable");
-          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
-          this.laneCoordinator.clearContinuation(executionLane);
-          if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SESSION_NOTICE);
-          input.finalize();
-          return true;
-        }
-        if (resumptionCount >= maxResumptions) {
-          if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
-            await this.continuation.killRunOwnedDescendants(input.runId);
-          }
-          this.continuationStore.markCancelled(input.runId, "automatic resumption limit reached");
-          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
-          this.laneCoordinator.clearContinuation(executionLane);
-          if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SAFETY_NOTICE);
-          input.finalize();
-          return true;
-        }
-
-        const deadlineAtMs = checkpoint?.state === "waiting"
-          ? Date.parse(checkpoint.deadlineAt)
-          : continuationStartedAtMs + maxLifetimeMs;
-        if (!Number.isFinite(deadlineAtMs) || this.continuation.now() >= deadlineAtMs) {
-          if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
-            await this.continuation.killRunOwnedDescendants(input.runId);
-          }
-          this.continuationStore.markCancelled(input.runId, "continuation lifetime limit reached");
-          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
-          this.laneCoordinator.clearContinuation(executionLane);
-          if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SAFETY_NOTICE);
-          input.finalize();
-          return true;
-        }
-
-        await this._assertContinuationCanProceed(input.laneHandle, input.runId, input.eventContext!, input.collect);
-        if (checkpoint?.state !== "waiting") throw new LostExecutionLeaseError();
-
-        const wake = await this._waitForContinuationWake(
-          input.laneHandle,
-          input.runId,
-          input.chatId,
-          input.threadId,
-          input.eventContext!,
-          input.collect,
-          deadlineAtMs,
-          input.surfaceNeutral,
-        );
-        if (wake === "limit") {
-          if (this.continuation.getRunOwnedProcessState(input.runId) === "live") {
-            await this.continuation.killRunOwnedDescendants(input.runId);
-          }
-          this.continuationStore.markCancelled(input.runId, "continuation lifetime limit reached");
-          this._cleanupContinuationAttachments(checkpoint?.attachments ?? []);
-          this.laneCoordinator.clearContinuation(executionLane);
-          if (!input.surfaceNeutral) await this._deliverContinuationTerminalNotice(input.laneHandle, input.chatId, input.threadId, CONTINUATION_SAFETY_NOTICE);
-          input.finalize();
-          return true;
-        }
-
-        await this._assertContinuationCanProceed(input.laneHandle, input.runId, input.eventContext!, input.collect);
-        const runnable = this.continuationStore.markRunnable(input.runId);
-        if (!runnable) throw new LostExecutionLeaseError();
-        const claimed = this.continuationStore.claimRunnable(input.runId);
-        if (!claimed) throw new LostExecutionLeaseError();
-        resumptionCount = claimed.resumptionCount;
-
-        const next = input.surfaceNeutral
-          ? await this.executePromptAsync(
-            CONTINUATION_INSTRUCTION,
-            claimed.sessionId,
-            input.chatId,
-            {},
-            () => {},
-            [],
-            input.eventContext,
-            input.runId,
-            input.collect,
-            input.chatKey,
-            input.laneHandle,
-          )
-          : await this._executeAndDeliverTurnAttempt({
-          mode: input.mode,
-          prompt: CONTINUATION_INSTRUCTION,
-          sessionId: claimed.sessionId,
-          isInitialResult: false,
-          chatId: input.chatId,
-          chatKey: input.chatKey,
-          chatType: input.chatType,
-          userId: input.userId,
-          threadId: input.threadId,
-          attachments: checkpoint?.attachments ?? input.attachments,
-          attachmentPartitions: input.attachmentPartitions,
-          laneHandle: input.laneHandle,
-          pendingIds: input.pendingIds,
-          runId: input.runId,
-          eventContext: input.eventContext,
-          collect: input.collect,
-          continuationStartedAtMs,
-          resumptionCount,
-          });
-        if (!next) {
-          if (!this._canPublish(input.laneHandle)) throw new LostExecutionLeaseError();
-          this.continuationStore.markCancelled(input.runId, "continuation attempt ended without a deliverable result");
-          this._cleanupContinuationAttachments(this.continuationStore.get(input.runId)?.attachments ?? []);
-          return true;
-        }
-        result = next;
-        input.attachments = checkpoint?.attachments ?? input.attachments;
-      }
-    } catch (error) {
-      if (error instanceof LostExecutionLeaseError || error instanceof PendingContinuationDeliveryError) throw error;
-      if (isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)))) throw error;
-      if (!this._canPublish(input.laneHandle)) throw new LostExecutionLeaseError();
-      const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
-      this.continuationStore.markCancelled(input.runId, `continuation failed: ${detail}`);
-      this._cleanupContinuationAttachments(this.continuationStore.get(input.runId)?.attachments ?? []);
-      this.db.updateRunFailed(input.runId, detail);
-      await this._deliverContinuationTerminalNotice(
-        input.laneHandle,
-        input.chatId,
-        input.threadId,
-        continuationFailureNotice(error),
-      );
-      input.finalize();
-      return true;
-    } finally {
-      this.laneCoordinator.clearContinuation(executionLane);
-    }
-  }
-
-  private async _waitForContinuationWake(
-    handle: ExecutionLaneHandle,
-    runId: string,
-    chatId: number,
-    threadId: number | undefined,
-    eventContext: NonNullable<CliOptions["eventContext"]>,
-    collect: (event: BridgeEvent) => void,
-    deadlineAtMs: number,
-    surfaceNeutral = false,
-  ): Promise<"ready" | "limit"> {
-    const waitTyping = surfaceNeutral ? null : createTypingTracker(
-      this.client,
-      chatId,
-      this.kind,
-      { message_thread_id: threadId },
-      () => !this._canPublish(handle),
-    );
-    try {
-      await waitTyping?.start();
-      for (;;) {
-        await this._assertContinuationCanProceed(handle, runId, eventContext, collect);
-        // The lifetime cap is a hard safety limit and must win a same-tick
-        // race against process completion — check it before treating the
-        // process as done, or a resume could slip past its own deadline.
-        if (this.continuation.now() >= deadlineAtMs) return "limit";
-        const processState = this.continuation.getRunOwnedProcessState(runId);
-        if (processState === "absent") return "ready";
-        // "ambiguous" deliberately follows the live path: do not interpret an
-        // inspection failure as completion and never issue a duplicate resume.
-        await this.continuation.sleep(CONTINUATION_POLL_MS);
-      }
-    } finally {
-      await waitTyping?.stop();
-    }
-  }
-
-  private _startRecoveredContinuation(record: ContinuationRecord, handle: ExecutionLaneHandle): void {
-    const executionLane = this._executionLane(record.chatKey);
-    const lifecycleToken = beginExecutionLifecycle(executionLane, handle);
-    const lockHeartbeat = setInterval(() => {
-      try {
-        if (!this.db.heartbeatLock(handle)) {
-          this.laneCoordinator.markAborted(executionLane);
-          abortCliProcess(executionLane);
-        }
-      } catch (error) {
-        console.error(`[${this.kind}] recovered continuation heartbeat failed chatKey=${record.chatKey}`, error);
-      }
-    }, this.db.lockHeartbeatMs);
-    lockHeartbeat.unref();
-    this.laneCoordinator.markContinuationActive(executionLane);
-
-    void (async () => {
-      let committed = false;
-      try {
-        committed = await this._resumeRecoveredContinuation(record, handle);
-        if (committed && record.pendingIds.length && !this.db.completePendingMsgs(handle, record.pendingIds)) {
-          throw new LostExecutionLeaseError();
-        }
-      } catch (error) {
-        if (!(error instanceof LostExecutionLeaseError) && !(error instanceof PendingContinuationDeliveryError)) {
-          console.error(`[${this.kind}] recovered continuation failed runId=${record.runId}`, error);
-          if (this._canPublish(handle)) {
-            const detail = toUserMessage(error instanceof Error ? error : new Error(String(error)));
-            this.continuationStore.markAmbiguous(record.runId, detail);
-            this._cleanupContinuationAttachments(record.attachments ?? []);
-            this.db.updateRunFailed(record.runId, detail);
-            await this._deliverContinuationTerminalNotice(
-              handle,
-              record.chatId,
-              record.threadId ?? undefined,
-              continuationFailureNotice(error),
-            ).catch((deliveryError) => {
-              console.error(`[${this.kind}] recovered continuation blocker delivery failed runId=${record.runId}`, deliveryError);
-            });
-          }
-        } else if (error instanceof PendingContinuationDeliveryError) {
-          console.error(`[${this.kind}] recovered continuation delivery failed runId=${record.runId}`, error.cause);
-        }
-      } finally {
-        clearInterval(lockHeartbeat);
-        this.laneCoordinator.clearContinuation(executionLane);
-        const deliveryStillPending = this.continuationStore.get(record.runId)?.deliveryState === "pending";
-        if (!committed) {
-          for (const id of record.pendingIds) this.db.releasePendingClaim(handle, id);
-        }
-        try {
-          if (!deliveryStillPending
-            && !this.laneCoordinator.isResetting(executionLane)
-            && !this.continuationStore.hasActiveRun(record.runId)
-            && this.db.ownsLock(handle)) {
-            await this._drainQueueAndUnlock(handle, undefined, 0, true, this.opts.busyMessageMode === "augment");
-          }
-        } finally {
-          completeExecutionLifecycle(executionLane, lifecycleToken);
-          if (this.db.ownsLock(handle)) this.db.unlock(handle);
-        }
-      }
-    })();
-  }
-
-  private async _resumeRecoveredContinuation(record: ContinuationRecord, handle: ExecutionLaneHandle): Promise<boolean> {
-    const deadlineAtMs = Date.parse(record.deadlineAt);
-    if (!Number.isFinite(deadlineAtMs)) {
-      this.continuationStore.markAmbiguous(record.runId, "continuation deadline is invalid");
-      this.db.updateRunFailed(record.runId, "continuation deadline is invalid");
-      this._cleanupContinuationAttachments(record.attachments ?? []);
-      return true;
-    }
-
-    const { eventContext, collect, finalize } = this._createEventContext(record.chatId, record.threadId ?? undefined, handle, record.runId);
-
-    if (record.deliveryState === "none") {
-      return this._resumeRecoveredSurfaceNeutralContinuation(record, handle, eventContext!, collect, finalize, deadlineAtMs);
-    }
-
-    if (record.deliveryState === "pending") {
-      const result = await this._deliverRecoveredPendingAttempt(record, handle);
-      return this._continueFromDeliveredResult({
-        mode: record.executionMode,
-        result,
-        chatId: record.chatId,
-        chatKey: record.chatKey,
-        chatType: record.chatType ?? "private",
-        userId: record.userId ?? undefined,
-        attachments: record.attachments ?? [],
-        threadId: record.threadId ?? undefined,
-        laneHandle: handle,
-        pendingIds: record.pendingIds,
-        runId: record.runId,
-        eventContext,
-        collect,
-        finalize,
-        continuationStartedAtMs: Date.parse(record.startedAt),
-        resumptionCount: record.resumptionCount,
-      });
-    }
-
-    if (record.state === "running" || record.state === "ambiguous") {
-      const wake = await this._waitForContinuationWake(
-        handle,
-        record.runId,
-        record.chatId,
-        record.threadId ?? undefined,
-        eventContext!,
-        collect,
-        deadlineAtMs,
-      );
-      if (wake === "limit" && this.continuation.getRunOwnedProcessState(record.runId) === "live") {
-        await this.continuation.killRunOwnedDescendants(record.runId);
-      }
-      this.continuationStore.markAmbiguous(record.runId, "resume was already claimed before restart");
-      this.db.updateRunFailed(record.runId, "resume was already claimed before restart");
-      this._cleanupContinuationAttachments(record.attachments ?? []);
-      await this._deliverContinuationTerminalNotice(handle, record.chatId, record.threadId ?? undefined, CONTINUATION_RECOVERY_NOTICE);
-      return true;
-    }
-
-    if (record.resumptionCount >= positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS)
-      || this.continuation.now() >= deadlineAtMs) {
-      if (this.continuation.getRunOwnedProcessState(record.runId) === "live") {
-        await this.continuation.killRunOwnedDescendants(record.runId);
-      }
-      this.continuationStore.markCancelled(record.runId, "recovered continuation exceeded its safety limit");
-      this.db.updateRunFailed(record.runId, "recovered continuation exceeded its safety limit");
-      this._cleanupContinuationAttachments(record.attachments ?? []);
-      await this._deliverContinuationTerminalNotice(handle, record.chatId, record.threadId ?? undefined, CONTINUATION_SAFETY_NOTICE);
-      return true;
-    }
-
-    let runnable = record.state === "runnable" ? record : null;
-    if (!runnable) {
-      const wake = await this._waitForContinuationWake(
-        handle,
-        record.runId,
-        record.chatId,
-        record.threadId ?? undefined,
-        eventContext!,
-        collect,
-        deadlineAtMs,
-      );
-      if (wake === "limit") {
-        if (this.continuation.getRunOwnedProcessState(record.runId) === "live") {
-          await this.continuation.killRunOwnedDescendants(record.runId);
-        }
-        this.continuationStore.markCancelled(record.runId, "recovered continuation lifetime limit reached");
-        this.db.updateRunFailed(record.runId, "recovered continuation lifetime limit reached");
-        this._cleanupContinuationAttachments(record.attachments ?? []);
-        await this._deliverContinuationTerminalNotice(handle, record.chatId, record.threadId ?? undefined, CONTINUATION_SAFETY_NOTICE);
-        return true;
-      }
-      runnable = this.continuationStore.markRunnable(record.runId);
-      if (!runnable) throw new LostExecutionLeaseError();
-    }
-
-    const claimed = this.continuationStore.claimRunnable(record.runId);
-    if (!claimed) throw new LostExecutionLeaseError();
-    const result = await this._executeAndDeliverTurnAttempt({
-      mode: claimed.executionMode,
-      prompt: CONTINUATION_INSTRUCTION,
-      sessionId: claimed.sessionId,
-      isInitialResult: false,
-      chatId: claimed.chatId,
-      chatKey: claimed.chatKey,
-      chatType: record.chatType ?? "private",
-      userId: record.userId ?? undefined,
-      threadId: claimed.threadId ?? undefined,
-      attachments: record.attachments ?? [],
-      laneHandle: handle,
-      pendingIds: claimed.pendingIds,
-      runId: claimed.runId,
-      eventContext,
-      collect,
-      continuationStartedAtMs: Date.parse(claimed.startedAt),
-      resumptionCount: claimed.resumptionCount,
-    });
-    if (!result) {
-      if (!this._canPublish(handle)) throw new LostExecutionLeaseError();
-      this.continuationStore.markCancelled(record.runId, "recovered continuation attempt failed");
-      this.db.updateRunFailed(record.runId, "recovered continuation attempt failed");
-      this._cleanupContinuationAttachments(record.attachments ?? []);
-      return true;
-    }
-
-    return this._continueFromDeliveredResult({
-      mode: claimed.executionMode,
-      result,
-      chatId: claimed.chatId,
-      chatKey: claimed.chatKey,
-      chatType: record.chatType ?? "private",
-      userId: record.userId ?? undefined,
-      attachments: record.attachments ?? [],
-      threadId: claimed.threadId ?? undefined,
-      laneHandle: handle,
-      pendingIds: claimed.pendingIds,
-      runId: claimed.runId,
-      eventContext,
-      collect,
-      finalize,
-      continuationStartedAtMs: Date.parse(claimed.startedAt),
-      resumptionCount: claimed.resumptionCount,
-    });
-  }
-
-  private async _resumeRecoveredSurfaceNeutralContinuation(
-    record: ContinuationRecord,
-    handle: ExecutionLaneHandle,
-    eventContext: NonNullable<CliOptions["eventContext"]>,
-    collect: (event: BridgeEvent) => void,
-    finalize: () => void,
-    deadlineAtMs: number,
-  ): Promise<boolean> {
-    if (record.state === "running" || record.state === "ambiguous") {
-      const wake = await this._waitForContinuationWake(handle, record.runId, record.chatId, undefined, eventContext, collect, deadlineAtMs, true);
-      if (wake === "limit" && this.continuation.getRunOwnedProcessState(record.runId) === "live") {
-        await this.continuation.killRunOwnedDescendants(record.runId);
-      }
-      this.continuationStore.markAmbiguous(record.runId, "surface-neutral continuation was interrupted before replay");
-      this.db.updateRunFailed(record.runId, "surface-neutral continuation was interrupted before replay");
-      this._cleanupContinuationAttachments(record.attachments ?? []);
-      return true;
-    }
-    if (record.resumptionCount >= positiveIntegerEnv("CONTINUATION_MAX_RESUMPTIONS", DEFAULT_CONTINUATION_MAX_RESUMPTIONS)
-      || this.continuation.now() >= deadlineAtMs) {
-      if (this.continuation.getRunOwnedProcessState(record.runId) === "live") {
-        await this.continuation.killRunOwnedDescendants(record.runId);
-      }
-      this.continuationStore.markCancelled(record.runId, "recovered continuation exceeded its safety limit");
-      this.db.updateRunFailed(record.runId, "recovered continuation exceeded its safety limit");
-      this._cleanupContinuationAttachments(record.attachments ?? []);
-      return true;
-    }
-    let runnable = record.state === "runnable" ? record : null;
-    if (!runnable) {
-      const wake = await this._waitForContinuationWake(handle, record.runId, record.chatId, undefined, eventContext, collect, deadlineAtMs, true);
-      if (wake === "limit") {
-        if (this.continuation.getRunOwnedProcessState(record.runId) === "live") {
-          await this.continuation.killRunOwnedDescendants(record.runId);
-        }
-        this.continuationStore.markCancelled(record.runId, "surface-neutral continuation lifetime limit reached");
-        this.db.updateRunFailed(record.runId, "surface-neutral continuation lifetime limit reached");
-        this._cleanupContinuationAttachments(record.attachments ?? []);
-        return true;
-      }
-      runnable = this.continuationStore.markRunnable(record.runId);
-      if (!runnable) throw new LostExecutionLeaseError();
-    }
-    const claimed = this.continuationStore.claimRunnable(record.runId);
-    if (!claimed) throw new LostExecutionLeaseError();
-    const result = await this.executePromptAsync(
-      CONTINUATION_INSTRUCTION,
-      claimed.sessionId,
-      claimed.chatId,
-      {},
-      () => {},
-      [],
-      eventContext,
-      claimed.runId,
-      collect,
-      claimed.chatKey,
-      handle,
-    );
-    return this._continueFromDeliveredResult({
-      mode: claimed.executionMode,
-      result,
-      chatId: claimed.chatId,
-      chatKey: claimed.chatKey,
-      chatType: "private",
-      attachments: [],
-      threadId: undefined,
-      laneHandle: handle,
-      pendingIds: [],
-      runId: claimed.runId,
-      eventContext,
-      collect,
-      finalize,
-      continuationStartedAtMs: Date.parse(claimed.startedAt),
-      resumptionCount: claimed.resumptionCount,
-      surfaceNeutral: true,
-    });
-  }
-
-  private async _deliverRecoveredPendingAttempt(record: ContinuationRecord, handle: ExecutionLaneHandle): Promise<StagedCliResult> {
-    const attempt = record.pendingAttempt;
-    if (!attempt) throw new PendingContinuationDeliveryError(new Error("pending continuation response is missing"));
-    const result: StagedCliResult = { ...attempt.result };
-    const deliveryPhase = this._claimFinalDeliveryPhase(handle);
-    if (!deliveryPhase) throw new LostExecutionLeaseError();
-    try {
-      if (result.text) {
-        await this.sendText(record.chatId, { text: result.text, message_thread_id: record.threadId ?? undefined });
-      }
-      if (attempt.isInitialResult) this._commitResultState(handle, attempt.prompt, result, record.runId);
-      else this._commitContinuationResultState(handle, result, record.runId);
-      return result;
-    } catch (error) {
-      if (error instanceof LostExecutionLeaseError) throw error;
-      throw new PendingContinuationDeliveryError(error);
-    } finally {
-      this._releaseFinalDeliveryPhase(handle, deliveryPhase);
-    }
-  }
-
-  /**
-   * Build a fresh event context for a single run. Returns the runId, the
-   * eventContext payload expected by `runCli`/`runCliAsync`, and a collector
-   * that downstream consumers (sendMessageWithProgress) can use to receive
-   * every emitted event for the run. The collector writes into a shared
-   * array on the returned record so callers can also read the buffered
-   * events if they need to inspect them.
-   */
   private _createEventContext(chatId: number, threadId: number | undefined, laneHandle: ExecutionLaneHandle, existingRunId?: string): {
     runId: string;
     eventContext: CliOptions["eventContext"];
@@ -1975,12 +938,11 @@ export class BridgeEngine {
   /**
    * Own cancellation per execution lane. Every caller observes the same
    * process-tree/lifecycle fence and only the owner may continue the lane.
-   * Messages received after /stop begins remain queued for the single
-   * continuation; messages already pending at /stop admission are discarded.
+   * Messages received after /stop begins remain queued for the successor;
+   * messages already pending at /stop admission are discarded.
    */
   private _cancelLane(chatKey: string, mode: "augment" | "interrupt" | "stop"): Promise<void> {
     const executionLane = this._executionLane(chatKey);
-    this.continuationStore.cancelActiveForLane(this.surfaceIdentity, chatKey, mode);
     const existing = this.laneCoordinator.getCancellation(executionLane);
     if (existing) {
       if (mode === "stop" && existing.mode !== "stop") {
@@ -2002,10 +964,7 @@ export class BridgeEngine {
       const finalDelivery = this.laneCoordinator.getFinalDelivery(executionLane);
       if (finalDelivery && record.mode === "augment") {
         await finalDelivery.promise;
-        // Existing augment semantics let a genuinely final delivery finish.
-        // An intermediate continuation response is different: after that
-        // delivery the old logical turn is still active and must be fenced.
-        if (record.mode === "augment" && !this.laneCoordinator.isContinuationActive(executionLane)) return;
+        if (record.mode === "augment") return;
       }
       if (finalDelivery && record.mode !== "stop") await finalDelivery.promise;
       if (record.mode !== "stop") {
@@ -2119,10 +1078,6 @@ export class BridgeEngine {
   ): Promise<void> {
     const chatKey = handle.chatKey;
     const executionLane = this._executionLane(chatKey);
-    if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
-      if (this.db.ownsLock(handle)) this.db.unlock(handle);
-      return;
-    }
     const scheduled = this.queueRecoveryTimers.get(chatKey);
     if (scheduled) {
       clearTimeout(scheduled);
@@ -2141,7 +1096,6 @@ export class BridgeEngine {
         ...claimed[0],
         prompt: [...(augmentation ? [augmentation.prompt] : []), ...claimed.map((row) => row.prompt)].join("\n\n"),
         attachments: [...(augmentation?.attachments ?? []), ...claimed.flatMap((row) => row.attachments)],
-        attachmentPartitions: claimed.map((row) => row.attachments),
         pendingIds: claimed.map((row) => row.id),
         queueRecoveryAttempt: recoveryAttempt,
       };
@@ -2187,13 +1141,8 @@ export class BridgeEngine {
     const timer = setTimeout(() => {
       this.queueRecoveryTimers.delete(chatKey);
       try {
-        if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return;
-        const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
+          const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
         if (!handle) return;
-        if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
-          this.db.unlock(handle);
-          return;
-        }
         void this._drainQueueAndUnlock(handle, undefined, attempt).catch((error) =>
           console.error(`[${this.kind}] queue recovery failed chatKey=${chatKey}`, error)
         );
@@ -2210,14 +1159,9 @@ export class BridgeEngine {
     const timer = setTimeout(() => {
       this.startupQueueRecoveryTimers.delete(chatKey);
       if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return;
-      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) return;
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
       if (!handle) {
         this._scheduleStartupQueueRecovery(chatKey);
-        return;
-      }
-      if (this.continuationStore.hasActiveForLane(this.surfaceIdentity, chatKey)) {
-        this.db.unlock(handle);
         return;
       }
       void this._drainQueueAndUnlock(
@@ -2247,12 +1191,19 @@ export class BridgeEngine {
       false, !next.laneLifecycleManaged, false, false,
       next.queueRecoveryAttempt == null || next.queueRecoveryAttempt >= MAX_QUEUE_RECOVERY_ATTEMPTS,
       next.pendingIds ?? [next.id],
-      next.attachmentPartitions,
     );
   }
 
   private _deleteQueuedAttachments(attachments: string[]): void {
-    cleanupAttachmentPaths(attachments);
+    const uploadDirs = new Set<string>();
+    for (const attachment of attachments) {
+      try { unlinkSync(attachment); } catch {}
+      const parent = dirname(attachment);
+      if (basename(parent).startsWith("bridge-uploads-")) uploadDirs.add(parent);
+    }
+    for (const dir of uploadDirs) {
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
   }
 
   private _assertLaneOwned(handle: ExecutionLaneHandle): void {
@@ -2272,72 +1223,7 @@ export class BridgeEngine {
     return { ...result, text: extracted.cleanText, memoryCandidates: extracted.candidates };
   }
 
-  private async _assertContinuationCanProceed(
-    handle: ExecutionLaneHandle,
-    runId: string,
-    eventContext: NonNullable<CliOptions["eventContext"]>,
-    collect: (event: BridgeEvent) => void,
-  ): Promise<void> {
-    if (this._canPublish(handle)) return;
-    this.continuationStore.markCancelled(runId, "execution lane fenced");
-    this._cleanupContinuationAttachments(this.continuationStore.get(runId)?.attachments ?? []);
-    try {
-      if (this.continuation.getRunOwnedProcessState(runId) === "live") {
-        await this.continuation.killRunOwnedDescendants(runId);
-      }
-    } finally {
-      collect(eventType.runCancelled({
-        runId,
-        bot: eventContext.bot,
-        chatId: eventContext.chatId,
-        threadId: eventContext.threadId,
-        reason: this.laneCoordinator.isAborted(this._executionLane(handle.chatKey)) ? "user" : "shutdown",
-      }));
-    }
-    throw new LostExecutionLeaseError();
-  }
-
-  private async _deliverContinuationTerminalNotice(
-    handle: ExecutionLaneHandle,
-    chatId: number,
-    threadId: number | undefined,
-    text: string,
-  ): Promise<void> {
-    const phase = this._claimFinalDeliveryPhase(handle);
-    if (!phase) throw new LostExecutionLeaseError();
-    try {
-      await this.sendText(chatId, { text, message_thread_id: threadId });
-      this._assertLaneOwned(handle);
-    } finally {
-      this._releaseFinalDeliveryPhase(handle, phase);
-    }
-  }
-
-  private _commitContinuationResultState(handle: ExecutionLaneHandle, result: StagedCliResult, continuationRunId?: string): void {
-    const chatKey = handle.chatKey;
-    this._runWithFence(handle, () => {
-      if (result.sessionId && isAgentKind(this.kind)) {
-        db_setSession(this.db, chatKey, this.kind, result.sessionId);
-        if (result.nativeSessionMode === "fresh") clearHandoffRequired(this.db, chatKey, this.kind);
-      }
-      if (isAgentKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
-      for (const candidate of result.memoryCandidates) {
-        storeProjectMemoryCandidate(this.db, candidate, {
-          chatKey,
-          cliKind: this.kind,
-          repoPath: process.cwd(),
-        });
-      }
-      if (isAgentKind(this.kind)) {
-        this.db.addConvTurn(chatKey, "assistant", trimTurnText(result.text), this.kind);
-      }
-      if (continuationRunId && !this.continuationStore.markDeliveryCommitted(continuationRunId)) {
-        throw new LostExecutionLeaseError();
-      }
-    });
-  }
-
-  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult, continuationRunId?: string): void {
+  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult): void {
     const chatKey = handle.chatKey;
     this._runWithFence(handle, () => {
       if (result.sessionId && isAgentKind(this.kind)) {
@@ -2353,9 +1239,6 @@ export class BridgeEngine {
         });
       }
       if (isAgentKind(this.kind)) this._rememberTurn(chatKey, prompt, result.text);
-      if (continuationRunId && !this.continuationStore.markDeliveryCommitted(continuationRunId)) {
-        throw new LostExecutionLeaseError();
-      }
     });
   }
 
@@ -2540,12 +1423,7 @@ ${contextPrompt}` : contextPrompt);
     );
   }
 
-  /**
-   * Executes a turn for a non-messaging surface. Provider execution remains
-   * in executePromptAsync. The existing continuation coordinator supplies
-   * heartbeat, fencing, process polling, limits, and terminal finalisation;
-   * only Telegram delivery is omitted.
-   */
+  /** Executes one ordinary provider turn for a non-messaging surface. */
   async executeSurfaceNeutralTurn(input: SurfaceNeutralTurnInput): Promise<StagedCliResult> {
     const executionLane = this._executionLane(input.chatKey);
     const lifecycleToken = beginExecutionLifecycle(executionLane, input.laneHandle);
@@ -2561,7 +1439,7 @@ ${contextPrompt}` : contextPrompt);
     }, this.db.lockHeartbeatMs);
     lockHeartbeat.unref();
     try {
-      const result = await this.executePromptAsync(
+      return await this.executePromptAsync(
         input.prompt,
         input.sessionId,
         input.chatId,
@@ -2574,27 +1452,8 @@ ${contextPrompt}` : contextPrompt);
         input.chatKey,
         input.laneHandle,
       );
-      return await this._continueFromDeliveredResult({
-        mode: "async",
-        result,
-        chatId: input.chatId,
-        chatKey: input.chatKey,
-        chatType: "private",
-        attachments: [],
-        threadId: undefined,
-        laneHandle: input.laneHandle,
-        pendingIds: [],
-        runId: input.runId,
-        eventContext: input.eventContext,
-        collect: input.collect,
-        finalize: input.finalize,
-        continuationStartedAtMs: null,
-        resumptionCount: 0,
-        surfaceNeutral: true,
-      }).then(() => result);
     } finally {
       clearInterval(lockHeartbeat);
-      this.laneCoordinator.clearContinuation(executionLane);
       completeExecutionLifecycle(executionLane, lifecycleToken);
     }
   }
@@ -2683,9 +1542,8 @@ ${contextPrompt}` : contextPrompt);
       sessionId,
       ...(mode === "sync" ? { sessionMode: "resume" as const } : {}),
       executionMode: this.opts.executionMode,
-      // Claude continuation-capable turns request transcript-bearing stream JSON
-      // in both execution modes so tool_use evidence reaches the continuation
-      // detector.
+      // Claude stream-json is retained for safe answer presentation; native
+      // provider completion, not Bridge parsing, owns background task lifetime.
       outputFormat: executionKind === "antigravity"
         ? undefined
         : executionKind === "claude"
@@ -2696,6 +1554,7 @@ ${contextPrompt}` : contextPrompt);
       includeResponseContract: promptForCli.includeResponseContract,
       attachments,
       outputDir: outDir,
+      nativeCompletion: true,
     });
     const isClaudeStreamJson = executionKind === "claude"
       && invocation.args.includes("stream-json");
@@ -2734,13 +1593,6 @@ ${contextPrompt}` : contextPrompt);
 
       (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
 
-      // Snapshot generic run-owned work immediately when the direct CLI exits.
-      // A short-lived background task may finish during parsing/hooks/delivery;
-      // the continuation decision must retain evidence from the actual process
-      // completion boundary in both sync and async modes.
-      const continuationProcessObserved = executionKind === "claude"
-        && !!runId
-        && this.continuation.hasLiveRunOwnedDescendants(runId);
       this._assertLaneOwned(laneHandle);
 
       let logContent: string | null = null;
@@ -2759,7 +1611,7 @@ ${contextPrompt}` : contextPrompt);
         result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
       }
       result.text = scrubOutputDir(result.text, outDir);
-      const stagedResult: StagedCliResult = { ...this._stageResultState(result), continuationProcessObserved, nativeSessionMode };
+      const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
@@ -2857,6 +1709,7 @@ ${contextPrompt}` : contextPrompt);
       includeResponseContract,
       outputDir: outDir,
       attachments,
+      nativeCompletion: true,
     });
 
     try {
@@ -3007,9 +1860,7 @@ ${contextPrompt}` : contextPrompt);
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      // Mirror the primary attempt's Claude continuation treatment (Issue #261):
-      // the fallback model retry is still a normal writable Claude turn and
-      // must expose the same tool_use evidence to the continuation detector.
+      // Keep the same answer-streaming format on a fresh fallback attempt.
       outputFormat: executionKind === "antigravity"
         ? undefined
         : executionKind === "claude"
@@ -3020,6 +1871,7 @@ ${contextPrompt}` : contextPrompt);
       includeResponseContract: fallbackPromptForCli.includeResponseContract,
       outputDir: outDir,
       attachments,
+      nativeCompletion: true,
     });
     const isFallbackClaudeStreamJson = executionKind === "claude"
       && fallbackInvocation.args.includes("stream-json");
@@ -3047,13 +1899,6 @@ ${contextPrompt}` : contextPrompt);
           onEvent: collect ?? undefined,
         });
       body.onProviderOutputFinished?.();
-      // Snapshot generic run-owned work immediately when the direct CLI exits,
-      // matching the primary attempt (Issue #261). A capacity-fallback retry
-      // is still a normal writable Claude turn and must be eligible for the
-      // same continuation detection as the initial model.
-      const continuationProcessObserved = executionKind === "claude"
-        && !!runId
-        && this.continuation.hasLiveRunOwnedDescendants(runId);
       this._assertLaneOwned(laneHandle);
 
       let fallbackLogContent: string | null = null;
@@ -3077,7 +1922,7 @@ ${contextPrompt}` : contextPrompt);
         ...result,
         text: `⚠️ Fell back to ${fallbackModel} (${currentModel || "default"} at capacity)\n\n${result.text}`,
       };
-      const stagedResult: StagedCliResult = { ...this._stageResultState(finalResult), continuationProcessObserved, nativeSessionMode: "fresh" };
+      const stagedResult: StagedCliResult = { ...this._stageResultState(finalResult), nativeSessionMode: "fresh" };
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, eventContext?.threadId));

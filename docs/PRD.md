@@ -4,8 +4,9 @@
 
 Agent Bridge provides remote, durable access to provider-native coding-agent
 CLIs through Telegram and Discord. It keeps conversation turns, native
-provider sessions, ordinary Runs, continuation, cancellation, fallback, and
-safe result delivery.
+provider sessions, ordinary Runs, cancellation, fallback, and safe result
+delivery. Provider-owned background work remains inside the native CLI turn until
+that provider reports terminal completion.
 
 Engineering delegation follows repository-local `AGENTS.md` and installed
 Skills. A user aligns with the agent, then says `ship it`. The provider agent
@@ -13,8 +14,9 @@ performs the repository work, tests, review, CI, merge, and cleanup allowed by
 the local instructions and available tools.
 
 ```text
-conversation → turns/history → native session → Run/continuation
-→ provider agent + AGENTS.md + Skills + tools/native subagents → result
+conversation → turns/history → native session → ordinary Run
+→ provider agent + AGENTS.md + Skills + tools/native subagents
+→ provider-native terminal completion → result
 ```
 
 Unattended health and autonomous goal work uses an authenticated durable

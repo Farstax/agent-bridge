@@ -3,7 +3,7 @@ import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
 import { openProductionDb } from "./db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
-import { killRunOwnedDescendants } from "./turnContinuationProcesses.js";
+import { killRunOwnedDescendants } from "./runOwnedProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { createAutonomyDispositionChannel, type AutonomyDisposition, type AutonomyDispositionRecord } from "./autonomyDisposition.js";
@@ -575,7 +575,6 @@ export async function runNextAutonomousGoal(
         runId,
         eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },
         collect: (event) => event.type === "run.completed" ? eventStore.queueCompleted(event) : eventStore.collect(event),
-        finalize: () => eventStore.finalize(),
       };
       try {
         const result = await engine.executeSurfaceNeutralTurn(input);

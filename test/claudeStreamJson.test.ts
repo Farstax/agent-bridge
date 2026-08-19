@@ -81,28 +81,6 @@ describe("parseClaudeStreamJsonOutput", () => {
     expect(result?.text).toBe("second");
     expect(result?.sessionId).toBe("s2");
   });
-
-  it("marks a result when Claude recorded a background Bash tool use", () => {
-    const stdout = [
-      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_bg","name":"Bash","input":{"command":"npm test","run_in_background":true}}]}}',
-      '{"type":"result","subtype":"success","result":"I started the test suite in the background.","session_id":"sess_bg"}',
-    ].join("\n");
-
-    expect(parseClaudeStreamJsonOutput(stdout)).toEqual({
-      text: "I started the test suite in the background.",
-      sessionId: "sess_bg",
-      continuationHint: "background-process",
-    });
-  });
-
-  it("does not mark foreground Bash or unrelated tool uses", () => {
-    const stdout = [
-      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_fg","name":"Bash","input":{"command":"npm test","run_in_background":false}},{"type":"tool_use","id":"toolu_other","name":"Read","input":{"file_path":"README.md","run_in_background":true}}]}}',
-      '{"type":"result","subtype":"success","result":"Done.","session_id":"sess_fg"}',
-    ].join("\n");
-
-    expect(parseClaudeStreamJsonOutput(stdout)).toEqual({ text: "Done.", sessionId: "sess_fg" });
-  });
 });
 
 describe("encodeFileAsBase64", () => {

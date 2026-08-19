@@ -10,7 +10,7 @@ import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
-export const PROVIDER_CONTRACT_VERSION = 2;
+export const PROVIDER_CONTRACT_VERSION = 3;
 
 export type QualificationCheckStatus =
   | "pass"
@@ -335,6 +335,10 @@ async function executeNativeQualificationCheck({
     effort: null,
     homeDir,
     toolMode: adapter.capabilities.toolFree ? "none" : "default",
+    // Qualification must exercise the same provider-native terminal-completion
+    // invocation shape used by ordinary Runs. Codex deliberately ignores this
+    // flag; Claude and Agy must accept their native lifecycle boundary.
+    nativeCompletion: true,
   });
 
   if (sessionId && invocation.nativeSessionMode !== "resume") {

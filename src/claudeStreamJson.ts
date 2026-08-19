@@ -9,17 +9,6 @@ const MIME_MAP: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-export const CLAUDE_CONTINUATION_PROCESS_EVENT = "agent_bridge.continuation_process_observed";
-
-export type ClaudeContinuationHint = "background-process";
-
-export interface ClaudeStreamJsonResult {
-  text: string;
-  sessionId: string | null;
-  continuationHint?: ClaudeContinuationHint;
-  continuationProcessObserved?: boolean;
-}
-
 export async function encodeFileAsBase64(filePath: string): Promise<{ data: string; mimeType: string }> {
   const ext = extname(filePath).toLowerCase();
   const mimeType = MIME_MAP[ext] ?? "application/octet-stream";
@@ -53,40 +42,15 @@ export function buildClaudeStreamJsonInput(prompt: string, attachments: string[]
   });
 }
 
-function recordsBackgroundBashToolUse(obj: any): boolean {
-  if (obj?.type !== "assistant" || !Array.isArray(obj?.message?.content)) return false;
-  return obj.message.content.some((block: any) =>
-    block?.type === "tool_use"
-    && block?.name === "Bash"
-    && block?.input?.run_in_background === true
-  );
-}
-
-export function parseClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonResult | null {
-  let last: ClaudeStreamJsonResult | null = null;
-  let continuationHint: ClaudeContinuationHint | undefined;
-  let continuationProcessObserved = false;
+export function parseClaudeStreamJsonOutput(stdout: string): { text: string; sessionId: string | null } | null {
+  let last: { text: string; sessionId: string | null } | null = null;
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
     try {
       const obj = JSON.parse(trimmed);
-      if (obj?.type === CLAUDE_CONTINUATION_PROCESS_EVENT && obj?.observed === true) {
-        continuationProcessObserved = true;
-        if (last) last.continuationProcessObserved = true;
-        continue;
-      }
-      if (recordsBackgroundBashToolUse(obj)) {
-        continuationHint = "background-process";
-      }
-      if (typeof obj.result === "string") {
-        last = {
-          text: obj.result.trim(),
-          sessionId: obj.session_id ?? null,
-          ...(continuationHint ? { continuationHint } : {}),
-          ...(continuationProcessObserved ? { continuationProcessObserved: true } : {}),
-        };
-        continuationHint = undefined;
+      if (obj.type === "result" && typeof obj.result === "string") {
+        last = { text: obj.result.trim(), sessionId: obj.session_id ?? null };
       }
     } catch { /* skip non-JSON */ }
   }
