@@ -1,8 +1,9 @@
 # Grok Build Integration Plan
 
 **Related:** [#416](https://github.com/nickconstantinou/agent-bridge/issues/416) (required capability spike), [#96](https://github.com/nickconstantinou/agent-bridge/issues/96) (implementation, blocked on #416)  
-**Status:** Plan only — no production provider code until #416 decision gate  
-**Rollout impact:** none (docs-only)
+**Status:** Plan + **partial #416 evidence** — paused pending authentication; no production provider code; **A/B/C decision withheld**  
+**Rollout impact:** none (docs-only)  
+**Spike evidence file:** [`docs/research/grok-build-native-contract-spike.md`](../research/grok-build-native-contract-spike.md)
 
 This document is a **sequenced plan for both issues**:
 
@@ -13,13 +14,64 @@ This document is a **sequenced plan for both issues**:
 
 ---
 
+## Spike progress snapshot (2026-08-19) — pick up here
+
+Work started on #416 against a real install, then **paused** for non-interactive auth. Full success-path matrices and the A/B/C decision are **not** done.
+
+### Environment
+
+| Item | Value |
+|------|--------|
+| Grok Build version | **`grok 1.0.5 (5115b46bc9)`** (linux-x86_64) |
+| Install | Official `https://x.ai/cli/install.sh` → `/root/.grok/bin/grok` (symlinked as `grok` / `agent`) |
+| Auth on spike host | **None** — no `XAI_API_KEY`, no device login, no `~/.grok/auth.json` credentials usable for prompts |
+| Local docs | Shipped under `~/.grok/docs/user-guide/` including `14-headless-mode.md`, `15-agent-mode.md` |
+
+### Completed
+
+| #416 item | Result |
+|-----------|--------|
+| Exact version | Recorded |
+| Headless `--help` contract | `-p/--single`, `--output-format` (`plain` / `json` / `streaming-json` / `streaming-messages-json`), `--resume` / `--continue` / `--session-id` / `--fork-session`, `--always-approve`, `--permission-mode`, `--cwd`, `--max-turns`, `--no-subagents` |
+| ACP CLI surface | `grok agent stdio` (also `serve`, `headless` WS relay, `leader`) |
+| Official docs reviewed | Installed user-guide + upstream headless/agent-mode pages |
+| Headless **unauthenticated** probe | Stdout single line `{"type":"error","message":"Not signed in…"}`; **exit 1**; completes in seconds — **no interactive login hang** |
+| ACP **`initialize`** (no auth) | **Succeeds** — `protocolVersion: 1`, `loadSession: true`, session list/resume/close caps, auth methods advertised (`grok.com`), model catalog metadata (`grok-4.6` / `grok-4.5`), xAI capability extensions |
+| ACP **`session/new`** (no auth) | **Fail closed** — JSON-RPC `{"code":-32000,"message":"Authentication required","data":"no auth method id provided"}`; no `sessionId`; no prompt attempted |
+| Production Agent Bridge code | **Unchanged** (spike only) |
+
+### Not completed (blocked on auth)
+
+- Headless success path: fresh short answer, resume via session ID from `end`, tool use, reasoning/answer separation, SIGINT/SIGTERM cancel mid-stream, long answer, first-`text` latency  
+- ACP success path: authenticated `session/new`, `session/prompt`, `agent_message_chunk` ordering, `agent_thought_chunk` separation, tools, load/resume after process restart, cancel, long answer, failure after auth, native subagents, latency  
+- Narrow ACP vs headless comparison table  
+- Process-lifecycle recommendation for ACP  
+- **Decision gate A / B / C**
+
+### Preliminary observations (not a decision)
+
+1. **Headless** already looks aligned with the existing one-shot `runSupervisedProcess` seam (`-p` + structured stdout + process exit).  
+2. **ACP** is confirmed long-lived duplex; `initialize` ≠ ready-to-Run — auth is enforced at `session/new`. Plan Phase 3B (Grok-specific duplex client) remains required if ACP is chosen.  
+3. **Missing auth** fails boundedly on both surfaces in this environment — useful evidence for #96 Phase 5A.  
+4. **Streaming safety** (only `text` / `agent_message_chunk`) remains **unproven** until authenticated traces exist.
+
+### Resume checklist (next session)
+
+1. Provide non-interactive auth on the spike host: `XAI_API_KEY` **or** `grok login --device-code` (or equivalent).  
+2. Re-install or confirm `grok --version` still matches (re-record if drifted).  
+3. Run remaining probes in §3.2 and §3.3 below; sanitize traces into `docs/research/grok-build-native-contract-spike.md`.  
+4. Fill comparison + lifecycle + latency; emit **A / B / C**.  
+5. Only then start #96 Phases 1–7.
+
+---
+
 ## Review repairs (vs earlier drafts)
 
-1. **ACP does not fit the one-shot invocation seam.** Current `runSupervisedProcess()` writes stdin once, closes it, and returns buffered stdout on exit. ACP is long-lived bidirectional JSON-RPC. If #416 selects ACP, implementation uses a **Grok-specific duplex executor/client**, not `buildInvocation()` / `parseResult()` alone.
+1. **ACP does not fit the one-shot invocation seam.** Current `runSupervisedProcess()` writes stdin once, closes it, and returns buffered stdout on exit. ACP is long-lived bidirectional JSON-RPC. If #416 selects ACP, implementation uses a **Grok-specific duplex executor/client**, not `buildInvocation()` / `parseResult()` alone. **Partial live confirmation:** ACP `initialize` keeps a stdio process up; session creation is a separate RPC.
 2. **TDD is per-phase.** Every behaviour-adding phase names a focused red that fails because the desired capability is absent, then the minimum green.
 3. **Full provider vocabulary + dispatch fan-out** is planned (`PROVIDER_IDS`, registry, config/`BotKind`/`CliOptions`, `cli.ts`, selection, Doctor).
-4. **#96 auth + install isolation** have executable acceptance steps.
-5. **#416 is fully factored in** — Phase 0 below is the operational checklist for the spike issue itself (probes, safety gate, comparison dimensions, measurement, decision gate, acceptance), not a one-line dependency note.
+4. **#96 auth + install isolation** have executable acceptance steps. **Partial live confirmation:** headless and ACP already fail closed without interactive hang when unsigned-in.
+5. **#416 is fully factored in** — Phase 0 below is the operational checklist for the spike issue itself.
 
 ---
 
@@ -68,41 +120,44 @@ Hard-coded fan-out to extend for #96: `types.ts` `PROVIDER_IDS`, `registry.ts`, 
 
 **This phase is the body of issue #416.** No production Agent Bridge provider is added or changed. Finish with a clear A/B/C recommendation and, if justified, confirm #96 remains the narrow integration issue (or open a replacement if scope must change).
 
-Deliverable file: `docs/research/grok-build-native-contract-spike.md` (or equivalent under `docs/roadmap/`), plus sanitized trace artifacts as needed.
+Deliverable file: `docs/research/grok-build-native-contract-spike.md`, plus sanitized trace artifacts as needed.
+
+**Current state:** inspection + unauthenticated probes recorded (see **Spike progress snapshot** above and the research file). Authenticated matrices and decision **outstanding**.
 
 ### 3.0 Official references (re-validate at spike time)
 
 - Headless: https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md  
 - ACP: https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md  
+- Also installed locally with the CLI under `~/.grok/docs/user-guide/`
 
 Use official docs **and** repository source. Do not infer contracts from TUI rendering.
 
 ### 3.1 Phase 0 inspection — exact supported contracts
 
-Record:
-
-1. Exact `grok --version`.
-2. Headless `--help` for `--output-format streaming-json`, session IDs, resume/continue, cancellation, permissions.
-3. ACP startup/initialize capabilities.
-4. Supported session create/load/resume operations.
-5. All standard and xAI extension notifications relevant to Agent Bridge.
-6. Whether protocol/version/capability discovery is sufficient to **fail closed across drift**.
+| # | Item | Status (2026-08-19) |
+|---|------|---------------------|
+| 1 | Exact `grok --version` | **Done** — `1.0.5 (5115b46bc9)` |
+| 2 | Headless help: streaming-json, session, resume, cancel, permissions | **Done** — see snapshot |
+| 3 | ACP startup/initialize capabilities | **Done** — live `initialize` without auth |
+| 4 | Session create/load/resume operations | **Partial** — capabilities advertised; authenticated create/load/resume **not** exercised |
+| 5 | Standard + xAI extension notifications | **Partial** — capability `_meta` seen; full event vocabulary needs success-path traces |
+| 6 | Fail closed across drift via capability discovery | **Partial** — initialize surface is rich; not proven across version drift |
 
 ### 3.2 Required real probes — headless `streaming-json`
 
-Capture **sanitized** traces for at least:
+| # | Probe | Status |
+|---|-------|--------|
+| 1 | Fresh short answer | **Blocked** (auth) |
+| 2 | Resumed session via returned session ID | **Blocked** (auth) |
+| 3 | Tool use followed by answer | **Blocked** (auth) |
+| 4 | Reasoning + answer separation | **Blocked** (auth) |
+| 5 | Cancellation (SIGINT/SIGTERM or documented) | **Blocked** (auth) |
+| 6 | Failure/error path | **Done (unauthenticated)** — structured `type:error`, exit 1 |
+| 7 | Long answer | **Blocked** (auth) |
 
-1. Fresh short answer  
-2. Resumed session using the returned session ID  
-3. Tool use followed by answer  
-4. Reasoning + answer separation  
-5. Cancellation via SIGINT/SIGTERM or documented mechanism  
-6. Failure/error path  
-7. Long answer  
+**Prove when unblocked:** `text` is user-visible answer content; `thought`, tool/lifecycle, unknown, and error events cannot leak into Telegram.
 
-**Prove:** `text` events are user-visible answer content; `thought`, tool/lifecycle, unknown, and error events **cannot** leak into Telegram.
-
-Documented headless event types (non-exhaustive; treat as open set and fail closed on unknown):
+Documented headless event types (non-exhaustive; fail closed on unknown):
 
 | Type | Role |
 |------|------|
@@ -110,22 +165,22 @@ Documented headless event types (non-exhaustive; treat as open set and fail clos
 | `thought` | Reasoning — never surface |
 | `tool_call` / `tool_call_update` | Tool lifecycle — never surface |
 | `end` | Terminal metadata including `sessionId` |
-| `error` | Failure |
+| `error` | Failure (observed unauthenticated) |
 
 ### 3.3 Required real probes — ACP
 
-Capture **sanitized** JSON-RPC traces for at least:
-
-1. `initialize` + `session/new`  
-2. Short answer via `session/prompt`  
-3. `agent_message_chunk` ordering and terminal response  
-4. Reasoning via `agent_thought_chunk` kept separate  
-5. Tool call + tool call update followed by answer  
-6. Session load/resume after process restart/reconnect  
-7. Cancellation  
-8. Long answer  
-9. Failure path  
-10. Native subagent behaviour if exposed by the supported release — **without** adding Agent Bridge-owned subagent state  
+| # | Probe | Status |
+|---|-------|--------|
+| 1 | `initialize` + `session/new` | **Partial** — `initialize` OK; `session/new` auth-required error without credentials |
+| 2 | Short answer via `session/prompt` | **Blocked** (auth) |
+| 3 | `agent_message_chunk` ordering + terminal | **Blocked** (auth) |
+| 4 | `agent_thought_chunk` kept separate | **Blocked** (auth) |
+| 5 | Tool call + update + answer | **Blocked** (auth) |
+| 6 | Session load/resume after process restart | **Blocked** (auth) |
+| 7 | Cancellation | **Blocked** (auth) |
+| 8 | Long answer | **Blocked** (auth) |
+| 9 | Failure path | **Partial** — unauthenticated `session/new` error only |
+| 10 | Native subagent if exposed | **Blocked** (auth) |
 
 ### 3.4 Safety gate for answer streaming (#416 — binding on #96)
 
@@ -136,54 +191,37 @@ Stream **only** event types explicitly documented as user-visible answer text:
 
 Everything else must fail closed. **Never** surface: thought / `agent_thought_chunk`, tool inputs/results, plan/protocol events, permission requests, raw NDJSON/JSON-RPC, stderr/logging, credentials, unknown event types. **No heuristic terminal parsing.**
 
+**Status:** Gate definition stands; **not yet proven** on success-path traces.
+
 ### 3.5 Narrow comparison dimensions (#416)
 
-Compare ACP vs headless **only** on:
+Compare ACP vs headless **only** on: first safe answer availability; session identity/resume; restart/reconnect; cancellation; tool/reasoning separation; final authoritative result; process ownership complexity; compatibility with Run/fencing/delivery; later native subagents/orchestration.
 
-- first safe answer availability  
-- session identity/resume semantics  
-- restart/reconnect behaviour  
-- cancellation  
-- tool/reasoning separation  
-- final authoritative result  
-- process ownership complexity  
-- compatibility with Agent Bridge Run/fencing/delivery semantics  
-- ability to preserve Grok-native subagents/orchestration later  
-
-Do **not** turn the spike into a broad product evaluation.
+**Status:** Comparison table **not started** (needs both success paths).
 
 ### 3.6 Process-lifecycle question (if ACP is a contender)
 
-Determine the smallest safe ownership model. Prefer a **bounded provider-native process per Agent Bridge provider runtime/workspace**, with Grok owning sessions underneath. Explicitly test restart/reconnect and `session/load` before any Bridge-owned daemon/session reconstruction. **Do not** create a generic provider-daemon framework in the spike or in #96.
+Prefer a **bounded provider-native process per Agent Bridge provider runtime/workspace**, with Grok owning sessions underneath. Explicitly test restart/reconnect and `session/load` before any Bridge-owned daemon/session reconstruction. **Do not** create a generic provider-daemon framework.
 
-This is the evidence that decides whether Phase 3B (duplex client) is justified vs “not ready” or headless.
+**Status:** Unauthenticated ACP confirms long-lived stdio process; authenticated lifecycle **not** tested.
 
 ### 3.7 Measurement
 
-For representative short turns capture:
+Capture for short turns: `prompt accepted` → `first provider event` → `first eligible answer chunk` → `terminal provider result`.
 
-```text
-prompt accepted
-first provider event
-first eligible answer chunk
-terminal provider result
-```
-
-Compare ACP and headless potential time-to-first-visible answer. Presentation-latency evidence only — not a model benchmark.
+**Status:** **Not measured** (no successful prompts).
 
 ### 3.8 Decision gate (exactly as #416)
 
-End with **one** recommendation:
+End with **one** recommendation: **A — ACP** | **B — headless** | **C — not ready**.
 
-- **A — ACP** — only if evidence proves it is the richest stable contract without unnecessary Bridge machinery.  
-- **B — headless `streaming-json`** — only if it preserves required session/cancellation/safety semantics and is materially simpler.  
-- **C — not ready** — if neither is sufficiently safe/stable; document the exact limitation and defer #96. **Do not invent a third parsing layer.**
+**Status:** **Withheld** — resume after authenticated probes.
 
 ### 3.9 #416 acceptance criteria (checklist for spike close)
 
-- [ ] Exact Grok Build version recorded  
-- [ ] Official ACP and headless docs/source reviewed and linked  
-- [ ] Sanitized real traces for both surfaces  
+- [x] Exact Grok Build version recorded  
+- [x] Official ACP and headless docs/source reviewed and linked  
+- [ ] Sanitized real traces for **both** surfaces (success paths outstanding)  
 - [ ] User-visible answer event discrimination proven  
 - [ ] Reasoning/tool/protocol separation proven  
 - [ ] Fresh/resumed/reloaded session behaviour documented  
@@ -191,18 +229,19 @@ End with **one** recommendation:
 - [ ] Restart/reconnect behaviour documented for ACP  
 - [ ] Potential first-visible latency measured  
 - [ ] ACP vs headless recommendation explicit and evidence-based  
-- [ ] Follow-up integration remains #96 only if justified (or issue updated)  
-- [ ] **No** production Agent Bridge provider added or changed by the spike  
+- [ ] Follow-up integration remains #96 only if justified  
+- [x] **No** production Agent Bridge provider added or changed by the spike  
+- [x] Unauthenticated fail-closed behaviour documented for headless + ACP  
 
-Related spikes for pattern reference: #413 (Codex App Server), #414 (Agy stream-json), #415 (Kimchi).
+Related spikes: #413 (Codex App Server), #414 (Agy stream-json), #415 (Kimchi).
 
 ---
 
 ## 4. Phases 1–7 — Execute #96 only after #416 decision ≠ C
 
-**Hard gate:** If #416 → **C**, stop. Keep #96 deferred.
+**Hard gate:** If #416 → **C**, stop. Keep #96 deferred. **Do not start these phases while the decision is withheld.**
 
-Implementation must follow the **selected** native contract and #416 traces, not older assumptions in #96’s text. Capabilities registered must be **only those proven** by #416.
+Implementation must follow the **selected** native contract and #416 traces. Capabilities registered must be **only those proven** by #416.
 
 ### Phase 1 – Provider vocabulary + registration (test-first)
 
@@ -257,11 +296,15 @@ Implements #416 safety gate in production code.
 
 **Green:** child env/argv non-interactive; classification `auth_required` (or equivalent) without broad false positives. Live qual may report `not_authenticated`.
 
+**Spike note:** Unauthenticated headless (`type:error`, exit 1) and ACP (`-32000 Authentication required` on `session/new`) already demonstrate bounded failure shapes usable as fixtures.
+
 #### 5B – Install must not overwrite/shadow another binary
 
 **Red:** explicit path or non-colliding name policy tests; Doctor/config fail closed on missing/collision.
 
 **Green:** isolated install path; `resolveProviderExecutable("grok")` never silently picks arbitrary PATH collisions. Ops docs: update/drift/rollback/removal without foreign tool overwrite.
+
+**Spike note:** Official installer also links `agent` → same binary; collision policy must account for both `grok` and `agent` names on PATH.
 
 ### Phase 6 – Error classification, qualification, doctor, selection policy
 
@@ -297,7 +340,7 @@ From #416 and #96 combined:
 ## 6. Rollout impact
 
 - This plan PR: **none**  
-- #416 spike PR: **none** (docs + evidence)  
+- #416 spike completion: **none** (docs + evidence)  
 - #96 implementation: **none** if opt-in config only; **required** only if install scripts, default binaries, or systemd change  
 
 ---
@@ -305,6 +348,7 @@ From #416 and #96 combined:
 ## 7. Acceptance for this plan document
 
 - [x] #416 is fully specified as Phase 0 (inspect, probes, safety gate, compare, lifecycle, measure, A/B/C, acceptance checklist)  
+- [x] Partial #416 results recorded with explicit resume checklist  
 - [x] #96 is explicitly blocked on #416 ≠ C and on following the selected contract  
 - [x] Headless → one-shot seam; ACP → Grok duplex client  
 - [x] Fan-out, per-phase TDD, auth, install collision planned  
@@ -314,12 +358,12 @@ From #416 and #96 combined:
 
 ## 8. Suggested PR sequence
 
-1. **This plan PR** (docs).  
-2. **Spike PR** — closes or advances **#416** (traces + A/B/C only).  
+1. **This plan PR** (docs + partial spike evidence).  
+2. **Spike completion** — finish **#416** after auth (remaining traces + A/B/C); update research doc.  
 3. **Implementation PR** — closes **#96** on the chosen branch of Phase 3 + Phases 1–2, 4–7.  
 
 ---
 
 ## Agent pickup note
 
-**Do #416 first, completely.** Prefer the provider’s richest *stable* native contract that fits a safe Bridge seam. Headless maps to today’s one-shot supervisor; ACP needs a Grok-owned duplex client and #416’s process-lifecycle evidence. Stream only `text` / `agent_message_chunk`. Fail closed on everything else. Auth fails boundedly without interactive login. Install uses an isolated executable path. If #416 says not ready, do not implement #96.
+**Paused mid-#416.** Next agent: authenticate the spike host, continue from **Spike progress snapshot → Resume checklist**, complete §3.2–3.8, then decide A/B/C. Do not implement #96 while the decision is withheld. Prefer the provider’s richest *stable* native contract that fits a safe Bridge seam. Headless maps to today’s one-shot supervisor; ACP needs a Grok-owned duplex client. Stream only `text` / `agent_message_chunk`. Fail closed on everything else. Auth fails boundedly without interactive login (already observed). Install uses an isolated executable path (watch for installer `agent` symlink collisions).
