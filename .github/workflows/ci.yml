@@ -7,31 +7,42 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  issue-480-migration-artifact:
+  issue-480-migration:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 487
-    name: Issue 480 migration artifact
+    name: Issue 480 migration
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the exact event head
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Apply migration in workspace only
+          fetch-depth: 0
+      - name: Apply migration
         run: python3 .github/issue-480-migrate.py
-      - name: Upload migrated files
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@v4
         with:
-          name: issue-480-migrated-files
-          path: |
-            src/autonomousGoalRuntime.ts
-            test/autonomousGoalRuntime.test.ts
+          node-version: 24.15.0
+          cache: npm
+      - run: npm ci
+      - name: Focused autonomy tests
+        run: npx vitest run test/autonomousGoalRuntime.test.ts test/autonomyDispositionContract.test.ts
+      - run: npm run typecheck
+      - name: Commit migrated files only
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/autonomousGoalRuntime.ts test/autonomousGoalRuntime.test.ts
+          git diff --cached --quiet && exit 0
+          git commit -m "test: migrate autonomous runtime to disposition actions"
+          git push origin HEAD:feat/issue-480-autonomy-disposition
 
   test:
     name: Test & Typecheck
