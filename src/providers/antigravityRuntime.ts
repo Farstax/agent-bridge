@@ -758,7 +758,10 @@ export function parseResult(
   logContent?: string | null,
   outputFormat?: "text" | "json" | "stream-json" | null,
 ): CliResult {
-  const outputMode = outputFormat || resolveAntigravityOutputMode();
+  let outputMode = outputFormat || resolveAntigravityOutputMode();
+  if (!outputFormat && outputMode === "text" && (stdout.trim().startsWith('{"event"') || stdout.trim().includes('\n{"event"'))) {
+    outputMode = "stream-json";
+  }
   if (outputMode === "json") return parseAntigravityNativeJsonResult(stdout);
   if (outputMode === "stream-json") return parseAntigravityStreamJsonResult(stdout);
 
