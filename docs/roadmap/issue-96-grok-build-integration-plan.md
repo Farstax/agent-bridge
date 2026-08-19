@@ -1,280 +1,325 @@
 # Grok Build Integration Plan
 
-**Related:** #416 (required spike), #96 (implementation, blocked on #416)  
+**Related:** [#416](https://github.com/nickconstantinou/agent-bridge/issues/416) (required capability spike), [#96](https://github.com/nickconstantinou/agent-bridge/issues/96) (implementation, blocked on #416)  
 **Status:** Plan only — no production provider code until #416 decision gate  
 **Rollout impact:** none (docs-only)
 
-## Review repairs (vs first draft)
+This document is a **sequenced plan for both issues**:
 
-This revision addresses four material plan defects:
+1. Execute **#416** exactly (inspect → probe → compare → decide A/B/C).  
+2. Only then implement **#96** on the contract #416 selected, using the seams and TDD phases below.
 
-1. **ACP does not fit the one-shot invocation seam.** Current `runSupervisedProcess()` writes stdin once, closes it, and returns buffered stdout on process exit. ACP is a long-lived bidirectional JSON-RPC process. If #416 selects ACP, implementation uses a **Grok-specific duplex executor/client**, not `buildInvocation()` / `parseResult()` alone.
-2. **TDD sequence is per-phase.** Every behaviour-adding phase names a focused red test that fails because the desired capability is absent, then the minimum green implementation.
-3. **Full provider vocabulary + dispatch fan-out** is planned: `PROVIDER_IDS`, registry, `BotKind` / config / `CliOptions`, `cli.ts` build/parse dispatch, selection chain maps, Doctor maps, and their tests.
-4. **#96 acceptance for auth and install isolation** is planned with executable tests (deterministic unauthenticated failure + isolated executable/path collision policy), not prose alone.
+#96 acceptance criterion zero is: *“#416 is complete with an explicit ACP/headless/not-ready decision and sanitized real traces.”* Nothing in Phases 1–7 of #96 may start before that.
+
+---
+
+## Review repairs (vs earlier drafts)
+
+1. **ACP does not fit the one-shot invocation seam.** Current `runSupervisedProcess()` writes stdin once, closes it, and returns buffered stdout on exit. ACP is long-lived bidirectional JSON-RPC. If #416 selects ACP, implementation uses a **Grok-specific duplex executor/client**, not `buildInvocation()` / `parseResult()` alone.
+2. **TDD is per-phase.** Every behaviour-adding phase names a focused red that fails because the desired capability is absent, then the minimum green.
+3. **Full provider vocabulary + dispatch fan-out** is planned (`PROVIDER_IDS`, registry, config/`BotKind`/`CliOptions`, `cli.ts`, selection, Doctor).
+4. **#96 auth + install isolation** have executable acceptance steps.
+5. **#416 is fully factored in** — Phase 0 below is the operational checklist for the spike issue itself (probes, safety gate, comparison dimensions, measurement, decision gate, acceptance), not a one-line dependency note.
 
 ---
 
 ## 1. Executive outcome
 
-Add Grok Build as an optional native CLI provider in Agent Bridge by leaning into Grok’s own harness (ACP agent mode **or** headless `streaming-json`).
+Add Grok Build as an optional native CLI provider by leaning into Grok’s own harness (ACP **or** headless `streaming-json`), after #416 proves which surface is safe.
 
-Agent Bridge continues to own only:
+**Agent Bridge owns:** durable Run identity, cancellation/fencing, continuation/restart correlation, delivery, idempotency, hard mechanical safety, provider selection/fallback.  
+**Grok owns:** session state, model/tool loop, reasoning, permissions, native subagents/orchestration, provider lifecycle under the selected contract.
 
-- durable Run identity & ownership
-- cancellation / fencing
-- continuation / restart recovery correlation
-- delivery & idempotency
-- hard mechanical safety invariants
-- provider selection / fallback eligibility
+**No** second agent state machine, no heuristic parsing, no generic provider-daemon framework, no Worker resurrection, no third invented parsing layer (#416 decision gate C).
 
-Grok owns:
-
-- session / thread state
-- model + tool loop
-- reasoning stream
-- permissions
-- native subagents / orchestration
-
-**No** second agent state machine, no heuristic answer/reasoning parsing, no generic provider-daemon framework, no Worker resurrection.
-
-### Contract-conditional execution seam (critical)
+### Contract-conditional execution seam (binding after #416)
 
 | #416 decision | Execution path |
 |---------------|----------------|
-| **B – headless `streaming-json`** | Fits the existing one-shot seam: `buildInvocation` → `runSupervisedProcess` → `parseResult` (and optional fail-closed stream decoder). |
-| **A – ACP** | **Does not** fit `runSupervisedProcess` as currently designed. Requires a **provider-owned Grok ACP client/executor** that owns process lifetime, duplex stdin/stdout JSON-RPC, request correlation, cancellation/fencing, session new/load/resume, and final-result ownership. This is Grok-specific machinery under `src/providers/`, not a generic daemon framework. |
-| **C – not ready** | Stop. No production provider. |
+| **B – headless `streaming-json`** | Existing one-shot seam: `buildInvocation` → `runSupervisedProcess` → `parseResult` (+ optional fail-closed stream decoder). |
+| **A – ACP** | **Grok-specific duplex ACP client** under `src/providers/`: process lifetime, JSON-RPC, request correlation, cancel/fence, session new/load/resume, final-result ownership. Not a generic daemon framework. |
+| **C – not ready** | Stop. Defer #96. Do not invent adapters. |
 
-Headless is the natural first production path if evidence is equal; ACP is only chosen when #416 proves it is worth the extra executor surface.
+#416’s preferred *test* direction is ACP-as-leading-candidate, but selection must be evidence-based: if headless provides the same safety/session/cancel semantics with materially less Bridge machinery, recommend the smaller integration.
 
 ---
 
 ## 2. Architecture alignment
 
-| Principle | How this plan obeys it |
-|-----------|------------------------|
-| Native CLI first | Use only Grok’s documented ACP or `streaming-json` contracts |
-| Provider adapter owns protocol | `grokRuntime.ts` for headless; `grokAcpClient.ts` (name TBD) for ACP |
-| Shared runtime stays agnostic | `cliSupervisor` remains one-shot; ACP does not force a generic duplex supervisor |
-| TDD red-green-refactor | Each phase below has explicit red → green |
-| Fail-closed on unknown protocol | Mirror `claudeAnswerPresentation.ts` |
-| Qualification is mechanical | version / fresh / resume only |
+Matches #416’s architecture rule and `AGENTS.md`:
 
-Current one-shot seam (must not be misused for ACP):
+> Prefer the provider’s richest stable native integration contract. Agent Bridge should stitch Grok Build into durable Run and delivery semantics, not recreate the Grok harness.
 
-- `cli.ts` → `buildCliInvocation` / `parseCliResult` hard-code `codex` / `claude` / `antigravity`
-- `runSupervisedProcess` → single stdin write, close, wait for exit, buffer stdout
-- Claude streaming is **stdout decode during that one-shot run**, not a long-lived RPC session
+| Principle | Plan behaviour |
+|-----------|----------------|
+| Native CLI first | Only documented ACP or `streaming-json` |
+| Provider owns protocol | `grokRuntime.ts` (headless) or `grokAcpClient.ts` (ACP) |
+| Shared runtime agnostic | One-shot supervisor unchanged; ACP does not force a generic duplex supervisor |
+| Fail-closed streaming | #416 safety gate: only `text` / `agent_message_chunk`; never thought/tool/plan/permission/raw/unknown |
+| TDD | Per-phase red → green for #96; spike is evidence-only |
 
-Current hard-coded fan-out (must be extended, not only registry):
+Current one-shot seam (must not be misused for ACP): `cli.ts` dispatch + `runSupervisedProcess` (single stdin write, close, buffer stdout). Claude streaming is stdout decode during that one-shot run, not long-lived RPC.
 
-- `src/providers/types.ts` — `PROVIDER_IDS`
-- `src/providers/registry.ts` — adapters + bot-name map
-- `src/providers/selection.ts` — `PROVIDER_TO_CHAIN_KIND`, `ChainCliKind`
-- `src/providers/doctor.ts` — `KNOWN_CHAIN_KINDS`, `CHAIN_KIND_TO_PROVIDER_ID`
-- `src/cli.ts` — `buildCliInvocation` / `parseCliResult` / antigravity special path
-- Config / types — `BotKind`, `BridgeConfig.bots`, `CliOptions.bot`, event context bot fields (inspect exact current definitions at implementation time)
+Hard-coded fan-out to extend for #96: `types.ts` `PROVIDER_IDS`, `registry.ts`, `selection.ts` maps, `doctor.ts` maps, `cli.ts` build/parse, config/`BotKind`/`CliOptions`/event context.
 
 ---
 
-## 3. Decision gate (owned by #416)
+## 3. Phase 0 — Execute #416 (capability spike only)
 
-Before any production code:
+**This phase is the body of issue #416.** No production Agent Bridge provider is added or changed. Finish with a clear A/B/C recommendation and, if justified, confirm #96 remains the narrow integration issue (or open a replacement if scope must change).
 
-1. Record exact `grok --version`.
-2. Capture sanitized real traces for both surfaces (fresh, resume, tool use, reasoning separation, cancellation, long answer, error).
-3. Prove user-visible answer events are discriminable without heuristics.
-4. Measure first-safe-answer latency.
-5. Document process-lifetime implications of ACP (long-lived duplex vs one-shot).
-6. Explicit recommendation: **A – ACP** | **B – headless** | **C – not ready**.
+Deliverable file: `docs/research/grok-build-native-contract-spike.md` (or equivalent under `docs/roadmap/`), plus sanitized trace artifacts as needed.
 
-### Official contract references (re-validate at spike time)
+### 3.0 Official references (re-validate at spike time)
 
-- Headless: https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md
-- ACP agent mode: https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md
+- Headless: https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/14-headless-mode.md  
+- ACP: https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md  
 
-Headless events (non-exhaustive): `text` (answer), `thought`, `tool_call` / `tool_call_update`, `end` (+ `sessionId`), `error`.
+Use official docs **and** repository source. Do not infer contracts from TUI rendering.
 
-ACP updates of interest: `agent_message_chunk` (answer), `agent_thought_chunk`, `tool_call` / `tool_call_update`, `plan`.
+### 3.1 Phase 0 inspection — exact supported contracts
+
+Record:
+
+1. Exact `grok --version`.
+2. Headless `--help` for `--output-format streaming-json`, session IDs, resume/continue, cancellation, permissions.
+3. ACP startup/initialize capabilities.
+4. Supported session create/load/resume operations.
+5. All standard and xAI extension notifications relevant to Agent Bridge.
+6. Whether protocol/version/capability discovery is sufficient to **fail closed across drift**.
+
+### 3.2 Required real probes — headless `streaming-json`
+
+Capture **sanitized** traces for at least:
+
+1. Fresh short answer  
+2. Resumed session using the returned session ID  
+3. Tool use followed by answer  
+4. Reasoning + answer separation  
+5. Cancellation via SIGINT/SIGTERM or documented mechanism  
+6. Failure/error path  
+7. Long answer  
+
+**Prove:** `text` events are user-visible answer content; `thought`, tool/lifecycle, unknown, and error events **cannot** leak into Telegram.
+
+Documented headless event types (non-exhaustive; treat as open set and fail closed on unknown):
+
+| Type | Role |
+|------|------|
+| `text` | Candidate user-visible answer chunk |
+| `thought` | Reasoning — never surface |
+| `tool_call` / `tool_call_update` | Tool lifecycle — never surface |
+| `end` | Terminal metadata including `sessionId` |
+| `error` | Failure |
+
+### 3.3 Required real probes — ACP
+
+Capture **sanitized** JSON-RPC traces for at least:
+
+1. `initialize` + `session/new`  
+2. Short answer via `session/prompt`  
+3. `agent_message_chunk` ordering and terminal response  
+4. Reasoning via `agent_thought_chunk` kept separate  
+5. Tool call + tool call update followed by answer  
+6. Session load/resume after process restart/reconnect  
+7. Cancellation  
+8. Long answer  
+9. Failure path  
+10. Native subagent behaviour if exposed by the supported release — **without** adding Agent Bridge-owned subagent state  
+
+### 3.4 Safety gate for answer streaming (#416 — binding on #96)
+
+Stream **only** event types explicitly documented as user-visible answer text:
+
+- headless: candidate `text`  
+- ACP: candidate `agent_message_chunk`  
+
+Everything else must fail closed. **Never** surface: thought / `agent_thought_chunk`, tool inputs/results, plan/protocol events, permission requests, raw NDJSON/JSON-RPC, stderr/logging, credentials, unknown event types. **No heuristic terminal parsing.**
+
+### 3.5 Narrow comparison dimensions (#416)
+
+Compare ACP vs headless **only** on:
+
+- first safe answer availability  
+- session identity/resume semantics  
+- restart/reconnect behaviour  
+- cancellation  
+- tool/reasoning separation  
+- final authoritative result  
+- process ownership complexity  
+- compatibility with Agent Bridge Run/fencing/delivery semantics  
+- ability to preserve Grok-native subagents/orchestration later  
+
+Do **not** turn the spike into a broad product evaluation.
+
+### 3.6 Process-lifecycle question (if ACP is a contender)
+
+Determine the smallest safe ownership model. Prefer a **bounded provider-native process per Agent Bridge provider runtime/workspace**, with Grok owning sessions underneath. Explicitly test restart/reconnect and `session/load` before any Bridge-owned daemon/session reconstruction. **Do not** create a generic provider-daemon framework in the spike or in #96.
+
+This is the evidence that decides whether Phase 3B (duplex client) is justified vs “not ready” or headless.
+
+### 3.7 Measurement
+
+For representative short turns capture:
+
+```text
+prompt accepted
+first provider event
+first eligible answer chunk
+terminal provider result
+```
+
+Compare ACP and headless potential time-to-first-visible answer. Presentation-latency evidence only — not a model benchmark.
+
+### 3.8 Decision gate (exactly as #416)
+
+End with **one** recommendation:
+
+- **A — ACP** — only if evidence proves it is the richest stable contract without unnecessary Bridge machinery.  
+- **B — headless `streaming-json`** — only if it preserves required session/cancellation/safety semantics and is materially simpler.  
+- **C — not ready** — if neither is sufficiently safe/stable; document the exact limitation and defer #96. **Do not invent a third parsing layer.**
+
+### 3.9 #416 acceptance criteria (checklist for spike close)
+
+- [ ] Exact Grok Build version recorded  
+- [ ] Official ACP and headless docs/source reviewed and linked  
+- [ ] Sanitized real traces for both surfaces  
+- [ ] User-visible answer event discrimination proven  
+- [ ] Reasoning/tool/protocol separation proven  
+- [ ] Fresh/resumed/reloaded session behaviour documented  
+- [ ] Cancellation and terminal semantics documented  
+- [ ] Restart/reconnect behaviour documented for ACP  
+- [ ] Potential first-visible latency measured  
+- [ ] ACP vs headless recommendation explicit and evidence-based  
+- [ ] Follow-up integration remains #96 only if justified (or issue updated)  
+- [ ] **No** production Agent Bridge provider added or changed by the spike  
+
+Related spikes for pattern reference: #413 (Codex App Server), #414 (Agy stream-json), #415 (Kimchi).
 
 ---
 
-## 4. Implementation plan (after #416)
+## 4. Phases 1–7 — Execute #96 only after #416 decision ≠ C
 
-### Phase 0 – Spike deliverable (docs + evidence only)
+**Hard gate:** If #416 → **C**, stop. Keep #96 deferred.
 
-**Red:** none (docs).  
-**Green deliverable:** `docs/research/grok-build-native-contract-spike.md` with version, sanitized traces, comparison table, latency, ACP lifetime notes, and A/B/C decision.  
-**No production provider code.**
-
----
+Implementation must follow the **selected** native contract and #416 traces, not older assumptions in #96’s text. Capabilities registered must be **only those proven** by #416.
 
 ### Phase 1 – Provider vocabulary + registration (test-first)
 
-**Desired behaviour:** Grok is a known provider id with registry metadata and config shape, without yet executing production Runs.
+**Desired:** Grok is a known provider id with registry metadata and config shape.
 
-**Red (focused tests must fail for these reasons):**
+**Red** (must fail because capability is missing — not because “Grok is absent”):
 
-- `PROVIDER_IDS` includes `"grok"` (fails: only `codex`/`claude`/`agy` exist).
-- `getProviderAdapter("grok")` returns a stable adapter with `id: "grok"`, configurable executable path, capabilities initially conservative (`fallbackTarget: false` unless spike evidence says otherwise).
-- `loadBotsConfig` / bot config accepts a `grok` entry (command path, model prefs as needed) without putting credentials in argv.
-- Bot/provider name mapping resolves `"grok"` where applicable.
+- `PROVIDER_IDS` includes `"grok"`  
+- `getProviderAdapter("grok")` returns stable adapter; executable is **exact configurable path**, not a generic `agent` alias (#96)  
+- Config accepts `grok` entry; credentials never in argv  
+- Capabilities initially conservative; `interactive` / `fallbackTarget` / tool-free only if #416 evidence supports them  
 
-**Green:** minimum type + registry + config wiring so those tests pass. Still no live execution path required in this phase if dispatch is Phase 2.
+**Green:** minimum types + registry + config.
 
-Do **not** write a red test that asserts Grok is absent or that `getProviderAdapter("grok")` throws — that is current behaviour and is already green / non-diagnostic of the feature.
+### Phase 2 – Dispatch fan-out (test-first)
 
----
+**Desired:** bot/provider `grok` reaches Grok-owned path, not `Unknown bot type` or empty default invocation.
 
-### Phase 2 – Dispatch fan-out across hard-coded seams (test-first)
+**Red:** `buildCliInvocation` / `parseCliResult` (or ACP client entry) for `grok`; selection/Doctor exhaustive maps; `BotKind` / `CliOptions` / event-context unions as needed.
 
-**Desired behaviour:** Choosing bot/provider `grok` reaches Grok-owned build/parse (or ACP client) rather than falling through to `Unknown bot type` or a no-op default invocation.
+**Green:** extend `cli.ts`, `selection.ts`, `doctor.ts`, type unions. Prefer small table-driven dispatch; no plugin framework.
 
-**Red:**
+### Phase 3 – Execution path (contract-conditional)
 
-- `buildCliInvocation({ bot: "grok", ... })` produces a Grok-shaped invocation (or delegates to ACP client entry) — fails today (falls through to empty default args path).
-- `parseCliResult({ bot: "grok", stdout })` parses a fixture Grok envelope — fails today (`Unknown bot type`).
-- Selection / Doctor chain maps accept or deliberately exclude Grok according to capability flags (exhaustive maps must not omit a registered interactive provider without an explicit test).
-- Any `BotKind` / `CliOptions.bot` / event-context unions that hard-code three providers accept `grok` or document a deliberate narrower vocabulary with tests.
+#### 3A — #416 selected **headless**
 
-**Green:** extend `cli.ts` dispatch, `selection.ts` maps, `doctor.ts` maps, and type unions. Prefer table-driven dispatch over growing if/else chains when a small local refactor is clearly safer; do not invent a plugin framework.
+**Red:** NDJSON fixtures — `text` + `end.sessionId`; thought/tool/unknown never in user text; resume argv per spike; cancel/fence behaviour.
 
----
+**Green:** `grokRuntime.ts` `buildInvocation` / `parseResult` on existing one-shot seam. Shared prompt wrapping, effort, toolMode as Claude/Codex.
 
-### Phase 3 – Execution path (contract-conditional, test-first)
+#### 3B — #416 selected **ACP**
 
-#### 3A — If #416 selects **headless `streaming-json`**
+**Red:** Fake duplex transport — initialize, session/new or load, prompt, message chunks, terminal result; unknown notifications fail closed; cancel after partial chunks does not final-deliver; auth absence bounded (Phase 5).
 
-**Seam:** existing one-shot path.
+**Green:** Grok-owned duplex client (process, JSON-RPC, correlation, cancel/fence, session load). Prefer bounded process per runtime/workspace per #416 process-lifecycle guidance. **Not** `runSupervisedProcess` as protocol engine. **Not** a generic daemon framework.
 
-**Red:**
+Native session/resume/reload: **proven in #416 or explicitly disabled** in #96 (#96 acceptance).
 
-- Fixture NDJSON with `text` + `end.sessionId` parses to `CliResult` with correct text and session id.
-- `thought` / `tool_call` / unknown types never appear in user-visible text.
-- Resume args include proven `--resume` / session id form from the spike.
-- Cancellation: SIGINT/SIGTERM path respects existing fencing (process exit 130/143 style) without late delivery.
+### Phase 4 – Safe answer streaming (only if #416 proved discriminators)
 
-**Green:** `src/providers/grokRuntime.ts` with `buildInvocation` / `parseResult` (+ optional `hasUsableFinalResponse`). Wire through Phase 2 dispatch. Use shared prompt wrapping, effort, toolMode helpers like Claude/Codex.
+Implements #416 safety gate in production code.
 
-#### 3B — If #416 selects **ACP**
+**Red:** only answer events emit deltas; thought/tool/plan/permission/unknown disable or ignore without leak.
 
-**Seam:** **new Grok-owned duplex executor** (e.g. `src/providers/grokAcpClient.ts`). **Not** `runSupervisedProcess` as the protocol engine.
-
-The client owns:
-
-- process spawn (`grok agent --always-approve stdio` or spike-proven argv)
-- JSON-RPC framing on stdin/stdout
-- `initialize` → `session/new` or load/resume → `session/prompt`
-- correlation of requests/responses/notifications
-- streaming of only `agent_message_chunk` to the existing preview path when enabled
-- terminal result assembly and native session id extraction
-- cancellation: prefer protocol cancel if documented; else kill + Bridge fence; never allow late commit after fence
-- restart: fail closed or proven `session/load` only — no Bridge-owned session reconstruction beyond what ACP exposes
-
-**Red:**
-
-- Fake duplex transport tests: initialize + session/new + prompt yields message chunks + terminal result.
-- Unknown notification types fail closed for streaming.
-- Cancel after partial chunks does not deliver a final user message.
-- Missing auth fails boundedly (see Phase 5) without hanging on interactive login.
-
-**Green:** Grok-specific client + thin integration from Run execution path that selects this client when provider is Grok/ACP. Document explicitly: this is **not** a generic provider-daemon framework; do not generalize to Codex/Claude here.
-
----
-
-### Phase 4 – Safe answer streaming (only if contract proves it)
-
-**Red:** decoder fixtures — only answer events emit deltas; thought/tool/plan/unknown disable or ignore streaming without leaking.
-
-**Green:** `grokAnswerPresentation.ts` (headless `text` or ACP `agent_message_chunk`). Wire into the same Telegram preview / final-reconciliation path Claude uses. Final parsed result remains authoritative.
-
----
+**Green:** `grokAnswerPresentation.ts` (`text` or `agent_message_chunk`). Reuse Claude’s Telegram preview / final-reconciliation path. Final parsed result remains authoritative.
 
 ### Phase 5 – Auth bounded failure + install isolation (#96 acceptance)
 
-These are **first-class phases**, not documentation afterthoughts.
+#### 5A – Missing authentication
 
-#### 5A – Missing authentication fails boundedly
+**Red:** scrubbed/unauthenticated invocation fails within timeout as classified auth failure; **no** indefinite interactive login wait; **no** browser login from Bridge child.
 
-**Red:**
+**Green:** child env/argv non-interactive; classification `auth_required` (or equivalent) without broad false positives. Live qual may report `not_authenticated`.
 
-- Deterministic test: Grok invocation with auth deliberately absent (env scrubbed / fake binary returning auth error envelope) completes as a classified failure within timeout — **does not** wait indefinitely for interactive login, **does not** open a browser flow from the Bridge child.
-- Error classification maps auth failure to `auth_required` (or existing equivalent) without broad false positives.
+#### 5B – Install must not overwrite/shadow another binary
 
-**Green:** child env and argv never rely on interactive login; timeout + classification path proven. Live qualification note: unauthenticated host may report `not_authenticated` rather than hanging.
+**Red:** explicit path or non-colliding name policy tests; Doctor/config fail closed on missing/collision.
 
-#### 5B – Installation must not overwrite/shadow another binary
-
-**Red:**
-
-- Policy tests: configured executable is an **explicit path** or a **non-colliding name** (e.g. documented `grok-build` / path under a Bridge-managed prefix), not an ambient `grok` that could shadow unrelated tools.
-- Doctor/config validation fails closed when the resolved binary path is missing or when a collision policy check fails (exact check defined against current install helpers at implementation time).
-
-**Green:** config default and install docs use isolated path; `resolveProviderExecutable("grok")` never silently picks an arbitrary PATH collision. Operations docs describe update/drift/rollback without overwriting foreign tools.
-
----
+**Green:** isolated install path; `resolveProviderExecutable("grok")` never silently picks arbitrary PATH collisions. Ops docs: update/drift/rollback/removal without foreign tool overwrite.
 
 ### Phase 6 – Error classification, qualification, doctor, selection policy
 
-**Red:**
+**Red:** classification fixtures (auth, capacity, model unavailable, timeout, transient, fatal) from #416 evidence; qualification `version` / `fresh_prompt` / `session_resume` (or `not_applicable`); Doctor availability; fallback remains opt-in false until explicit evidence.
 
-- Classification fixtures for auth, capacity, model unavailable, transient, fatal from spike evidence.
-- Qualification contract: `version`, `fresh_prompt`, `session_resume` (or `not_applicable`) for Grok.
-- Doctor reports Grok availability from configured executable.
-- Fallback eligibility remains **opt-in false** until explicit evidence/tests flip it.
-
-**Green:** extend `errorClassification.ts`, `qualification.ts`, `PROVIDER-QUALIFICATION.md`, doctor, selection capabilities. Live qualification remains version-change / explicit only.
-
----
+**Green:** extend classification, qualification, docs, doctor, selection. Live qualification version-change / explicit only. Secrets absent from args, logs, diagnostics, telemetry (#96).
 
 ### Phase 7 – Integration gates
 
-- Existing Codex/Claude/Agy fixtures remain green (no behavioural change).
-- Architecture Lint, typecheck, exact-head CI, Release Artifact.
-- Independent adversarial review of the exact head.
-- No systemd unit for Grok until isolated live qualification passes on a managed host.
+- Existing Codex/Claude/Agy contracts unchanged  
+- Full tests, typecheck, Architecture Lint, Release Artifact  
+- Relevant isolated live qualification  
+- Independent adversarial review of exact head  
+- No managed-host enablement / systemd until isolated live qual passes (#96 ops)  
 
 ---
 
 ## 5. Explicit non-goals
 
-- No generic provider-daemon / duplex framework for all providers
-- No recreation of Grok’s tool/session/agent state machine inside Bridge
-- No heuristic text parsing of answers or thoughts
-- No automatic addition to fallback/advisor chains solely because Grok is registered
-- No Worker / Engineering Worker path
-- No production provider code before #416 decision
-- No using `runSupervisedProcess` as if it were an ACP session server
+From #416 and #96 combined:
+
+- No production provider in the spike  
+- No third parsing layer if contracts are inadequate  
+- No generic provider-daemon framework  
+- No recreation of Grok’s tool/session/agent state machine  
+- No heuristic answer/reasoning parsing  
+- No auto-add to fallback/advisor chains solely because registered  
+- No Worker integration  
+- No using `runSupervisedProcess` as an ACP session server  
 
 ---
 
 ## 6. Rollout impact
 
-`Rollout impact: none` for this plan PR.  
-Implementation PR: `none` if opt-in config only; `required` only if install scripts, default binaries, or systemd change.
+- This plan PR: **none**  
+- #416 spike PR: **none** (docs + evidence)  
+- #96 implementation: **none** if opt-in config only; **required** only if install scripts, default binaries, or systemd change  
 
 ---
 
 ## 7. Acceptance for this plan document
 
-- [x] #416 remains the decision gate
-- [x] Headless → existing one-shot seam; ACP → Grok-specific duplex executor (explicit)
-- [x] Full vocabulary/dispatch fan-out listed with test ownership
-- [x] Each behaviour phase has explicit red → green
-- [x] Auth bounded failure + install collision isolation planned as executable acceptance
-- [x] No production code in this PR
+- [x] #416 is fully specified as Phase 0 (inspect, probes, safety gate, compare, lifecycle, measure, A/B/C, acceptance checklist)  
+- [x] #96 is explicitly blocked on #416 ≠ C and on following the selected contract  
+- [x] Headless → one-shot seam; ACP → Grok duplex client  
+- [x] Fan-out, per-phase TDD, auth, install collision planned  
+- [x] No production code in this PR  
 
 ---
 
 ## 8. Suggested PR sequence
 
-1. **This plan PR** (docs only).
-2. **Spike PR** — advances #416 (traces + A/B/C).
-3. **Implementation PR** — closes #96 following the chosen branch of Phase 3 and Phases 1–2, 4–7.
+1. **This plan PR** (docs).  
+2. **Spike PR** — closes or advances **#416** (traces + A/B/C only).  
+3. **Implementation PR** — closes **#96** on the chosen branch of Phase 3 + Phases 1–2, 4–7.  
 
 ---
 
 ## Agent pickup note
 
-Prefer the provider’s richest **stable** native contract that fits a safe Bridge seam. Headless `streaming-json` maps to today’s one-shot supervisor. ACP requires a Grok-owned duplex client and must not be forced into `buildInvocation`/`parseResult`/`runSupervisedProcess` alone. Do not implement production code until #416 records an explicit decision with sanitized traces. Auth must fail closed without interactive login waits; install must use an isolated executable path with collision tests.
+**Do #416 first, completely.** Prefer the provider’s richest *stable* native contract that fits a safe Bridge seam. Headless maps to today’s one-shot supervisor; ACP needs a Grok-owned duplex client and #416’s process-lifecycle evidence. Stream only `text` / `agent_message_chunk`. Fail closed on everything else. Auth fails boundedly without interactive login. Install uses an isolated executable path. If #416 says not ready, do not implement #96.
