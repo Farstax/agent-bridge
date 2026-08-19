@@ -25,7 +25,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - name: Apply migration
-        run: python3 .github/issue-480-migrate.py
+        run: |
+          python3 .github/issue-480-migrate.py
+          python3 .github/issue-480-migrate-fix.py
       - uses: actions/setup-node@v4
         with:
           node-version: 24.15.0
