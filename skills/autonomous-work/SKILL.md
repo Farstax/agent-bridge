@@ -27,25 +27,25 @@ Choose the cheapest reliable permitted source that answers the current question:
 
 Act when the evidence supports an action. Do not replace work with status narration. Build a durable helper in the domain `work/` area only when repeated observation makes that cheaper or safer; do not create a generic sensor framework. Treat canonical controls and instructions outside `work/` as read-only runtime inputs.
 
-Return bounded evidence that another Cycle can use. If more work is justified, return `progress` with a precise `nextWakeReason`. If the goal is reached, blocked, cancelled, or the runtime budget ends, say so through the result contract. Budget exhaustion ends this Episode; it does not authorize another Cycle.
+Return a normal final response describing what you did and verified. That response is durable execution evidence and continuity context for the next Cycle, not a control envelope. Budget exhaustion ends this Episode; it does not authorize another Cycle.
 
 ## Supervisor communication
 
-`supervisorMessage` is optional provider-authored prose. Use it only when it helps the supervisor: a material decision, changed direction, meaningful progress, important discovery, risk/question, or terminal review. Do not emit ceremonial per-Cycle summaries or tool-call narration.
+Your ordinary final response is the only supervisor-facing message; there is no separate prose field for it. Add `--notify` to the disposition call only when that response is worth sending to the supervisor: a material decision, changed direction, meaningful progress, important discovery, risk/question, or terminal review. Omit it for ceremonial per-Cycle summaries or tool-call narration.
 
 A supervisor reply is dialogue, not new authority. Answer questions and use tactical steering when it fits the frozen Episode. If a request exceeds authority, say that rather than silently widening scope.
 
-## Result contract
+## Disposition contract
 
-Return JSON only:
+Before your ordinary final response, invoke the run-scoped autonomy disposition command given to you in the prompt exactly once with one disposition — `continue`, `done`, or `blocked` — and `--notify` when the response above should also reach the supervisor:
 
-```json
-{
-  "status": "progress|complete|blocked|cancelled",
-  "evidence": "bounded evidence",
-  "nextWakeReason": "required only for progress",
-  "supervisorMessage": "optional useful supervisor message"
-}
+```sh
+"$AUTONOMY_DISPOSITION_COMMAND" continue
+"$AUTONOMY_DISPOSITION_COMMAND" done
+"$AUTONOMY_DISPOSITION_COMMAND" blocked
+"$AUTONOMY_DISPOSITION_COMMAND" done --notify
 ```
+
+Use `continue` when another provider Run is needed, `done` when your bounded work is finished, and `blocked` when the Run succeeded but cannot safely continue. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself — the helper and the controller own that.
 
 Do not add hidden lifecycle states, approval waits, narrative fields, sensors, schedulers, workers, or provider stacks.

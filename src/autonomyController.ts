@@ -146,10 +146,10 @@ export class AutonomyController {
   }
 
   private onCycleReconciled(event: CycleReconciledEvent): void {
-    if (!event.supervisorMessage || !this.options.deliverSupervisorMessage) return;
+    if (!event.notify || !this.options.deliverSupervisorMessage) return;
     const state = getAutonomousSupervisorState(this.options.db, event.goalId);
     if (!state) return;
-    void this.options.deliverSupervisorMessage(state.route, event.supervisorMessage)
+    void this.options.deliverSupervisorMessage(state.route, event.evidence)
       .then((messageId) => recordAutonomousSupervisorMessageId(this.options.db, event.goalId, messageId))
       .catch((error) => this.options.log?.error?.("[autonomy] supervisor delivery failed", error));
   }
