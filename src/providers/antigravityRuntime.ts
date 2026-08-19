@@ -256,9 +256,12 @@ export function buildInvocation({
   nativeCompletion,
   logFile,
   homeDir,
+  outputFormat,
 }: AntigravityInvocationRequest): ProviderInvocation {
   const args: string[] = [];
-  const outputMode = resolveAntigravityOutputMode();
+  const outputMode = (process.env.ANTIGRAVITY_OUTPUT_MODE && process.env.ANTIGRAVITY_OUTPUT_MODE.trim())
+    ? resolveAntigravityOutputMode()
+    : (outputFormat || "text");
   const resolvedHomeDir = homeDir || homedir();
   // Agy fatally aborts a cascade if it lists its own worktrees state dir before
   // ever creating it, so guarantee the dir exists ahead of every invocation.
@@ -751,7 +754,10 @@ export function extractAntigravityStreamJsonError(stdout: string): Error | null 
 }
 
 export function parseResult(stdout: string, logContent?: string | null): CliResult {
-  const outputMode = resolveAntigravityOutputMode();
+  let outputMode = resolveAntigravityOutputMode();
+  if (outputMode === "text" && (stdout.trim().startsWith('{"event"') || stdout.trim().includes('\n{"event"'))) {
+    outputMode = "stream-json";
+  }
   if (outputMode === "json") return parseAntigravityNativeJsonResult(stdout);
   if (outputMode === "stream-json") return parseAntigravityStreamJsonResult(stdout);
 
