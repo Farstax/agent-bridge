@@ -313,6 +313,10 @@ converge_deployer_autonomy_config() {
   if (( test_mode == 0 )); then
     [[ "$(/usr/bin/stat -c %u "$autonomy_parent")" == "$(/usr/bin/id -u "$runtime_user")" ]] || die "autonomy database parent must be owned by the runtime user"
   fi
+  if [[ -e "$autonomy_database" || -L "$autonomy_database" ]]; then
+    [[ -f "$autonomy_database" && ! -L "$autonomy_database" ]] || die "autonomy database target is occupied by an unsafe path: $autonomy_database"
+    [[ "$(/usr/bin/realpath -e "$autonomy_database")" == "$autonomy_database" ]] || die "existing autonomy database target is not canonical: $autonomy_database"
+  fi
 
   local config_dir config_tmp config_current_mode
   config_dir="$(/usr/bin/dirname -- "$config_file")"
