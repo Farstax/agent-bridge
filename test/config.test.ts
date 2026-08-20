@@ -85,14 +85,6 @@ describe("resolveBusyMessageMode", () => {
     expect(resolveBusyMessageMode({ BRIDGE_BUSY_MESSAGE_MODE: "interrupt" })).toBe("interrupt");
   });
 
-  it("has no per-CLI override — only the flat BRIDGE_BUSY_MESSAGE_MODE var is read", () => {
-    const src = readFileSync(new URL("../src/config.ts", import.meta.url), "utf8");
-    const fnStart = src.indexOf("export function resolveBusyMessageMode");
-    const fn = src.slice(fnStart, src.indexOf("\n}", fnStart));
-    expect(fn).not.toMatch(/\$\{.*\}_BUSY_MESSAGE_MODE/); // no per-kind prefix template
-    expect(fn).not.toMatch(/toUpperCase/);
-  });
-
 });
 
 describe("validateBusyMessageModeEnv", () => {

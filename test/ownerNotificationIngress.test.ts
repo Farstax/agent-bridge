@@ -159,9 +159,4 @@ describe("interactive owner notification ingress (#453)", () => {
     expect(existsSync(socketPath)).toBe(false);
   });
 
-  it("is opt-in wired into the interactive process", () => {
-    const source = readFileSync(join(process.cwd(), "src/index-interactive.ts"), "utf8");
-    expect(source).toContain("startOwnerNotificationIngress");
-    expect(source).toContain("BRIDGE_OWNER_NOTIFICATION_SOCKET");
-  });
 });

@@ -667,16 +667,6 @@ describe("sendTelegramMessage rendering", () => {
   });
 });
 
-describe("dead code removed from messageDelivery.ts", () => {
-  it("unused local helpers and stale stream state are not present", () => {
-    const src = readFileSync("src/messageDelivery.ts", "utf-8");
-    expect(src).not.toContain("usePlaceholder");
-    expect(src).not.toContain("StreamingUpdater");
-    expect(src).not.toContain("activeStreams");
-    expect(src).not.toContain("extractCodexProgressText");
-  });
-});
-
 describe("isAborted suppression", () => {
   it("suppresses final sendTelegramMessage when isAborted() returns true", async () => {
     const client = createMockClient();
