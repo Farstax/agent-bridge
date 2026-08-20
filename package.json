@@ -10,6 +10,7 @@
     "start": "tsx src/index-interactive.ts",
     "build": "tsc",
     "test": "vitest run",
+    "test:resources": "vitest run --detect-async-leaks",
     "doctor": "tsx src/doctorCli.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
