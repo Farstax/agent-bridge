@@ -260,6 +260,24 @@ converge_deployer_autonomy_config() {
   exec 8>"$lock_file"
   /usr/bin/flock --exclusive --nonblock 8 || die "another rollout is already active"
 
+  # Re-read the live config under the convergence lock. If another
+  # invocation already converged this path (or the config was already
+  # correct before this helper started), preserve #499's existing path
+  # semantics and skip the migration-only sibling-state restriction.
+  local database config_key config_value already_configured=0 in_memory=0
+  while IFS='=' read -r config_key config_value || [[ -n "$config_key$config_value" ]]; do
+    [[ "$config_key" == "database" && "$config_value" == "$autonomy_database" ]] && already_configured=1
+  done < "$config_file"
+  for database in "${databases[@]}"; do
+    [[ "$database" == "$autonomy_database" ]] && in_memory=1
+  done
+  if (( already_configured == 1 )); then
+    (( in_memory == 1 )) || databases+=("$autonomy_database")
+    /usr/bin/flock --unlock 8
+    exec 8>&-
+    return 0
+  fi
+
   convergence_env_value=""
   read_convergence_env_key "$shared_env" DB_PATH "" 0
   read_convergence_env_key "$release_env" DB_PATH "$convergence_env_value" 1
@@ -296,24 +314,15 @@ converge_deployer_autonomy_config() {
     [[ "$(/usr/bin/stat -c %u "$autonomy_parent")" == "$(/usr/bin/id -u "$runtime_user")" ]] || die "autonomy database parent must be owned by the runtime user"
   fi
 
-  local database config_key config_value already_configured=0 in_memory=0
-  while IFS='=' read -r config_key config_value || [[ -n "$config_key$config_value" ]]; do
-    [[ "$config_key" == "database" && "$config_value" == "$autonomy_database" ]] && already_configured=1
-  done < "$config_file"
-  for database in "${databases[@]}"; do
-    [[ "$database" == "$autonomy_database" ]] && in_memory=1
-  done
-  if (( already_configured == 0 )); then
-    local config_dir config_tmp config_current_mode
-    config_dir="$(/usr/bin/dirname -- "$config_file")"
-    config_tmp="$(/usr/bin/mktemp --tmpdir="$config_dir" .rollout.conf.autonomy.XXXXXX)"
-    /usr/bin/cat "$config_file" > "$config_tmp"
-    printf '\ndatabase=%s\n' "$autonomy_database" >> "$config_tmp"
-    config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
-    /usr/bin/chmod "$config_current_mode" "$config_tmp"
-    /usr/bin/mv -T -- "$config_tmp" "$config_file"
-    echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
-  fi
+  local config_dir config_tmp config_current_mode
+  config_dir="$(/usr/bin/dirname -- "$config_file")"
+  config_tmp="$(/usr/bin/mktemp --tmpdir="$config_dir" .rollout.conf.autonomy.XXXXXX)"
+  /usr/bin/cat "$config_file" > "$config_tmp"
+  printf '\ndatabase=%s\n' "$autonomy_database" >> "$config_tmp"
+  config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
+  /usr/bin/chmod "$config_current_mode" "$config_tmp"
+  /usr/bin/mv -T -- "$config_tmp" "$config_file"
+  echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
   (( in_memory == 1 )) || databases+=("$autonomy_database")
   /usr/bin/flock --unlock 8
   exec 8>&-
