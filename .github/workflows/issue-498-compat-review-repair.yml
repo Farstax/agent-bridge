@@ -1,0 +1,111 @@
+name: Issue 498 compatibility review repair
+
+on:
+  push:
+    branches:
+      - fix/issue-498-autonomy-config-convergence
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-498-autonomy-config-convergence
+          fetch-depth: 0
+      - name: Apply compatibility repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/rollout-agent-bridge.sh")
+          text = path.read_text()
+          old = '''  /usr/bin/mkdir -p "$(/usr/bin/dirname "$lock_file")"
+            exec 8>"$lock_file"
+            /usr/bin/flock --exclusive --nonblock 8 || die "another rollout is already active"
+
+            convergence_env_value=""
+          '''
+          new = '''  /usr/bin/mkdir -p "$(/usr/bin/dirname "$lock_file")"
+            exec 8>"$lock_file"
+            /usr/bin/flock --exclusive --nonblock 8 || die "another rollout is already active"
+
+            # Re-read the live config under the convergence lock. If another
+            # invocation already converged this path (or the config was already
+            # correct before this helper started), preserve #499's existing path
+            # semantics and skip the migration-only sibling-state restriction.
+            local database config_key config_value already_configured=0 in_memory=0
+            while IFS='=' read -r config_key config_value || [[ -n "$config_key$config_value" ]]; do
+              [[ "$config_key" == "database" && "$config_value" == "$autonomy_database" ]] && already_configured=1
+            done < "$config_file"
+            for database in "${databases[@]}"; do
+              [[ "$database" == "$autonomy_database" ]] && in_memory=1
+            done
+            if (( already_configured == 1 )); then
+              (( in_memory == 1 )) || databases+=("$autonomy_database")
+              /usr/bin/flock --unlock 8
+              exec 8>&-
+              return 0
+            fi
+
+            convergence_env_value=""
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"first anchor count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old2 = '''  local database config_key config_value already_configured=0 in_memory=0
+            while IFS='=' read -r config_key config_value || [[ -n "$config_key$config_value" ]]; do
+              [[ "$config_key" == "database" && "$config_value" == "$autonomy_database" ]] && already_configured=1
+            done < "$config_file"
+            for database in "${databases[@]}"; do
+              [[ "$database" == "$autonomy_database" ]] && in_memory=1
+            done
+            if (( already_configured == 0 )); then
+              local config_dir config_tmp config_current_mode
+              config_dir="$(/usr/bin/dirname -- "$config_file")"
+              config_tmp="$(/usr/bin/mktemp --tmpdir="$config_dir" .rollout.conf.autonomy.XXXXXX)"
+              /usr/bin/cat "$config_file" > "$config_tmp"
+              printf '\\ndatabase=%s\\n' "$autonomy_database" >> "$config_tmp"
+              config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
+              /usr/bin/chmod "$config_current_mode" "$config_tmp"
+              /usr/bin/mv -T -- "$config_tmp" "$config_file"
+              echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
+            fi
+            (( in_memory == 1 )) || databases+=("$autonomy_database")
+            /usr/bin/flock --unlock 8
+            exec 8>&-
+          }
+          '''
+          new2 = '''  local config_dir config_tmp config_current_mode
+            config_dir="$(/usr/bin/dirname -- "$config_file")"
+            config_tmp="$(/usr/bin/mktemp --tmpdir="$config_dir" .rollout.conf.autonomy.XXXXXX)"
+            /usr/bin/cat "$config_file" > "$config_tmp"
+            printf '\\ndatabase=%s\\n' "$autonomy_database" >> "$config_tmp"
+            config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
+            /usr/bin/chmod "$config_current_mode" "$config_tmp"
+            /usr/bin/mv -T -- "$config_tmp" "$config_file"
+            echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
+            (( in_memory == 1 )) || databases+=("$autonomy_database")
+            /usr/bin/flock --unlock 8
+            exec 8>&-
+          }
+          '''
+          if text.count(old2) != 1:
+              raise SystemExit(f"second anchor count={text.count(old2)}")
+          path.write_text(text.replace(old2, new2, 1))
+          PY
+          bash -n scripts/rollout-agent-bridge.sh
+      - name: Commit repair and remove scaffolding
+        shell: bash
+        run: |
+          rm -f .github/workflows/issue-498-compat-review-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- scripts/rollout-agent-bridge.sh .github/workflows/issue-498-compat-review-repair.yml
+          git commit -m "fix: preserve configured autonomy path compatibility"
+          git push origin HEAD:fix/issue-498-autonomy-config-convergence
