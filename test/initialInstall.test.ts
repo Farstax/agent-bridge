@@ -160,6 +160,34 @@ with tempfile.TemporaryDirectory() as directory:
     expect(result.contents).toBe("existing-state");
   });
 
+  it("rejects whitespace around the autonomy database path before configuration is written", () => {
+    const result = probe(`
+with tempfile.TemporaryDirectory() as directory:
+  state = pathlib.Path(directory)
+  service = module.selected_services({"TELEGRAM_BOT_TOKEN_INTERACTIVE": "token"})[0]
+  autonomy = state / "company-autonomy" / "bridge.sqlite"
+  try:
+    module.require_fresh_database_targets(
+      state,
+      [service],
+      {"AGENT_BRIDGE_AUTONOMY_DB_PATH": f" {autonomy} "},
+    )
+  except Exception as error:
+    print(json.dumps({
+      "error": str(error),
+      "config_written": (state / "agent-bridge-shared").exists(),
+    }))
+  else:
+    print(json.dumps({
+      "error": "no error",
+      "config_written": (state / "agent-bridge-shared").exists(),
+    }))
+`) as { error: string; config_written: boolean };
+
+    expect(result.error).toContain("AGENT_BRIDGE_AUTONOMY_DB_PATH must be a canonical absolute path");
+    expect(result.config_written).toBe(false);
+  });
+
   it("bootstraps from the staged immutable release, not the root-only extraction directory", () => {
     const source = readFileSync(installer, "utf8");
     const stage = source.indexOf("stage.stage(args.release, release_root, activated_commit, archive_sha256)");
