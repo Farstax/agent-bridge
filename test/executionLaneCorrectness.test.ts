@@ -646,7 +646,7 @@ describe("execution lane correctness", () => {
     const oldRun = engine.handleMessages([message("old request", 7)]);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const reset = engine.handleMessages([message("/reset", 7)]);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await waitForCondition(() => db.acquireLock("telegram:interactive", "100:7") === null);
     expect(db.acquireLock("telegram:interactive", "100:7")).toBeNull();
 
     resumeFinalisation();
