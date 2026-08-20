@@ -44,8 +44,13 @@ export function createSurfaceNeutralProviderRouter(
           // BridgeEngine emits run.started for every actual CLI process,
           // including same-provider model fallback and fresh-session retries.
           // A new process supersedes the abandoned attempt for this one
-          // durable Run, so retain only events from the latest real attempt.
+          // durable Run, so retain only bounded lifecycle events from the
+          // latest real attempt. Text deltas remain streaming/non-terminal.
           collect: (event) => {
+            if (event.type === "text.delta") {
+              input.collect(event);
+              return;
+            }
             if (event.type === "run.started") {
               input.onProviderExecutionStarted?.();
               attemptEvents = [event];
