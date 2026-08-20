@@ -32,6 +32,7 @@ const SUCCESSOR_INPUT_SETTING_PREFIX = "autonomy:successor-input:";
 const SUCCESSOR_INTENT_SETTING = "autonomy:successor-intent";
 const DAILY_EPISODE_COUNT_SETTING_PREFIX = "autonomy:episodes-per-day:";
 const FROZEN_EPISODE_PREFIX = "[Frozen Episode authority]";
+const START_POLICY_MARKER = "[Authorized start policy instruction]";
 
 interface SuccessorInputRecord {
   idempotencyKey: string;
@@ -149,16 +150,35 @@ export class AutonomyController {
     mkdirSync(this.workDir, { recursive: true });
   }
 
+  private boundedPolicyInstruction(policyInstruction?: string): string {
+    const policy = policyInstruction?.trim() ?? "";
+    if (policy.length > MAX_POLICY_INSTRUCTION_CHARS) throw new Error("autonomy policyInstruction is too long");
+    return policy;
+  }
+
   private frozenPrompt(policyInstruction?: string): string {
     const autonomyPath = join(this.options.autonomyDir, "AUTONOMY.md");
     const authority = readFileSync(autonomyPath, "utf8").trim();
     if (!authority || authority.length > MAX_AUTONOMY_FILE_CHARS) throw new Error("AUTONOMY.md must be non-empty and bounded");
-    const policy = policyInstruction?.trim() ?? "";
-    if (policy.length > MAX_POLICY_INSTRUCTION_CHARS) throw new Error("autonomy policyInstruction is too long");
+    const policy = this.boundedPolicyInstruction(policyInstruction);
     return [
       FROZEN_EPISODE_PREFIX,
       authority,
-      ...(policy ? ["", "[Authorized start policy instruction]", policy] : []),
+      ...(policy ? ["", START_POLICY_MARKER, policy] : []),
+    ].join("\n");
+  }
+
+  private successorPrompt(predecessorPrompt: string, policyInstruction?: string): string {
+    const marker = `\n\n${START_POLICY_MARKER}\n`;
+    const markerIndex = predecessorPrompt.lastIndexOf(marker);
+    const frozenAuthority = (markerIndex >= 0 ? predecessorPrompt.slice(0, markerIndex) : predecessorPrompt).trimEnd();
+    if (!frozenAuthority.startsWith(FROZEN_EPISODE_PREFIX)) {
+      throw new Error("predecessor Episode is missing frozen authority");
+    }
+    const policy = this.boundedPolicyInstruction(policyInstruction);
+    return [
+      frozenAuthority,
+      ...(policy ? ["", START_POLICY_MARKER, policy] : []),
     ].join("\n");
   }
 
@@ -217,6 +237,16 @@ export class AutonomyController {
     });
   }
 
+  private successorPredecessor(): AutonomousGoal | null {
+    const predecessor = latestTerminalGoal(this.options.db);
+    if (!predecessor) return null;
+    if (predecessor.status === "budget_exhausted") return predecessor;
+    const intent = parseSuccessorIntent(this.options.db.getSetting(SUCCESSOR_INTENT_SETTING));
+    if (intent?.predecessorGoalId === predecessor.goalId) return predecessor;
+    if (parseSuccessorInputs(this.options.db.getSetting(successorInputSettingKey(predecessor.goalId))).length > 0) return predecessor;
+    return null;
+  }
+
   private promoteSuccessorInputs(predecessorGoalId: string, successorGoalId: string): void {
     const key = successorInputSettingKey(predecessorGoalId);
     const inputs = parseSuccessorInputs(this.options.db.getSetting(key));
@@ -243,7 +273,7 @@ export class AutonomyController {
     const existing = activeGoals(this.options.db);
     if (existing.length > 1) throw new Error("multiple active autonomous Episodes; refusing ambiguous start");
     if (existing.length === 1) {
-      const predecessor = latestTerminalGoal(this.options.db);
+      const predecessor = this.successorPredecessor();
       if (predecessor) this.promoteSuccessorInputs(predecessor.goalId, existing[0].goalId);
       this.clearSuccessorIntent(predecessor?.goalId);
       this.startDrain(existing[0]);
@@ -251,8 +281,10 @@ export class AutonomyController {
     }
 
     this.options.engineForBot(input.bot);
-    const predecessor = latestTerminalGoal(this.options.db);
-    const prompt = predecessor ? predecessor.prompt : this.frozenPrompt(input.policyInstruction);
+    const predecessor = this.successorPredecessor();
+    const prompt = predecessor
+      ? this.successorPrompt(predecessor.prompt, input.policyInstruction)
+      : this.frozenPrompt(input.policyInstruction);
     const constraints = predecessor ? predecessor.constraints : [];
     const initialEvidence = predecessor
       ? [...predecessor.evidence, ...(input.initialEvidence ?? [])].slice(-8)
@@ -318,7 +350,7 @@ export class AutonomyController {
     const active = activeGoals(this.options.db);
     if (active.length > 1) throw new Error("multiple active autonomous Episodes; refusing ambiguous resume");
     if (active.length === 1) {
-      const predecessor = latestTerminalGoal(this.options.db);
+      const predecessor = this.successorPredecessor();
       if (predecessor) this.promoteSuccessorInputs(predecessor.goalId, active[0].goalId);
       this.clearSuccessorIntent(predecessor?.goalId);
       this.startDrain(active[0]);
