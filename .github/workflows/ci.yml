@@ -37,13 +37,6 @@ jobs:
 
       - run: npm test
         env:
-          # vitest.config.ts caps the forks pool to maxForks: 1 (serial),
-          # removing concurrent-process memory competition. 8192MB was not
-          # enough for a branch with a larger test suite (PR #330's durable
-          # continuation work): the single process grew to exactly that
-          # ceiling and OOM'd, confirming genuine (not concurrency-driven)
-          # memory need above 8GB for a bigger suite. Raise toward the
-          # runner's actual ceiling, leaving headroom for the OS/coordinator.
-          NODE_OPTIONS: "--max-old-space-size=14336"
+          NODE_OPTIONS: "--max-old-space-size=3072"
 
       - run: npm run typecheck
