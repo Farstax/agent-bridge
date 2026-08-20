@@ -51,7 +51,7 @@ export function matchAutonomousTelegramSupervisorReply(db: BridgeDb, message: Te
   if (!replyId || senderId == null || !text) return null;
   if (/^\/autonomy(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return null;
 
-  const active = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' ORDER BY created_at DESC, goal_id DESC").all() as Array<{ goal_id: string }>;
+  const active = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' ORDER BY rowid DESC").all() as Array<{ goal_id: string }>;
   if (active.length > 1) throw new Error("multiple active autonomous Episodes; refusing ambiguous supervisor reply");
   if (active.length === 1) {
     const goal = getAutonomousGoal(db, active[0].goal_id);
@@ -59,7 +59,9 @@ export function matchAutonomousTelegramSupervisorReply(db: BridgeDb, message: Te
     return matchGoalReply(db, goal.goalId, "active", message, replyId, senderId, text);
   }
 
-  const terminal = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status <> 'active' ORDER BY created_at DESC, goal_id DESC LIMIT 1").get() as { goal_id: string } | undefined;
+  // created_at is only second-granularity; automatic successors can share the
+  // same timestamp. SQLite rowid is the deterministic insertion order here.
+  const terminal = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status <> 'active' ORDER BY rowid DESC LIMIT 1").get() as { goal_id: string } | undefined;
   if (!terminal) return null;
   return matchGoalReply(db, terminal.goal_id, "successor", message, replyId, senderId, text);
 }
