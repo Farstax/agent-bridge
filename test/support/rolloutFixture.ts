@@ -431,6 +431,7 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   const systemdDir = join(root, "etc", "systemd", "system");
   const cgroupRoot = join(root, "sys", "fs", "cgroup");
   mkdirSync(join(project, "scripts"), { recursive: true });
+  mkdirSync(dbDir, { recursive: true, mode: 0o700 });
   mkdirSync(join(project, "systemd"), { recursive: true });
   mkdirSync(join(root, "etc", "agent-bridge"), { recursive: true });
   mkdirSync(envDir, { recursive: true });
