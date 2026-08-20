@@ -75,17 +75,17 @@ export interface AutonomyControllerOptions {
 }
 
 function activeGoals(db: BridgeDb): AutonomousGoal[] {
-  const rows = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' ORDER BY created_at DESC, goal_id DESC").all() as Array<{ goal_id: string }>;
+  const rows = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' ORDER BY rowid DESC").all() as Array<{ goal_id: string }>;
   return rows.map((row) => getAutonomousGoal(db, row.goal_id));
 }
 
 function latestGoal(db: BridgeDb): AutonomousGoal | null {
-  const row = db.raw.prepare("SELECT goal_id FROM autonomous_goals ORDER BY created_at DESC, goal_id DESC LIMIT 1").get() as { goal_id: string } | undefined;
+  const row = db.raw.prepare("SELECT goal_id FROM autonomous_goals ORDER BY rowid DESC LIMIT 1").get() as { goal_id: string } | undefined;
   return row ? getAutonomousGoal(db, row.goal_id) : null;
 }
 
 function latestTerminalGoal(db: BridgeDb): AutonomousGoal | null {
-  const row = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status <> 'active' ORDER BY created_at DESC, goal_id DESC LIMIT 1").get() as { goal_id: string } | undefined;
+  const row = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status <> 'active' ORDER BY rowid DESC LIMIT 1").get() as { goal_id: string } | undefined;
   return row ? getAutonomousGoal(db, row.goal_id) : null;
 }
 
