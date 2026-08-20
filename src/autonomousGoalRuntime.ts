@@ -570,6 +570,7 @@ export async function runNextAutonomousGoal(
         runId,
         eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },
         collect: (event) => event.type === "run.completed" ? eventStore.queueCompleted(event) : eventStore.collect(event),
+        onProviderExecutionStarted: () => dispositionChannel.reset(),
       };
       try {
         const result = await engine.executeSurfaceNeutralTurn(input);

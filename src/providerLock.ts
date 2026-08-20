@@ -19,9 +19,12 @@ export interface AutonomyRuntimeConfig {
   dir: string | null;
   dbPath: string | null;
   maxCycles: number;
+  requireEpisodeApproval: boolean;
+  maxEpisodesPerDay: number;
 }
 
 const PROVIDERS = new Set<CliKind>(["codex", "claude", "antigravity"]);
+export const DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY = 5;
 
 export function parseProviderLock(raw: string | undefined): CliKind | null {
   const value = raw?.trim();
@@ -32,6 +35,22 @@ export function parseProviderLock(raw: string | undefined): CliKind | null {
     );
   }
   return value as CliKind;
+}
+
+export function parseAutonomyRequireEpisodeApproval(raw: string | undefined): boolean {
+  const value = raw?.trim().toLowerCase();
+  if (!value) return true;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error("AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL must be true or false");
+}
+
+export function parseAutonomyMaxEpisodesPerDay(raw: string | undefined): number {
+  const value = Number(raw || DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error("AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY must be a positive integer");
+  }
+  return value;
 }
 
 function lockedToken(env: Env, provider: CliKind): string | undefined {
@@ -74,10 +93,21 @@ export function resolveAutonomyRuntimeConfig(
   env: Env,
   providerLock: CliKind | null,
 ): AutonomyRuntimeConfig {
+  // Provider-locked runtimes deliberately ignore inherited autonomy settings.
+  // Keep that boundary fail-closed without validating values they never use.
   if (providerLock) {
-    return { enabled: false, dir: null, dbPath: null, maxCycles: 3 };
+    return {
+      enabled: false,
+      dir: null,
+      dbPath: null,
+      maxCycles: 3,
+      requireEpisodeApproval: true,
+      maxEpisodesPerDay: DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY,
+    };
   }
 
+  const requireEpisodeApproval = parseAutonomyRequireEpisodeApproval(env.AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL);
+  const maxEpisodesPerDay = parseAutonomyMaxEpisodesPerDay(env.AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY);
   const dir = env.AGENT_BRIDGE_AUTONOMY_DIR?.trim() || null;
   const dbPath = env.AGENT_BRIDGE_AUTONOMY_DB_PATH?.trim() || null;
   if (Boolean(dir) !== Boolean(dbPath)) {
@@ -91,5 +121,5 @@ export function resolveAutonomyRuntimeConfig(
     throw new Error("AGENT_BRIDGE_AUTONOMY_MAX_CYCLES must be a positive integer");
   }
 
-  return { enabled: Boolean(dir && dbPath), dir, dbPath, maxCycles };
+  return { enabled: Boolean(dir && dbPath), dir, dbPath, maxCycles, requireEpisodeApproval, maxEpisodesPerDay };
 }
