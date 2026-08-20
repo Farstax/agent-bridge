@@ -86,6 +86,8 @@ describe("Telegram provider lock", () => {
       dir: "/var/lib/agent-bridge/autonomy",
       dbPath: "/var/lib/agent-bridge/autonomy/autonomy.sqlite",
       maxCycles: 20,
+      requireEpisodeApproval: true,
+      maxEpisodesPerDay: 5,
     });
     expect(
       buildGlobalInteractiveCommandRegistrations("codex", { autonomy: config.enabled })
@@ -102,7 +104,14 @@ describe("Telegram provider lock", () => {
       provider,
     );
 
-    expect(config).toEqual({ enabled: false, dir: null, dbPath: null, maxCycles: 3 });
+    expect(config).toEqual({
+      enabled: false,
+      dir: null,
+      dbPath: null,
+      maxCycles: 3,
+      requireEpisodeApproval: true,
+      maxEpisodesPerDay: 5,
+    });
     expect(
       buildGlobalInteractiveCommandRegistrations(provider, { autonomy: config.enabled })
         .every((registration) => registration.commands.every((command) => command.command !== "autonomy")),
