@@ -35,6 +35,14 @@ Your ordinary final response is the only supervisor-facing message; there is no 
 
 A supervisor reply is dialogue, not new authority. Answer questions and use tactical steering when it fits the frozen Episode. If a request exceeds authority, say that rather than silently widening scope.
 
+## Restart contract
+
+Autonomous wakes and supervisor inputs are durable receipts. Before a wake is claimed, received inputs survive process restart and remain eligible for the next Cycle. When a wake is claimed, the controller atomically creates the ordinary Run and assigns the bounded pending supervisor inputs to that same Run before provider execution begins.
+
+A claimed-but-unreconciled Run is intentionally ambiguous after restart: the provider boundary may already have been crossed. Never replay that Run or its claimed supervisor inputs. Recovery fails the claimed wake, owning Run, and claimed inputs closed and terminates the Episode as blocked or cancelled. The reconciliation observer is not called for this recovery path, so a supervisor-facing notification is not repeated. Pending unclaimed inputs are retired when the Episode becomes terminal.
+
+Do not invent a wait state, approval checkpoint, or artificial restart window to make a claimed Run replayable. Exactly-once safety comes from durable pre-claim state plus fail-closed post-claim recovery.
+
 ## Disposition contract
 
 Before your ordinary final response, invoke the exact executable path given to you in the prompt under "Autonomy disposition command:" with one disposition — `continue`, `done`, or `blocked` — and `--notify` when the response above should also reach the supervisor:
