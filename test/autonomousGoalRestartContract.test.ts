@@ -70,7 +70,7 @@ describe("autonomous restart ownership contract (#366)", () => {
     expect(prompts).toHaveLength(1);
     expect(prompts[0].split("owner reply after cycle one")).toHaveLength(2);
     expect(getAutonomousGoal(db, "input-before-claim")).toMatchObject({ status: "complete", cycle: 2 });
-    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE surface = 'autonomous'").get()).toEqual({ count: 2 });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:input-before-claim")).toEqual({ count: 2 });
     expect(db.raw.prepare(`SELECT COUNT(*) AS count FROM event_receipts
       WHERE source = ? AND event_kind = ?`).get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_SUPERVISOR_INPUT_KIND)).toEqual({ count: 1 });
     expect(db.raw.prepare(`SELECT status FROM event_receipts
@@ -119,7 +119,7 @@ describe("autonomous restart ownership contract (#366)", () => {
     expect(db.raw.prepare("SELECT status, error_class FROM event_receipts WHERE id = ?").get(input.id))
       .toEqual({ status: "failed", error_class: "restart_recovery" });
     expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE run_id = ?").get(runId)).toEqual({ status: "failed" });
-    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE surface = 'autonomous'").get()).toEqual({ count: 1 });
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?").get("autonomous:input-after-claim")).toEqual({ count: 1 });
     expect(db.raw.prepare(`SELECT COUNT(*) AS count FROM event_receipts
       WHERE source = ? AND event_kind = ?`).get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_EVENT_KIND)).toEqual({ count: 1 });
     expect(await runNextAutonomousGoal(db, "input-after-claim", { executeSurfaceNeutralTurn }, observer)).toBe(false);
