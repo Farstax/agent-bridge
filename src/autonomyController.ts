@@ -426,6 +426,14 @@ export class AutonomyController {
       this.options.log?.error?.("[autonomy] successor resume failed", error);
     } finally {
       this.resumingSuccessor = false;
+      const nextIntent = parseSuccessorIntent(this.options.db.getSetting(SUCCESSOR_INTENT_SETTING));
+      // A very fast successor can finish and persist its own continuation while
+      // this resume is still unwinding. Re-enter only for a genuinely newer
+      // predecessor; retaining the same intent (for example at the daily
+      // ceiling) must not create a busy retry loop.
+      if (nextIntent && nextIntent.predecessorGoalId !== intent.predecessorGoalId) {
+        void this.resumeSuccessorIntent();
+      }
     }
   }
 }
