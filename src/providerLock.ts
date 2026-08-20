@@ -93,12 +93,21 @@ export function resolveAutonomyRuntimeConfig(
   env: Env,
   providerLock: CliKind | null,
 ): AutonomyRuntimeConfig {
-  const requireEpisodeApproval = parseAutonomyRequireEpisodeApproval(env.AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL);
-  const maxEpisodesPerDay = parseAutonomyMaxEpisodesPerDay(env.AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY);
+  // Provider-locked runtimes deliberately ignore inherited autonomy settings.
+  // Keep that boundary fail-closed without validating values they never use.
   if (providerLock) {
-    return { enabled: false, dir: null, dbPath: null, maxCycles: 3, requireEpisodeApproval, maxEpisodesPerDay };
+    return {
+      enabled: false,
+      dir: null,
+      dbPath: null,
+      maxCycles: 3,
+      requireEpisodeApproval: true,
+      maxEpisodesPerDay: DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY,
+    };
   }
 
+  const requireEpisodeApproval = parseAutonomyRequireEpisodeApproval(env.AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL);
+  const maxEpisodesPerDay = parseAutonomyMaxEpisodesPerDay(env.AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY);
   const dir = env.AGENT_BRIDGE_AUTONOMY_DIR?.trim() || null;
   const dbPath = env.AGENT_BRIDGE_AUTONOMY_DB_PATH?.trim() || null;
   if (Boolean(dir) !== Boolean(dbPath)) {
