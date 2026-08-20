@@ -95,7 +95,7 @@ else
   test_mode=0
 fi
 
-for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
+for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/chown /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
   [[ -x "$command_path" ]] || die "required command is unavailable: $command_path"
 done
 [[ -f "$config_file" && ! -L "$config_file" ]] || die "missing fixed rollout config: $config_file"
@@ -199,6 +199,141 @@ fi
 [[ -x "$node_bin" && ! -L "$node_bin" ]] || die "configured Node binary is missing or symlinked"
 [[ "$runtime_user" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "invalid runtime user"
 if (( test_mode == 0 )); then /usr/bin/id -u "$runtime_user" >/dev/null || die "runtime user does not exist"; fi
+read_convergence_env_key() {
+  local file="$1" target_key="$2" value="$3" required="$4" line mode owner expected_owner
+  if [[ ! -e "$file" && ! -L "$file" ]]; then
+    [[ "$required" == "0" ]] || die "required EnvironmentFile is missing during autonomy config convergence: $file"
+    convergence_env_value="$value"
+    return 0
+  fi
+  [[ -f "$file" && ! -L "$file" ]] || die "unsafe EnvironmentFile during autonomy config convergence: $file"
+  [[ "$(/usr/bin/realpath -e "$file")" == "$file" ]] || die "non-canonical EnvironmentFile during autonomy config convergence: $file"
+  expected_owner="$EUID"
+  (( test_mode == 0 )) && expected_owner=0
+  owner="$(/usr/bin/stat -c %u "$file")"
+  [[ "$owner" == "$expected_owner" ]] || die "unsafe EnvironmentFile ownership during autonomy config convergence: $file"
+  mode="$(/usr/bin/stat -c %a "$file")"
+  (( (8#$mode & 022) == 0 )) || die "writable EnvironmentFile during autonomy config convergence: $file"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" == "$target_key="* ]]; then
+      value="${line#*=}"
+      [[ -n "$value" && "$value" != *[[:space:]]* ]] || die "unsupported or empty $target_key in $file"
+      [[ "$value" != *\"* && "$value" != *"'"* && "$value" != *\\* && "$value" != *'$'* ]] || die "unsupported $target_key in $file"
+    fi
+  done < "$file"
+  convergence_env_value="$value"
+}
+
+converge_deployer_autonomy_config() {
+  [[ "$deployer_mode" == "1" ]] || return 0
+  local autonomy_unit="agent-bridge-interactive.service" unit selected=0
+  for unit in "${units[@]}"; do
+    [[ "$unit" == "$autonomy_unit" ]] && selected=1
+  done
+  (( selected == 1 )) || return 0
+
+  local shared_env="$defaults_dir/agent-bridge-shared"
+  local release_env="$defaults_dir/agent-bridge-release"
+  local unit_env="$defaults_dir/agent-bridge-interactive"
+  local expected_environment_files actual_environment_files explicit_environment
+  expected_environment_files="$shared_env (ignore_errors=yes)"$'\n'"$release_env (ignore_errors=no)"$'\n'"$unit_env (ignore_errors=no)"
+  actual_environment_files="$("$systemctl_cmd" show "$autonomy_unit" --property=EnvironmentFiles --value)"
+  [[ "$actual_environment_files" == "$expected_environment_files" ]] || die "effective EnvironmentFiles mismatch for $autonomy_unit during autonomy config convergence"
+  explicit_environment="$("$systemctl_cmd" show "$autonomy_unit" --property=Environment --value)"
+  [[ " $explicit_environment " != *" AGENT_BRIDGE_AUTONOMY_DB_PATH="* ]] || die "explicit systemd AGENT_BRIDGE_AUTONOMY_DB_PATH override is unsupported for $autonomy_unit"
+  [[ " $explicit_environment " != *" DB_PATH="* ]] || die "explicit systemd DB_PATH override is unsupported for $autonomy_unit"
+
+  convergence_env_value=""
+  read_convergence_env_key "$shared_env" AGENT_BRIDGE_AUTONOMY_DB_PATH "" 0
+  read_convergence_env_key "$release_env" AGENT_BRIDGE_AUTONOMY_DB_PATH "$convergence_env_value" 1
+  local autonomy_inherited="$convergence_env_value"
+  read_convergence_env_key "$unit_env" AGENT_BRIDGE_AUTONOMY_DB_PATH "$autonomy_inherited" 1
+  local autonomy_database="$convergence_env_value"
+  [[ -n "$autonomy_database" ]] || return 0
+
+  # The public deployer already serializes deployments, but this helper is
+  # also a supported privileged boundary. Serialize the config/parent
+  # convergence itself so direct concurrent invocations cannot race an
+  # append or directory creation before the helper's later rollout lock.
+  /usr/bin/mkdir -p "$(/usr/bin/dirname "$lock_file")"
+  exec 8>"$lock_file"
+  /usr/bin/flock --exclusive --nonblock 8 || die "another rollout is already active"
+
+  # Re-read the live config under the convergence lock. If another
+  # invocation already converged this path (or the config was already
+  # correct before this helper started), preserve #499's existing path
+  # semantics and skip the migration-only sibling-state restriction.
+  local database config_key config_value already_configured=0 in_memory=0
+  while IFS='=' read -r config_key config_value || [[ -n "$config_key$config_value" ]]; do
+    [[ "$config_key" == "database" && "$config_value" == "$autonomy_database" ]] && already_configured=1
+  done < "$config_file"
+  for database in "${databases[@]}"; do
+    [[ "$database" == "$autonomy_database" ]] && in_memory=1
+  done
+  if (( already_configured == 1 )); then
+    (( in_memory == 1 )) || databases+=("$autonomy_database")
+    /usr/bin/flock --unlock 8
+    exec 8>&-
+    return 0
+  fi
+
+  convergence_env_value=""
+  read_convergence_env_key "$shared_env" DB_PATH "" 0
+  read_convergence_env_key "$release_env" DB_PATH "$convergence_env_value" 1
+  local db_inherited="$convergence_env_value"
+  read_convergence_env_key "$unit_env" DB_PATH "$db_inherited" 1
+  local primary_database="$convergence_env_value"
+  [[ "$primary_database" == /* && "$autonomy_database" == /* ]] || die "autonomy convergence database paths must be absolute"
+  [[ "$(/usr/bin/realpath -m -- "$primary_database")" == "$primary_database" ]] || die "interactive primary database path is not canonical during autonomy config convergence"
+  [[ -f "$primary_database" && ! -L "$primary_database" ]] || die "interactive primary database is missing or symlinked during autonomy config convergence"
+  [[ "$autonomy_database" != "$primary_database" ]] || die "autonomy database duplicates the interactive primary database"
+
+  local primary_parent managed_state_root autonomy_parent
+  primary_parent="$(/usr/bin/dirname -- "$primary_database")"
+  managed_state_root="$(/usr/bin/dirname -- "$primary_parent")"
+  autonomy_parent="$(/usr/bin/dirname -- "$autonomy_database")"
+  [[ "$(/usr/bin/dirname -- "$autonomy_parent")" == "$managed_state_root" ]] || die "autonomy database must live in a sibling managed state directory"
+  [[ -d "$managed_state_root" && ! -L "$managed_state_root" && "$(/usr/bin/realpath -e "$managed_state_root")" == "$managed_state_root" ]] || die "managed state root is unsafe during autonomy config convergence"
+
+  if [[ ! -e "$autonomy_parent" && ! -L "$autonomy_parent" ]]; then
+    /usr/bin/mkdir --mode=0750 -- "$autonomy_parent"
+    if (( test_mode == 0 )); then
+      local runtime_uid runtime_gid
+      runtime_uid="$(/usr/bin/id -u "$runtime_user")"
+      runtime_gid="$(/usr/bin/id -g "$runtime_user")"
+      /usr/bin/chown "$runtime_uid:$runtime_gid" "$autonomy_parent"
+    fi
+  fi
+  [[ -d "$autonomy_parent" && ! -L "$autonomy_parent" && "$(/usr/bin/realpath -e "$autonomy_parent")" == "$autonomy_parent" ]] || die "autonomy database parent is missing or unsafe during config convergence"
+  local parent_mode
+  parent_mode="$(/usr/bin/stat -c %a "$autonomy_parent")"
+  (( (8#$parent_mode & 022) == 0 )) || die "autonomy database parent must not be group/world writable"
+  if (( test_mode == 0 )); then
+    [[ "$(/usr/bin/stat -c %u "$autonomy_parent")" == "$(/usr/bin/id -u "$runtime_user")" ]] || die "autonomy database parent must be owned by the runtime user"
+  fi
+  if [[ -e "$autonomy_database" || -L "$autonomy_database" ]]; then
+    [[ -f "$autonomy_database" && ! -L "$autonomy_database" ]] || die "autonomy database target is occupied by an unsafe path: $autonomy_database"
+    [[ "$(/usr/bin/realpath -e "$autonomy_database")" == "$autonomy_database" ]] || die "existing autonomy database target is not canonical: $autonomy_database"
+  else
+    [[ "$(/usr/bin/realpath -m -- "$autonomy_database")" == "$autonomy_database" ]] || die "autonomy database path is not canonical during autonomy config convergence"
+  fi
+
+  local config_dir config_tmp config_current_mode
+  config_dir="$(/usr/bin/dirname -- "$config_file")"
+  config_tmp="$(/usr/bin/mktemp --tmpdir="$config_dir" .rollout.conf.autonomy.XXXXXX)"
+  /usr/bin/cat "$config_file" > "$config_tmp"
+  printf '\ndatabase=%s\n' "$autonomy_database" >> "$config_tmp"
+  config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
+  /usr/bin/chmod "$config_current_mode" "$config_tmp"
+  /usr/bin/mv -T -- "$config_tmp" "$config_file"
+  echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
+  (( in_memory == 1 )) || databases+=("$autonomy_database")
+  /usr/bin/flock --unlock 8
+  exec 8>&-
+}
+
+converge_deployer_autonomy_config
 rollout_config_sha256="$(/usr/bin/sha256sum "$config_file" | /usr/bin/cut -d' ' -f1)"
 installed_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d' ' -f1)"
 if (( test_mode == 1 )); then
@@ -414,9 +549,6 @@ if [[ -n "${selected_units[$autonomy_unit]:-}" ]]; then
   autonomy_candidate="$resolved_env_value"
   if [[ -n "$autonomy_candidate" ]]; then
     [[ "$autonomy_candidate" == /* && "$autonomy_candidate" != *[[:space:]]* ]] || die "$autonomy_unit would use an invalid $autonomy_key"
-    autonomy_parent_dir="$(/usr/bin/dirname -- "$autonomy_candidate")"
-    [[ -d "$autonomy_parent_dir" && ! -L "$autonomy_parent_dir" && "$(/usr/bin/realpath -e "$autonomy_parent_dir")" == "$autonomy_parent_dir" ]] \
-      || die "$autonomy_unit autonomy database parent directory is missing or unsafe: $autonomy_parent_dir"
     if [[ -e "$autonomy_candidate" || -L "$autonomy_candidate" ]]; then
       [[ -f "$autonomy_candidate" && ! -L "$autonomy_candidate" ]] || die "missing database or symlinked database for $autonomy_unit autonomy path: $autonomy_candidate"
       autonomy_canonical="$(/usr/bin/realpath -e "$autonomy_candidate")"
@@ -461,6 +593,11 @@ done
 (( ${#canonical_databases[@]} == ${#discovered_databases[@]} )) || die "configured and discovered database inventory counts differ"
 for database in "${!canonical_databases[@]}"; do [[ -n "${discovered_databases[$database]:-}" ]] || die "extra configured database not selected by any unit: $database"; done
 for database in "${!discovered_databases[@]}"; do [[ -n "${canonical_databases[$database]:-}" ]] || die "discovered database missing from root allowlist: $database"; done
+if [[ -n "$autonomy_bootstrap_path" ]]; then
+  autonomy_parent_dir="$(/usr/bin/dirname -- "$autonomy_bootstrap_path")"
+  [[ -d "$autonomy_parent_dir" && ! -L "$autonomy_parent_dir" && "$(/usr/bin/realpath -e "$autonomy_parent_dir")" == "$autonomy_parent_dir" ]] \
+    || die "$autonomy_unit autonomy database parent directory is missing or unsafe: $autonomy_parent_dir"
+fi
 
 run_as_runtime() {
   "$runuser_cmd" --user "$runtime_user" -- "$@"
