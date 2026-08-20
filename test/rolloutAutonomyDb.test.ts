@@ -148,4 +148,19 @@ describe("guarded rollout — interactive autonomy database (issue #498)", () =>
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/missing database or symlinked database/i);
     expect(actions(fixture)).not.toContain("systemctl:stop");
   });
+
+  it("still rejects duplicate allowlist entries for a missing autonomy database", () => {
+    const fixture = createFixture();
+    const autonomyPath = join(fixture.root, "databases", "autonomy.sqlite");
+    setAutonomyEnv(fixture, autonomyPath);
+    addAutonomyToAllowlist(fixture, autonomyPath);
+    addAutonomyToAllowlist(fixture, autonomyPath);
+
+    const result = runRollout(fixture);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/duplicate database allowlist entry/i);
+    expect(existsSync(autonomyPath)).toBe(false);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
 });

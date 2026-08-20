@@ -447,6 +447,7 @@ for database_index in "${!databases[@]}"; do
     # existence check, but keep it out of the databases[] array that
     # preflight inspect/backup/build_db_args iterate until the sanctioned
     # bootstrap call (after containment) actually creates it.
+    [[ -z "${canonical_databases[$database]:-}" ]] || die "duplicate database allowlist entry: $database"
     canonical_databases[$database]=1
     unset 'databases[database_index]'
     continue
