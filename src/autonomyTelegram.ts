@@ -56,11 +56,14 @@ export function matchAutonomousTelegramSupervisorReply(db: BridgeDb, message: Te
   if (active.length === 1) {
     const goal = getAutonomousGoal(db, active[0].goal_id);
     if (goal.status !== "active") return null;
-    return matchGoalReply(db, goal.goalId, "active", message, replyId, senderId, text);
+    const activeMatch = matchGoalReply(db, goal.goalId, "active", message, replyId, senderId, text);
+    if (activeMatch) return activeMatch;
   }
 
   // created_at is only second-granularity; automatic successors can share the
   // same timestamp. SQLite rowid is the deterministic insertion order here.
+  // An unmatched reply against the active successor may still target the
+  // immediately preceding terminal Episode's correlated terminal message.
   const terminal = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status <> 'active' ORDER BY rowid DESC LIMIT 1").get() as { goal_id: string } | undefined;
   if (!terminal) return null;
   return matchGoalReply(db, terminal.goal_id, "successor", message, replyId, senderId, text);
