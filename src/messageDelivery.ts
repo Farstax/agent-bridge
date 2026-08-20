@@ -240,7 +240,8 @@ export async function sendMessageWithProgress({
   const streamingEnabled = kind === "antigravity";
   // Abandoned previews must be removable before fallback can publish the
   // authoritative answer. Clients without deletion support stay final-only.
-  let answerPreviewEnabled = kind === "claude" && typeof client.deleteMessage === "function";
+  let answerPreviewEnabled = (kind === "claude" || kind === "antigravity")
+    && typeof client.deleteMessage === "function";
   let answerPreviewMessageId: number | null = null;
   let answerPreviewText = "";
   let answerPreviewDirty = false;
