@@ -971,6 +971,42 @@ describe("BridgeEngine", () => {
       }));
     });
 
+    it.each(["sync", "async"] as const)("streams only agent responses through the %s capacity fallback", async (mode) => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const fallbackSessionId = "33333333-3333-4333-8333-333333333333";
+      const fallbackOutput = [
+        JSON.stringify({ event: "init", init: { cwd: "/tmp" } }),
+        JSON.stringify({ event: "step_update", step_update: { step_type: "tool", text_delta: "hidden tool output" } }),
+        JSON.stringify({ event: "step_update", step_update: { step_type: "checkpoint", text_delta: "hidden checkpoint" } }),
+        JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "visible fallback answer" } }),
+        JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "visible fallback answer", conversation_id: fallbackSessionId } }),
+      ].join("\n") + "\n";
+      let attempts = 0;
+      const providerRun = vi.fn((_cmd: string, _args: string[], _cwd: string, options: any) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        options.onProviderOutputChunk?.(fallbackOutput);
+        return mode === "async" ? { text: fallbackOutput } : fallbackOutput;
+      });
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: mode === "async", pollIntervalMs: 1000 },
+        db,
+        client,
+        mode === "async" ? { runCliAsync: providerRun as any } : { runCli: providerRun as any },
+      );
+
+      await engine.handleMessages([makeMessage(`capacity fallback ${mode}`)]);
+
+      expect(providerRun).toHaveBeenCalledTimes(2);
+      const deliveredTexts = [
+        ...client.sendMessage.mock.calls.map((call: any[]) => String(call[0]?.text ?? "")),
+        ...client.editMessageText.mock.calls.map((call: any[]) => String(call[0]?.text ?? "")),
+      ];
+      expect(deliveredTexts.some((text) => text.includes("visible fallback answer"))).toBe(true);
+      expect(deliveredTexts.every((text) => !text.includes("hidden tool output") && !text.includes("hidden checkpoint"))).toBe(true);
+    });
+
     it("retries recoverable Agy cascade errors once with a fresh conversation and recent context", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
 
