@@ -1,6 +1,7 @@
 import { isCapacityExhaustedError } from "./cli.js";
 import type { BridgeDb } from "./db.js";
 import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
+import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import type { BotKind } from "./types.js";
 
@@ -36,24 +37,50 @@ export function createSurfaceNeutralProviderRouter(
       for (;;) {
         const provider = fallback.getActiveCli(input.chatKey) as BotKind;
         const engine = options.engineForProvider(provider);
+        let attemptEvents: BridgeEvent[] = [];
         const providerInput: SurfaceNeutralTurnInput = {
           ...input,
           eventContext: { ...input.eventContext, bot: provider },
           // BridgeEngine emits run.started for every actual CLI process,
           // including same-provider model fallback and fresh-session retries.
-          // Reuse that production event boundary so Run-scoped attempt state
-          // cannot leak from a failed provider attempt into the successful one.
+          // A new process supersedes the abandoned attempt for this one
+          // durable Run, so retain only events from the latest real attempt.
           collect: (event) => {
-            if (event.type === "run.started") input.onProviderExecutionStarted?.();
-            input.collect(event);
+            if (event.type === "run.started") {
+              input.onProviderExecutionStarted?.();
+              attemptEvents = [event];
+              return;
+            }
+            attemptEvents.push(event);
           },
         };
         try {
-          return await engine.executeSurfaceNeutralTurn(providerInput);
+          const result = await engine.executeSurfaceNeutralTurn(providerInput);
+          const completed = [...attemptEvents].reverse().find(
+            (event): event is Extract<BridgeEvent, { type: "run.completed" }> => event.type === "run.completed",
+          );
+          for (const event of attemptEvents) {
+            if (event.type === "run.failed" || event.type === "run.cancelled" || event.type === "run.completed") continue;
+            input.collect(event);
+          }
+          if (completed) {
+            input.collect({ ...completed, text: result.text, sessionId: result.sessionId });
+          }
+          return result;
         } catch (error) {
-          if (!isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)))) throw error;
+          const capacityError = isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)));
+          if (!capacityError) {
+            for (const event of attemptEvents) input.collect(event);
+            throw error;
+          }
           const next = fallback.advance(input.chatKey);
-          if (!next) throw error;
+          if (!next) {
+            for (const event of attemptEvents) input.collect(event);
+            throw error;
+          }
+          // The failed provider/model attempt was abandoned in favour of the
+          // next configured CLI. Do not let its terminal event settle the
+          // single durable Run owned by the eventual successful attempt.
         }
       }
     },
