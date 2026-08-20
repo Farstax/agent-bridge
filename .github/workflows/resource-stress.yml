@@ -1,0 +1,53 @@
+name: Resource Stress
+
+on:
+  pull_request:
+    paths:
+      - "vitest.config.ts"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/resource-stress.yml"
+      - "test/ciPolicy.test.ts"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resource-stress-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  stress:
+    name: Repeated Resource Stress
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the exact event head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify the exact event head
+        run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: npm
+
+      - run: npm ci
+
+      - name: Baseline full-suite resource sample
+        run: /usr/bin/time -v npm test
+        env:
+          NODE_OPTIONS: "--max-old-space-size=3072"
+
+      - name: Repeat with async leak detection
+        run: /usr/bin/time -v npm run test:resources
+        env:
+          NODE_OPTIONS: "--max-old-space-size=3072"
