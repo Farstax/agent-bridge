@@ -1,0 +1,107 @@
+name: Issue 498 review repair
+
+on:
+  push:
+    branches:
+      - fix/issue-498-autonomy-config-convergence
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-498-autonomy-config-convergence
+          fetch-depth: 0
+      - name: Apply review repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one anchor in {path}, found {text.count(old)}")
+              path.write_text(text.replace(old, new, 1))
+
+          rollout = Path("scripts/rollout-agent-bridge.sh")
+          replace_once(rollout, '''  local autonomy_database="$convergence_env_value"
+            [[ -n "$autonomy_database" ]] || return 0
+
+            convergence_env_value=""
+          ''', '''  local autonomy_database="$convergence_env_value"
+            [[ -n "$autonomy_database" ]] || return 0
+
+            # The public deployer already serializes deployments, but this helper is
+            # also a supported privileged boundary. Serialize the config/parent
+            # convergence itself so direct concurrent invocations cannot race an
+            # append or directory creation before the helper's later rollout lock.
+            /usr/bin/mkdir -p "$(/usr/bin/dirname "$lock_file")"
+            exec 8>"$lock_file"
+            /usr/bin/flock --exclusive --nonblock 8 || die "another rollout is already active"
+
+            convergence_env_value=""
+          ''')
+
+          replace_once(rollout, '''  local database already_configured=0
+            for database in "${databases[@]}"; do
+              [[ "$database" == "$autonomy_database" ]] && already_configured=1
+            done
+            if (( already_configured == 0 )); then
+              local config_dir config_tmp config_current_mode
+              config_dir="$(/usr/bin/dirname -- "$config_file")"
+              config_tmp="$(/usr/bin/mktemp --tmpdir="$config_dir" .rollout.conf.autonomy.XXXXXX)"
+              /usr/bin/cat "$config_file" > "$config_tmp"
+              printf '\\ndatabase=%s\\n' "$autonomy_database" >> "$config_tmp"
+              config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
+              /usr/bin/chmod "$config_current_mode" "$config_tmp"
+              /usr/bin/mv -T -- "$config_tmp" "$config_file"
+              databases+=("$autonomy_database")
+              echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
+            fi
+          }
+          ''', '''  local database config_key config_value already_configured=0 in_memory=0
+            while IFS='=' read -r config_key config_value || [[ -n "$config_key$config_value" ]]; do
+              [[ "$config_key" == "database" && "$config_value" == "$autonomy_database" ]] && already_configured=1
+            done < "$config_file"
+            for database in "${databases[@]}"; do
+              [[ "$database" == "$autonomy_database" ]] && in_memory=1
+            done
+            if (( already_configured == 0 )); then
+              local config_dir config_tmp config_current_mode
+              config_dir="$(/usr/bin/dirname -- "$config_file")"
+              config_tmp="$(/usr/bin/mktemp --tmpdir="$config_dir" .rollout.conf.autonomy.XXXXXX)"
+              /usr/bin/cat "$config_file" > "$config_tmp"
+              printf '\\ndatabase=%s\\n' "$autonomy_database" >> "$config_tmp"
+              config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
+              /usr/bin/chmod "$config_current_mode" "$config_tmp"
+              /usr/bin/mv -T -- "$config_tmp" "$config_file"
+              echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
+            fi
+            (( in_memory == 1 )) || databases+=("$autonomy_database")
+            /usr/bin/flock --unlock 8
+            exec 8>&-
+          }
+          ''')
+
+          install = Path("scripts/agent-bridge-install.py")
+          replace_once(install,
+              '    if not Path(raw).is_absolute() or any(char.isspace() for char in raw) or os.path.normpath(raw) != raw:\n        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH must be a canonical absolute path without whitespace")\n',
+              '    if (\n        not Path(raw).is_absolute()\n        or any(char.isspace() for char in raw)\n        or any(char in "\\\"\'\\\\$" for char in raw)\n        or os.path.normpath(raw) != raw\n    ):\n        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH must be a canonical absolute path without shell metacharacters")\n',
+          )
+          PY
+          python3 -m py_compile scripts/agent-bridge-install.py
+          bash -n scripts/rollout-agent-bridge.sh
+      - name: Commit repair and remove scaffolding
+        shell: bash
+        run: |
+          rm -f .github/workflows/issue-498-review-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- scripts/agent-bridge-install.py scripts/rollout-agent-bridge.sh .github/workflows/issue-498-review-repair.yml
+          git commit -m "fix: serialize autonomy config convergence"
+          git push origin HEAD:fix/issue-498-autonomy-config-convergence
