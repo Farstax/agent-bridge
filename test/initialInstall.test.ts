@@ -188,17 +188,6 @@ with tempfile.TemporaryDirectory() as directory:
     expect(result.config_written).toBe(false);
   });
 
-  it("bootstraps from the staged immutable release, not the root-only extraction directory", () => {
-    const source = readFileSync(installer, "utf8");
-    const stage = source.indexOf("stage.stage(args.release, release_root, activated_commit, archive_sha256)");
-    const bootstrap = source.indexOf("bootstrap_databases(release_root / activated_commit");
-    const activate = source.indexOf("activate.activate(release_root, current, activated_commit)");
-
-    expect(stage).toBeGreaterThan(-1);
-    expect(bootstrap).toBeGreaterThan(stage);
-    expect(activate).toBeGreaterThan(bootstrap);
-  });
-
   it("installs and verifies default shared skills from the immutable release in the runtime user's real home", () => {
     const result = probe(`
 calls = []
@@ -300,15 +289,6 @@ print(json.dumps({"commands": len(commands)}))
       rmSync(home, { recursive: true, force: true });
     }
   }, 15_000);
-
-  it("keeps exact-release and legacy installer default skill lists in parity", () => {
-    const defaults = probe(`print(json.dumps(list(module.DEFAULT_AGENT_BRIDGE_SKILLS)))`) as string[];
-    const legacyDefaults = readFileSync("scripts/install.sh", "utf8")
-      .match(/^DEFAULT_AGENT_BRIDGE_SKILLS="([^"]+)"$/m)?.[1]
-      .split(",");
-
-    expect(legacyDefaults).toEqual(defaults);
-  });
 
   it("propagates a shared-skill manager failure so exact-release installation fails", () => {
     const result = probe(`

@@ -1,52 +1,43 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { openDb } from "../src/db.js";
+import { BridgeEngine } from "../src/engine.js";
 
-const engineSource = readFileSync(new URL("../src/engine.ts", import.meta.url), "utf8");
-
-function sliceBetween(startMarker: string, endMarker: string): string {
-  const start = engineSource.indexOf(startMarker);
-  const end = engineSource.indexOf(endMarker, start + startMarker.length);
-  expect(start, `missing ${startMarker}`).toBeGreaterThanOrEqual(0);
-  expect(end, `missing ${endMarker}`).toBeGreaterThan(start);
-  return engineSource.slice(start, end);
+function client() {
+  return {
+    sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
+    sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+    sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
+    sendDocument: vi.fn().mockResolvedValue({ ok: true }),
+  } as any;
 }
 
-describe("BridgeEngine provider-attempt ownership", () => {
-  it("keeps sync and async public entrypoints as thin adapters over one shared attempt pipeline", () => {
-    const sharedMarker = "  private async _executeProviderAttempt(";
-    const sharedStart = engineSource.indexOf(sharedMarker);
-    expect(sharedStart, "shared provider-attempt owner must exist").toBeGreaterThanOrEqual(0);
-
-    const asyncWrapper = sliceBetween("  async executePromptAsync(", "  async executePrompt(");
-    const syncWrapper = engineSource.slice(
-      engineSource.indexOf("  async executePrompt("),
-      sharedStart,
-    );
-
-    for (const wrapper of [asyncWrapper, syncWrapper]) {
-      expect(wrapper).toContain("this._executeProviderAttempt(");
-      for (const duplicatedOwner of [
-        "buildCliInvocation(",
-        "parseCliResult(",
-        "_retryAntigravityFreshSession(",
-        "_runWithFallback(",
-        "_handleCircuitBreaker(",
-      ]) {
-        expect(wrapper).not.toContain(duplicatedOwner);
-      }
-    }
-
-    const sharedEnd = engineSource.indexOf("  private async _runFreshAntigravityRetry(", sharedStart);
-    expect(sharedEnd).toBeGreaterThan(sharedStart);
-    const sharedPipeline = engineSource.slice(sharedStart, sharedEnd);
-    for (const sharedResponsibility of [
-      "buildCliInvocation(",
-      "parseCliResult(",
-      "_retryAntigravityFreshSession(",
-      "_runWithFallback(",
-      "_handleCircuitBreaker(",
-    ]) {
-      expect(sharedPipeline).toContain(sharedResponsibility);
+describe("BridgeEngine provider-attempt contract", () => {
+  it.each([["sync", false], ["async", true]] as const)("executes a %s provider attempt through the public runtime contract", async (_mode, asyncMode) => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-attempt-"));
+    const db = openDb(join(root, "bridge.sqlite"));
+    const runCli = vi.fn().mockResolvedValue("provider response");
+    const runCliAsync = vi.fn().mockResolvedValue({ text: "provider response" });
+    const engine = new BridgeEngine({
+      kind: "claude", surfaceIdentity: "test",
+      botConfig: { command: "claude", modelPreference: ["claude-primary"] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: asyncMode, pollIntervalMs: 1_000,
+    }, db, client(), { runCli, runCliAsync });
+    const handle = db.acquireLock("test", "100");
+    try {
+      expect(handle).not.toBeNull();
+      const result = asyncMode
+        ? await engine.executePromptAsync("hello", null, 100, {}, () => {}, [], undefined, null, null, "100", handle!)
+        : await engine.executePrompt("hello", null, 100, {}, [], undefined, null, null, "100", handle!);
+      expect(result.text).toBe("provider response");
+      expect(result.sessionId).toBeNull();
+      expect(asyncMode ? runCliAsync : runCli).toHaveBeenCalledOnce();
+    } finally {
+      if (handle && db.ownsLock(handle)) db.unlock(handle);
+      db.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

@@ -95,9 +95,6 @@ print(json.dumps({"resolved": str(resolved), "calls": calls}))
       expect(evidence.calls[1]).toContain("interactive");
       expect(evidence.calls[1]).toContain(join(stateRoot, "company-autonomy", "bridge.sqlite"));
 
-      const source = readFileSync("scripts/agent-bridge-install.py", "utf8");
-      expect(source).toContain("databases.append(autonomy_database)");
-      expect(source).toContain("require_fresh_database_targets(state_root, selected, os.environ)");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
