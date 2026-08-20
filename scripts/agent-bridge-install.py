@@ -159,7 +159,7 @@ def configured_autonomy_database(
     state_root: Path,
     services: Sequence[tuple[str, str, tuple[str, ...], str]],
 ) -> Path | None:
-    raw = env.get("AGENT_BRIDGE_AUTONOMY_DB_PATH", "").strip()
+    raw = env.get("AGENT_BRIDGE_AUTONOMY_DB_PATH", "")
     if not raw:
         return None
     if (
