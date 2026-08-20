@@ -116,6 +116,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
       { status: "budget_exhausted", cycle: 1 },
       { status: "budget_exhausted", cycle: 1 },
     ]);
+    expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(2);
     expect(controller.statusText()).toContain("Episodes today 2/2");
 
     db.close();
@@ -175,7 +176,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("routes a reply to the terminal predecessor after its automatic successor is active", () => {
+  it("keeps predecessor terminal replies stale once a successor is active", () => {
     const dir = autonomyDir();
     const db = openDb(join(dir, "autonomy.sqlite"), { serviceId: "test-autonomy-terminal-reply", runId: "process-terminal-reply" });
     const route = { surface: "telegram", address: "123", identity: "42", thread: "9" };
@@ -201,7 +202,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
     });
     recordAutonomousSupervisorMessageId(db, successor.goal.goalId, 99);
 
-    const reply = matchAutonomousTelegramSupervisorReply(db, {
+    const staleReply = matchAutonomousTelegramSupervisorReply(db, {
       message_id: 88,
       chat: { id: 123, type: "supergroup" },
       from: { id: 42, first_name: "Owner" },
@@ -209,12 +210,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
       text: "Use this guidance for the next Episode.",
       reply_to_message: { message_id: 77 },
     } as any);
-
-    expect(reply).toMatchObject({
-      goalId: predecessor.goal.goalId,
-      phase: "successor",
-      text: "Use this guidance for the next Episode.",
-    });
+    expect(staleReply).toBeNull();
 
     const activeReply = matchAutonomousTelegramSupervisorReply(db, {
       message_id: 100,
@@ -290,6 +286,55 @@ describe("bounded autonomous Episode succession (#512)", () => {
 
     expect(claude.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
     expect(codex.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
+    expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "blocked", cycle: 1 } });
+    const run = db.raw.prepare("SELECT status, error FROM bridge_runs ORDER BY started_at DESC LIMIT 1").get() as { status: string; error: string | null };
+    expect(run).toEqual({ status: "failed", error: "missing_autonomy_disposition" });
+
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("resets disposition on every same-provider run.started attempt", async () => {
+    const dir = autonomyDir();
+    const db = openDb(join(dir, "autonomy.sqlite"), { serviceId: "test-autonomy-model-fallback-disposition", runId: "process-model-fallback-disposition" });
+    const engine = {
+      executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
+        const started = (id: string) => ({
+          type: "run.started" as const,
+          version: 1 as const,
+          id,
+          runId: input.runId,
+          timestamp: new Date().toISOString(),
+          bot: input.eventContext.bot,
+          chatId: input.eventContext.chatId,
+          threadId: input.eventContext.threadId,
+          model: null,
+          command: "test-provider",
+          cwd: process.cwd(),
+        });
+        input.collect(started("attempt-1"));
+        execFileSync(dispositionCommand(input.prompt), ["continue"], { stdio: "pipe" });
+        // Same-provider model fallback/fresh retry starts another actual CLI
+        // process under the same Run. Its run.started boundary must invalidate
+        // the failed attempt's lifecycle decision.
+        input.collect(started("attempt-2"));
+        return { text: "fallback attempt succeeded without disposition", sessionId: null } as any;
+      }),
+    };
+    const controller = new AutonomyController({
+      db,
+      autonomyDir: dir,
+      maxCycles: 3,
+      requireEpisodeApproval: true,
+      maxEpisodesPerDay: 3,
+      providerChain: ["claude"],
+      engineForBot: () => engine as any,
+    });
+
+    const started = await controller.start({ bot: "claude" });
+    await eventually(() => controller.status().state === "terminal");
+
+    expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
     expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "blocked", cycle: 1 } });
     const run = db.raw.prepare("SELECT status, error FROM bridge_runs ORDER BY started_at DESC LIMIT 1").get() as { status: string; error: string | null };
     expect(run).toEqual({ status: "failed", error: "missing_autonomy_disposition" });
