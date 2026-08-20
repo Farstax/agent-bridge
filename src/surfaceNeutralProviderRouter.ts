@@ -39,6 +39,14 @@ export function createSurfaceNeutralProviderRouter(
         const providerInput: SurfaceNeutralTurnInput = {
           ...input,
           eventContext: { ...input.eventContext, bot: provider },
+          // BridgeEngine emits run.started for every actual CLI process,
+          // including same-provider model fallback and fresh-session retries.
+          // Reuse that production event boundary so Run-scoped attempt state
+          // cannot leak from a failed provider attempt into the successful one.
+          collect: (event) => {
+            if (event.type === "run.started") input.onProviderExecutionStarted?.();
+            input.collect(event);
+          },
         };
         try {
           return await engine.executeSurfaceNeutralTurn(providerInput);
