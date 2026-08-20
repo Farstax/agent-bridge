@@ -984,7 +984,10 @@ describe("BridgeEngine", () => {
       let attempts = 0;
       const providerRun = vi.fn((_cmd: string, _args: string[], _cwd: string, options: any) => {
         attempts += 1;
-        if (attempts === 1) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        if (attempts === 1) {
+          options.onProviderOutputChunk?.('{"event":"step_update","step_update":{"step_type":"agent_response"}');
+          throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        }
         options.onProviderOutputChunk?.(fallbackOutput);
         return mode === "async" ? { text: fallbackOutput } : fallbackOutput;
       });
@@ -1005,6 +1008,9 @@ describe("BridgeEngine", () => {
       ];
       expect(deliveredTexts.some((text) => text.includes("visible fallback answer"))).toBe(true);
       expect(deliveredTexts.every((text) => !text.includes("hidden tool output") && !text.includes("hidden checkpoint"))).toBe(true);
+      expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+        text: expect.stringContaining("visible fallback answer"),
+      }));
     });
 
     it("retries recoverable Agy cascade errors once with a fresh conversation and recent context", async () => {
