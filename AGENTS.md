@@ -392,6 +392,19 @@ The red test must exercise the production boundary that could permit the defect 
 
 Match verification to the highest-risk boundary affected. Persistence, migrations, queues, authentication, permissions, external APIs, cross-module contracts, and operational changes require boundary-level checks; critical user paths require end-to-end or realistic manual verification.
 
+## Keep tests deterministic and production-shaped
+
+Tests are executable contracts, not snapshots of implementation shape. When behaviour can be exercised directly, do not assert source text, regex-match code structure, exact command formatting, prose, private method layout, or other incidental representation.
+
+- Build fixtures from shared production contracts such as builders, types, schemas, or canonical helpers where practical; do not maintain hand-copied command, config, or request structures that can drift independently. Keep expected outcomes independent of production decision logic so a test cannot prove itself with the same bug.
+- A regression test must reproduce the real defective execution path at the smallest authoritative boundary and fail for the expected reason before the repair.
+- Do not treat retries, arbitrary sleeps, inflated timeouts, oversized heaps, or global suite serialization as fixes for flaky tests. They are temporary diagnostics only when backed by measured evidence and a documented root cause.
+- Tests must clean up every resource or mutation they create: subprocesses, timers, sockets, database handles, listeners, temporary files/directories, environment variables, globals, fake clocks, and process/module state.
+- Parallel safety is the default. If a test genuinely requires serialization, scope it to the smallest set and document the concrete shared resource or ordering constraint.
+- Synchronize on observable state/events with deterministic hooks or bounded polling; fixed sleeps are not readiness assertions.
+- For flaky-test or regression repairs, repeatedly run the focused reproducer and the relevant neighbouring tests to expose order dependence or leaked state before relying on exact-head CI for the full regression gate.
+- Any exceptional increase in heap, timeout, or worker restriction must record the measurement that justifies it, the root cause it contains, and an exit condition; do not normalize the workaround as permanent without evidence.
+
 ## Preserve compatibility, explicit intent, and sibling behaviour
 
 Before changing defaults or semantics, record and test existing behaviour for default, explicitly configured, legacy or omitted, unavailable dependency, and unsupported cases.
