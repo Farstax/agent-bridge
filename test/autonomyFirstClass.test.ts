@@ -158,7 +158,11 @@ describe("first-class autonomy (#466)", () => {
     writeFileSync(join(dir, "AUTONOMY.md"), "Goal: qualify the current system.\nConstraint: no destructive changes.");
     mkdirSync(join(dir, "work"), { recursive: true });
     writeFileSync(join(dir, "work", "learned-tool.txt"), "keep me");
-    const neverRun = { executeSurfaceNeutralTurn: vi.fn(async () => new Promise(() => {})) } as any;
+    let finishRun: ((result: { text: string }) => void) | undefined;
+    const neverRun = {
+      executeSurfaceNeutralTurn: vi.fn(() => new Promise<{ text: string }>((resolve) => { finishRun = resolve; })
+        .finally(() => { finishRun = undefined; })),
+    } as any;
     const controller = new AutonomyController({ db, autonomyDir: dir, maxCycles: 20, engineForBot: () => neverRun });
     const first = await controller.start({ bot: "claude", policyInstruction: "Owner approved this Episode.", supervisorRoute: { surface: "telegram", address: "1", identity: "2" } });
     expect(first.created).toBe(true);
@@ -171,6 +175,8 @@ describe("first-class autonomy (#466)", () => {
     expect(getAutonomousGoal(db, first.goal.goalId).prompt).toBe(frozen);
     expect(readFileSync(join(dir, "work", "learned-tool.txt"), "utf8")).toBe("keep me");
     await controller.stop("test stop");
+    finishRun?.({ text: "stopped" });
+    await vi.waitFor(() => expect(finishRun).toBeUndefined());
     rmSync(dir, { recursive: true, force: true });
     cleanup(db, dbPath);
   });
