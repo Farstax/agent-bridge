@@ -30,6 +30,7 @@ const MAX_SUCCESSOR_INPUT_TOTAL_CHARS = 6_000;
 const MAX_SUCCESSOR_INPUTS = 8;
 const SUCCESSOR_INPUT_SETTING_PREFIX = "autonomy:successor-input:";
 const SUCCESSOR_INTENT_SETTING = "autonomy:successor-intent";
+const DAILY_EPISODE_COUNT_SETTING_PREFIX = "autonomy:episodes-per-day:";
 const FROZEN_EPISODE_PREFIX = "[Frozen Episode authority]";
 
 interface SuccessorInputRecord {
@@ -165,6 +166,10 @@ export class AutonomyController {
     return new Date().toISOString().slice(0, 10);
   }
 
+  private dailyCountSettingKey(): string {
+    return `${DAILY_EPISODE_COUNT_SETTING_PREFIX}${this.utcDay()}`;
+  }
+
   private episodesToday(): number {
     const row = this.options.db.raw.prepare(`
       SELECT COUNT(*) AS count FROM autonomous_goals
@@ -173,9 +178,23 @@ export class AutonomyController {
     return Number(row.count);
   }
 
-  private assertDailyAllowance(): void {
-    const used = this.episodesToday();
-    if (used >= this.maxEpisodesPerDay) throw new AutonomyDailyEpisodeLimitError(used, this.maxEpisodesPerDay);
+  private createEpisodeWithDailyReservation(input: Parameters<typeof createAutonomousGoalIfNoneActive>[1]): ReturnType<typeof createAutonomousGoalIfNoneActive> {
+    return this.options.db.runInTransaction(() => {
+      const key = this.dailyCountSettingKey();
+      const observed = this.episodesToday();
+      const rawReserved = Number(this.options.db.getSetting(key) ?? "0");
+      const reserved = Number.isInteger(rawReserved) && rawReserved >= 0 ? rawReserved : 0;
+      const used = Math.max(observed, reserved);
+      if (used >= this.maxEpisodesPerDay) throw new AutonomyDailyEpisodeLimitError(used, this.maxEpisodesPerDay);
+
+      // Take the SQLite write lock before the active-Episode check/create. The
+      // reservation is in the same transaction, so a failed/no-op create rolls
+      // back or is restored and can never consume phantom daily allowance.
+      this.options.db.setSetting(key, String(used + 1));
+      const result = createAutonomousGoalIfNoneActive(this.options.db, input);
+      if (!result.created) this.options.db.setSetting(key, String(used));
+      return result;
+    });
   }
 
   private recordSuccessorInput(input: { goalId: string; text: string; idempotencyKey: string }): boolean {
@@ -231,7 +250,6 @@ export class AutonomyController {
       return { goal: existing[0], created: false };
     }
 
-    this.assertDailyAllowance();
     this.options.engineForBot(input.bot);
     const predecessor = latestTerminalGoal(this.options.db);
     const prompt = predecessor ? predecessor.prompt : this.frozenPrompt(input.policyInstruction);
@@ -240,7 +258,7 @@ export class AutonomyController {
       ? [...predecessor.evidence, ...(input.initialEvidence ?? [])].slice(-8)
       : input.initialEvidence;
     const supervisorRoute = input.supervisorRoute ?? (predecessor ? getAutonomousSupervisorState(this.options.db, predecessor.goalId)?.route : undefined);
-    const result = createAutonomousGoalIfNoneActive(this.options.db, {
+    const result = this.createEpisodeWithDailyReservation({
       goalId: `episode-${randomUUID()}`,
       prompt,
       constraints,
