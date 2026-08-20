@@ -162,8 +162,13 @@ def configured_autonomy_database(
     raw = env.get("AGENT_BRIDGE_AUTONOMY_DB_PATH", "").strip()
     if not raw:
         return None
-    if not Path(raw).is_absolute() or any(char.isspace() for char in raw) or os.path.normpath(raw) != raw:
-        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH must be a canonical absolute path without whitespace")
+    if (
+        not Path(raw).is_absolute()
+        or any(char.isspace() for char in raw)
+        or any(char in "\"'\\$" for char in raw)
+        or os.path.normpath(raw) != raw
+    ):
+        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH must be a canonical absolute path without shell metacharacters")
     if not any(service[0] == "agent-bridge-interactive.service" for service in services):
         fail("AGENT_BRIDGE_AUTONOMY_DB_PATH requires agent-bridge-interactive.service")
     path = Path(raw)

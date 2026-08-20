@@ -252,6 +252,14 @@ converge_deployer_autonomy_config() {
   local autonomy_database="$convergence_env_value"
   [[ -n "$autonomy_database" ]] || return 0
 
+  # The public deployer already serializes deployments, but this helper is
+  # also a supported privileged boundary. Serialize the config/parent
+  # convergence itself so direct concurrent invocations cannot race an
+  # append or directory creation before the helper's later rollout lock.
+  /usr/bin/mkdir -p "$(/usr/bin/dirname "$lock_file")"
+  exec 8>"$lock_file"
+  /usr/bin/flock --exclusive --nonblock 8 || die "another rollout is already active"
+
   convergence_env_value=""
   read_convergence_env_key "$shared_env" DB_PATH "" 0
   read_convergence_env_key "$release_env" DB_PATH "$convergence_env_value" 1
@@ -288,9 +296,12 @@ converge_deployer_autonomy_config() {
     [[ "$(/usr/bin/stat -c %u "$autonomy_parent")" == "$(/usr/bin/id -u "$runtime_user")" ]] || die "autonomy database parent must be owned by the runtime user"
   fi
 
-  local database already_configured=0
+  local database config_key config_value already_configured=0 in_memory=0
+  while IFS='=' read -r config_key config_value || [[ -n "$config_key$config_value" ]]; do
+    [[ "$config_key" == "database" && "$config_value" == "$autonomy_database" ]] && already_configured=1
+  done < "$config_file"
   for database in "${databases[@]}"; do
-    [[ "$database" == "$autonomy_database" ]] && already_configured=1
+    [[ "$database" == "$autonomy_database" ]] && in_memory=1
   done
   if (( already_configured == 0 )); then
     local config_dir config_tmp config_current_mode
@@ -301,9 +312,11 @@ converge_deployer_autonomy_config() {
     config_current_mode="$(/usr/bin/stat -c %a "$config_file")"
     /usr/bin/chmod "$config_current_mode" "$config_tmp"
     /usr/bin/mv -T -- "$config_tmp" "$config_file"
-    databases+=("$autonomy_database")
     echo "converged configured autonomy database into fixed rollout inventory path=$autonomy_database"
   fi
+  (( in_memory == 1 )) || databases+=("$autonomy_database")
+  /usr/bin/flock --unlock 8
+  exec 8>&-
 }
 
 converge_deployer_autonomy_config
