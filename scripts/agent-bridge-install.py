@@ -154,10 +154,37 @@ def database_path(state_root: Path, service: tuple[str, str, tuple[str, ...], st
     return state_root / service[3] / "bridge.sqlite"
 
 
+def configured_autonomy_database(
+    env: Mapping[str, str],
+    state_root: Path,
+    services: Sequence[tuple[str, str, tuple[str, ...], str]],
+) -> Path | None:
+    raw = env.get("AGENT_BRIDGE_AUTONOMY_DB_PATH", "").strip()
+    if not raw:
+        return None
+    if not Path(raw).is_absolute() or any(char.isspace() for char in raw) or os.path.normpath(raw) != raw:
+        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH must be a canonical absolute path without whitespace")
+    if not any(service[0] == "agent-bridge-interactive.service" for service in services):
+        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH requires agent-bridge-interactive.service")
+    path = Path(raw)
+    if path.parent.parent != state_root:
+        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH must live in a direct child of the managed state root")
+    primary_paths = {database_path(state_root, service) for service in services}
+    if path in primary_paths:
+        fail("AGENT_BRIDGE_AUTONOMY_DB_PATH must not duplicate a primary service database")
+    return path
+
+
 def require_fresh_database_targets(
-    state_root: Path, services: Sequence[tuple[str, str, tuple[str, ...], str]],
+    state_root: Path,
+    services: Sequence[tuple[str, str, tuple[str, ...], str]],
+    env: Mapping[str, str],
 ) -> None:
-    occupied = [str(path) for service in services if (path := database_path(state_root, service)).exists() or path.is_symlink()]
+    targets = [database_path(state_root, service) for service in services]
+    autonomy_database = configured_autonomy_database(env, state_root, services)
+    if autonomy_database is not None:
+        targets.append(autonomy_database)
+    occupied = [str(path) for path in targets if path.exists() or path.is_symlink()]
     if occupied:
         fail(f"persistent database targets already exist; refusing initial installation: {', '.join(occupied)}")
 
@@ -170,21 +197,29 @@ def bootstrap_databases(
     databases: Sequence[Path],
 ) -> None:
     """Create schema-valid, provenance-bound databases before services start."""
-    if len(services) != len(databases):
+    if len(databases) not in {len(services), len(services) + 1}:
         fail("selected service and database inventories do not match")
     tsx = release / "node_modules/tsx/dist/cli.mjs"
     bootstrap = release / "scripts/rollout-db.ts"
     if any(path.is_symlink() or not path.is_file() for path in (tsx, bootstrap)):
         fail("release is missing database bootstrap runtime")
-    for service, database in zip(services, databases):
-        role = DATABASE_ROLES.get(service[3])
-        if role is None:
-            fail(f"unknown database role for service state: {service[3]}")
+
+    def bootstrap_database(database: Path, role: str) -> None:
         subprocess.run([
             "/usr/sbin/runuser", "--user", account.pw_name, "--", str(node_bin),
             str(tsx), str(bootstrap), "bootstrap", "--db", str(database), "--role", role,
             "--confirm-new-role", str(database),
         ], check=True, capture_output=True, text=True)
+
+    for service, database in zip(services, databases[:len(services)]):
+        role = DATABASE_ROLES.get(service[3])
+        if role is None:
+            fail(f"unknown database role for service state: {service[3]}")
+        bootstrap_database(database, role)
+    if len(databases) == len(services) + 1:
+        if not any(service[0] == "agent-bridge-interactive.service" for service in services):
+            fail("secondary autonomy database requires agent-bridge-interactive.service")
+        bootstrap_database(databases[-1], "interactive")
 
 
 def install_shared_skills(
@@ -421,6 +456,18 @@ def configure_host(
         units.append(unit)
         databases.append(db_path)
 
+    autonomy_database = configured_autonomy_database(env, state_root, selected)
+    if autonomy_database is not None:
+        if state_root.is_symlink() or not state_root.is_dir() or state_root.resolve() != state_root:
+            fail("managed state root must be a canonical non-symlink directory for autonomy database provisioning")
+        autonomy_parent = autonomy_database.parent
+        autonomy_parent.mkdir(mode=0o750, exist_ok=True)
+        if autonomy_parent.is_symlink() or not autonomy_parent.is_dir() or autonomy_parent.resolve() != autonomy_parent:
+            fail("autonomy database parent must be a canonical non-symlink directory")
+        os.chown(autonomy_parent, account.pw_uid, account.pw_gid)
+        os.chmod(autonomy_parent, 0o750)
+        databases.append(autonomy_database)
+
     for name in (CLEANUP_SERVICE, CLEANUP_TIMER):
         source = release / "systemd" / name
         if source.is_symlink() or not source.is_file():
@@ -510,7 +557,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     current = release_root / "current"
     if current.exists() or current.is_symlink():
         fail("an active release already exists; use agent-bridge-deploy for upgrades")
-    require_fresh_database_targets(state_root, selected)
+    require_fresh_database_targets(state_root, selected, os.environ)
 
     bootstrap_stage = load_module("agent_bridge_bootstrap_stage", Path(__file__).with_name("release-stage.py"))
     managed_units: list[str] = []
