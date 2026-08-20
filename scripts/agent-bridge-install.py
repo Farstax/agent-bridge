@@ -183,8 +183,9 @@ def configured_autonomy_database(
 def require_fresh_database_targets(
     state_root: Path,
     services: Sequence[tuple[str, str, tuple[str, ...], str]],
-    env: Mapping[str, str],
+    env: Mapping[str, str] | None = None,
 ) -> None:
+    env = os.environ if env is None else env
     targets = [database_path(state_root, service) for service in services]
     autonomy_database = configured_autonomy_database(env, state_root, services)
     if autonomy_database is not None:

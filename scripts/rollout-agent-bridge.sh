@@ -286,7 +286,6 @@ converge_deployer_autonomy_config() {
   local primary_database="$convergence_env_value"
   [[ "$primary_database" == /* && "$autonomy_database" == /* ]] || die "autonomy convergence database paths must be absolute"
   [[ "$(/usr/bin/realpath -m -- "$primary_database")" == "$primary_database" ]] || die "interactive primary database path is not canonical during autonomy config convergence"
-  [[ "$(/usr/bin/realpath -m -- "$autonomy_database")" == "$autonomy_database" ]] || die "autonomy database path is not canonical during autonomy config convergence"
   [[ -f "$primary_database" && ! -L "$primary_database" ]] || die "interactive primary database is missing or symlinked during autonomy config convergence"
   [[ "$autonomy_database" != "$primary_database" ]] || die "autonomy database duplicates the interactive primary database"
 
@@ -316,6 +315,8 @@ converge_deployer_autonomy_config() {
   if [[ -e "$autonomy_database" || -L "$autonomy_database" ]]; then
     [[ -f "$autonomy_database" && ! -L "$autonomy_database" ]] || die "autonomy database target is occupied by an unsafe path: $autonomy_database"
     [[ "$(/usr/bin/realpath -e "$autonomy_database")" == "$autonomy_database" ]] || die "existing autonomy database target is not canonical: $autonomy_database"
+  else
+    [[ "$(/usr/bin/realpath -m -- "$autonomy_database")" == "$autonomy_database" ]] || die "autonomy database path is not canonical during autonomy config convergence"
   fi
 
   local config_dir config_tmp config_current_mode
@@ -548,9 +549,6 @@ if [[ -n "${selected_units[$autonomy_unit]:-}" ]]; then
   autonomy_candidate="$resolved_env_value"
   if [[ -n "$autonomy_candidate" ]]; then
     [[ "$autonomy_candidate" == /* && "$autonomy_candidate" != *[[:space:]]* ]] || die "$autonomy_unit would use an invalid $autonomy_key"
-    autonomy_parent_dir="$(/usr/bin/dirname -- "$autonomy_candidate")"
-    [[ -d "$autonomy_parent_dir" && ! -L "$autonomy_parent_dir" && "$(/usr/bin/realpath -e "$autonomy_parent_dir")" == "$autonomy_parent_dir" ]] \
-      || die "$autonomy_unit autonomy database parent directory is missing or unsafe: $autonomy_parent_dir"
     if [[ -e "$autonomy_candidate" || -L "$autonomy_candidate" ]]; then
       [[ -f "$autonomy_candidate" && ! -L "$autonomy_candidate" ]] || die "missing database or symlinked database for $autonomy_unit autonomy path: $autonomy_candidate"
       autonomy_canonical="$(/usr/bin/realpath -e "$autonomy_candidate")"
@@ -595,6 +593,11 @@ done
 (( ${#canonical_databases[@]} == ${#discovered_databases[@]} )) || die "configured and discovered database inventory counts differ"
 for database in "${!canonical_databases[@]}"; do [[ -n "${discovered_databases[$database]:-}" ]] || die "extra configured database not selected by any unit: $database"; done
 for database in "${!discovered_databases[@]}"; do [[ -n "${canonical_databases[$database]:-}" ]] || die "discovered database missing from root allowlist: $database"; done
+if [[ -n "$autonomy_bootstrap_path" ]]; then
+  autonomy_parent_dir="$(/usr/bin/dirname -- "$autonomy_bootstrap_path")"
+  [[ -d "$autonomy_parent_dir" && ! -L "$autonomy_parent_dir" && "$(/usr/bin/realpath -e "$autonomy_parent_dir")" == "$autonomy_parent_dir" ]] \
+    || die "$autonomy_unit autonomy database parent directory is missing or unsafe: $autonomy_parent_dir"
+fi
 
 run_as_runtime() {
   "$runuser_cmd" --user "$runtime_user" -- "$@"
