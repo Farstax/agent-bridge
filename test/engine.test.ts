@@ -53,7 +53,6 @@ function codexCompactEvents(text: string): string {
   ].join("\n");
 }
 
-/** A successful Agy stream-json terminal result line, as engine.ts now requires for antigravity CLI output. */
 function agyStreamJsonResult(responseText: string, sessionId = "11111111-1111-4111-8111-111111111111"): string {
   return JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: responseText } });
 }
@@ -364,6 +363,37 @@ describe("BridgeEngine", () => {
       expect(client.sendMessage).toHaveBeenCalledTimes(1);
       expect(client.sendMessage.mock.calls[0][0].text).toContain("sync answer");
       expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("sync answer") }));
+    });
+
+    it("streams only Antigravity agent responses into a visible preview", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+        const streamOutput = [
+          JSON.stringify({ event: "init", init: { cwd: "/tmp" } }),
+          JSON.stringify({ event: "step_update", step_update: { step_type: "tool", text_delta: "secret tool output" } }),
+          JSON.stringify({ event: "step_update", step_update: { step_type: "checkpoint", text_delta: "secret checkpoint" } }),
+          JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "safe agent response" } }),
+          JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "safe agent response", conversation_id: "11111111-1111-4111-8111-111111111111" } }),
+        ].join("\n") + "\n";
+        options.onProviderOutputChunk?.(streamOutput);
+        options.onProviderOutputFinished?.();
+        return { text: streamOutput };
+      });
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 },
+        db, client, { runCliAsync },
+      );
+
+      await engine.handleMessages([makeMessage("hello")]);
+
+      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+      expect(client.sendMessage.mock.calls[0][0].text).toContain("safe agent response");
+      expect(client.sendMessage.mock.calls[0][0].text).not.toContain("secret tool output");
+      expect(client.sendMessage.mock.calls[0][0].text).not.toContain("secret checkpoint");
+      expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+        text: expect.stringContaining("safe agent response"),
+      }));
     });
 
     it("handoff_once injects when handoff_required is set even though a native session already exists", async () => {
@@ -859,9 +889,9 @@ describe("BridgeEngine", () => {
       const [command, args] = runCli.mock.calls[0];
       expect(command).toBe("agy");
       expect(args).toContain("--print");
-      const formatIdx = args.indexOf("--output-format");
-      expect(formatIdx).not.toBe(-1);
-      expect(args[formatIdx + 1]).toBe("stream-json");
+      const outputFormatIdx = args.indexOf("--output-format");
+      expect(outputFormatIdx).not.toBe(-1);
+      expect(args[outputFormatIdx + 1]).toBe("stream-json");
       expect(client.sendMessage).toHaveBeenCalledOnce();
       expect(client.sendMessage.mock.calls[0][0].text).toBe("Use the Agy-specific response.");
     });
@@ -908,6 +938,37 @@ describe("BridgeEngine", () => {
       expect(capturedPrompts[2]).toContain("User request:");
       expect(capturedPrompts[2]).toContain("second question");
       expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("Recovered answer");
+    });
+
+    it("resets the Antigravity presentation decoder before a fresh retry", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const retrySessionId = "22222222-2222-4222-8222-222222222222";
+      const retryOutput = [
+        JSON.stringify({ event: "init", init: { cwd: "/tmp" } }),
+        JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "recovered visible answer" } }),
+        JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "recovered visible answer", conversation_id: retrySessionId } }),
+      ].join("\n") + "\n";
+      const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+        if (runCli.mock.calls.length === 1) {
+          options.onProviderOutputChunk?.('{"event":"step_update","step_update":{"step_type":"agent_response"}');
+          throw new Error("Agy execution timed out waiting for response");
+        }
+        options.onProviderOutputChunk?.(retryOutput);
+        return retryOutput;
+      });
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: false, pollIntervalMs: 1000 },
+        db, client, { runCli },
+      );
+
+      db.setSession("100", "antigravity", "stale-conversation");
+      await engine.handleMessages([makeMessage("retry after partial output")]);
+
+      expect(runCli).toHaveBeenCalledTimes(2);
+      expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+        text: expect.stringContaining("recovered visible answer"),
+      }));
     });
 
     it("retries recoverable Agy cascade errors once with a fresh conversation and recent context", async () => {
@@ -1129,7 +1190,7 @@ describe("BridgeEngine", () => {
       const { BridgeEngine } = await import("../src/engine.js");
 
       const runCli = vi.fn().mockImplementation(async () => {
-        if (runCli.mock.calls.length === 1) return "***\nPrior answer";
+        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer");
         throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command abc/task-18 not found");
       });
       const client = makeMockClient();
@@ -3242,9 +3303,9 @@ describe("BridgeEngine", () => {
       await engine.handleMessages([makeMessage("hello")]);
 
       expect(runCli).toHaveBeenCalledOnce();
-      const formatIdx = capturedArgs.indexOf("--output-format");
-      expect(formatIdx).not.toBe(-1);
-      expect(capturedArgs[formatIdx + 1]).toBe("stream-json");
+      const outputFormatIdx = capturedArgs.indexOf("--output-format");
+      expect(outputFormatIdx).not.toBe(-1);
+      expect(capturedArgs[outputFormatIdx + 1]).toBe("stream-json");
     });
 
     it("captures session ID from structured JSON output in sync Claude path", async () => {

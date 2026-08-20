@@ -49,4 +49,17 @@ describe("BridgeEngine provider-attempt ownership", () => {
       expect(sharedPipeline).toContain(sharedResponsibility);
     }
   });
+
+  it("preserves presentation hooks on primary, fresh-retry, and fallback executions", () => {
+    const primary = sliceBetween("  private async _executeProviderAttempt(", "  private async _runFreshAntigravityRetry(");
+    const freshRetry = sliceBetween("  private async _runFreshAntigravityRetry(", "  private async _retryAntigravityFreshSession(");
+    const fallback = sliceBetween("  private async _runWithFallback(", "  private _handleCircuitBreaker(");
+
+    for (const path of [primary, freshRetry, fallback]) {
+      expect(path).toContain("onProviderOutputChunk");
+      expect(path).toContain("onProviderOutputFinished");
+    }
+    expect(freshRetry).toContain('outputFormat: executionKind === "antigravity" || executionKind === "claude"');
+    expect(fallback).toContain('outputFormat: executionKind === "antigravity" || executionKind === "claude"');
+  });
 });
