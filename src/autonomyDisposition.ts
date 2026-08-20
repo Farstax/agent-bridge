@@ -12,6 +12,7 @@ export interface AutonomyDispositionRecord {
 export interface AutonomyDispositionChannel {
   commandPath: string;
   read(): AutonomyDispositionRecord | null;
+  reset(): void;
   cleanup(): void;
 }
 
@@ -75,6 +76,9 @@ fs.renameSync(tmpPath, recordPath);
         if (error instanceof Error && error.message === "invalid_autonomy_disposition") throw error;
         throw new Error("invalid_autonomy_disposition");
       }
+    },
+    reset() {
+      rmSync(recordPath, { force: true });
     },
     cleanup() {
       rmSync(dir, { recursive: true, force: true });
