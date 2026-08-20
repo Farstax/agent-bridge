@@ -23,20 +23,36 @@ def load(path: Path) -> dict:
     return value
 
 
-def compare(before: dict, after: dict, reconciliation_evidence: dict | None = None, relocated_from: str | None = None, relocated_to: str | None = None) -> dict:
+def compare(before: dict, after: dict, reconciliation_evidence: dict | None = None, relocated_from: str | None = None, relocated_to: str | None = None, added: list[str] | None = None) -> dict:
     left = {entry.get("path"): entry for entry in before["databases"]}
     right = {entry.get("path"): entry for entry in after["databases"]}
     if relocated_from or relocated_to:
         if not relocated_from or not relocated_to or relocated_from not in left or relocated_to in left:
             fail("invalid database relocation evidence")
         left[relocated_to] = {**left.pop(relocated_from), "path": relocated_to}
-    if set(left) != set(right) or None in left:
+    added_paths = set(added or [])
+    # A database bootstrapped mid-rollout (issue #498) is legitimately
+    # absent from the pre-containment "before" evidence (it doesn't exist on
+    # disk yet at that point) and only appears in "after" — an intentional,
+    # explicitly-declared exception to the otherwise-strict inventory
+    # bijection, not a silent drift. It must not already be in "before".
+    for path in added_paths:
+        if path in left:
+            fail(f"declared added database was unexpectedly already present before rollout: {path}")
+        if path not in right:
+            fail(f"declared added database is missing from after evidence: {path}")
+    if (set(left) | added_paths) != set(right) or None in left or None in right:
         fail("database inventory changed during bounded acceptance")
     results = []
-    for path in sorted(left):
-        old, new = left[path], right[path]
-        if old.get("integrity") != "ok" or new.get("integrity") != "ok":
-            fail(f"database integrity is not ok: {path}")
+    for path in sorted(set(left) | added_paths):
+        new = right[path]
+        if path in added_paths:
+            if new.get("integrity") != "ok":
+                fail(f"database integrity is not ok: {path}")
+        else:
+            old = left[path]
+            if old.get("integrity") != "ok" or new.get("integrity") != "ok":
+                fail(f"database integrity is not ok: {path}")
         if new.get("schema") != "current":
             fail(f"database schema is not current: {path}")
         if not isinstance(new.get("executionLockState"), dict):
@@ -60,6 +76,7 @@ def main() -> int:
     parser.add_argument("--reconciliation-evidence", type=Path)
     parser.add_argument("--relocated-from")
     parser.add_argument("--relocated-to")
+    parser.add_argument("--added", action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = compare(
@@ -68,6 +85,7 @@ def main() -> int:
         load(args.reconciliation_evidence) if args.reconciliation_evidence else None,
         args.relocated_from,
         args.relocated_to,
+        args.added,
     )
     args.output.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     args.output.chmod(0o600)

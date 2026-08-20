@@ -390,6 +390,49 @@ for unit in "${units[@]}"; do
   discovered_databases[$canonical]=1
 done
 
+# The interactive service may own a second production database for the
+# autonomy runtime (issue #498). Resolve it from the same validated
+# EnvironmentFile chain as its primary DB_PATH, but never require it to
+# already exist: a freshly provisioned host may have the env var configured
+# before the file has been bootstrapped. autonomy_bootstrap_path stays empty
+# whenever the key is unset (requirement 6: single-DB behavior is an exact
+# no-op) or the file already exists (it then flows through as an ordinary
+# already-present database).
+declare -A unit_autonomy_databases=()
+autonomy_bootstrap_path=""
+autonomy_unit="agent-bridge-interactive.service"
+if [[ -n "${selected_units[$autonomy_unit]:-}" ]]; then
+  autonomy_unit_env="$defaults_dir/${autonomy_unit%.service}"
+  autonomy_key=AGENT_BRIDGE_AUTONOMY_DB_PATH
+  autonomy_explicit_environment="$("$systemctl_cmd" show "$autonomy_unit" --property=Environment --value)"
+  [[ " $autonomy_explicit_environment " != *" $autonomy_key="* ]] || die "explicit systemd $autonomy_key override is unsupported for $autonomy_unit"
+  resolved_env_value=""
+  read_env_key "$shared_env" "$autonomy_key" ""
+  read_env_key "$release_env" "$autonomy_key" "$resolved_env_value"
+  autonomy_inherited_value="$resolved_env_value"
+  read_env_key "$autonomy_unit_env" "$autonomy_key" "$autonomy_inherited_value"
+  autonomy_candidate="$resolved_env_value"
+  if [[ -n "$autonomy_candidate" ]]; then
+    [[ "$autonomy_candidate" == /* && "$autonomy_candidate" != *[[:space:]]* ]] || die "$autonomy_unit would use an invalid $autonomy_key"
+    autonomy_parent_dir="$(/usr/bin/dirname -- "$autonomy_candidate")"
+    [[ -d "$autonomy_parent_dir" && ! -L "$autonomy_parent_dir" && "$(/usr/bin/realpath -e "$autonomy_parent_dir")" == "$autonomy_parent_dir" ]] \
+      || die "$autonomy_unit autonomy database parent directory is missing or unsafe: $autonomy_parent_dir"
+    if [[ -e "$autonomy_candidate" || -L "$autonomy_candidate" ]]; then
+      [[ -f "$autonomy_candidate" && ! -L "$autonomy_candidate" ]] || die "missing database or symlinked database for $autonomy_unit autonomy path: $autonomy_candidate"
+      autonomy_canonical="$(/usr/bin/realpath -e "$autonomy_candidate")"
+      [[ "$autonomy_canonical" == "$autonomy_candidate" ]] || die "autonomy database path for $autonomy_unit is not canonical: $autonomy_candidate"
+      [[ -z "${discovered_databases[$autonomy_canonical]:-}" ]] || die "autonomy database duplicates another managed database: $autonomy_canonical"
+      unit_autonomy_databases[$autonomy_unit]="$autonomy_canonical"
+      discovered_databases[$autonomy_canonical]=1
+    else
+      [[ -z "${discovered_databases[$autonomy_candidate]:-}" ]] || die "autonomy database duplicates another managed database: $autonomy_candidate"
+      autonomy_bootstrap_path="$autonomy_candidate"
+      unit_autonomy_databases[$autonomy_unit]="$autonomy_bootstrap_path"
+      discovered_databases[$autonomy_bootstrap_path]=1
+    fi
+  fi
+fi
+
 declare -A canonical_databases=()
 for database_index in "${!databases[@]}"; do
   database="${databases[$database_index]}"
@@ -398,6 +441,16 @@ for database_index in "${!databases[@]}"; do
     [[ -n "$health_relocation_source" ]] || die "health relocation source is unavailable"
     databases[$database_index]="$health_relocation_source"
     database="$health_relocation_source"
+  fi
+  if [[ -n "$autonomy_bootstrap_path" && "$database" == "$autonomy_bootstrap_path" ]]; then
+    # Not yet on disk — accept it into the allowlist bijection without an
+    # existence check, but keep it out of the databases[] array that
+    # preflight inspect/backup/build_db_args iterate until the sanctioned
+    # bootstrap call (after containment) actually creates it.
+    [[ -z "${canonical_databases[$database]:-}" ]] || die "duplicate database allowlist entry: $database"
+    canonical_databases[$database]=1
+    unset 'databases[database_index]'
+    continue
   fi
   [[ -f "$database" && ! -L "$database" ]] || die "missing database or symlinked database: $database"
   canonical="$(/usr/bin/realpath -e "$database")"
@@ -1118,6 +1171,15 @@ build_db_args() {
   # resolution already proven above rather than re-deriving it in TypeScript.
   for unit in "${!unit_databases[@]}"; do db_args+=(--resolving-unit "${unit_databases[$unit]}=$unit"); done
   for unit in "${!unit_databases[@]}"; do db_args+=(--database-role "${unit_databases[$unit]}=${unit_roles[$unit]}"); done
+  # The interactive unit's autonomy database (issue #498) is tracked
+  # separately from unit_databases because a unit may have both a primary
+  # and an autonomy database. Safe to emit unconditionally even before the
+  # path exists on disk / is in databases[] — rollout-db.ts only looks up
+  # resolving-unit/database-role entries for paths actually passed via --db.
+  for unit in "${!unit_autonomy_databases[@]}"; do
+    db_args+=(--resolving-unit "${unit_autonomy_databases[$unit]}=$unit")
+    db_args+=(--database-role "${unit_autonomy_databases[$unit]}=interactive")
+  done
 }
 build_db_args
 run_db_tool() {
@@ -1139,6 +1201,18 @@ echo "stopping all services"
 stop_attempted=1
 stop_and_verify_all_services || die "CONTAINMENT INCOMPLETE during primary stop"
 record_phase CONTAINED
+
+if [[ -n "$autonomy_bootstrap_path" ]]; then
+  echo "bootstrapping configured autonomy database while services are contained path=$autonomy_bootstrap_path"
+  run_db_tool bootstrap --db "$autonomy_bootstrap_path" --role interactive --confirm-new-role "$autonomy_bootstrap_path" --evidence "$artifact_dir/autonomy-bootstrap-evidence.json"
+  hash_evidence_file "$artifact_dir/autonomy-bootstrap-evidence.json"
+  [[ -f "$autonomy_bootstrap_path" && ! -L "$autonomy_bootstrap_path" ]] || die "autonomy database bootstrap did not create a regular database: $autonomy_bootstrap_path"
+  autonomy_canonical_after_bootstrap="$(/usr/bin/realpath -e "$autonomy_bootstrap_path")"
+  [[ "$autonomy_canonical_after_bootstrap" == "$autonomy_bootstrap_path" ]] || die "bootstrapped autonomy database path is not canonical: $autonomy_bootstrap_path"
+  databases+=("$autonomy_bootstrap_path")
+  record_phase AUTONOMY_DB_BOOTSTRAPPED
+  build_db_args
+fi
 
 code_check
 run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
@@ -1213,6 +1287,9 @@ hash_evidence_file "$artifact_dir/post-start-evidence.json"
 acceptance_args=(--before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --reconciliation-evidence "$artifact_dir/reconciliation-evidence.json" --output "$artifact_dir/acceptance-evidence.json")
 if [[ -n "$health_relocation_source" ]]; then
   acceptance_args+=(--relocated-from "$health_relocation_source" --relocated-to "$health_relocation_target")
+fi
+if [[ -n "$autonomy_bootstrap_path" ]]; then
+  acceptance_args+=(--added "$autonomy_bootstrap_path")
 fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
