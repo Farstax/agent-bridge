@@ -35,6 +35,7 @@ import { downloadTelegramAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 import { createClaudeAnswerPresentationDecoder } from "./providers/claudeAnswerPresentation.js";
+import { createAntigravityAnswerPresentationDecoder } from "./providers/antigravityAnswerPresentation.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { PreviewCleanupError, sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
@@ -873,7 +874,12 @@ export class BridgeEngine {
         runId: input.runId,
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
-          const answerDecoder = this._executionKind() === "claude" ? createClaudeAnswerPresentationDecoder(onAnswerDelta) : null;
+          const executionKind = this._executionKind();
+          const answerDecoder = executionKind === "claude"
+            ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
+            : executionKind === "antigravity"
+              ? createAntigravityAnswerPresentationDecoder(onAnswerDelta)
+              : null;
           const body = {
             message_thread_id: input.threadId,
             ...(input.mode === "sync" ? { skipProviderTyping: true } : {}),
@@ -1542,13 +1548,11 @@ ${contextPrompt}` : contextPrompt);
       sessionId,
       ...(mode === "sync" ? { sessionMode: "resume" as const } : {}),
       executionMode: this.opts.executionMode,
-      // Claude stream-json is retained for safe answer presentation; native
+      // Claude/Antigravity stream-json is retained for safe answer presentation; native
       // provider completion, not Bridge parsing, owns background task lifetime.
-      outputFormat: executionKind === "antigravity"
-        ? undefined
-        : executionKind === "claude"
-          ? "stream-json"
-          : "json",
+      outputFormat: executionKind === "antigravity" || executionKind === "claude"
+        ? "stream-json"
+        : "json",
       logFile,
       soulContext: promptForCli.soulContext,
       includeResponseContract: promptForCli.includeResponseContract,
@@ -1605,7 +1609,10 @@ ${contextPrompt}` : contextPrompt);
         const parsed = parseClaudeStreamJsonOutput(stdout);
         result = parsed ?? { text: stdout.trim(), sessionId: null };
       } else {
-        result = parseCliResult({ bot: executionKind, stdout, logContent });
+        const outputFormat = executionKind === "antigravity"
+          ? (invocation.args.includes("stream-json") ? "stream-json" : (invocation.args.includes("json") ? "json" : "text"))
+          : undefined;
+        result = parseCliResult({ bot: executionKind, stdout, logContent, outputFormat });
       }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
@@ -1703,7 +1710,10 @@ ${contextPrompt}` : contextPrompt);
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      outputFormat: undefined,
+      // Keep the same answer-streaming format as the primary attempt and its fallback.
+      outputFormat: executionKind === "antigravity" || executionKind === "claude"
+        ? "stream-json"
+        : "json",
       logFile: retryLogFile,
       soulContext,
       includeResponseContract,
@@ -1735,7 +1745,10 @@ ${contextPrompt}` : contextPrompt);
       try { retryLogContent = readFileSync(retryLogFile, "utf8"); } catch {}
       finally { try { rmSync(retryLogFile); } catch {} }
 
-      const result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: retryLogContent });
+      const outputFormat = executionKind === "antigravity"
+        ? (retryInvocation.args.includes("stream-json") ? "stream-json" : (retryInvocation.args.includes("json") ? "json" : "text"))
+        : undefined;
+      const result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: retryLogContent, outputFormat });
       if (!result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd: retryCwd, sinceMs: retryStartedAtMs, explicitLogContent: retryLogContent });
       }
@@ -1861,11 +1874,9 @@ ${contextPrompt}` : contextPrompt);
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
       // Keep the same answer-streaming format on a fresh fallback attempt.
-      outputFormat: executionKind === "antigravity"
-        ? undefined
-        : executionKind === "claude"
-          ? "stream-json"
-          : "json",
+      outputFormat: executionKind === "antigravity" || executionKind === "claude"
+        ? "stream-json"
+        : "json",
       logFile: fallbackLogFile,
       soulContext: fallbackPromptForCli.soulContext,
       includeResponseContract: fallbackPromptForCli.includeResponseContract,
@@ -1912,7 +1923,10 @@ ${contextPrompt}` : contextPrompt);
         const parsed = parseClaudeStreamJsonOutput(rawResult);
         result = parsed ?? { text: rawResult.trim(), sessionId: null };
       } else {
-        result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: fallbackLogContent });
+        const outputFormat = executionKind === "antigravity"
+          ? (fallbackInvocation.args.includes("stream-json") ? "stream-json" : (fallbackInvocation.args.includes("json") ? "json" : "text"))
+          : undefined;
+        result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: fallbackLogContent, outputFormat });
       }
       if (executionKind === "antigravity" && !result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd: fallbackCwd, sinceMs: fallbackStartedAtMs, explicitLogContent: fallbackLogContent });

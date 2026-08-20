@@ -117,6 +117,24 @@ printf '%s\\n' '${JSON.stringify({ event: "result", result: { conversation_id: c
     expect(caught?.message).toBe("Agy execution timed out waiting for response");
     expect(caught?.category).toBe("timeout");
   });
+
+  it("carries explicit outputFormat into parsing and does not rely on stdout checks", () => {
+    // 1. Reordered keys, valid NDJSON stream:
+    const stdout = stream(
+      { conversation_id: conversationId, event: "init", init: { cwd: "/tmp" } },
+      { event: "result", result: { status: "SUCCESS", response: "Clean reordered keys response", conversation_id: conversationId } }
+    );
+
+    // 2. Parse with explicit outputFormat='stream-json'
+    expect(parseCliResult({ bot: "antigravity", stdout, outputFormat: "stream-json" })).toEqual({
+      text: "Clean reordered keys response",
+      sessionId: conversationId,
+    });
+
+    // 3. Fallback when outputFormat='text' (should fall into legacy text parser and treat NDJSON as plain text)
+    const resultText = parseCliResult({ bot: "antigravity", stdout, outputFormat: "text" });
+    expect(resultText.text).toContain("SUCCESS");
+  });
 });
 
 describe("Agy stream-json serialized execution boundary", () => {
