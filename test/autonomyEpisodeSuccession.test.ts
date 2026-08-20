@@ -21,13 +21,17 @@ function dispositionCommand(prompt: string): string {
   return JSON.parse(line.slice(prefix.length)) as string;
 }
 
-function continuingEngine(notify = false) {
+function dispositionEngine(disposition: "continue" | "done" | "blocked", notify = false, text = "bounded result") {
   return {
     executeSurfaceNeutralTurn: vi.fn(async (input: any) => {
-      execFileSync(dispositionCommand(input.prompt), ["continue", ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
-      return { text: "More useful work remains.", sessionId: null } as any;
+      execFileSync(dispositionCommand(input.prompt), [disposition, ...(notify ? ["--notify"] : [])], { stdio: "pipe" });
+      return { text, sessionId: null } as any;
     }),
   };
+}
+
+function continuingEngine(notify = false) {
+  return dispositionEngine("continue", notify, "More useful work remains.");
 }
 
 async function eventually(check: () => boolean, attempts = 80): Promise<void> {
@@ -75,7 +79,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
       requireEpisodeApproval: false,
       maxEpisodesPerDay: 2,
       engineForBot: () => engine as any,
-    } as any);
+    });
 
     await controller.start({ bot: "claude" });
     await eventually(() => (db.raw.prepare("SELECT COUNT(*) AS count FROM autonomous_goals").get() as any).count === 2);
@@ -92,7 +96,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("keeps terminal Episode replies correlated for successor guidance without reopening the Episode", async () => {
+  it("keeps terminal replies immutable, captures guidance, and injects it once into the successor", async () => {
     const dir = autonomyDir();
     const dbPath = join(dir, "autonomy.sqlite");
     const db = openDb(dbPath, { serviceId: "test-autonomy-reply", runId: "process-2" });
@@ -106,7 +110,7 @@ describe("bounded autonomous Episode succession (#512)", () => {
       maxEpisodesPerDay: 3,
       engineForBot: () => engine as any,
       deliverSupervisorMessage: deliver,
-    } as any);
+    });
 
     const started = await controller.start({
       bot: "claude",
@@ -122,14 +126,53 @@ describe("bounded autonomous Episode succession (#512)", () => {
       message_thread_id: 9,
       text: "For the next Episode, prioritise the release blocker first.",
       reply_to_message: { message_id: 77 },
-    } as any) as any;
+    } as any)!;
 
     expect(matched).toMatchObject({
       goalId: started.goal.goalId,
       phase: "successor",
       text: "For the next Episode, prioritise the release blocker first.",
     });
+    expect(controller.recordSupervisorInput(matched)).toBe(false);
     expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "budget_exhausted" } });
+
+    const successor = await controller.start({ bot: "claude" });
+    expect(successor.created).toBe(true);
+    await eventually(() => engine.executeSurfaceNeutralTurn.mock.calls.length === 2);
+    const successorPrompt = engine.executeSurfaceNeutralTurn.mock.calls[1][0].prompt as string;
+    expect(successorPrompt).toContain("Supervisor input since previous cycle: For the next Episode, prioritise the release blocker first.");
+
+    const copied = db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = 'autonomous' AND event_kind = 'supervisor_input' AND status <> 'received'").get() as { count: number };
+    expect(copied.count).toBe(1);
+
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reuses the configured CLI fallback chain without creating another Episode or Cycle", async () => {
+    const dir = autonomyDir();
+    const dbPath = join(dir, "autonomy.sqlite");
+    const db = openDb(dbPath, { serviceId: "test-autonomy-fallback", runId: "process-3" });
+    const claude = { executeSurfaceNeutralTurn: vi.fn().mockRejectedValue(new Error("usage limit reached")) };
+    const codex = dispositionEngine("done", false, "fallback completed the work");
+    const controller = new AutonomyController({
+      db,
+      autonomyDir: dir,
+      maxCycles: 3,
+      requireEpisodeApproval: true,
+      maxEpisodesPerDay: 3,
+      providerChain: ["claude", "codex"],
+      engineForBot: (bot) => (bot === "claude" ? claude : codex) as any,
+    });
+
+    const started = await controller.start({ bot: "claude" });
+    await eventually(() => controller.status().state === "terminal");
+
+    expect(claude.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
+    expect(codex.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(1);
+    expect(controller.status()).toMatchObject({ state: "terminal", goal: { goalId: started.goal.goalId, status: "complete", cycle: 1 } });
+    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM autonomous_goals").get() as any).count).toBe(1);
+    expect((db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs").get() as any).count).toBe(1);
 
     db.close();
     rmSync(dir, { recursive: true, force: true });
