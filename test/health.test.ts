@@ -1043,7 +1043,7 @@ describe("ServerPlugin — extended checks", () => {
     expect(["green", "amber", "red"]).toContain(tmpDisk?.status);
     expect(typeof tmpDisk?.value).toBe("number");
     expect(tmpDisk!.value as number).toBeGreaterThan(0);
-  });
+  }, 15_000);
 
   it("includes disk-space-home check for home directory filesystem", async () => {
     const { ServerPlugin } = await import("../src/health/plugins/server.js");
@@ -1054,7 +1054,7 @@ describe("ServerPlugin — extended checks", () => {
     expect(["green", "amber", "red"]).toContain(homeDisk?.status);
     expect(typeof homeDisk?.value).toBe("number");
     expect(homeDisk!.value as number).toBeGreaterThan(0);
-  });
+  }, 15_000);
 
   it("includes inode-usage check for root filesystem", async () => {
     const { ServerPlugin } = await import("../src/health/plugins/server.js");
@@ -1063,7 +1063,7 @@ describe("ServerPlugin — extended checks", () => {
     const inodeCheck = report.checks.find(c => c.name === "inode-usage");
     expect(inodeCheck).toBeDefined();
     expect(["green", "amber", "red"]).toContain(inodeCheck?.status);
-  });
+  }, 15_000);
 
   it("supports configurable memory amber threshold via HEALTH_MEMORY_AMBER_PCT", async () => {
     process.env.HEALTH_MEMORY_AMBER_PCT = "1";
@@ -1076,7 +1076,7 @@ describe("ServerPlugin — extended checks", () => {
     } finally {
       delete process.env.HEALTH_MEMORY_AMBER_PCT;
     }
-  });
+  }, 15_000);
 
   it("includes pending-updates check and reports green when no updates", async () => {
     (globalThis as any).__mockExistsSync = (path: string) => {

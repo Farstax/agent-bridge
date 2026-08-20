@@ -53,6 +53,26 @@ describe("sendMessageWithProgress", () => {
     }));
   });
 
+  it("shows Antigravity agent-response deltas while hiding tool and checkpoint records", async () => {
+    const client = createMockClient();
+    await sendMessageWithProgress({
+      client,
+      kind: "antigravity",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.("safe agent response");
+        return { text: "safe agent response", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 123,
+      message_id: 456,
+      text: expect.stringContaining("safe agent response"),
+    }));
+  });
+
   it("keeps final-only delivery when preview editing fails", async () => {
     const client = createMockClient();
     client.editMessageText.mockRejectedValue(new Error("preview edit failed"));

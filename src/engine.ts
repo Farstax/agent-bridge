@@ -1570,32 +1570,34 @@ ${contextPrompt}` : contextPrompt);
       if (typingTracker) await typingTracker.start();
 
       let stdout: string;
-      if (mode === "async") {
-        (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
-        stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
-          ...buildExecutionOptions(executionKind),
-          onProgress,
-          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
-          chatId: this._executionLane(chatKey),
-          stdin: invocation.stdin,
-          contextEnv: promptForCli.contextEnv,
-          eventContext,
-          onEvent: collect ?? undefined,
-        })).text;
-      } else {
-        (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
-        stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
-          ...buildExecutionOptions(executionKind),
-          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
-          chatId: this._executionLane(chatKey),
-          stdin: invocation.stdin,
-          contextEnv: promptForCli.contextEnv,
-          eventContext,
-          onEvent: collect ?? undefined,
-        });
+      try {
+        if (mode === "async") {
+          (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
+          stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
+            ...buildExecutionOptions(executionKind),
+            onProgress,
+            onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
+            chatId: this._executionLane(chatKey),
+            stdin: invocation.stdin,
+            contextEnv: promptForCli.contextEnv,
+            eventContext,
+            onEvent: collect ?? undefined,
+          })).text;
+        } else {
+          (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
+          stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
+            ...buildExecutionOptions(executionKind),
+            onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
+            chatId: this._executionLane(chatKey),
+            stdin: invocation.stdin,
+            contextEnv: promptForCli.contextEnv,
+            eventContext,
+            onEvent: collect ?? undefined,
+          });
+        }
+      } finally {
+        (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
       }
-
-      (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
 
       this._assertLaneOwned(laneHandle);
 
@@ -1661,7 +1663,7 @@ ${contextPrompt}` : contextPrompt);
         return this.executePrompt(prompt, null, chatId, body, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
-        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, onProgress, attachments, mode, laneHandle, eventContext, runId, collect, body.message_thread_id);
+        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, onProgress, attachments, mode, laneHandle, eventContext, runId, collect, body.message_thread_id, body);
       }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
@@ -1693,6 +1695,7 @@ ${contextPrompt}` : contextPrompt);
     collect: ((e: BridgeEvent) => void) | null = null,
     soulContext: string | null = null,
     includeResponseContract = true,
+    body: any = {},
   ): Promise<StagedCliResult> {
     const executionKind = this._executionKind();
     const model = isAgentKind(this.kind)
@@ -1723,22 +1726,29 @@ ${contextPrompt}` : contextPrompt);
     });
 
     try {
-      const rawResult = mode === "async"
-        ? (await this.exec.runCliAsync(retryInvocation.command, retryInvocation.args, retryCwd, {
-            ...buildExecutionOptions(executionKind),
-            onProgress,
-            chatId: this._executionLane(chatKey),
-            stdin: retryInvocation.stdin,
-            eventContext,
-            onEvent: collect ?? undefined,
-          })).text
-        : await this.exec.runCli(retryInvocation.command, retryInvocation.args, retryCwd, {
-            ...buildExecutionOptions(executionKind),
-            chatId: this._executionLane(chatKey),
-            stdin: retryInvocation.stdin,
-            eventContext,
-            onEvent: collect ?? undefined,
-          });
+      let rawResult: string;
+      try {
+        rawResult = mode === "async"
+          ? (await this.exec.runCliAsync(retryInvocation.command, retryInvocation.args, retryCwd, {
+              ...buildExecutionOptions(executionKind),
+              onProgress,
+              onProviderOutputChunk: body.onProviderOutputChunk,
+              chatId: this._executionLane(chatKey),
+              stdin: retryInvocation.stdin,
+              eventContext,
+              onEvent: collect ?? undefined,
+            })).text
+          : await this.exec.runCli(retryInvocation.command, retryInvocation.args, retryCwd, {
+              ...buildExecutionOptions(executionKind),
+              onProviderOutputChunk: body.onProviderOutputChunk,
+              chatId: this._executionLane(chatKey),
+              stdin: retryInvocation.stdin,
+              eventContext,
+              onEvent: collect ?? undefined,
+            });
+      } finally {
+        body.onProviderOutputFinished?.();
+      }
       this._assertLaneOwned(laneHandle);
 
       let retryLogContent: string | null = null;
@@ -1788,6 +1798,7 @@ ${contextPrompt}` : contextPrompt);
     runId: string | null = null,
     collect: ((e: BridgeEvent) => void) | null = null,
     bodyThreadId?: number | string,
+    body: any = {},
   ): Promise<StagedCliResult> {
     if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
     // Fresh-session retry: sessionId is null, so this always injects under handoff_once too.
@@ -1813,6 +1824,7 @@ ${contextPrompt}` : contextPrompt);
           collect,
           retryPromptForCli.soulContext,
           retryPromptForCli.includeResponseContract,
+          body,
         );
         break;
       } catch (retryError) {
@@ -1890,26 +1902,31 @@ ${contextPrompt}` : contextPrompt);
     try {
       const fallbackCwd = this._workingDir(executionKind);
       const fallbackStartedAtMs = Date.now();
-      const rawResult = mode === "async"
-        ? (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
-            ...buildExecutionOptions(executionKind),
-            onProgress,
-            onProviderOutputChunk: body.onProviderOutputChunk,
-            chatId: this._executionLane(chatKey),
-            stdin: fallbackInvocation.stdin,
-            contextEnv: fallbackPromptForCli.contextEnv,
-            eventContext,
-            onEvent: collect ?? undefined,
-          })).text
-        : await this.exec.runCli(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
-            ...buildExecutionOptions(executionKind),
-            chatId: this._executionLane(chatKey),
-            stdin: fallbackInvocation.stdin,
-            contextEnv: fallbackPromptForCli.contextEnv,
-            eventContext,
-          onEvent: collect ?? undefined,
-        });
-      body.onProviderOutputFinished?.();
+      let rawResult: string;
+      try {
+        rawResult = mode === "async"
+          ? (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
+              ...buildExecutionOptions(executionKind),
+              onProgress,
+              onProviderOutputChunk: body.onProviderOutputChunk,
+              chatId: this._executionLane(chatKey),
+              stdin: fallbackInvocation.stdin,
+              contextEnv: fallbackPromptForCli.contextEnv,
+              eventContext,
+              onEvent: collect ?? undefined,
+            })).text
+          : await this.exec.runCli(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
+              ...buildExecutionOptions(executionKind),
+              onProviderOutputChunk: body.onProviderOutputChunk,
+              chatId: this._executionLane(chatKey),
+              stdin: fallbackInvocation.stdin,
+              contextEnv: fallbackPromptForCli.contextEnv,
+              eventContext,
+              onEvent: collect ?? undefined,
+            });
+      } finally {
+        body.onProviderOutputFinished?.();
+      }
       this._assertLaneOwned(laneHandle);
 
       let fallbackLogContent: string | null = null;
