@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { executionLaneCoordinator } from "../src/executionLaneCoordinator.js";
 import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
 import { dispatchClaimedInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
@@ -646,7 +647,8 @@ describe("execution lane correctness", () => {
     const oldRun = engine.handleMessages([message("old request", 7)]);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const reset = engine.handleMessages([message("/reset", 7)]);
-    await waitForCondition(() => db.acquireLock("telegram:interactive", "100:7") === null);
+    const lane = JSON.stringify(["telegram:interactive", "100:7"]);
+    await waitForCondition(() => executionLaneCoordinator(db, "telegram:interactive").isResetting(lane));
     expect(db.acquireLock("telegram:interactive", "100:7")).toBeNull();
 
     resumeFinalisation();
