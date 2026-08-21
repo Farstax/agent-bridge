@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping
 
@@ -22,6 +21,7 @@ UNITS = (INTERACTIVE_UNIT, HEALTH_UNIT)
 INTEGRATED_HEALTH_LOG = "integrated mode: scheduler is send-only; interactive bot owns Telegram polling"
 INTERACTIVE_POLL_LOG = "[interactive] starting polling"
 HEALTH_START_LOG = "[health-bot] starting..."
+HEALTH_FAILURE_LOGS = ("[health-bot] setMyCommands failed", "[health] polling conflict:", "[health] polling failed")
 
 
 class TransitionError(RuntimeError):
@@ -123,29 +123,74 @@ def wait_active(systemctl: str, timeout_seconds: float) -> None:
         time.sleep(min(0.25, max(0.01, timeout_seconds / 10)))
 
 
-def journal_since(journalctl: str, unit: str, since: str) -> str:
-    result = run([journalctl, "-u", unit, "--since", since, "--no-pager", "-n", "200"], capture=True)
+def journal_cursor(journalctl: str) -> str:
+    result = run([journalctl, "--no-pager", "-n", "0", "--show-cursor"], capture=True)
     if result.returncode != 0:
-        raise TransitionError(f"unable to read fresh service logs for {unit}")
+        raise TransitionError("unable to capture journal cursor before service restart")
+    for line in reversed(result.stdout.splitlines()):
+        prefix = "-- cursor: "
+        if line.startswith(prefix) and line[len(prefix):].strip():
+            return line[len(prefix):].strip()
+    raise TransitionError("journalctl did not return a restart-scoped cursor")
+
+
+def journal_after_cursor(journalctl: str, unit: str, cursor: str) -> str:
+    result = run(
+        [journalctl, "-u", unit, "--after-cursor", cursor, "--no-pager", "-n", "200"],
+        capture=True,
+    )
+    if result.returncode != 0:
+        raise TransitionError(f"unable to read restart-scoped service logs for {unit}")
     return result.stdout
 
 
-def wait_for_log_markers(journalctl: str, since: str, mode: str, timeout_seconds: float) -> None:
+def validation_failure(interactive_log: str, health_log: str) -> str | None:
+    interactive_command_failed = "[interactive] setMyCommands (" in interactive_log and " failed" in interactive_log
+    if "[interactive] poll error" in interactive_log or interactive_command_failed:
+        return "interactive command registration or Telegram polling failed after restart"
+    for marker in HEALTH_FAILURE_LOGS:
+        if marker in health_log:
+            return "health command registration or Telegram polling failed after restart"
+    return None
+
+
+def wait_for_service_validation(
+    systemctl: str,
+    journalctl: str,
+    cursor: str,
+    mode: str,
+    timeout_seconds: float,
+) -> None:
     deadline = time.monotonic() + timeout_seconds
+    markers_seen = False
     while True:
-        interactive_log = journal_since(journalctl, INTERACTIVE_UNIT, since)
-        health_log = journal_since(journalctl, HEALTH_UNIT, since)
+        inactive = [unit for unit in UNITS if run([systemctl, "is-active", "--quiet", unit]).returncode != 0]
+        if inactive:
+            raise TransitionError(f"services became inactive during validation: {', '.join(inactive)}")
+
+        interactive_log = journal_after_cursor(journalctl, INTERACTIVE_UNIT, cursor)
+        health_log = journal_after_cursor(journalctl, HEALTH_UNIT, cursor)
+        failure = validation_failure(interactive_log, health_log)
+        if failure:
+            raise TransitionError(failure)
+
         interactive_ok = INTERACTIVE_POLL_LOG in interactive_log
         health_ok = (
             INTEGRATED_HEALTH_LOG in health_log
             if mode == "integrated"
             else HEALTH_START_LOG in health_log and INTEGRATED_HEALTH_LOG not in health_log
         )
-        if interactive_ok and health_ok:
-            return
+        markers_seen = markers_seen or (interactive_ok and health_ok)
+
         if time.monotonic() >= deadline:
-            expected = "integrated send-only health / interactive polling" if mode == "integrated" else "standalone health polling / interactive polling"
-            raise TransitionError(f"service logs did not confirm expected polling ownership: {expected}")
+            if markers_seen:
+                return
+            expected = (
+                "integrated send-only health / interactive polling"
+                if mode == "integrated"
+                else "standalone health polling / interactive polling"
+            )
+            raise TransitionError(f"restart-scoped service logs did not confirm expected polling ownership: {expected}")
         time.sleep(min(0.25, max(0.01, timeout_seconds / 10)))
 
 
@@ -160,6 +205,9 @@ def transition(mode: str, defaults_dir: Path, systemctl: str, journalctl: str, t
     shared_values = read_env(shared)
     interactive_values = read_env(interactive)
     health_values = read_env(health)
+    previous_mode = (shared_values.get("HEALTH_BOT_MODE") or "standalone").strip()
+    if previous_mode not in {"standalone", "integrated"}:
+        raise TransitionError(f"unsupported existing HEALTH_BOT_MODE: {previous_mode}")
 
     if mode == "integrated":
         interactive_token = interactive_values.get("TELEGRAM_BOT_TOKEN_INTERACTIVE", "").strip()
@@ -189,23 +237,25 @@ def transition(mode: str, defaults_dir: Path, systemctl: str, journalctl: str, t
             health: update_env_text(originals[health], {}, {"TELEGRAM_BOT_TOKEN_INTERACTIVE"}),
         }
 
-    since = (datetime.now(timezone.utc) - timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S UTC")
     mutation_started = False
     try:
         mutation_started = True
         for path in paths:
             atomic_write(path, replacements[path], stats[path], 0o600)
+        cursor = journal_cursor(journalctl)
         restart_services(systemctl)
         wait_active(systemctl, timeout_seconds)
-        wait_for_log_markers(journalctl, since, mode, timeout_seconds)
+        wait_for_service_validation(systemctl, journalctl, cursor, mode, timeout_seconds)
     except Exception as error:
         if mutation_started:
             rollback_error: Exception | None = None
             try:
                 for path in paths:
                     atomic_write(path, originals[path], stats[path], stat.S_IMODE(stats[path].st_mode))
+                rollback_cursor = journal_cursor(journalctl)
                 restart_services(systemctl)
                 wait_active(systemctl, timeout_seconds)
+                wait_for_service_validation(systemctl, journalctl, rollback_cursor, previous_mode, timeout_seconds)
             except Exception as restore_error:  # pragma: no cover - catastrophic host failure
                 rollback_error = restore_error
             if rollback_error is not None:
