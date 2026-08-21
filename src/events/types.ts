@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { RunTelemetry } from "../types.js";
 
 export type BotKind = "codex" | "antigravity" | "claude";
 
@@ -30,6 +31,7 @@ export interface RunCompletedEvent extends BridgeEventBase {
   type: "run.completed";
   text: string;
   sessionId: string | null;
+  telemetry?: RunTelemetry;
 }
 
 export interface RunFailedEvent extends BridgeEventBase {
@@ -49,8 +51,6 @@ export type BridgeEvent =
   | RunCompletedEvent
   | RunFailedEvent
   | RunCancelledEvent;
-
-// ── Factory helpers ───────────────────────────────────────────────────────────
 
 function base(fields: { runId: string; bot: BotKind; chatId: string; threadId?: string }): BridgeEventBase {
   return {
@@ -91,9 +91,16 @@ export const type = {
     chatId: string;
     text: string;
     sessionId: string | null;
+    telemetry?: RunTelemetry;
     threadId?: string;
   }): RunCompletedEvent {
-    return { ...base(fields), type: "run.completed", text: fields.text, sessionId: fields.sessionId };
+    return {
+      ...base(fields),
+      type: "run.completed",
+      text: fields.text,
+      sessionId: fields.sessionId,
+      ...(fields.telemetry ? { telemetry: fields.telemetry } : {}),
+    };
   },
 
   runFailed(fields: {

@@ -14,6 +14,7 @@ import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
 import * as claudeRuntime from "./providers/claudeRuntime.js";
 import * as antigravityRuntime from "./providers/antigravityRuntime.js";
+import { extractAntigravityRunTelemetry } from "./providers/antigravityTelemetry.js";
 import {
   extractAntigravityConversationId,
   toAntigravityModelLabel,
@@ -61,6 +62,12 @@ import {
   isChildRunning,
 } from "./cliSupervisor.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
+import {
+  captureParsedProviderOutput,
+  consumePendingRunFallback,
+  noteRunProviderAttempt,
+  registerProviderOutput,
+} from "./runTelemetry.js";
 import { wrapPromptContext } from "./promptWrapping.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
@@ -202,14 +209,20 @@ export function parseCliResult({
   logContent?: string | null;
   outputFormat?: "text" | "json" | "stream-json" | null;
 }): CliResult {
+  let result: CliResult;
   if (bot === "codex") {
-    return codexRuntime.parseResult(stdout);
+    result = codexRuntime.parseResult(stdout);
   } else if (bot === "claude") {
-    return claudeRuntime.parseResult(stdout);
+    result = claudeRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
-    return antigravityRuntime.parseResult(stdout, logContent, outputFormat);
+    result = antigravityRuntime.parseResult(stdout, logContent, outputFormat);
+    const telemetry = extractAntigravityRunTelemetry(stdout, outputFormat);
+    if (telemetry) result = { ...result, telemetry };
+  } else {
+    throw new Error(`Unknown bot type: ${bot}`);
   }
-  throw new Error(`Unknown bot type: ${bot}`);
+  captureParsedProviderOutput(bot, stdout, result.telemetry);
+  return result;
 }
 
 function extractUpstreamCliError(raw: string): string | null {
@@ -254,6 +267,12 @@ function isAntigravityExecution(options: CliOptions): boolean {
   return options.bot === "antigravity" || options.eventContext?.bot === "antigravity";
 }
 
+function eventChatKey(options: CliOptions): string | undefined {
+  const context = options.eventContext;
+  if (!context) return undefined;
+  return context.threadId ? `${context.chatId}:${context.threadId}` : context.chatId;
+}
+
 async function runConfiguredCli(
   command: string,
   args: string[],
@@ -261,21 +280,33 @@ async function runConfiguredCli(
   options: CliOptions,
   onProgress?: (text: string) => void,
 ): Promise<{ stdout: string }> {
+  const provider = options.eventContext?.bot ?? options.bot;
+  const explicitModelIndex = args.lastIndexOf("--model");
+  const explicitModel = explicitModelIndex >= 0 && explicitModelIndex + 1 < args.length
+    ? args[explicitModelIndex + 1]
+    : null;
+  const antigravityModel = isAntigravityExecution(options)
+    ? antigravityInvocationMetadata.get(args)?.model ?? null
+    : null;
+  consumePendingRunFallback(options.eventContext?.runId, eventChatKey(options), provider);
+  noteRunProviderAttempt(options.eventContext?.runId, provider, antigravityModel ?? explicitModel);
+
   const executionOptions: CliOptions = {
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   };
-  if (isAntigravityExecution(options)) {
-    return runAntigravitySerialized(
-      command,
-      args,
-      cwd,
-      executionOptions,
-      antigravityInvocationMetadata.get(args),
-      onProgress,
-    );
-  }
-  return runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
+  const outcome = isAntigravityExecution(options)
+    ? await runAntigravitySerialized(
+        command,
+        args,
+        cwd,
+        executionOptions,
+        antigravityInvocationMetadata.get(args),
+        onProgress,
+      )
+    : await runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
+  registerProviderOutput(options.eventContext?.runId, provider, outcome.stdout);
+  return outcome;
 }
 
 /** Runs a CLI command and returns stdout. */

@@ -1,4 +1,5 @@
 import type { BridgeDb } from "../db.js";
+import { finalizeRunTelemetry } from "../runTelemetry.js";
 import type { BridgeEvent } from "./types.js";
 
 function runChatKey(event: { chatId: string; threadId?: string }): string {
@@ -50,7 +51,12 @@ export class EventStore {
   finalize(): void {
     if (!this.pendingCompleted) return;
     try {
-      this._persistTerminal(this.pendingCompleted);
+      const telemetry = finalizeRunTelemetry(
+        this.pendingCompleted.runId,
+        this.pendingCompleted.bot,
+        this.pendingCompleted.telemetry,
+      );
+      this._persistTerminal({ ...this.pendingCompleted, telemetry });
     } catch {
       /* swallow — same policy as collect */
     }

@@ -155,10 +155,40 @@ export interface CliProcessWatchContext {
 
 export type CliProcessWatch = (context: CliProcessWatchContext) => NodeJS.Timeout | null;
 
+export interface RunTelemetryFallback {
+  fromProvider: BotKind;
+  toProvider: BotKind;
+  fromModel: string | null;
+  toModel: string | null;
+  attempt: number;
+}
+
+export interface RunTelemetry {
+  provider: BotKind;
+  model?: string | null;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
+  durationMs?: number;
+  providerDurationMs?: number;
+  providerApiDurationMs?: number;
+  turns?: number;
+  stopReason?: string;
+  terminalReason?: string;
+  serviceTier?: string;
+  toolUseCounts?: Record<string, number>;
+  retryCount?: number;
+  fallback?: RunTelemetryFallback;
+}
+
 /**
  * CLI Invocation result.
  */
 export interface CliResult {
   text: string;
   sessionId: string | null;
+  telemetry?: RunTelemetry;
 }
