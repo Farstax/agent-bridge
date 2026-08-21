@@ -47,6 +47,7 @@ import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseHealthBotMode } from "./health/config.js";
 import { createHealthRuntime } from "./health/runtime.js";
 import { handleIntegratedHealthCommand } from "./health/integrated.js";
+import { autoUpdateClis } from "./health/autoRemediate.js";
 import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 import { loadWorkspaceContext } from "./workspaceContext.js";
 import { AutonomyController } from "./autonomyController.js";
@@ -164,6 +165,11 @@ const integratedHealthRuntime = healthDb ? createHealthRuntime({
   env: process.env,
   chatId: 0,
   sendText: async () => {},
+  onReport: (report, sendNotification) => autoUpdateClis(report, {
+    upgradeScript: `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh`,
+    sendNotification,
+    bridgeCommit: process.env.AGENT_BRIDGE_COMMIT ?? process.env.BRIDGE_COMMIT ?? process.env.BRIDGE_RELEASE_COMMIT,
+  }),
 }) : null;
 
 await db.reconcileOrphanedRuns({
@@ -452,7 +458,14 @@ for (;;) {
             rawText,
             botUsername,
             chatId,
-            runCheck: () => integratedHealthRuntime.runChecks(),
+            runCheck: () => integratedHealthRuntime.runChecks(async (text) => {
+              await sendTelegramMessage({
+                client,
+                kind: "interactive",
+                chatId,
+                body: { text, message_thread_id: message.message_thread_id },
+              });
+            }),
             getStatus: () => integratedHealthRuntime.statusText(),
             sendText: async (text) => {
               await sendTelegramMessage({
