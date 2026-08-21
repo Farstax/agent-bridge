@@ -43,6 +43,40 @@ describe("provider-native terminal completion", () => {
     expect(claudeSettings(bounded.args)).not.toHaveProperty("hooks.Stop");
   });
 
+  it("does not treat conditional authorization offers as committed outstanding work", () => {
+    const invocation = buildCliInvocation({
+      bot: "claude",
+      prompt: "offer to run the deployment after I approve it",
+      sessionId: null,
+      command: "claude",
+      model: null,
+      nativeCompletion: true,
+    });
+
+    const prompt = (claudeSettings(invocation.args).hooks as {
+      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
+    }).Stop[0].hooks[0].prompt;
+    expect(prompt).toMatch(/conditional|authorization|permission/i);
+    expect(prompt).toMatch(/accepted|committed|authorized/i);
+  });
+
+  it("does not claim unrelated processes observed during diagnostics", () => {
+    const invocation = buildCliInvocation({
+      bot: "claude",
+      prompt: "inspect the current processes and report",
+      sessionId: null,
+      command: "claude",
+      model: null,
+      nativeCompletion: true,
+    });
+
+    const prompt = (claudeSettings(invocation.args).hooks as {
+      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
+    }).Stop[0].hooks[0].prompt;
+    expect(prompt).toMatch(/observed|diagnostic|process listing/i);
+    expect(prompt).toMatch(/initiated|current turn|this turn/i);
+  });
+
   it("uses Agy's native goal lifecycle only for provider-owned terminal completion", () => {
     const ordinary = buildCliInvocation({
       bot: "antigravity",
