@@ -905,12 +905,14 @@ describe("SelfPlugin — extended checks", () => {
     expect(claudeCheck?.status).toBe("red"); // 10 versions behind
     expect(claudeCheck?.message).toContain("2.1.158 -> 2.1.168");
     expect(claudeCheck?.message).toContain("upgrade.sh");
+    expect(claudeCheck?.message).toContain("--clis-only");
 
     const codexCheck = report.checks.find(c => c.name === "cli-update-codex");
     expect(codexCheck).toBeDefined();
     expect(codexCheck?.status).toBe("green"); // 2 versions behind
     expect(codexCheck?.message).toContain("0.135.0 -> 0.137.0");
     expect(codexCheck?.message).toContain("upgrade.sh");
+    expect(codexCheck?.message).toContain("--clis-only");
 
     // agy is now checked directly via agy --version, not npm outdated
     const antigravityNpmCheck = report.checks.find(c => c.name === "cli-update-antigravity");

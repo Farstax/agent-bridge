@@ -245,7 +245,14 @@ engine = new BridgeEngine(
             ...results.map(r => formatReport(r)),
             qualificationStatus,
           ].join("\n\n---\n\n");
-          for (const report of results) healthReportStore.saveReport(report);
+          for (const report of results) {
+            await handleHealthReportEventIngress(report);
+            await autoUpdateClis(report, {
+              upgradeScript: `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh`,
+              sendNotification: sendText,
+              bridgeCommit: process.env.AGENT_BRIDGE_COMMIT ?? process.env.BRIDGE_COMMIT ?? process.env.BRIDGE_RELEASE_COMMIT,
+            });
+          }
           return { text: combined || "✅ All checks passed." };
         }
 
@@ -360,7 +367,7 @@ if (shouldHealthServicePoll(process.env)) {
 if (healthEnabled) {
   scheduler.start();
   for (const plugin of plugins) {
-    plugin.check().then(report => handleHealthReportEventIngress(report)).catch((err: unknown) =>
+    scheduler.runPlugin(plugin).catch((err: unknown) =>
       console.error("[health-bot] startup check error", err)
     );
   }

@@ -5,7 +5,7 @@ import { ExternalPlugin } from "./plugins/external.js";
 import { SelfPlugin } from "./plugins/self.js";
 import { ServerPlugin } from "./plugins/server.js";
 import { formatAggregateReport, formatReport } from "./reporter.js";
-import type { HealthPlugin } from "./types.js";
+import type { HealthPlugin, HealthReport } from "./types.js";
 
 export function createHealthRuntime(options: {
   bridgeDb: BridgeDb;
@@ -13,6 +13,7 @@ export function createHealthRuntime(options: {
   env: Record<string, string | undefined>;
   chatId: number;
   sendText: (text: string) => Promise<void>;
+  onReport?: (report: HealthReport, sendNotification: (text: string) => Promise<void>) => Promise<void>;
 }) {
   const reportStore = new HealthReportStore(options.bridgeDb.raw);
   const plugins: HealthPlugin[] = [new SelfPlugin(options.bridgeDb, options.dbPath)];
@@ -28,9 +29,12 @@ export function createHealthRuntime(options: {
   }
   return {
     plugins,
-    async runChecks(): Promise<string> {
+    async runChecks(sendNotification = options.sendText): Promise<string> {
       const reports = await Promise.all(plugins.map((plugin) => plugin.check()));
-      for (const report of reports) reportStore.saveReport(report);
+      for (const report of reports) {
+        reportStore.saveReport(report);
+        await options.onReport?.(report, sendNotification);
+      }
       return reports.map((report) => formatReport(report)).join("\n\n---\n\n") || "✅ All checks passed.";
     },
     statusText(): string {

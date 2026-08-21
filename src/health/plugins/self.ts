@@ -6,7 +6,8 @@ import type { HealthPlugin, HealthReport, CheckResult } from "../types.js";
 import type { BridgeDb } from "../../db.js";
 import { readInstalledProviderVersions } from "../../providers/qualificationStatus.js";
 
-const upgradeCommand = process.env.BRIDGE_UPGRADE_COMMAND ?? `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh`;
+const upgradeCommand = process.env.BRIDGE_UPGRADE_COMMAND
+  ?? `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh --clis-only`;
 
 export class SelfPlugin implements HealthPlugin {
   readonly name = "agent-bridge";
