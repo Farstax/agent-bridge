@@ -155,6 +155,23 @@ Production deployment, destructive operations, credential/permission mutation, a
 
 Update documentation that the shipped change makes inaccurate or incomplete. Do not create documentation churn when documented behaviour did not change.
 
+## GitHub CLI authentication
+
+This host authenticates the GitHub CLI with the token file, not the OAuth
+session in `~/.config/gh/hosts.yml`. Before every `gh` command, including
+commands in a new shell or tool call, load the token for that shell:
+
+```bash
+export GH_TOKEN=$(cat ~/.secrets/GITHUB_TOKEN.TXT)
+gh api user
+```
+
+The identity check must succeed before release, workflow, PR, or issue
+operations. Do not run `gh auth login`; it starts an interactive browser flow
+and is not the authentication method for this host. GitHub SSH authentication
+for Git fetch and push is separate from `GH_TOKEN` and from the stale OAuth
+state in `~/.config/gh/hosts.yml`.
+
 ## Owner release shorthand — "release it"
 
 When the repository owner says **"release it"**, treat that as authorization to qualify and publish the current release candidate through the repository's established release-publication path. "release it" does **not** authorize production deployment.
