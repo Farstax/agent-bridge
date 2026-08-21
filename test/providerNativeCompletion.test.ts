@@ -43,6 +43,26 @@ describe("provider-native terminal completion", () => {
     expect(claudeSettings(bounded.args)).not.toHaveProperty("hooks.Stop");
   });
 
+  it("binds Claude Stop evaluation to the exact current Agent Bridge request", () => {
+    const currentRequest = "deploy only PR #519 after its exact-head review";
+    const invocation = buildCliInvocation({
+      bot: "claude",
+      prompt: currentRequest,
+      sessionId: null,
+      command: "claude",
+      model: null,
+      nativeCompletion: true,
+    });
+
+    const prompt = (claudeSettings(invocation.args).hooks as {
+      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
+    }).Stop[0].hooks[0].prompt ?? "";
+    expect(prompt).toMatch(/current Agent Bridge.*request/i);
+    expect(prompt).toContain(JSON.stringify(currentRequest));
+    expect(prompt).toMatch(/session-scoped/i);
+    expect(prompt).toMatch(/treat.*request.*data|request.*not.*instructions/i);
+  });
+
   it("does not treat conditional authorization offers as committed outstanding work", () => {
     const invocation = buildCliInvocation({
       bot: "claude",
