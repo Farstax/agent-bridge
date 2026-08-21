@@ -21,6 +21,7 @@ const NATIVE_COMPLETION_STOP_PROMPT = [
   "Return ok=false only when this turn explicitly initiated or committed provider-owned background work, an asynchronous task, subagent, Monitor, or verification and that work is still outstanding or its completion result has not yet been consumed.",
   "A conditional offer, suggestion, or request for authorization or permission is not committed outstanding work unless the user accepted or authorized it in this turn.",
   "Do not treat a process, task, promise, or other provider state merely observed in diagnostics or a process listing as this turn's work; require evidence that this turn initiated it.",
+  "When stop_hook_active is true, reassess from the current Stop event and do not reuse evidence from an earlier Stop evaluation in this turn; block again only when the current input contains fresh evidence that work is still outstanding, otherwise return ok=true.",
   "Return ok=true only when the requested work is terminally complete or a concrete blocker has been reported.",
   "Evaluate the Stop event input: $ARGUMENTS",
 ].join(" ");
