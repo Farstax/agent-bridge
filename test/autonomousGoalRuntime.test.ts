@@ -96,7 +96,8 @@ function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, 
     const result = await runCliAsync(...args) as { text: string; autonomyDisposition?: TestDisposition; autonomyNotify?: boolean };
     if (!result.autonomyDisposition) return result;
     const cliArgs = Array.isArray(args[1]) ? args[1] : [];
-    const prompt = cliArgs.find((arg: unknown) => typeof arg === "string" && arg.includes("Autonomy disposition command: "));
+    const prompt = cliArgs.find((arg: unknown) => typeof arg === "string"
+      && arg.split("\n").some((line) => line.startsWith("Autonomy disposition command: ")));
     if (typeof prompt !== "string") throw new Error("autonomous prompt not found in test CLI invocation");
     invokeDisposition(prompt, result.autonomyDisposition, result.autonomyNotify === true);
     return { text: result.text };
