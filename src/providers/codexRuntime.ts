@@ -9,7 +9,7 @@
  * change; locked by test/providerInvocationFixtures.test.ts (Phase 3A).
  */
 
-import type { CliResult } from "../types.js";
+import type { CliResult, RunTelemetry } from "../types.js";
 import { appendEffortArgs } from "../effort.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
@@ -77,9 +77,31 @@ export function buildInvocation({
   return { command, args: appendEffortArgs(command, args, effort), nativeSessionMode: sessionId && !forceFreshForAttachments ? "resume" : "fresh" };
 }
 
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function parseUsage(value: unknown): RunTelemetry | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = nonNegativeNumber(usage.input_tokens);
+  const cachedInputTokens = nonNegativeNumber(usage.cached_input_tokens);
+  const outputTokens = nonNegativeNumber(usage.output_tokens);
+  const reasoningTokens = nonNegativeNumber(usage.reasoning_output_tokens);
+  if ([inputTokens, cachedInputTokens, outputTokens, reasoningTokens].every((item) => item === undefined)) return undefined;
+  return {
+    provider: "codex",
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+  };
+}
+
 export function parseResult(stdout: string): CliResult {
   let sessionId: string | null = null;
   let finalText: string | null = null;
+  let telemetry: RunTelemetry | undefined;
   const deltaChunks: string[] = [];
 
   const lines = stdout.split("\n").map((v) => v.trim()).filter(Boolean);
@@ -99,6 +121,8 @@ export function parseResult(stdout: string): CliResult {
         finalText = e.output_text;
       } else if (e.type === "response.output_text.delta" && e.delta) {
         deltaChunks.push(e.delta);
+      } else if (e.type === "turn.completed") {
+        telemetry = parseUsage(e.usage);
       }
     } catch {
       // not JSON, skip
@@ -108,6 +132,7 @@ export function parseResult(stdout: string): CliResult {
   return {
     text: (finalText ?? deltaChunks.join("")).trim(),
     sessionId,
+    ...(telemetry ? { telemetry } : {}),
   };
 }
 

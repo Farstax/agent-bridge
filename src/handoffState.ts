@@ -7,6 +7,8 @@
  */
 
 import type { BridgeDb } from "./db.js";
+import type { BotKind } from "./types.js";
+import { notePendingRunFallback } from "./runTelemetry.js";
 
 type HandoffDb = Pick<BridgeDb, "getSetting" | "setSetting">;
 
@@ -14,16 +16,20 @@ export function handoffRequiredSettingKey(chatKey: string, cliKind: string): str
   return `handoff_required:${chatKey}:${cliKind}`;
 }
 
-export function markHandoffRequired(
-  db: HandoffDb,
-  chatKey: string,
-  cliKind: string,
-  reason: string,
-): void {
-  db.setSetting(
-    handoffRequiredSettingKey(chatKey, cliKind),
-    JSON.stringify({ reason, at: new Date().toISOString() }),
-  );
+export function markHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string, reason: string): void {
+  db.setSetting(handoffRequiredSettingKey(chatKey, cliKind), JSON.stringify({ reason, at: new Date().toISOString() }));
+  const match = reason.match(/^fallback_from_(codex|claude|antigravity)$/);
+  if (match && (cliKind === "codex" || cliKind === "claude" || cliKind === "antigravity")) {
+    notePendingRunFallback(chatKey, {
+      fromProvider: match[1] as BotKind,
+      toProvider: cliKind,
+      fromModel: null,
+      toModel: null,
+      attempt: 1,
+    });
+  } else if (reason === "manual_switch") {
+    notePendingRunFallback(chatKey, null);
+  }
 }
 
 export function isHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): boolean {

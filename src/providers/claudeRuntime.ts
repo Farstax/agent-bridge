@@ -13,7 +13,7 @@ import type { CliResult } from "../types.js";
 import { appendEffortArgs } from "../effort.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import { buildClaudeSettingsArg } from "../claudeSettings.js";
-import { buildClaudeStreamJsonInput, parseClaudeStreamJsonOutput } from "../claudeStreamJson.js";
+import { buildClaudeStreamJsonInput, parseClaudeResultObject, parseClaudeStreamJsonOutput } from "../claudeStreamJson.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 
 const NATIVE_COMPLETION_STOP_PROMPT = [
@@ -96,7 +96,10 @@ export function parseResult(stdout: string): CliResult {
     if (!lines[i].startsWith("{")) continue;
     try {
       const obj = JSON.parse(lines[i]);
-      if (obj.result != null) {
+      const parsed = parseClaudeResultObject(obj);
+      if (parsed) return parsed;
+      // Preserve the legacy JSON fallback for older Claude CLI result shapes.
+      if (obj?.result != null) {
         return { text: String(obj.result).trim(), sessionId: obj.session_id ?? null };
       }
     } catch { /* not JSON */ }
