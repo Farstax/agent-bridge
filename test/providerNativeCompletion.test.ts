@@ -77,6 +77,25 @@ describe("provider-native terminal completion", () => {
     expect(prompt).toMatch(/initiated|current turn|this turn/i);
   });
 
+  it("re-evaluates repeated Stop hooks from fresh evidence", () => {
+    const invocation = buildCliInvocation({
+      bot: "claude",
+      prompt: "run the requested check",
+      sessionId: null,
+      command: "claude",
+      model: null,
+      nativeCompletion: true,
+    });
+
+    const prompt = (claudeSettings(invocation.args).hooks as {
+      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
+    }).Stop[0].hooks[0].prompt;
+    expect(prompt).toMatch(/stop_hook_active/i);
+    expect(prompt).toMatch(/earlier|previous|prior/i);
+    expect(prompt).toMatch(/fresh|current.*evidence/i);
+    expect(prompt).toMatch(/ok=true/i);
+  });
+
   it("uses Agy's native goal lifecycle only for provider-owned terminal completion", () => {
     const ordinary = buildCliInvocation({
       bot: "antigravity",
