@@ -213,6 +213,9 @@ export class TelegramClient implements MessagingPlatform {
       const detail = data?.description ? `: ${data.description}` : "";
       throw new Error(`Telegram ${endpoint} HTTP ${response.status}${detail}`);
     }
+    if (data?.ok !== true) {
+      throw new Error(`Telegram ${endpoint} response missing ok:true`);
+    }
   }
 
   async sendDocument(chatId: number | string, filePath: string, caption?: string, options?: FileSendOptions): Promise<void> {
@@ -256,6 +259,9 @@ export class TelegramClient implements MessagingPlatform {
     if (!response.ok || data?.ok === false) {
       const detail = data?.description ? `: ${data.description}` : "";
       throw new Error(`Telegram sendDocument HTTP ${response.status}${detail}`);
+    }
+    if (data?.ok !== true) {
+      throw new Error("Telegram sendDocument response missing ok:true");
     }
     return data;
   }
