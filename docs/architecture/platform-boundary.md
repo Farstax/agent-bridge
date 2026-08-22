@@ -48,6 +48,12 @@ The Platform may start, stop, configure, update, and monitor Agent Bridge deploy
 
 The Platform should not own autonomous prompt execution, planning, TDD implementation, PR lifecycle, or merge decision logic. Provider agents and repository Skills own engineering workflow.
 
+## Licensing Boundary
+
+Agent Bridge material in the public `agent-bridge` repository is licensed under Apache-2.0 except where bundled third-party material states another licence.
+
+That repository licence does not apply to `agent-bridge-platform`, the Farstax hosted control plane, managed hosting or provisioning services, commercial operations, branding, or other proprietary Platform assets. Platform code and services remain separately licensed even when they provision or operate an Apache-2.0 Agent Bridge deployment.
+
 ## Security and Policy
 
 Secrets, tokens, and runtime credentials should be scoped to the deployment that needs them.
