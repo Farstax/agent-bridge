@@ -111,7 +111,7 @@ The real 0.149.0 fresh, resumed, and short tool-directed probes emitted `phase: 
 <<< {"method":"item/started","params":{"item":{"type":"agentMessage","id":"item-agent-commentary","text":""}}}
 <<< {"method":"item/agentMessage/delta","params":{"itemId":"item-agent-commentary","delta":"No tool calls are needed now. I will wait..."}}
 ```
-Without the phase field, the client cannot distinguish whether this delta is raw commentary/narration or the user-visible final answer. 
+Without the phase field, the client cannot distinguish whether this delta is raw commentary/narration or the user-visible final answer.
 * Streaming all deltas when phase is `null`/unknown leaks internal agent commentary.
 * Blocking all deltas with unknown phase renders streaming non-functional for those turns.
 * Since text heuristics are prohibited, streaming is classified as unsafe.
