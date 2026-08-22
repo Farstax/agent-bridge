@@ -147,33 +147,32 @@ export class TelegramClient implements MessagingPlatform {
     const url = `${this.baseUrl}/getFile?file_id=${encodeURIComponent(fileId)}`;
     const ac = new AbortController();
     const fetchTimer = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
-    let response: Response;
     try {
-      response = await this.fetch(url, { signal: ac.signal } as any);
+      const response = await this.fetch(url, { signal: ac.signal } as any);
+      if (!response.ok) {
+        throw new Error(`Telegram getFile HTTP ${response.status}`);
+      }
+      const data = await response.json() as any;
+      return data.result.file_path as string;
     } finally {
       clearTimeout(fetchTimer);
     }
-    if (!response.ok) {
-      throw new Error(`Telegram getFile HTTP ${response.status}`);
-    }
-    const data = await response.json() as any;
-    return data.result.file_path as string;
   }
 
   async downloadFile(filePath: string, destPath: string): Promise<void> {
     const url = `${TELEGRAM_FILE_BASE_URL}${this.token}/${filePath}`;
     const ac = new AbortController();
     const fetchTimer = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
-    let response: Response;
+    let buffer: ArrayBuffer;
     try {
-      response = await this.fetch(url, { signal: ac.signal } as any);
+      const response = await this.fetch(url, { signal: ac.signal } as any);
+      if (!response.ok) {
+        throw new Error(`Telegram downloadFile HTTP ${response.status}`);
+      }
+      buffer = await response.arrayBuffer();
     } finally {
       clearTimeout(fetchTimer);
     }
-    if (!response.ok) {
-      throw new Error(`Telegram downloadFile HTTP ${response.status}`);
-    }
-    const buffer = await response.arrayBuffer();
     await writeFile(destPath, Buffer.from(buffer));
   }
 
@@ -198,12 +197,18 @@ export class TelegramClient implements MessagingPlatform {
     const ac = new AbortController();
     const fetchTimer = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
     let response: Response;
+    let data: any = null;
     try {
       response = await this.fetch(url, { method: "POST", body: fd, signal: ac.signal } as any);
+      try {
+        data = await response.json();
+      } catch (err) {
+        if (ac.signal.aborted) throw err;
+        data = null;
+      }
     } finally {
       clearTimeout(fetchTimer);
     }
-    const data = await response.json().catch(() => null) as any;
     if (!response.ok || data?.ok === false) {
       const detail = data?.description ? `: ${data.description}` : "";
       throw new Error(`Telegram ${endpoint} HTTP ${response.status}${detail}`);
@@ -235,13 +240,19 @@ export class TelegramClient implements MessagingPlatform {
     const ac = new AbortController();
     const fetchTimer = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
     let response: Response;
+    let data: any = null;
     try {
       response = await this.fetch(url, { method: "POST", body: fd, signal: ac.signal } as any);
+      try {
+        data = await response.json();
+      } catch (err) {
+        if (ac.signal.aborted) throw err;
+        data = null;
+      }
     } finally {
       clearTimeout(fetchTimer);
     }
 
-    const data = await response.json().catch(() => null) as any;
     if (!response.ok || data?.ok === false) {
       const detail = data?.description ? `: ${data.description}` : "";
       throw new Error(`Telegram sendDocument HTTP ${response.status}${detail}`);
