@@ -86,6 +86,22 @@ Provider-lock convergence does not move or change existing dedicated provider
 databases. Locked units keep the `shared` database role; the switchable
 interactive unit keeps the `interactive` role.
 
+## Open-source licence and commercial boundary
+
+Agent Bridge material in this repository is licensed under the
+[Apache License 2.0](LICENSE), except for third-party material that carries its
+own licence. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled
+third-party attribution.
+
+This licence applies to the public `agent-bridge` repository only. It does not
+license `agent-bridge-platform`, the Farstax hosted control plane, managed
+hosting or provisioning services, commercial operations, or other proprietary
+Platform assets. The runtime/platform responsibility boundary is documented in
+[docs/architecture/platform-boundary.md](docs/architecture/platform-boundary.md).
+
+The licence decision and rationale are recorded in
+[ADR-004](docs/adr/ADR-004-oss-license.md).
+
 ## Development
 
 ```bash
