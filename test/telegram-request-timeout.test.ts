@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { TelegramClient } from "../src/telegram.js";
 
 function abortError(): DOMException {
@@ -27,6 +30,119 @@ describe("TelegramClient request deadlines", () => {
 
     const client = new TelegramClient("token", fakeFetch, 50);
     const request = client.sendMessage({ chat_id: 1, text: "hi" });
+    const outcome = request.then(() => "resolved", (error) => error?.name);
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(signal?.aborted).toBe(true);
+    await expect(outcome).resolves.toBe("AbortError");
+  });
+
+  it("keeps the getFile deadline active while consuming JSON", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+
+    const fakeFetch = (async (_url: string, options: any) => {
+      signal = options.signal;
+      return {
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () => reject(abortError()), { once: true });
+        }),
+      };
+    }) as any;
+
+    const client = new TelegramClient("token", fakeFetch, 50);
+    const request = client.getFilePath("file-id");
+    const outcome = request.then(() => "resolved", (error) => error?.name);
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(signal?.aborted).toBe(true);
+    await expect(outcome).resolves.toBe("AbortError");
+  });
+
+  it("keeps the download deadline active while consuming file bytes", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+
+    const fakeFetch = (async (_url: string, options: any) => {
+      signal = options.signal;
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: () => new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () => reject(abortError()), { once: true });
+        }),
+      };
+    }) as any;
+
+    const client = new TelegramClient("token", fakeFetch, 50);
+    const request = client.downloadFile("photos/file.jpg", "/tmp/agent-bridge-timeout-never-written");
+    const outcome = request.then(() => "resolved", (error) => error?.name);
+
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(signal?.aborted).toBe(true);
+    await expect(outcome).resolves.toBe("AbortError");
+  });
+
+  it("keeps multipart upload deadlines active while consuming JSON", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+
+    const fakeFetch = (async (_url: string, options: any) => {
+      signal = options.signal;
+      return {
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () => reject(abortError()), { once: true });
+        }),
+      };
+    }) as any;
+
+    const dir = await mkdtemp(join(tmpdir(), "bridge-telegram-timeout-"));
+    const filePath = join(dir, "report.pdf");
+    await writeFile(filePath, "pdf");
+
+    try {
+      const client = new TelegramClient("token", fakeFetch, 50);
+      const request = client.sendDocument(1, filePath);
+      const outcome = request.then(() => "resolved", (error) => error?.name);
+
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(signal?.aborted).toBe(true);
+      await expect(outcome).resolves.toBe("AbortError");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps buffered document upload deadlines active while consuming JSON", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+
+    const fakeFetch = (async (_url: string, options: any) => {
+      signal = options.signal;
+      return {
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () => reject(abortError()), { once: true });
+        }),
+      };
+    }) as any;
+
+    const client = new TelegramClient("token", fakeFetch, 50);
+    const request = client.sendDocumentBuffer({
+      chat_id: 1,
+      bytes: Buffer.from("hello"),
+      filename: "response.txt",
+      mime_type: "text/plain",
+    });
     const outcome = request.then(() => "resolved", (error) => error?.name);
 
     await vi.advanceTimersByTimeAsync(50);
