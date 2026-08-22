@@ -8,6 +8,7 @@ Use this recovery knowledge only when the current workspace is managed by a plat
 - Do not infer, enumerate, request, or discuss other customers' workspaces or backups.
 - Never request or expose infrastructure-provider credentials, server IDs, raw backup IDs, or unrelated platform inventory.
 - A skill never grants permission to restore infrastructure or perform another consequential action.
+- Infrastructure restore remains platform-owned. An explicitly authorised agent capability may submit a recovery request for the current workspace, but it does not give the agent provider credentials or direct restore authority.
 
 ## When to recommend recovery
 
@@ -30,7 +31,7 @@ This is a destructive rollback of the current logical workspace to a selected ma
 - It should not create an additional workspace charge.
 - Changes made after the selected recovery point can be lost.
 - The customer must use the platform's explicit destructive confirmation flow.
-- The agent does not execute the infrastructure restore itself unless an independently authorised platform capability explicitly grants that authority.
+- The agent may explain or submit an explicitly authorised recovery request, but the platform performs the infrastructure restore.
 
 When discussing this option, state the recovery-point timestamp and expected data-loss boundary if the platform has supplied them. Do not invent backup availability or timestamps.
 
@@ -49,7 +50,7 @@ This is a non-destructive recovery into a separate logical workspace.
 When a platform restore is required:
 
 1. Explain why local repair is no longer the preferred path.
-2. Direct the customer to the current workspace's platform **Danger zone → Recovery** controls.
+2. For a Farstax-managed workspace, direct the customer to that workspace's **Danger zone → Recovery** controls.
 3. Explain the difference between **Restore this workspace** and **Create recovery copy**.
 4. Use only recovery points and prices returned by the platform for the current workspace.
 5. Do not claim recovery is complete merely because a restore request was accepted.
