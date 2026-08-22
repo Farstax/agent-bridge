@@ -6,6 +6,7 @@ import type { FileSendOptions, MessagingPlatform } from "./platform.js";
 
 const TELEGRAM_FILE_BASE_URL = "https://api.telegram.org/file/bot";
 const TELEGRAM_LONG_POLL_HEADROOM_MS = 30_000;
+const TELEGRAM_POLL_WATCHDOG_GRACE_MS = 15_000;
 
 const MIME_TYPE_MAP: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -105,13 +106,23 @@ export class TelegramClient implements MessagingPlatform {
       typeof options?.timeout === "number" && Number.isFinite(options.timeout) && options.timeout > 0
         ? options.timeout * 1000 + TELEGRAM_LONG_POLL_HEADROOM_MS
         : this.fetchTimeoutMs;
+    const requestTimeoutMs = Math.max(this.fetchTimeoutMs, longPollTimeoutMs);
+    const watchdogMs = requestTimeoutMs + TELEGRAM_POLL_WATCHDOG_GRACE_MS;
+    const watchdog = setTimeout(() => {
+      console.error(`[telegram] getUpdates exceeded ${watchdogMs}ms liveness deadline; exiting for supervised restart`);
+      process.exit(1);
+    }, watchdogMs);
 
-    return this.call(
-      "getUpdates",
-      options,
-      0,
-      Math.max(this.fetchTimeoutMs, longPollTimeoutMs),
-    );
+    try {
+      return await this.call(
+        "getUpdates",
+        options,
+        0,
+        requestTimeoutMs,
+      );
+    } finally {
+      clearTimeout(watchdog);
+    }
   }
 
   async sendMessage(body: any): Promise<TelegramResponse<TelegramMessage>> {
