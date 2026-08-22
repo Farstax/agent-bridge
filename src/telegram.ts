@@ -5,6 +5,7 @@ import type { TelegramMessage } from "./types.js";
 import type { FileSendOptions, MessagingPlatform } from "./platform.js";
 
 const TELEGRAM_FILE_BASE_URL = "https://api.telegram.org/file/bot";
+const TELEGRAM_LONG_POLL_HEADROOM_MS = 30_000;
 
 const MIME_TYPE_MAP: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -44,15 +45,21 @@ export class TelegramClient implements MessagingPlatform {
     this.fetchTimeoutMs = fetchTimeoutMs;
   }
 
-  async call<T>(method: string, body: any = {}, retryCount = 0): Promise<TelegramResponse<T>> {
+  async call<T>(
+    method: string,
+    body: any = {},
+    retryCount = 0,
+    requestTimeoutMs = this.fetchTimeoutMs,
+  ): Promise<TelegramResponse<T>> {
     const payload = { ...body };
     if (payload.reply_markup && typeof payload.reply_markup === "object") {
       payload.reply_markup = JSON.stringify(payload.reply_markup);
     }
 
     const ac = new AbortController();
-    const fetchTimer = setTimeout(() => ac.abort(), this.fetchTimeoutMs);
+    const fetchTimer = setTimeout(() => ac.abort(), requestTimeoutMs);
     let response: Response;
+    let data: any = null;
     try {
       response = await this.fetch(`${this.baseUrl}/${method}`, {
         method: "POST",
@@ -60,15 +67,15 @@ export class TelegramClient implements MessagingPlatform {
         body: JSON.stringify(payload),
         signal: ac.signal,
       });
+
+      try {
+        data = await response.json();
+      } catch (err) {
+        if (ac.signal.aborted) throw err;
+        data = null;
+      }
     } finally {
       clearTimeout(fetchTimer);
-    }
-
-    let data: any = null;
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
     }
 
     if (!response.ok) {
@@ -81,7 +88,7 @@ export class TelegramClient implements MessagingPlatform {
       if (error.status === 429 && error.retryAfter && retryCount < 2) {
         console.warn(`[telegram] rate limited, retrying after ${error.retryAfter}s (attempt ${retryCount + 1})`);
         await new Promise((resolve) => setTimeout(resolve, error.retryAfter * 1000));
-        return this.call(method, body, retryCount + 1);
+        return this.call<T>(method, body, retryCount + 1, requestTimeoutMs);
       }
 
       throw error;
@@ -94,7 +101,17 @@ export class TelegramClient implements MessagingPlatform {
   }
 
   async getUpdates(options: any): Promise<TelegramResponse<any[]>> {
-    return this.call("getUpdates", options);
+    const longPollTimeoutMs =
+      typeof options?.timeout === "number" && Number.isFinite(options.timeout) && options.timeout > 0
+        ? options.timeout * 1000 + TELEGRAM_LONG_POLL_HEADROOM_MS
+        : this.fetchTimeoutMs;
+
+    return this.call(
+      "getUpdates",
+      options,
+      0,
+      Math.max(this.fetchTimeoutMs, longPollTimeoutMs),
+    );
   }
 
   async sendMessage(body: any): Promise<TelegramResponse<TelegramMessage>> {
