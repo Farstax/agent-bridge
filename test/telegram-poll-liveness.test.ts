@@ -40,4 +40,21 @@ describe("TelegramClient poll liveness", () => {
 
     expect(exit).not.toHaveBeenCalled();
   });
+
+  it("cancels the liveness watchdog when getUpdates rejects", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined as never) as typeof process.exit);
+
+    const fakeFetch = (async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({ ok: false, description: "server error" }),
+    })) as any;
+    const client = new TelegramClient("token", fakeFetch, 45_000);
+
+    await expect(client.getUpdates({ timeout: 30 })).rejects.toThrow(/500/);
+    await vi.advanceTimersByTimeAsync(75_000);
+
+    expect(exit).not.toHaveBeenCalled();
+  });
 });
