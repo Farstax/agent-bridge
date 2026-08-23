@@ -51,11 +51,9 @@ export class ProviderFallbackChain {
       this.chatActiveIdx.set(chatKey, candidate);
       return this.chain[candidate];
     }
-    if (this.chain.includes("grok")) {
-      throw new Error("No qualified and authenticated CLI is available in the configured fallback chain");
-    }
-    // Preserve the historical return type for established-provider-only chains;
-    // their admission layer owns the terminal unavailable condition.
+    // Preserve the historical return type when every configured provider is
+    // unavailable. The execution boundary still fails closed before Grok can
+    // spawn, allowing the normal engine path to deliver the provider error.
     return this.chain[idx];
   }
 
