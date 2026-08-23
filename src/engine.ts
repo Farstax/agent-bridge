@@ -167,7 +167,7 @@ export interface SurfaceNeutralTurnInput {
 const MAX_QUEUE_DEPTH = 5;
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
 const ENGINE_TURN_TEXT_LIMIT = 1_200;
-const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude"]);
+const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok"]);
 function isAgentKind(kind: string): kind is BotKind {
   return AGENT_KINDS.has(kind);
 }
@@ -1564,7 +1564,9 @@ ${contextPrompt}` : contextPrompt);
       // provider completion, not Bridge parsing, owns background task lifetime.
       outputFormat: executionKind === "antigravity" || executionKind === "claude"
         ? "stream-json"
-        : "json",
+        : executionKind === "grok"
+          ? "streaming-json"
+          : "json",
       logFile,
       soulContext: promptForCli.soulContext,
       includeResponseContract: promptForCli.includeResponseContract,
@@ -1729,7 +1731,9 @@ ${contextPrompt}` : contextPrompt);
       // Keep the same answer-streaming format as the primary attempt and its fallback.
       outputFormat: executionKind === "antigravity" || executionKind === "claude"
         ? "stream-json"
-        : "json",
+        : executionKind === "grok"
+          ? "streaming-json"
+          : "json",
       logFile: retryLogFile,
       soulContext,
       includeResponseContract,
@@ -1902,7 +1906,9 @@ ${contextPrompt}` : contextPrompt);
       // Keep the same answer-streaming format on a fresh fallback attempt.
       outputFormat: executionKind === "antigravity" || executionKind === "claude"
         ? "stream-json"
-        : "json",
+        : executionKind === "grok"
+          ? "streaming-json"
+          : "json",
       logFile: fallbackLogFile,
       soulContext: fallbackPromptForCli.soulContext,
       includeResponseContract: fallbackPromptForCli.includeResponseContract,
@@ -2139,6 +2145,7 @@ ${contextPrompt}` : contextPrompt);
         codex: this.kind === "codex" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
         antigravity: this.kind === "antigravity" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
         claude: this.kind === "claude" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
+        grok: this.kind === "grok" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
       },
     };
   }

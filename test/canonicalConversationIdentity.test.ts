@@ -43,6 +43,7 @@ function fullConfig(allowedUserIds: ReadonlySet<string>): BridgeConfig {
       codex: { token: undefined, command: "codex", modelPreference: ["default"] },
       claude: { token: undefined, command: "claude", modelPreference: ["default"] },
       antigravity: { token: undefined, command: "agy", modelPreference: ["default"] },
+      grok: { token: undefined, command: "grok", modelPreference: ["default"] },
     },
   };
 }

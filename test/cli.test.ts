@@ -917,6 +917,7 @@ const stubConfig: BridgeConfig = {
     codex: { token: undefined, command: "codex", modelPreference: [] },
     antigravity: { token: undefined, command: "agy", modelPreference: [] },
     claude: { token: undefined, command: "claude", modelPreference: [] },
+    grok: { token: undefined, command: "grok", modelPreference: [] },
   },
 };
 

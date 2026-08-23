@@ -2,7 +2,7 @@
 
 Agent Bridge is an open-source runtime for the coding-agent CLIs you already
 use. It provides durable Telegram and Discord access to Codex, Claude Code,
-and Antigravity/Agy through provider-native sessions and ordinary Runs.
+Antigravity/Agy, and Grok Build through provider-native sessions and ordinary Runs.
 
 ## Architecture
 
@@ -41,17 +41,18 @@ the installed Skills.
 ## Services
 
 All Telegram conversation services use the same production runtime. The three
-dedicated provider units set `BRIDGE_PROVIDER_LOCK` and keep their existing
-provider-specific tokens and persistent databases. The interactive unit leaves
-the lock unset so `/cli` switching and configured provider fallback remain
-available.
+established dedicated provider units set `BRIDGE_PROVIDER_LOCK` and keep their
+existing provider-specific tokens and persistent databases. The interactive
+unit leaves the lock unset so `/cli` switching and configured provider fallback
+remain available. Managed Grok uses that interactive unit rather than widening
+the guarded systemd unit inventory.
 
 | Service | Entry point | Surface |
 |---|---|---|
 | `agent-bridge-codex.service` | `src/index-interactive.ts` | Telegram, locked to Codex |
 | `agent-bridge-antigravity.service` | `src/index-interactive.ts` | Telegram, locked to Antigravity |
 | `agent-bridge-claude.service` | `src/index-interactive.ts` | Telegram, locked to Claude |
-| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable |
+| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable, including Grok |
 | `agent-bridge-health.service` | `src/index-health.ts` | Telegram |
 | `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord |
 
@@ -69,11 +70,27 @@ then run the matching service or `npm start`. The systemd installer and guarded
 rollout helpers are documented in [docs/INITIAL-INSTALL.md](docs/INITIAL-INSTALL.md)
 and [docs/GUARDED-ROLLOUT.md](docs/GUARDED-ROLLOUT.md).
 
-The interactive fallback order is configured with
-`INTERACTIVE_CLI_CHAIN`. `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity`
-turns the same Telegram runtime into a fixed-provider instance; the shipped
-dedicated systemd units set this automatically. Explicit `AGENT_BRIDGE_SKILLS`
-overrides keep their existing behaviour.
+The interactive fallback order is configured with `INTERACTIVE_CLI_CHAIN`.
+When unset, the default is `codex,claude,grok,antigravity`. The runtime also
+accepts `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok` for fixed-provider
+custom or dedicated deployments. The shipped managed dedicated units remain
+Codex, Claude, and Antigravity; managed Grok uses
+`agent-bridge-interactive.service`. Explicit `AGENT_BRIDGE_SKILLS` overrides
+keep their existing behaviour.
+
+Grok participates when it is authenticated, using the runtime user's native
+Grok credentials or `XAI_API_KEY`. Qualification remains available for upgrade,
+health, doctor, and diagnostics. Missing, stale, or degraded qualification
+evidence does not block routing; a current deterministic `overall: fail` record
+for the installed Grok version does. For a managed host, use `GROK_COMMAND` to
+pin the executable path; the installer propagates `GROK_COMMAND`,
+`GROK_MODEL_PREFERENCE`, `GROK_EFFORT`, and `GROK_PROJECT_DIR`.
+
+Run an explicit diagnostic qualification when needed with:
+
+```bash
+npm run qualify:provider -- --provider grok
+```
 
 ## Data compatibility
 
@@ -81,6 +98,8 @@ Schema version 9 removes the obsolete Engineering Worker tables, including
 `work_items`, `work_jobs`, approvals, GitHub links, feature plans, and
 role-assignment rows. The migration accepts populated legacy tables because
 their data is obsolete by design. Active runtime state remains intact.
+
+Schema version 10 adds Grok Build session identity columns.
 
 Provider-lock convergence does not move or change existing dedicated provider
 databases. Locked units keep the `shared` database role; the switchable

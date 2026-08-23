@@ -10,13 +10,14 @@ import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
-const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity"]);
+const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity", "grok"]);
 
 /** Chain vocabulary differs from registry ids only for Antigravity (`agy`). */
 const CHAIN_KIND_TO_PROVIDER_ID: Readonly<Record<string, string>> = {
   codex: "codex",
   claude: "claude",
   antigravity: "agy",
+  grok: "grok",
 };
 
 const CHAIN_ENV_VARS = [

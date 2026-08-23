@@ -62,6 +62,13 @@ export interface QualificationHealthResult {
   message: string;
 }
 
+function qualificationOutputFormat(args: string[]): "streaming-json" | "stream-json" | "json" | "text" {
+  if (args.includes("streaming-json")) return "streaming-json";
+  if (args.includes("stream-json")) return "stream-json";
+  if (args.includes("json")) return "json";
+  return "text";
+}
+
 const FRESH_PROBE = "Agent Bridge provider qualification probe.";
 const RESUME_PROBE = "Agent Bridge provider qualification resume probe.";
 
@@ -299,7 +306,7 @@ async function runQualificationInvocation({
         parseCliResult({
           bot,
           stdout,
-          outputFormat: args.includes("stream-json") ? "stream-json" : (args.includes("json") ? "json" : "text"),
+          outputFormat: qualificationOutputFormat(args),
         });
       }
       throw error;
@@ -366,7 +373,7 @@ async function executeNativeQualificationCheck({
     parsed = parseCliResult({
       bot,
       stdout,
-      outputFormat: invocation.args.includes("stream-json") ? "stream-json" : (invocation.args.includes("json") ? "json" : "text"),
+      outputFormat: qualificationOutputFormat(invocation.args),
     });
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error(String(caught));

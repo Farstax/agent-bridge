@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 
-type BotKind = "codex" | "antigravity" | "claude";
+type BotKind = "codex" | "antigravity" | "claude" | "grok";
 
 const pollingKey = (bot: string) => `$polling:${bot}`;
 
@@ -60,15 +60,17 @@ export class SettingsRepository {
       .prepare(
         `SELECT MAX(codex_consecutive_failures) AS codex,
                 MAX(claude_consecutive_failures) AS claude,
-                MAX(antigravity_consecutive_failures) AS antigravity
+                MAX(antigravity_consecutive_failures) AS antigravity,
+                MAX(grok_consecutive_failures) AS grok
          FROM bridge_state`
       )
-      .get() as { codex: number; claude: number; antigravity: number } | undefined;
+      .get() as { codex: number; claude: number; antigravity: number; grok: number } | undefined;
     if (!row) return [];
     const results: { bot: string; count: number }[] = [];
     if (row.codex > 0) results.push({ bot: "codex", count: row.codex });
     if (row.claude > 0) results.push({ bot: "claude", count: row.claude });
     if (row.antigravity > 0) results.push({ bot: "antigravity", count: row.antigravity });
+    if (row.grok > 0) results.push({ bot: "grok", count: row.grok });
     return results;
   }
 

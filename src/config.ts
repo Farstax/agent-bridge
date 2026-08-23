@@ -38,6 +38,11 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
       command: env.CLAUDE_COMMAND || "claude",
       modelPreference: parseModelPreference(env.CLAUDE_MODEL_PREFERENCE),
     },
+    grok: {
+      token: token(env.TELEGRAM_BOT_TOKEN_GROK),
+      command: env.GROK_COMMAND || "grok",
+      modelPreference: parseModelPreference(env.GROK_MODEL_PREFERENCE),
+    },
   };
 }
 

@@ -33,6 +33,11 @@ const SUCCESSOR_INTENT_SETTING = "autonomy:successor-intent";
 const DAILY_EPISODE_COUNT_SETTING_PREFIX = "autonomy:episodes-per-day:";
 const FROZEN_EPISODE_PREFIX = "[Frozen Episode authority]";
 const START_POLICY_MARKER = "[Authorized start policy instruction]";
+const FIRST_CLASS_AUTONOMY_BOTS = ["codex", "claude", "antigravity"] as const;
+
+export function isFirstClassAutonomyBot(bot: string): bot is Exclude<BotKind, "grok"> {
+  return (FIRST_CLASS_AUTONOMY_BOTS as readonly string[]).includes(bot);
+}
 
 interface SuccessorInputRecord {
   idempotencyKey: string;
@@ -141,7 +146,7 @@ export class AutonomyController {
       ?? parseAutonomyRequireEpisodeApproval(process.env.AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL);
     this.maxEpisodesPerDay = options.maxEpisodesPerDay
       ?? parseAutonomyMaxEpisodesPerDay(process.env.AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY);
-    const allowed = interactiveChainKinds() as BotKind[];
+    const allowed = interactiveChainKinds().filter((kind) => kind !== "grok") as BotKind[];
     this.providerChain = options.providerChain ?? parseCliChain(
       process.env.INTERACTIVE_CLI_CHAIN,
       { allowed, fallback: ["codex", "claude", "antigravity"] },
@@ -270,6 +275,9 @@ export class AutonomyController {
   }
 
   async start(input: AutonomyControllerStartInput): Promise<{ goal: AutonomousGoal; created: boolean }> {
+    if (!isFirstClassAutonomyBot(input.bot)) {
+      throw new Error(`provider ${input.bot} is not available for first-class autonomy`);
+    }
     const existing = activeGoals(this.options.db);
     if (existing.length > 1) throw new Error("multiple active autonomous Episodes; refusing ambiguous start");
     if (existing.length === 1) {

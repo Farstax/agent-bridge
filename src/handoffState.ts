@@ -18,8 +18,8 @@ export function handoffRequiredSettingKey(chatKey: string, cliKind: string): str
 
 export function markHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string, reason: string): void {
   db.setSetting(handoffRequiredSettingKey(chatKey, cliKind), JSON.stringify({ reason, at: new Date().toISOString() }));
-  const match = reason.match(/^fallback_from_(codex|claude|antigravity)$/);
-  if (match && (cliKind === "codex" || cliKind === "claude" || cliKind === "antigravity")) {
+  const match = reason.match(/^fallback_from_(codex|claude|antigravity|grok)$/);
+  if (match && (cliKind === "codex" || cliKind === "claude" || cliKind === "antigravity" || cliKind === "grok")) {
     notePendingRunFallback(chatKey, {
       fromProvider: match[1] as BotKind,
       toProvider: cliKind,

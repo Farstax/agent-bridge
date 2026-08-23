@@ -14,6 +14,7 @@ const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
   codex: "codex",
   claude: "claude",
   agy: "antigravity",
+  grok: "grok",
 };
 
 /** CLI kinds usable in companion interactive chains, in registry order. */

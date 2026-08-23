@@ -23,6 +23,7 @@ import {
   buildChatInteractiveCommandRegistrations,
   dispatchInteractiveWithFallback,
   applyManualCliSwitchHandoff,
+  getSelectableCliKinds,
   type CliKind,
 } from "../src/interactiveBot.js";
 import { isHandoffRequired } from "../src/handoffState.js";
@@ -42,6 +43,11 @@ describe("getUserCliPreference", () => {
     expect(getUserCliPreference(db, "chat:1")).toBe("claude");
   });
 
+  it("stores and restores an opt-in grok preference", () => {
+    setUserCliPreference(db, "chat:1", "grok");
+    expect(getUserCliPreference(db, "chat:1")).toBe("grok");
+  });
+
   it("preferences are per chat_id", () => {
     setUserCliPreference(db, "chat:1", "claude");
     setUserCliPreference(db, "chat:2", "antigravity");
@@ -53,6 +59,19 @@ describe("getUserCliPreference", () => {
     setUserCliPreference(db, "chat:1", "claude");
     setUserCliPreference(db, "chat:1", "codex");
     expect(getUserCliPreference(db, "chat:1")).toBe("codex");
+  });
+});
+
+describe("opt-in grok CLI selection", () => {
+  it("does not treat grok as a default selectable CLI", () => {
+    expect(getSelectableCliKinds()).not.toContain("grok");
+    expect(buildCliStatusText("codex")).not.toContain("grok");
+  });
+
+  it("selects grok from cli callbacks and authenticated sets", () => {
+    expect(handleCliSwitchCallback("cli:grok")).toBe("grok");
+    expect(getSelectableCliKinds(new Set(["grok"]))).toEqual(["grok"]);
+    expect(buildCliStatusText("grok", new Set(["grok"]))).toContain("grok");
   });
 });
 
@@ -435,8 +454,10 @@ describe("buildInteractiveCommands", () => {
   it("includes /usage only when pref is codex", () => {
     const codexCmds = buildInteractiveCommands("codex").map(c => c.command);
     const claudeCmds = buildInteractiveCommands("claude").map(c => c.command);
+    const grokCmds = buildInteractiveCommands("grok").map(c => c.command);
     expect(codexCmds).toContain("usage");
     expect(claudeCmds).not.toContain("usage");
+    expect(grokCmds).not.toContain("usage");
   });
 
   it("has no duplicate command names", () => {

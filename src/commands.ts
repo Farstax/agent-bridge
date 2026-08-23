@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { BridgeConfig } from "./types.js";
+import type { BridgeConfig, BotKind } from "./types.js";
 import type { BridgeDb } from "./db.js";
 import { buildModelKeyboard, buildModelsText } from "./bridge.js";
 import { listLocalCatalog } from "./skills.js";
@@ -171,7 +171,7 @@ export function isAntigravityNarrationVisible(db: BridgeDb, chatId: string): boo
   return db.getSetting(antigravityNarrationSettingKey(chatId)) === "visible";
 }
 
-function handleNarrationCommand(kind: "codex" | "antigravity" | "claude", text: string, db: BridgeDb, chatId: string): CommandResult {
+function handleNarrationCommand(kind: BotKind, text: string, db: BridgeDb, chatId: string): CommandResult {
   if (kind !== "antigravity") {
     return { kind: "message", text: "/narration is only available on Antigravity." };
   }
@@ -216,7 +216,7 @@ function buildSkillsText(): string {
 }
 
 export function handleCommand(
-  kind: "codex" | "antigravity" | "claude",
+  kind: BotKind,
   prompt: string,
   {
     db,
@@ -368,7 +368,7 @@ export function handleCommand(
   return null;
 }
 
-export function buildTelegramCommands(kind: "codex" | "antigravity" | "claude"): Array<{ command: string; description: string }> {
+export function buildTelegramCommands(kind: BotKind): Array<{ command: string; description: string }> {
   const commands = [
     { command: "models",   description: "Switch model" },
     { command: "effort",   description: "Switch reasoning effort" },

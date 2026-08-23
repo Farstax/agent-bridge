@@ -1,6 +1,6 @@
 # Provider contract qualification
 
-Agent Bridge treats Codex, Claude, and Agy as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
+Agent Bridge treats Codex, Claude, Agy, and Grok Build as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
 
 ## Contract v1
 
@@ -27,6 +27,14 @@ The managed production trigger is a CLI install/upgrade or a subsequently observ
 - The health service checks established evidence for out-of-band/self-updated provider versions. When `installed_version != last_qualified_version`, it qualifies that provider once and persists the new result.
 - Only the changed provider is qualified.
 
+Grok is not part of the managed automatic upgrade set. Its qualifier can be run explicitly after installation, an upgrade, or when troubleshooting:
+
+```bash
+npm run qualify:provider -- --provider grok
+```
+
+Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok install can participate in `/cli` and fallback without a prior `pass` record. A current deterministic `overall: fail` record for the installed Grok version suppresses routing until the failure is resolved or the binary version changes.
+
 No separate qualification scheduler is installed.
 
 ## Evidence
@@ -47,6 +55,7 @@ Run an explicit qualification with:
 npm run qualify:provider -- --provider codex
 npm run qualify:provider -- --provider claude
 npm run qualify:provider -- --provider agy
+npm run qualify:provider -- --provider grok
 ```
 
 `--expected-version <version>` and `--if-needed` are available for managed upgrade paths. Machine-readable JSON is written to stdout. A deterministic contract failure exits non-zero after persisting its evidence; a degraded prerequisite state remains distinguishable in the JSON result.
@@ -57,7 +66,7 @@ Managed upgrade output is consumed by the health auto-remediation path. A newly 
 
 On-demand `/health` and `/status` include the persistent qualification summary without adding the qualification record as a scheduled health plugin, avoiding repeated Telegram reports for the same known degraded version. `npm run doctor` prints the same concise qualification summary. Detailed per-check diagnostics remain in the evidence file.
 
-The first slice does not automatically downgrade a failed CLI. A provider with deterministic `overall: fail` evidence is excluded from interactive CLI selection and fallback chains so known-bad contracts are avoided while the binary remains installed for diagnosis. `degraded` prerequisite/transient states are surfaced but are not routing-blocked.
+The runtime does not automatically downgrade a failed CLI. For all providers, current deterministic `overall: fail` evidence excludes that provider from interactive selection and fallback chains while missing, stale, or `degraded` prerequisite/transient evidence remains visible but routeable.
 
 ## Regression policy
 
@@ -65,11 +74,12 @@ When a production provider incident exposes a reusable assumption at the CLI bou
 
 ## Explicit non-goals
 
-This first slice does not:
+This qualification mechanism does not:
 
 - benchmark model intelligence or answer quality;
 - maintain a permanent provider-version allowlist;
 - gate every release on live external calls;
+- require a positive qualification record before normal routing;
 - dynamically rewrite provider capabilities from model judgement;
 - add a separate timer/scheduler;
 - automatically roll back/downgrade provider packages after a qualification failure.

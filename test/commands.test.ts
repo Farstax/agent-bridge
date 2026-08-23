@@ -13,7 +13,7 @@ function makeConfig(): BridgeConfig {
     executionMode: "safe",
     asyncEnabled: false,
     dbPath: ":memory:",
-    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot },
+    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot, grok: emptyBot },
   };
 }
 
@@ -94,5 +94,28 @@ describe("/btw command parsing (Issue #177)", () => {
   it("is recognised as a bridge command", () => {
     const result = handleCommand("codex", "/btw quick side question", { db, chatId: "100", config: makeConfig() });
     expect(result?.kind).toBe("btw");
+  });
+});
+
+describe("grok command surface", () => {
+  let db: BridgeDb;
+
+  beforeEach(() => { db = openDb(":memory:"); });
+  afterEach(() => { db.close(); });
+
+  it("resets a grok session", () => {
+    db.setSession("100", "grok", "sess-grok");
+    const result = handleCommand("grok", "/reset", { db, chatId: "100", config: makeConfig() });
+    expect(result).toEqual({
+      kind: "message",
+      text: "grok session reset. Pending work and conversation history cleared.",
+    });
+    expect(db.getSession("100", "grok")).toBeNull();
+  });
+
+  it("does not expose Codex-only /usage on grok", () => {
+    const result = handleCommand("grok", "/usage", { db, chatId: "100", config: makeConfig() });
+    expect(result?.kind).toBe("message");
+    expect((result as { text: string }).text).toMatch(/codex/i);
   });
 });

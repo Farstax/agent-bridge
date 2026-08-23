@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
 import { getAvailableCliKinds } from "../src/interactiveCliAuth.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
-import { getQualificationFailedProviders } from "../src/providers/qualificationStatus.js";
+import { getQualificationFailedProviders, getQualificationPassedProviders } from "../src/providers/qualificationStatus.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 
 describe("provider qualification routing", () => {
@@ -71,12 +71,64 @@ describe("provider qualification routing", () => {
     expect([...getQualificationFailedProviders(evidencePath, { agy: "1.1.13" })]).toEqual([]);
   });
 
+  it("tracks current passing Grok evidence for health and diagnostics", () => {
+    const root = mkdtempSync(join(tmpdir(), "qualification-routing-grok-pass-"));
+    const evidencePath = join(root, "qualification.json");
+    writeQualificationRecord({
+      provider: "grok",
+      providerVersion: "1.0.5",
+      previousVersion: null,
+      bridgeCommit: "e".repeat(40),
+      contractVersion: PROVIDER_CONTRACT_VERSION,
+      qualifiedAt: "2026-08-23T18:00:00.000Z",
+      environment: "managed-appliance",
+      overall: "degraded",
+      checks: [
+        { name: "version", status: "pass" },
+        { name: "fresh_prompt", status: "not_authenticated" },
+        { name: "session_resume", status: "not_applicable" },
+      ],
+    }, evidencePath);
+
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.5" })]).toEqual([]);
+
+    writeQualificationRecord({
+      provider: "grok",
+      providerVersion: "1.0.5",
+      previousVersion: null,
+      bridgeCommit: "e".repeat(40),
+      contractVersion: PROVIDER_CONTRACT_VERSION,
+      qualifiedAt: "2026-08-23T18:01:00.000Z",
+      environment: "managed-appliance",
+      overall: "pass",
+      checks: [
+        { name: "version", status: "pass" },
+        { name: "fresh_prompt", status: "pass" },
+        { name: "session_resume", status: "pass" },
+      ],
+    }, evidencePath);
+
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.5" })]).toEqual(["grok"]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.6" })]).toEqual([]);
+  });
+
   it("excludes only providers with hard qualification failures from interactive selection", () => {
     const available = getAvailableCliKinds({
       homeDir: "/qualification-test-home",
       exists: () => true,
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy"]),
+    });
+
+    expect([...available]).toEqual(["claude", "grok"]);
+  });
+
+  it("excludes grok from interactive selection when it has a hard qualification failure", () => {
+    const available = getAvailableCliKinds({
+      homeDir: "/qualification-test-home",
+      exists: () => true,
+      commandExists: () => true,
+      failedProviders: new Set(["codex", "agy", "grok"]),
     });
 
     expect([...available]).toEqual(["claude"]);

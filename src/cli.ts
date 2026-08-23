@@ -13,6 +13,7 @@ import { resolveTimeoutsForKind } from "./timeouts.js";
 import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
 import * as claudeRuntime from "./providers/claudeRuntime.js";
+import * as grokRuntime from "./providers/grokRuntime.js";
 import * as antigravityRuntime from "./providers/antigravityRuntime.js";
 import { extractAntigravityRunTelemetry } from "./providers/antigravityTelemetry.js";
 import {
@@ -170,6 +171,11 @@ export function buildCliInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
     });
   }
+  if (bot === "grok") {
+    return grokRuntime.buildInvocation({
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
+    });
+  }
   if (bot === "antigravity") {
     const invocation = antigravityRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion, logFile, homeDir,
@@ -207,16 +213,21 @@ export function parseCliResult({
   bot: string;
   stdout: string;
   logContent?: string | null;
-  outputFormat?: "text" | "json" | "stream-json" | null;
+  outputFormat?: "text" | "json" | "stream-json" | "streaming-json" | null;
 }): CliResult {
   let result: CliResult;
   if (bot === "codex") {
     result = codexRuntime.parseResult(stdout);
   } else if (bot === "claude") {
     result = claudeRuntime.parseResult(stdout);
+  } else if (bot === "grok") {
+    result = grokRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
-    result = antigravityRuntime.parseResult(stdout, logContent, outputFormat);
-    const telemetry = extractAntigravityRunTelemetry(stdout, outputFormat);
+    // Keep null so parseResult can honor ANTIGRAVITY_OUTPUT_MODE. Only Grok's
+    // streaming-json is outside Agy's union and must be coerced.
+    const agyFormat = outputFormat === "streaming-json" ? "text" : outputFormat;
+    result = antigravityRuntime.parseResult(stdout, logContent, agyFormat);
+    const telemetry = extractAntigravityRunTelemetry(stdout, agyFormat);
     if (telemetry) result = { ...result, telemetry };
   } else {
     throw new Error(`Unknown bot type: ${bot}`);
