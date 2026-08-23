@@ -52,7 +52,7 @@ export class ProviderFallbackChain {
       return this.chain[candidate];
     }
     // Preserve the historical return type when every configured provider is
-    // unavailable. The execution boundary still fails closed before Grok can
+    // unavailable. The execution boundary still rejects unavailable Grok before
     // spawn, allowing the normal engine path to deliver the provider error.
     return this.chain[idx];
   }
@@ -67,8 +67,7 @@ export class ProviderFallbackChain {
 
   setActiveCli(chatKey: string, cli: string): void {
     // Discord writes the preference before calling this method. Reject and scrub
-    // unavailable Grok before chain membership is checked because the default
-    // established-provider chain intentionally does not contain Grok.
+    // unavailable Grok before chain membership is checked.
     if (cli === "grok" && !this.isCliAvailable(cli)) {
       this.clearUnavailableGrokPreference(chatKey);
       return;
