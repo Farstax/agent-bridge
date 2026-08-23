@@ -177,6 +177,7 @@ describe("normalized provider run telemetry", () => {
         runId,
         bot: "codex",
         chatId: "100",
+        chatKey: "100",
         command: "codex",
         cwd: "/repo",
         model: null,
@@ -185,6 +186,7 @@ describe("normalized provider run telemetry", () => {
         runId,
         bot: "codex",
         chatId: "100",
+        chatKey: "100",
         text: parsed.text,
         sessionId: parsed.sessionId,
       }));
