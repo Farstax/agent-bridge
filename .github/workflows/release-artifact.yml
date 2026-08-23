@@ -3,7 +3,6 @@ name: Release Artifact
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,22 +10,22 @@ permissions:
 
 concurrency:
   group: release-artifact-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: Build immutable release artifact
+    name: Qualify and build immutable release artifact
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the exact event head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
 
       - name: Verify the exact event head
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
         env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXPECTED_SHA: ${{ github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -38,15 +37,14 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        if: github.event_name != 'pull_request'
         run: npm test
+        env:
+          NODE_OPTIONS: "--max-old-space-size=3072"
 
       - name: Typecheck
-        if: github.event_name != 'pull_request'
         run: npm run typecheck
 
       - name: Architecture lint
-        if: github.event_name != 'pull_request'
         run: bash scripts/arch-lint.sh src
 
       - name: Compile runtime
@@ -62,15 +60,11 @@ jobs:
           set -Eeuo pipefail
           commit="$(git rev-parse HEAD)"
           tree="$(git rev-parse HEAD^{tree})"
-          builder_head="${{ github.event.pull_request.head.sha || github.sha }}"
+          builder_head="${{ github.sha }}"
           database_schema_version="$(node --input-type=module -e 'import("./dist/db/schema.js").then((m) => console.log(m.CURRENT_SCHEMA_VERSION))')"
           root="$RUNNER_TEMP/agent-bridge-release"
           archive="$RUNNER_TEMP/agent-bridge-${commit}.tar.gz"
-          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            checks_json='["compile","manifest"]'
-          else
-            checks_json='["test","typecheck","architecture-lint","compile","manifest"]'
-          fi
+          checks_json='["test","typecheck","architecture-lint","compile","manifest"]'
           mkdir -p "$root"
           cp -a dist src package.json package-lock.json node_modules "$root/"
           mkdir -p "$root/scripts" "$root/bin" "$root/skills"
@@ -113,10 +107,10 @@ jobs:
           ( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" ) | tee "$archive.sha256"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
 
-      - name: Upload non-production release artifact
+      - name: Upload qualified release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agent-bridge-release-${{ github.event.pull_request.head.sha || github.sha }}
+          name: agent-bridge-release-${{ github.sha }}
           if-no-files-found: error
           path: |
             ${{ steps.artifact.outputs.archive }}

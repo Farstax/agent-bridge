@@ -34,12 +34,13 @@ afterEach(() => {
 });
 
 describe("shared skills catalog", () => {
-  it("lists bundled SDLC skills", () => {
+  it("lists the consolidated SDLC skills plus the legacy compatibility alias", () => {
     const names = listLocalCatalog().map((entry) => entry.name);
     expect(names).toContain("requirements-to-acceptance");
-    expect(names).toContain("risk-based-test-strategy");
     expect(names).toContain("red-green-refactor-tdd");
     expect(names).toContain("release-readiness-review");
+    expect(names).toContain("delivery-directives");
+    expect(names).toContain("risk-based-test-strategy");
   });
 
   it("accepts a standards-compatible SKILL.md without skill.json", () => {

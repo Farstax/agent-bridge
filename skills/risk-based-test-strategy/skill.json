@@ -1,5 +1,5 @@
 {
   "name": "risk-based-test-strategy",
-  "version": "1.0.0",
-  "description": "Maps change risk to appropriate unit, integration, contract, end-to-end, manual, and observability checks"
+  "version": "1.1.0",
+  "description": "Deprecated compatibility alias; new work uses the requirements, TDD, and release-readiness skills"
 }
