@@ -233,7 +233,7 @@ describe("release artifact manifest", () => {
   it("uses the exact event head for artifact naming and portable checksum output", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/release-artifact.yml"), "utf8");
 
-    expect(workflow).toContain("name: agent-bridge-release-${{ github.event.pull_request.head.sha || github.sha }}");
+    expect(workflow).toContain("name: agent-bridge-release-${{ github.sha }}");
     expect(workflow).toContain('( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" )');
   });
 
