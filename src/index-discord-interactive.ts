@@ -11,7 +11,7 @@
  *   DISCORD_APPLICATION_ID       — required
  *   DISCORD_GUILD_ID             — optional; instant slash command propagation
  *   DISCORD_ALLOWED_USER_IDS     — comma-separated Discord snowflake user IDs
- *   INTERACTIVE_CLI_CHAIN        — comma-separated fallback order (default: codex,claude,antigravity)
+ *   INTERACTIVE_CLI_CHAIN        — comma-separated fallback order (default: codex,claude,grok,antigravity)
  *   CODEX_COMMAND / CLAUDE_COMMAND / ANTIGRAVITY_COMMAND — CLI binary paths
  *   DB_PATH                      — SQLite for session/lock/CLI-preference state
  *   BRIDGE_EXECUTION_MODE        — "safe" | "trusted"
@@ -102,7 +102,7 @@ const advisorBroker = await startConfiguredAdvisorBroker({ db, bots: config.bots
 
 const cliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
-  { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity"] },
+  { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "grok", "antigravity"] },
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
