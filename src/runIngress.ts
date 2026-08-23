@@ -170,6 +170,7 @@ export async function executeRunIngressRequest(
       runId,
       bot: options.bot ?? "claude",
       chatId: chatKey,
+      chatKey,
       threadId: undefined,
       serviceId: lane.serviceId,
       acquisitionId: lane.acquisitionId,
