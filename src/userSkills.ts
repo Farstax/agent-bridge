@@ -1,56 +1,66 @@
 /**
  * PURPOSE: Project user-authored skills from the canonical shared skill store into native provider skill directories.
- * INPUTS: A user skill name, shared home directory, bundled-skill catalog root, and projection link mode.
- * OUTPUTS: Existing shared skill registration plus native CLI projections managed by the shared skill manager.
+ * INPUTS: A validated user skill name, shared home directory, and bundled-skill catalog root.
+ * OUTPUTS: Existing shared skill registration plus native CLI symlink projections managed by the shared skill manager.
  * NEIGHBORS: src/skills.ts, scripts/skill-manager.ts, skills/manage-skills/SKILL.md
- * LOGIC: Reject bundled-name and unmanaged-native-path collisions, then reuse installSkillGlobal against ~/.agents as the source root.
+ * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, or unmanaged native paths, then reuse installSkillGlobal against ~/.agents.
  */
 
-import { existsSync, lstatSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import {
-  hashDirectory,
-  installSkillGlobal,
-  listLocalCatalog,
-  resolveSkillPaths,
-  type SkillLinkMode,
-} from "./skills.js";
+import { installSkillGlobal, listLocalCatalog, resolveSkillPaths } from "./skills.js";
 
 export interface ProjectUserSkillOptions {
   homeDir?: string;
   repoRoot?: string;
-  linkMode?: SkillLinkMode;
   now?: Date;
 }
 
 export function projectUserSkillGlobal(skillName: string, options: ProjectUserSkillOptions = {}): void {
+  validateUserSkillName(skillName);
   const paths = resolveSkillPaths(options.homeDir);
   const sharedDir = join(paths.agentsSkillsDir, skillName);
-  const linkMode = options.linkMode ?? "symlink";
 
-  if (linkMode !== "symlink" && linkMode !== "copy") throw new Error(`Invalid link mode: ${linkMode}`);
   if (!existsSync(sharedDir)) throw new Error(`User skill is missing from canonical shared storage: ${sharedDir}`);
+  assertLockfileReadable(paths.lockfilePath);
   if (listLocalCatalog(options.repoRoot).some((entry) => entry.name === skillName)) {
     throw new Error(`Refusing to project user skill with bundled skill name: ${skillName}`);
   }
 
   for (const nativeDir of [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir]) {
-    assertNativeProjectionCompatible(join(nativeDir, skillName), sharedDir, linkMode);
+    assertNativeProjectionCompatible(join(nativeDir, skillName), sharedDir);
   }
 
-  // installSkillGlobal already owns validation, lockfile metadata, atomic writes,
-  // and provider-native projection. Point its source root at ~/.agents so the
-  // existing canonical user skill is registered without copying it elsewhere.
+  // installSkillGlobal already owns SKILL.md validation, lockfile metadata,
+  // atomic writes, and provider-native projection. Point its source root at
+  // ~/.agents so the canonical user skill is registered in place. User skills
+  // intentionally use symlinks: copy mode cannot safely distinguish a stale
+  // managed copy from unrelated user-owned native content after an edit.
   installSkillGlobal(skillName, {
     repoRoot: join(paths.homeDir, ".agents"),
     homeDir: paths.homeDir,
     force: true,
-    linkMode,
+    linkMode: "symlink",
     now: options.now,
   });
 }
 
-function assertNativeProjectionCompatible(nativePath: string, sharedDir: string, linkMode: SkillLinkMode): void {
+function validateUserSkillName(skillName: string): void {
+  if (skillName.length < 1 || skillName.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skillName)) {
+    throw new Error(`Invalid user skill name: ${skillName}`);
+  }
+}
+
+function assertLockfileReadable(lockfilePath: string): void {
+  if (!existsSync(lockfilePath)) return;
+  try {
+    JSON.parse(readFileSync(lockfilePath, "utf8"));
+  } catch {
+    throw new Error(`Unable to parse skill lockfile: ${lockfilePath}`);
+  }
+}
+
+function assertNativeProjectionCompatible(nativePath: string, sharedDir: string): void {
   let stat;
   try {
     stat = lstatSync(nativePath);
@@ -58,17 +68,9 @@ function assertNativeProjectionCompatible(nativePath: string, sharedDir: string,
     return;
   }
 
-  if (linkMode === "symlink" && stat.isSymbolicLink()) {
+  if (stat.isSymbolicLink()) {
     try {
       if (resolve(dirname(nativePath), readlinkSync(nativePath)) === resolve(sharedDir)) return;
-    } catch {
-      // Fall through to the collision error below.
-    }
-  }
-
-  if (linkMode === "copy" && stat.isDirectory()) {
-    try {
-      if (hashDirectory(nativePath) === hashDirectory(sharedDir)) return;
     } catch {
       // Fall through to the collision error below.
     }
