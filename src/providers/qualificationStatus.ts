@@ -57,7 +57,25 @@ export function getQualificationFailedProviders(
   }
 }
 
-/** Providers with current, explicit passing evidence for the installed binary. */
+/** Whether one exact installed provider binary has a current explicit pass. */
+export function isProviderQualificationPassed(
+  providerId: ProviderId,
+  evidencePath: string = qualificationEvidencePath(),
+  installedVersion?: string,
+): boolean {
+  try {
+    const evidence = readQualificationEvidence(evidencePath);
+    const record = evidence.providers[providerId];
+    if (record?.overall !== "pass") return false;
+    const version = installedVersion ?? readInstalledProviderVersion(providerId);
+    return Boolean(version && isQualificationCurrent(record, providerId, version));
+  } catch {
+    // Positive gating must fail closed when evidence is unreadable.
+    return false;
+  }
+}
+
+/** Providers with current, explicit passing evidence for supplied/installed binaries. */
 export function getQualificationPassedProviders(
   evidencePath: string = qualificationEvidencePath(),
   installedVersions?: Partial<Record<ProviderId, string>>,
@@ -77,7 +95,6 @@ export function getQualificationPassedProviders(
     }
     return passed;
   } catch {
-    // Positive gating must fail closed when evidence is unreadable.
     return new Set<ProviderId>();
   }
 }
