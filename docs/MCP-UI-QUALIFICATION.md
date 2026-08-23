@@ -82,20 +82,26 @@ MCP configuration should reference environment-variable names, never persist cre
 
 That path is suitable for user-owned API/MCP credentials but is not hidden from the provider/model. A credential that must remain hidden requires a scoped local service (for example a future OpenConnector integration), not encryption followed by plaintext injection into the CLI environment.
 
-## Latest provider evidence
+## Agy and Grok follow-up qualification
 
-The follow-up qualification evidence records these provider-specific results:
+A later read-only spike ran on Agent Bridge `82b8e22d3b4b99c279363efce930ed81fa3e4b1d`. No repository commits were made. Both providers exercised the real production path:
 
-- Agy `1.1.19`: MCP tool use and the Playwright headless UI loop passed.
-- Grok Build `1.0.5`: the MCP/UI qualification passed with
-  `GROK_EXECUTION_MODE=trusted`.
+```text
+buildCliInvocation -> runSupervisedProcess -> parseCliResult
+```
 
-Grok follows the shared per-provider execution-mode policy. Production remains
-safe when no execution mode is configured, and trusted mode adds Grok's native
-`--always-approve` flag. The explicit Grok variable is the normal per-provider
-override, not a separate production-only safety policy. The earlier Agy `1.1.12`
-observation that MCP was unsupported is historical and is superseded by the
-`1.1.19` qualification.
+The follow-up recorded:
+
+| Provider | Native MCP surface | Native config observed | Deterministic MCP call | Playwright UI fix |
+| --- | --- | --- | --- | --- |
+| Agy `1.1.19` | `agy mcp add/remove/list/enable/disable` | `~/.gemini/config/mcp_config.json` | PASS | PASS |
+| Grok Build `1.0.5` | `grok mcp add/remove/list/enable/disable/doctor` | `~/.grok/config.toml` | PASS with trusted execution | PASS with trusted execution |
+
+Agy `1.1.19`: MCP tool use and the Playwright headless UI loop passed. The earlier Agy `1.1.12` observation that MCP was unsupported is historical and is superseded by the `1.1.19` qualification.
+
+Grok Build `1.0.5` initially returned a cancelled tool use under safe execution because its headless one-shot process had no channel for an interactive tool-permission prompt. With trusted execution, both the deterministic MCP call and the Playwright inspect/edit/reload/re-inspect loop passed. Under the current shared execution-mode policy, safe mode remains the default and does not add Grok's native `--always-approve`; trusted mode does. `GROK_EXECUTION_MODE=trusted` remains the normal explicit per-provider override when required. Do not use `NODE_ENV` as an execution-policy bypass. Grok remains opt-in.
+
+The follow-up report did not separately record the MCP server package version, Playwright MCP version, Chromium version, or viewport. Those details are therefore intentionally not inferred here; the earlier Claude/Codex evidence point above remains the exact provenance for Playwright MCP `0.0.79` and viewport `390x844`.
 
 ## Requalification triggers
 
@@ -116,7 +122,7 @@ For Playwright/UI qualification also record browser/version, headless mode, view
 
 ## Residual qualification
 
-The #554 spike did not separately re-prove:
+The #554 work did not separately re-prove:
 
 - MCP availability across resumed provider sessions;
 - cancellation while an MCP tool call is actively running;
