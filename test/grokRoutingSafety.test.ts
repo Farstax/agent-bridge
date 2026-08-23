@@ -80,11 +80,12 @@ describe("Grok fail-closed routing", () => {
     });
   });
 
-  it("fails closed for an unqualified Grok-only configured chain", () => {
+  it("filters an unqualified Grok-only chain from available fallback targets", () => {
     withGrokEnvironment(() => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(["grok"], db);
-      expect(() => chain.getActiveCli("chat:1")).toThrow(/No qualified and authenticated CLI/i);
+      expect(chain.getChain()).toEqual([]);
+      expect(chain.getActiveCli("chat:1")).toBe("grok");
     });
   });
 
