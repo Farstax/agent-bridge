@@ -7,7 +7,6 @@
  */
 
 import type { CliResult } from "../types.js";
-import { appendEffortArgs } from "../effort.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 
@@ -64,10 +63,11 @@ export function buildInvocation({
   const args = ["-p", finalPrompt, "--output-format", "streaming-json"];
   if (sessionId) args.push("--resume", sessionId);
   if (model) args.push("--model", model);
+  if (effort) args.push("--effort", effort);
   if (executionMode === "trusted") args.push("--always-approve");
   return {
     command,
-    args: appendEffortArgs(command, args, effort),
+    args,
     nativeSessionMode: sessionId ? "resume" : "fresh",
   };
 }
@@ -82,6 +82,9 @@ export function parseResult(stdout: string): CliResult {
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    if (sawEnd) {
+      throw new Error("Grok streaming-json contained data after terminal end event");
+    }
     let event: unknown;
     try {
       event = JSON.parse(trimmed);
