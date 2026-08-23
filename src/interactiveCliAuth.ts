@@ -19,7 +19,6 @@ export interface AvailableCliOptions {
   exists?: (path: string) => boolean;
   commandExists?: (command: string) => boolean;
   failedProviders?: ReadonlySet<ProviderId>;
-  qualifiedProviders?: ReadonlySet<ProviderId>;
   env?: Record<string, string | undefined>;
 }
 
@@ -57,13 +56,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   if (exists(paths.claude) && !failedProviders.has("claude")) available.add("claude");
   if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
 
-  const grokRouteable = isGrokRouteable({
-    homeDir: home,
-    exists,
-    env,
-    qualified: options.qualifiedProviders ? options.qualifiedProviders.has("grok") : undefined,
-  });
-  if (grokRouteable && !failedProviders.has("grok")) available.add("grok");
+  if (isGrokRouteable({ homeDir: home, exists, env, failedProviders })) available.add("grok");
 
   void commandExists; // retained for the existing injectable availability seam.
   return available;
