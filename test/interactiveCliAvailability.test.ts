@@ -73,13 +73,27 @@ describe("interactive CLI availability filtering", () => {
     expect(available).toEqual(new Set<CliKind>(["antigravity"]));
   });
 
-  it("detects grok credential files without making grok a default selectable CLI", () => {
+  it("keeps grok unavailable until current qualification passes", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
       homeDir,
       exists: (path) => path === paths.grok[0],
       commandExists: () => false,
+      qualifiedProviders: new Set(),
+    });
+
+    expect(available).toEqual(new Set<CliKind>());
+  });
+
+  it("detects qualified grok credential files without making grok a default selectable CLI", () => {
+    const homeDir = "/home/tester";
+    const paths = resolveInteractiveCliAuthPaths(homeDir);
+    const available = getAvailableCliKinds({
+      homeDir,
+      exists: (path) => path === paths.grok[0],
+      commandExists: () => false,
+      qualifiedProviders: new Set(["grok"]),
     });
 
     expect(paths.grok).toEqual([
@@ -89,5 +103,17 @@ describe("interactive CLI availability filtering", () => {
     expect(available).toEqual(new Set<CliKind>(["grok"]));
     expect(getSelectableCliKinds()).not.toContain("grok");
     expect(getSelectableCliKinds(available)).toEqual(["grok"]);
+  });
+
+  it("accepts XAI_API_KEY as Grok authentication only after qualification passes", () => {
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => false,
+      qualifiedProviders: new Set(["grok"]),
+      env: { XAI_API_KEY: "xai-test" },
+    });
+
+    expect(available).toEqual(new Set<CliKind>(["grok"]));
   });
 });
