@@ -1,10 +1,18 @@
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { EventStore } from "../src/events/store.js";
-import { resolveUpdateChatKey } from "../src/interactiveBot.js";
+import {
+  getUserCliPreference,
+  resolveUpdateChatKey,
+  setUserCliPreference,
+} from "../src/interactiveBot.js";
 import type { MessagingPlatform } from "../src/platform.js";
-import type { TelegramUpdate } from "../src/types.js";
+import type { BridgeConfig, TelegramUpdate } from "../src/types.js";
 
 function fakePlatform(): MessagingPlatform {
   return {
@@ -21,6 +29,24 @@ function fakePlatform(): MessagingPlatform {
   };
 }
 
+function fullConfig(allowedUserIds: ReadonlySet<string>): BridgeConfig {
+  return {
+    allowedUserIds,
+    serviceEnvFile: null,
+    serviceKind: null,
+    pollIntervalMs: 1,
+    executionMode: "safe",
+    busyMessageMode: "augment",
+    asyncEnabled: false,
+    dbPath: ":memory:",
+    bots: {
+      codex: { token: undefined, command: "codex", modelPreference: ["default"] },
+      claude: { token: undefined, command: "claude", modelPreference: ["default"] },
+      antigravity: { token: undefined, command: "agy", modelPreference: ["default"] },
+    },
+  };
+}
+
 function resetUpdate(updateId: number): TelegramUpdate {
   return {
     update_id: updateId,
@@ -33,37 +59,141 @@ function resetUpdate(updateId: number): TelegramUpdate {
   };
 }
 
+function queueModeUpdate(updateId: number): TelegramUpdate {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: `callback-${updateId}`,
+      from: { id: 7, first_name: "User" },
+      data: "queue_mode:queue",
+      message: {
+        message_id: updateId,
+        chat: { id: 1, type: "private" },
+        from: { id: 7, first_name: "User" },
+        text: "queue mode",
+      },
+    },
+  };
+}
+
+function oldDiscordAlias(snowflake: string): string {
+  return String(Number(BigInt(snowflake) % BigInt(Number.MAX_SAFE_INTEGER)));
+}
+
 describe("canonical conversation identity", () => {
-  it("uses the surface-provided key even when two Discord channels share the old numeric alias", async () => {
+  it("keeps colliding Discord Snowflakes isolated across Engine-owned durable state", async () => {
+    const nativeA = "1";
+    const nativeB = String(BigInt(Number.MAX_SAFE_INTEGER) + 1n);
+    expect(oldDiscordAlias(nativeA)).toBe(oldDiscordAlias(nativeB));
+
+    const surface = "discord:interactive";
     const db = openDb(":memory:", { serviceId: "canonical-chat-key-test" });
     try {
-      const nativeA = "1";
-      const nativeB = String(BigInt(Number.MAX_SAFE_INTEGER) + 1n);
       db.setSession(nativeA, "codex", "session-a");
       db.setSession(nativeB, "codex", "session-b");
+      db.addConvTurn(nativeA, "user", "alpha marker", "codex");
+      db.addConvTurn(nativeB, "user", "beta marker", "codex");
+      setUserCliPreference(db, nativeA, "claude");
+      setUserCliPreference(db, nativeB, "antigravity");
 
+      const lockA = db.acquireLock(surface, nativeA);
+      const lockB = db.acquireLock(surface, nativeB);
+      expect(lockA).not.toBeNull();
+      expect(lockB).not.toBeNull();
+      db.unlock(lockA!);
+      db.unlock(lockB!);
+
+      db.enqueueMsg(surface, nativeA, {
+        prompt: "queued-a",
+        chatId: 1,
+        chatType: "private",
+        userId: 7,
+      });
+      db.enqueueMsg(surface, nativeB, {
+        prompt: "queued-b",
+        chatId: 1,
+        chatType: "private",
+        userId: 7,
+      });
+
+      const allowedUserIds = new Set(["7"]);
       const engine = new BridgeEngine({
         kind: "codex",
-        surfaceIdentity: "discord:interactive",
+        surfaceIdentity: surface,
         botConfig: { command: "codex", modelPreference: ["default"] },
-        allowedUserIds: new Set(["7"]),
+        allowedUserIds,
         executionMode: "safe",
+        busyMessageMode: "augment",
         asyncEnabled: false,
         pollIntervalMs: 1,
+        fullConfig: fullConfig(allowedUserIds),
       }, db, fakePlatform());
 
-      await (engine.handleUpdate as any)(resetUpdate(1), nativeB);
+      await engine.handleUpdate(resetUpdate(1), nativeB);
+
       expect(db.getSession(nativeB, "codex")).toBeNull();
       expect(db.getSession(nativeA, "codex")).toBe("session-a");
+      expect(db.searchConvTurns(nativeB, "beta")).toEqual([]);
+      expect(db.searchConvTurns(nativeA, "alpha").some((row) => row.text.includes("alpha marker"))).toBe(true);
+      expect(db.pendingMsgCount(surface, nativeB)).toBe(0);
+      expect(db.pendingMsgCount(surface, nativeA)).toBe(1);
+      expect(getUserCliPreference(db, nativeA)).toBe("claude");
+      expect(getUserCliPreference(db, nativeB)).toBe("antigravity");
 
-      await (engine.handleUpdate as any)(resetUpdate(2), nativeA);
-      expect(db.getSession(nativeA, "codex")).toBeNull();
+      await engine.handleUpdate(queueModeUpdate(2), nativeB);
+      expect(db.getSetting(busyMessageModeSettingKey(surface, nativeB))).toBe("queue");
+      expect(db.getSetting(busyMessageModeSettingKey(surface, nativeA))).toBeNull();
     } finally {
       db.close();
     }
   });
 
-  it("persists and reconciles the authoritative key instead of rebuilding it from delivery fields", async () => {
+  it("recovers a queued Discord conversation from its durable native key after database reopen", async () => {
+    const dbPath = join(tmpdir(), `canonical-chat-key-${process.pid}-${Date.now()}.sqlite`);
+    const surface = "discord:interactive";
+    const nativeKey = "1234567890123456789";
+    try {
+      const first = openDb(dbPath, { serviceId: "canonical-queue-before-restart" });
+      first.enqueueMsg(surface, nativeKey, {
+        prompt: "recover me",
+        chatId: 1,
+        chatType: "private",
+        userId: 7,
+      });
+      first.close();
+
+      const second = openDb(dbPath, { serviceId: "canonical-queue-after-restart" });
+      try {
+        const recovered: Array<{ chatKey: string; chatId: number }> = [];
+        const engine = new BridgeEngine({
+          kind: "codex",
+          surfaceIdentity: surface,
+          botConfig: { command: "codex", modelPreference: ["default"] },
+          allowedUserIds: new Set(["7"]),
+          executionMode: "safe",
+          busyMessageMode: "queue",
+          asyncEnabled: false,
+          pollIntervalMs: 1,
+        }, second, fakePlatform());
+        engine.setQueuedMessageHandler(async (message) => {
+          recovered.push({ chatKey: message.chatKey, chatId: message.chatId });
+          return "committed";
+        });
+
+        expect(await engine.recoverPendingQueue(nativeKey)).toBe(true);
+        expect(recovered).toEqual([{ chatKey: nativeKey, chatId: 1 }]);
+        expect(second.pendingMsgCount(surface, nativeKey)).toBe(0);
+      } finally {
+        second.close();
+      }
+    } finally {
+      rmSync(dbPath, { force: true });
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+    }
+  });
+
+  it("persists and reconciles the authoritative Run key instead of rebuilding delivery coordinates", async () => {
     const db = openDb(":memory:", { serviceId: "canonical-event-key-test" });
     try {
       const nativeKey = "1234567890123456789";
@@ -81,7 +211,7 @@ describe("canonical conversation identity", () => {
         model: null,
         command: "claude",
         cwd: "/tmp",
-      } as any);
+      });
 
       expect(db.getRun("run-native").chat_id).toBe(nativeKey);
 
@@ -100,16 +230,20 @@ describe("canonical conversation identity", () => {
     }
   });
 
-  it("keeps Telegram topic addressing unchanged", () => {
-    expect(resolveUpdateChatKey({
+  it("keeps Telegram private, group, and topic addressing unchanged", () => {
+    const update = (chatId: number, chatType: string, threadId?: number): TelegramUpdate => ({
       update_id: 1,
       message: {
         message_id: 1,
-        chat: { id: -1004366290625, type: "supergroup" },
+        chat: { id: chatId, type: chatType },
         from: { id: 7, first_name: "User" },
-        message_thread_id: 1458,
+        ...(threadId == null ? {} : { message_thread_id: threadId }),
         text: "hello",
       },
-    })).toBe("-1004366290625:1458");
+    });
+
+    expect(resolveUpdateChatKey(update(42, "private"))).toBe("42");
+    expect(resolveUpdateChatKey(update(-1004366290625, "supergroup"))).toBe("-1004366290625");
+    expect(resolveUpdateChatKey(update(-1004366290625, "supergroup", 1458))).toBe("-1004366290625:1458");
   });
 });
