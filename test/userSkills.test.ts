@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveSkillPaths, verifySkillGlobal } from "../src/skills.js";
@@ -46,6 +46,27 @@ describe("user skill projection", () => {
     expect(verifySkillGlobal("my-review", { homeDir: home }).ok).toBe(true);
   });
 
+  it("repairs a missing managed projection by rerunning project-user", () => {
+    const home = makeTempDir("user-skill-home");
+    const repoRoot = makeTempDir("user-skill-repo");
+    const paths = resolveSkillPaths(home);
+    writeSkill(join(paths.agentsSkillsDir, "my-review"), "my-review");
+    projectUserSkillGlobal("my-review", { homeDir: home, repoRoot });
+    rmSync(join(paths.codexSkillsDir, "my-review"), { recursive: true, force: true });
+
+    expect(verifySkillGlobal("my-review", { homeDir: home }).ok).toBe(false);
+    projectUserSkillGlobal("my-review", { homeDir: home, repoRoot });
+
+    expect(readlinkSync(join(paths.codexSkillsDir, "my-review"))).toBe("../../.agents/skills/my-review");
+    expect(verifySkillGlobal("my-review", { homeDir: home }).ok).toBe(true);
+  });
+
+  it("rejects invalid names before resolving shared or native paths", () => {
+    const home = makeTempDir("user-skill-home");
+    const repoRoot = makeTempDir("user-skill-repo");
+    expect(() => projectUserSkillGlobal("../escape", { homeDir: home, repoRoot })).toThrow(/invalid user skill name/i);
+  });
+
   it("rejects a user skill whose name collides with a bundled skill", () => {
     const home = makeTempDir("user-skill-home");
     const repoRoot = makeTempDir("user-skill-repo");
@@ -67,6 +88,19 @@ describe("user skill projection", () => {
 
     expect(() => projectUserSkillGlobal("my-review", { homeDir: home, repoRoot }))
       .toThrow(/not this managed projection/i);
+    expect(existsSync(join(paths.codexSkillsDir, "my-review"))).toBe(false);
+  });
+
+  it("fails closed on a corrupt lockfile instead of resetting other skill records", () => {
+    const home = makeTempDir("user-skill-home");
+    const repoRoot = makeTempDir("user-skill-repo");
+    const paths = resolveSkillPaths(home);
+    writeSkill(join(paths.agentsSkillsDir, "my-review"), "my-review");
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    writeFileSync(paths.lockfilePath, "{broken");
+
+    expect(() => projectUserSkillGlobal("my-review", { homeDir: home, repoRoot })).toThrow(/unable to parse skill lockfile/i);
+    expect(readFileSync(paths.lockfilePath, "utf8")).toBe("{broken");
     expect(existsSync(join(paths.codexSkillsDir, "my-review"))).toBe(false);
   });
 });
