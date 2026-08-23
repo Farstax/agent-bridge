@@ -41,6 +41,11 @@ function normalizeStopReason(value: unknown): string {
     .toLowerCase();
 }
 
+function resolveGrokExecutionMode(fallback: "safe" | "trusted"): "safe" | "trusted" {
+  const configured = process.env.GROK_EXECUTION_MODE?.trim().toLowerCase();
+  return configured === "safe" || configured === "trusted" ? configured : fallback;
+}
+
 export function buildInvocation({
   prompt,
   sessionId,
@@ -64,7 +69,7 @@ export function buildInvocation({
   if (sessionId) args.push("--resume", sessionId);
   if (model) args.push("--model", model);
   if (effort) args.push("--effort", effort);
-  if (executionMode === "trusted") args.push("--always-approve");
+  if (resolveGrokExecutionMode(executionMode) === "trusted") args.push("--always-approve");
   return {
     command,
     args,
