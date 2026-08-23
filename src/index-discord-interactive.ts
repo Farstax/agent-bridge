@@ -22,7 +22,7 @@ import dotenv from "dotenv";
 import { getBridgeProjectDir } from "./bridge.js";
 import { openProductionDb } from "./db.js";
 import { getExecutionProcessState, shutdownCliProcesses } from "./cliSupervisor.js";
-import { loadBotsConfig, resolveBusyMessageMode, validateBusyMessageModeEnv } from "./config.js";
+import { loadBotsConfig, resolveBusyMessageMode, resolveExecutionMode, validateBusyMessageModeEnv } from "./config.js";
 import { DiscordClient, type DiscordUpdate } from "./discord.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
@@ -67,7 +67,7 @@ const allowedUserIds = new Set(
 const engineAllowedUserIds = new Set<string>(allowedUserIds);
 
 const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/discord-interactive.sqlite`;
-const executionMode = (process.env.BRIDGE_EXECUTION_MODE as "safe" | "trusted") || "safe";
+const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
 const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
@@ -154,7 +154,7 @@ const engines = Object.fromEntries(
         surfaceIdentity: "discord:interactive",
         botConfig: { ...config.bots[kind as BotKind], token },
         allowedUserIds: engineAllowedUserIds,
-        executionMode,
+        executionMode: resolveExecutionMode(kind as BotKind, process.env),
         busyMessageMode,
         asyncEnabled,
         pollIntervalMs: 1_000,
