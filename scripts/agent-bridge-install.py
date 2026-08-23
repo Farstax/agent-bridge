@@ -51,19 +51,18 @@ SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ("agent-bridge-codex.service", "agent-bridge-codex", ("TELEGRAM_BOT_TOKEN_CODEX",), "codex"),
     ("agent-bridge-antigravity.service", "agent-bridge-antigravity", ("TELEGRAM_BOT_TOKEN_ANTIGRAVITY", "TELEGRAM_BOT_TOKEN_GEMINI"), "antigravity"),
     ("agent-bridge-claude.service", "agent-bridge-claude", ("TELEGRAM_BOT_TOKEN_CLAUDE",), "claude"),
-    ("agent-bridge-grok.service", "agent-bridge-grok", ("TELEGRAM_BOT_TOKEN_GROK",), "grok"),
     ("agent-bridge-interactive.service", "agent-bridge-interactive", ("TELEGRAM_BOT_TOKEN_INTERACTIVE",), "interactive"),
     ("agent-bridge-health.service", "agent-bridge-health", ("TELEGRAM_BOT_TOKEN_HEALTH",), "health"),
     ("agent-bridge-discord-interactive.service", "agent-bridge-discord-interactive", ("DISCORD_BOT_TOKEN",), "discord-interactive"),
 )
 
 # Provenance roles are intentionally independent of service database paths:
-# single-CLI bridges share the same database shape but retain separate state.
+# the three single-CLI bridges share the same database shape but retain
+# separate persistent state.
 DATABASE_ROLES = {
     "codex": "shared",
     "antigravity": "shared",
     "claude": "shared",
-    "grok": "shared",
     "interactive": "interactive",
     "health": "health",
     "discord-interactive": "discord",
@@ -101,7 +100,7 @@ SHARED_KEYS = (
 SERVICE_KEYS = (
     "TELEGRAM_BOT_TOKEN_CODEX", "TELEGRAM_BOT_TOKEN_ANTIGRAVITY",
     "TELEGRAM_BOT_TOKEN_GEMINI", "TELEGRAM_BOT_TOKEN_CLAUDE",
-    "TELEGRAM_BOT_TOKEN_GROK", "TELEGRAM_BOT_TOKEN_INTERACTIVE",
+    "TELEGRAM_BOT_TOKEN_INTERACTIVE",
     "TELEGRAM_BOT_TOKEN_HEALTH", "DISCORD_BOT_TOKEN", "DISCORD_APPLICATION_ID",
     "DISCORD_GUILD_ID", "DISCORD_ALLOWED_USER_IDS", "GITHUB_USERNAME",
     "GITHUB_TOKEN_FILE",
@@ -409,8 +408,6 @@ def service_values(
     for key in set(SERVICE_KEYS) - other_tokens:
         if env.get(key, "") != "":
             values[key] = env[key]
-    if defaults_path.name == "agent-bridge-grok" and env.get("XAI_API_KEY", "") != "":
-        values["XAI_API_KEY"] = env["XAI_API_KEY"]
     if defaults_path.name == "agent-bridge-health" and env.get("HEALTH_BOT_MODE", "standalone") == "integrated":
         values["TELEGRAM_BOT_TOKEN_INTERACTIVE"] = env["TELEGRAM_BOT_TOKEN_INTERACTIVE"]
     if env.get("HEALTH_BOT_MODE", "standalone") == "integrated" and defaults_path.name in {"agent-bridge-health", "agent-bridge-interactive"}:
