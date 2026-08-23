@@ -1,20 +1,19 @@
-TYPECHECK_STATUS=2
+TYPECHECK_STATUS=0
 
 > agent-bridge@0.1.0 typecheck
 > tsc --noEmit
 
-src/autonomousGoalRuntime.ts(571,9): error TS2741: Property 'chatKey' is missing in type '{ runId: string; bot: BotKind; chatId: string; threadId: undefined; serviceId: string; acquisitionId: string; }' but required in type '{ runId: string; bot: "codex" | "antigravity" | "claude"; chatId: string; chatKey: string; threadId?: string | undefined; serviceId?: string | undefined; acquisitionId?: string | undefined; }'.
-src/health/eventIngress.ts(422,9): error TS2741: Property 'chatKey' is missing in type '{ runId: string; bot: BotKind; chatId: "health:ops"; threadId: undefined; serviceId: string; acquisitionId: string; }' but required in type '{ runId: string; bot: "codex" | "antigravity" | "claude"; chatId: string; chatKey: string; threadId?: string | undefined; serviceId?: string | undefined; acquisitionId?: string | undefined; }'.
 FOCUSED_TEST_STATUS=0
 
 [1m[30m[46m RUN [49m[39m[22m [36mv4.1.9 [39m[90m/home/runner/work/agent-bridge/agent-bridge[39m
 
- [32m✓[39m test/runIngress.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 142[2mms[22m[39m
- [32m✓[39m test/eventStore.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 174[2mms[22m[39m
- [32m✓[39m test/canonicalConversationIdentity.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m test/runIngress.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 160[2mms[22m[39m
+ [32m✓[39m test/eventStore.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 157[2mms[22m[39m
+ [32m✓[39m test/canonicalConversationIdentity.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m test/autonomousGoalRuntime.test.ts [2m([22m[2m36 tests[22m[2m)[22m[33m 1589[2mms[22m[39m
 
-[2m Test Files [22m [1m[32m3 passed[39m[22m[90m (3)[39m
-[2m      Tests [22m [1m[32m21 passed[39m[22m[90m (21)[39m
-[2m   Start at [22m 13:41:26
-[2m   Duration [22m 1.04s[2m (transform 641ms, setup 0ms, import 845ms, tests 344ms, environment 0ms)[22m
+[2m Test Files [22m [1m[32m4 passed[39m[22m[90m (4)[39m
+[2m      Tests [22m [1m[32m57 passed[39m[22m[90m (57)[39m
+[2m   Start at [22m 13:42:26
+[2m   Duration [22m 2.43s[2m (transform 828ms, setup 0ms, import 1.21s, tests 1.94s, environment 1ms)[22m
 
