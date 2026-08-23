@@ -116,7 +116,7 @@ describe("Grok routing safety", () => {
 });
 
 describe("managed Grok execution mode", () => {
-  it("defaults production Grok to safe even when the shared caller requests trusted mode", () => {
+  it("inherits the shared trusted mode in production", () => {
     const previousNodeEnv = process.env.NODE_ENV;
     const previousMode = process.env.GROK_EXECUTION_MODE;
     process.env.NODE_ENV = "production";
@@ -130,7 +130,7 @@ describe("managed Grok execution mode", () => {
         executionMode: "trusted",
         includeResponseContract: false,
       });
-      expect(invocation.args).not.toContain("--always-approve");
+      expect(invocation.args).toContain("--always-approve");
     } finally {
       if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = previousNodeEnv;
@@ -177,10 +177,10 @@ describe("managed Grok execution mode", () => {
     }
   });
 
-  it("ships safe Grok defaults in both managed interactive units", () => {
+  it("does not override the shared execution mode in managed interactive units", () => {
     const telegramUnit = readFileSync(resolve(process.cwd(), "systemd/agent-bridge-interactive.service"), "utf8");
     const discordUnit = readFileSync(resolve(process.cwd(), "systemd/agent-bridge-discord-interactive.service"), "utf8");
-    expect(telegramUnit).toContain("Environment=GROK_EXECUTION_MODE=safe");
-    expect(discordUnit).toContain("Environment=GROK_EXECUTION_MODE=safe");
+    expect(telegramUnit).not.toContain("Environment=GROK_EXECUTION_MODE=");
+    expect(discordUnit).not.toContain("Environment=GROK_EXECUTION_MODE=");
   });
 });
