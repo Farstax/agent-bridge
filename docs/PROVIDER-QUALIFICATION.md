@@ -1,6 +1,6 @@
 # Provider contract qualification
 
-Agent Bridge treats Codex, Claude, and Agy as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
+Agent Bridge treats Codex, Claude, Agy, and opt-in Grok Build as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
 
 ## Contract v1
 
@@ -47,6 +47,7 @@ Run an explicit qualification with:
 npm run qualify:provider -- --provider codex
 npm run qualify:provider -- --provider claude
 npm run qualify:provider -- --provider agy
+npm run qualify:provider -- --provider grok
 ```
 
 `--expected-version <version>` and `--if-needed` are available for managed upgrade paths. Machine-readable JSON is written to stdout. A deterministic contract failure exits non-zero after persisting its evidence; a degraded prerequisite state remains distinguishable in the JSON result.

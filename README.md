@@ -2,7 +2,7 @@
 
 Agent Bridge is an open-source runtime for the coding-agent CLIs you already
 use. It provides durable Telegram and Discord access to Codex, Claude Code,
-and Antigravity/Agy through provider-native sessions and ordinary Runs.
+Antigravity/Agy, and opt-in Grok Build through provider-native sessions and ordinary Runs.
 
 ## Architecture
 
@@ -81,6 +81,8 @@ Schema version 9 removes the obsolete Engineering Worker tables, including
 `work_items`, `work_jobs`, approvals, GitHub links, feature plans, and
 role-assignment rows. The migration accepts populated legacy tables because
 their data is obsolete by design. Active runtime state remains intact.
+
+Schema version 10 adds Grok Build session identity columns. Grok stays out of default fallback until explicitly selected.
 
 Provider-lock convergence does not move or change existing dedicated provider
 databases. Locked units keep the `shared` database role; the switchable
