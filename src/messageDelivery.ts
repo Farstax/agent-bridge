@@ -144,6 +144,7 @@ function validateParity({
         runId: valRunId,
         bot: kind as any,
         chatId: String(chatId),
+        chatKey: String(chatId),
         command: "validation",
         cwd: process.cwd(),
         model: null,
@@ -158,6 +159,7 @@ function validateParity({
           runId: valRunId,
           bot: kind as any,
           chatId: String(chatId),
+          chatKey: String(chatId),
           error: errorText.startsWith("❌ ") ? errorText.slice(2) : errorText,
           category: "cli",
         })
@@ -169,6 +171,7 @@ function validateParity({
           runId: valRunId,
           bot: kind as any,
           chatId: String(chatId),
+          chatKey: String(chatId),
           text: expectedText,
           sessionId: sessionId || null,
         })
