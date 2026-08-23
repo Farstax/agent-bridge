@@ -1,5 +1,0 @@
-{
-  "name": "risk-based-test-strategy",
-  "version": "1.0.0",
-  "description": "Maps change risk to appropriate unit, integration, contract, end-to-end, manual, and observability checks"
-}
