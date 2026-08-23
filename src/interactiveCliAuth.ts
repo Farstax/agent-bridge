@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
-import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
+import { getQualificationFailedProviders, getQualificationPassedProviders } from "./providers/qualificationStatus.js";
 import type { ProviderId } from "./providers/types.js";
 
 export interface InteractiveCliAuthPaths {
@@ -18,6 +18,8 @@ export interface AvailableCliOptions {
   exists?: (path: string) => boolean;
   commandExists?: (command: string) => boolean;
   failedProviders?: ReadonlySet<ProviderId>;
+  qualifiedProviders?: ReadonlySet<ProviderId>;
+  env?: Record<string, string | undefined>;
 }
 
 export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
@@ -49,14 +51,24 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const exists = options.exists ?? existsSync;
   const commandExists = options.commandExists ?? commandExistsOnPath;
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
+  const qualifiedProviders = options.qualifiedProviders ?? getQualificationPassedProviders();
+  const env = options.env ?? process.env;
   const paths = resolveInteractiveCliAuthPaths(home);
   const available = new Set<CliKind>();
 
   if (exists(paths.codex) && !failedProviders.has("codex")) available.add("codex");
   if (exists(paths.claude) && !failedProviders.has("claude")) available.add("claude");
   if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
-  if (paths.grok.some(exists) && !failedProviders.has("grok")) available.add("grok");
 
+  // Grok is deliberately stricter than established providers: registration is
+  // opt-in and routing stays fail-closed until this exact installed binary has
+  // a current passing provider-qualification record.
+  const grokAuthenticated = paths.grok.some(exists) || Boolean(env.XAI_API_KEY?.trim());
+  if (grokAuthenticated && qualifiedProviders.has("grok") && !failedProviders.has("grok")) {
+    available.add("grok");
+  }
+
+  void commandExists; // retained for the existing injectable availability seam.
   return available;
 }
 
