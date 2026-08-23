@@ -2,7 +2,7 @@
 
 Agent Bridge is an open-source runtime for the coding-agent CLIs you already
 use. It provides durable Telegram and Discord access to Codex, Claude Code,
-Antigravity/Agy, and opt-in Grok Build through provider-native sessions and ordinary Runs.
+Antigravity/Agy, and Grok Build through provider-native sessions and ordinary Runs.
 
 ## Architecture
 
@@ -44,15 +44,15 @@ All Telegram conversation services use the same production runtime. The three
 established dedicated provider units set `BRIDGE_PROVIDER_LOCK` and keep their
 existing provider-specific tokens and persistent databases. The interactive
 unit leaves the lock unset so `/cli` switching and configured provider fallback
-remain available. Managed Grok opt-in reuses that interactive unit rather than
-widening the guarded systemd unit inventory.
+remain available. Managed Grok uses that interactive unit rather than widening
+the guarded systemd unit inventory.
 
 | Service | Entry point | Surface |
 |---|---|---|
 | `agent-bridge-codex.service` | `src/index-interactive.ts` | Telegram, locked to Codex |
 | `agent-bridge-antigravity.service` | `src/index-interactive.ts` | Telegram, locked to Antigravity |
 | `agent-bridge-claude.service` | `src/index-interactive.ts` | Telegram, locked to Claude |
-| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable, including qualified opt-in Grok |
+| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable, including Grok |
 | `agent-bridge-health.service` | `src/index-health.ts` | Telegram |
 | `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord |
 
@@ -70,29 +70,27 @@ then run the matching service or `npm start`. The systemd installer and guarded
 rollout helpers are documented in [docs/INITIAL-INSTALL.md](docs/INITIAL-INSTALL.md)
 and [docs/GUARDED-ROLLOUT.md](docs/GUARDED-ROLLOUT.md).
 
-The interactive fallback order is configured with
-`INTERACTIVE_CLI_CHAIN`. The runtime also accepts
-`BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok` for fixed-provider custom
-or dedicated deployments. The shipped managed dedicated units remain Codex,
-Claude, and Antigravity; managed Grok uses `agent-bridge-interactive.service`
-with `INTERACTIVE_CLI_CHAIN=grok`. Explicit `AGENT_BRIDGE_SKILLS` overrides
+The interactive fallback order is configured with `INTERACTIVE_CLI_CHAIN`.
+When unset, the default is `codex,claude,grok,antigravity`. The runtime also
+accepts `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok` for fixed-provider
+custom or dedicated deployments. The shipped managed dedicated units remain
+Codex, Claude, and Antigravity; managed Grok uses
+`agent-bridge-interactive.service`. Explicit `AGENT_BRIDGE_SKILLS` overrides
 keep their existing behaviour.
 
-Grok is deliberately stricter than the established providers. Installing the
-CLI, adding `grok` to a chain, or setting `BRIDGE_PROVIDER_LOCK=grok` does not
-make it routeable by itself. The exact installed Grok binary must first pass:
+Grok participates when it is authenticated, using the runtime user's native
+Grok credentials or `XAI_API_KEY`. Qualification remains available for upgrade,
+health, doctor, and diagnostics. Missing, stale, or degraded qualification
+evidence does not block routing; a current deterministic `overall: fail` record
+for the installed Grok version does. For a managed host, use `GROK_COMMAND` to
+pin the executable path; the installer propagates `GROK_COMMAND`,
+`GROK_MODEL_PREFERENCE`, `GROK_EFFORT`, and `GROK_PROJECT_DIR`.
+
+Run an explicit diagnostic qualification when needed with:
 
 ```bash
 npm run qualify:provider -- --provider grok
 ```
-
-A current `overall: pass` qualification record is required. Missing, stale,
-degraded, failed, or unreadable evidence keeps Grok unavailable. For a managed
-host, configure the existing interactive service and use `GROK_COMMAND` to pin
-the exact executable path; the installer propagates `GROK_COMMAND`,
-`GROK_MODEL_PREFERENCE`, `GROK_EFFORT`, and `GROK_PROJECT_DIR`. Authentication
-may use the runtime user's `~/.grok/auth.json`; `XAI_API_KEY` is also recognized
-when supplied to the runtime environment.
 
 ## Data compatibility
 
@@ -101,7 +99,7 @@ Schema version 9 removes the obsolete Engineering Worker tables, including
 role-assignment rows. The migration accepts populated legacy tables because
 their data is obsolete by design. Active runtime state remains intact.
 
-Schema version 10 adds Grok Build session identity columns. Grok stays out of default fallback until explicitly selected and qualified.
+Schema version 10 adds Grok Build session identity columns.
 
 Provider-lock convergence does not move or change existing dedicated provider
 databases. Locked units keep the `shared` database role; the switchable
@@ -122,16 +120,3 @@ Platform assets. The runtime/platform responsibility boundary is documented in
 
 The licence decision and rationale are recorded in
 [ADR-004](docs/adr/ADR-004-oss-license.md).
-
-## Development
-
-```bash
-npm test
-npm run typecheck
-npm run cleanup:check
-```
-
-See [docs/architecture/overview.md](docs/architecture/overview.md) and
-[docs/README.md](docs/README.md) for the current documentation map. Research
-and archive documents are historical context and do not define runtime
-behaviour.
