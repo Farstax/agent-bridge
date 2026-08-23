@@ -223,7 +223,9 @@ export function parseCliResult({
   } else if (bot === "grok") {
     result = grokRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
-    const agyFormat = outputFormat === "stream-json" || outputFormat === "json" || outputFormat === "text" ? outputFormat : "text";
+    // Keep null so parseResult can honor ANTIGRAVITY_OUTPUT_MODE. Only Grok's
+    // streaming-json is outside Agy's union and must be coerced.
+    const agyFormat = outputFormat === "streaming-json" ? "text" : outputFormat;
     result = antigravityRuntime.parseResult(stdout, logContent, agyFormat);
     const telemetry = extractAntigravityRunTelemetry(stdout, agyFormat);
     if (telemetry) result = { ...result, telemetry };
