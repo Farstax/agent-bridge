@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveSkillPaths, verifySkillGlobal } from "../src/skills.js";
+import { installSkillGlobal, resolveSkillPaths, verifySkillGlobal } from "../src/skills.js";
 import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 const tempDirs: string[] = [];
@@ -44,6 +44,8 @@ describe("user skill management", () => {
     expect(readlinkSync(join(paths.geminiSkillsDir, "my-review"))).toBe("../../../.agents/skills/my-review");
     expect(readlinkSync(join(paths.claudeSkillsDir, "my-review"))).toBe("../../.agents/skills/my-review");
     expect(verifySkillGlobal("my-review", { homeDir: home }).ok).toBe(true);
+    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as { skills: Record<string, { ownership?: string }> };
+    expect(lockfile.skills["my-review"]?.ownership).toBe("user");
   });
 
   it("repairs a missing managed projection by rerunning project-user", () => {
@@ -135,5 +137,27 @@ describe("user skill management", () => {
       expect(readFileSync(paths.lockfilePath, "utf8")).toBe(invalid);
       expect(existsSync(join(paths.codexSkillsDir, "my-review"))).toBe(false);
     }
+  });
+
+  it("refuses a future bundled skill that collides with a user-owned skill", () => {
+    const home = makeTempDir("user-skill-home");
+    const userRepoRoot = makeTempDir("user-skill-repo");
+    const futureRepoRoot = makeTempDir("future-bundled-repo");
+    const paths = resolveSkillPaths(home);
+    const canonical = join(paths.agentsSkillsDir, "my-review");
+    writeSkill(canonical, "my-review");
+    projectUserSkillGlobal("my-review", { homeDir: home, repoRoot: userRepoRoot });
+    const before = readFileSync(join(canonical, "SKILL.md"), "utf8");
+
+    writeSkill(join(futureRepoRoot, "skills", "my-review"), "my-review");
+    writeFileSync(join(futureRepoRoot, "skills", "my-review", "SKILL.md"), `${before}\nBundled replacement.\n`);
+
+    expect(() => installSkillGlobal("my-review", {
+      homeDir: home,
+      repoRoot: futureRepoRoot,
+      force: true,
+      linkMode: "symlink",
+    })).toThrow(/user-owned/i);
+    expect(readFileSync(join(canonical, "SKILL.md"), "utf8")).toBe(before);
   });
 });

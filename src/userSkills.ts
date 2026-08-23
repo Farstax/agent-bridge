@@ -3,7 +3,7 @@
  * INPUTS: A validated user skill name, shared home directory, and bundled-skill catalog root.
  * OUTPUTS: Existing shared skill registration plus native CLI symlink projections managed by the shared skill manager.
  * NEIGHBORS: src/skills.ts, scripts/skill-manager.ts, skills/manage-skills/SKILL.md
- * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, or unmanaged native paths, then reuse the shared skill manager.
+ * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, or unmanaged native paths, then reuse the shared skill manager with explicit user ownership.
  */
 
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
@@ -29,13 +29,14 @@ export function projectUserSkillGlobal(skillName: string, options: ProjectUserSk
     homeDir: paths.homeDir,
     force: true,
     linkMode: "symlink",
+    ownership: "user",
     now: options.now,
   });
 }
 
 export function uninstallUserSkillGlobal(skillName: string, options: ProjectUserSkillOptions = {}): void {
   const paths = preflightUserSkill(skillName, options);
-  uninstallSkillGlobal(skillName, { homeDir: paths.homeDir });
+  uninstallSkillGlobal(skillName, { homeDir: paths.homeDir, expectedOwnership: "user" });
 }
 
 function preflightUserSkill(skillName: string, options: ProjectUserSkillOptions): ReturnType<typeof resolveSkillPaths> {
