@@ -57,6 +57,31 @@ export function getQualificationFailedProviders(
   }
 }
 
+/** Providers with current, explicit passing evidence for the installed binary. */
+export function getQualificationPassedProviders(
+  evidencePath: string = qualificationEvidencePath(),
+  installedVersions?: Partial<Record<ProviderId, string>>,
+): Set<ProviderId> {
+  try {
+    const evidence = readQualificationEvidence(evidencePath);
+    const passed = new Set<ProviderId>();
+    for (const [provider, record] of Object.entries(evidence.providers)) {
+      if (record?.overall !== "pass") continue;
+      const providerId = provider as ProviderId;
+      const installedVersion = installedVersions
+        ? installedVersions[providerId]
+        : readInstalledProviderVersion(providerId);
+      if (installedVersion && isQualificationCurrent(record, providerId, installedVersion)) {
+        passed.add(providerId);
+      }
+    }
+    return passed;
+  } catch {
+    // Positive gating must fail closed when evidence is unreadable.
+    return new Set<ProviderId>();
+  }
+}
+
 export function getInstalledQualificationStatus(
   evidencePath: string = qualificationEvidencePath(),
   installedVersions: Partial<Record<ProviderId, string>> = readInstalledProviderVersions(),
