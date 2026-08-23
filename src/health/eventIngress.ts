@@ -406,6 +406,7 @@ export async function executeHealthOpsRun(
       runId,
       bot,
       chatId: HEALTH_RUN_CHAT_KEY,
+      chatKey: HEALTH_RUN_CHAT_KEY,
       threadId: undefined,
       serviceId: laneHandle.serviceId,
       acquisitionId: laneHandle.acquisitionId,

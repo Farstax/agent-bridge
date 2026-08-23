@@ -568,7 +568,7 @@ export async function runNextAutonomousGoal(
         chatKey: goalChatKey(goalId),
         laneHandle,
         runId,
-        eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },
+        eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), chatKey: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },
         collect: (event) => event.type === "run.completed" ? eventStore.queueCompleted(event) : eventStore.collect(event),
         onProviderExecutionStarted: () => dispositionChannel.reset(),
       };
