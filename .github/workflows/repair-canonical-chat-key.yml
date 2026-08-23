@@ -1,0 +1,48 @@
+name: Repair canonical chat key review finding
+
+on:
+  push:
+    branches:
+      - fix/278-canonical-chat-key
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[canonical-review-repair]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/278-canonical-chat-key
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Carry chatKey through surface-neutral ingress
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/runIngress.ts')
+          text = p.read_text()
+          old = '''      chatId: chatKey,\n      threadId: undefined,'''
+          new = '''      chatId: chatKey,\n      chatKey,\n      threadId: undefined,'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one surface-neutral event context, found {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+          PY
+      - name: Commit review repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/runIngress.ts
+          git commit -m "fix: carry canonical key through run ingress [canonical-review-repair]"
+          git push origin HEAD:fix/278-canonical-chat-key
+      - run: npm ci
+      - name: Focused verification
+        run: |
+          npm run typecheck
+          npx vitest run test/canonicalConversationIdentity.test.ts test/eventStore.test.ts test/runIngress.test.ts
