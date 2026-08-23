@@ -94,9 +94,19 @@ describe("schema version 9 legacy Worker table removal", () => {
       "autonomous_goals",
       "reconciliation_audit",
     ]));
-    expect(db.prepare("SELECT * FROM bridge_state WHERE chat_id = 'chat:retained'").get()).toEqual(retainedBefore.state);
-    expect(db.prepare("SELECT * FROM bridge_runs WHERE run_id = 'run-retained'").get()).toEqual(retainedBefore.run);
-    expect(db.prepare("SELECT * FROM bridge_events WHERE id = 'event-retained'").get()).toEqual(retainedBefore.event);
+    const retainedAfter = {
+      state: db.prepare("SELECT * FROM bridge_state WHERE chat_id = 'chat:retained'").get() as Record<string, unknown>,
+      run: db.prepare("SELECT * FROM bridge_runs WHERE run_id = 'run-retained'").get(),
+      event: db.prepare("SELECT * FROM bridge_events WHERE id = 'event-retained'").get(),
+    };
+    expect(retainedAfter.state).toMatchObject(retainedBefore.state as Record<string, unknown>);
+    expect(retainedAfter.state).toMatchObject({
+      grok_session_id: null,
+      grok_session_created_at: null,
+      grok_consecutive_failures: 0,
+    });
+    expect(retainedAfter.run).toEqual(retainedBefore.run);
+    expect(retainedAfter.event).toEqual(retainedBefore.event);
     expect(db.pragma("foreign_key_check")).toEqual([]);
 
     const placeholders = LEGACY_WORKER_TABLES.map(() => "?").join(",");
@@ -109,16 +119,16 @@ describe("schema version 9 legacy Worker table removal", () => {
     db.close();
   });
 
-  it("builds a clean schema and treats version 9 as idempotent", () => {
+  it("builds a clean schema and treats the current version as idempotent", () => {
     const db = new Database(":memory:");
     applyMigrations(db);
-    expect(db.pragma("user_version", { simple: true })).toBe(9);
+    expect(db.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
     for (const table of LEGACY_WORKER_TABLES) {
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeUndefined();
     }
     const before = tableNames(db);
     applyMigrations(db);
-    expect(db.pragma("user_version", { simple: true })).toBe(9);
+    expect(db.pragma("user_version", { simple: true })).toBe(CURRENT_SCHEMA_VERSION);
     expect(tableNames(db)).toEqual(before);
     expect(db.pragma("foreign_key_check")).toEqual([]);
     db.close();
