@@ -6,6 +6,7 @@ import { openDb, type BridgeDb } from "../src/db.js";
 import { compactConversation } from "../src/compactConversation.js";
 import { handleCommand } from "../src/commands.js";
 import { renderAgentBridgeContext } from "../src/contextCommand.js";
+import { legacyMemoryCompactionEnabled } from "../src/legacyMemoryCompaction.js";
 import { extractProjectMemorySidecars, storeProjectMemoryCandidate } from "../src/projectMemory.js";
 import type { BridgeConfig } from "../src/types.js";
 
@@ -54,7 +55,14 @@ describe("turn-history continuity canary (issue #477)", () => {
     rmSync(dbPath, { force: true });
   });
 
-  it("keeps legacy summary-first context as the default rollback behavior", () => {
+  it("defaults legacy memory and compaction off unless explicitly enabled", () => {
+    expect(legacyMemoryCompactionEnabled({})).toBe(false);
+    expect(legacyMemoryCompactionEnabled({ [FLAG]: "false" })).toBe(false);
+    expect(legacyMemoryCompactionEnabled({ [FLAG]: "true" })).toBe(true);
+  });
+
+  it("keeps legacy summary-first context available for explicit rollback", () => {
+    process.env[FLAG] = "true";
     db.addConvTurn("chat:1", "user", "covered raw turn", "claude");
     db.addConvSummary("chat:1", 1, 1, "LEGACY SUMMARY");
     db.addConvTurn("chat:1", "assistant", "recent raw turn", "claude");
@@ -66,8 +74,7 @@ describe("turn-history continuity canary (issue #477)", () => {
     expect(context).toContain("recent raw turn");
   });
 
-  it("uses bounded exact conversation turns and ignores stored summaries when disabled", () => {
-    process.env[FLAG] = "false";
+  it("uses bounded exact conversation turns and ignores stored summaries by default", () => {
     db.addConvTurn("chat:1", "user", "covered raw turn must survive", "claude");
     db.addConvSummary("chat:1", 1, 1, "GENERATED SUMMARY MUST NOT APPEAR");
     for (let i = 0; i < 5; i++) {

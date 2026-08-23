@@ -106,9 +106,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("turn-history canary production handoff boundaries", () => {
+describe("turn-history default production handoff boundaries", () => {
   it("manual switch starts fresh with exact retained turns, excludes the stored summary, then resumes without reseeding", async () => {
-    process.env[FLAG] = "false";
     const dbPath = join(tmpdir(), `legacy-manual-boundary-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
     const client = makeMockClient();
@@ -149,7 +148,6 @@ describe("turn-history canary production handoff boundaries", () => {
   });
 
   it("capacity fallback skips compaction entirely, gives the fresh successor exact turns, and does not reseed its resumed session", async () => {
-    process.env[FLAG] = "false";
     const dbPath = join(tmpdir(), `legacy-fallback-boundary-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
     const client = makeMockClient();
