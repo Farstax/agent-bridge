@@ -54,7 +54,12 @@ function validateUserSkillName(skillName: string): void {
 function assertLockfileReadable(lockfilePath: string): void {
   if (!existsSync(lockfilePath)) return;
   try {
-    JSON.parse(readFileSync(lockfilePath, "utf8"));
+    const parsed = JSON.parse(readFileSync(lockfilePath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid lockfile root");
+    const skills = (parsed as { skills?: unknown }).skills;
+    if (skills !== undefined && (!skills || typeof skills !== "object" || Array.isArray(skills))) {
+      throw new Error("invalid skills map");
+    }
   } catch {
     throw new Error(`Unable to parse skill lockfile: ${lockfilePath}`);
   }
