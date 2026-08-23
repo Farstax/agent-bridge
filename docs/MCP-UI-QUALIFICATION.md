@@ -87,13 +87,12 @@ That path is suitable for user-owned API/MCP credentials but is not hidden from 
 The follow-up qualification evidence records these provider-specific results:
 
 - Agy `1.1.19`: MCP tool use and the Playwright headless UI loop passed.
-- Grok Build `1.0.5`: the MCP/UI qualification passed only with
-  `GROK_EXECUTION_MODE=trusted`.
+- Grok Build `1.0.5`: the MCP/UI qualification passed with trusted execution.
 
-Grok remains opt-in. Production safe mode remains fail-closed and does not
-inherit trusted execution or add `--always-approve`. The earlier Agy `1.1.12`
-observation that MCP was unsupported is historical and is superseded by the
-`1.1.19` qualification.
+Grok follows the shared per-provider execution-mode policy. Production remains
+safe when no execution mode is configured, and trusted mode adds Grok's native
+`--always-approve` flag. The earlier Agy `1.1.12` observation that MCP was
+unsupported is historical and is superseded by the `1.1.19` qualification.
 
 ## Requalification triggers
 

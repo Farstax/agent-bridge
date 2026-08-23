@@ -41,15 +41,6 @@ function normalizeStopReason(value: unknown): string {
     .toLowerCase();
 }
 
-function resolveGrokExecutionMode(fallback: "safe" | "trusted"): "safe" | "trusted" {
-  const configured = process.env.GROK_EXECUTION_MODE?.trim().toLowerCase();
-  if (configured === "safe" || configured === "trusted") return configured;
-  // Grok is opt-in. A managed/production host must not inherit a broad trusted
-  // bridge default and silently turn that into --always-approve.
-  if (process.env.NODE_ENV === "production") return "safe";
-  return fallback;
-}
-
 export function buildInvocation({
   prompt,
   sessionId,
@@ -73,7 +64,7 @@ export function buildInvocation({
   if (sessionId) args.push("--resume", sessionId);
   if (model) args.push("--model", model);
   if (effort) args.push("--effort", effort);
-  if (resolveGrokExecutionMode(executionMode) === "trusted") args.push("--always-approve");
+  if (executionMode === "trusted") args.push("--always-approve");
   return {
     command,
     args,

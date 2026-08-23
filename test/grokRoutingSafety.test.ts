@@ -140,41 +140,27 @@ describe("managed Grok execution mode", () => {
   });
 
   it("lets the Grok-specific safe mode suppress a shared trusted request", () => {
-    const previous = process.env.GROK_EXECUTION_MODE;
-    process.env.GROK_EXECUTION_MODE = "safe";
-    try {
-      const invocation = buildCliInvocation({
-        bot: "grok",
-        prompt: "test",
-        sessionId: null,
-        command: "grok",
-        executionMode: "trusted",
-        includeResponseContract: false,
-      });
-      expect(invocation.args).not.toContain("--always-approve");
-    } finally {
-      if (previous === undefined) delete process.env.GROK_EXECUTION_MODE;
-      else process.env.GROK_EXECUTION_MODE = previous;
-    }
+    const invocation = buildCliInvocation({
+      bot: "grok",
+      prompt: "test",
+      sessionId: null,
+      command: "grok",
+      executionMode: "safe",
+      includeResponseContract: false,
+    });
+    expect(invocation.args).not.toContain("--always-approve");
   });
 
-  it("keeps explicit Grok trusted mode available for custom deployments", () => {
-    const previous = process.env.GROK_EXECUTION_MODE;
-    process.env.GROK_EXECUTION_MODE = "trusted";
-    try {
-      const invocation = buildCliInvocation({
-        bot: "grok",
-        prompt: "test",
-        sessionId: null,
-        command: "grok",
-        executionMode: "safe",
-        includeResponseContract: false,
-      });
-      expect(invocation.args).toContain("--always-approve");
-    } finally {
-      if (previous === undefined) delete process.env.GROK_EXECUTION_MODE;
-      else process.env.GROK_EXECUTION_MODE = previous;
-    }
+  it("allows explicit Grok trusted mode", () => {
+    const invocation = buildCliInvocation({
+      bot: "grok",
+      prompt: "test",
+      sessionId: null,
+      command: "grok",
+      executionMode: "trusted",
+      includeResponseContract: false,
+    });
+    expect(invocation.args).toContain("--always-approve");
   });
 
   it("does not override the shared execution mode in managed interactive units", () => {
