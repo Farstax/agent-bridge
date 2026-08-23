@@ -53,7 +53,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     defaultArgs: ["-p", "--output-format", "streaming-json"],
     capabilities: {
       interactive: true,
-      fallbackTarget: false,
+      fallbackTarget: true,
       toolFree: false,
     },
   },
