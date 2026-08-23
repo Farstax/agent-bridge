@@ -7,7 +7,7 @@ import {
   verifySkillGlobal,
   type SkillLinkMode,
 } from "../src/skills.js";
-import { projectUserSkillGlobal } from "../src/userSkills.js";
+import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 function usage(): never {
   console.error([
@@ -16,6 +16,7 @@ function usage(): never {
     "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy]",
     "  npx tsx scripts/skill-manager.ts project-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
+    "  npx tsx scripts/skill-manager.ts uninstall-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
   ].join("\n"));
   process.exit(1);
@@ -72,6 +73,13 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log("Skill verification passed");
+    return;
+  }
+
+  if (command === "uninstall-user") {
+    if (!maybeSkillName) usage();
+    uninstallUserSkillGlobal(maybeSkillName);
+    console.log(`Uninstalled user skill ${maybeSkillName}`);
     return;
   }
 
