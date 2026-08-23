@@ -268,9 +268,7 @@ function isAntigravityExecution(options: CliOptions): boolean {
 }
 
 function eventChatKey(options: CliOptions): string | undefined {
-  const context = options.eventContext;
-  if (!context) return undefined;
-  return context.threadId ? `${context.chatId}:${context.threadId}` : context.chatId;
+  return options.eventContext?.chatKey;
 }
 
 async function runConfiguredCli(

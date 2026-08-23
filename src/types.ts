@@ -134,7 +134,7 @@ export interface CliOptions {
   advisorChild?: boolean;
   bot?: "codex" | "antigravity" | "claude";
   /** Context for BridgeEvent emission. When provided, runCliAsync emits lifecycle events. */
-  eventContext?: { runId: string; bot: "codex" | "antigravity" | "claude"; chatId: string; threadId?: string; serviceId?: string; acquisitionId?: string };
+  eventContext?: { runId: string; bot: "codex" | "antigravity" | "claude"; chatId: string; chatKey: string; threadId?: string; serviceId?: string; acquisitionId?: string };
   /** Called with each emitted BridgeEvent. Requires eventContext to be set. */
   onEvent?: (event: import("./events/types.js").BridgeEvent) => void;
   /** Optional provider-supplied failure watch; supervisor only owns lifecycle/settlement. */

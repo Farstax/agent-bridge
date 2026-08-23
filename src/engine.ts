@@ -185,6 +185,12 @@ function topicChatKey(chatId: number, chatType: string, threadId?: number): stri
   return threadId != null ? `${chatId}:${threadId}` : String(chatId);
 }
 
+function telegramUpdateChatKey(update: TelegramUpdate): string | null {
+  const source = update.message ?? update.callback_query?.message;
+  if (!source?.chat) return null;
+  return topicChatKey(source.chat.id, source.chat.type ?? "private", source.message_thread_id);
+}
+
 function hookContext(chatId: number, chatKey: string, threadId?: number | string): HookContext {
   const numericThreadId = typeof threadId === "string" ? Number(threadId) : threadId;
   return {
@@ -246,6 +252,7 @@ export class BridgeEngine {
   private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly laneCoordinator: ExecutionLaneCoordinator;
   private readonly seenTelegramMessageKeys = new Set<string>();
+  private readonly messageChatKeys = new WeakMap<TelegramMessage, string>();
 
   constructor(
     opts: BridgeEngineOptions,
@@ -269,7 +276,7 @@ export class BridgeEngine {
     this.mediaBuffer = new MediaGroupBuffer({
       timeoutMs: 1500,
       onFlush: (_groupId, messages) => {
-        return this.handleMessages(messages).catch((err) => {
+        return this.handleMessages(messages, this.messageChatKeys.get(messages[0])).catch((err) => {
           console.error(`[${this.kind}] mediaBuffer flush error`, err);
         });
       },
@@ -312,7 +319,9 @@ export class BridgeEngine {
           if (isAgentKind(this.kind)) {
             this.db.setLastUpdateId(this.kind, updateId);
           }
-          this.handleUpdate(update).catch((error) => {
+          const chatKey = telegramUpdateChatKey(update);
+          if (!chatKey) continue;
+          this.handleUpdate(update, chatKey).catch((error) => {
             console.error(`[${this.kind}] update handling failed`, error);
           });
         }
@@ -354,9 +363,11 @@ export class BridgeEngine {
     return true;
   }
 
-  async handleUpdate(update: TelegramUpdate): Promise<void> {
+  async handleUpdate(update: TelegramUpdate, providedChatKey?: string): Promise<void> {
+    const chatKey = providedChatKey ?? telegramUpdateChatKey(update);
+    if (!chatKey) return;
     if (update.callback_query) {
-      await this.handleCallback(update.callback_query);
+      await this.handleCallback(update.callback_query, chatKey);
       return;
     }
 
@@ -369,7 +380,6 @@ export class BridgeEngine {
     if (rawText === "/stop" || rawText === "/cancel") {
       const chatId = message.chat.id;
       const threadId = message.message_thread_id;
-      const chatKey = topicChatKey(chatId, message.chat.type, threadId);
       // Stop admission establishes its abort fence before this handler makes
       // any asynchronous call. Cleanup retains the execution lane until all
       // writable work is gone, but must not delay the user-visible stop.
@@ -380,6 +390,7 @@ export class BridgeEngine {
       return;
     }
 
+    this.messageChatKeys.set(message, chatKey);
     await this.mediaBuffer.push(message);
   }
 
@@ -406,7 +417,7 @@ export class BridgeEngine {
     return true;
   }
 
-  async handleMessages(messages: TelegramMessage[]): Promise<void> {
+  async handleMessages(messages: TelegramMessage[], providedChatKey?: string): Promise<void> {
     const primaryMessage = messages.find((m) => m.text || m.caption) || messages[0];
 
     // Auth check — defence-in-depth; handleUpdate also checks before buffering
@@ -424,7 +435,7 @@ export class BridgeEngine {
 
     const chatId = primaryMessage.chat.id;
     const userId = primaryMessage.from?.id;
-    const chatKey = topicChatKey(chatId, primaryMessage.chat.type, threadId);
+    const chatKey = providedChatKey ?? this.messageChatKeys.get(primaryMessage) ?? topicChatKey(chatId, primaryMessage.chat.type, threadId);
     const executionLane = this._executionLane(chatKey);
     if (!this.laneCoordinator.isResetting(executionLane) && !this.laneCoordinator.hasCancellation(executionLane)) {
       this.laneCoordinator.clearAborted(executionLane);
@@ -777,7 +788,7 @@ export class BridgeEngine {
     lockHeartbeat?.unref();
 
     try {
-      const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, threadId, laneHandle);
+      const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
       const result = await this._executeAndDeliverTurn({
         mode, prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
@@ -902,7 +913,7 @@ export class BridgeEngine {
     }
   }
 
-  private _createEventContext(chatId: number, threadId: number | undefined, laneHandle: ExecutionLaneHandle, existingRunId?: string): {
+  private _createEventContext(chatId: number, chatKey: string, threadId: number | undefined, laneHandle: ExecutionLaneHandle, existingRunId?: string): {
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (e: BridgeEvent) => void;
@@ -914,6 +925,7 @@ export class BridgeEngine {
       runId,
       bot: (isAgentKind(this.kind) ? this.kind : "claude") as BotKind,
       chatId: String(chatId),
+      chatKey,
       threadId: threadId != null ? String(threadId) : undefined,
       serviceId: laneHandle.serviceId,
       acquisitionId: laneHandle.acquisitionId,
@@ -1643,6 +1655,7 @@ ${contextPrompt}` : contextPrompt);
           timestamp: new Date().toISOString(),
           bot: eventContext.bot,
           chatId: eventContext.chatId,
+          chatKey: eventContext.chatKey,
           threadId: eventContext.threadId,
           sessionId: stagedResult.sessionId ?? null,
           text: stagedResult.text,
@@ -1773,6 +1786,7 @@ ${contextPrompt}` : contextPrompt);
           timestamp: new Date().toISOString(),
           bot: eventContext.bot,
           chatId: eventContext.chatId,
+          chatKey: eventContext.chatKey,
           threadId: eventContext.threadId,
           sessionId: stagedResult.sessionId ?? null,
           text: stagedResult.text,
@@ -1984,7 +1998,7 @@ ${contextPrompt}` : contextPrompt);
     }
   }
 
-  async handleCallback(callbackQuery: TelegramCallbackQuery): Promise<void> {
+  async handleCallback(callbackQuery: TelegramCallbackQuery, providedChatKey?: string): Promise<void> {
     const fromId = callbackQuery?.from?.id;
     if (!this.opts.allowedUserIds.has(String(fromId))) return;
     if (!isAgentKind(this.kind) || !this.opts.fullConfig) return;
@@ -1998,7 +2012,7 @@ ${contextPrompt}` : contextPrompt);
       const chatType = callbackQuery.message?.chat?.type ?? "private";
       const threadId = callbackQuery.message?.message_thread_id;
       if (!chatId || !messageId || !["augment", "interrupt", "queue", "reset"].includes(value)) return;
-      const chatKey = topicChatKey(chatId, chatType, threadId);
+      const chatKey = providedChatKey ?? topicChatKey(chatId, chatType, threadId);
       this.db.setSetting(busyMessageModeSettingKey(this.surfaceIdentity, chatKey), value === "reset" ? null : value);
       const effective = this._busyMessageMode(chatKey);
       await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id, text: `Busy-message mode: ${effective}` });

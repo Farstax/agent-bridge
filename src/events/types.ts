@@ -10,6 +10,7 @@ export interface BridgeEventBase {
   timestamp: string;
   bot: BotKind;
   chatId: string;
+  chatKey: string;
   threadId?: string;
   sessionId?: string | null;
 }
@@ -52,7 +53,7 @@ export type BridgeEvent =
   | RunFailedEvent
   | RunCancelledEvent;
 
-function base(fields: { runId: string; bot: BotKind; chatId: string; threadId?: string }): BridgeEventBase {
+function base(fields: { runId: string; bot: BotKind; chatId: string; chatKey: string; threadId?: string }): BridgeEventBase {
   return {
     version: 1,
     id: randomUUID(),
@@ -66,6 +67,7 @@ export const type = {
     runId: string;
     bot: BotKind;
     chatId: string;
+    chatKey: string;
     command: string;
     cwd: string;
     model: string | null;
@@ -78,6 +80,7 @@ export const type = {
     runId: string;
     bot: BotKind;
     chatId: string;
+    chatKey: string;
     text: string;
     source: "stdout" | "stderr" | "parsed";
     threadId?: string;
@@ -89,6 +92,7 @@ export const type = {
     runId: string;
     bot: BotKind;
     chatId: string;
+    chatKey: string;
     text: string;
     sessionId: string | null;
     telemetry?: RunTelemetry;
@@ -107,6 +111,7 @@ export const type = {
     runId: string;
     bot: BotKind;
     chatId: string;
+    chatKey: string;
     error: string;
     category?: RunFailedEvent["category"];
     threadId?: string;
@@ -118,6 +123,7 @@ export const type = {
     runId: string;
     bot: BotKind;
     chatId: string;
+    chatKey: string;
     reason: "user" | "shutdown" | "timeout";
     threadId?: string;
   }): RunCancelledEvent {
