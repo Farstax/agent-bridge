@@ -1,13 +1,14 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isProviderQualificationPassed } from "./qualificationStatus.js";
+import { getQualificationFailedProviders } from "./qualificationStatus.js";
+import type { ProviderId } from "./types.js";
 
 export interface GrokAvailabilityOptions {
   homeDir?: string;
   exists?: (path: string) => boolean;
   env?: Record<string, string | undefined>;
-  qualified?: boolean;
+  failedProviders?: ReadonlySet<ProviderId>;
 }
 
 export function resolveGrokAuthPaths(homeDir: string = homedir()): string[] {
@@ -25,10 +26,12 @@ export function isGrokAuthenticated(options: GrokAvailabilityOptions = {}): bool
 }
 
 /**
- * Grok is opt-in and fail-closed: credentials are necessary but the exact
- * installed binary must also have current passing provider-qualification evidence.
+ * Grok is routeable when authenticated unless current qualification evidence
+ * proves a deterministic failure. Missing/stale/degraded evidence is diagnostic,
+ * not a routing prerequisite.
  */
 export function isGrokRouteable(options: GrokAvailabilityOptions = {}): boolean {
   if (!isGrokAuthenticated(options)) return false;
-  return options.qualified ?? isProviderQualificationPassed("grok");
+  const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
+  return !failedProviders.has("grok");
 }
