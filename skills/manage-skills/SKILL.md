@@ -11,7 +11,7 @@ Use Agent Bridge's existing shared-skill projection. Do not create another skill
 
 - Bundled Agent Bridge Skills live in the active release's `skills/` directory and are managed by the release.
 - User-authored Skills live canonically at `~/.agents/skills/<skill-name>/SKILL.md` (`SHARED_MEMORY_HOME` takes precedence over `HOME` when configured).
-- Native provider projections are managed by Agent Bridge:
+- User Skills project as symlinks into native provider directories so the canonical Skill remains authoritative:
   - Codex: `~/.codex/skills/<skill-name>`
   - Claude: `~/.claude/skills/<skill-name>`
   - Antigravity/Agy: `~/.gemini/antigravity-cli/skills/<skill-name>`
@@ -45,17 +45,13 @@ npm run skills -- project-user <name>
 npm run skills -- verify <name>
 ```
 
-## Update
+## Update or repair
 
-Edit only the canonical `~/.agents/skills/<name>` content, then run `project-user` again so the lock hash and native projections are refreshed. Finish with `verify`.
+Edit only the canonical `~/.agents/skills/<name>` content, then run `project-user` again so the lock hash and native symlinks are refreshed. Finish with `verify`.
 
-If a native projection is missing or stale, use:
+If a managed native projection is missing, rerunning `project-user` repairs it. If a native path exists but is no longer the expected symlink to the canonical Skill, `project-user` fails closed instead of overwriting it; inspect that collision before changing or deleting anything.
 
-```bash
-npm run skills -- verify <name> --fix
-```
-
-Do not use `--fix` to overwrite an unrelated manually managed native Skill path. `project-user` fails closed on that collision.
+Do not use `verify --fix` for user-authored Skills: the generic bundled-skill repair path can replace a conflicting native entry. `project-user` is the fail-closed repair path for user Skills.
 
 ## Remove
 
