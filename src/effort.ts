@@ -57,7 +57,7 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): stri
   const support =
     kind === "codex" ? "Codex maps effort to model_reasoning_effort." :
     kind === "claude" ? "Claude maps effort to --effort." :
-    kind === "grok" ? "Grok effort is recorded for parity; the headless streaming-json contract does not take an effort flag." :
+    kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
     "Agy effort is unsupported by the CLI; this setting is recorded for parity only. Use Agy model labels for low/high variants.";
 
   return [
