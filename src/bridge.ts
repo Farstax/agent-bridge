@@ -26,12 +26,13 @@ export function getBridgeProjectDir(): string {
   return process.env.BRIDGE_PROJECT_DIR || process.cwd();
 }
 
-export function getCliWorkingDir(bot?: "codex" | "antigravity" | "claude"): string {
+export function getCliWorkingDir(bot?: "codex" | "antigravity" | "claude" | "grok"): string {
   if (bot === "codex" && process.env.CODEX_PROJECT_DIR) return process.env.CODEX_PROJECT_DIR;
   if (bot === "antigravity" && (process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR)) {
     return process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR!;
   }
   if (bot === "claude" && process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR;
+  if (bot === "grok" && process.env.GROK_PROJECT_DIR) return process.env.GROK_PROJECT_DIR;
   return process.env.BRIDGE_PROJECT_DIR || process.env.BRIDGE_ROOT_DIR || process.cwd();
 }
 
@@ -64,7 +65,7 @@ export function buildModelKeyboard(kind: string, modelPreference: string[], curr
 }
 
 export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; config: BridgeConfig }): string {
-  const bot = config.bots[kind as "codex" | "antigravity" | "claude"];
+  const bot = config.bots[kind as "codex" | "antigravity" | "claude" | "grok"];
   const current = db.getSetting(kind) || bot.modelPreference[0] || "default";
   const available = bot.modelPreference.length > 0 ? bot.modelPreference.join(", ") : "none configured";
   return `[${kind} model settings]\n\nCurrent: ${current}\nAvailable: ${available}\n\nSelect a model below:`;
