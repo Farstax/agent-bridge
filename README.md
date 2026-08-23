@@ -40,18 +40,19 @@ the installed Skills.
 
 ## Services
 
-All Telegram conversation services use the same production runtime. Dedicated
-provider units set `BRIDGE_PROVIDER_LOCK` and keep provider-specific tokens and
-persistent databases. The interactive unit leaves the lock unset so `/cli`
-switching and configured provider fallback remain available.
+All Telegram conversation services use the same production runtime. The three
+established dedicated provider units set `BRIDGE_PROVIDER_LOCK` and keep their
+existing provider-specific tokens and persistent databases. The interactive
+unit leaves the lock unset so `/cli` switching and configured provider fallback
+remain available. Managed Grok opt-in reuses that interactive unit rather than
+widening the guarded systemd unit inventory.
 
 | Service | Entry point | Surface |
 |---|---|---|
 | `agent-bridge-codex.service` | `src/index-interactive.ts` | Telegram, locked to Codex |
 | `agent-bridge-antigravity.service` | `src/index-interactive.ts` | Telegram, locked to Antigravity |
 | `agent-bridge-claude.service` | `src/index-interactive.ts` | Telegram, locked to Claude |
-| `agent-bridge-grok.service` | `src/index-interactive.ts` | Telegram, locked to qualified opt-in Grok Build |
-| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable |
+| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable, including qualified opt-in Grok |
 | `agent-bridge-health.service` | `src/index-health.ts` | Telegram |
 | `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord |
 
@@ -70,10 +71,12 @@ rollout helpers are documented in [docs/INITIAL-INSTALL.md](docs/INITIAL-INSTALL
 and [docs/GUARDED-ROLLOUT.md](docs/GUARDED-ROLLOUT.md).
 
 The interactive fallback order is configured with
-`INTERACTIVE_CLI_CHAIN`. `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok`
-turns the same Telegram runtime into a fixed-provider instance; the shipped
-dedicated systemd units set this automatically. Explicit `AGENT_BRIDGE_SKILLS`
-overrides keep their existing behaviour.
+`INTERACTIVE_CLI_CHAIN`. The runtime also accepts
+`BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok` for fixed-provider custom
+or dedicated deployments. The shipped managed dedicated units remain Codex,
+Claude, and Antigravity; managed Grok uses `agent-bridge-interactive.service`
+with `INTERACTIVE_CLI_CHAIN=grok`. Explicit `AGENT_BRIDGE_SKILLS` overrides
+keep their existing behaviour.
 
 Grok is deliberately stricter than the established providers. Installing the
 CLI, adding `grok` to a chain, or setting `BRIDGE_PROVIDER_LOCK=grok` does not
@@ -84,11 +87,12 @@ npm run qualify:provider -- --provider grok
 ```
 
 A current `overall: pass` qualification record is required. Missing, stale,
-degraded, failed, or unreadable evidence keeps Grok unavailable. The managed
-Grok unit is only selected by the installer when `TELEGRAM_BOT_TOKEN_GROK` is
-configured; `GROK_COMMAND` can pin the exact executable path. Authentication
-may use the runtime user's `~/.grok/auth.json` or, for the dedicated Grok unit,
-`XAI_API_KEY`.
+degraded, failed, or unreadable evidence keeps Grok unavailable. For a managed
+host, configure the existing interactive service and use `GROK_COMMAND` to pin
+the exact executable path; the installer propagates `GROK_COMMAND`,
+`GROK_MODEL_PREFERENCE`, `GROK_EFFORT`, and `GROK_PROJECT_DIR`. Authentication
+may use the runtime user's `~/.grok/auth.json`; `XAI_API_KEY` is also recognized
+when supplied to the runtime environment.
 
 ## Data compatibility
 
