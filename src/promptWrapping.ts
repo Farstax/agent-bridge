@@ -30,7 +30,7 @@ export function prependHandoffModel(prompt: string, model: string | null): strin
   return [
     "[Agent Bridge handoff]",
     ...(model ? [`Active model: ${model}`] : []),
-    "Continue naturally. When prior conversation context is supplied, recover the user goal, what was done / evidence, current state, pending / next steps, and key context / constraints from any exact recent turns; use the provided scoped history search when older turns are needed.",
+    "Continue naturally. When prior conversation context is supplied, recover the user goal, what was done / evidence, current state, pending / next steps, and key context / constraints from any exact recent turns. Use scoped older-history search when available and needed.",
     "",
     prompt,
   ].join("\n");
