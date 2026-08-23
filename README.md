@@ -120,3 +120,16 @@ Platform assets. The runtime/platform responsibility boundary is documented in
 
 The licence decision and rationale are recorded in
 [ADR-004](docs/adr/ADR-004-oss-license.md).
+
+## Development
+
+```bash
+npm test
+npm run typecheck
+npm run cleanup:check
+```
+
+See [docs/architecture/overview.md](docs/architecture/overview.md) and
+[docs/README.md](docs/README.md) for the current documentation map. Research
+and archive documents are historical context and do not define runtime
+behaviour.
