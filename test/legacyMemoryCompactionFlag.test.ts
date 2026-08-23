@@ -118,6 +118,30 @@ describe("turn-history continuity canary (issue #477)", () => {
     },
   );
 
+  it("suppresses every legacy compaction trigger and memory writes when the flag is unset", async () => {
+    db.addConvTurn("chat:1", "user", "raw turn with default-off flag", "claude");
+
+    for (const trigger of ["manual", "preseed", "capacity_fallback"] as const) {
+      const runCli = vi.fn().mockResolvedValue("unused");
+      const result = await compactConversation("chat:1", compactDeps(db, trigger, runCli));
+      expect(result.outcome).toBe("failed");
+      expect(result.error).toMatch(/disabled/i);
+      expect(runCli).not.toHaveBeenCalled();
+    }
+
+    const extracted = extractProjectMemorySidecars([
+      "Visible answer.",
+      '<!-- agent-bridge-memory {"type":"decision","scope":"project","text":"Default-off memory must not be persisted."} -->',
+    ].join("\n"));
+    const stored = storeProjectMemoryCandidate(db, extracted.candidates[0], { chatKey: "chat:1", cliKind: "claude" });
+
+    expect(stored.status).toBe("rejected");
+    expect(stored).toEqual(expect.objectContaining({ reason: expect.stringMatching(/disabled/i) }));
+    expect(db.getLatestConvSummary("chat:1")).toBeNull();
+    expect(db.getLatestCompactionAttempt("chat:1")).toBeNull();
+    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM project_memories").get() as { n: number }).n).toBe(0);
+  });
+
   it("does not persist hidden assistant memory sidecars when disabled", () => {
     process.env[FLAG] = "false";
     db.addConvTurn("chat:1", "user", "source turn", "claude");
