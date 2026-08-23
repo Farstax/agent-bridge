@@ -15,6 +15,7 @@ describe("CI qualification ownership policy", () => {
 
     expect(ci).toContain("pull_request:");
     expect(ci).toContain("ready_for_review");
+    expect(ci).toContain("converted_to_draft");
     expect(ci).toContain("github.event.pull_request.draft == false");
     expect(ci).toContain("group: ci-${{ github.event.pull_request.number || github.run_id }}");
     expect(ci).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
@@ -68,6 +69,7 @@ describe("CI qualification ownership policy", () => {
     expect(packageJson.scripts?.["test:resources"]).toContain("--detect-async-leaks");
     expect(stress).toContain("pull_request:");
     expect(stress).toContain("ready_for_review");
+    expect(stress).toContain("converted_to_draft");
     expect(stress).toContain("github.event.pull_request.draft == false");
     expect(stress).toContain("vitest.config.ts");
     expect(stress).toContain(".github/workflows/ci.yml");
