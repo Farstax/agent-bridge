@@ -17,7 +17,7 @@ export interface ProjectUserSkillOptions {
 }
 
 export function projectUserSkillGlobal(skillName: string, options: ProjectUserSkillOptions = {}): void {
-  const { paths, sharedDir } = preflightUserSkill(skillName, options, true);
+  const paths = preflightUserSkill(skillName, options);
 
   // installSkillGlobal already owns SKILL.md validation, lockfile metadata,
   // atomic writes, and provider-native projection. Point its source root at
@@ -31,29 +31,19 @@ export function projectUserSkillGlobal(skillName: string, options: ProjectUserSk
     linkMode: "symlink",
     now: options.now,
   });
-
-  // Keep the local variable used in the preflight explicit for reviewability:
-  // the native links projected above point back to this canonical directory.
-  void sharedDir;
 }
 
 export function uninstallUserSkillGlobal(skillName: string, options: ProjectUserSkillOptions = {}): void {
-  const { paths } = preflightUserSkill(skillName, options, true);
+  const paths = preflightUserSkill(skillName, options);
   uninstallSkillGlobal(skillName, { homeDir: paths.homeDir });
 }
 
-function preflightUserSkill(
-  skillName: string,
-  options: ProjectUserSkillOptions,
-  requireSharedDir: boolean,
-): { paths: ReturnType<typeof resolveSkillPaths>; sharedDir: string } {
+function preflightUserSkill(skillName: string, options: ProjectUserSkillOptions): ReturnType<typeof resolveSkillPaths> {
   validateUserSkillName(skillName);
   const paths = resolveSkillPaths(options.homeDir);
   const sharedDir = join(paths.agentsSkillsDir, skillName);
 
-  if (requireSharedDir && !existsSync(sharedDir)) {
-    throw new Error(`User skill is missing from canonical shared storage: ${sharedDir}`);
-  }
+  if (!existsSync(sharedDir)) throw new Error(`User skill is missing from canonical shared storage: ${sharedDir}`);
   assertLockfileReadable(paths.lockfilePath);
   if (listLocalCatalog(options.repoRoot).some((entry) => entry.name === skillName)) {
     throw new Error(`Refusing user-skill operation with bundled skill name: ${skillName}`);
@@ -63,7 +53,7 @@ function preflightUserSkill(
     assertNativeProjectionCompatible(join(nativeDir, skillName), sharedDir);
   }
 
-  return { paths, sharedDir };
+  return paths;
 }
 
 function validateUserSkillName(skillName: string): void {
