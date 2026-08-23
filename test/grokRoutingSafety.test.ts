@@ -107,6 +107,29 @@ describe("Grok fail-closed routing", () => {
 });
 
 describe("managed Grok execution mode", () => {
+  it("defaults production Grok to safe even when the shared caller requests trusted mode", () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousMode = process.env.GROK_EXECUTION_MODE;
+    process.env.NODE_ENV = "production";
+    delete process.env.GROK_EXECUTION_MODE;
+    try {
+      const invocation = buildCliInvocation({
+        bot: "grok",
+        prompt: "test",
+        sessionId: null,
+        command: "grok",
+        executionMode: "trusted",
+        includeResponseContract: false,
+      });
+      expect(invocation.args).not.toContain("--always-approve");
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousMode === undefined) delete process.env.GROK_EXECUTION_MODE;
+      else process.env.GROK_EXECUTION_MODE = previousMode;
+    }
+  });
+
   it("lets the Grok-specific safe mode suppress a shared trusted request", () => {
     const previous = process.env.GROK_EXECUTION_MODE;
     process.env.GROK_EXECUTION_MODE = "safe";
