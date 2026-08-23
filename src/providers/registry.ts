@@ -45,6 +45,18 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     },
     processWatch: createPlannerStallWatch,
   },
+  grok: {
+    id: "grok",
+    displayName: "Grok Build",
+    executable: "grok",
+    versionArgs: ["--version"],
+    defaultArgs: ["-p", "--output-format", "streaming-json"],
+    capabilities: {
+      interactive: true,
+      fallbackTarget: false,
+      toolFree: false,
+    },
+  },
 };
 
 /**
@@ -59,6 +71,7 @@ const BOT_NAME_TO_PROVIDER_ID: Record<string, ProviderId> = {
   claude: "claude",
   agy: "agy",
   antigravity: "agy",
+  grok: "grok",
 };
 
 export function supportsToolFreeMode(bot: string): boolean {
