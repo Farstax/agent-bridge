@@ -7,13 +7,16 @@ import {
   verifySkillGlobal,
   type SkillLinkMode,
 } from "../src/skills.js";
+import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 function usage(): never {
   console.error([
     "Usage:",
     "  npx tsx scripts/skill-manager.ts list",
     "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts project-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
+    "  npx tsx scripts/skill-manager.ts uninstall-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
   ].join("\n"));
   process.exit(1);
@@ -53,6 +56,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "project-user") {
+    if (!maybeSkillName) usage();
+    projectUserSkillGlobal(maybeSkillName);
+    console.log(`Projected user skill ${maybeSkillName} (symlink)`);
+    return;
+  }
+
   if (command === "verify") {
     const skillName = maybeSkillName?.startsWith("--") ? undefined : maybeSkillName;
     const args = skillName ? rest : [maybeSkillName, ...rest].filter((arg): arg is string => Boolean(arg));
@@ -63,6 +73,13 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log("Skill verification passed");
+    return;
+  }
+
+  if (command === "uninstall-user") {
+    if (!maybeSkillName) usage();
+    uninstallUserSkillGlobal(maybeSkillName);
+    console.log(`Uninstalled user skill ${maybeSkillName}`);
     return;
   }
 
