@@ -28,7 +28,7 @@ describe("EventStore", () => {
     const store = new EventStore(db);
     const { type } = await import("../src/events/types.js");
 
-    const startedEvt = type.runStarted({ runId: "r-1", bot: "claude", chatId: "100", command: "claude", cwd: "/", model: null });
+    const startedEvt = type.runStarted({ runId: "r-1", bot: "claude", chatId: "100", chatKey: "100", command: "claude", cwd: "/", model: null });
     store.collect(startedEvt);
 
     const run = db.getRun("r-1");
@@ -50,6 +50,7 @@ describe("EventStore", () => {
       runId: "r-topic-start",
       bot: "claude",
       chatId: "-1004366290625",
+      chatKey: "-1004366290625:1458",
       threadId: "1458",
       command: "claude",
       cwd: "/",
@@ -68,6 +69,7 @@ describe("EventStore", () => {
       runId: "r-topic-terminal",
       bot: "claude",
       chatId: "-1004366290625",
+      chatKey: "-1004366290625:3",
       threadId: "3",
       error: "interrupted",
       category: "cli",
@@ -81,8 +83,8 @@ describe("EventStore", () => {
     const store = new EventStore(db);
     const { type } = await import("../src/events/types.js");
 
-    const startEvt = type.runStarted({ runId: "r-2", bot: "claude", chatId: "100", command: "claude", cwd: "/", model: null });
-    const failEvt = type.runFailed({ runId: "r-2", bot: "claude", chatId: "100", error: "timeout", category: "timeout" });
+    const startEvt = type.runStarted({ runId: "r-2", bot: "claude", chatId: "100", chatKey: "100", command: "claude", cwd: "/", model: null });
+    const failEvt = type.runFailed({ runId: "r-2", bot: "claude", chatId: "100", chatKey: "100", error: "timeout", category: "timeout" });
     store.collect(startEvt);
     store.collect(failEvt);
 
@@ -96,8 +98,8 @@ describe("EventStore", () => {
     const store = new EventStore(db);
     const { type } = await import("../src/events/types.js");
 
-    store.collect(type.runStarted({ runId: "r-3", bot: "claude", chatId: "100", command: "claude", cwd: "/", model: null }));
-    store.collect(type.runCancelled({ runId: "r-3", bot: "claude", chatId: "100", reason: "user" }));
+    store.collect(type.runStarted({ runId: "r-3", bot: "claude", chatId: "100", chatKey: "100", command: "claude", cwd: "/", model: null }));
+    store.collect(type.runCancelled({ runId: "r-3", bot: "claude", chatId: "100", chatKey: "100", reason: "user" }));
 
     expect(db.getRun("r-3").status).toBe("cancelled");
   });
@@ -107,8 +109,8 @@ describe("EventStore", () => {
     const store = new EventStore(db);
     const { type } = await import("../src/events/types.js");
 
-    store.collect(type.runStarted({ runId: "r-4", bot: "claude", chatId: "100", command: "claude", cwd: "/", model: null }));
-    store.queueCompleted(type.runCompleted({ runId: "r-4", bot: "claude", chatId: "100", text: "done", sessionId: "s-1" }));
+    store.collect(type.runStarted({ runId: "r-4", bot: "claude", chatId: "100", chatKey: "100", command: "claude", cwd: "/", model: null }));
+    store.queueCompleted(type.runCompleted({ runId: "r-4", bot: "claude", chatId: "100", chatKey: "100", text: "done", sessionId: "s-1" }));
     store.finalize();
 
     const run = db.getRun("r-4");
@@ -129,7 +131,7 @@ describe("EventStore", () => {
     const store = new EventStore(db);
     const { type } = await import("../src/events/types.js");
 
-    const e = type.runStarted({ runId: "r-5", bot: "claude", chatId: "100", command: "claude", cwd: "/", model: null });
+    const e = type.runStarted({ runId: "r-5", bot: "claude", chatId: "100", chatKey: "100", command: "claude", cwd: "/", model: null });
     store.collect(e);
     store.collect(e); // second call — run already inserted
 
@@ -143,7 +145,7 @@ describe("EventStore", () => {
     // Close DB so all writes fail
     db.close();
     const store = new EventStore(db);
-    const e = type.runStarted({ runId: "r-6", bot: "claude", chatId: "100", command: "claude", cwd: "/", model: null });
+    const e = type.runStarted({ runId: "r-6", bot: "claude", chatId: "100", chatKey: "100", command: "claude", cwd: "/", model: null });
 
     expect(() => store.collect(e)).not.toThrow();
 

@@ -2,10 +2,6 @@ import type { BridgeDb } from "../db.js";
 import { finalizeRunTelemetry } from "../runTelemetry.js";
 import type { BridgeEvent } from "./types.js";
 
-function runChatKey(event: { chatId: string; threadId?: string }): string {
-  return event.threadId ? `${event.chatId}:${event.threadId}` : event.chatId;
-}
-
 /**
  * Persists BridgeEvents to the database.
  * Extracted from BridgeEngine._createEventContext() so the persistence logic
@@ -65,7 +61,7 @@ export class EventStore {
 
   private _persistRunStart(e: Extract<BridgeEvent, { type: "run.started" }>): void {
     if (this.runInserted) return;
-    this.db.insertRun(e.runId, runChatKey(e), e.bot);
+    this.db.insertRun(e.runId, e.chatKey, e.bot);
     this.db.insertEvent(e.runId, ++this.seq, e.type, e.timestamp, e);
     this.runInserted = true;
   }
@@ -75,7 +71,7 @@ export class EventStore {
   ): void {
     if (this.terminalPersisted) return;
     if (!this.runInserted) {
-      this.db.insertRun(e.runId, runChatKey(e), e.bot);
+      this.db.insertRun(e.runId, e.chatKey, e.bot);
       this.runInserted = true;
     }
     this.db.insertEvent(e.runId, ++this.seq, e.type, e.timestamp, e);

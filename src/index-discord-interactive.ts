@@ -27,7 +27,6 @@ import { DiscordClient, type DiscordUpdate } from "./discord.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
-import type { MessagingPlatform } from "./platform.js";
 import {
   getUserCliPreference,
   setUserCliPreference,
@@ -44,7 +43,6 @@ import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./f
 import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
-import { discordLaneKey } from "./discordLaneKey.js";
 import { resolveDiscordStartInteraction } from "./discordStart.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 
@@ -67,9 +65,6 @@ const allowedUserIds = new Set(
     .split(",").map((s) => s.trim()).filter(Boolean),
 );
 const engineAllowedUserIds = new Set<string>(allowedUserIds);
-for (const id of allowedUserIds) {
-  engineAllowedUserIds.add(String(numericId(id)));
-}
 
 const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/discord-interactive.sqlite`;
 const executionMode = (process.env.BRIDGE_EXECUTION_MODE as "safe" | "trusted") || "safe";
@@ -112,66 +107,6 @@ const cliChain = parseCliChain(
 const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();
-const snowflakeAliases = new Map<string, string>();
-
-class DiscordEngineClient implements MessagingPlatform {
-  constructor(
-    private readonly inner: DiscordClient,
-    private readonly aliases: Map<string, string>,
-  ) {}
-
-  getUpdates(): Promise<any> {
-    throw new Error("Discord gateway is push-based; getUpdates is not supported");
-  }
-
-  sendMessage(body: any): Promise<any> {
-    return this.inner.sendMessage(this.rewriteBody(body));
-  }
-
-  editMessageText(body: any): Promise<any> {
-    return this.inner.editMessageText(this.rewriteBody(body));
-  }
-
-  sendChatAction(body: any): Promise<any> {
-    return this.inner.sendChatAction(this.rewriteBody(body));
-  }
-
-  answerCallbackQuery(body: any): Promise<any> {
-    return this.inner.answerCallbackQuery(body);
-  }
-
-  setMyCommands(body: any): Promise<any> {
-    return this.inner.setMyCommands(body);
-  }
-
-  sendDocument(chatId: number, filePath: string, caption?: string, options?: unknown): Promise<void> {
-    return this.inner.sendDocument(this.resolveSnowflake(chatId), filePath, caption);
-  }
-
-  sendPhoto(chatId: number, filePath: string, caption?: string, options?: unknown): Promise<void> {
-    return this.inner.sendPhoto(this.resolveSnowflake(chatId), filePath, caption);
-  }
-
-  getFilePath(fileId: string): Promise<string> {
-    return this.inner.getFilePath(fileId);
-  }
-
-  downloadFile(filePath: string, destPath: string): Promise<void> {
-    return this.inner.downloadFile(filePath, destPath);
-  }
-
-  private rewriteBody(body: any): any {
-    const chatId = body?.chat_id ?? body?.channel_id;
-    if (chatId == null) return body;
-    const snowflake = this.resolveSnowflake(chatId);
-    return { ...body, chat_id: snowflake, channel_id: snowflake };
-  }
-
-  private resolveSnowflake(id: number | string): string {
-    return this.aliases.get(String(id)) ?? String(id);
-  }
-}
-
 // ── DiscordClient ─────────────────────────────────────────────────────────────
 
 let reconciliationReady: Promise<void> = new Promise(() => {});
@@ -206,7 +141,6 @@ const client = new DiscordClient({
   },
   onError: (err) => console.error("[discord-interactive] gateway error", err),
 });
-const engineClient = new DiscordEngineClient(client, snowflakeAliases);
 
 // ── Engines ───────────────────────────────────────────────────────────────────
 
@@ -235,16 +169,19 @@ const engines = Object.fromEntries(
         },
       },
       db,
-      engineClient,
+      client,
     ),
   ]),
 ) as Record<CliKind, BridgeEngine>;
 
 for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
-    return dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
+    // pending_messages keeps legacy numeric delivery columns; the durable chatKey
+    // is authoritative, so restart recovery restores the native Discord destination.
+    const deliveryQueued = { ...queued, chatId: queued.chatKey as unknown as number };
+    return dispatchClaimedInteractiveWithFallback(deliveryQueued, deliveryQueued.chatKey, {
       engines, fallbackChain, exhaustedChats, db,
-      notify: async (msg) => { await engineClient.sendMessage({ chat_id: queued.chatId, text: msg }); },
+      notify: async (msg) => { await client.sendMessage({ chat_id: deliveryQueued.chatKey, text: msg }); },
       onCliSwitched: async (newCli) => setUserCliPreference(db, queued.chatKey, newCli),
       compactBeforeSwitch: (request) => runCapacityFallbackCompaction(request, {
         db, runCli, bots: config.bots, configuredChain: compactionProviderChain, compactProfile: "companion",
@@ -374,8 +311,8 @@ async function handleMessage(d: any): Promise<void> {
   const channelId = String(d.channel_id ?? "");
   const chatKey = channelId; // Discord: channel IS the conversation unit
 
-  const chatId = rememberSnowflakeAlias(channelId);
-  const userId = rememberSnowflakeAlias(authorId);
+  const chatId = channelId as unknown as number;
+  const userId = authorId as unknown as number;
 
   const update: TelegramUpdate = {
     update_id: numericId(d.id ?? "0"),
@@ -423,7 +360,7 @@ async function handleInteraction(d: any): Promise<void> {
     if (customId.startsWith("queue_mode:")) {
       const value = customId.slice("queue_mode:".length);
       if (!["augment", "interrupt", "queue", "reset"].includes(value)) return;
-      const laneKey = discordLaneKey(channelId);
+      const laneKey = channelId;
       db.setSetting(busyMessageModeSettingKey("discord:interactive", laneKey), value === "reset" ? null : value);
       const effective = resolveLaneBusyMessageMode(db, "discord:interactive", laneKey, busyMessageMode);
       await client.answerCallbackQuery({ interaction_id: d.id, interaction_token: d.token, type: 7,
@@ -457,7 +394,7 @@ async function handleInteraction(d: any): Promise<void> {
     const channelId = String(d.channel_id ?? "");
 
     if (commandName === "queue_mode") {
-      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", discordLaneKey(channelId), busyMessageMode);
+      const effective = resolveLaneBusyMessageMode(db, "discord:interactive", channelId, busyMessageMode);
       await client.answerCallbackQuery({ interaction_id: d.id, interaction_token: d.token, type: 4,
         data: { content: queueModeText(effective), components: buildQueueModeComponents(effective) } });
       return;
@@ -487,8 +424,8 @@ async function handleInteraction(d: any): Promise<void> {
     }
 
     if (commandName === "start") {
-      const chatId = rememberSnowflakeAlias(channelId);
-      const numUserId = rememberSnowflakeAlias(userId);
+      const chatId = channelId as unknown as number;
+      const numUserId = userId as unknown as number;
       const resolution = resolveDiscordStartInteraction(d, {
         chatId,
         userId: numUserId,
@@ -509,7 +446,7 @@ async function handleInteraction(d: any): Promise<void> {
         interaction_token: d.token,
         type: 5,
       }).catch((err) => console.warn("[discord-interactive] /start ACK failed", err));
-      await engines[getUserCliPreference(db, channelId)].handleUpdate(resolution.update);
+      await engines[getUserCliPreference(db, channelId)].handleUpdate(resolution.update, channelId);
       return;
     }
 
@@ -522,8 +459,8 @@ async function handleInteraction(d: any): Promise<void> {
     }).catch((err) => console.warn("[discord-interactive] slash ACK failed", err));
 
     const promptText = d.data?.options?.[0]?.value as string | undefined ?? commandName;
-    const chatId = rememberSnowflakeAlias(channelId);
-    const numUserId = rememberSnowflakeAlias(userId);
+    const chatId = channelId as unknown as number;
+    const numUserId = userId as unknown as number;
     const chatKey = channelId;
 
     const update: TelegramUpdate = {
@@ -537,7 +474,7 @@ async function handleInteraction(d: any): Promise<void> {
     };
 
     if (commandName === "reset") clearInteractiveFallbackState(fallbackChain, chatKey);
-    await engines[getUserCliPreference(db, chatKey)].handleUpdate(update);
+    await engines[getUserCliPreference(db, chatKey)].handleUpdate(update, chatKey);
   }
 }
 
@@ -562,12 +499,9 @@ await new Promise(() => {}); // keep process alive — gateway drives everything
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function rememberSnowflakeAlias(snowflake: string): number {
-  const alias = numericId(snowflake);
-  snowflakeAliases.set(String(alias), snowflake);
-  return alias;
-}
-
 function numericId(snowflake: string): number {
-  return Number(discordLaneKey(snowflake));
+  // Discord update/message IDs only satisfy the Telegram-shaped adapter type.
+  // They are never used as conversation identity or durable routing keys.
+  const value = BigInt(snowflake || "0");
+  return Number(value % BigInt(Number.MAX_SAFE_INTEGER));
 }
