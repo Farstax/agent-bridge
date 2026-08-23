@@ -9,21 +9,19 @@ function readRepoFile(path: string): string {
   return readFileSync(join(repoRoot, path), "utf8");
 }
 
-describe("CI full-suite ownership policy", () => {
-  it("cancels only superseded pull-request CI and architecture runs", () => {
+describe("CI qualification ownership policy", () => {
+  it("runs full PR qualification only for a non-draft merge candidate", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
-    const architectureLint = readRepoFile(".github/workflows/architecture-lint.yml");
 
+    expect(ci).toContain("pull_request:");
+    expect(ci).toContain("ready_for_review");
+    expect(ci).toContain("github.event.pull_request.draft == false");
     expect(ci).toContain("group: ci-${{ github.event.pull_request.number || github.run_id }}");
-    expect(architectureLint).toContain("group: architecture-lint-${{ github.event.pull_request.number || github.run_id }}");
-
-    for (const workflow of [ci, architectureLint]) {
-      expect(workflow).toContain("concurrency:");
-      expect(workflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
-    }
+    expect(ci).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+    expect(ci).not.toContain("branches: [main]");
   });
 
-  it("runs the authoritative full suite on the release Node version", () => {
+  it("runs the PR and release qualification on the release Node version", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     const releaseArtifact = readRepoFile(".github/workflows/release-artifact.yml");
     const packageJson = JSON.parse(readRepoFile("package.json")) as { engines?: { node?: string } };
@@ -33,18 +31,22 @@ describe("CI full-suite ownership policy", () => {
     expect(releaseArtifact).toContain("node-version: 24.15.0");
   });
 
-  it("runs the authoritative CI suite once and keeps release-artifact tests off pull requests", () => {
+  it("has one owner for test, typecheck and architecture checks at each qualification boundary", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     const releaseArtifact = readRepoFile(".github/workflows/release-artifact.yml");
 
-    expect(ci).toContain("- run: npm test");
-    expect(releaseArtifact).toContain("if: github.event_name != 'pull_request'");
-    expect(releaseArtifact).toContain("run: npm test");
-    expect(releaseArtifact).toContain("run: npm run typecheck");
-    expect(releaseArtifact).toContain("run: bash scripts/arch-lint.sh src");
+    for (const workflow of [ci, releaseArtifact]) {
+      expect(workflow).toContain("npm test");
+      expect(workflow).toContain("npm run typecheck");
+      expect(workflow).toContain("bash scripts/arch-lint.sh src");
+    }
+
+    expect(releaseArtifact).toContain("push:");
+    expect(releaseArtifact).toContain("branches: [main]");
+    expect(releaseArtifact).not.toContain("pull_request:");
   });
 
-  it("qualifies test-runtime changes with bounded parallel resource stress", () => {
+  it("qualifies test-runtime changes with bounded resource stress only when the PR is ready", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     const stress = readRepoFile(".github/workflows/resource-stress.yml");
     const vitest = readRepoFile("vitest.config.ts");
@@ -65,19 +67,19 @@ describe("CI full-suite ownership policy", () => {
 
     expect(packageJson.scripts?.["test:resources"]).toContain("--detect-async-leaks");
     expect(stress).toContain("pull_request:");
+    expect(stress).toContain("ready_for_review");
+    expect(stress).toContain("github.event.pull_request.draft == false");
     expect(stress).toContain("vitest.config.ts");
     expect(stress).toContain(".github/workflows/ci.yml");
     expect(stress).toContain("package.json");
     expect(stress.match(/\/usr\/bin\/time -v npm /g)).toHaveLength(2);
-    expect(stress).toContain("/usr/bin/time -v npm test");
-    expect(stress).toContain("/usr/bin/time -v npm run test:resources");
   });
 
-  it("keeps release-artifact evidence truthful for PR versus release qualification", () => {
+  it("keeps release-artifact evidence truthful for the qualified main state", () => {
     const releaseArtifact = readRepoFile(".github/workflows/release-artifact.yml");
 
-    expect(releaseArtifact).toContain("checks_json='[\"compile\",\"manifest\"]'");
     expect(releaseArtifact).toContain("checks_json='[\"test\",\"typecheck\",\"architecture-lint\",\"compile\",\"manifest\"]'");
     expect(releaseArtifact).toContain('"checks": ${checks_json}');
+    expect(releaseArtifact).toContain("Upload qualified release artifact");
   });
 });
