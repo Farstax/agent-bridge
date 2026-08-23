@@ -7,7 +7,13 @@ import { BridgeEngine } from "../src/engine.js";
 import type { TelegramMessage } from "../src/types.js";
 
 const HISTORY_MARKER = "issue-538-older-turn";
-const HANDOFF_GUIDANCE = "Continue naturally. Recover the user goal, what was done / evidence, current state, pending / next steps, and key context / constraints from the bounded exact recent turns below. Search older conversation history when needed.";
+const HANDOFF_CONCEPTS = [
+  "user goal",
+  "what was done / evidence",
+  "current state",
+  "pending / next steps",
+  "key context / constraints",
+];
 
 function makeMessage(text: string): TelegramMessage {
   return {
@@ -65,9 +71,25 @@ describe("Issue #538 fresh-session handoff guidance", () => {
 
     await makeEngine(db, dbPath, runCli).handleMessages([makeMessage("continue the work")]);
 
+    expect(capturedPrompt).toContain("[Agent Bridge handoff]");
     expect(capturedPrompt).toContain(HISTORY_MARKER);
-    expect(capturedPrompt).toContain(HANDOFF_GUIDANCE);
+    for (const concept of HANDOFF_CONCEPTS) expect(capturedPrompt).toContain(concept);
+    expect(capturedPrompt).toContain("exact recent turns");
     expect(capturedPrompt).toContain('"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>"');
+  });
+
+  it("keeps first-ever fresh-session guidance conditional when no prior turns exist", async () => {
+    let capturedPrompt = "";
+    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      capturedPrompt = args[args.length - 1];
+      return JSON.stringify({ type: "result", result: "ok", session_id: "issue-538-new-session" });
+    });
+
+    await makeEngine(db, dbPath, runCli).handleMessages([makeMessage("start new work")]);
+
+    expect(capturedPrompt).toContain("[Agent Bridge handoff]");
+    expect(capturedPrompt).toContain("When prior conversation context is supplied");
+    expect(capturedPrompt).not.toContain("bounded exact recent turns below");
   });
 
   it("does not repeat the handoff guidance on an ordinary resumed native turn", async () => {
@@ -82,7 +104,8 @@ describe("Issue #538 fresh-session handoff guidance", () => {
     await makeEngine(db, dbPath, runCli).handleMessages([makeMessage("ordinary continuation")]);
 
     expect(capturedPrompt).toContain("ordinary continuation");
+    expect(capturedPrompt).not.toContain("[Agent Bridge handoff]");
     expect(capturedPrompt).not.toContain(HISTORY_MARKER);
-    expect(capturedPrompt).not.toContain(HANDOFF_GUIDANCE);
+    for (const concept of HANDOFF_CONCEPTS) expect(capturedPrompt).not.toContain(concept);
   });
 });
