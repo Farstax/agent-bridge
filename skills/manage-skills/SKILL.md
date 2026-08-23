@@ -58,10 +58,10 @@ Do not use `verify --fix` for user-authored Skills: the generic bundled-skill re
 Only when the user explicitly wants the user Skill removed:
 
 ```bash
-npm run skills -- uninstall <name>
+npm run skills -- uninstall-user <name>
 ```
 
-This removes the canonical shared Skill, Agent Bridge's native projections, and its lockfile record. Never use it to remove a bundled release Skill unless that is explicitly the requested operation.
+This removes the canonical shared Skill, its expected native symlink projections, and its lockfile record. It fails closed if a native path has been replaced with unrelated content. Never use the generic bundled `uninstall` command for a user-authored Skill.
 
 ## Completion evidence
 
