@@ -28,6 +28,7 @@ describe("Telegram provider lock", () => {
     ["claude", "TELEGRAM_BOT_TOKEN_CLAUDE", "claude-token"],
     ["codex", "TELEGRAM_BOT_TOKEN_CODEX", "codex-token"],
     ["antigravity", "TELEGRAM_BOT_TOKEN_ANTIGRAVITY", "agy-token"],
+    ["grok", "TELEGRAM_BOT_TOKEN_GROK", "grok-token"],
   ] as const)("locks %s to one engine, token and poll cursor", (provider, tokenKey, token) => {
     const policy = resolveTelegramRuntimePolicy(
       {

@@ -57,6 +57,7 @@ export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
 import { assertDatabaseForeignKeyIntegrity } from "./db/roleAssignmentsMigration.js";
 import { classifyLifecycleState } from "./rolloutLifecycle.js";
+import type { BotKind } from "./types.js";
 
 // Sentinel row keys stored in bridge_state for non-chat state
 const pollingKey = (bot: string) => `$polling:${bot}`;
@@ -167,7 +168,7 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
 
   // Expire sessions older than 7 days — prevents a stale/corrupt session from
   // being resumed indefinitely after a long gap without a /reset
-  for (const bot of ["codex", "antigravity", "claude"] as const) {
+  for (const bot of ["codex", "antigravity", "claude", "grok"] as const) {
     raw.exec(
       `UPDATE bridge_state
        SET ${bot}_session_id = NULL, ${bot}_session_created_at = NULL
@@ -210,7 +211,7 @@ function assertProductionInstallation(raw: Database.Database, dbPath: string, op
   if (get("agent_bridge_first_boot_verified")) return;
   const sessionCount = Number((raw.prepare(`SELECT COUNT(*) AS n FROM bridge_state
     WHERE codex_session_id IS NOT NULL OR claude_session_id IS NOT NULL
-       OR antigravity_session_id IS NOT NULL`).get() as { n: number }).n);
+       OR antigravity_session_id IS NOT NULL OR grok_session_id IS NOT NULL`).get() as { n: number }).n);
   const runCount = Number((raw.prepare("SELECT COUNT(*) AS n FROM bridge_runs").get() as { n: number }).n);
   if (sessionCount > 0 || runCount > 0) throw new Error("first boot database already contains sessions or runs");
   raw.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)
@@ -326,11 +327,11 @@ export class BridgeDb {
 
   // ── Session management ───────────────────────────────────────────────────
 
-  getSession(chatId: string, bot: "codex" | "antigravity" | "claude"): string | null {
+  getSession(chatId: string, bot: BotKind): string | null {
     return this.sessions.getSession(chatId, bot);
   }
 
-  setSession(chatId: string, bot: "codex" | "antigravity" | "claude", sessionId: string | null): void {
+  setSession(chatId: string, bot: BotKind, sessionId: string | null): void {
     this.sessions.setSession(chatId, bot, sessionId);
   }
 
@@ -355,11 +356,11 @@ export class BridgeDb {
 
   // ── Global polling offset (per bot kind) ────────────────────────────────
 
-  getLastUpdateId(bot: "codex" | "antigravity" | "claude"): number {
+  getLastUpdateId(bot: BotKind): number {
     return this.settings.getLastUpdateId(bot);
   }
 
-  setLastUpdateId(bot: "codex" | "antigravity" | "claude", updateId: number): void {
+  setLastUpdateId(bot: BotKind, updateId: number): void {
     this.settings.setLastUpdateId(bot, updateId);
   }
 
@@ -371,11 +372,11 @@ export class BridgeDb {
 
   // ── Session failure circuit breaker ─────────────────────────────────────
 
-  incrementFailures(chatId: string, bot: "codex" | "antigravity" | "claude"): number {
+  incrementFailures(chatId: string, bot: BotKind): number {
     return this.settings.incrementFailures(chatId, bot);
   }
 
-  resetFailures(chatId: string, bot: "codex" | "antigravity" | "claude"): void {
+  resetFailures(chatId: string, bot: BotKind): void {
     this.settings.resetFailures(chatId, bot);
   }
 

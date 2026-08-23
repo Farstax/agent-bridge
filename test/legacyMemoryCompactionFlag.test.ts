@@ -22,7 +22,7 @@ function makeConfig(dbPath = ":memory:"): BridgeConfig {
     executionMode: "safe",
     asyncEnabled: false,
     dbPath,
-    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot },
+    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot, grok: emptyBot },
   };
 }
 

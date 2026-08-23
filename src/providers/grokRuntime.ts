@@ -25,6 +25,23 @@ const IGNORED_EVENT_TYPES = new Set([
   "stderr",
 ]);
 
+const SUCCESS_STOP_REASONS = new Set(["end_turn", "success"]);
+const FAILURE_STOP_REASONS = new Set([
+  "cancelled",
+  "refusal",
+  "max_tokens",
+  "max_turn_requests",
+]);
+
+function normalizeStopReason(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/-/g, "_")
+    .toLowerCase();
+}
+
 export function buildInvocation({
   prompt,
   sessionId,
@@ -59,6 +76,7 @@ export function parseResult(stdout: string): CliResult {
   const answerChunks: string[] = [];
   let sessionId: string | null = null;
   let sawEnd = false;
+  let stopReason: string | null = null;
   let errorMessage: string | null = null;
 
   for (const line of stdout.split(/\r?\n/)) {
@@ -87,6 +105,7 @@ export function parseResult(stdout: string): CliResult {
         throw new Error("Grok terminal session evidence was missing");
       }
       sessionId = record.sessionId;
+      stopReason = normalizeStopReason(record.stopReason);
       sawEnd = true;
       continue;
     }
@@ -96,13 +115,28 @@ export function parseResult(stdout: string): CliResult {
         : "Grok reported an error";
       continue;
     }
-    if (typeof type === "string" && IGNORED_EVENT_TYPES.has(type)) continue;
+    if (type === "max_turns_reached") {
+      errorMessage = "Grok reached its max turns limit";
+      continue;
+    }
+    if (typeof type === "string" && (IGNORED_EVENT_TYPES.has(type) || type.startsWith("auto_compact"))) {
+      continue;
+    }
     throw new Error("Grok streaming-json contained an unknown event type");
   }
 
   if (errorMessage) throw new Error(errorMessage);
   if (!sawEnd || !sessionId) {
     throw new Error("Grok terminal session evidence was missing");
+  }
+  if (!stopReason) {
+    throw new Error("Grok terminal stop reason was missing");
+  }
+  if (FAILURE_STOP_REASONS.has(stopReason)) {
+    throw new Error(`Grok terminal stop reason was ${stopReason}`);
+  }
+  if (!SUCCESS_STOP_REASONS.has(stopReason)) {
+    throw new Error(`Grok terminal stop reason was unrecognized: ${stopReason}`);
   }
   const text = answerChunks.join("");
   if (!text.trim()) {

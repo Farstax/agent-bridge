@@ -259,9 +259,12 @@ export function buildInvocation({
   outputFormat,
 }: AntigravityInvocationRequest): ProviderInvocation {
   const args: string[] = [];
-  const outputMode = (process.env.ANTIGRAVITY_OUTPUT_MODE && process.env.ANTIGRAVITY_OUTPUT_MODE.trim())
+  const requestedFormat = (process.env.ANTIGRAVITY_OUTPUT_MODE && process.env.ANTIGRAVITY_OUTPUT_MODE.trim())
     ? resolveAntigravityOutputMode()
     : (outputFormat || "text");
+  const outputMode: AntigravityOutputMode = requestedFormat === "stream-json" || requestedFormat === "json" || requestedFormat === "text"
+    ? requestedFormat
+    : "text";
   const resolvedHomeDir = homeDir || homedir();
   // Agy fatally aborts a cascade if it lists its own worktrees state dir before
   // ever creating it, so guarantee the dir exists ahead of every invocation.

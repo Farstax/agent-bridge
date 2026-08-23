@@ -50,7 +50,7 @@ import { handleIntegratedHealthCommand } from "./health/integrated.js";
 import { autoUpdateClis } from "./health/autoRemediate.js";
 import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 import { loadWorkspaceContext } from "./workspaceContext.js";
-import { AutonomyController } from "./autonomyController.js";
+import { AutonomyController, isFirstClassAutonomyBot } from "./autonomyController.js";
 import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } from "./autonomyTelegram.js";
 import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
 
@@ -415,8 +415,20 @@ for (;;) {
               await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: "No authenticated CLI is available to start autonomy.", message_thread_id: message.message_thread_id } });
               continue;
             }
+            if (!isFirstClassAutonomyBot(pref)) {
+              await sendTelegramMessage({
+                client,
+                kind: "interactive",
+                chatId,
+                body: {
+                  text: `${pref} does not support first-class autonomy yet. Switch to Codex, Claude, or Antigravity, then /autonomy approve.`,
+                  message_thread_id: message.message_thread_id,
+                },
+              });
+              continue;
+            }
             const started = await autonomyController.start({
-              bot: pref as BotKind,
+              bot: pref,
               policyInstruction: "Authenticated owner approved this Episode via /autonomy approve.",
               supervisorRoute: {
                 surface: "telegram",

@@ -70,6 +70,7 @@ function makeFullConfig(dbPath: string): BridgeConfig {
       codex: { token: undefined, command: "codex", modelPreference: [] },
       claude: { token: undefined, command: "claude", modelPreference: [] },
       antigravity: { token: undefined, command: "agy", modelPreference: [] },
+      grok: { token: undefined, command: "grok", modelPreference: [] },
     },
   };
 }

@@ -47,6 +47,24 @@ function mockEngine(db: ReturnType<typeof openDb>, run: (input: any) => Promise<
 }
 
 describe("first-class autonomy (#466)", () => {
+  it("rejects Grok as a first-class autonomy provider", async () => {
+    const { db, dbPath } = makeDb();
+    const dir = mkdtempSync(join(tmpdir(), "autonomy-grok-"));
+    writeFileSync(join(dir, "AUTONOMY.md"), "frozen authority");
+    const engine = mockEngine(db, async () => {
+      throw new Error("grok autonomy must not dispatch");
+    });
+    const controller = new AutonomyController({
+      db,
+      autonomyDir: dir,
+      maxCycles: 1,
+      engineForBot: () => engine,
+    });
+    await expect(controller.start({ bot: "grok" })).rejects.toThrow(/not available for first-class autonomy/i);
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM autonomous_goals").get()).toEqual({ count: 0 });
+    rmSync(dir, { recursive: true, force: true });
+    cleanup(db, dbPath);
+  });
   it("atomically creates at most one active Episode and never rebinds its supervisor route", () => {
     const { db, dbPath } = makeDb();
     const first = createAutonomousGoalIfNoneActive(db, {

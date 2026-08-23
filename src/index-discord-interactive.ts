@@ -144,7 +144,7 @@ const client = new DiscordClient({
 
 // ── Engines ───────────────────────────────────────────────────────────────────
 
-const CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
+const CLI_KINDS: CliKind[] = interactiveChainKinds();
 const engines = Object.fromEntries(
   CLI_KINDS.map((kind) => [
     kind,

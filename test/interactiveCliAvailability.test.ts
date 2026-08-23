@@ -72,4 +72,22 @@ describe("interactive CLI availability filtering", () => {
 
     expect(available).toEqual(new Set<CliKind>(["antigravity"]));
   });
+
+  it("detects grok credential files without making grok a default selectable CLI", () => {
+    const homeDir = "/home/tester";
+    const paths = resolveInteractiveCliAuthPaths(homeDir);
+    const available = getAvailableCliKinds({
+      homeDir,
+      exists: (path) => path === paths.grok[0],
+      commandExists: () => false,
+    });
+
+    expect(paths.grok).toEqual([
+      "/home/tester/.grok/auth.json",
+      "/home/tester/.config/grok/auth.json",
+    ]);
+    expect(available).toEqual(new Set<CliKind>(["grok"]));
+    expect(getSelectableCliKinds()).not.toContain("grok");
+    expect(getSelectableCliKinds(available)).toEqual(["grok"]);
+  });
 });
