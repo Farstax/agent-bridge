@@ -41,7 +41,7 @@ function withGrokEnvironment<T>(run: (root: string, evidencePath: string) => T):
   }
 }
 
-function writePassingGrokQualification(evidencePath: string): void {
+function writeFailedGrokQualification(evidencePath: string): void {
   writeQualificationRecord({
     provider: "grok",
     providerVersion: "1.0.5",
@@ -50,47 +50,48 @@ function writePassingGrokQualification(evidencePath: string): void {
     contractVersion: PROVIDER_CONTRACT_VERSION,
     qualifiedAt: "2026-08-23T18:45:00.000Z",
     environment: "test",
-    overall: "pass",
+    overall: "fail",
     checks: [
       { name: "version", status: "pass" },
-      { name: "fresh_prompt", status: "pass" },
-      { name: "session_resume", status: "pass" },
+      { name: "fresh_prompt", status: "fail", diagnostic: "contract regression" },
+      { name: "session_resume", status: "not_applicable" },
     ],
   }, evidencePath);
 }
 
-describe("Grok fail-closed routing", () => {
-  it("does not enter Grok through capacity fallback without current passing qualification", () => {
-    withGrokEnvironment((_root, _evidencePath) => {
+describe("Grok routing safety", () => {
+  it("allows authenticated Grok through fallback without qualification evidence", () => {
+    withGrokEnvironment(() => {
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "grok"], db);
+      const chain = new ProviderFallbackChain(["codex", "grok", "antigravity"], db);
       expect(chain.getActiveCli("chat:1")).toBe("codex");
-      expect(chain.advance("chat:1")).toBeNull();
-      expect(chain.getChain()).toEqual(["codex"]);
-    });
-  });
-
-  it("allows Grok fallback only after the exact installed binary has a current pass", () => {
-    withGrokEnvironment((_root, evidencePath) => {
-      writePassingGrokQualification(evidencePath);
-      const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "grok"], db);
       expect(chain.advance("chat:1")).toBe("grok");
-      expect(chain.getChain()).toEqual(["codex", "grok"]);
+      expect(chain.getChain()).toEqual(["codex", "grok", "antigravity"]);
     });
   });
 
-  it("filters an unqualified Grok-only chain from available fallback targets", () => {
+  it("skips Grok when current qualification evidence proves a deterministic failure", () => {
+    withGrokEnvironment((_root, evidencePath) => {
+      writeFailedGrokQualification(evidencePath);
+      const db = openDb(":memory:");
+      const chain = new ProviderFallbackChain(["codex", "grok", "antigravity"], db);
+      expect(chain.advance("chat:1")).toBe("antigravity");
+      expect(chain.getChain()).toEqual(["codex", "antigravity"]);
+    });
+  });
+
+  it("keeps an authenticated Grok-only chain routeable without qualification evidence", () => {
     withGrokEnvironment(() => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(["grok"], db);
-      expect(chain.getChain()).toEqual([]);
+      expect(chain.getChain()).toEqual(["grok"]);
       expect(chain.getActiveCli("chat:1")).toBe("grok");
     });
   });
 
-  it("undoes an unavailable Grok preference written by a manual Discord-style switch", () => {
-    withGrokEnvironment(() => {
+  it("undoes a Grok preference when current qualification evidence proves failure", () => {
+    withGrokEnvironment((_root, evidencePath) => {
+      writeFailedGrokQualification(evidencePath);
       const db = openDb(":memory:");
       setUserCliPreference(db, "channel:1", "grok");
       const chain = new ProviderFallbackChain(["codex", "grok"], db);
@@ -100,9 +101,16 @@ describe("Grok fail-closed routing", () => {
     });
   });
 
-  it("blocks direct engine working-directory resolution before unqualified Grok can spawn", () => {
+  it("allows direct Grok execution boundary when authenticated without qualification evidence", () => {
     withGrokEnvironment(() => {
-      expect(() => getCliWorkingDir("grok")).toThrow(/current provider qualification passes/i);
+      expect(() => getCliWorkingDir("grok")).not.toThrow();
+    });
+  });
+
+  it("blocks direct Grok execution boundary after a current deterministic qualification failure", () => {
+    withGrokEnvironment((_root, evidencePath) => {
+      writeFailedGrokQualification(evidencePath);
+      expect(() => getCliWorkingDir("grok")).toThrow(/qualification failure/i);
     });
   });
 });
