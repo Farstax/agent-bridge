@@ -12,6 +12,24 @@ describe("doctor diagnostics", () => {
     }
   });
 
+  it("reports the configured provider executable when it resolves", () => {
+    const configuredAgy = "/opt/antigravity/bin/agy";
+    const report = runDoctor({
+      env: {
+        INTERACTIVE_CLI_CHAIN: "antigravity",
+        ANTIGRAVITY_COMMAND: configuredAgy,
+      },
+      commandExists: (executable) => executable === configuredAgy,
+    });
+
+    expect(report.providers.find((p) => p.id === "agy")).toEqual({
+      id: "agy",
+      executable: configuredAgy,
+      status: "available",
+    });
+    expect(report.ok).toBe(true);
+  });
+
   it("reports provider commands as missing when the executable does not resolve", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity,unsupported" },
@@ -33,25 +51,38 @@ describe("doctor diagnostics", () => {
   });
 
   it("does not fail for an unavailable provider that no configured chain uses", () => {
+    const configuredAgy = "/opt/antigravity/bin/agy-missing";
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
-        INTERACTIVE_CLI_CHAIN: "codex",
+        ANTIGRAVITY_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable === "codex",
     });
 
-    expect(report.providers.find((p) => p.id === "agy")?.status).toBe("missing");
+    expect(report.providers.find((p) => p.id === "agy")).toEqual({
+      id: "agy",
+      executable: configuredAgy,
+      status: "missing",
+    });
     expect(report.ok).toBe(true);
   });
 
   it("fails when a configured provider executable is missing", () => {
+    const configuredAgy = "/opt/antigravity/bin/agy-missing";
     const report = runDoctor({
-      env: { INTERACTIVE_CLI_CHAIN: "antigravity" },
-      commandExists: (executable) => executable !== "agy",
+      env: {
+        INTERACTIVE_CLI_CHAIN: "antigravity",
+        ANTIGRAVITY_COMMAND: configuredAgy,
+      },
+      commandExists: (executable) => executable !== configuredAgy,
     });
 
-    expect(report.providers.find((p) => p.id === "agy")?.status).toBe("missing");
+    expect(report.providers.find((p) => p.id === "agy")).toEqual({
+      id: "agy",
+      executable: configuredAgy,
+      status: "missing",
+    });
     expect(report.ok).toBe(false);
   });
 

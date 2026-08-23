@@ -6,7 +6,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { getProviderAdapters } from "./registry.js";
+import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
@@ -67,11 +67,14 @@ export function runDoctor({
   requiredEnv?: string[];
   commandExists?: (executable: string) => boolean;
 } = {}): DoctorReport {
-  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => ({
-    id: adapter.id,
-    executable: adapter.executable,
-    status: commandExists(adapter.executable) ? "available" : "missing",
-  }));
+  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => {
+    const executable = resolveProviderExecutable(adapter.id, env);
+    return {
+      id: adapter.id,
+      executable,
+      status: commandExists(executable) ? "available" : "missing",
+    };
+  });
 
   const effectiveEntries: Record<(typeof CHAIN_ENV_VARS)[number], string[]> = {
     INTERACTIVE_CLI_CHAIN: parseCliChain(
