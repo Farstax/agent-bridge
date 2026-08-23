@@ -1,8 +1,8 @@
 import Database from "better-sqlite3";
 
-type BotKind = "codex" | "antigravity" | "claude";
+type BotKind = "codex" | "antigravity" | "claude" | "grok";
 
-const VALID_BOTS = new Set<string>(["codex", "antigravity", "claude"]);
+const VALID_BOTS = new Set<string>(["codex", "antigravity", "claude", "grok"]);
 
 function assertBot(bot: string): asserts bot is BotKind {
   if (!VALID_BOTS.has(bot)) throw new Error(`Invalid bot kind: ${bot}`);

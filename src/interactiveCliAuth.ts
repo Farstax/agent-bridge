@@ -10,6 +10,7 @@ export interface InteractiveCliAuthPaths {
   codex: string;
   claude: string;
   antigravity: string[];
+  grok: string[];
 }
 
 export interface AvailableCliOptions {
@@ -26,6 +27,10 @@ export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): Int
     antigravity: [
       join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
       join(homeDir, ".gemini", "oauth_creds.json"),
+    ],
+    grok: [
+      join(homeDir, ".grok", "auth.json"),
+      join(homeDir, ".config", "grok", "auth.json"),
     ],
   };
 }
@@ -50,6 +55,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   if (exists(paths.codex) && !failedProviders.has("codex")) available.add("codex");
   if (exists(paths.claude) && !failedProviders.has("claude")) available.add("claude");
   if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
+  if (paths.grok.some(exists) && !failedProviders.has("grok")) available.add("grok");
 
   return available;
 }
