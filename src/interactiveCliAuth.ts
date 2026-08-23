@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
-import { getQualificationFailedProviders, isProviderQualificationPassed } from "./providers/qualificationStatus.js";
+import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
+import { isGrokRouteable, resolveGrokAuthPaths } from "./providers/grokAvailability.js";
 import type { ProviderId } from "./providers/types.js";
 
 export interface InteractiveCliAuthPaths {
@@ -30,10 +31,7 @@ export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): Int
       join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
       join(homeDir, ".gemini", "oauth_creds.json"),
     ],
-    grok: [
-      join(homeDir, ".grok", "auth.json"),
-      join(homeDir, ".config", "grok", "auth.json"),
-    ],
+    grok: resolveGrokAuthPaths(homeDir),
   };
 }
 
@@ -59,17 +57,13 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   if (exists(paths.claude) && !failedProviders.has("claude")) available.add("claude");
   if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
 
-  // Grok is deliberately stricter than established providers: registration is
-  // opt-in and routing stays fail-closed until this exact installed binary has
-  // a current passing provider-qualification record. Do not probe provider
-  // versions at all unless Grok authentication is present.
-  const grokAuthenticated = paths.grok.some(exists) || Boolean(env.XAI_API_KEY?.trim());
-  const grokQualified = grokAuthenticated && (
-    options.qualifiedProviders
-      ? options.qualifiedProviders.has("grok")
-      : isProviderQualificationPassed("grok")
-  );
-  if (grokQualified && !failedProviders.has("grok")) available.add("grok");
+  const grokRouteable = isGrokRouteable({
+    homeDir: home,
+    exists,
+    env,
+    qualified: options.qualifiedProviders ? options.qualifiedProviders.has("grok") : undefined,
+  });
+  if (grokRouteable && !failedProviders.has("grok")) available.add("grok");
 
   void commandExists; // retained for the existing injectable availability seam.
   return available;
