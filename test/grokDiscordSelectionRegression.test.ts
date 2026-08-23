@@ -3,8 +3,8 @@ import { openDb } from "../src/db.js";
 import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 
-describe("Discord Grok selection fail-closed boundary", () => {
-  it("scrubs unavailable Grok even when the default fallback chain does not contain it", () => {
+describe("Discord Grok selection availability boundary", () => {
+  it("scrubs unavailable Grok even when an explicit fallback chain omits it", () => {
     const db = openDb(":memory:");
     setUserCliPreference(db, "discord:channel:1", "grok");
     const chain = new ProviderFallbackChain(
