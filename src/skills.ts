@@ -3,7 +3,7 @@
  * INPUTS: Bundled skill folders, a target home directory, lockfile contents, and link mode options.
  * OUTPUTS: Installed skill folders, native CLI skill links or copies, lockfile records, and verification results.
  * NEIGHBORS: scripts/skill-manager.ts, scripts/install.sh
- * LOGIC: Maintains a shared ~/.agents/skills store, projects skills into native CLI skill directories, and preserves lockfile metadata.
+ * LOGIC: Maintains a shared ~/.agents/skills store, projects skills into native CLI skill directories, and preserves lockfile metadata and ownership.
  */
 
 import { createHash } from "node:crypto";
@@ -26,6 +26,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type SkillLinkMode = "symlink" | "copy";
+export type SkillOwnership = "bundled" | "user";
 
 export interface SkillCatalogEntry {
   name: string;
@@ -48,6 +49,7 @@ export interface InstallSkillOptions {
   repoRoot?: string;
   force?: boolean;
   linkMode?: SkillLinkMode;
+  ownership?: SkillOwnership;
   now?: Date;
 }
 
@@ -59,6 +61,7 @@ export interface VerifySkillOptions {
 
 export interface UninstallSkillOptions {
   homeDir?: string;
+  expectedOwnership?: SkillOwnership;
 }
 
 export interface VerifySkillResult {
@@ -73,6 +76,7 @@ type SkillLockRecord = {
   skillPath?: string;
   skillFolderHash?: string;
   linkMode?: SkillLinkMode;
+  ownership?: SkillOwnership;
   installedAt?: string;
   updatedAt?: string;
   [key: string]: unknown;
@@ -93,6 +97,27 @@ type LegacySkillManifest = {
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = join(moduleDir, "..");
 const unversionedSkill = "unversioned";
+const skillLockVersion = 4;
+
+// Frozen at the v4 ownership migration. Never derive this from the current
+// catalog: a later release may add a bundled name that already belongs to a
+// legacy user-authored v3 skill, and that collision must remain user-owned.
+const legacyBundledSkillsAtOwnershipV4 = new Set([
+  "advisor",
+  "autonomous-work",
+  "cli-auth-telegram",
+  "delivery-directives",
+  "git-sandbox",
+  "health-troubleshooting",
+  "manage-mcp",
+  "manage-skills",
+  "red-green-refactor-tdd",
+  "release-readiness-review",
+  "requirements-to-acceptance",
+  "risk-based-test-strategy",
+  "systematic-debugging",
+  "ui-engineering",
+]);
 
 export function getSharedSkillsHomeDir(env: { SHARED_MEMORY_HOME?: string; HOME?: string } = process.env, fallbackHome = homedir()): string {
   return env.SHARED_MEMORY_HOME || env.HOME || fallbackHome;
@@ -123,6 +148,7 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const paths = resolveSkillPaths(options.homeDir);
   const linkMode = options.linkMode ?? "symlink";
+  const requestedOwnership = options.ownership ?? "bundled";
   const sourceDir = join(repoRoot, "skills", skillName);
   if (!existsSync(sourceDir)) throw new Error(`Unknown bundled skill: ${skillName}`);
   validateLinkMode(linkMode);
@@ -130,7 +156,21 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
 
   mkdirSync(paths.agentsSkillsDir, { recursive: true });
   const destDir = join(paths.agentsSkillsDir, skillName);
-  if (existsSync(destDir)) {
+  const destinationExists = existsSync(destDir);
+  // Force may repair a corrupt lock only when no canonical skill can be lost.
+  // Existing canonical content requires readable ownership metadata.
+  const lockfile = readLockfile(paths.lockfilePath, { force: Boolean(options.force && !destinationExists) });
+  const previous = lockfile.skills?.[skillName];
+  if (previous) {
+    const existingOwnership = resolveSkillOwnership(skillName, previous);
+    if (existingOwnership !== requestedOwnership) {
+      throw new Error(`Refusing to replace ${existingOwnership}-owned skill with ${requestedOwnership}-owned skill: ${skillName}`);
+    }
+  } else if (destinationExists && requestedOwnership === "bundled") {
+    throw new Error(`Refusing to replace unowned shared skill path with bundled skill: ${skillName}`);
+  }
+
+  if (destinationExists) {
     const currentHash = hashDirectory(destDir);
     const sourceHash = hashDirectory(sourceDir);
     if (!options.force) throw new Error(`Skill already installed: ${skillName}`);
@@ -138,20 +178,19 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
   }
   if (!existsSync(destDir)) cpSync(sourceDir, destDir, { recursive: true });
 
-  const lockfile = readLockfile(paths.lockfilePath, { force: options.force });
   const installedHash = hashDirectory(destDir);
   const now = (options.now ?? new Date()).toISOString();
-  const previous = lockfile.skills?.[skillName] ?? {};
-  lockfile.version ??= 3;
+  lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
   lockfile.skills ??= {};
   lockfile.skills[skillName] = {
-    ...previous,
+    ...(previous ?? {}),
     source: "shared-local",
     sourceType: "local",
     skillPath: `skills/${skillName}/SKILL.md`,
     skillFolderHash: installedHash,
     linkMode,
-    installedAt: typeof previous.installedAt === "string" ? previous.installedAt : now,
+    ownership: requestedOwnership,
+    installedAt: typeof previous?.installedAt === "string" ? previous.installedAt : now,
     updatedAt: now,
   };
 
@@ -180,6 +219,13 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
       errors.push(`Skill is not registered in lockfile: ${name}`);
       continue;
     }
+    let ownership: SkillOwnership;
+    try {
+      ownership = resolveSkillOwnership(name, record);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+      continue;
+    }
     const sharedDir = join(paths.agentsSkillsDir, name);
     if (!existsSync(sharedDir)) {
       errors.push(`Installed skill folder is missing: ${sharedDir}`);
@@ -195,9 +241,11 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
       const nativePath = join(nativeDir, name);
       const problem = verifyNativeSkill({ nativePath, sharedDir, linkMode, expectedHash: sharedHash });
       if (!problem) continue;
-      if (options.fix) {
+      if (options.fix && ownership === "bundled") {
         projectNativeSkill({ skillName: name, sharedDir, nativeDir, linkMode, force: true });
         repaired.push(nativePath);
+      } else if (options.fix) {
+        errors.push(`${problem}; refusing generic --fix for user-owned skill ${name}; use project-user`);
       } else {
         errors.push(problem);
       }
@@ -210,12 +258,20 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
 export function uninstallSkillGlobal(skillName: string, options: UninstallSkillOptions = {}): void {
   const paths = resolveSkillPaths(options.homeDir);
   const lockfile = readLockfile(paths.lockfilePath, { force: false });
+  const record = lockfile.skills?.[skillName];
+  if (!record) throw new Error(`Skill is not registered in lockfile: ${skillName}`);
+  const expectedOwnership = options.expectedOwnership ?? "bundled";
+  const ownership = resolveSkillOwnership(skillName, record);
+  if (ownership !== expectedOwnership) {
+    throw new Error(`Refusing to uninstall ${ownership}-owned skill as ${expectedOwnership}-owned skill: ${skillName}`);
+  }
 
   for (const nativeDir of nativeSkillDirs(paths)) {
     rmSync(join(nativeDir, skillName), { recursive: true, force: true });
   }
   rmSync(join(paths.agentsSkillsDir, skillName), { recursive: true, force: true });
   if (lockfile.skills) delete lockfile.skills[skillName];
+  lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
   writeJsonAtomic(paths.lockfilePath, lockfile);
 }
 
@@ -311,17 +367,33 @@ function readLegacySkillManifest(manifestPath: string): { name?: string; version
 }
 
 function readLockfile(path: string, options: { force?: boolean }): SkillLockfile {
-  if (!existsSync(path)) return { version: 3, skills: {} };
+  if (!existsSync(path)) return { version: skillLockVersion, skills: {} };
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as SkillLockfile;
-    parsed.skills ??= {};
-    return parsed;
-  } catch (error) {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid lockfile root");
+    const lockfile = parsed as SkillLockfile;
+    if (lockfile.skills !== undefined && (!lockfile.skills || typeof lockfile.skills !== "object" || Array.isArray(lockfile.skills))) {
+      throw new Error("invalid skills map");
+    }
+    lockfile.skills ??= {};
+    for (const [name, record] of Object.entries(lockfile.skills)) {
+      if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`invalid skill record: ${name}`);
+      record.ownership = resolveSkillOwnership(name, record);
+    }
+    lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
+    return lockfile;
+  } catch {
     if (!options.force) throw new Error(`Unable to parse skill lockfile: ${path}`);
     const backup = `${path}.bak.${new Date().toISOString().replace(/[:.]/g, "-")}`;
     copyFileSync(path, backup);
-    return { version: 3, skills: {} };
+    return { version: skillLockVersion, skills: {} };
   }
+}
+
+function resolveSkillOwnership(skillName: string, record: SkillLockRecord): SkillOwnership {
+  if (record.ownership === "bundled" || record.ownership === "user") return record.ownership;
+  if (record.ownership !== undefined) throw new Error(`Invalid skill ownership for ${skillName}`);
+  return legacyBundledSkillsAtOwnershipV4.has(skillName) ? "bundled" : "user";
 }
 
 function writeJsonAtomic(path: string, value: unknown): void {
