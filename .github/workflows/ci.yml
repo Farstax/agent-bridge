@@ -1,9 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -15,7 +14,8 @@ concurrency:
 
 jobs:
   test:
-    name: Test & Typecheck
+    name: Test, Typecheck & Architecture
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the exact event head
@@ -40,3 +40,6 @@ jobs:
           NODE_OPTIONS: "--max-old-space-size=3072"
 
       - run: npm run typecheck
+
+      - name: Architecture lint
+        run: bash scripts/arch-lint.sh src
