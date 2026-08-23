@@ -36,6 +36,10 @@ Only require transitions that the change can actually affect.
 
 Treat tests/CI as evidence. Challenge a mock, synthetic request, source-shape assertion, or helper-only test when it does not reach the consequential production boundary.
 
+## Simplification changes
+
+When a change reduces instructions, context, skills, or verification, prove the simplification against a small representative task set before returning PASS. Prefer existing evidence or manual fixtures: confirm required skills/capabilities and relevant checks are still selected, and compare prompt/context size or an existing proxy where available. Token or process savings count only when capability/check selection does not regress. Do not add persistent retrieval, selection, scoring, or evaluation machinery unless this comparison exposes a concrete gap that existing owners cannot address.
+
 ## Findings
 
 Return either **PASS** or deterministic findings. Each finding should contain only what makes it actionable:
