@@ -7,6 +7,7 @@
  */
 
 import type { BridgeDb } from "./db.js";
+import { isGrokRouteable } from "./providers/grokAvailability.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import type { ProviderId } from "./providers/types.js";
 
@@ -17,6 +18,7 @@ function providerIdForCli(cli: string): ProviderId | null {
 }
 
 function qualificationAllowsCli(cli: string): boolean {
+  if (cli === "grok") return isGrokRouteable();
   const providerId = providerIdForCli(cli);
   return providerId == null || !getQualificationFailedProviders().has(providerId);
 }
@@ -49,16 +51,31 @@ export class ProviderFallbackChain {
       this.chatActiveIdx.set(chatKey, candidate);
       return this.chain[candidate];
     }
-    // Preserve the historical return type when every configured provider is
-    // unavailable; admission/routing layers surface the terminal condition.
+    if (this.chain.includes("grok")) {
+      throw new Error("No qualified and authenticated CLI is available in the configured fallback chain");
+    }
+    // Preserve the historical return type for established-provider-only chains;
+    // their admission layer owns the terminal unavailable condition.
     return this.chain[idx];
   }
 
   setActiveCli(chatKey: string, cli: string): void {
     const idx = this.chain.indexOf(cli);
-    if (idx !== -1) {
-      this.chatActiveIdx.set(chatKey, idx);
+    if (idx === -1) return;
+    if (!this.isCliAvailable(cli)) {
+      if (cli === "grok") {
+        // Discord writes the preference before calling this method. Undo an
+        // unavailable Grok selection so a stale/crafted interaction cannot
+        // persist a provider that is not routeable.
+        try {
+          this.db.raw
+            .prepare(`UPDATE bridge_state SET interactive_cli_preference = NULL WHERE chat_id = ? AND interactive_cli_preference = ?`)
+            .run(chatKey, "grok");
+        } catch { /* preference column may not exist on non-interactive test DBs */ }
+      }
+      return;
     }
+    this.chatActiveIdx.set(chatKey, idx);
   }
 
   /** Advance to the next available CLI. Returns null if none remains. */
