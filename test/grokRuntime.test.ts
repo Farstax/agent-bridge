@@ -336,6 +336,8 @@ describe("grok engine dispatch", () => {
     const dbPath = join(tmpdir(), `grok-engine-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
     const db = openDb(dbPath);
     const client = makeMockClient();
+    const previousApiKey = process.env.XAI_API_KEY;
+    process.env.XAI_API_KEY = "test-grok-key";
     const runCli = vi.fn().mockImplementation(async (_command: string, _args: string[]) => grokStream([
       { type: "thought", data: "hide-me" },
       { type: "text", data: "Hello from Grok" },
@@ -383,6 +385,8 @@ describe("grok engine dispatch", () => {
       expect(resumeArgs).toContain("--resume");
       expect(resumeArgs).toContain("grok-sess-1");
     } finally {
+      if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previousApiKey;
       db.close();
       try { rmSync(dbPath); } catch {}
     }
