@@ -1,26 +1,56 @@
 ---
 name: release-readiness-review
-description: Use before merging or releasing software changes to check scope, migrations, feature flags, rollback paths, documentation, monitoring, and operational readiness.
+description: Use for `review it` and before merge/release/deploy to adversarially test the intended outcome, real runtime journey, transitions, authority, and exact candidate evidence.
 ---
 
 # Release Readiness Review
 
-Use this skill for pre-merge, pre-release, or deployment-readiness checks.
+This skill owns the `review it` command. The reviewer's job is to try to disprove readiness, not confirm the implementer's narrative.
 
-<!-- BEGIN AGENT_BRIDGE_RUNTIME_GUIDANCE -->
-## Review Areas
+## Independence
 
-- Scope: confirm the change matches the stated goal and has no unrelated churn.
-- Data: check migrations, backfills, irreversible writes, and compatibility.
-- Flags: confirm rollout, kill switch, or config behavior when relevant.
-- Rollback: describe how to revert safely and what state may remain.
-- Observability: verify logs, metrics, alerts, and dashboards for risky paths.
-- Documentation: every required document must describe the final verified behaviour. Missing, stale, contradictory, or misleading required documentation is a blocker and must be corrected in the same delivery rather than deferred.
-- Evidence: distinguish `passed`, `failed`, `not_run`, `not_scheduled`, `stale`, and `unknown`; only authoritative passed evidence for the exact current head satisfies a required gate.
-- Review separation: confirm the final Technical Lead review is a distinct read-only phase over the pinned exact checked head, with no mutation authority while judging the candidate. Reviewer identity may be the same capable agent/model that implemented earlier work only after implementation has ended and the reviewer freshly re-derives its judgement from the issue/acceptance contract and current diff. A finding that requires mutation must be recorded against that exact head and ends the review phase. If the defect and smallest safe repair are clear, bounded, in scope, and already authorised, immediately resume implementation and repair it without conversationally blocking delivery; then refresh invalidated exact-head checks and start a new fresh review. Pause only for a genuinely new owner decision, material scope change, materially different repair choices, separately protected irreversible/costly action, or unresolved ambiguity. Different reviewer identity is preferred when available, but identity/model/human diversity is metadata rather than the independence gate.
-- Validation: name post-release checks and expected signals.
+Prefer a fresh/context-isolated execution when available. Start from the issue/acceptance contract, current candidate diff/head, repository architecture/instructions, and evidence the reviewer chooses to inspect. Do not treat the implementer's reasoning, claimed root cause, or green tests as proof.
 
-## Output
+Before reading the implementation in detail, independently restate the intended observable outcome, actor/resource/authority, and important non-goals. If that contract is wrong or incomplete, report it rather than reviewing the wrong solution more carefully.
 
-Lead with blocking risks. Then list non-blocking observations and final release confidence. Do not classify stale required documentation, missing exact-head evidence, a review that was not a distinct read-only exact-head phase, or mutation performed during the purported final review as a non-blocking follow-up.
-<!-- END AGENT_BRIDGE_RUNTIME_GUIDANCE -->
+## Adversarial review
+
+Inspect only areas relevant to the change, but trace the real journey far enough to challenge the selected boundary:
+
+- complete user/runtime path and affected change surfaces;
+- sibling/provider/caller implementations of the same invariant;
+- production-shaped external contract when local simulation cannot prove it;
+- persistence, process identity, PATH/env/executable/service, installation, restart, and reconciliation where affected;
+- security/identity/credential/permission path:
+  `actor -> authentication -> selection -> durable state -> credential -> target -> operation`;
+- incorrect product assumptions, unintended scope expansion, weakened compatibility, or hidden coupling.
+
+For persistent state, startup, provisioning, deployment, or reconciliation changes, explicitly select and qualify the relevant supported transitions:
+
+- fresh state -> candidate;
+- existing supported production state -> candidate;
+- restart/reconcile on candidate;
+- rollback after candidate has touched persistent state.
+
+Only require transitions that the change can actually affect.
+
+Treat tests/CI as evidence. Challenge a mock, synthetic request, source-shape assertion, or helper-only test when it does not reach the consequential production boundary.
+
+## Findings
+
+Return either **PASS** or deterministic findings. Each finding should contain only what makes it actionable:
+
+- severity;
+- violated invariant;
+- concrete consequence;
+- supporting location/evidence.
+
+Avoid praise, style nits, generic summaries, speculative future work, or repeating CI evidence already recorded elsewhere.
+
+A finding that requires mutation ends that review of the pinned head. The implementer repairs the issue, runs focused validation, and `review it` is rerun against the new head. Do not treat a reviewer that is simultaneously editing the candidate as the final approval.
+
+## Qualification placement
+
+Run `review it` before the expensive final full-suite qualification where practical. After the review passes, the final merge-candidate head must satisfy the repository's required exact-head checks. A subsequent head change invalidates the review or check evidence whose conclusions depend on the previous head.
+
+For release/deploy readiness, additionally inspect the merged delta, relevant migrations/rollback, release identity/artifact provenance, and post-release/deploy signals without reopening already-reviewed implementation work absent a concrete integration risk.
