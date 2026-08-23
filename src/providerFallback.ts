@@ -12,7 +12,7 @@ import type { ProviderId } from "./providers/types.js";
 
 function providerIdForCli(cli: string): ProviderId | null {
   if (cli === "antigravity" || cli === "agy") return "agy";
-  if (cli === "codex" || cli === "claude") return cli;
+  if (cli === "codex" || cli === "claude" || cli === "grok") return cli;
   return null;
 }
 

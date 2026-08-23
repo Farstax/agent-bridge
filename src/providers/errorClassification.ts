@@ -31,6 +31,14 @@ const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
     /usage limit/i,
     /\bresets\b/i,
   ],
+  grok: [
+    /No capacity available/i,
+    /RESOURCE_EXHAUSTED/,
+    /quota (?:reached|exceeded)/i,
+    /hit your (?:session |usage )?limit/i,
+    /usage limit/i,
+    /rate limit/i,
+  ],
 };
 
 const AUTH_PATTERNS: readonly RegExp[] = [
@@ -41,6 +49,8 @@ const AUTH_PATTERNS: readonly RegExp[] = [
   /invalid api key/i,
   /unauthorized/i,
   /permission denied/i,
+  /XAI_API_KEY/i,
+  /grok login/i,
 ];
 
 const MODEL_UNAVAILABLE_PATTERNS: readonly RegExp[] = [

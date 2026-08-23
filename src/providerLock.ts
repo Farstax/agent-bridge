@@ -23,7 +23,7 @@ export interface AutonomyRuntimeConfig {
   maxEpisodesPerDay: number;
 }
 
-const PROVIDERS = new Set<CliKind>(["codex", "claude", "antigravity"]);
+const PROVIDERS = new Set<CliKind>(["codex", "claude", "antigravity", "grok"]);
 export const DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY = 5;
 
 export function parseProviderLock(raw: string | undefined): CliKind | null {
@@ -31,7 +31,7 @@ export function parseProviderLock(raw: string | undefined): CliKind | null {
   if (!value) return null;
   if (!PROVIDERS.has(value as CliKind)) {
     throw new Error(
-      `Invalid BRIDGE_PROVIDER_LOCK: "${value}". Must be "codex", "claude" or "antigravity".`,
+      `Invalid BRIDGE_PROVIDER_LOCK: "${value}". Must be "codex", "claude", "antigravity" or "grok".`,
     );
   }
   return value as CliKind;
@@ -56,6 +56,7 @@ export function parseAutonomyMaxEpisodesPerDay(raw: string | undefined): number 
 function lockedToken(env: Env, provider: CliKind): string | undefined {
   if (provider === "codex") return env.TELEGRAM_BOT_TOKEN_CODEX;
   if (provider === "claude") return env.TELEGRAM_BOT_TOKEN_CLAUDE;
+  if (provider === "grok") return env.TELEGRAM_BOT_TOKEN_GROK;
   return env.TELEGRAM_BOT_TOKEN_ANTIGRAVITY || env.TELEGRAM_BOT_TOKEN_GEMINI;
 }
 
