@@ -82,6 +82,19 @@ MCP configuration should reference environment-variable names, never persist cre
 
 That path is suitable for user-owned API/MCP credentials but is not hidden from the provider/model. A credential that must remain hidden requires a scoped local service (for example a future OpenConnector integration), not encryption followed by plaintext injection into the CLI environment.
 
+## Latest provider evidence
+
+The follow-up qualification evidence records these provider-specific results:
+
+- Agy `1.1.19`: MCP tool use and the Playwright headless UI loop passed.
+- Grok Build `1.0.5`: the MCP/UI qualification passed only with
+  `GROK_EXECUTION_MODE=trusted`.
+
+Grok remains opt-in. Production safe mode remains fail-closed and does not
+inherit trusted execution or add `--always-approve`. The earlier Agy `1.1.12`
+observation that MCP was unsupported is historical and is superseded by the
+`1.1.19` qualification.
+
 ## Requalification triggers
 
 Repeat bounded model-mediated qualification when Agent Bridge begins to depend on a materially changed provider executable/version or MCP contract. Do not make live provider qualification an every-commit CI gate.

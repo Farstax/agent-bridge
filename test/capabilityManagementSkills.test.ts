@@ -31,7 +31,7 @@ describe("capability management skills", () => {
     expect(skill).toContain("rendered page");
     expect(skill).toContain("console errors");
     expect(skill).toContain("failed network requests");
-    expect(skill).toContain("reload");
+    expect(skill).toMatch(/reload/i);
   });
 
   it("retains exact live qualification provenance and residual gaps", () => {
@@ -40,6 +40,11 @@ describe("capability management skills", () => {
     expect(evidence).toContain("Claude Code `2.1.240`");
     expect(evidence).toContain("Codex CLI `0.149.0`");
     expect(evidence).toContain("Playwright MCP `0.0.79`");
+    expect(evidence).toContain("Agy `1.1.19`: MCP tool use and the Playwright headless UI loop passed");
+    expect(evidence).toContain("Grok Build `1.0.5`");
+    expect(evidence).toContain("GROK_EXECUTION_MODE=trusted");
+    expect(evidence).toContain("earlier Agy `1.1.12`");
+    expect(evidence).toContain("observation that MCP was unsupported is historical");
     expect(evidence).toContain("cancellation while an MCP tool call is actively running");
   });
 });

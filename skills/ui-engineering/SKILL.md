@@ -28,7 +28,7 @@ For UI-affecting work:
 6. Inspect rendered visual state, not DOM/source alone. Use screenshots when they materially prove the issue or result.
 7. Check browser console errors and failed network requests when relevant to the task.
 8. Change the smallest appropriate source/component/style.
-9. Reload or restart as required.
+9. Reload after changes, or restart as required.
 10. Re-run the same rendered journey and inspect it again.
 11. Confirm the specific defect is absent and that the nearby UI did not visibly regress.
 
