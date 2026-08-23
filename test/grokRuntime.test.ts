@@ -39,13 +39,13 @@ function makeMockClient() {
 }
 
 describe("grok provider registration", () => {
-  it("registers grok as an explicit opt-in provider", () => {
+  it("registers grok as an interactive fallback provider", () => {
     expect(PROVIDER_IDS).toContain("grok");
     const adapter = getProviderAdapter("grok");
     expect(adapter.displayName).toBe("Grok Build");
     expect(adapter.executable).toBe("grok");
     expect(adapter.capabilities.interactive).toBe(true);
-    expect(adapter.capabilities.fallbackTarget).toBe(false);
+    expect(adapter.capabilities.fallbackTarget).toBe(true);
     expect(adapter.capabilities.toolFree).toBe(false);
   });
 
@@ -56,30 +56,23 @@ describe("grok provider registration", () => {
     expect(loadBotsConfig({ GROK_COMMAND: "/usr/local/bin/grok" }).grok.command).toBe("/usr/local/bin/grok");
   });
 
-  it("keeps grok out of production fallback defaults", () => {
+  it("supports the production default fallback with Grok ahead of Antigravity", () => {
+    const fallback = ["codex", "claude", "grok", "antigravity"] as const;
     expect(parseCliChain(undefined, {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity"],
-    })).toEqual(["codex", "claude", "antigravity"]);
+      fallback,
+    })).toEqual(["codex", "claude", "grok", "antigravity"]);
     expect(interactiveChainKinds()).toContain("grok");
-    expect(parseCliChain("grok", {
-      allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity"],
-    })).toEqual(["grok"]);
   });
 
-  it("selects grok only when INTERACTIVE_CLI_CHAIN opts in", () => {
-    expect(parseCliChain(process.env.INTERACTIVE_CLI_CHAIN, {
-      allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity"],
-    })).toEqual(["codex", "claude", "antigravity"]);
+  it("still honors explicit INTERACTIVE_CLI_CHAIN overrides", () => {
     expect(parseCliChain("grok", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity"],
+      fallback: ["codex", "claude", "grok", "antigravity"],
     })).toEqual(["grok"]);
     expect(parseCliChain("codex,grok", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity"],
+      fallback: ["codex", "claude", "grok", "antigravity"],
     })).toEqual(["codex", "grok"]);
   });
 });
