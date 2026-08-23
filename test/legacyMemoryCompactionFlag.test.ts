@@ -6,6 +6,7 @@ import { openDb, type BridgeDb } from "../src/db.js";
 import { compactConversation } from "../src/compactConversation.js";
 import { handleCommand } from "../src/commands.js";
 import { renderAgentBridgeContext } from "../src/contextCommand.js";
+import { legacyMemoryCompactionEnabled } from "../src/legacyMemoryCompaction.js";
 import { extractProjectMemorySidecars, storeProjectMemoryCandidate } from "../src/projectMemory.js";
 import type { BridgeConfig } from "../src/types.js";
 
@@ -40,12 +41,13 @@ describe("turn-history continuity canary (issue #477)", () => {
   let db: BridgeDb;
 
   beforeEach(() => {
+    delete process.env[FLAG];
     dbPath = join(tmpdir(), `legacy-memory-canary-${Date.now()}-${Math.random()}.sqlite`);
     db = openDb(dbPath);
   });
 
   afterEach(() => {
-    delete process.env[FLAG];
+    process.env[FLAG] = "true";
     delete process.env.BRIDGE_CONTEXT_MAX_CHARS;
     delete process.env.BRIDGE_PRESEED_COMPACT_MODE;
     delete process.env.BRIDGE_PRESEED_COMPACT_CHARS;
@@ -54,7 +56,14 @@ describe("turn-history continuity canary (issue #477)", () => {
     rmSync(dbPath, { force: true });
   });
 
-  it("keeps legacy summary-first context as the default rollback behavior", () => {
+  it("defaults legacy memory and compaction off unless explicitly enabled", () => {
+    expect(legacyMemoryCompactionEnabled({})).toBe(false);
+    expect(legacyMemoryCompactionEnabled({ [FLAG]: "false" })).toBe(false);
+    expect(legacyMemoryCompactionEnabled({ [FLAG]: "true" })).toBe(true);
+  });
+
+  it("keeps legacy summary-first context available for explicit rollback", () => {
+    process.env[FLAG] = "true";
     db.addConvTurn("chat:1", "user", "covered raw turn", "claude");
     db.addConvSummary("chat:1", 1, 1, "LEGACY SUMMARY");
     db.addConvTurn("chat:1", "assistant", "recent raw turn", "claude");
@@ -66,8 +75,7 @@ describe("turn-history continuity canary (issue #477)", () => {
     expect(context).toContain("recent raw turn");
   });
 
-  it("uses bounded exact conversation turns and ignores stored summaries when disabled", () => {
-    process.env[FLAG] = "false";
+  it("uses bounded exact conversation turns and ignores stored summaries by default", () => {
     db.addConvTurn("chat:1", "user", "covered raw turn must survive", "claude");
     db.addConvSummary("chat:1", 1, 1, "GENERATED SUMMARY MUST NOT APPEAR");
     for (let i = 0; i < 5; i++) {
@@ -110,6 +118,30 @@ describe("turn-history continuity canary (issue #477)", () => {
       expect(db.getLatestCompactionAttempt("chat:1")).toBeNull();
     },
   );
+
+  it("suppresses every legacy compaction trigger and memory writes when the flag is unset", async () => {
+    db.addConvTurn("chat:1", "user", "raw turn with default-off flag", "claude");
+
+    for (const trigger of ["manual", "preseed", "capacity_fallback"] as const) {
+      const runCli = vi.fn().mockResolvedValue("unused");
+      const result = await compactConversation("chat:1", compactDeps(db, trigger, runCli));
+      expect(result.outcome).toBe("failed");
+      expect(result.error).toMatch(/disabled/i);
+      expect(runCli).not.toHaveBeenCalled();
+    }
+
+    const extracted = extractProjectMemorySidecars([
+      "Visible answer.",
+      '<!-- agent-bridge-memory {"type":"decision","scope":"project","text":"Default-off memory must not be persisted."} -->',
+    ].join("\n"));
+    const stored = storeProjectMemoryCandidate(db, extracted.candidates[0], { chatKey: "chat:1", cliKind: "claude" });
+
+    expect(stored.status).toBe("rejected");
+    expect(stored).toEqual(expect.objectContaining({ reason: expect.stringMatching(/disabled/i) }));
+    expect(db.getLatestConvSummary("chat:1")).toBeNull();
+    expect(db.getLatestCompactionAttempt("chat:1")).toBeNull();
+    expect((db.raw.prepare("SELECT COUNT(*) AS n FROM project_memories").get() as { n: number }).n).toBe(0);
+  });
 
   it("does not persist hidden assistant memory sidecars when disabled", () => {
     process.env[FLAG] = "false";

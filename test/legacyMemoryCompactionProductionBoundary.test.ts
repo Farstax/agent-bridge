@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
@@ -20,6 +20,11 @@ const CHAT_KEY = "100";
 const EXACT_OLD_TURN = "exact retained decision: use the falcon rollout";
 const EXACT_RECENT_TURN = "exact retained follow-up: falcon remains current";
 const STALE_SUMMARY = "STALE GENERATED SUMMARY MUST NOT BE SEEDED";
+const LEGACY_MEMORY = "legacy project memory must stay hidden by default";
+
+beforeEach(() => {
+  delete process.env[FLAG];
+});
 
 function makeMockClient() {
   return {
@@ -69,6 +74,7 @@ function seedLegacyAndExactHistory(db: ReturnType<typeof openDb>): void {
   db.addConvTurn(CHAT_KEY, "user", EXACT_OLD_TURN, "codex");
   db.addConvSummary(CHAT_KEY, 1, 1, STALE_SUMMARY);
   db.addConvTurn(CHAT_KEY, "assistant", EXACT_RECENT_TURN, "codex");
+  db.addMemory({ id: "legacy-boundary-memory", type: "decision", scope: "project", text: LEGACY_MEMORY });
 }
 
 function makeEngine(
@@ -101,14 +107,13 @@ function makeEngine(
 }
 
 afterEach(() => {
-  delete process.env[FLAG];
+  process.env[FLAG] = "true";
   delete process.env.BRIDGE_CONTEXT_MAX_CHARS;
   vi.restoreAllMocks();
 });
 
-describe("turn-history canary production handoff boundaries", () => {
-  it("manual switch starts fresh with exact retained turns, excludes the stored summary, then resumes without reseeding", async () => {
-    process.env[FLAG] = "false";
+describe("turn-history default production handoff boundaries", () => {
+  it("manual switch starts fresh with exact retained turns, excludes legacy summary/memory, then resumes without reseeding", async () => {
     const dbPath = join(tmpdir(), `legacy-manual-boundary-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
     const client = makeMockClient();
@@ -132,6 +137,8 @@ describe("turn-history canary production handoff boundaries", () => {
       expect(prompts[0]).toContain(EXACT_OLD_TURN);
       expect(prompts[0]).toContain(EXACT_RECENT_TURN);
       expect(prompts[0]).not.toContain(STALE_SUMMARY);
+      expect(prompts[0]).not.toContain(LEGACY_MEMORY);
+      expect(prompts[0]).not.toContain("--memory-query");
       expect(prompts[0]).toContain("AGENT_BRIDGE_CONTEXT_COMMAND");
       expect(db.getSession(CHAT_KEY, "claude")).toBe("claude-fresh-after-manual-switch");
 
@@ -141,6 +148,7 @@ describe("turn-history canary production handoff boundaries", () => {
       expect(prompts[1]).not.toContain(EXACT_OLD_TURN);
       expect(prompts[1]).not.toContain(EXACT_RECENT_TURN);
       expect(prompts[1]).not.toContain(STALE_SUMMARY);
+      expect(prompts[1]).not.toContain(LEGACY_MEMORY);
       expect(prompts[1]).not.toContain("[Context from previous conversation]");
     } finally {
       db.close();
@@ -149,7 +157,6 @@ describe("turn-history canary production handoff boundaries", () => {
   });
 
   it("capacity fallback skips compaction entirely, gives the fresh successor exact turns, and does not reseed its resumed session", async () => {
-    process.env[FLAG] = "false";
     const dbPath = join(tmpdir(), `legacy-fallback-boundary-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
     const client = makeMockClient();
@@ -202,6 +209,8 @@ describe("turn-history canary production handoff boundaries", () => {
       expect(claudePrompts[0]).toContain(EXACT_OLD_TURN);
       expect(claudePrompts[0]).toContain(EXACT_RECENT_TURN);
       expect(claudePrompts[0]).not.toContain(STALE_SUMMARY);
+      expect(claudePrompts[0]).not.toContain(LEGACY_MEMORY);
+      expect(claudePrompts[0]).not.toContain("--memory-query");
       expect(claudePrompts[0]).toContain("AGENT_BRIDGE_CONTEXT_COMMAND");
       expect(getUserCliPreference(db, CHAT_KEY)).toBe("claude");
       expect(db.getSession(CHAT_KEY, "claude")).toBe("claude-fallback-session");
@@ -219,7 +228,39 @@ describe("turn-history canary production handoff boundaries", () => {
       expect(claudePrompts[1]).not.toContain(EXACT_OLD_TURN);
       expect(claudePrompts[1]).not.toContain(EXACT_RECENT_TURN);
       expect(claudePrompts[1]).not.toContain(STALE_SUMMARY);
+      expect(claudePrompts[1]).not.toContain(LEGACY_MEMORY);
       expect(claudePrompts[1]).not.toContain("[Context from previous conversation]");
+    } finally {
+      db.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("explicit rollback-on restores legacy summary-first and project-memory handoff hints", async () => {
+    process.env[FLAG] = "true";
+    const dbPath = join(tmpdir(), `legacy-rollback-boundary-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(dbPath);
+    const client = makeMockClient();
+    const prompts: string[] = [];
+    const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      prompts.push(args[args.length - 1]);
+      return JSON.stringify({ type: "result", result: "rollback ok", session_id: "claude-rollback-session" });
+    });
+
+    try {
+      seedLegacyAndExactHistory(db);
+      setUserCliPreference(db, CHAT_KEY, "codex");
+      applyManualCliSwitchHandoff(db, CHAT_KEY, "claude");
+
+      const claude = makeEngine("claude", db, dbPath, client, runCli);
+      await claude.handleMessages([makeMessage("continue with rollback enabled", 30)]);
+
+      expect(prompts[0]).toContain(STALE_SUMMARY);
+      expect(prompts[0]).not.toContain(EXACT_OLD_TURN);
+      expect(prompts[0]).toContain(EXACT_RECENT_TURN);
+      expect(prompts[0]).toContain("--memory-query");
+      expect(db.getMemoryCount()).toBe(1);
+      expect(db.getSession(CHAT_KEY, "claude")).toBe("claude-rollback-session");
     } finally {
       db.close();
       rmSync(dbPath, { force: true });

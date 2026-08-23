@@ -3,24 +3,24 @@ status: authoritative
 type: architecture
 authority: temporary-override
 implementation_status: implemented
-last_validated_against: issue-477
+last_validated_against: issue-539
 ---
 
 # Turn-history continuity canary
 
-Issue #477 adds a temporary rollback gate around the legacy compact-summary and project-memory continuity paths.
+Issue #477 added a temporary rollback gate around the legacy compact-summary and project-memory continuity paths. Issue #539 makes turn-history continuity the default while retaining that rollback gate.
 
-This document overrides `docs/architecture/memory-and-handoff.md` only while `BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED=false`. The existing memory-and-handoff architecture remains the rollback behavior while the flag is unset or `true`.
+This document overrides `docs/architecture/memory-and-handoff.md` while `BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED` is unset or `false`. The existing memory-and-handoff architecture remains available only as explicit rollback behavior when the flag is `true`.
 
 ## Rollout flag
 
-`BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED` defaults to enabled. Only an explicit value of `false` activates turn-history mode.
+`BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED` defaults to disabled. Only an explicit value of `true` restores legacy generated-summary/project-memory behavior.
 
 No schema migration or data deletion occurs when the flag changes. Existing `conversation_summaries` and `project_memories` rows remain on disk so rollback is one configuration change.
 
 ## Turn-history mode
 
-When the flag is `false`:
+When the flag is unset or `false`:
 
 - provider-native resume remains the primary same-provider continuity path;
 - a fresh provider receives bounded exact `conversation_turns`, not a generated compact summary;
@@ -37,8 +37,8 @@ The lane, fencing, fallback, restart, and provider-session ownership rules are u
 
 ## Rollback
 
-Set `BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED=true` (or remove the explicit `false`) and restart through the normal deployment path. Stored summaries and project memories become available again because the canary never migrates or deletes them.
+Set `BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED=true` and restart through the normal deployment path. Stored summaries and project memories become available again because the canary never migrates or deletes them. Remove the setting or set it to `false` to return to turn-history mode.
 
 ## Deletion gate
 
-Do not delete the legacy summary/compaction/project-memory paths as part of issue #477. After turn-history mode has become the qualified default and has been observed for at least one release without rollback, open a separate deletion issue. That issue owns removing the temporary flag and any legacy code or data structures that are no longer needed.
+Do not delete the legacy summary/compaction/project-memory paths as part of issue #539. After turn-history mode has been observed as the qualified default for at least one release without rollback, open a separate deletion issue. That issue owns removing the temporary flag and any legacy code or data structures that are no longer needed.
