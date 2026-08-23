@@ -27,6 +27,8 @@ The managed production trigger is a CLI install/upgrade or a subsequently observ
 - The health service checks established evidence for out-of-band/self-updated provider versions. When `installed_version != last_qualified_version`, it qualifies that provider once and persists the new result.
 - Only the changed provider is qualified.
 
+Grok remains an explicit opt-in provider rather than part of the managed automatic upgrade set. After installing or changing the Grok binary, run `npm run qualify:provider -- --provider grok` as the same runtime user and with the same qualification-evidence path the service will use before adding Grok to an interactive chain or fixed-provider deployment.
+
 No separate qualification scheduler is installed.
 
 ## Evidence
@@ -58,7 +60,9 @@ Managed upgrade output is consumed by the health auto-remediation path. A newly 
 
 On-demand `/health` and `/status` include the persistent qualification summary without adding the qualification record as a scheduled health plugin, avoiding repeated Telegram reports for the same known degraded version. `npm run doctor` prints the same concise qualification summary. Detailed per-check diagnostics remain in the evidence file.
 
-The first slice does not automatically downgrade a failed CLI. A provider with deterministic `overall: fail` evidence is excluded from interactive CLI selection and fallback chains so known-bad contracts are avoided while the binary remains installed for diagnosis. `degraded` prerequisite/transient states are surfaced but are not routing-blocked.
+The first slice does not automatically downgrade a failed CLI. For established providers, deterministic `overall: fail` evidence excludes that provider from interactive selection and fallback chains while `degraded` prerequisite/transient states remain visible but routeable.
+
+Grok is intentionally stricter while it remains opt-in: it is routeable only when the exact installed Grok version has a current `overall: pass` record for the current provider-contract version. Missing, stale, `degraded`, `fail`, or unreadable evidence keeps Grok unavailable to `/cli`, configured interactive chains, and fixed-provider dispatch.
 
 ## Regression policy
 
