@@ -62,10 +62,12 @@ describe("resolveExecutionMode", () => {
     expect(resolveExecutionMode("codex", {})).toBe("safe");
     expect(resolveExecutionMode("claude", {})).toBe("safe");
     expect(resolveExecutionMode("antigravity", {})).toBe("safe");
+    expect(resolveExecutionMode("grok", {})).toBe("safe");
   });
 
   it("lets per-bot env vars override the global mode", () => {
     expect(resolveExecutionMode("codex", { CODEX_EXECUTION_MODE: "trusted", BRIDGE_EXECUTION_MODE: "safe" })).toBe("trusted");
+    expect(resolveExecutionMode("grok", { GROK_EXECUTION_MODE: "safe", BRIDGE_EXECUTION_MODE: "trusted" })).toBe("safe");
   });
 
   it("falls back to BRIDGE_EXECUTION_MODE when no per-bot var is set", () => {

@@ -14,7 +14,6 @@ Restart=on-failure
 RestartSec=5
 KillMode=control-group
 Environment=BRIDGE_WORKSPACE_LOCK_MODE=off
-Environment=GROK_EXECUTION_MODE=safe
 Environment=NODE_ENV=production
 
 [Install]
