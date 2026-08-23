@@ -180,6 +180,8 @@ Direct restarts are for an external operator/session. Keep helper sudo narrow; d
 
 Health events are evidence, not mutation authority. Health event Runs use `health:report-only`; they do not grant deploy/restart/credential/permission/repository mutation authority. `HEALTH_EVENT_TOKEN` is required for authenticated scheduler-to-agent event execution and the path fails closed when absent.
 
+Health suggestions must execute through the configured agent/provider kind so invocation, parsing, and rendering use the same provider contract as normal Runs; the health service must not invent a parallel provider invocation path.
+
 Manual `/health` returns one combined report; plugin reports may be persisted silently for status context rather than double-sent. `HEALTH_SUGGEST_*` is the documented suggestion config family; `HEALTH_CLI_*` remains compatibility-only.
 
 ### CLI effort
