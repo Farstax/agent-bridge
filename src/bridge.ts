@@ -19,6 +19,7 @@ import {
   readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
   setAntigravityModel, ensureAntigravityStateDirs, toAntigravityModelLabel,
 } from "./providers/antigravityRuntime.js";
+import { isGrokRouteable } from "./providers/grokAvailability.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 import { classifyAnyProviderError, classifyProviderError, isFallbackEligibleProviderError } from "./providers/errorClassification.js";
 
@@ -27,6 +28,9 @@ export function getBridgeProjectDir(): string {
 }
 
 export function getCliWorkingDir(bot?: "codex" | "antigravity" | "claude" | "grok"): string {
+  if (bot === "grok" && !isGrokRouteable()) {
+    throw new Error("Grok Build is unavailable until authenticated and current provider qualification passes");
+  }
   if (bot === "codex" && process.env.CODEX_PROJECT_DIR) return process.env.CODEX_PROJECT_DIR;
   if (bot === "antigravity" && (process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR)) {
     return process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR!;
