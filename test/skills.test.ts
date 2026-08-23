@@ -34,13 +34,13 @@ afterEach(() => {
 });
 
 describe("shared skills catalog", () => {
-  it("lists the consolidated SDLC skills", () => {
+  it("lists the consolidated SDLC skills plus the legacy compatibility alias", () => {
     const names = listLocalCatalog().map((entry) => entry.name);
     expect(names).toContain("requirements-to-acceptance");
     expect(names).toContain("red-green-refactor-tdd");
     expect(names).toContain("release-readiness-review");
     expect(names).toContain("delivery-directives");
-    expect(names).not.toContain("risk-based-test-strategy");
+    expect(names).toContain("risk-based-test-strategy");
   });
 
   it("accepts a standards-compatible SKILL.md without skill.json", () => {
@@ -86,7 +86,6 @@ describe("shared skills catalog", () => {
     for (const name of listLocalCatalog().map((entry) => entry.name)) {
       expect(installScript).toContain(name);
     }
-    expect(installScript).not.toContain("risk-based-test-strategy");
     expect(installScript).toContain("DEFAULT_AGENT_BRIDGE_SKILLS");
   });
 
