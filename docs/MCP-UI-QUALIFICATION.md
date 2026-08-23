@@ -47,6 +47,19 @@ The test contained an oversized Save button whose defect was visual. The model:
 
 No console or network defect was present. Temporary MCP registrations, fixtures, screenshots, servers, and worktrees were removed after the spike.
 
+## Managed Linux prerequisites
+
+The qualified path does not require a desktop session or an Agent Bridge browser service. A managed Linux workspace needs:
+
+- an authenticated, supported provider CLI running as the Agent Bridge runtime user;
+- Node/npm/npx availability for a local stdio MCP package when that is the selected installation path;
+- the qualified Playwright MCP version (`0.0.79` for this evidence point), pinned until a newer version is requalified;
+- headless Chromium plus the system libraries required for that Chromium build, runnable by the same runtime user;
+- provider-native MCP configuration visible to the runtime user's headless provider invocation;
+- writable, task-scoped browser/output state where the MCP requires it.
+
+Run Chromium headlessly. Isolate browser state for concurrent or disposable tasks where practical. Preserve the Chromium sandbox unless the host specifically requires and qualifies an exception. Do not add an X server, desktop browser session, or Bridge-owned browser lifecycle merely for this workflow.
+
 ## Production boundary
 
 The supported architecture is:
