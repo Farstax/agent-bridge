@@ -8,6 +8,7 @@ import {
 let db: BridgeDb;
 
 beforeEach(() => {
+  process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "true";
   db = openDb(":memory:");
 });
 

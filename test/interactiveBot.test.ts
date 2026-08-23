@@ -2,7 +2,7 @@
  * Tests for the interactive bot's CLI routing and /switch + /cli commands.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
 import type { TelegramUpdate } from "../src/types.js";
@@ -28,6 +28,14 @@ import {
 import { isHandoffRequired } from "../src/handoffState.js";
 
 const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
+
+beforeEach(() => {
+  process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "true";
+});
+
+afterEach(() => {
+  delete process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED;
+});
 
 describe("getUserCliPreference", () => {
   let db: BridgeDb;

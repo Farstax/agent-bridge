@@ -18,11 +18,13 @@ describe("healthy capacity-fallback compaction", () => {
   let db: BridgeDb;
 
   beforeEach(() => {
+    process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "true";
     dbPath = join(tmpdir(), `fallback-compaction-${Date.now()}-${Math.random()}.sqlite`);
     db = openDb(dbPath);
   });
 
   afterEach(() => {
+    delete process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED;
     db.close();
     try { rmSync(dbPath); } catch {}
   });

@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { extractProjectMemorySidecars, storeProjectMemoryCandidate } from "../src/projectMemory.js";
+
+beforeEach(() => {
+  process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "true";
+});
+
+afterEach(() => {
+  delete process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED;
+});
 
 describe("project memory sidecar extraction", () => {
   it("does not strip sidecar examples inside fenced code blocks", () => {
