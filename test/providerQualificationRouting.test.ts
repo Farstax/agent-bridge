@@ -71,7 +71,7 @@ describe("provider qualification routing", () => {
     expect([...getQualificationFailedProviders(evidencePath, { agy: "1.1.13" })]).toEqual([]);
   });
 
-  it("requires current passing evidence before Grok becomes routeable", () => {
+  it("tracks current passing Grok evidence for health and diagnostics", () => {
     const root = mkdtempSync(join(tmpdir(), "qualification-routing-grok-pass-"));
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord({
@@ -118,7 +118,6 @@ describe("provider qualification routing", () => {
       exists: () => true,
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy"]),
-      qualifiedProviders: new Set(["grok"]),
     });
 
     expect([...available]).toEqual(["claude", "grok"]);
@@ -130,7 +129,6 @@ describe("provider qualification routing", () => {
       exists: () => true,
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy", "grok"]),
-      qualifiedProviders: new Set(["grok"]),
     });
 
     expect([...available]).toEqual(["claude"]);
