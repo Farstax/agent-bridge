@@ -14,7 +14,7 @@ function usage(): never {
     "Usage:",
     "  npx tsx scripts/skill-manager.ts list",
     "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy]",
-    "  npx tsx scripts/skill-manager.ts project-user <skill-name> [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts project-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
   ].join("\n"));
@@ -57,9 +57,8 @@ async function main(): Promise<void> {
 
   if (command === "project-user") {
     if (!maybeSkillName) usage();
-    const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
-    projectUserSkillGlobal(maybeSkillName, { linkMode });
-    console.log(`Projected user skill ${maybeSkillName} (${linkMode})`);
+    projectUserSkillGlobal(maybeSkillName);
+    console.log(`Projected user skill ${maybeSkillName} (symlink)`);
     return;
   }
 
