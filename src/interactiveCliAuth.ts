@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
-import { getQualificationFailedProviders, getQualificationPassedProviders } from "./providers/qualificationStatus.js";
+import { getQualificationFailedProviders, isProviderQualificationPassed } from "./providers/qualificationStatus.js";
 import type { ProviderId } from "./providers/types.js";
 
 export interface InteractiveCliAuthPaths {
@@ -51,7 +51,6 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const exists = options.exists ?? existsSync;
   const commandExists = options.commandExists ?? commandExistsOnPath;
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
-  const qualifiedProviders = options.qualifiedProviders ?? getQualificationPassedProviders();
   const env = options.env ?? process.env;
   const paths = resolveInteractiveCliAuthPaths(home);
   const available = new Set<CliKind>();
@@ -62,11 +61,15 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
 
   // Grok is deliberately stricter than established providers: registration is
   // opt-in and routing stays fail-closed until this exact installed binary has
-  // a current passing provider-qualification record.
+  // a current passing provider-qualification record. Do not probe provider
+  // versions at all unless Grok authentication is present.
   const grokAuthenticated = paths.grok.some(exists) || Boolean(env.XAI_API_KEY?.trim());
-  if (grokAuthenticated && qualifiedProviders.has("grok") && !failedProviders.has("grok")) {
-    available.add("grok");
-  }
+  const grokQualified = grokAuthenticated && (
+    options.qualifiedProviders
+      ? options.qualifiedProviders.has("grok")
+      : isProviderQualificationPassed("grok")
+  );
+  if (grokQualified && !failedProviders.has("grok")) available.add("grok");
 
   void commandExists; // retained for the existing injectable availability seam.
   return available;
