@@ -1,14 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
 import { storeProjectMemoryCandidate } from "../src/projectMemory.js";
-
-beforeEach(() => {
-  process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "true";
-});
-
-afterEach(() => {
-  delete process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED;
-});
 
 describe("project memory resolution atomicity", () => {
   it("rolls back the resolver insert and earlier resolutions when a later resolution fails", () => {

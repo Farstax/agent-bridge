@@ -81,13 +81,11 @@ describe("BridgeEngine", () => {
   let db: ReturnType<typeof openDb>;
 
   beforeEach(() => {
-    process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "true";
     dbPath = join(tmpdir(), `engine-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
     db = openDb(dbPath);
   });
 
   afterEach(() => {
-    delete process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED;
     delete process.env.BRIDGE_COMPACT_CHUNK_MAX_CHARS;
     delete process.env.BRIDGE_COMPACT_PARALLELISM;
     delete process.env.BRIDGE_MEMORY_EXTRACTOR_ENABLED;

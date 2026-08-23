@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
@@ -21,6 +21,10 @@ const EXACT_OLD_TURN = "exact retained decision: use the falcon rollout";
 const EXACT_RECENT_TURN = "exact retained follow-up: falcon remains current";
 const STALE_SUMMARY = "STALE GENERATED SUMMARY MUST NOT BE SEEDED";
 const LEGACY_MEMORY = "legacy project memory must stay hidden by default";
+
+beforeEach(() => {
+  delete process.env[FLAG];
+});
 
 function makeMockClient() {
   return {
@@ -103,7 +107,7 @@ function makeEngine(
 }
 
 afterEach(() => {
-  delete process.env[FLAG];
+  process.env[FLAG] = "true";
   delete process.env.BRIDGE_CONTEXT_MAX_CHARS;
   vi.restoreAllMocks();
 });

@@ -41,12 +41,13 @@ describe("turn-history continuity canary (issue #477)", () => {
   let db: BridgeDb;
 
   beforeEach(() => {
+    delete process.env[FLAG];
     dbPath = join(tmpdir(), `legacy-memory-canary-${Date.now()}-${Math.random()}.sqlite`);
     db = openDb(dbPath);
   });
 
   afterEach(() => {
-    delete process.env[FLAG];
+    process.env[FLAG] = "true";
     delete process.env.BRIDGE_CONTEXT_MAX_CHARS;
     delete process.env.BRIDGE_PRESEED_COMPACT_MODE;
     delete process.env.BRIDGE_PRESEED_COMPACT_CHARS;

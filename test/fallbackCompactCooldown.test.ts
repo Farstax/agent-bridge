@@ -14,7 +14,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.BRIDGE_FALLBACK_COMPACT_COOLDOWN_MS;
-  delete process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED;
+  process.env.BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED = "true";
   vi.useRealTimers();
 });
 

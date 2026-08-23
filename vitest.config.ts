@@ -4,7 +4,10 @@ import { resolve, dirname } from "node:path";
 
 export default defineConfig({
   test: {
-    env: { BRIDGE_SKIP_MEMORY_IMPORT: "1" },
+    env: {
+      BRIDGE_SKIP_MEMORY_IMPORT: "1",
+      BRIDGE_LEGACY_MEMORY_COMPACTION_ENABLED: "true",
+    },
     pool: "forks",
     // Bound aggregate memory without serializing the entire suite. Tests that
     // genuinely require ordering must scope it locally with sequential APIs.
