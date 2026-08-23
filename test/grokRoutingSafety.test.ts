@@ -139,7 +139,7 @@ describe("managed Grok execution mode", () => {
     }
   });
 
-  it("lets the Grok-specific safe mode suppress a shared trusted request", () => {
+  it("lets safe mode suppress trusted execution", () => {
     const invocation = buildCliInvocation({
       bot: "grok",
       prompt: "test",
