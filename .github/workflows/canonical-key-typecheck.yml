@@ -20,31 +20,35 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - name: Repair parity event contexts
+      - name: Repair remaining direct event contexts
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('src/messageDelivery.ts')
+
+          p = Path('src/autonomousGoalRuntime.ts')
           text = p.read_text()
-          replacements = [
-            ('        chatId: String(chatId),\n        command: "validation",', '        chatId: String(chatId),\n        chatKey: String(chatId),\n        command: "validation",'),
-            ('          chatId: String(chatId),\n          error:', '          chatId: String(chatId),\n          chatKey: String(chatId),\n          error:'),
-            ('          chatId: String(chatId),\n          text: expectedText,', '          chatId: String(chatId),\n          chatKey: String(chatId),\n          text: expectedText,'),
-          ]
-          for old, new in replacements:
-              if text.count(old) != 1:
-                  raise SystemExit(f'expected one parity event occurrence: {old!r}')
-              text = text.replace(old, new, 1)
-          p.write_text(text)
+          old = 'eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },'
+          new = 'eventContext: { runId, bot: current.bot, chatId: goalChatKey(goalId), chatKey: goalChatKey(goalId), threadId: undefined, serviceId: laneHandle.serviceId, acquisitionId: laneHandle.acquisitionId },'
+          if text.count(old) != 1:
+              raise SystemExit(f'autonomous context match count={text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+
+          p = Path('src/health/eventIngress.ts')
+          text = p.read_text()
+          old = '''      chatId: HEALTH_RUN_CHAT_KEY,\n      threadId: undefined,'''
+          new = '''      chatId: HEALTH_RUN_CHAT_KEY,\n      chatKey: HEALTH_RUN_CHAT_KEY,\n      threadId: undefined,'''
+          if text.count(old) != 1:
+              raise SystemExit(f'health context match count={text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
           PY
       - name: Commit source repair
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/messageDelivery.ts
-          git commit -m "fix: keep parity events on canonical key [canonical-typecheck-source]"
+          git add src/autonomousGoalRuntime.ts src/health/eventIngress.ts
+          git commit -m "fix: carry canonical key through direct event producers [canonical-typecheck-source2]"
           git push origin HEAD:fix/278-canonical-chat-key
       - run: npm ci
       - name: Capture contract verification
@@ -53,7 +57,7 @@ jobs:
           set +e
           npm run typecheck > /tmp/typecheck.log 2>&1
           typecheck_status=$?
-          npx vitest run test/canonicalConversationIdentity.test.ts test/eventStore.test.ts test/runIngress.test.ts > /tmp/tests.log 2>&1
+          npx vitest run test/canonicalConversationIdentity.test.ts test/eventStore.test.ts test/runIngress.test.ts test/autonomousGoalRuntime.test.ts test/health-event-ingress.test.ts > /tmp/tests.log 2>&1
           tests_status=$?
           set -e
           {
@@ -66,5 +70,5 @@ jobs:
         shell: bash
         run: |
           git add .canonical-typecheck-report.txt
-          git commit -m "chore: capture canonical key verification [canonical-typecheck-report]"
+          git commit -m "chore: capture canonical key verification [canonical-typecheck-report2]"
           git push origin HEAD:fix/278-canonical-chat-key
