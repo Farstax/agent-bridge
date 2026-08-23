@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveSkillPaths, verifySkillGlobal } from "../src/skills.js";
-import { projectUserSkillGlobal } from "../src/userSkills.js";
+import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 const tempDirs: string[] = [];
 
@@ -27,7 +27,7 @@ afterEach(() => {
   for (const path of tempDirs.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-describe("user skill projection", () => {
+describe("user skill management", () => {
   it("registers a canonical user skill and reuses native provider projection", () => {
     const home = makeTempDir("user-skill-home");
     const repoRoot = makeTempDir("user-skill-repo");
@@ -59,6 +59,37 @@ describe("user skill projection", () => {
 
     expect(readlinkSync(join(paths.codexSkillsDir, "my-review"))).toBe("../../.agents/skills/my-review");
     expect(verifySkillGlobal("my-review", { homeDir: home }).ok).toBe(true);
+  });
+
+  it("removes only an intact user skill and its managed projections", () => {
+    const home = makeTempDir("user-skill-home");
+    const repoRoot = makeTempDir("user-skill-repo");
+    const paths = resolveSkillPaths(home);
+    writeSkill(join(paths.agentsSkillsDir, "my-review"), "my-review");
+    projectUserSkillGlobal("my-review", { homeDir: home, repoRoot });
+
+    uninstallUserSkillGlobal("my-review", { homeDir: home, repoRoot });
+
+    expect(existsSync(join(paths.agentsSkillsDir, "my-review"))).toBe(false);
+    expect(existsSync(join(paths.codexSkillsDir, "my-review"))).toBe(false);
+    expect(existsSync(join(paths.geminiSkillsDir, "my-review"))).toBe(false);
+    expect(existsSync(join(paths.claudeSkillsDir, "my-review"))).toBe(false);
+  });
+
+  it("fails closed when removal would delete unrelated native content", () => {
+    const home = makeTempDir("user-skill-home");
+    const repoRoot = makeTempDir("user-skill-repo");
+    const paths = resolveSkillPaths(home);
+    const claudePath = join(paths.claudeSkillsDir, "my-review");
+    writeSkill(join(paths.agentsSkillsDir, "my-review"), "my-review");
+    projectUserSkillGlobal("my-review", { homeDir: home, repoRoot });
+    rmSync(claudePath, { recursive: true, force: true });
+    writeSkill(claudePath, "my-review");
+
+    expect(() => uninstallUserSkillGlobal("my-review", { homeDir: home, repoRoot }))
+      .toThrow(/not this managed projection/i);
+    expect(existsSync(join(paths.agentsSkillsDir, "my-review"))).toBe(true);
+    expect(existsSync(claudePath)).toBe(true);
   });
 
   it("rejects invalid names before resolving shared or native paths", () => {
