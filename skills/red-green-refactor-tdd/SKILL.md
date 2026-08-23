@@ -28,7 +28,7 @@ For a defect:
 
 Prefer production-shaped behavior over convenient test behavior. Use broader evidence only when the contract crosses that boundary:
 
-- external API/CLI/browser -> exercise or qualify the real request/protocol shape when mocks cannot prove it;
+- external API/CLI/browser -> exercise or qualify the real request/protocol shape when mocks cannot prove the real request/protocol shape when mocks cannot prove the real request/protocol shape;
 - timeout/network/concurrency -> inject hostile failure, non-settling operations, cancellation, retry, or race behavior as relevant;
 - persistence/install/systemd/PATH/env -> exercise the effective state/runtime boundary, not only generated text;
 - credentials/permissions -> prove the final effective authority, not only an earlier local check.
