@@ -40,17 +40,17 @@ the installed Skills.
 
 ## Services
 
-All Telegram conversation services use the same production runtime. The three
-dedicated provider units set `BRIDGE_PROVIDER_LOCK` and keep their existing
-provider-specific tokens and persistent databases. The interactive unit leaves
-the lock unset so `/cli` switching and configured provider fallback remain
-available.
+All Telegram conversation services use the same production runtime. Dedicated
+provider units set `BRIDGE_PROVIDER_LOCK` and keep provider-specific tokens and
+persistent databases. The interactive unit leaves the lock unset so `/cli`
+switching and configured provider fallback remain available.
 
 | Service | Entry point | Surface |
 |---|---|---|
 | `agent-bridge-codex.service` | `src/index-interactive.ts` | Telegram, locked to Codex |
 | `agent-bridge-antigravity.service` | `src/index-interactive.ts` | Telegram, locked to Antigravity |
 | `agent-bridge-claude.service` | `src/index-interactive.ts` | Telegram, locked to Claude |
+| `agent-bridge-grok.service` | `src/index-interactive.ts` | Telegram, locked to qualified opt-in Grok Build |
 | `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable |
 | `agent-bridge-health.service` | `src/index-health.ts` | Telegram |
 | `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord |
@@ -70,10 +70,25 @@ rollout helpers are documented in [docs/INITIAL-INSTALL.md](docs/INITIAL-INSTALL
 and [docs/GUARDED-ROLLOUT.md](docs/GUARDED-ROLLOUT.md).
 
 The interactive fallback order is configured with
-`INTERACTIVE_CLI_CHAIN`. `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity`
+`INTERACTIVE_CLI_CHAIN`. `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok`
 turns the same Telegram runtime into a fixed-provider instance; the shipped
 dedicated systemd units set this automatically. Explicit `AGENT_BRIDGE_SKILLS`
 overrides keep their existing behaviour.
+
+Grok is deliberately stricter than the established providers. Installing the
+CLI, adding `grok` to a chain, or setting `BRIDGE_PROVIDER_LOCK=grok` does not
+make it routeable by itself. The exact installed Grok binary must first pass:
+
+```bash
+npm run qualify:provider -- --provider grok
+```
+
+A current `overall: pass` qualification record is required. Missing, stale,
+degraded, failed, or unreadable evidence keeps Grok unavailable. The managed
+Grok unit is only selected by the installer when `TELEGRAM_BOT_TOKEN_GROK` is
+configured; `GROK_COMMAND` can pin the exact executable path. Authentication
+may use the runtime user's `~/.grok/auth.json` or, for the dedicated Grok unit,
+`XAI_API_KEY`.
 
 ## Data compatibility
 
@@ -82,7 +97,7 @@ Schema version 9 removes the obsolete Engineering Worker tables, including
 role-assignment rows. The migration accepts populated legacy tables because
 their data is obsolete by design. Active runtime state remains intact.
 
-Schema version 10 adds Grok Build session identity columns. Grok stays out of default fallback until explicitly selected.
+Schema version 10 adds Grok Build session identity columns. Grok stays out of default fallback until explicitly selected and qualified.
 
 Provider-lock convergence does not move or change existing dedicated provider
 databases. Locked units keep the `shared` database role; the switchable
