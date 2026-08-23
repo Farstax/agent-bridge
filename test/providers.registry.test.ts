@@ -67,5 +67,6 @@ describe("provider registry", () => {
   it("exposes fallback metadata", () => {
     const codex = getProviderAdapter("codex");
     expect(typeof codex.capabilities.fallbackTarget).toBe("boolean");
+    expect(getProviderAdapter("grok").capabilities.fallbackTarget).toBe(true);
   });
 });
