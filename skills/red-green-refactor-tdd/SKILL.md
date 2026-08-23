@@ -1,29 +1,40 @@
 ---
 name: red-green-refactor-tdd
-description: "Use for software development, refactoring, bug fixing, and behavior changes where work should follow red-green-refactor TDD: failing test first, smallest passing implementation, then cleanup with tests green."
+description: Use for software changes where behavior should be reproduced first, fixed with the smallest implementation, and protected by durable regression evidence.
 ---
 
 # Red Green Refactor TDD
 
-Use red-green-refactor as the default development loop for all software changes.
+Use red-green-refactor for behavior changes.
 
-<!-- BEGIN AGENT_BRIDGE_RUNTIME_GUIDANCE -->
 ## Loop
 
-1. Red: write or update a test that describes the desired behavior and fails for the right reason.
-2. Green: make the smallest production change that passes the test.
-3. Refactor: improve the design while keeping tests green.
+1. **Red** — write or update the narrowest deterministic test that proves the desired behavior or reproduces the defect, and observe it fail for the expected reason.
+2. **Green** — make the smallest correct production change and rerun that focused test plus directly affected boundary tests.
+3. **Refactor** — improve structure only when useful, keeping the same behavior green.
 
-Do not make production behavior changes before the red step unless the codebase has no viable test harness. If no harness exists, explain that constraint and create the smallest useful characterization or smoke test before changing behavior.
+The safety invariant is observed RED before the implementation and GREEN afterwards. Separate pushed RED/GREEN commits are optional; do not create Git/CI choreography solely to demonstrate the process.
 
-## By Work Type
+## Bugs: fix the invariant, not just the occurrence
 
-- Feature work: write the first acceptance or unit test for the new behavior before implementation.
-- Bug fix: reproduce the bug with a failing regression test before fixing it.
-- Refactor: add or identify characterization tests that protect existing behavior before changing structure.
-- Legacy code: lock down current behavior first, then change behavior with explicit tests.
+For a defect:
+
+- name the violated invariant;
+- search sibling callers, providers, modes, transports, install paths, and equivalent implementations for the same defect class;
+- repair in-scope occurrences or make the shared owner enforce the invariant;
+- keep one durable canonical regression at the narrowest boundary that would catch recurrence.
+
+## Match evidence to the real boundary
+
+Prefer production-shaped behavior over convenient test behavior. Use broader evidence only when the contract crosses that boundary:
+
+- external API/CLI/browser -> exercise or qualify the real request/protocol shape when mocks cannot prove it;
+- timeout/network/concurrency -> inject hostile failure, non-settling operations, cancellation, retry, or race behavior as relevant;
+- persistence/install/systemd/PATH/env -> exercise the effective state/runtime boundary, not only generated text;
+- credentials/permissions -> prove the final effective authority, not only an earlier local check.
+
+Do not copy production decision logic into the test oracle or assert incidental source shape when observable behavior can be exercised directly.
 
 ## Verification
 
-Run the focused test first. Add broader local tests only when the blast radius warrants them. Where repository policy makes exact-head GitHub CI the authoritative full-suite gate, do not duplicate that full-suite run locally without a concrete investigation reason. In the final note, report the red test, the focused green verification, the exact-head CI evidence when applicable, and any checks that could not be run.
-<!-- END AGENT_BRIDGE_RUNTIME_GUIDANCE -->
+Use focused local validation during iteration. Widen only when the changed surface warrants it. The repository's final exact-head CI owns the full regression gate; do not routinely duplicate that suite locally or on intermediate candidate states.
