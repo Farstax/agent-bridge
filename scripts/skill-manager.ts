@@ -7,12 +7,14 @@ import {
   verifySkillGlobal,
   type SkillLinkMode,
 } from "../src/skills.js";
+import { projectUserSkillGlobal } from "../src/userSkills.js";
 
 function usage(): never {
   console.error([
     "Usage:",
     "  npx tsx scripts/skill-manager.ts list",
     "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts project-user <skill-name> [--link-mode symlink|copy]",
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
   ].join("\n"));
@@ -50,6 +52,14 @@ async function main(): Promise<void> {
     const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
     installSkillGlobal(maybeSkillName, { force: hasFlag(rest, "--force"), linkMode });
     console.log(`Installed ${maybeSkillName} (${linkMode})`);
+    return;
+  }
+
+  if (command === "project-user") {
+    if (!maybeSkillName) usage();
+    const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
+    projectUserSkillGlobal(maybeSkillName, { linkMode });
+    console.log(`Projected user skill ${maybeSkillName} (${linkMode})`);
     return;
   }
 
