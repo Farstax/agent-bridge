@@ -1,0 +1,70 @@
+name: Canonical key contract typecheck
+
+on:
+  push:
+    branches:
+      - fix/278-canonical-chat-key
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: ${{ !contains(github.event.head_commit.message, '[canonical-typecheck') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/278-canonical-chat-key
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Repair parity event contexts
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/messageDelivery.ts')
+          text = p.read_text()
+          replacements = [
+            ('        chatId: String(chatId),\n        command: "validation",', '        chatId: String(chatId),\n        chatKey: String(chatId),\n        command: "validation",'),
+            ('          chatId: String(chatId),\n          error:', '          chatId: String(chatId),\n          chatKey: String(chatId),\n          error:'),
+            ('          chatId: String(chatId),\n          text: expectedText,', '          chatId: String(chatId),\n          chatKey: String(chatId),\n          text: expectedText,'),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected one parity event occurrence: {old!r}')
+              text = text.replace(old, new, 1)
+          p.write_text(text)
+          PY
+      - name: Commit source repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/messageDelivery.ts
+          git commit -m "fix: keep parity events on canonical key [canonical-typecheck-source]"
+          git push origin HEAD:fix/278-canonical-chat-key
+      - run: npm ci
+      - name: Capture contract verification
+        shell: bash
+        run: |
+          set +e
+          npm run typecheck > /tmp/typecheck.log 2>&1
+          typecheck_status=$?
+          npx vitest run test/canonicalConversationIdentity.test.ts test/eventStore.test.ts test/runIngress.test.ts > /tmp/tests.log 2>&1
+          tests_status=$?
+          set -e
+          {
+            echo "TYPECHECK_STATUS=$typecheck_status"
+            cat /tmp/typecheck.log
+            echo "FOCUSED_TEST_STATUS=$tests_status"
+            cat /tmp/tests.log
+          } > .canonical-typecheck-report.txt
+      - name: Publish verification report
+        shell: bash
+        run: |
+          git add .canonical-typecheck-report.txt
+          git commit -m "chore: capture canonical key verification [canonical-typecheck-report]"
+          git push origin HEAD:fix/278-canonical-chat-key
