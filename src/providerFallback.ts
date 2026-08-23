@@ -57,22 +57,24 @@ export class ProviderFallbackChain {
     return this.chain[idx];
   }
 
+  private clearUnavailableGrokPreference(chatKey: string): void {
+    try {
+      this.db.raw
+        .prepare(`UPDATE bridge_state SET interactive_cli_preference = NULL WHERE chat_id = ? AND interactive_cli_preference = ?`)
+        .run(chatKey, "grok");
+    } catch { /* preference column may not exist on non-interactive test DBs */ }
+  }
+
   setActiveCli(chatKey: string, cli: string): void {
-    const idx = this.chain.indexOf(cli);
-    if (idx === -1) return;
-    if (!this.isCliAvailable(cli)) {
-      if (cli === "grok") {
-        // Discord writes the preference before calling this method. Undo an
-        // unavailable Grok selection so a stale/crafted interaction cannot
-        // persist a provider that is not routeable.
-        try {
-          this.db.raw
-            .prepare(`UPDATE bridge_state SET interactive_cli_preference = NULL WHERE chat_id = ? AND interactive_cli_preference = ?`)
-            .run(chatKey, "grok");
-        } catch { /* preference column may not exist on non-interactive test DBs */ }
-      }
+    // Discord writes the preference before calling this method. Reject and scrub
+    // unavailable Grok before chain membership is checked because the default
+    // established-provider chain intentionally does not contain Grok.
+    if (cli === "grok" && !this.isCliAvailable(cli)) {
+      this.clearUnavailableGrokPreference(chatKey);
       return;
     }
+    const idx = this.chain.indexOf(cli);
+    if (idx === -1 || !this.isCliAvailable(cli)) return;
     this.chatActiveIdx.set(chatKey, idx);
   }
 
