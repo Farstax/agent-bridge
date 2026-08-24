@@ -17,9 +17,9 @@ function socketPath(): string {
   return join(dir, "notify.sock");
 }
 
-function post(path: string, text: string): Promise<number> {
+function post(path: string, body: unknown): Promise<number> {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ text });
+    const payload = JSON.stringify(body);
     const req = http.request({ socketPath: path, path: "/notify", method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
       res.resume();
       res.on("end", () => resolve(res.statusCode ?? 0));
@@ -30,7 +30,7 @@ function post(path: string, text: string): Promise<number> {
 }
 
 describe("durable owner notification delivery (#562)", () => {
-  it("records the delivered assistant turn after Telegram succeeds", async () => {
+  it("records an opted-in delivered assistant turn after Telegram succeeds", async () => {
     const path = socketPath();
     const delivered: Array<[string, string]> = [];
     const ingress: OwnerNotificationIngress = await startOwnerNotificationIngress({
@@ -41,8 +41,23 @@ describe("durable owner notification delivery (#562)", () => {
     });
     cleanup.push(() => ingress.stop());
 
-    expect(await post(path, "Workspace is ready.")).toBe(202);
+    expect(await post(path, { text: "Workspace is ready.", recordInConversation: true })).toBe(202);
     expect(delivered).toEqual([["42", "Workspace is ready."]]);
+  });
+
+  it("keeps ordinary notifications out of conversation history", async () => {
+    const path = socketPath();
+    const recordDeliveredAssistantTurn = vi.fn();
+    const ingress: OwnerNotificationIngress = await startOwnerNotificationIngress({
+      socketPath: path,
+      allowedUserIds: new Set(["42"]),
+      client: { sendMessage: vi.fn(async () => ({ ok: true })) },
+      recordDeliveredAssistantTurn,
+    });
+    cleanup.push(() => ingress.stop());
+
+    expect(await post(path, { text: "Health recovered." })).toBe(202);
+    expect(recordDeliveredAssistantTurn).not.toHaveBeenCalled();
   });
 
   it("does not record history when Telegram delivery fails", async () => {
@@ -56,7 +71,20 @@ describe("durable owner notification delivery (#562)", () => {
     });
     cleanup.push(() => ingress.stop());
 
-    expect(await post(path, "Workspace is ready.")).toBe(500);
+    expect(await post(path, { text: "Workspace is ready.", recordInConversation: true })).toBe(500);
     expect(recordDeliveredAssistantTurn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-boolean conversation-persistence request", async () => {
+    const path = socketPath();
+    const ingress: OwnerNotificationIngress = await startOwnerNotificationIngress({
+      socketPath: path,
+      allowedUserIds: new Set(["42"]),
+      client: { sendMessage: vi.fn(async () => ({ ok: true })) },
+      recordDeliveredAssistantTurn: vi.fn(),
+    });
+    cleanup.push(() => ingress.stop());
+
+    expect(await post(path, { text: "Workspace is ready.", recordInConversation: "yes" })).toBe(400);
   });
 });
