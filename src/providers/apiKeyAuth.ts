@@ -74,6 +74,7 @@ const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ProviderId, ReadonlySet<
 };
 const PROBE_TIMEOUT_MS = 15_000;
 const verificationCache = new Map<string, boolean>();
+const verificationInFlight = new Map<string, Promise<boolean>>();
 
 interface ProbeExecOptions {
   encoding: "utf8";
@@ -157,6 +158,7 @@ export function redactProviderApiKeySecrets(text: string, env: Env = process.env
 
 export function clearProviderApiKeyVerificationCache(): void {
   verificationCache.clear();
+  verificationInFlight.clear();
 }
 
 function buildProbeEnv(provider: ProviderId, env: Env): NodeJS.ProcessEnv {
@@ -354,20 +356,31 @@ export async function verifyProviderApiKey(
   if (!apiKey) return false;
 
   const key = cacheKey(provider, apiKey);
-  if (options.useCache !== false && verificationCache.has(key)) {
-    return verificationCache.get(key) === true;
+  if (options.useCache !== false) {
+    if (verificationCache.has(key)) return verificationCache.get(key) === true;
+    const inFlight = verificationInFlight.get(key);
+    if (inFlight) return inFlight;
   }
 
-  let verified = false;
+  const verification = (async () => {
+    let verified = false;
+    try {
+      await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
+      verified = true;
+    } catch {
+      verified = false;
+    }
+    if (options.useCache !== false) verificationCache.set(key, verified);
+    return verified;
+  })();
+
+  if (options.useCache === false) return verification;
+  verificationInFlight.set(key, verification);
   try {
-    await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
-    verified = true;
-  } catch {
-    verified = false;
+    return await verification;
+  } finally {
+    if (verificationInFlight.get(key) === verification) verificationInFlight.delete(key);
   }
-
-  if (options.useCache !== false) verificationCache.set(key, verified);
-  return verified;
 }
 
 export async function verifyConfiguredProviderApiKeys(
