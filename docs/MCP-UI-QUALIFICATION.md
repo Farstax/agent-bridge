@@ -78,9 +78,9 @@ Use the `manage-mcp` Skill for provider-native installation/configuration and th
 
 ## Credential boundary
 
-MCP configuration should reference environment-variable names, never persist credential values. Managed Farstax workspaces can use the existing Platform workspace Secrets path to provide those variables to provider CLI processes.
+MCP configuration should reference environment-variable names and never persist credential values. The deployment environment supplies those variables through its existing secret-management or environment-injection mechanism; Agent Bridge does not depend on or prescribe a particular hosting product or secret manager.
 
-That path is suitable for user-owned API/MCP credentials but is not hidden from the provider/model. A credential that must remain hidden requires a scoped local service (for example a future OpenConnector integration), not encryption followed by plaintext injection into the CLI environment.
+A credential injected into the provider process is not hidden from that provider or its tools. Credentials that must remain hidden require a separately scoped broker/service outside the provider environment rather than encryption followed by plaintext injection into the CLI environment. This does not justify an Agent Bridge MCP-specific credential subsystem.
 
 ## Agy and Grok follow-up qualification
 
