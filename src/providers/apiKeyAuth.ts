@@ -117,7 +117,17 @@ export function getProviderApiKeySecretValues(env: Env = process.env): string[] 
   )].sort((a, b) => b.length - a.length);
 }
 
-/** Keep provider credentials out of unrelated provider children. */
+export function isProviderApiKeyVerified(provider: ProviderId, env: Env = process.env): boolean {
+  const apiKey = getConfiguredProviderApiKey(provider, env);
+  if (!apiKey) return false;
+  return verificationCache.get(cacheKey(provider, apiKey)) === true;
+}
+
+/**
+ * Keep provider credentials out of unrelated provider children. The issue-572
+ * candidate key itself is withheld until its isolated native probe has passed,
+ * so a bad optional key cannot override an otherwise valid account session.
+ */
 export function filterProviderCredentialEnv(
   bot: BotKind | undefined,
   env: NodeJS.ProcessEnv,
@@ -125,8 +135,15 @@ export function filterProviderCredentialEnv(
   if (!bot) return { ...env };
   const provider: ProviderId = bot === "antigravity" ? "agy" : bot;
   const allowed = PROVIDER_ALLOWED_SECRET_ENV_KEYS[provider];
+  const candidateKey = PROVIDER_API_KEY_AUTH[provider].envVar;
+  const candidateVerified = isProviderApiKeyVerified(provider, env);
   return Object.fromEntries(
-    Object.entries(env).filter(([key]) => !PROVIDER_SECRET_ENV_KEY_SET.has(key) || allowed.has(key)),
+    Object.entries(env).filter(([key]) => {
+      if (!PROVIDER_SECRET_ENV_KEY_SET.has(key)) return true;
+      if (!allowed.has(key)) return false;
+      if (key === candidateKey) return candidateVerified;
+      return true;
+    }),
   );
 }
 
@@ -205,12 +222,26 @@ function applyTemporaryAgyApiKeyProvider(homeDir: string): () => void {
   };
 }
 
+export function hasAntigravityAccountAuth(homeDir: string): boolean {
+  return [
+    join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
+    join(homeDir, ".gemini", "oauth_creds.json"),
+  ].some(existsSync);
+}
+
+/**
+ * Account auth remains Agy's default. The Gemini provider setting is changed
+ * only when there is no account credential and the exact key has already
+ * passed isolated native verification.
+ */
 export async function withAntigravityApiKeyProvider<T>(
   homeDir: string,
   env: Env,
   operation: () => Promise<T>,
 ): Promise<T> {
-  if (!isProviderApiKeyConfigured("agy", env)) return operation();
+  if (hasAntigravityAccountAuth(homeDir) || !isProviderApiKeyVerified("agy", env)) {
+    return operation();
+  }
   const restore = applyTemporaryAgyApiKeyProvider(homeDir);
   try {
     return await operation();
@@ -307,12 +338,6 @@ async function runProbe(
   } finally {
     rmSync(probeHome, { recursive: true, force: true });
   }
-}
-
-export function isProviderApiKeyVerified(provider: ProviderId, env: Env = process.env): boolean {
-  const apiKey = getConfiguredProviderApiKey(provider, env);
-  if (!apiKey) return false;
-  return verificationCache.get(cacheKey(provider, apiKey)) === true;
 }
 
 export async function verifyProviderApiKey(
