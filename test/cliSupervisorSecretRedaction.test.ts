@@ -73,12 +73,12 @@ describe("provider credential redaction", () => {
     expect(progress.join("")).not.toContain(apiKey);
   });
 
-  it("passes only a verified active provider key and no unrelated provider key to its child", async () => {
+  it("verifies the active key at the shared boundary and passes no unrelated provider key to its child", async () => {
     const env = {
       CODEX_API_KEY: "codex-secret-572",
+      CODEX_COMMAND: "/bin/true",
       ANTHROPIC_API_KEY: "claude-secret-572",
     };
-    await verifyProviderApiKey("codex", { env, execFile: async () => undefined });
 
     const script = 'process.stdout.write(JSON.stringify({codex:Boolean(process.env.CODEX_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY)}));';
     const result = await runSupervisedProcess(process.execPath, ["-e", script], process.cwd(), {
