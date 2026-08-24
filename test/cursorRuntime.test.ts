@@ -226,4 +226,13 @@ describe("cursor session persistence", () => {
     db.setSession("chat:cursor", "cursor", null);
     expect(db.getSession("chat:cursor", "cursor")).toBeNull();
   });
+
+  it("includes Cursor consecutive failures in the health circuit-breaker aggregate", () => {
+    const db = openDb(":memory:");
+    db.incrementFailures("chat:cursor", "cursor");
+    db.incrementFailures("chat:cursor", "cursor");
+    expect(db.getMaxConsecutiveFailures()).toEqual([{ bot: "cursor", count: 2 }]);
+    db.resetFailures("chat:cursor", "cursor");
+    expect(db.getMaxConsecutiveFailures()).toEqual([]);
+  });
 });

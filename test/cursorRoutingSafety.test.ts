@@ -1,12 +1,15 @@
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { getCliWorkingDir } from "../src/bridge.js";
 import { openDb } from "../src/db.js";
 import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function withCursorEnvironment<T>(run: (root: string, evidencePath: string) => T): T {
   const root = mkdtempSync(join(tmpdir(), "cursor-routing-safety-"));
@@ -96,7 +99,11 @@ describe("Cursor routing safety", () => {
   });
 
   it("does not place Cursor on the default interactive fallback chain", () => {
-    const productionDefault = ["codex", "claude", "grok", "antigravity"];
-    expect(productionDefault).not.toContain("cursor");
+    const interactive = readFileSync(join(repoRoot, "src/index-interactive.ts"), "utf8");
+    const discord = readFileSync(join(repoRoot, "src/index-discord-interactive.ts"), "utf8");
+    expect(interactive).toMatch(/fallback:\s*\["codex",\s*"claude",\s*"grok",\s*"antigravity"\]/);
+    expect(discord).toMatch(/fallback:\s*\["codex",\s*"claude",\s*"grok",\s*"antigravity"\]/);
+    expect(interactive).not.toMatch(/fallback:\s*\[[^\]]*cursor/);
+    expect(discord).not.toMatch(/fallback:\s*\[[^\]]*cursor/);
   });
 });
