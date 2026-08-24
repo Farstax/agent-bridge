@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { ProviderId } from "./types.js";
@@ -69,15 +69,25 @@ const PROVIDER_SECRET_ENV_KEYS = [
 
 const PROVIDER_SECRET_ENV_KEY_SET = new Set<string>(PROVIDER_SECRET_ENV_KEYS);
 const PROBE_TIMEOUT_MS = 15_000;
-const POSITIVE_CACHE_MS = 10 * 60_000;
-const NEGATIVE_CACHE_MS = 30_000;
-const verificationCache = new Map<string, { verified: boolean; retryAfterMs: number }>();
+const verificationCache = new Map<string, boolean>();
+
+interface ProbeExecOptions {
+  encoding: "utf8";
+  stdio: ["ignore", "pipe", "pipe"];
+  timeout: number;
+  maxBuffer: number;
+  env: NodeJS.ProcessEnv;
+}
+
+export type ProviderApiKeyProbeExecutor = (
+  command: string,
+  args: string[],
+  options: ProbeExecOptions,
+) => Promise<unknown>;
 
 export interface VerifyProviderApiKeyOptions {
   env?: Env;
-  homeDir?: string;
-  execFile?: typeof execFileSync;
-  nowMs?: number;
+  execFile?: ProviderApiKeyProbeExecutor;
   useCache?: boolean;
 }
 
@@ -95,13 +105,17 @@ export function isProviderApiKeyConfigured(provider: ProviderId, env: Env = proc
   return getConfiguredProviderApiKey(provider, env) !== null;
 }
 
+export function getProviderApiKeySecretValues(env: Env = process.env): string[] {
+  return [...new Set(
+    PROVIDER_SECRET_ENV_KEYS
+      .map((name) => env[name]?.trim())
+      .filter((value): value is string => Boolean(value)),
+  )].sort((a, b) => b.length - a.length);
+}
+
 export function redactProviderApiKeySecrets(text: string, env: Env = process.env): string {
   let redacted = text;
-  const values = PROVIDER_SECRET_ENV_KEYS
-    .map((name) => env[name]?.trim())
-    .filter((value): value is string => Boolean(value))
-    .sort((a, b) => b.length - a.length);
-  for (const value of values) {
+  for (const value of getProviderApiKeySecretValues(env)) {
     redacted = redacted.split(value).join("[REDACTED_PROVIDER_CREDENTIAL]");
   }
   return redacted;
@@ -193,20 +207,28 @@ export async function withAntigravityApiKeyProvider<T>(
   }
 }
 
-function runProbe(
+const defaultProbeExecutor: ProviderApiKeyProbeExecutor = (command, args, options) =>
+  new Promise((resolve, reject) => {
+    execFile(command, args, options, (error) => {
+      if (error) reject(error);
+      else resolve(undefined);
+    });
+  });
+
+async function runProbe(
   provider: ProviderId,
   env: Env,
-  execFile: typeof execFileSync,
-): void {
+  execute: ProviderApiKeyProbeExecutor,
+): Promise<void> {
   const command = commandForProvider(provider, env);
   const probeHome = mkdtempSync(join(tmpdir(), `agent-bridge-${provider}-auth-`));
   const childEnv = {
     ...buildProbeEnv(provider, env),
     HOME: probeHome,
   };
-  const common = {
-    encoding: "utf8" as const,
-    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+  const common: ProbeExecOptions = {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
     timeout: PROBE_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
     env: childEnv,
@@ -214,7 +236,7 @@ function runProbe(
 
   try {
     if (provider === "codex") {
-      execFile(command, [
+      await execute(command, [
         "exec",
         "--json",
         "--skip-git-repo-check",
@@ -225,7 +247,7 @@ function runProbe(
       return;
     }
     if (provider === "claude") {
-      execFile(command, [
+      await execute(command, [
         "--print",
         "--tools",
         "",
@@ -241,7 +263,7 @@ function runProbe(
     }
     if (provider === "agy") {
       writeSettings(join(probeHome, ".gemini", "antigravity-cli", "settings.json"), { modelProvider: "gemini" });
-      execFile(command, [
+      await execute(command, [
         "--sandbox",
         "--print-timeout",
         "15s",
@@ -253,7 +275,7 @@ function runProbe(
       return;
     }
     if (provider === "grok") {
-      execFile(command, [
+      await execute(command, [
         "-p",
         "Reply with exactly OK.",
         "--output-format",
@@ -261,7 +283,7 @@ function runProbe(
       ], { ...common, env: { ...childEnv, GROK_HOME: join(probeHome, ".grok") } });
       return;
     }
-    execFile(command, [
+    await execute(command, [
       "-p",
       "Reply with exactly OK.",
       "--output-format",
@@ -275,42 +297,53 @@ function runProbe(
   }
 }
 
+/** Returns cached verification only for the exact currently configured key. */
+export function isProviderApiKeyVerified(provider: ProviderId, env: Env = process.env): boolean {
+  const apiKey = getConfiguredProviderApiKey(provider, env);
+  if (!apiKey) return false;
+  return verificationCache.get(cacheKey(provider, apiKey)) === true;
+}
+
 /**
- * A non-empty variable is only a candidate credential. A provider becomes
- * API-key authenticated after its own headless CLI completes a bounded real
- * request in isolated account state. Successful and failed verification are
- * cached briefly by key hash so routine availability checks do not spend
- * tokens or block on every request, while revoked keys are eventually tested
- * again without a process restart.
+ * A non-empty variable is only a candidate credential. Verification runs a
+ * bounded real provider request in isolated account state without blocking the
+ * Node event loop. Results are cached by key fingerprint for this process; a
+ * changed key gets a new fingerprint and therefore requires fresh evidence.
  */
-export function verifyProviderApiKey(
+export async function verifyProviderApiKey(
   provider: ProviderId,
   options: VerifyProviderApiKeyOptions = {},
-): boolean {
+): Promise<boolean> {
   const env = options.env ?? process.env;
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
 
   const key = cacheKey(provider, apiKey);
-  const nowMs = options.nowMs ?? Date.now();
-  if (options.useCache !== false) {
-    const cached = verificationCache.get(key);
-    if (cached && cached.retryAfterMs > nowMs) return cached.verified;
+  if (options.useCache !== false && verificationCache.has(key)) {
+    return verificationCache.get(key) === true;
   }
 
   let verified = false;
   try {
-    runProbe(provider, env, options.execFile ?? execFileSync);
+    await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
     verified = true;
   } catch {
     verified = false;
   }
 
-  if (options.useCache !== false) {
-    verificationCache.set(key, {
-      verified,
-      retryAfterMs: nowMs + (verified ? POSITIVE_CACHE_MS : NEGATIVE_CACHE_MS),
-    });
-  }
+  if (options.useCache !== false) verificationCache.set(key, verified);
   return verified;
+}
+
+/**
+ * Verify all configured provider keys in parallel during service startup.
+ * Individual failures are cached as unavailable and never abort startup.
+ */
+export async function verifyConfiguredProviderApiKeys(
+  options: VerifyProviderApiKeyOptions = {},
+): Promise<void> {
+  const env = options.env ?? process.env;
+  const providers = (Object.keys(PROVIDER_API_KEY_AUTH) as ProviderId[])
+    .filter((provider) => isProviderApiKeyConfigured(provider, env));
+  await Promise.all(providers.map((provider) => verifyProviderApiKey(provider, { ...options, env })));
 }
