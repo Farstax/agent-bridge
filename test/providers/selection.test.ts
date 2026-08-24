@@ -27,10 +27,10 @@ describe("shared provider selection", () => {
   });
 
   it("derives interactive kinds from the registry", () => {
-    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity", "grok"]);
+    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity", "grok", "cursor"]);
   });
 
   it("derives the interactive chain from provider capabilities", () => {
-    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity", "grok"]);
+    expect(interactiveChainKinds()).toEqual(["codex", "claude", "antigravity", "grok", "cursor"]);
   });
 });

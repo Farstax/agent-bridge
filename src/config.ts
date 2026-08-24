@@ -43,6 +43,11 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
       command: env.GROK_COMMAND || "grok",
       modelPreference: parseModelPreference(env.GROK_MODEL_PREFERENCE),
     },
+    cursor: {
+      token: token(env.TELEGRAM_BOT_TOKEN_CURSOR),
+      command: env.CURSOR_COMMAND || "cursor-agent",
+      modelPreference: parseModelPreference(env.CURSOR_MODEL_PREFERENCE),
+    },
   };
 }
 

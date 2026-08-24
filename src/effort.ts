@@ -18,6 +18,7 @@ const ENV_KEYS: Record<BotKind, string> = {
   claude: "CLAUDE_EFFORT",
   antigravity: "ANTIGRAVITY_EFFORT",
   grok: "GROK_EFFORT",
+  cursor: "CURSOR_EFFORT",
 };
 
 export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
@@ -58,6 +59,7 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): stri
     kind === "codex" ? "Codex maps effort to model_reasoning_effort." :
     kind === "claude" ? "Claude maps effort to --effort." :
     kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
+    kind === "cursor" ? "Cursor effort is unsupported by the qualified headless contract; this setting is recorded for parity only." :
     "Agy effort is unsupported by the CLI; this setting is recorded for parity only. Use Agy model labels for low/high variants.";
 
   return [

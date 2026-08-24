@@ -167,7 +167,7 @@ export interface SurfaceNeutralTurnInput {
 const MAX_QUEUE_DEPTH = 5;
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
 const ENGINE_TURN_TEXT_LIMIT = 1_200;
-const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok"]);
+const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor"]);
 function isAgentKind(kind: string): kind is BotKind {
   return AGENT_KINDS.has(kind);
 }
@@ -2146,6 +2146,7 @@ ${contextPrompt}` : contextPrompt);
         antigravity: this.kind === "antigravity" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
         claude: this.kind === "claude" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
         grok: this.kind === "grok" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
+        cursor: this.kind === "cursor" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,
       },
     };
   }

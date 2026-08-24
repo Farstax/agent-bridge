@@ -110,6 +110,7 @@ describe("shared skills install", () => {
     expect(paths.geminiSkillsDir).toBe(join(home, ".gemini", "antigravity-cli", "skills"));
     expect(readlinkSync(join(paths.geminiSkillsDir, "portable-skill"))).toBe("../../../.agents/skills/portable-skill");
     expect(readlinkSync(join(paths.claudeSkillsDir, "portable-skill"))).toBe("../../.agents/skills/portable-skill");
+    expect(readlinkSync(join(paths.cursorSkillsDir, "portable-skill"))).toBe("../../.agents/skills/portable-skill");
     expect(verifySkillGlobal("portable-skill", { homeDir: home }).ok).toBe(true);
   });
 
@@ -124,6 +125,7 @@ describe("shared skills install", () => {
     expect(paths.geminiSkillsDir).toBe(join(home, ".gemini", "antigravity-cli", "skills"));
     expect(readlinkSync(join(paths.geminiSkillsDir, "requirements-to-acceptance"))).toBe("../../../.agents/skills/requirements-to-acceptance");
     expect(readlinkSync(join(paths.claudeSkillsDir, "requirements-to-acceptance"))).toBe("../../.agents/skills/requirements-to-acceptance");
+    expect(readlinkSync(join(paths.cursorSkillsDir, "requirements-to-acceptance"))).toBe("../../.agents/skills/requirements-to-acceptance");
 
     const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8"));
     expect(lockfile.skills["requirements-to-acceptance"].linkMode).toBe("symlink");

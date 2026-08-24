@@ -1,6 +1,6 @@
 # Provider contract qualification
 
-Agent Bridge treats Codex, Claude, Agy, and Grok Build as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
+Agent Bridge treats Codex, Claude, Agy, Grok Build, and Cursor as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
 
 ## Contract v1
 
@@ -27,13 +27,16 @@ The managed production trigger is a CLI install/upgrade or a subsequently observ
 - The health service checks established evidence for out-of-band/self-updated provider versions. When `installed_version != last_qualified_version`, it qualifies that provider once and persists the new result.
 - Only the changed provider is qualified.
 
-Grok is not part of the managed automatic upgrade set. Its qualifier can be run explicitly after installation, an upgrade, or when troubleshooting:
+Grok and Cursor are not part of the managed automatic upgrade set. Their qualifiers can be run explicitly after installation, an upgrade, or when troubleshooting:
 
 ```bash
 npm run qualify:provider -- --provider grok
+npm run qualify:provider -- --provider cursor
 ```
 
-Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok install can participate in `/cli` and fallback without a prior `pass` record. A current deterministic `overall: fail` record for the installed Grok version suppresses routing until the failure is resolved or the binary version changes.
+Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok or Cursor install can participate when explicitly selected/configured without a prior `pass` record. Cursor remains opt-in and is not part of the default interactive chain. A current deterministic `overall: fail` record for the installed provider version suppresses routing until the failure is resolved or the binary version changes.
+
+Cursor Skills use the canonical managed projection `~/.cursor/skills/<name>/SKILL.md`. Cursor may also discover Claude/Codex skill directories; duplicate skill names across those paths are ambiguous and were observed to prefer the Claude-compatible copy during #552.
 
 No separate qualification scheduler is installed.
 
@@ -56,6 +59,7 @@ npm run qualify:provider -- --provider codex
 npm run qualify:provider -- --provider claude
 npm run qualify:provider -- --provider agy
 npm run qualify:provider -- --provider grok
+npm run qualify:provider -- --provider cursor
 ```
 
 `--expected-version <version>` and `--if-needed` are available for managed upgrade paths. Machine-readable JSON is written to stdout. A deterministic contract failure exits non-zero after persisting its evidence; a degraded prerequisite state remains distinguishable in the JSON result.

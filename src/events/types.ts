@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { RunTelemetry } from "../types.js";
 
-export type BotKind = "codex" | "antigravity" | "claude" | "grok";
+export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
 export interface BridgeEventBase {
   version: 1;

@@ -43,6 +43,7 @@ describe("user skill management", () => {
     expect(readlinkSync(join(paths.codexSkillsDir, "my-review"))).toBe("../../.agents/skills/my-review");
     expect(readlinkSync(join(paths.geminiSkillsDir, "my-review"))).toBe("../../../.agents/skills/my-review");
     expect(readlinkSync(join(paths.claudeSkillsDir, "my-review"))).toBe("../../.agents/skills/my-review");
+    expect(readlinkSync(join(paths.cursorSkillsDir, "my-review"))).toBe("../../.agents/skills/my-review");
     expect(verifySkillGlobal("my-review", { homeDir: home }).ok).toBe(true);
     const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as { skills: Record<string, { ownership?: string }> };
     expect(lockfile.skills["my-review"]?.ownership).toBe("user");

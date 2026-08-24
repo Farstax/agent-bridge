@@ -12,11 +12,12 @@ describe("loadBotsConfig", () => {
 
   it("builds all supported bot configs with defaults from an empty env", () => {
     const bots = loadBotsConfig({});
-    expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex", "grok"]);
+    expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex", "cursor", "grok"]);
     expect(bots.codex.command).toBe("codex");
     expect(bots.claude.command).toBe("claude");
     expect(bots.antigravity.command).toBe("agy");
     expect(bots.grok.command).toBe("grok");
+    expect(bots.cursor.command).toBe("cursor-agent");
   });
 
   it("respects env overrides for commands and model preferences", () => {
@@ -63,6 +64,7 @@ describe("resolveExecutionMode", () => {
     expect(resolveExecutionMode("claude", {})).toBe("safe");
     expect(resolveExecutionMode("antigravity", {})).toBe("safe");
     expect(resolveExecutionMode("grok", {})).toBe("safe");
+    expect(resolveExecutionMode("cursor", {})).toBe("safe");
   });
 
   it("lets per-bot env vars override the global mode", () => {

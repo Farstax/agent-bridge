@@ -36,7 +36,7 @@ describe("fresh-session execution contract", () => {
   });
 
   it("seeds the execution contract on a fresh invocation even when /reset suppresses Bridge context", () => {
-    for (const bot of ["codex", "claude", "antigravity", "grok"]) {
+    for (const bot of ["codex", "claude", "antigravity", "grok", "cursor"]) {
       const invocation = buildCliInvocation({
         bot,
         prompt: "first turn after reset",

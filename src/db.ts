@@ -211,7 +211,8 @@ function assertProductionInstallation(raw: Database.Database, dbPath: string, op
   if (get("agent_bridge_first_boot_verified")) return;
   const sessionCount = Number((raw.prepare(`SELECT COUNT(*) AS n FROM bridge_state
     WHERE codex_session_id IS NOT NULL OR claude_session_id IS NOT NULL
-       OR antigravity_session_id IS NOT NULL OR grok_session_id IS NOT NULL`).get() as { n: number }).n);
+       OR antigravity_session_id IS NOT NULL OR grok_session_id IS NOT NULL
+       OR cursor_session_id IS NOT NULL`).get() as { n: number }).n);
   const runCount = Number((raw.prepare("SELECT COUNT(*) AS n FROM bridge_runs").get() as { n: number }).n);
   if (sessionCount > 0 || runCount > 0) throw new Error("first boot database already contains sessions or runs");
   raw.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)

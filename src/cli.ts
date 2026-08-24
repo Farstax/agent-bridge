@@ -14,6 +14,7 @@ import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
 import * as claudeRuntime from "./providers/claudeRuntime.js";
 import * as grokRuntime from "./providers/grokRuntime.js";
+import * as cursorRuntime from "./providers/cursorRuntime.js";
 import * as antigravityRuntime from "./providers/antigravityRuntime.js";
 import { extractAntigravityRunTelemetry } from "./providers/antigravityTelemetry.js";
 import {
@@ -176,6 +177,11 @@ export function buildCliInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
     });
   }
+  if (bot === "cursor") {
+    return cursorRuntime.buildInvocation({
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
+    });
+  }
   if (bot === "antigravity") {
     const invocation = antigravityRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion, logFile, homeDir,
@@ -222,6 +228,8 @@ export function parseCliResult({
     result = claudeRuntime.parseResult(stdout);
   } else if (bot === "grok") {
     result = grokRuntime.parseResult(stdout);
+  } else if (bot === "cursor") {
+    result = cursorRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
     // Keep null so parseResult can honor ANTIGRAVITY_OUTPUT_MODE. Only Grok's
     // streaming-json is outside Agy's union and must be coerced.

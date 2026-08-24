@@ -35,7 +35,7 @@ const FROZEN_EPISODE_PREFIX = "[Frozen Episode authority]";
 const START_POLICY_MARKER = "[Authorized start policy instruction]";
 const FIRST_CLASS_AUTONOMY_BOTS = ["codex", "claude", "antigravity"] as const;
 
-export function isFirstClassAutonomyBot(bot: string): bot is Exclude<BotKind, "grok"> {
+export function isFirstClassAutonomyBot(bot: string): bot is Exclude<BotKind, "grok" | "cursor"> {
   return (FIRST_CLASS_AUTONOMY_BOTS as readonly string[]).includes(bot);
 }
 
@@ -146,7 +146,7 @@ export class AutonomyController {
       ?? parseAutonomyRequireEpisodeApproval(process.env.AGENT_BRIDGE_AUTONOMY_REQUIRE_EPISODE_APPROVAL);
     this.maxEpisodesPerDay = options.maxEpisodesPerDay
       ?? parseAutonomyMaxEpisodesPerDay(process.env.AGENT_BRIDGE_AUTONOMY_MAX_EPISODES_PER_DAY);
-    const allowed = interactiveChainKinds().filter((kind) => kind !== "grok") as BotKind[];
+    const allowed = interactiveChainKinds().filter((kind) => kind !== "grok" && kind !== "cursor") as BotKind[];
     this.providerChain = options.providerChain ?? parseCliChain(
       process.env.INTERACTIVE_CLI_CHAIN,
       { allowed, fallback: ["codex", "claude", "antigravity"] },

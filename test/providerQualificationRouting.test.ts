@@ -120,7 +120,7 @@ describe("provider qualification routing", () => {
       failedProviders: new Set(["codex", "agy"]),
     });
 
-    expect([...available]).toEqual(["claude", "grok"]);
+    expect([...available]).toEqual(["claude", "grok", "cursor"]);
   });
 
   it("excludes grok from interactive selection when it has a hard qualification failure", () => {
@@ -129,6 +129,17 @@ describe("provider qualification routing", () => {
       exists: () => true,
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy", "grok"]),
+    });
+
+    expect([...available]).toEqual(["claude", "cursor"]);
+  });
+
+  it("excludes cursor from interactive selection when it has a hard qualification failure", () => {
+    const available = getAvailableCliKinds({
+      homeDir: "/qualification-test-home",
+      exists: () => true,
+      commandExists: () => true,
+      failedProviders: new Set(["codex", "agy", "grok", "cursor"]),
     });
 
     expect([...available]).toEqual(["claude"]);
