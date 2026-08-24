@@ -51,8 +51,10 @@ export async function startOwnerNotificationIngress(options: {
   socketPath: string;
   allowedUserIds: Set<string>;
   client: OwnerNotificationClient;
+  /** Records only messages that Telegram has already accepted for delivery. */
+  recordDeliveredAssistantTurn?: (chatKey: string, text: string) => void;
 }): Promise<OwnerNotificationIngress> {
-  const { socketPath, allowedUserIds, client } = options;
+  const { socketPath, allowedUserIds, client, recordDeliveredAssistantTurn } = options;
 
   if (!isAbsolute(socketPath)) {
     throw new Error("Owner notification ingress requires an absolute socket path");
@@ -122,7 +124,14 @@ export async function startOwnerNotificationIngress(options: {
       }
 
       client.sendMessage(ownerId, text).then(
-        () => { res.writeHead(202).end(); },
+        () => {
+          try {
+            recordDeliveredAssistantTurn?.(ownerIdText, text);
+            res.writeHead(202).end();
+          } catch {
+            res.writeHead(500).end();
+          }
+        },
         () => { res.writeHead(500).end(); },
       );
     });
