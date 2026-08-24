@@ -24,17 +24,17 @@ Verification is cached for the process by a SHA-256 fingerprint of the exact key
 
 Authentication method does not create a new provider identity. A provider authenticated by API key uses the same selection, fallback, qualification, session, execution-mode, and completion contracts as the same provider authenticated through its existing account flow. Current deterministic qualification failures still suppress routing.
 
-Account and API-key authentication are additive. If an optional API key is invalid but the provider's existing account/OAuth contract is authenticated, that provider remains available through the account path.
+Account and API-key authentication are additive. If an optional API key is invalid but the provider's existing account/OAuth contract is authenticated, that provider remains available through the account path. An unverified issue-572 candidate key is also stripped before the real provider child is spawned, preventing an invalid environment key from overriding that valid account session.
 
 Grok Build retains its provider-specific precedence: when a stored Grok account session exists, Agent Bridge keeps that account path and does not require `XAI_API_KEY` verification. This matches Grok Build's account-session-before-environment-key behavior.
 
 ## Agy settings
 
-Agy's direct Gemini API route requires both `GEMINI_API_KEY` and `modelProvider: "gemini"`. Verification uses an isolated temporary home. Real Agent Bridge runs and qualification apply `modelProvider: "gemini"` only while holding the existing Agy state lock, then restore the prior provider setting in `finally`. Existing model-setting behavior remains under the same lock.
+Agy's direct Gemini API route requires both `GEMINI_API_KEY` and `modelProvider: "gemini"`. Verification uses an isolated temporary home. Existing Agy account credentials remain the default route. With no account credential, real Agent Bridge runs and qualification apply `modelProvider: "gemini"` only after the exact key has passed native verification, while holding the existing Agy state lock, then restore the prior provider setting in `finally`.
 
 ## Secret boundary
 
-The shared CLI supervisor redacts configured provider credential values before stdout/stderr, progress chunks, lifecycle events, spawn logs, or returned errors leave the process boundary. Streaming redaction buffers possible credential prefixes, so a key split across arbitrary child-process chunks cannot bypass redaction. Internal raw output is retained only long enough for provider validation and process-watch logic.
+The shared CLI supervisor redacts configured provider credential values before stdout/stderr, progress chunks, lifecycle events, spawn logs, or returned errors leave the process boundary. Streaming redaction buffers possible credential prefixes, so a key split across arbitrary child-process chunks cannot bypass redaction. Each provider child receives only its own provider credential family, and the new candidate API-key variable is withheld until verified. Internal raw output is retained only long enough for provider validation and process-watch logic.
 
 Agent Bridge OSS does not persist provider API keys and exposes no app-facing secret state. Encrypted persistence and onboarding/UI belong to `agent-bridge-platform#482`.
 
