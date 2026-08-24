@@ -64,4 +64,17 @@ describe("provider credential redaction", () => {
     expect(exposedSurface).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
     expect(progress.join("")).not.toContain(apiKey);
   });
+
+  it("passes only the active provider's credential family to its child", async () => {
+    const script = 'process.stdout.write(JSON.stringify({codex:Boolean(process.env.CODEX_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY)}));';
+    const result = await runSupervisedProcess(process.execPath, ["-e", script], process.cwd(), {
+      contextEnv: {
+        CODEX_API_KEY: "codex-secret-572",
+        ANTHROPIC_API_KEY: "claude-secret-572",
+      },
+      bot: "codex",
+    });
+
+    expect(JSON.parse(result.stdout)).toEqual({ codex: true, claude: false });
+  });
 });
