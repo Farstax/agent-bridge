@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isProviderApiKeyConfigured, verifyProviderApiKey } from "./apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./qualificationStatus.js";
 import type { ProviderId } from "./types.js";
 
@@ -9,6 +10,7 @@ export interface GrokAvailabilityOptions {
   exists?: (path: string) => boolean;
   env?: Record<string, string | undefined>;
   failedProviders?: ReadonlySet<ProviderId>;
+  verifyApiKey?: () => boolean;
 }
 
 export function resolveGrokAuthPaths(homeDir: string = homedir()): string[] {
@@ -22,7 +24,12 @@ export function isGrokAuthenticated(options: GrokAvailabilityOptions = {}): bool
   const homeDir = options.homeDir ?? homedir();
   const exists = options.exists ?? existsSync;
   const env = options.env ?? process.env;
-  return resolveGrokAuthPaths(homeDir).some(exists) || Boolean(env.XAI_API_KEY?.trim());
+
+  // Grok Build gives an active account session precedence over XAI_API_KEY.
+  // Preserve that provider-owned account path unchanged when it exists.
+  if (resolveGrokAuthPaths(homeDir).some(exists)) return true;
+  if (!isProviderApiKeyConfigured("grok", env)) return false;
+  return options.verifyApiKey?.() ?? verifyProviderApiKey("grok", { env, homeDir });
 }
 
 /**
