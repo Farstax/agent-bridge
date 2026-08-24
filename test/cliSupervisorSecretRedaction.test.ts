@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runSupervisedProcess, shutdownCliProcessesAndWait } from "../src/cliSupervisor.js";
+import {
+  clearProviderApiKeyVerificationCache,
+  verifyProviderApiKey,
+} from "../src/providers/apiKeyAuth.js";
 import { createStreamingSecretRedactor } from "../src/providers/streamingSecretRedactor.js";
 import type { BridgeEvent } from "../src/events/types.js";
 
 afterEach(async () => {
   await shutdownCliProcessesAndWait();
+  clearProviderApiKeyVerificationCache();
   vi.restoreAllMocks();
 });
 
@@ -25,6 +30,9 @@ describe("provider credential redaction", () => {
 
   it("keeps split API keys out of logs, events, progress, and failures", async () => {
     const apiKey = "provider-secret-572-do-not-leak";
+    const env = { CODEX_API_KEY: apiKey };
+    await verifyProviderApiKey("codex", { env, execFile: async () => undefined });
+
     const logs: string[] = [];
     const events: BridgeEvent[] = [];
     const progress: string[] = [];
@@ -42,7 +50,7 @@ describe("provider credential redaction", () => {
     let failure: (Error & { stdout?: string; stderr?: string }) | null = null;
     try {
       await runSupervisedProcess(process.execPath, ["-e", script], process.cwd(), {
-        contextEnv: { CODEX_API_KEY: apiKey },
+        contextEnv: env,
         bot: "codex",
         eventContext: { runId: "run-572", bot: "codex", chatId: "1", chatKey: "1" },
         onEvent: (event) => events.push(event),
@@ -65,13 +73,16 @@ describe("provider credential redaction", () => {
     expect(progress.join("")).not.toContain(apiKey);
   });
 
-  it("passes only the active provider's credential family to its child", async () => {
+  it("passes only a verified active provider key and no unrelated provider key to its child", async () => {
+    const env = {
+      CODEX_API_KEY: "codex-secret-572",
+      ANTHROPIC_API_KEY: "claude-secret-572",
+    };
+    await verifyProviderApiKey("codex", { env, execFile: async () => undefined });
+
     const script = 'process.stdout.write(JSON.stringify({codex:Boolean(process.env.CODEX_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY)}));';
     const result = await runSupervisedProcess(process.execPath, ["-e", script], process.cwd(), {
-      contextEnv: {
-        CODEX_API_KEY: "codex-secret-572",
-        ANTHROPIC_API_KEY: "claude-secret-572",
-      },
+      contextEnv: env,
       bot: "codex",
     });
 
