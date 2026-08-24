@@ -51,7 +51,7 @@ export async function startOwnerNotificationIngress(options: {
   socketPath: string;
   allowedUserIds: Set<string>;
   client: OwnerNotificationClient;
-  /** Records only messages that Telegram has already accepted for delivery. */
+  /** Records only opted-in messages that Telegram has already accepted for delivery. */
   recordDeliveredAssistantTurn?: (chatKey: string, text: string) => void;
 }): Promise<OwnerNotificationIngress> {
   const { socketPath, allowedUserIds, client, recordDeliveredAssistantTurn } = options;
@@ -109,11 +109,12 @@ export async function startOwnerNotificationIngress(options: {
         return;
       }
       const keys = Object.keys(parsed as Record<string, unknown>);
-      if (keys.some((key) => key !== "text")) {
+      if (keys.some((key) => key !== "text" && key !== "recordInConversation")) {
         res.writeHead(400).end();
         return;
       }
-      const text = (parsed as { text?: unknown }).text;
+      const payload = parsed as { text?: unknown; recordInConversation?: unknown };
+      const text = payload.text;
       if (typeof text !== "string" || text.length === 0) {
         res.writeHead(400).end();
         return;
@@ -122,11 +123,16 @@ export async function startOwnerNotificationIngress(options: {
         res.writeHead(413).end();
         return;
       }
+      if (payload.recordInConversation !== undefined && typeof payload.recordInConversation !== "boolean") {
+        res.writeHead(400).end();
+        return;
+      }
+      const recordInConversation = payload.recordInConversation === true;
 
       client.sendMessage(ownerId, text).then(
         () => {
           try {
-            recordDeliveredAssistantTurn?.(ownerIdText, text);
+            if (recordInConversation) recordDeliveredAssistantTurn?.(ownerIdText, text);
             res.writeHead(202).end();
           } catch {
             res.writeHead(500).end();
