@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   PROVIDER_API_KEY_AUTH,
   clearProviderApiKeyVerificationCache,
+  filterProviderCredentialEnv,
   getProviderApiKeyCapability,
   isProviderApiKeyVerified,
   redactProviderApiKeySecrets,
@@ -105,6 +106,24 @@ describe("provider API-key authentication", () => {
     expect(calls).toBe(2);
   });
 
+  it("withholds an unverified candidate key and unrelated provider secrets from runtime children", async () => {
+    const env = {
+      CODEX_API_KEY: "codex-candidate",
+      OPENAI_API_KEY: "legacy-codex-secret",
+      ANTHROPIC_API_KEY: "unrelated-claude-secret",
+    };
+    const before = filterProviderCredentialEnv("codex", env);
+    expect(before.CODEX_API_KEY).toBeUndefined();
+    expect(before.OPENAI_API_KEY).toBe("legacy-codex-secret");
+    expect(before.ANTHROPIC_API_KEY).toBeUndefined();
+
+    const execFile: ProviderApiKeyProbeExecutor = async () => undefined;
+    await expect(verifyProviderApiKey("codex", { env, execFile })).resolves.toBe(true);
+    const after = filterProviderCredentialEnv("codex", env);
+    expect(after.CODEX_API_KEY).toBe("codex-candidate");
+    expect(after.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
   it("verifies configured providers in parallel without blocking on one probe", async () => {
     const env = { CODEX_API_KEY: "codex-key", ANTHROPIC_API_KEY: "claude-key" };
     const started: string[] = [];
@@ -126,20 +145,39 @@ describe("provider API-key authentication", () => {
     await verification;
   });
 
-  it("restores Agy modelProvider after an API-key run", async () => {
+  it("restores Agy modelProvider after a verified API-key run", async () => {
     const homeDir = mkdtempSync(join(tmpdir(), "agent-bridge-agy-provider-test-"));
     tempDirs.push(homeDir);
     const settingsDir = join(homeDir, ".gemini", "antigravity-cli");
     mkdirSync(settingsDir, { recursive: true });
     const settingsPath = join(settingsDir, "settings.json");
     writeFileSync(settingsPath, JSON.stringify({ modelProvider: "antigravity", model: "keep-me" }));
+    const env = { GEMINI_API_KEY: "secret" };
+    await verifyProviderApiKey("agy", { env, execFile: async () => undefined });
 
-    await withAntigravityApiKeyProvider(homeDir, { GEMINI_API_KEY: "secret" }, async () => {
+    await withAntigravityApiKeyProvider(homeDir, env, async () => {
       const during = JSON.parse(readFileSync(settingsPath, "utf8"));
       expect(during).toEqual({ modelProvider: "gemini", model: "keep-me" });
     });
 
     expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ modelProvider: "antigravity", model: "keep-me" });
+  });
+
+  it("keeps Agy account settings unchanged even when a verified optional key is configured", async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), "agent-bridge-agy-account-precedence-"));
+    tempDirs.push(homeDir);
+    const settingsDir = join(homeDir, ".gemini", "antigravity-cli");
+    mkdirSync(settingsDir, { recursive: true });
+    const settingsPath = join(settingsDir, "settings.json");
+    const tokenPath = join(settingsDir, "antigravity-oauth-token");
+    writeFileSync(settingsPath, JSON.stringify({ modelProvider: "antigravity", model: "keep-me" }));
+    writeFileSync(tokenPath, "account-token");
+    const env = { GEMINI_API_KEY: "verified-but-optional" };
+    await verifyProviderApiKey("agy", { env, execFile: async () => undefined });
+
+    await withAntigravityApiKeyProvider(homeDir, env, async () => {
+      expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ modelProvider: "antigravity", model: "keep-me" });
+    });
   });
 
   it("redacts configured provider credentials without redacting ordinary text", () => {
