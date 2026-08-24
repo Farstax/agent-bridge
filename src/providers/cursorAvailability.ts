@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadBotsConfig } from "../config.js";
-import { isProviderApiKeyConfigured, verifyProviderApiKey } from "./apiKeyAuth.js";
+import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./qualificationStatus.js";
 import type { ProviderId } from "./types.js";
 
@@ -52,14 +52,15 @@ export function readCursorCliStatus(
 }
 
 /**
- * Cursor auth readiness uses a bounded native request for CURSOR_API_KEY and
- * the live-qualified `cursor-agent status --format json` contract for account
- * sessions. Credential-file presence is never authentication evidence.
+ * Cursor auth readiness accepts either a verified CURSOR_API_KEY or the
+ * existing live `cursor-agent status --format json` account contract. A bad
+ * optional key never suppresses an otherwise valid account session.
  */
 export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): boolean {
   const env = options.env ?? process.env;
   if (isProviderApiKeyConfigured("cursor", env)) {
-    return options.verifyApiKey?.() ?? verifyProviderApiKey("cursor", { env, homeDir: options.homeDir });
+    const keyVerified = options.verifyApiKey?.() ?? isProviderApiKeyVerified("cursor", env);
+    if (keyVerified) return true;
   }
 
   const readStatus = options.readStatus ?? (() => {
