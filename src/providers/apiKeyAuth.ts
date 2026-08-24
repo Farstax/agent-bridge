@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
+import type { BotKind } from "../types.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -22,10 +23,6 @@ export interface ProviderApiKeyAuthCapability {
   readonly notes: string;
 }
 
-/**
- * Exhaustive API-key capability matrix for every provider on main. Adding a
- * ProviderId fails type-check until its auth contract is classified here.
- */
 export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAuthCapability>> = {
   codex: {
     envVar: "CODEX_API_KEY",
@@ -68,6 +65,13 @@ const PROVIDER_SECRET_ENV_KEYS = [
 ] as const;
 
 const PROVIDER_SECRET_ENV_KEY_SET = new Set<string>(PROVIDER_SECRET_ENV_KEYS);
+const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ProviderId, ReadonlySet<string>>> = {
+  codex: new Set(["CODEX_API_KEY", "OPENAI_API_KEY"]),
+  claude: new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]),
+  agy: new Set(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+  grok: new Set(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
+  cursor: new Set(["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"]),
+};
 const PROBE_TIMEOUT_MS = 15_000;
 const verificationCache = new Map<string, boolean>();
 
@@ -111,6 +115,19 @@ export function getProviderApiKeySecretValues(env: Env = process.env): string[] 
       .map((name) => env[name]?.trim())
       .filter((value): value is string => Boolean(value)),
   )].sort((a, b) => b.length - a.length);
+}
+
+/** Keep provider credentials out of unrelated provider children. */
+export function filterProviderCredentialEnv(
+  bot: BotKind | undefined,
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  if (!bot) return { ...env };
+  const provider: ProviderId = bot === "antigravity" ? "agy" : bot;
+  const allowed = PROVIDER_ALLOWED_SECRET_ENV_KEYS[provider];
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => !PROVIDER_SECRET_ENV_KEY_SET.has(key) || allowed.has(key)),
+  );
 }
 
 export function redactProviderApiKeySecrets(text: string, env: Env = process.env): string {
@@ -188,11 +205,6 @@ function applyTemporaryAgyApiKeyProvider(homeDir: string): () => void {
   };
 }
 
-/**
- * Agy only consumes GEMINI_API_KEY when modelProvider=gemini. Keep that
- * provider selection scoped to the serialized Bridge run so account auth and
- * user settings are unchanged once the run finishes.
- */
 export async function withAntigravityApiKeyProvider<T>(
   homeDir: string,
   env: Env,
@@ -297,19 +309,12 @@ async function runProbe(
   }
 }
 
-/** Returns cached verification only for the exact currently configured key. */
 export function isProviderApiKeyVerified(provider: ProviderId, env: Env = process.env): boolean {
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
   return verificationCache.get(cacheKey(provider, apiKey)) === true;
 }
 
-/**
- * A non-empty variable is only a candidate credential. Verification runs a
- * bounded real provider request in isolated account state without blocking the
- * Node event loop. Results are cached by key fingerprint for this process; a
- * changed key gets a new fingerprint and therefore requires fresh evidence.
- */
 export async function verifyProviderApiKey(
   provider: ProviderId,
   options: VerifyProviderApiKeyOptions = {},
@@ -335,10 +340,6 @@ export async function verifyProviderApiKey(
   return verified;
 }
 
-/**
- * Verify all configured provider keys in parallel during service startup.
- * Individual failures are cached as unavailable and never abort startup.
- */
 export async function verifyConfiguredProviderApiKeys(
   options: VerifyProviderApiKeyOptions = {},
 ): Promise<void> {
