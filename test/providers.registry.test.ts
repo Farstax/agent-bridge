@@ -10,12 +10,12 @@ import type { ProviderId } from "../src/providers/types.js";
 
 describe("provider registry", () => {
   it("exports the canonical provider ids", () => {
-    expect(PROVIDER_IDS).toEqual(["codex", "claude", "agy", "grok"]);
+    expect(PROVIDER_IDS).toEqual(["codex", "claude", "agy", "grok", "cursor"]);
   });
 
   it("returns all adapters in stable order", () => {
     const adapters = getProviderAdapters();
-    expect(adapters.map((a) => a.id)).toEqual(["codex", "claude", "agy", "grok"]);
+    expect(adapters.map((a) => a.id)).toEqual(["codex", "claude", "agy", "grok", "cursor"]);
   });
 
   it("returns the codex adapter", () => {
@@ -46,6 +46,7 @@ describe("provider registry", () => {
     expect(isProviderId("claude")).toBe(true);
     expect(isProviderId("agy")).toBe(true);
     expect(isProviderId("grok")).toBe(true);
+    expect(isProviderId("cursor")).toBe(true);
     expect(isProviderId("not-a-provider")).toBe(false);
     expect(isProviderId("")).toBe(false);
   });

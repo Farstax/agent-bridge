@@ -6,7 +6,7 @@
  * LOGIC: Declares central data types representing telegram payload structures, configuration schemas, and CLI returns.
  */
 
-export type BotKind = "codex" | "antigravity" | "claude" | "grok";
+export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
 /**
  * Configuration for the Agent Bridge.
@@ -27,6 +27,7 @@ export interface BridgeConfig {
     antigravity: BotConfig;
     claude: BotConfig;
     grok: BotConfig;
+    cursor: BotConfig;
   };
 }
 

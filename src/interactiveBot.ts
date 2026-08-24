@@ -14,13 +14,13 @@ import type { CompactConversationResult } from "./compactConversation.js";
 import type { CapacityFallbackCompactionRequest } from "./fallbackCompaction.js";
 import type { ExecutionOutcome, PendingMessage } from "./engine.js";
 
-export type CliKind = "codex" | "claude" | "antigravity" | "grok";
+export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
 export type InteractiveCommandRegistration = {
   commands: Array<{ command: string; description: string }>;
   scope?: { type: "all_group_chats" | "all_chat_administrators" } | { type: "chat" | "chat_administrators"; chat_id: number };
 };
 
-const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity", "grok"];
+const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity", "grok", "cursor"];
 const DEFAULT_CLI: CliKind = "codex";
 const DEFAULT_AUTHENTICATED_CLI_KINDS = new Set<CliKind>(["codex", "claude", "antigravity"]);
 

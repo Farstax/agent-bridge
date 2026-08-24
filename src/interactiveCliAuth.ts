@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
+import { isCursorRouteable, resolveCursorAuthPaths } from "./providers/cursorAvailability.js";
 import { isGrokRouteable, resolveGrokAuthPaths } from "./providers/grokAvailability.js";
 import type { ProviderId } from "./providers/types.js";
 
@@ -12,6 +13,7 @@ export interface InteractiveCliAuthPaths {
   claude: string;
   antigravity: string[];
   grok: string[];
+  cursor: string[];
 }
 
 export interface AvailableCliOptions {
@@ -31,6 +33,7 @@ export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): Int
       join(homeDir, ".gemini", "oauth_creds.json"),
     ],
     grok: resolveGrokAuthPaths(homeDir),
+    cursor: resolveCursorAuthPaths(homeDir),
   };
 }
 
@@ -57,6 +60,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
 
   if (isGrokRouteable({ homeDir: home, exists, env, failedProviders })) available.add("grok");
+  if (isCursorRouteable({ homeDir: home, exists, env, failedProviders })) available.add("cursor");
 
   void commandExists; // retained for the existing injectable availability seam.
   return available;

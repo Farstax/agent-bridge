@@ -57,6 +57,18 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
       toolFree: false,
     },
   },
+  cursor: {
+    id: "cursor",
+    displayName: "Cursor",
+    executable: "cursor-agent",
+    versionArgs: ["--version"],
+    defaultArgs: ["-p", "--output-format", "json"],
+    capabilities: {
+      interactive: true,
+      fallbackTarget: true,
+      toolFree: false,
+    },
+  },
 };
 
 /**
@@ -72,6 +84,7 @@ const BOT_NAME_TO_PROVIDER_ID: Record<string, ProviderId> = {
   agy: "agy",
   antigravity: "agy",
   grok: "grok",
+  cursor: "cursor",
 };
 
 export function supportsToolFreeMode(bot: string): boolean {

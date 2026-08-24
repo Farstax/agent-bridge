@@ -39,6 +39,14 @@ const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
     /usage limit/i,
     /rate limit/i,
   ],
+  cursor: [
+    /No capacity available/i,
+    /RESOURCE_EXHAUSTED/,
+    /quota (?:reached|exceeded)/i,
+    /hit your (?:session |usage )?limit/i,
+    /usage limit/i,
+    /rate limit/i,
+  ],
 };
 
 const AUTH_PATTERNS: readonly RegExp[] = [
@@ -51,10 +59,14 @@ const AUTH_PATTERNS: readonly RegExp[] = [
   /permission denied/i,
   /XAI_API_KEY/i,
   /grok login/i,
+  /CURSOR_API_KEY/i,
+  /cursor-agent login/i,
+  /agent login first/i,
 ];
 
 const MODEL_UNAVAILABLE_PATTERNS: readonly RegExp[] = [
   /model\s+"?[\w./:-]+"?\s+(?:not found|does not exist)/i,
+  /Cannot use this model:/i,
   /unknown model\s+[\w./:-]+/i,
   /unsupported model\s+[\w./:-]+/i,
   // claude CLI json mode reports an unknown/unauthorized model as a 404 with

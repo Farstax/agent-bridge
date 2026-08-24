@@ -35,12 +35,25 @@ export interface SkillCatalogEntry {
   path: string;
 }
 
+/**
+ * Cursor also discovers Claude/Codex skill directories. When the same skill name
+ * exists in multiple Cursor-visible locations, #552 observed Cursor preferring
+ * the Claude-compatible copy. Managed Bridge skills therefore treat
+ * `.cursor/skills/<name>/SKILL.md` as the canonical Cursor projection and keep
+ * that ambiguity explicit rather than inventing a second precedence layer.
+ */
+export const CURSOR_SKILL_DISCOVERY_NOTE =
+  "Canonical Cursor Skill projection is ~/.cursor/skills/<name>/SKILL.md. " +
+  "Cursor may also discover .claude/skills and .codex/skills; duplicate names " +
+  "are ambiguous and were observed to prefer the Claude-compatible copy (#552).";
+
 export interface SkillPaths {
   homeDir: string;
   agentsSkillsDir: string;
   codexSkillsDir: string;
   geminiSkillsDir: string;
   claudeSkillsDir: string;
+  cursorSkillsDir: string;
   lockfilePath: string;
 }
 
@@ -130,6 +143,7 @@ export function resolveSkillPaths(homeDir = getSharedSkillsHomeDir()): SkillPath
     codexSkillsDir: join(homeDir, ".codex", "skills"),
     geminiSkillsDir: join(homeDir, ".gemini", "antigravity-cli", "skills"),
     claudeSkillsDir: join(homeDir, ".claude", "skills"),
+    cursorSkillsDir: join(homeDir, ".cursor", "skills"),
     lockfilePath: join(homeDir, ".agents", ".skill-lock.json"),
   };
 }
@@ -404,7 +418,8 @@ function writeJsonAtomic(path: string, value: unknown): void {
 }
 
 function nativeSkillDirs(paths: SkillPaths): string[] {
-  return [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir];
+  // Cursor is included as its canonical native projection. See CURSOR_SKILL_DISCOVERY_NOTE.
+  return [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir, paths.cursorSkillsDir];
 }
 
 function projectNativeSkill(input: { skillName: string; sharedDir: string; nativeDir: string; linkMode: SkillLinkMode; force?: boolean }): void {

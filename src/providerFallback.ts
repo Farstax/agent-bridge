@@ -7,18 +7,20 @@
  */
 
 import type { BridgeDb } from "./db.js";
+import { isCursorRouteable } from "./providers/cursorAvailability.js";
 import { isGrokRouteable } from "./providers/grokAvailability.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import type { ProviderId } from "./providers/types.js";
 
 function providerIdForCli(cli: string): ProviderId | null {
   if (cli === "antigravity" || cli === "agy") return "agy";
-  if (cli === "codex" || cli === "claude" || cli === "grok") return cli;
+  if (cli === "codex" || cli === "claude" || cli === "grok" || cli === "cursor") return cli;
   return null;
 }
 
 function qualificationAllowsCli(cli: string): boolean {
   if (cli === "grok") return isGrokRouteable();
+  if (cli === "cursor") return isCursorRouteable();
   const providerId = providerIdForCli(cli);
   return providerId == null || !getQualificationFailedProviders().has(providerId);
 }
@@ -57,19 +59,19 @@ export class ProviderFallbackChain {
     return this.chain[idx];
   }
 
-  private clearUnavailableGrokPreference(chatKey: string): void {
+  private clearUnavailableOptInPreference(chatKey: string, cli: "grok" | "cursor"): void {
     try {
       this.db.raw
         .prepare(`UPDATE bridge_state SET interactive_cli_preference = NULL WHERE chat_id = ? AND interactive_cli_preference = ?`)
-        .run(chatKey, "grok");
+        .run(chatKey, cli);
     } catch { /* preference column may not exist on non-interactive test DBs */ }
   }
 
   setActiveCli(chatKey: string, cli: string): void {
     // Discord writes the preference before calling this method. Reject and scrub
-    // unavailable Grok before chain membership is checked.
-    if (cli === "grok" && !this.isCliAvailable(cli)) {
-      this.clearUnavailableGrokPreference(chatKey);
+    // unavailable opt-in providers before chain membership is checked.
+    if ((cli === "grok" || cli === "cursor") && !this.isCliAvailable(cli)) {
+      this.clearUnavailableOptInPreference(chatKey, cli);
       return;
     }
     const idx = this.chain.indexOf(cli);

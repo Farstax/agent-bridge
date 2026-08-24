@@ -13,7 +13,7 @@ function makeConfig(): BridgeConfig {
     executionMode: "safe",
     asyncEnabled: false,
     dbPath: ":memory:",
-    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot, grok: emptyBot },
+    bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot, grok: emptyBot, cursor: emptyBot },
   };
 }
 
