@@ -1,6 +1,6 @@
 /**
  * PURPOSE: The one deliberate authenticated ingress boundary approved by
- * issue #347/#351 — accepts a single bounded Farstax health/operations
+ * issue #347/#351 — accepts a single bounded authenticated health/operations
  * scenario (a health plugin report crossing into `red` status) and starts
  * bounded work through the ordinary owning Run (bridge_runs), executed by
  * the SAME provider-turn execution owner ordinary Telegram-driven turns use
