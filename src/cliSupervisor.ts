@@ -24,9 +24,13 @@ import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
 import {
   filterProviderCredentialEnv,
   getProviderApiKeySecretValues,
+  isProviderApiKeyConfigured,
+  isProviderApiKeyVerified,
   redactProviderApiKeySecrets,
+  verifyProviderApiKey,
 } from "./providers/apiKeyAuth.js";
 import { createStreamingSecretRedactor } from "./providers/streamingSecretRedactor.js";
+import type { ProviderId } from "./providers/types.js";
 
 interface ActiveExecution {
   child: ChildProcess | null;
@@ -323,6 +327,16 @@ export async function runSupervisedProcess(
   const onEvent = options.onEvent;
   const evtCtx = options.eventContext;
   const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
+  const providerId: ProviderId | null = options.bot
+    ? options.bot === "antigravity" ? "agy" : options.bot
+    : null;
+  if (
+    providerId
+    && isProviderApiKeyConfigured(providerId, redactionEnv)
+    && !isProviderApiKeyVerified(providerId, redactionEnv)
+  ) {
+    await verifyProviderApiKey(providerId, { env: redactionEnv });
+  }
   const redact = (text: string): string => redactProviderApiKeySecrets(text, redactionEnv);
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
   const stdoutRedactor = createStreamingSecretRedactor(secretValues);
