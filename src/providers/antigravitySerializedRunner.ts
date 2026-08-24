@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import type { CliOptions } from "../types.js";
 import { isAbortRequested, runSupervisedProcess } from "../cliSupervisor.js";
 import { type as evtType, type BridgeEvent } from "../events/types.js";
+import { withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
 import {
   extractAntigravityNativeJsonError,
   extractAntigravityStreamJsonError,
@@ -109,9 +110,10 @@ function extractNativeJsonProviderError(stdout: string): Error | null {
 
 /**
  * Runs one complete Agy operation under the provider-state lock. The lock
- * covers model application, all bounded DNS attempts, and conversation-ID
- * reconciliation. Direct calls without bridge invocation metadata are still
- * serialized but deliberately leave the user's current model setting intact.
+ * covers model application, API-key provider selection, all bounded DNS
+ * attempts, and conversation-ID reconciliation. Direct calls without bridge
+ * invocation metadata are still serialized but deliberately leave the user's
+ * current model setting intact.
  */
 export async function runAntigravitySerialized(
   command: string,
@@ -136,109 +138,111 @@ export async function runAntigravitySerialized(
   let cancelled = false;
   let lastError: Error | null = null;
   try {
-    return await withAntigravityStateLock(executionContext.homeDir, async () => {
-      if (executionContext.applyModel) {
-        writeModelSettings(executionContext.model, executionContext.homeDir);
-      }
-      const startedAtMs = Date.now();
+    return await withAntigravityStateLock(executionContext.homeDir, async () =>
+      withAntigravityApiKeyProvider(executionContext.homeDir, process.env, async () => {
+        if (executionContext.applyModel) {
+          writeModelSettings(executionContext.model, executionContext.homeDir);
+        }
+        const startedAtMs = Date.now();
 
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        try {
-          if (options.chatId != null && isAbortRequested(options.chatId)) {
-            cancelled = true;
-            throw new Error("CLI execution aborted by user");
-          }
-
-          const result = await runSupervisedProcess(command, args, cwd, {
-            ...options,
-            onEvent: (event) => {
-              if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
-              if (
-                structuredOutput &&
-                event.type === "text.delta" &&
-                event.source === "stdout"
-              ) return;
-              try { onEvent?.(event); } catch { /* observer failures are isolated */ }
-            },
-          }, structuredOutput ? undefined : onProgress);
-
-          if (options.chatId != null && isAbortRequested(options.chatId)) {
-            cancelled = true;
-            throw new Error("CLI execution aborted by user");
-          }
-
-          let sessionId: string | null;
-          let completionText: string;
-          if (outputMode === "json") {
-            const parsed = parseAntigravityNativeJsonResult(result.stdout);
-            sessionId = parsed.sessionId;
-            completionText = parsed.text;
-          } else if (outputMode === "stream-json") {
-            const parsed = parseAntigravityStreamJsonResult(result.stdout);
-            sessionId = parsed.sessionId;
-            completionText = parsed.text;
-          } else {
-            const logFile = extractLogFileArg(args);
-            let explicitLogContent: string | null = null;
-            if (logFile) {
-              try { explicitLogContent = readFileSync(logFile, "utf8"); } catch {}
-            }
-            sessionId = resolveAntigravityConversationId({
-              cwd,
-              sinceMs: startedAtMs,
-              explicitLogContent,
-              homeDir: executionContext.homeDir,
-              allowSharedStateFallback: options.chatId == null && eventContext == null,
-            });
-            completionText = result.stdout;
-          }
-          if (eventContext) {
-            emitSafe(onEvent, evtType.runCompleted({
-              ...eventContext,
-              sessionId,
-              text: completionText,
-            }));
-          }
-          return {
-            stdout: structuredOutput
-              ? result.stdout
-              : appendConversationMarker(result.stdout, sessionId),
-          };
-        } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error));
-          if (cancelled || lastError.message.includes("aborted by user")) throw lastError;
-
-          const stdout = (lastError as Error & { stdout?: string }).stdout ?? "";
-          const stderr = (lastError as Error & { stderr?: string }).stderr ?? "";
-          if (outputMode === "json") {
-            const nativeError = extractNativeJsonProviderError(stdout);
-            if (nativeError) {
-              lastError = nativeError;
-              throw lastError;
-            }
-          } else if (outputMode === "stream-json") {
-            const streamError = extractAntigravityStreamJsonError(stdout);
-            if (streamError) {
-              lastError = streamError;
-              throw lastError;
-            }
-          }
-          if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, args, stdout, stderr) || attempt === 3) {
-            throw lastError;
-          }
-
-          const deadline = Date.now() + 1_000 * attempt;
-          while (Date.now() < deadline) {
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
             if (options.chatId != null && isAbortRequested(options.chatId)) {
               cancelled = true;
               throw new Error("CLI execution aborted by user");
             }
-            await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+
+            const result = await runSupervisedProcess(command, args, cwd, {
+              ...options,
+              onEvent: (event) => {
+                if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
+                if (
+                  structuredOutput &&
+                  event.type === "text.delta" &&
+                  event.source === "stdout"
+                ) return;
+                try { onEvent?.(event); } catch { /* observer failures are isolated */ }
+              },
+            }, structuredOutput ? undefined : onProgress);
+
+            if (options.chatId != null && isAbortRequested(options.chatId)) {
+              cancelled = true;
+              throw new Error("CLI execution aborted by user");
+            }
+
+            let sessionId: string | null;
+            let completionText: string;
+            if (outputMode === "json") {
+              const parsed = parseAntigravityNativeJsonResult(result.stdout);
+              sessionId = parsed.sessionId;
+              completionText = parsed.text;
+            } else if (outputMode === "stream-json") {
+              const parsed = parseAntigravityStreamJsonResult(result.stdout);
+              sessionId = parsed.sessionId;
+              completionText = parsed.text;
+            } else {
+              const logFile = extractLogFileArg(args);
+              let explicitLogContent: string | null = null;
+              if (logFile) {
+                try { explicitLogContent = readFileSync(logFile, "utf8"); } catch {}
+              }
+              sessionId = resolveAntigravityConversationId({
+                cwd,
+                sinceMs: startedAtMs,
+                explicitLogContent,
+                homeDir: executionContext.homeDir,
+                allowSharedStateFallback: options.chatId == null && eventContext == null,
+              });
+              completionText = result.stdout;
+            }
+            if (eventContext) {
+              emitSafe(onEvent, evtType.runCompleted({
+                ...eventContext,
+                sessionId,
+                text: completionText,
+              }));
+            }
+            return {
+              stdout: structuredOutput
+                ? result.stdout
+                : appendConversationMarker(result.stdout, sessionId),
+            };
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            if (cancelled || lastError.message.includes("aborted by user")) throw lastError;
+
+            const stdout = (lastError as Error & { stdout?: string }).stdout ?? "";
+            const stderr = (lastError as Error & { stderr?: string }).stderr ?? "";
+            if (outputMode === "json") {
+              const nativeError = extractNativeJsonProviderError(stdout);
+              if (nativeError) {
+                lastError = nativeError;
+                throw lastError;
+              }
+            } else if (outputMode === "stream-json") {
+              const streamError = extractAntigravityStreamJsonError(stdout);
+              if (streamError) {
+                lastError = streamError;
+                throw lastError;
+              }
+            }
+            if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, args, stdout, stderr) || attempt === 3) {
+              throw lastError;
+            }
+
+            const deadline = Date.now() + 1_000 * attempt;
+            while (Date.now() < deadline) {
+              if (options.chatId != null && isAbortRequested(options.chatId)) {
+                cancelled = true;
+                throw new Error("CLI execution aborted by user");
+              }
+              await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+            }
           }
         }
-      }
-      throw lastError ?? new Error("CLI execution failed");
-    }, options.chatId);
+        throw lastError ?? new Error("CLI execution failed");
+      }),
+    options.chatId);
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
     if (eventContext) {
