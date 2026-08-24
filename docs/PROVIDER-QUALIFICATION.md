@@ -34,7 +34,7 @@ npm run qualify:provider -- --provider grok
 npm run qualify:provider -- --provider cursor
 ```
 
-Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok or Cursor install can participate when explicitly selected/configured without a prior `pass` record. Cursor remains opt-in and is not part of the default interactive chain. A current deterministic `overall: fail` record for the installed provider version suppresses routing until the failure is resolved or the binary version changes.
+Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok or Cursor install can participate without a prior `pass` record. Cursor is the final target in the default interactive fallback chain, but it is routeable only when `cursor-agent status --format json` reports authenticated. A current deterministic `overall: fail` record for the installed provider version suppresses routing until the failure is resolved or the binary version changes.
 
 Cursor Skills use the canonical managed projection `~/.cursor/skills/<name>/SKILL.md`. Managed skill install does not auto-project into Cursor alongside Claude/Codex. Explicit Cursor projection is available through `npm run skills -- project-cursor <name>` or `install`/`project-user --project-cursor`, and refuses to overwrite unmanaged Cursor skill paths. Cursor may still discover Claude/Codex skill directories; duplicate skill names across those paths are ambiguous and were observed to prefer the Claude-compatible copy during #552.
 
