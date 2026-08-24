@@ -21,6 +21,7 @@ import type { ExecutionLaneHandle } from "./db.js";
 import { buildWorkspaceLockedInvocation } from "./workspaceLock.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
+import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
 
 interface ActiveExecution {
   child: ChildProcess | null;
@@ -317,15 +318,24 @@ export async function shutdownCliProcessesAndWait(): Promise<number> {
 
 const PROMPT_REDACT_THRESHOLD = 100;
 
-/** Replaces any arg longer than PROMPT_REDACT_THRESHOLD with a size-only placeholder. */
-export function redactArgs(args: string[]): string[] {
-  return args.map((arg) =>
-    arg.length > PROMPT_REDACT_THRESHOLD ? `[prompt: ${arg.length}chars]` : arg
-  );
+/** Replaces provider secrets and long args before they can enter process logs. */
+export function redactArgs(args: string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  return args.map((arg) => {
+    const credentialSafe = redactProviderApiKeySecrets(arg, env);
+    if (credentialSafe !== arg) return credentialSafe;
+    return arg.length > PROMPT_REDACT_THRESHOLD ? `[prompt: ${arg.length}chars]` : arg;
+  });
 }
 
-function formatSpawnLog(command: string, args: string[], cwd: string, chatId?: number | string, stdin?: string): string {
-  const safeArgs = redactArgs(args).map((arg) => (arg.includes(" ") ? `"${arg}"` : arg)).join(" ");
+function formatSpawnLog(
+  command: string,
+  args: string[],
+  cwd: string,
+  chatId?: number | string,
+  stdin?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const safeArgs = redactArgs(args, env).map((arg) => (arg.includes(" ") ? `"${arg}"` : arg)).join(" ");
   const chatPart = chatId != null ? ` chatId=${String(chatId)}` : "";
   const stdinPart = stdin ? ` stdin=[${stdin.length}chars]` : "";
   return `[spawn]${chatPart} cwd=${cwd} command=${command} args=${safeArgs}${stdinPart}`;
@@ -347,9 +357,16 @@ export async function runSupervisedProcess(
   const killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
   const onEvent = options.onEvent;
   const evtCtx = options.eventContext;
+  const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
+  const redact = (text: string): string => redactProviderApiKeySecrets(text, redactionEnv);
 
-  const emit = (e: BridgeEvent) => {
+  const emit = (event: BridgeEvent) => {
     try {
+      const e: BridgeEvent = event.type === "run.failed"
+        ? { ...event, error: redact(event.error) }
+        : event.type === "text.delta" || event.type === "run.completed"
+          ? { ...event, text: redact(event.text) }
+          : event;
       if (e.type === "run.started") {
         console.log(`[event] run.started runId=${e.runId} bot=${e.bot} chatId=${e.chatId}`);
       } else if (e.type === "run.completed") {
@@ -370,11 +387,11 @@ export async function runSupervisedProcess(
     const spawnInvocation = buildWorkspaceLockedInvocation(command, normalizedArgs, cwd, {
       bypassWorkspaceLock: options.bypassWorkspaceLock,
     });
-    console.log(formatSpawnLog(command, normalizedArgs, cwd, options.chatId, options.stdin));
+    console.log(formatSpawnLog(command, normalizedArgs, cwd, options.chatId, options.stdin, redactionEnv));
     // detached:true puts the child in its own process group so timeout kills
     // can signal the whole subtree (process.kill(-pid)) instead of stranding
     // grandchildren.
-    const childEnv = buildChildEnv(options.contextEnv, options.advisorChild);
+    const childEnv = { ...redactionEnv };
     if (options.eventContext?.runId) childEnv[RUN_MARKER_ENV] = options.eventContext.runId;
     if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;
     if (options.eventContext?.acquisitionId) childEnv[ACQUISITION_MARKER_ENV] = options.eventContext.acquisitionId;
@@ -408,7 +425,7 @@ export async function runSupervisedProcess(
     // timeoutMs === 0 means the hard timeout is disabled (Issue #177 canonical default).
     const timer: NodeJS.Timeout | null = timeoutMs === 0 ? null : setTimeout(() => {
       if (settled || pendingError) return;
-      console.error(`[HARD TIMEOUT] CLI hard timeout after ${timeoutMs}ms - killing process\n${formatSpawnLog(command, args, cwd, options.chatId)}`);
+      console.error(`[HARD TIMEOUT] CLI hard timeout after ${timeoutMs}ms - killing process\n${formatSpawnLog(command, args, cwd, options.chatId, undefined, redactionEnv)}`);
       if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI hard timeout after ${timeoutMs}ms`, category: "timeout" }));
       pendingError = new CliTimeoutError(`CLI hard timeout after ${timeoutMs}ms`, "hard");
       pendingKill = killChildTree(child, killGraceMs);
@@ -419,10 +436,11 @@ export async function runSupervisedProcess(
       readStdout: () => stdout,
       onFailure: (error, category = "unknown") => {
         if (settled || pendingError) return;
-        console.error(`[PROCESS WATCH] ${error.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
-        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: error.message, category }));
-        (error as any).category = category;
-        pendingError = error;
+        const safeError = new Error(redact(error.message));
+        (safeError as any).category = category;
+        console.error(`[PROCESS WATCH] ${safeError.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
+        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: safeError.message, category }));
+        pendingError = safeError;
         pendingKill = killChildTree(child, killGraceMs);
       },
     }) ?? null;
@@ -445,17 +463,18 @@ export async function runSupervisedProcess(
 
     child.stdout.on("data", (data) => {
       const chunk = data.toString();
+      const safeChunk = redact(chunk);
       stdout += chunk;
       resetIdleTimer();
-      if (onProgress) onProgress(chunk);
-      options.onProviderOutputChunk?.(chunk);
-      if (evtCtx) emit(evtType.textDelta({ ...evtCtx, text: chunk, source: "stdout" }));
+      if (onProgress) onProgress(safeChunk);
+      options.onProviderOutputChunk?.(safeChunk);
+      if (evtCtx) emit(evtType.textDelta({ ...evtCtx, text: safeChunk, source: "stdout" }));
     });
 
     child.stderr.on("data", (data) => {
       const chunk = data.toString();
       stderr += chunk;
-      console.error(`[stderr]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${pid ?? "?"} ${chunk.trimEnd()}`);
+      console.error(`[stderr]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${pid ?? "?"} ${redact(chunk).trimEnd()}`);
       resetIdleTimer();
     });
 
@@ -476,42 +495,46 @@ export async function runSupervisedProcess(
         return;
       }
 
+      const safeStdout = redact(stdout);
+      const safeStderr = redact(stderr);
       if (signal && abortedChildren.has(child)) {
         if (evtCtx) emit(evtType.runCancelled({ ...evtCtx, reason: "user" }));
-        doResolve({ stdout });
+        doResolve({ stdout: safeStdout });
       } else if (signal) {
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI killed by signal ${signal}`, category: "cli" }));
-        const combined = [stderr.trim(), stdout.slice(-2000).trim()].filter(Boolean).join("\n");
+        const combined = [safeStderr.trim(), safeStdout.slice(-2000).trim()].filter(Boolean).join("\n");
         const err = new Error(`CLI killed by signal ${signal}: ${combined}`);
-        (err as any).stdout = stdout;
-        (err as any).stderr = stderr;
+        (err as any).stdout = safeStdout;
+        (err as any).stderr = safeStderr;
         doReject(err);
       } else if (code !== 0 && code !== null) {
         if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI exited with code ${code}`, category: "cli" }));
-        const combined = [stderr.trim(), stdout.slice(-2000).trim()].filter(Boolean).join("\n");
+        const combined = [safeStderr.trim(), safeStdout.slice(-2000).trim()].filter(Boolean).join("\n");
         const err = new Error(`CLI exited with code ${code}: ${combined}`);
-        (err as any).stdout = stdout;
-        (err as any).stderr = stderr;
+        (err as any).stdout = safeStdout;
+        (err as any).stderr = safeStderr;
         doReject(err);
       } else {
         const validationError = validateSuccessfulCliExit(options.bot, { stdout, stderr });
         if (validationError) {
+          validationError.message = redact(validationError.message);
           if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: validationError.message, category: "cli" }));
-          (validationError as any).stdout = stdout;
-          (validationError as any).stderr = stderr;
+          (validationError as any).stdout = safeStdout;
+          (validationError as any).stderr = safeStderr;
           doReject(validationError);
           return;
         }
-        if (evtCtx) emit(evtType.runCompleted({ ...evtCtx, text: stdout, sessionId: null }));
-        doResolve({ stdout });
+        if (evtCtx) emit(evtType.runCompleted({ ...evtCtx, text: safeStdout, sessionId: null }));
+        doResolve({ stdout: safeStdout });
       }
     });
 
-    child.on("error", (err) => {
+    child.on("error", (error) => {
       if (timer) clearTimeout(timer);
       if (processWatchTimer) clearInterval(processWatchTimer);
       if (idleTimer) clearTimeout(idleTimer);
       if (options.chatId != null) deregisterProcess(options.chatId, child);
+      const err = new Error(redact(error.message));
       if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: err.message, category: "cli" }));
       doReject(err);
     });
