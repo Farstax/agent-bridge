@@ -87,4 +87,18 @@ describe("durable owner notification delivery (#562)", () => {
 
     expect(await post(path, { text: "Workspace is ready.", recordInConversation: "yes" })).toBe(400);
   });
+
+  it("fails closed before delivery when persistence is requested without a recorder", async () => {
+    const path = socketPath();
+    const sendMessage = vi.fn(async () => ({ ok: true }));
+    const ingress: OwnerNotificationIngress = await startOwnerNotificationIngress({
+      socketPath: path,
+      allowedUserIds: new Set(["42"]),
+      client: { sendMessage },
+    });
+    cleanup.push(() => ingress.stop());
+
+    expect(await post(path, { text: "Workspace is ready.", recordInConversation: true })).toBe(503);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
 });
