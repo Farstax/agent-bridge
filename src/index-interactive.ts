@@ -139,6 +139,9 @@ const ownerNotificationIngress = ownerNotificationSocketPath
       client: {
         sendMessage: (chatId, text) => client.sendMessage({ chat_id: chatId, text }),
       },
+      recordDeliveredAssistantTurn: (chatKey, text) => {
+        db.addConvTurn(chatKey, "assistant", text);
+      },
     })
   : null;
 if (ownerNotificationIngress) {
