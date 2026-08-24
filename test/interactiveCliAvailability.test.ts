@@ -7,6 +7,7 @@ import {
   type CliKind,
 } from "../src/interactiveBot.js";
 import { getAvailableCliKinds, resolveInteractiveCliAuthPaths } from "../src/interactiveCliAuth.js";
+import type { ProviderId } from "../src/providers/types.js";
 
 const cursorStatusUnavailable = () => {
   throw new Error("Cursor status unavailable in test");
@@ -114,20 +115,38 @@ describe("interactive CLI availability filtering", () => {
     expect(available).toEqual(new Set<CliKind>());
   });
 
-  it("accepts XAI_API_KEY as Grok authentication without requiring a positive qualification", () => {
-    const available = getAvailableCliKinds({
+  it.each([
+    ["codex", "codex", "CODEX_API_KEY"],
+    ["claude", "claude", "ANTHROPIC_API_KEY"],
+    ["agy", "antigravity", "GEMINI_API_KEY"],
+    ["grok", "grok", "XAI_API_KEY"],
+    ["cursor", "cursor", "CURSOR_API_KEY"],
+  ] as const)("accepts only a verified %s API key", (provider, cliKind, envVar) => {
+    const env = { [envVar]: `candidate-${provider}-key` };
+    const verified = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => false,
       failedProviders: new Set(),
-      env: { XAI_API_KEY: "xai-test" },
+      env,
+      verifyApiKey: (candidate: ProviderId) => candidate === provider,
+      readCursorStatus: cursorStatusUnavailable,
+    });
+    const rejected = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => false,
+      failedProviders: new Set(),
+      env,
+      verifyApiKey: () => false,
       readCursorStatus: cursorStatusUnavailable,
     });
 
-    expect(available).toEqual(new Set<CliKind>(["grok"]));
+    expect(verified).toEqual(new Set<CliKind>([cliKind]));
+    expect(rejected).toEqual(new Set<CliKind>());
   });
 
-  it("treats Cursor as available only when status reports authenticated", () => {
+  it("treats Cursor as available only when account status reports authenticated and no API key is configured", () => {
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
