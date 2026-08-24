@@ -103,6 +103,18 @@ describe("Cursor routing safety", () => {
     });
   });
 
+  it("allows authenticated Cursor as the final fallback target", () => {
+    withCursorEnvironment(() => {
+      const db = openDb(":memory:");
+      const chain = new ProviderFallbackChain(["codex", "claude", "grok", "antigravity", "cursor"], db);
+      expect(chain.advance("chat:1")).toBe("claude");
+      expect(chain.advance("chat:1")).toBe("grok");
+      expect(chain.advance("chat:1")).toBe("antigravity");
+      expect(chain.advance("chat:1")).toBe("cursor");
+      expect(chain.isChainExhausted("chat:1")).toBe(true);
+    });
+  });
+
   it("skips Cursor when current qualification evidence proves a deterministic failure", () => {
     withCursorEnvironment((_root, evidencePath) => {
       writeFailedCursorQualification(evidencePath);
@@ -132,12 +144,11 @@ describe("Cursor routing safety", () => {
     });
   });
 
-  it("does not place Cursor on the default interactive fallback chain", () => {
+  it("places Cursor last on both default interactive fallback chains", () => {
     const interactive = readFileSync(join(repoRoot, "src/index-interactive.ts"), "utf8");
     const discord = readFileSync(join(repoRoot, "src/index-discord-interactive.ts"), "utf8");
-    expect(interactive).toMatch(/fallback:\s*\["codex",\s*"claude",\s*"grok",\s*"antigravity"\]/);
-    expect(discord).toMatch(/fallback:\s*\["codex",\s*"claude",\s*"grok",\s*"antigravity"\]/);
-    expect(interactive).not.toMatch(/fallback:\s*\[[^\]]*cursor/);
-    expect(discord).not.toMatch(/fallback:\s*\[[^\]]*cursor/);
+    const expected = /fallback:\s*\["codex",\s*"claude",\s*"grok",\s*"antigravity",\s*"cursor"\]/;
+    expect(interactive).toMatch(expected);
+    expect(discord).toMatch(expected);
   });
 });
