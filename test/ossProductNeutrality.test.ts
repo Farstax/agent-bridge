@@ -27,6 +27,7 @@ describe("OSS product neutrality", () => {
       const found: string[] = [];
       if (/farstax/i.test(text)) found.push("Farstax");
       if (/agent-bridge-platform/i.test(text)) found.push("agent-bridge-platform");
+      if (/FARSTAX_/.test(text)) found.push("FARSTAX_*");
       return found.map((marker) => `${path}: ${marker}`);
     });
 
