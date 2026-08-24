@@ -21,7 +21,8 @@ import type { ExecutionLaneHandle } from "./db.js";
 import { buildWorkspaceLockedInvocation } from "./workspaceLock.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
-import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
+import { getProviderApiKeySecretValues, redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
+import { createStreamingSecretRedactor } from "./providers/streamingSecretRedactor.js";
 
 interface ActiveExecution {
   child: ChildProcess | null;
@@ -359,6 +360,9 @@ export async function runSupervisedProcess(
   const evtCtx = options.eventContext;
   const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
   const redact = (text: string): string => redactProviderApiKeySecrets(text, redactionEnv);
+  const secretValues = getProviderApiKeySecretValues(redactionEnv);
+  const stdoutRedactor = createStreamingSecretRedactor(secretValues);
+  const stderrRedactor = createStreamingSecretRedactor(secretValues);
 
   const emit = (event: BridgeEvent) => {
     try {
@@ -380,6 +384,13 @@ export async function runSupervisedProcess(
     } catch {
       /* never let event emission break execution */
     }
+  };
+
+  const publishStdout = (safeChunk: string) => {
+    if (!safeChunk) return;
+    onProgress?.(safeChunk);
+    options.onProviderOutputChunk?.(safeChunk);
+    if (evtCtx) emit(evtType.textDelta({ ...evtCtx, text: safeChunk, source: "stdout" }));
   };
 
   return new Promise((resolve, reject) => {
@@ -436,11 +447,11 @@ export async function runSupervisedProcess(
       readStdout: () => stdout,
       onFailure: (error, category = "unknown") => {
         if (settled || pendingError) return;
-        const safeError = new Error(redact(error.message));
-        (safeError as any).category = category;
-        console.error(`[PROCESS WATCH] ${safeError.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
-        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: safeError.message, category }));
-        pendingError = safeError;
+        error.message = redact(error.message);
+        (error as any).category = category;
+        console.error(`[PROCESS WATCH] ${error.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
+        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: error.message, category }));
+        pendingError = error;
         pendingKill = killChildTree(child, killGraceMs);
       },
     }) ?? null;
@@ -463,18 +474,18 @@ export async function runSupervisedProcess(
 
     child.stdout.on("data", (data) => {
       const chunk = data.toString();
-      const safeChunk = redact(chunk);
       stdout += chunk;
       resetIdleTimer();
-      if (onProgress) onProgress(safeChunk);
-      options.onProviderOutputChunk?.(safeChunk);
-      if (evtCtx) emit(evtType.textDelta({ ...evtCtx, text: safeChunk, source: "stdout" }));
+      publishStdout(stdoutRedactor.push(chunk));
     });
 
     child.stderr.on("data", (data) => {
       const chunk = data.toString();
       stderr += chunk;
-      console.error(`[stderr]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${pid ?? "?"} ${redact(chunk).trimEnd()}`);
+      const safeChunk = stderrRedactor.push(chunk);
+      if (safeChunk) {
+        console.error(`[stderr]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${pid ?? "?"} ${safeChunk.trimEnd()}`);
+      }
       resetIdleTimer();
     });
 
@@ -483,6 +494,11 @@ export async function runSupervisedProcess(
       if (processWatchTimer) clearInterval(processWatchTimer);
       if (idleTimer) clearTimeout(idleTimer);
       if (options.chatId != null) deregisterProcess(options.chatId, child);
+      publishStdout(stdoutRedactor.flush());
+      const safeStderrTail = stderrRedactor.flush();
+      if (safeStderrTail) {
+        console.error(`[stderr]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${pid ?? "?"} ${safeStderrTail.trimEnd()}`);
+      }
       console.log(`[close]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${pid ?? "?"} code=${code} signal=${signal ?? "none"}`);
 
       if (settled) return;
@@ -534,9 +550,9 @@ export async function runSupervisedProcess(
       if (processWatchTimer) clearInterval(processWatchTimer);
       if (idleTimer) clearTimeout(idleTimer);
       if (options.chatId != null) deregisterProcess(options.chatId, child);
-      const err = new Error(redact(error.message));
-      if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: err.message, category: "cli" }));
-      doReject(err);
+      error.message = redact(error.message);
+      if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: error.message, category: "cli" }));
+      doReject(error);
     });
   });
 }
