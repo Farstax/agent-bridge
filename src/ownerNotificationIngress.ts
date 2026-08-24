@@ -128,11 +128,15 @@ export async function startOwnerNotificationIngress(options: {
         return;
       }
       const recordInConversation = payload.recordInConversation === true;
+      if (recordInConversation && !recordDeliveredAssistantTurn) {
+        res.writeHead(503).end();
+        return;
+      }
 
       client.sendMessage(ownerId, text).then(
         () => {
           try {
-            if (recordInConversation) recordDeliveredAssistantTurn?.(ownerIdText, text);
+            if (recordInConversation) recordDeliveredAssistantTurn!(ownerIdText, text);
             res.writeHead(202).end();
           } catch {
             res.writeHead(500).end();
