@@ -1,0 +1,31 @@
+name: issue-562-wire
+on:
+  push:
+    branches: [issue-562-durable-owner-notifications]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: issue-562-durable-owner-notifications
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --include=dev
+      - run: python3 scripts/issue-562-wire.py
+      - run: npx vitest run test/ownerNotificationIngress.test.ts test/ownerNotificationDurability.test.ts
+      - run: npm run typecheck
+      - name: Commit implementation
+        run: |
+          rm -f scripts/issue-562-wire.py .github/workflows/issue-562-wire.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Wire owner notifications into conversation history"
+          git push origin HEAD:issue-562-durable-owner-notifications
