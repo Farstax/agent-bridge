@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,9 +6,12 @@ import {
   PROVIDER_API_KEY_AUTH,
   clearProviderApiKeyVerificationCache,
   getProviderApiKeyCapability,
+  isProviderApiKeyVerified,
   redactProviderApiKeySecrets,
+  verifyConfiguredProviderApiKeys,
   verifyProviderApiKey,
   withAntigravityApiKeyProvider,
+  type ProviderApiKeyProbeExecutor,
 } from "../src/providers/apiKeyAuth.js";
 import type { ProviderId } from "../src/providers/types.js";
 
@@ -35,7 +37,7 @@ describe("provider API-key authentication", () => {
     expect(getProviderApiKeyCapability("future-provider")).toBeNull();
   });
 
-  it.each(providerCases)("requires a successful bounded native probe for $provider", ({ provider, envVar, commandEnv }) => {
+  it.each(providerCases)("requires a successful bounded native probe for $provider", async ({ provider, envVar, commandEnv }) => {
     const homeDir = mkdtempSync(join(tmpdir(), `agent-bridge-${provider}-auth-test-`));
     tempDirs.push(homeDir);
     const apiKey = `secret-${provider}-572`;
@@ -46,7 +48,7 @@ describe("provider API-key authentication", () => {
       ANTHROPIC_AUTH_TOKEN: "unrelated-provider-secret",
     };
     let call: { command: string; args: string[]; env: NodeJS.ProcessEnv; timeout: number } | null = null;
-    const execFile = ((command: string, args: string[], options: any) => {
+    const execFile: ProviderApiKeyProbeExecutor = async (command, args, options) => {
       call = { command, args, env: options.env, timeout: options.timeout };
       if (provider === "agy") {
         const isolatedHome = String(options.env.HOME);
@@ -54,10 +56,9 @@ describe("provider API-key authentication", () => {
         const settings = JSON.parse(readFileSync(join(isolatedHome, ".gemini", "antigravity-cli", "settings.json"), "utf8"));
         expect(settings.modelProvider).toBe("gemini");
       }
-      return "ok";
-    }) as unknown as typeof execFileSync;
+    };
 
-    expect(verifyProviderApiKey(provider, { env, homeDir, execFile, useCache: false })).toBe(true);
+    await expect(verifyProviderApiKey(provider, { env, execFile, useCache: false })).resolves.toBe(true);
     expect(call).not.toBeNull();
     expect(call!.command).toBe(`fake-${provider}`);
     expect(call!.args.join(" ")).not.toContain(apiKey);
@@ -67,38 +68,62 @@ describe("provider API-key authentication", () => {
     expect(call!.timeout).toBe(15_000);
   });
 
-  it.each(providerCases)("does not treat a non-empty $envVar as proof for $provider", ({ provider, envVar }) => {
+  it.each(providerCases)("does not treat a non-empty $envVar as proof for $provider", async ({ provider, envVar }) => {
     const env = { [envVar]: `invalid-${provider}-572` };
-    const execFile = (() => {
+    const execFile: ProviderApiKeyProbeExecutor = async () => {
       throw new Error("provider rejected credential");
-    }) as unknown as typeof execFileSync;
-    expect(verifyProviderApiKey(provider, { env, execFile, useCache: false })).toBe(false);
+    };
+    await expect(verifyProviderApiKey(provider, { env, execFile, useCache: false })).resolves.toBe(false);
+    expect(isProviderApiKeyVerified(provider, env)).toBe(false);
   });
 
-  it("does not probe when the key is missing or blank", () => {
+  it("does not probe when the key is missing or blank", async () => {
     let calls = 0;
-    const execFile = (() => {
+    const execFile: ProviderApiKeyProbeExecutor = async () => {
       calls += 1;
-      return "ok";
-    }) as unknown as typeof execFileSync;
-    expect(verifyProviderApiKey("claude", { env: {}, execFile, useCache: false })).toBe(false);
-    expect(verifyProviderApiKey("claude", { env: { ANTHROPIC_API_KEY: "   " }, execFile, useCache: false })).toBe(false);
+    };
+    await expect(verifyProviderApiKey("claude", { env: {}, execFile, useCache: false })).resolves.toBe(false);
+    await expect(verifyProviderApiKey("claude", { env: { ANTHROPIC_API_KEY: "   " }, execFile, useCache: false })).resolves.toBe(false);
     expect(calls).toBe(0);
   });
 
-  it("caches successful verification briefly and then rechecks", () => {
+  it("caches successful verification for the exact key fingerprint", async () => {
     let calls = 0;
-    const execFile = (() => {
+    const execFile: ProviderApiKeyProbeExecutor = async () => {
       calls += 1;
-      return "ok";
-    }) as unknown as typeof execFileSync;
+    };
     const env = { CURSOR_API_KEY: "cursor-cache-key" };
 
-    expect(verifyProviderApiKey("cursor", { env, execFile, nowMs: 0 })).toBe(true);
-    expect(verifyProviderApiKey("cursor", { env, execFile, nowMs: 60_000 })).toBe(true);
+    await expect(verifyProviderApiKey("cursor", { env, execFile })).resolves.toBe(true);
+    await expect(verifyProviderApiKey("cursor", { env, execFile })).resolves.toBe(true);
     expect(calls).toBe(1);
-    expect(verifyProviderApiKey("cursor", { env, execFile, nowMs: 11 * 60_000 })).toBe(true);
+    expect(isProviderApiKeyVerified("cursor", env)).toBe(true);
+
+    const changedEnv = { CURSOR_API_KEY: "cursor-cache-key-2" };
+    expect(isProviderApiKeyVerified("cursor", changedEnv)).toBe(false);
+    await expect(verifyProviderApiKey("cursor", { env: changedEnv, execFile })).resolves.toBe(true);
     expect(calls).toBe(2);
+  });
+
+  it("verifies configured providers in parallel without blocking on one probe", async () => {
+    const env = { CODEX_API_KEY: "codex-key", ANTHROPIC_API_KEY: "claude-key" };
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const execFile: ProviderApiKeyProbeExecutor = async (command) => {
+      started.push(command);
+      await gate;
+    };
+
+    const verification = verifyConfiguredProviderApiKeys({
+      env: { ...env, CODEX_COMMAND: "codex-probe", CLAUDE_COMMAND: "claude-probe" },
+      execFile,
+      useCache: false,
+    });
+    await Promise.resolve();
+    expect(started.sort()).toEqual(["claude-probe", "codex-probe"]);
+    release();
+    await verification;
   });
 
   it("restores Agy modelProvider after an API-key run", async () => {
