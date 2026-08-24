@@ -7,6 +7,7 @@ import { getCliWorkingDir } from "../src/bridge.js";
 import { openDb } from "../src/db.js";
 import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { isCursorRouteable } from "../src/providers/cursorAvailability.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -106,7 +107,11 @@ describe("Cursor routing safety", () => {
   it("allows authenticated Cursor as the final fallback target", () => {
     withCursorEnvironment(() => {
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "claude", "grok", "antigravity", "cursor"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "claude", "grok", "antigravity", "cursor"],
+        db,
+        (cli) => cli === "cursor" ? isCursorRouteable() : true,
+      );
       expect(chain.advance("chat:1")).toBe("claude");
       expect(chain.advance("chat:1")).toBe("grok");
       expect(chain.advance("chat:1")).toBe("antigravity");
