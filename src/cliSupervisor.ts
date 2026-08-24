@@ -21,7 +21,11 @@ import type { ExecutionLaneHandle } from "./db.js";
 import { buildWorkspaceLockedInvocation } from "./workspaceLock.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
-import { getProviderApiKeySecretValues, redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
+import {
+  filterProviderCredentialEnv,
+  getProviderApiKeySecretValues,
+  redactProviderApiKeySecrets,
+} from "./providers/apiKeyAuth.js";
 import { createStreamingSecretRedactor } from "./providers/streamingSecretRedactor.js";
 
 interface ActiveExecution {
@@ -33,9 +37,6 @@ interface ActiveExecution {
   finishLifecycle: (() => void) | null;
 }
 
-// The single process registry. Both runCli() and runCliAsync() route through
-// runSupervisedProcess() below, which is the only code that reads or writes
-// this map — there is no second registry.
 const activeExecutions = new Map<number | string, ActiveExecution>();
 const abortedChildren = new WeakSet<ChildProcess>();
 
@@ -86,19 +87,6 @@ export function resolveSupervisorTimeouts(options: Pick<CliOptions, "timeoutMs" 
   };
 }
 
-/**
- * Sends SIGTERM to the full process group (child spawned with detached:true
- * is the group leader) and escalates to SIGKILL after graceMs — unless a
- * liveness probe at escalation time shows nothing left in the group. Returns
- * a promise that resolves only once the whole group is confirmed dead (or
- * the bounded poll gives up), not merely once SIGTERM/SIGKILL was sent.
- *
- * Escalation deliberately does NOT cancel on the direct child's "close"
- * event: the group leader can exit (and fire "close") while a TERM-resistant
- * descendant in the same process group is still alive and still needs the
- * SIGKILL. Falls back to signalling the direct child only when no pid is
- * available (e.g. spawn failed before a pid was assigned).
- */
 function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Promise<void> {
   const pid = child.pid;
   const signal = (sig: NodeJS.Signals) => {
@@ -110,10 +98,6 @@ function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Pr
   signal("SIGTERM");
   if (!pid) return Promise.resolve();
 
-  // Poll continuously from the moment SIGTERM is sent — do NOT wait until
-  // graceMs elapses before checking liveness. Most processes die well before
-  // the grace deadline; only a still-alive group at the deadline gets
-  // escalated to SIGKILL.
   return new Promise((resolve) => {
     const escalateAt = Date.now() + graceMs;
     const giveUpAt = escalateAt + GROUP_EXIT_POLL_BOUND_MS;
@@ -122,7 +106,7 @@ function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Pr
       try {
         process.kill(-pid, 0);
       } catch {
-        resolve(); // ESRCH: group empty, whether before or after escalation
+        resolve();
         return;
       }
       const now = Date.now();
@@ -130,7 +114,7 @@ function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Pr
         escalated = true;
         signal("SIGKILL");
       } else if (escalated && now >= giveUpAt) {
-        resolve(); // bounded — give up on an unreapable/zombie entry
+        resolve();
         return;
       }
       setTimeout(poll, GROUP_EXIT_POLL_INTERVAL_MS);
@@ -139,10 +123,6 @@ function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Pr
   });
 }
 
-/**
- * Structured cancellation reason for a configured hard/idle timeout (Issue
- * #177) — callers must branch on `timeoutKind`, not on Error#message text.
- */
 export class CliTimeoutError extends Error {
   public readonly category = "timeout";
   constructor(message: string, public readonly timeoutKind: "hard" | "idle") {
@@ -156,11 +136,6 @@ function killChild(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Promis
   return killChildTree(child, graceMs);
 }
 
-/**
- * Removes a chat's process registration only if it still points at this child.
- * A retry/fallback spawn may have re-registered the same chatId; a late close
- * from the older child must not deregister the newer process.
- */
 function deregisterProcess(chatId: number | string, child: ChildProcess): void {
   const active = activeExecutions.get(chatId);
   if (active?.child === child) {
@@ -202,7 +177,6 @@ export function completeExecutionLifecycle(chatId: number | string, token: strin
   if (!active.child) activeExecutions.delete(chatId);
 }
 
-/** Returns whether this process still owns a live execution for a durable run ID. */
 export function getExecutionProcessState(runId: string): ExecutionProcessState {
   for (const active of activeExecutions.values()) {
     if (active.lifecycleHandle?.runId === runId) return "live";
@@ -293,10 +267,6 @@ export function shutdownCliProcesses(): number {
   return count;
 }
 
-/**
- * Test/process teardown variant that does not return until every tracked
- * child, and every descendant in its process group, is confirmed dead.
- */
 export async function shutdownCliProcessesAndWait(): Promise<number> {
   const children = [...new Set(
     [...activeExecutions.values()].flatMap((active) => active.child ? [active.child] : []),
@@ -319,7 +289,6 @@ export async function shutdownCliProcessesAndWait(): Promise<number> {
 
 const PROMPT_REDACT_THRESHOLD = 100;
 
-/** Replaces provider secrets and long args before they can enter process logs. */
 export function redactArgs(args: string[], env: NodeJS.ProcessEnv = process.env): string[] {
   return args.map((arg) => {
     const credentialSafe = redactProviderApiKeySecrets(arg, env);
@@ -342,11 +311,6 @@ function formatSpawnLog(
   return `[spawn]${chatPart} cwd=${cwd} command=${command} args=${safeArgs}${stdinPart}`;
 }
 
-/**
- * The single authoritative child-process lifecycle. runCli() and
- * runCliAsync() in src/cli.ts are thin adapters over this function; both
- * share identical spawn/env/timer/registry/cancellation/settlement behaviour.
- */
 export async function runSupervisedProcess(
   command: string,
   args: string[],
@@ -399,17 +363,12 @@ export async function runSupervisedProcess(
       bypassWorkspaceLock: options.bypassWorkspaceLock,
     });
     console.log(formatSpawnLog(command, normalizedArgs, cwd, options.chatId, options.stdin, redactionEnv));
-    // detached:true puts the child in its own process group so timeout kills
-    // can signal the whole subtree (process.kill(-pid)) instead of stranding
-    // grandchildren.
-    const childEnv = { ...redactionEnv };
+    const childEnv = filterProviderCredentialEnv(options.bot, redactionEnv);
     if (options.eventContext?.runId) childEnv[RUN_MARKER_ENV] = options.eventContext.runId;
     if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;
     if (options.eventContext?.acquisitionId) childEnv[ACQUISITION_MARKER_ENV] = options.eventContext.acquisitionId;
     const child = spawn(spawnInvocation.command, spawnInvocation.args, { cwd, shell: false, detached: true, env: childEnv });
-    if (options.stdin) {
-      child.stdin?.write(options.stdin);
-    }
+    if (options.stdin) child.stdin?.write(options.stdin);
     child.stdin?.end();
     if (options.chatId != null) registerProcess(options.chatId, child);
     const pid = child.pid;
@@ -433,7 +392,6 @@ export async function runSupervisedProcess(
       resolve(val);
     };
 
-    // timeoutMs === 0 means the hard timeout is disabled (Issue #177 canonical default).
     const timer: NodeJS.Timeout | null = timeoutMs === 0 ? null : setTimeout(() => {
       if (settled || pendingError) return;
       console.error(`[HARD TIMEOUT] CLI hard timeout after ${timeoutMs}ms - killing process\n${formatSpawnLog(command, args, cwd, options.chatId, undefined, redactionEnv)}`);
@@ -458,7 +416,6 @@ export async function runSupervisedProcess(
 
     let idleTimer: NodeJS.Timeout | null = null;
     const resetIdleTimer = () => {
-      // null or 0 means the idle timeout is disabled (Issue #177 canonical default).
       if (idleTimeoutMs === null || idleTimeoutMs === 0) return;
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
@@ -504,9 +461,6 @@ export async function runSupervisedProcess(
       if (settled) return;
       if (pendingError) {
         const err = pendingError;
-        // Don't settle until the full process-group kill is confirmed
-        // complete — the group leader closing here doesn't mean a
-        // TERM-resistant descendant has died yet.
         (pendingKill ?? Promise.resolve()).then(() => doReject(err));
         return;
       }
