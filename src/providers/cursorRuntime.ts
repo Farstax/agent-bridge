@@ -87,6 +87,11 @@ export function buildInvocation({
     // Qualified #552 trusted-workspace edit contract. Host --sandbox enabled is
     // not required; Agent Bridge owns surrounding execution safety.
     args.push("--trust", "--sandbox", "disabled");
+  } else {
+    // Cursor docs say headless/print mode otherwise has write access. Safe mode
+    // therefore uses the live-qualified Ask read-only contract (#552) plus
+    // --trust so headless runs are not blocked on an interactive trust prompt.
+    args.push("--mode", "ask", "--trust");
   }
   return {
     command,
@@ -111,6 +116,9 @@ export function parseResult(stdout: string): CliResult {
     }
     if (!event || typeof event !== "object" || Array.isArray(event)) {
       throw new Error("Cursor structured output was malformed");
+    }
+    if (terminal) {
+      throw new Error("Cursor structured output contained data after terminal result");
     }
     const record = event as Record<string, unknown>;
     const type = record.type;

@@ -36,16 +36,18 @@ export interface SkillCatalogEntry {
 }
 
 /**
- * Cursor also discovers Claude/Codex skill directories. When the same skill name
- * exists in multiple Cursor-visible locations, #552 observed Cursor preferring
- * the Claude-compatible copy. Managed Bridge skills therefore treat
- * `.cursor/skills/<name>/SKILL.md` as the canonical Cursor projection and keep
- * that ambiguity explicit rather than inventing a second precedence layer.
+ * Managed installs do not auto-project into Cursor. Cursor also discovers
+ * Claude/Codex skill directories, and #552 observed ambiguous preference for the
+ * Claude-compatible copy when duplicates exist. Use
+ * projectManagedSkillToCursor() for an explicit Cursor-only projection that
+ * preserves unmanaged ~/.cursor/skills content.
  */
 export const CURSOR_SKILL_DISCOVERY_NOTE =
   "Canonical Cursor Skill projection is ~/.cursor/skills/<name>/SKILL.md. " +
-  "Cursor may also discover .claude/skills and .codex/skills; duplicate names " +
-  "are ambiguous and were observed to prefer the Claude-compatible copy (#552).";
+  "Managed skill install does not auto-project into Cursor alongside Claude/Codex. " +
+  "Use an explicit Cursor projection. Cursor may still discover .claude/skills and " +
+  ".codex/skills; duplicate names are ambiguous and were observed to prefer the " +
+  "Claude-compatible copy (#552).";
 
 export interface SkillPaths {
   homeDir: string;
@@ -418,8 +420,37 @@ function writeJsonAtomic(path: string, value: unknown): void {
 }
 
 function nativeSkillDirs(paths: SkillPaths): string[] {
-  // Cursor is included as its canonical native projection. See CURSOR_SKILL_DISCOVERY_NOTE.
-  return [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir, paths.cursorSkillsDir];
+  // Cursor is intentionally excluded from automatic multi-provider projection.
+  // See CURSOR_SKILL_DISCOVERY_NOTE and projectManagedSkillToCursor().
+  return [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir];
+}
+
+/**
+ * Explicitly project one already-installed managed skill into Cursor's native
+ * skill directory only. Refuses to overwrite unmanaged Cursor skill content.
+ */
+export function projectManagedSkillToCursor(
+  skillName: string,
+  options: { homeDir?: string; linkMode?: SkillLinkMode } = {},
+): void {
+  const paths = resolveSkillPaths(options.homeDir);
+  const sharedDir = join(paths.agentsSkillsDir, skillName);
+  if (!existsSync(sharedDir)) {
+    throw new Error(`Installed skill folder is missing: ${sharedDir}`);
+  }
+  const linkMode = options.linkMode ?? "symlink";
+  validateLinkMode(linkMode);
+  const nativePath = join(paths.cursorSkillsDir, skillName);
+  if (pathExists(nativePath) && !isExpectedNativeEntry(nativePath, sharedDir, linkMode)) {
+    throw new Error(`Native skill path already exists and is not this managed projection: ${nativePath}`);
+  }
+  projectNativeSkill({
+    skillName,
+    sharedDir,
+    nativeDir: paths.cursorSkillsDir,
+    linkMode,
+    force: false,
+  });
 }
 
 function projectNativeSkill(input: { skillName: string; sharedDir: string; nativeDir: string; linkMode: SkillLinkMode; force?: boolean }): void {

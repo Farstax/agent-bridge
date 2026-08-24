@@ -50,7 +50,7 @@ function preflightUserSkill(skillName: string, options: ProjectUserSkillOptions)
     throw new Error(`Refusing user-skill operation with bundled skill name: ${skillName}`);
   }
 
-  for (const nativeDir of [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir]) {
+  for (const nativeDir of [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir, paths.cursorSkillsDir]) {
     assertNativeProjectionCompatible(join(nativeDir, skillName), sharedDir);
   }
 
