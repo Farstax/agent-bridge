@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isProviderApiKeyConfigured, verifyProviderApiKey } from "./apiKeyAuth.js";
+import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./qualificationStatus.js";
 import type { ProviderId } from "./types.js";
 
@@ -29,14 +29,9 @@ export function isGrokAuthenticated(options: GrokAvailabilityOptions = {}): bool
   // Preserve that provider-owned account path unchanged when it exists.
   if (resolveGrokAuthPaths(homeDir).some(exists)) return true;
   if (!isProviderApiKeyConfigured("grok", env)) return false;
-  return options.verifyApiKey?.() ?? verifyProviderApiKey("grok", { env, homeDir });
+  return options.verifyApiKey?.() ?? isProviderApiKeyVerified("grok", env);
 }
 
-/**
- * Grok is routeable when authenticated unless current qualification evidence
- * proves a deterministic failure. Missing/stale/degraded evidence is diagnostic,
- * not a routing prerequisite.
- */
 export function isGrokRouteable(options: GrokAvailabilityOptions = {}): boolean {
   if (!isGrokAuthenticated(options)) return false;
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
