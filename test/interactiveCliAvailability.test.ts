@@ -146,7 +146,49 @@ describe("interactive CLI availability filtering", () => {
     expect(rejected).toEqual(new Set<CliKind>());
   });
 
-  it("treats Cursor as available only when account status reports authenticated and no API key is configured", () => {
+  it.each([
+    ["codex", "CODEX_API_KEY"],
+    ["claude", "ANTHROPIC_API_KEY"],
+    ["agy", "GEMINI_API_KEY"],
+    ["grok", "XAI_API_KEY"],
+  ] as const)("keeps an authenticated %s account available when its optional key is invalid", (provider, envVar) => {
+    const homeDir = "/home/tester";
+    const paths = resolveInteractiveCliAuthPaths(homeDir);
+    const accountPaths = provider === "codex"
+      ? [paths.codex]
+      : provider === "claude"
+        ? [paths.claude]
+        : provider === "agy"
+          ? [paths.antigravity[0]]
+          : [paths.grok[0]];
+    const expected = provider === "agy" ? "antigravity" : provider;
+    const available = getAvailableCliKinds({
+      homeDir,
+      exists: (path) => accountPaths.includes(path),
+      commandExists: () => false,
+      failedProviders: new Set(),
+      env: { [envVar]: `invalid-${provider}-key` },
+      verifyApiKey: () => false,
+      readCursorStatus: cursorStatusUnavailable,
+    });
+
+    expect(available.has(expected as CliKind)).toBe(true);
+  });
+
+  it("keeps an authenticated Cursor account available when its optional key is invalid", () => {
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => false,
+      failedProviders: new Set(),
+      env: { CURSOR_API_KEY: "invalid-cursor-key" },
+      verifyApiKey: () => false,
+      readCursorStatus: () => ({ isAuthenticated: true }),
+    });
+    expect(available).toEqual(new Set<CliKind>(["cursor"]));
+  });
+
+  it("treats Cursor as available only when account status reports authenticated without a verified API key", () => {
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
