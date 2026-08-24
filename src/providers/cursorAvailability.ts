@@ -50,14 +50,12 @@ export function readCursorCliStatus(
 }
 
 /**
- * Prefer the live-qualified `cursor-agent status --format json` contract.
- * Credential-file presence alone is not enough. CURSOR_API_KEY remains a
- * documented alternate authentication path.
+ * Cursor auth readiness uses only the live-qualified
+ * `cursor-agent status --format json` contract. Credential files and
+ * CURSOR_API_KEY are not authentication evidence for Agent Bridge.
  */
 export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): boolean {
   const env = options.env ?? process.env;
-  if (env.CURSOR_API_KEY?.trim()) return true;
-
   const readStatus = options.readStatus ?? (() => {
     const command = options.command ?? loadBotsConfig(env).cursor.command;
     return readCursorCliStatus(command);

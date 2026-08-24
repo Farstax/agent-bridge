@@ -15,9 +15,14 @@ function withCursorEnvironment<T>(run: (root: string, evidencePath: string) => T
   const root = mkdtempSync(join(tmpdir(), "cursor-routing-safety-"));
   const evidencePath = join(root, "qualification.json");
   const executable = join(root, "cursor-agent");
-  writeFileSync(executable, "#!/bin/sh\necho '2026.08.11-e8db854'\n", "utf8");
+  writeFileSync(executable, `#!/bin/sh
+if [ "$1" = "status" ]; then
+  echo '{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true}'
+  exit 0
+fi
+echo '2026.08.11-e8db854'
+`, "utf8");
   chmodSync(executable, 0o755);
-  writeFileSync(join(root, "auth.json"), "{\"token\":\"redacted\"}\n", "utf8");
 
   const previous = {
     evidencePath: process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH,
@@ -26,7 +31,7 @@ function withCursorEnvironment<T>(run: (root: string, evidencePath: string) => T
   };
   process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = evidencePath;
   process.env.CURSOR_COMMAND = executable;
-  process.env.CURSOR_API_KEY = "test-key";
+  delete process.env.CURSOR_API_KEY;
 
   try {
     return run(root, evidencePath);
@@ -59,6 +64,35 @@ function writeFailedCursorQualification(evidencePath: string): void {
 }
 
 describe("Cursor routing safety", () => {
+  it("skips Cursor when only CURSOR_API_KEY is present and status is unavailable", () => {
+    const previous = {
+      evidencePath: process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH,
+      command: process.env.CURSOR_COMMAND,
+      apiKey: process.env.CURSOR_API_KEY,
+    };
+    const root = mkdtempSync(join(tmpdir(), "cursor-api-key-only-"));
+    const evidencePath = join(root, "qualification.json");
+    const executable = join(root, "cursor-agent");
+    writeFileSync(executable, "#!/bin/sh\nexit 1\n", "utf8");
+    chmodSync(executable, 0o755);
+    process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = evidencePath;
+    process.env.CURSOR_COMMAND = executable;
+    process.env.CURSOR_API_KEY = "not-supported";
+    try {
+      const db = openDb(":memory:");
+      const chain = new ProviderFallbackChain(["codex", "cursor", "antigravity"], db);
+      expect(chain.getChain()).toEqual(["codex", "antigravity"]);
+      expect(chain.advance("chat:1")).toBe("antigravity");
+    } finally {
+      if (previous.evidencePath === undefined) delete process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH;
+      else process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = previous.evidencePath;
+      if (previous.command === undefined) delete process.env.CURSOR_COMMAND;
+      else process.env.CURSOR_COMMAND = previous.command;
+      if (previous.apiKey === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = previous.apiKey;
+    }
+  });
+
   it("allows authenticated Cursor through an explicit chain without qualification evidence", () => {
     withCursorEnvironment(() => {
       const db = openDb(":memory:");

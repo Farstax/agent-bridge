@@ -36,9 +36,9 @@ npm run qualify:provider -- --provider cursor
 
 Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok or Cursor install can participate when explicitly selected/configured without a prior `pass` record. Cursor remains opt-in and is not part of the default interactive chain. A current deterministic `overall: fail` record for the installed provider version suppresses routing until the failure is resolved or the binary version changes.
 
-Cursor Skills use the canonical managed projection `~/.cursor/skills/<name>/SKILL.md` via an explicit Cursor-only projection helper. Managed skill install does not auto-project into Cursor alongside Claude/Codex. Cursor may still discover Claude/Codex skill directories; duplicate skill names across those paths are ambiguous and were observed to prefer the Claude-compatible copy during #552.
+Cursor Skills use the canonical managed projection `~/.cursor/skills/<name>/SKILL.md`. Managed skill install does not auto-project into Cursor alongside Claude/Codex. Explicit Cursor projection is available through `npm run skills -- project-cursor <name>` or `install`/`project-user --project-cursor`, and refuses to overwrite unmanaged Cursor skill paths. Cursor may still discover Claude/Codex skill directories; duplicate skill names across those paths are ambiguous and were observed to prefer the Claude-compatible copy during #552.
 
-Cursor `safe` execution uses `--mode ask --trust` (read-only Ask contract). Cursor `trusted` execution uses `--trust --sandbox disabled`. Auth readiness prefers `cursor-agent status --format json`; credential files alone are not sufficient.
+Cursor `safe` execution uses `--mode ask --trust` (read-only Ask contract). Cursor `trusted` execution uses `--trust --sandbox disabled`. Auth readiness uses only `cursor-agent status --format json`; credential files and API keys are not Agent Bridge authentication evidence for Cursor.
 
 No separate qualification scheduler is installed.
 

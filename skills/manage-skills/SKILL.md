@@ -15,6 +15,7 @@ Use Agent Bridge's existing shared-skill projection. Do not create another skill
   - Codex: `~/.codex/skills/<skill-name>`
   - Claude: `~/.claude/skills/<skill-name>`
   - Antigravity/Agy: `~/.gemini/antigravity-cli/skills/<skill-name>`
+- Cursor is excluded from that universal projection. The canonical Cursor-native path is `~/.cursor/skills/<skill-name>/SKILL.md` and is created only when explicitly requested.
 - Do not edit a bundled Skill when the user intends to create their own Skill.
 
 ## Create or save
@@ -39,7 +40,16 @@ description: Use when ...
 npm run skills -- project-user <name>
 ```
 
-6. Verify it:
+6. If Cursor-native projection is explicitly required, add it with one of:
+
+```bash
+npm run skills -- project-user <name> --project-cursor
+npm run skills -- project-cursor <name>
+```
+
+Do not create duplicate Claude/Codex/Cursor projections unless the operator accepts Cursor's cross-CLI discovery ambiguity. Never overwrite an unmanaged `~/.cursor/skills/<name>` path.
+
+7. Verify it:
 
 ```bash
 npm run skills -- verify <name>

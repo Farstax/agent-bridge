@@ -59,7 +59,6 @@ const AUTH_PATTERNS: readonly RegExp[] = [
   /permission denied/i,
   /XAI_API_KEY/i,
   /grok login/i,
-  /CURSOR_API_KEY/i,
   /cursor-agent login/i,
   /agent login first/i,
 ];

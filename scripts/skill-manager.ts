@@ -3,6 +3,7 @@
 import {
   installSkillGlobal,
   listLocalCatalog,
+  projectManagedSkillToCursor,
   uninstallSkillGlobal,
   verifySkillGlobal,
   type SkillLinkMode,
@@ -13,8 +14,9 @@ function usage(): never {
   console.error([
     "Usage:",
     "  npx tsx scripts/skill-manager.ts list",
-    "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy]",
-    "  npx tsx scripts/skill-manager.ts project-user <skill-name>",
+    "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy] [--project-cursor]",
+    "  npx tsx scripts/skill-manager.ts project-user <skill-name> [--project-cursor]",
+    "  npx tsx scripts/skill-manager.ts project-cursor <skill-name> [--link-mode symlink|copy]",
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
     "  npx tsx scripts/skill-manager.ts uninstall-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
@@ -51,15 +53,29 @@ async function main(): Promise<void> {
   if (command === "install") {
     if (!maybeSkillName) usage();
     const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
-    installSkillGlobal(maybeSkillName, { force: hasFlag(rest, "--force"), linkMode });
-    console.log(`Installed ${maybeSkillName} (${linkMode})`);
+    installSkillGlobal(maybeSkillName, {
+      force: hasFlag(rest, "--force"),
+      linkMode,
+      projectCursor: hasFlag(rest, "--project-cursor"),
+    });
+    console.log(`Installed ${maybeSkillName} (${linkMode}${hasFlag(rest, "--project-cursor") ? ", cursor" : ""})`);
     return;
   }
 
   if (command === "project-user") {
     if (!maybeSkillName) usage();
-    projectUserSkillGlobal(maybeSkillName);
-    console.log(`Projected user skill ${maybeSkillName} (symlink)`);
+    projectUserSkillGlobal(maybeSkillName, {
+      projectCursor: hasFlag(rest, "--project-cursor"),
+    });
+    console.log(`Projected user skill ${maybeSkillName} (symlink${hasFlag(rest, "--project-cursor") ? ", cursor" : ""})`);
+    return;
+  }
+
+  if (command === "project-cursor") {
+    if (!maybeSkillName) usage();
+    const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
+    projectManagedSkillToCursor(maybeSkillName, { linkMode });
+    console.log(`Projected Cursor skill ${maybeSkillName} (${linkMode})`);
     return;
   }
 

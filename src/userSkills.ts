@@ -14,6 +14,8 @@ export interface ProjectUserSkillOptions {
   homeDir?: string;
   repoRoot?: string;
   now?: Date;
+  /** Explicit opt-in Cursor-native projection; never part of universal auto-projection. */
+  projectCursor?: boolean;
 }
 
 export function projectUserSkillGlobal(skillName: string, options: ProjectUserSkillOptions = {}): void {
@@ -31,6 +33,7 @@ export function projectUserSkillGlobal(skillName: string, options: ProjectUserSk
     linkMode: "symlink",
     ownership: "user",
     now: options.now,
+    projectCursor: options.projectCursor,
   });
 }
 
