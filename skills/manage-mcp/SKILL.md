@@ -33,9 +33,11 @@ Preserve unrelated user-managed MCP registrations. Update or remove only the nam
 
 Never write a credential value into MCP configuration, Skill content, logs, screenshots, qualification evidence, or user-visible output.
 
-Configure the MCP to reference an environment-variable name where the provider/server supports it. On managed Farstax workspaces, use the existing Platform workspace Secrets path to supply that environment variable to provider CLI runs.
+Configure the MCP to reference an environment-variable name where the provider/server supports it. Supply the value through the deployment environment's existing secret-management or environment-injection mechanism. Agent Bridge does not own a deployment-specific secret manager and must not require one particular hosting product to configure MCP.
 
-Current Platform workspace Secrets are available to provider tasks. They are appropriate for user-owned API/MCP credentials, but they are not a hidden-from-agent boundary. Credentials that must remain hidden from the provider/model require a scoped local service such as OpenConnector rather than plaintext injection into the CLI environment.
+Environment injection is not a hidden-from-provider boundary: a credential supplied to the provider process can be accessible to that process and its tools. Credentials that must remain hidden from the provider/model require a separately scoped credential broker or service supplied by the deployment rather than plaintext injection into the provider environment.
+
+If a required credential is missing, tell the user which environment-variable name is needed and ask them to configure it through their deployment's secret-management mechanism. Do not ask them to paste the secret into chat.
 
 ## Verify real capability
 
@@ -64,4 +66,4 @@ Playwright MCP is a tool boundary, not a security sandbox. Keep test credentials
 
 ## Remove or update
 
-Use the provider's native MCP commands/configuration to change only the named registration. Verify the final provider-visible state and remove temporary test fixtures. Do not rewrite whole provider configuration files when a native targeted command exists.
+Use the provider's native MCP commands/configuration to change only the named registration. Verify the final provider-visible state. Remove temporary MCP registrations, test fixtures, servers, browser state, and other qualification artifacts that are not intentionally retained. Do not rewrite whole provider configuration files when a native targeted command exists.

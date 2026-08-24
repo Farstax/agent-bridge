@@ -31,16 +31,16 @@ Investigate health observations inside the authority already granted to the curr
 
 - Prefer the smallest mechanically justified repair.
 - Apply a repair only when the current Run's existing authority permits it. Skill text never expands authority.
-- Reuse established scripts, deployment helpers, service controls, and qualification paths instead of inventing parallel mechanisms.
+- Reuse established local scripts, deployment helpers, service controls, and qualification paths instead of inventing parallel mechanisms.
 - If the repair requires authority the Run does not have, stop at a concrete recommended action.
-- If evidence shows that ordinary local repair is inappropriate and the workspace is managed by a platform with backup recovery, read `references/workspace-recovery.md` and hand the customer to that platform recovery flow. Do not attempt to obtain provider credentials or execute an infrastructure restore merely because this skill knows recovery exists.
+- If local repair is inappropriate and recovery requires infrastructure, backups, or another deployment-owned capability, report that boundary and follow only recovery instructions explicitly supplied by the current deployment/operator. Do not invent a control-plane flow, obtain infrastructure credentials, or execute a restore merely because recovery may exist elsewhere.
 
 ## 5. Verify recovery
 
 - Re-run the directly relevant health check or inspect the authoritative recovery signal.
 - Verify the affected boundary, not merely that a command exited successfully.
 - If recovery is not observed, keep the original incident open and return to evidence gathering.
-- A platform restore being accepted or started is not evidence that recovery completed; qualify the restored workspace using the managed recovery guidance before reporting success.
+- If recovery was performed outside Agent Bridge, require an authoritative completion signal and then re-qualify the affected local boundary before reporting success.
 
 ## Report
 
