@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
-import { isProviderApiKeyConfigured, verifyProviderApiKey } from "./providers/apiKeyAuth.js";
+import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./providers/apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import {
   isCursorRouteable,
@@ -62,21 +62,18 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const paths = resolveInteractiveCliAuthPaths(home);
   const available = new Set<CliKind>();
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
-    verifyProviderApiKey(provider, { env, homeDir: home }));
+    isProviderApiKeyVerified(provider, env));
 
-  const codexAuthenticated = isProviderApiKeyConfigured("codex", env)
-    ? verifyApiKey("codex")
-    : exists(paths.codex);
+  const codexAuthenticated = exists(paths.codex)
+    || (isProviderApiKeyConfigured("codex", env) && verifyApiKey("codex"));
   if (codexAuthenticated && !failedProviders.has("codex")) available.add("codex");
 
-  const claudeAuthenticated = isProviderApiKeyConfigured("claude", env)
-    ? verifyApiKey("claude")
-    : exists(paths.claude);
+  const claudeAuthenticated = exists(paths.claude)
+    || (isProviderApiKeyConfigured("claude", env) && verifyApiKey("claude"));
   if (claudeAuthenticated && !failedProviders.has("claude")) available.add("claude");
 
-  const agyAuthenticated = isProviderApiKeyConfigured("agy", env)
-    ? verifyApiKey("agy")
-    : paths.antigravity.some(exists);
+  const agyAuthenticated = paths.antigravity.some(exists)
+    || (isProviderApiKeyConfigured("agy", env) && verifyApiKey("agy"));
   if (agyAuthenticated && !failedProviders.has("agy")) available.add("antigravity");
 
   if (isGrokRouteable({
