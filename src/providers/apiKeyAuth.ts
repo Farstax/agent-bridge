@@ -45,7 +45,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   grok: {
     envVar: "XAI_API_KEY",
     verification: "bounded_native_turn",
-    notes: "Grok Build supports XAI_API_KEY for headless use; Bridge verifies it in an isolated GROK_HOME.",
+    notes: "Grok Build supports XAI_API_KEY for headless use; Bridge verifies it without account state.",
   },
   cursor: {
     envVar: "CURSOR_API_KEY",
@@ -67,7 +67,9 @@ const PROVIDER_SECRET_ENV_KEYS = [
   "CURSOR_AUTH_TOKEN",
 ] as const;
 
+const PROVIDER_SECRET_ENV_KEY_SET = new Set<string>(PROVIDER_SECRET_ENV_KEYS);
 const PROBE_TIMEOUT_MS = 15_000;
+const POSITIVE_CACHE_MS = 10 * 60_000;
 const NEGATIVE_CACHE_MS = 30_000;
 const verificationCache = new Map<string, { verified: boolean; retryAfterMs: number }>();
 
@@ -109,10 +111,13 @@ export function clearProviderApiKeyVerificationCache(): void {
   verificationCache.clear();
 }
 
-function buildProbeEnv(env: Env): NodeJS.ProcessEnv {
+function buildProbeEnv(provider: ProviderId, env: Env): NodeJS.ProcessEnv {
+  const activeKey = PROVIDER_API_KEY_AUTH[provider].envVar;
   return Object.fromEntries(
     Object.entries(env).filter(([key]) =>
-      !/^TELEGRAM_BOT_TOKEN/.test(key) && !/^TELEGRAM_ALLOWED_USER_IDS/.test(key),
+      !/^TELEGRAM_BOT_TOKEN/.test(key)
+      && !/^TELEGRAM_ALLOWED_USER_IDS/.test(key)
+      && (!PROVIDER_SECRET_ENV_KEY_SET.has(key) || key === activeKey),
     ),
   );
 }
@@ -191,11 +196,14 @@ export async function withAntigravityApiKeyProvider<T>(
 function runProbe(
   provider: ProviderId,
   env: Env,
-  homeDir: string,
   execFile: typeof execFileSync,
 ): void {
   const command = commandForProvider(provider, env);
-  const childEnv = buildProbeEnv(env);
+  const probeHome = mkdtempSync(join(tmpdir(), `agent-bridge-${provider}-auth-`));
+  const childEnv = {
+    ...buildProbeEnv(provider, env),
+    HOME: probeHome,
+  };
   const common = {
     encoding: "utf8" as const,
     stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
@@ -204,35 +212,35 @@ function runProbe(
     env: childEnv,
   };
 
-  if (provider === "codex") {
-    execFile(command, [
-      "exec",
-      "--json",
-      "--skip-git-repo-check",
-      "--sandbox",
-      "read-only",
-      "Reply with exactly OK.",
-    ], common);
-    return;
-  }
-  if (provider === "claude") {
-    execFile(command, [
-      "--print",
-      "--tools",
-      "",
-      "--disable-slash-commands",
-      "--strict-mcp-config",
-      "--mcp-config",
-      '{"mcpServers":{}}',
-      "--output-format",
-      "json",
-      "Reply with exactly OK.",
-    ], common);
-    return;
-  }
-  if (provider === "agy") {
-    const restore = applyTemporaryAgyApiKeyProvider(homeDir);
-    try {
+  try {
+    if (provider === "codex") {
+      execFile(command, [
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "Reply with exactly OK.",
+      ], { ...common, env: { ...childEnv, CODEX_HOME: join(probeHome, ".codex") } });
+      return;
+    }
+    if (provider === "claude") {
+      execFile(command, [
+        "--print",
+        "--tools",
+        "",
+        "--disable-slash-commands",
+        "--strict-mcp-config",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+        "--output-format",
+        "json",
+        "Reply with exactly OK.",
+      ], { ...common, env: { ...childEnv, CLAUDE_CONFIG_DIR: join(probeHome, ".claude") } });
+      return;
+    }
+    if (provider === "agy") {
+      writeSettings(join(probeHome, ".gemini", "antigravity-cli", "settings.json"), { modelProvider: "gemini" });
       execFile(command, [
         "--sandbox",
         "--print-timeout",
@@ -242,41 +250,38 @@ function runProbe(
         "--print",
         "Reply with exactly OK.",
       ], common);
-    } finally {
-      restore();
+      return;
     }
-    return;
-  }
-  if (provider === "grok") {
-    const grokHome = mkdtempSync(join(tmpdir(), "agent-bridge-grok-auth-"));
-    try {
+    if (provider === "grok") {
       execFile(command, [
         "-p",
         "Reply with exactly OK.",
         "--output-format",
         "streaming-json",
-      ], { ...common, env: { ...childEnv, GROK_HOME: grokHome } });
-    } finally {
-      rmSync(grokHome, { recursive: true, force: true });
+      ], { ...common, env: { ...childEnv, GROK_HOME: join(probeHome, ".grok") } });
+      return;
     }
-    return;
+    execFile(command, [
+      "-p",
+      "Reply with exactly OK.",
+      "--output-format",
+      "json",
+      "--mode",
+      "ask",
+      "--trust",
+    ], common);
+  } finally {
+    rmSync(probeHome, { recursive: true, force: true });
   }
-  execFile(command, [
-    "-p",
-    "Reply with exactly OK.",
-    "--output-format",
-    "json",
-    "--mode",
-    "ask",
-    "--trust",
-  ], common);
 }
 
 /**
  * A non-empty variable is only a candidate credential. A provider becomes
  * API-key authenticated after its own headless CLI completes a bounded real
- * request. Successful verification is cached for this process by key hash;
- * failures are retried after a short backoff so transient outages recover.
+ * request in isolated account state. Successful and failed verification are
+ * cached briefly by key hash so routine availability checks do not spend
+ * tokens or block on every request, while revoked keys are eventually tested
+ * again without a process restart.
  */
 export function verifyProviderApiKey(
   provider: ProviderId,
@@ -290,13 +295,12 @@ export function verifyProviderApiKey(
   const nowMs = options.nowMs ?? Date.now();
   if (options.useCache !== false) {
     const cached = verificationCache.get(key);
-    if (cached?.verified) return true;
-    if (cached && cached.retryAfterMs > nowMs) return false;
+    if (cached && cached.retryAfterMs > nowMs) return cached.verified;
   }
 
   let verified = false;
   try {
-    runProbe(provider, env, options.homeDir ?? homedir(), options.execFile ?? execFileSync);
+    runProbe(provider, env, options.execFile ?? execFileSync);
     verified = true;
   } catch {
     verified = false;
@@ -305,7 +309,7 @@ export function verifyProviderApiKey(
   if (options.useCache !== false) {
     verificationCache.set(key, {
       verified,
-      retryAfterMs: verified ? Number.POSITIVE_INFINITY : nowMs + NEGATIVE_CACHE_MS,
+      retryAfterMs: nowMs + (verified ? POSITIVE_CACHE_MS : NEGATIVE_CACHE_MS),
     });
   }
   return verified;
