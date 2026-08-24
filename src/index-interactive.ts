@@ -397,6 +397,7 @@ for (;;) {
           const rawText = (message.text || "").trim();
           const chatId = message.chat.id;
           const chatKey = resolveUpdateChatKey(typedUpdate) ?? String(chatId);
+
           const autonomyCommand = parseAutonomyTelegramCommand(rawText, botUsername);
           if (autonomyCommand) {
             if (!autonomyController) {
