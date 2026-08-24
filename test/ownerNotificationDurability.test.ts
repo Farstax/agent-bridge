@@ -41,7 +41,7 @@ describe("durable owner notification delivery (#562)", () => {
     });
     cleanup.push(() => ingress.stop());
 
-    expect(await post(path, "Workspace is ready." )).toBe(202);
+    expect(await post(path, "Workspace is ready.")).toBe(202);
     expect(delivered).toEqual([["42", "Workspace is ready."]]);
   });
 
@@ -56,7 +56,7 @@ describe("durable owner notification delivery (#562)", () => {
     });
     cleanup.push(() => ingress.stop());
 
-    expect(await post(path, "Workspace is ready." )).toBe(500);
+    expect(await post(path, "Workspace is ready.")).toBe(500);
     expect(recordDeliveredAssistantTurn).not.toHaveBeenCalled();
   });
 });
