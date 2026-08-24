@@ -424,7 +424,7 @@ _write_interactive_defaults() {
     echo "BRIDGE_ENV_FILE=${dest}"
     echo "TELEGRAM_BOT_TOKEN_INTERACTIVE=${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}"
     echo "INTERACTIVE_DEFAULT_CLI=${INTERACTIVE_DEFAULT_CLI:-codex}"
-    echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,antigravity}"
+    echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,grok,antigravity,cursor}"
     echo "CODEX_COMMAND=${CODEX_COMMAND:-codex}"
     echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
     echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
@@ -450,7 +450,7 @@ _write_discord_defaults() {
       [[ -n "${CLI_MODEL_PREFERENCE:-}" ]] && echo "CLI_MODEL_PREFERENCE=${CLI_MODEL_PREFERENCE}"
     else
       echo "INTERACTIVE_DEFAULT_CLI=${INTERACTIVE_DEFAULT_CLI:-codex}"
-      echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,antigravity}"
+      echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,grok,antigravity,cursor}"
       echo "CODEX_COMMAND=${CODEX_COMMAND:-codex}"
       echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
       echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
