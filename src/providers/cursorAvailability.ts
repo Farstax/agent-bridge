@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadBotsConfig } from "../config.js";
+import { isProviderApiKeyConfigured, verifyProviderApiKey } from "./apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./qualificationStatus.js";
 import type { ProviderId } from "./types.js";
 
@@ -16,6 +17,7 @@ export interface CursorAvailabilityOptions {
   failedProviders?: ReadonlySet<ProviderId>;
   command?: string;
   readStatus?: () => CursorStatusSnapshot;
+  verifyApiKey?: () => boolean;
 }
 
 export function resolveCursorAuthPaths(homeDir: string = homedir()): string[] {
@@ -50,12 +52,16 @@ export function readCursorCliStatus(
 }
 
 /**
- * Cursor auth readiness uses only the live-qualified
- * `cursor-agent status --format json` contract. Credential files and
- * CURSOR_API_KEY are not authentication evidence for Agent Bridge.
+ * Cursor auth readiness uses a bounded native request for CURSOR_API_KEY and
+ * the live-qualified `cursor-agent status --format json` contract for account
+ * sessions. Credential-file presence is never authentication evidence.
  */
 export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): boolean {
   const env = options.env ?? process.env;
+  if (isProviderApiKeyConfigured("cursor", env)) {
+    return options.verifyApiKey?.() ?? verifyProviderApiKey("cursor", { env, homeDir: options.homeDir });
+  }
+
   const readStatus = options.readStatus ?? (() => {
     const command = options.command ?? loadBotsConfig(env).cursor.command;
     return readCursorCliStatus(command);
@@ -78,4 +84,3 @@ export function isCursorRouteable(options: CursorAvailabilityOptions = {}): bool
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
   return !failedProviders.has("cursor");
 }
-
