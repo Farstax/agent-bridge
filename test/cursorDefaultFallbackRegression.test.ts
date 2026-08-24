@@ -2,9 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { interactiveChainKinds, parseCliChain } from "../src/providers/selection.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const expectedChain = ["codex", "claude", "grok", "antigravity", "cursor"];
+const expectedChain = ["codex", "claude", "grok", "antigravity", "cursor"] as const;
 
 function read(pathname: string): string {
   return fs.readFileSync(path.join(root, pathname), "utf8");
@@ -23,10 +24,23 @@ function extractEnvChain(pathname: string): string[] {
 }
 
 describe("Cursor default fallback policy", () => {
-  it("keeps Telegram, Discord, and operator examples on the same default chain", () => {
-    expect(extractCodeFallback("src/index-interactive.ts")).toEqual(expectedChain);
-    expect(extractCodeFallback("src/index-discord-interactive.ts")).toEqual(expectedChain);
+  it("resolves the unset Telegram and Discord chains to Cursor-last defaults", () => {
+    for (const pathname of ["src/index-interactive.ts", "src/index-discord-interactive.ts"]) {
+      const fallback = extractCodeFallback(pathname);
+      expect(fallback, pathname).toEqual(expectedChain);
+      expect(parseCliChain(undefined, { allowed: interactiveChainKinds(), fallback }), pathname).toEqual(expectedChain);
+    }
+  });
+
+  it("keeps operator examples aligned with code-level defaults", () => {
     expect(extractEnvChain(".env.interactive.example")).toEqual(expectedChain);
     expect(extractEnvChain(".env.discord-interactive.example")).toEqual(expectedChain);
+  });
+
+  it("preserves explicit INTERACTIVE_CLI_CHAIN overrides", () => {
+    expect(parseCliChain("claude,cursor", {
+      allowed: interactiveChainKinds(),
+      fallback: expectedChain,
+    })).toEqual(["claude", "cursor"]);
   });
 });
