@@ -23,6 +23,11 @@ function extractEnvChain(pathname: string): string[] {
   return match[1].split(",");
 }
 
+function extractInstallerDefaultChains(): string[][] {
+  const matches = [...read("scripts/install.sh").matchAll(/INTERACTIVE_CLI_CHAIN=\$\{INTERACTIVE_CLI_CHAIN:-([^}]+)\}/g)];
+  return matches.map((match) => match[1].split(","));
+}
+
 describe("Cursor default fallback policy", () => {
   it("resolves the unset Telegram and Discord chains to Cursor-last defaults", () => {
     expect(extractCodeFallback("src/index-interactive.ts")).toEqual(expectedChain);
@@ -36,6 +41,10 @@ describe("Cursor default fallback policy", () => {
   it("keeps operator examples aligned with code-level defaults", () => {
     expect(extractEnvChain(".env.interactive.example")).toEqual(expectedChain);
     expect(extractEnvChain(".env.discord-interactive.example")).toEqual(expectedChain);
+  });
+
+  it("keeps installer-generated service defaults aligned with code-level defaults", () => {
+    expect(extractInstallerDefaultChains()).toEqual([expectedChain, expectedChain]);
   });
 
   it("preserves explicit INTERACTIVE_CLI_CHAIN overrides", () => {
