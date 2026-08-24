@@ -8,6 +8,10 @@ import {
 } from "../src/interactiveBot.js";
 import { getAvailableCliKinds, resolveInteractiveCliAuthPaths } from "../src/interactiveCliAuth.js";
 
+const cursorStatusUnavailable = () => {
+  throw new Error("Cursor status unavailable in test");
+};
+
 describe("interactive CLI availability filtering", () => {
   it("filters the switch keyboard to available CLIs", () => {
     const available = new Set<CliKind>(["claude"]);
@@ -33,6 +37,7 @@ describe("interactive CLI availability filtering", () => {
       homeDir: "/tmp/no-creds",
       exists: () => false,
       commandExists: () => false,
+      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>());
@@ -50,6 +55,7 @@ describe("interactive CLI availability filtering", () => {
       homeDir,
       exists: (path) => existing.has(path),
       commandExists: () => false,
+      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>(["codex", "claude"]));
@@ -68,6 +74,7 @@ describe("interactive CLI availability filtering", () => {
       homeDir,
       exists: (path) => path === paths.antigravity[0],
       commandExists: () => false,
+      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>(["antigravity"]));
@@ -81,6 +88,7 @@ describe("interactive CLI availability filtering", () => {
       exists: (path) => path === paths.grok[0],
       commandExists: () => false,
       failedProviders: new Set(),
+      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(paths.grok).toEqual([
@@ -100,6 +108,7 @@ describe("interactive CLI availability filtering", () => {
       exists: (path) => path === paths.grok[0],
       commandExists: () => false,
       failedProviders: new Set(["grok"]),
+      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>());
@@ -112,8 +121,29 @@ describe("interactive CLI availability filtering", () => {
       commandExists: () => false,
       failedProviders: new Set(),
       env: { XAI_API_KEY: "xai-test" },
+      readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>(["grok"]));
+  });
+
+  it("treats Cursor as available only when status reports authenticated", () => {
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => false,
+      failedProviders: new Set(),
+      readCursorStatus: () => ({ isAuthenticated: true }),
+    });
+    expect(available).toEqual(new Set<CliKind>(["cursor"]));
+
+    const unavailable = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => true,
+      commandExists: () => true,
+      failedProviders: new Set(),
+      readCursorStatus: () => ({ isAuthenticated: false }),
+    });
+    expect(unavailable.has("cursor")).toBe(false);
   });
 });

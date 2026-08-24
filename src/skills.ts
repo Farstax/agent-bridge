@@ -66,6 +66,8 @@ export interface InstallSkillOptions {
   linkMode?: SkillLinkMode;
   ownership?: SkillOwnership;
   now?: Date;
+  /** Explicit opt-in Cursor-native projection; never part of universal auto-projection. */
+  projectCursor?: boolean;
 }
 
 export interface VerifySkillOptions {
@@ -215,6 +217,14 @@ export function installSkillGlobal(skillName: string, options: InstallSkillOptio
   }
 
   writeJsonAtomic(paths.lockfilePath, lockfile);
+
+  if (options.projectCursor) {
+    projectManagedSkillToCursor(skillName, {
+      homeDir: options.homeDir,
+      linkMode,
+      now: options.now,
+    });
+  }
 }
 
 export function verifySkillGlobal(skillName?: string, options: VerifySkillOptions = {}): VerifySkillResult {
@@ -266,6 +276,47 @@ export function verifySkillGlobal(skillName?: string, options: VerifySkillOption
         errors.push(problem);
       }
     }
+
+    if (record.cursorProjected === true) {
+      const cursorPath = join(paths.cursorSkillsDir, name);
+      const problem = verifyNativeSkill({
+        nativePath: cursorPath,
+        sharedDir,
+        linkMode,
+        expectedHash: sharedHash,
+      });
+      if (!problem) continue;
+      if (options.fix && ownership === "bundled") {
+        try {
+          const canForceRepair = !pathExists(cursorPath) || isExpectedNativeEntry(cursorPath, sharedDir, linkMode)
+            || (() => {
+              try {
+                return lstatSync(cursorPath).isSymbolicLink();
+              } catch {
+                return false;
+              }
+            })();
+          if (!canForceRepair) {
+            errors.push(`${problem}; refusing to overwrite unmanaged Cursor skill path: ${cursorPath}`);
+            continue;
+          }
+          projectNativeSkill({
+            skillName: name,
+            sharedDir,
+            nativeDir: paths.cursorSkillsDir,
+            linkMode,
+            force: true,
+          });
+          repaired.push(cursorPath);
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      } else if (options.fix) {
+        errors.push(`${problem}; refusing generic --fix for user-owned skill ${name}; use project-cursor`);
+      } else {
+        errors.push(problem);
+      }
+    }
   }
 
   return { ok: errors.length === 0, errors, repaired };
@@ -282,10 +333,20 @@ export function uninstallSkillGlobal(skillName: string, options: UninstallSkillO
     throw new Error(`Refusing to uninstall ${ownership}-owned skill as ${expectedOwnership}-owned skill: ${skillName}`);
   }
 
+  const sharedDir = join(paths.agentsSkillsDir, skillName);
+  const linkMode = record.linkMode === "copy" ? "copy" : "symlink";
   for (const nativeDir of nativeSkillDirs(paths)) {
     rmSync(join(nativeDir, skillName), { recursive: true, force: true });
   }
-  rmSync(join(paths.agentsSkillsDir, skillName), { recursive: true, force: true });
+  const cursorPath = join(paths.cursorSkillsDir, skillName);
+  if (pathExists(cursorPath)) {
+    if (isExpectedNativeEntry(cursorPath, sharedDir, linkMode)) {
+      rmSync(cursorPath, { recursive: true, force: true });
+    } else if (record.cursorProjected === true) {
+      throw new Error(`Native skill path already exists and is not this managed projection: ${cursorPath}`);
+    }
+  }
+  rmSync(sharedDir, { recursive: true, force: true });
   if (lockfile.skills) delete lockfile.skills[skillName];
   lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
   writeJsonAtomic(paths.lockfilePath, lockfile);
@@ -431,14 +492,20 @@ function nativeSkillDirs(paths: SkillPaths): string[] {
  */
 export function projectManagedSkillToCursor(
   skillName: string,
-  options: { homeDir?: string; linkMode?: SkillLinkMode } = {},
+  options: { homeDir?: string; linkMode?: SkillLinkMode; now?: Date } = {},
 ): void {
   const paths = resolveSkillPaths(options.homeDir);
   const sharedDir = join(paths.agentsSkillsDir, skillName);
   if (!existsSync(sharedDir)) {
     throw new Error(`Installed skill folder is missing: ${sharedDir}`);
   }
-  const linkMode = options.linkMode ?? "symlink";
+  const lockfile = readLockfile(paths.lockfilePath, { force: false });
+  const previous = lockfile.skills?.[skillName];
+  if (!previous) {
+    throw new Error(`Skill is not registered in lockfile: ${skillName}`);
+  }
+  const linkMode = options.linkMode
+    ?? (previous.linkMode === "copy" || previous.linkMode === "symlink" ? previous.linkMode : "symlink");
   validateLinkMode(linkMode);
   const nativePath = join(paths.cursorSkillsDir, skillName);
   if (pathExists(nativePath) && !isExpectedNativeEntry(nativePath, sharedDir, linkMode)) {
@@ -451,6 +518,16 @@ export function projectManagedSkillToCursor(
     linkMode,
     force: false,
   });
+  const now = (options.now ?? new Date()).toISOString();
+  lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
+  lockfile.skills ??= {};
+  lockfile.skills[skillName] = {
+    ...previous,
+    linkMode,
+    cursorProjected: true,
+    updatedAt: now,
+  };
+  writeJsonAtomic(paths.lockfilePath, lockfile);
 }
 
 function projectNativeSkill(input: { skillName: string; sharedDir: string; nativeDir: string; linkMode: SkillLinkMode; force?: boolean }): void {

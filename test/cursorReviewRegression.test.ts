@@ -175,15 +175,15 @@ describe("cursor auth readiness", () => {
     })).toBe(false);
   });
 
-  it("still accepts a configured CURSOR_API_KEY", () => {
+  it("does not treat CURSOR_API_KEY as authenticated", () => {
     expect(isCursorAuthenticated({
       homeDir: "/no-cursor-home",
       exists: () => false,
       env: { CURSOR_API_KEY: "test-key" },
       readStatus: () => {
-        throw new Error("should not run");
+        throw new Error("status unavailable");
       },
-    })).toBe(true);
+    })).toBe(false);
   });
 
   it("is not routeable when status reports unauthenticated", () => {
@@ -194,6 +194,13 @@ describe("cursor auth readiness", () => {
       readStatus: () => ({ isAuthenticated: false }),
       failedProviders: new Set(),
     })).toBe(false);
+  });
+
+  it("does not mention CURSOR_API_KEY in Cursor env examples or docs", () => {
+    const example = readFileSync(join(process.cwd(), ".env.cursor.example"), "utf8");
+    const docs = readFileSync(join(process.cwd(), "docs/PROVIDER-QUALIFICATION.md"), "utf8");
+    expect(example).not.toMatch(/CURSOR_API_KEY/);
+    expect(docs).not.toMatch(/CURSOR_API_KEY/);
   });
 });
 
