@@ -71,7 +71,7 @@ export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): 
 /**
  * Cursor is routeable when authenticated unless current qualification evidence
  * proves a deterministic failure. Missing/stale/degraded evidence is diagnostic,
- * not a routing prerequisite. Cursor remains opt-in for default chains.
+ * not a routing prerequisite. Default-chain membership still defers to this gate.
  */
 export function isCursorRouteable(options: CursorAvailabilityOptions = {}): boolean {
   if (!isCursorAuthenticated(options)) return false;

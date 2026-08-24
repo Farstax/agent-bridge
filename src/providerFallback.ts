@@ -54,12 +54,12 @@ export class ProviderFallbackChain {
       return this.chain[candidate];
     }
     // Preserve the historical return type when every configured provider is
-    // unavailable. The execution boundary still rejects unavailable Grok before
-    // spawn, allowing the normal engine path to deliver the provider error.
+    // unavailable. The execution boundary still rejects unavailable Grok or
+    // Cursor before spawn, allowing the normal engine path to deliver the error.
     return this.chain[idx];
   }
 
-  private clearUnavailableOptInPreference(chatKey: string, cli: "grok" | "cursor"): void {
+  private clearUnavailableGatedPreference(chatKey: string, cli: "grok" | "cursor"): void {
     try {
       this.db.raw
         .prepare(`UPDATE bridge_state SET interactive_cli_preference = NULL WHERE chat_id = ? AND interactive_cli_preference = ?`)
@@ -69,9 +69,9 @@ export class ProviderFallbackChain {
 
   setActiveCli(chatKey: string, cli: string): void {
     // Discord writes the preference before calling this method. Reject and scrub
-    // unavailable opt-in providers before chain membership is checked.
+    // unavailable status-gated providers before chain membership is checked.
     if ((cli === "grok" || cli === "cursor") && !this.isCliAvailable(cli)) {
-      this.clearUnavailableOptInPreference(chatKey, cli);
+      this.clearUnavailableGatedPreference(chatKey, cli);
       return;
     }
     const idx = this.chain.indexOf(cli);
