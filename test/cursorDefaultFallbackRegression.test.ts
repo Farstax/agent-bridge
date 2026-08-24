@@ -25,11 +25,12 @@ function extractEnvChain(pathname: string): string[] {
 
 describe("Cursor default fallback policy", () => {
   it("resolves the unset Telegram and Discord chains to Cursor-last defaults", () => {
-    for (const pathname of ["src/index-interactive.ts", "src/index-discord-interactive.ts"]) {
-      const fallback = extractCodeFallback(pathname);
-      expect(fallback, pathname).toEqual(expectedChain);
-      expect(parseCliChain(undefined, { allowed: interactiveChainKinds(), fallback }), pathname).toEqual(expectedChain);
-    }
+    expect(extractCodeFallback("src/index-interactive.ts")).toEqual(expectedChain);
+    expect(extractCodeFallback("src/index-discord-interactive.ts")).toEqual(expectedChain);
+    expect(parseCliChain(undefined, {
+      allowed: interactiveChainKinds(),
+      fallback: expectedChain,
+    })).toEqual(expectedChain);
   });
 
   it("keeps operator examples aligned with code-level defaults", () => {
