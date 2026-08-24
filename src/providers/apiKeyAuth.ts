@@ -230,18 +230,23 @@ export function hasAntigravityAccountAuth(homeDir: string): boolean {
 }
 
 /**
- * Account auth remains Agy's default. The Gemini provider setting is changed
- * only when there is no account credential and the exact key has already
- * passed isolated native verification.
+ * Account auth remains Agy's default. With no account credential, a configured
+ * key is verified asynchronously before the Gemini setting is applied. Normal
+ * runtime calls hit the fingerprint cache; qualification can establish the
+ * same evidence without a separate unsafe execution path.
  */
 export async function withAntigravityApiKeyProvider<T>(
   homeDir: string,
   env: Env,
   operation: () => Promise<T>,
 ): Promise<T> {
-  if (hasAntigravityAccountAuth(homeDir) || !isProviderApiKeyVerified("agy", env)) {
+  if (hasAntigravityAccountAuth(homeDir) || !isProviderApiKeyConfigured("agy", env)) {
     return operation();
   }
+  const verified = isProviderApiKeyVerified("agy", env)
+    || await verifyProviderApiKey("agy", { env });
+  if (!verified) return operation();
+
   const restore = applyTemporaryAgyApiKeyProvider(homeDir);
   try {
     return await operation();
