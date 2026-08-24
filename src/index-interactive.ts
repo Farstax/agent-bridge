@@ -62,7 +62,7 @@ dotenv.config({
 const supportedCliKinds = interactiveChainKinds();
 const configuredCliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
-  { allowed: supportedCliKinds, fallback: ["codex", "claude", "grok", "antigravity"] },
+  { allowed: supportedCliKinds, fallback: ["codex", "claude", "grok", "antigravity", "cursor"] },
 );
 const runtimePolicy = resolveTelegramRuntimePolicy(process.env, supportedCliKinds);
 const { providerLock, token } = runtimePolicy;
@@ -397,7 +397,6 @@ for (;;) {
           const rawText = (message.text || "").trim();
           const chatId = message.chat.id;
           const chatKey = resolveUpdateChatKey(typedUpdate) ?? String(chatId);
-
           const autonomyCommand = parseAutonomyTelegramCommand(rawText, botUsername);
           if (autonomyCommand) {
             if (!autonomyController) {
