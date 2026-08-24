@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { buildCliInvocation, parseCliResult, runCli } from "../cli.js";
 import { runSupervisedProcess } from "../cliSupervisor.js";
 import type { BotKind } from "../types.js";
+import { withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
 import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
@@ -286,32 +287,34 @@ async function runQualificationInvocation({
   // Qualification must additionally detect that raw contradiction as provider-
   // contract drift, so bypass the runtime recovery shim but keep the same
   // invocation, supervisor, process watch, state lock and strict result parser.
-  return withAntigravityStateLock(homeDir, async () => {
-    try {
-      const result = await runSupervisedProcess(command, args, cwd, {
-        bot,
-        timeoutMs,
-        idleTimeoutMs: timeoutMs,
-        killGraceMs: 1_000,
-        processWatch: getProcessWatchForCommand(command),
-      });
-      return result.stdout;
-    } catch (caught) {
-      const error = caught instanceof Error ? caught : new Error(String(caught));
-      const stdout = (error as Error & { stdout?: string }).stdout ?? "";
-      if (stdout.trim()) {
-        // A valid ERROR result throws a classifiable provider error here; a
-        // contradictory ERROR + response result throws the stricter contract
-        // error before runtime recovery can normalize it.
-        parseCliResult({
+  return withAntigravityStateLock(homeDir, async () =>
+    withAntigravityApiKeyProvider(homeDir, process.env, async () => {
+      try {
+        const result = await runSupervisedProcess(command, args, cwd, {
           bot,
-          stdout,
-          outputFormat: qualificationOutputFormat(args),
+          timeoutMs,
+          idleTimeoutMs: timeoutMs,
+          killGraceMs: 1_000,
+          processWatch: getProcessWatchForCommand(command),
         });
+        return result.stdout;
+      } catch (caught) {
+        const error = caught instanceof Error ? caught : new Error(String(caught));
+        const stdout = (error as Error & { stdout?: string }).stdout ?? "";
+        if (stdout.trim()) {
+          // A valid ERROR result throws a classifiable provider error here; a
+          // contradictory ERROR + response result throws the stricter contract
+          // error before runtime recovery can normalize it.
+          parseCliResult({
+            bot,
+            stdout,
+            outputFormat: qualificationOutputFormat(args),
+          });
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
+    }),
+  );
 }
 
 async function executeNativeQualificationCheck({
