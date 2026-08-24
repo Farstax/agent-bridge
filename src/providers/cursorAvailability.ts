@@ -1,14 +1,21 @@
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadBotsConfig } from "../config.js";
 import { getQualificationFailedProviders } from "./qualificationStatus.js";
 import type { ProviderId } from "./types.js";
+
+export interface CursorStatusSnapshot {
+  readonly isAuthenticated: boolean;
+}
 
 export interface CursorAvailabilityOptions {
   homeDir?: string;
   exists?: (path: string) => boolean;
   env?: Record<string, string | undefined>;
   failedProviders?: ReadonlySet<ProviderId>;
+  command?: string;
+  readStatus?: () => CursorStatusSnapshot;
 }
 
 export function resolveCursorAuthPaths(homeDir: string = homedir()): string[] {
@@ -18,11 +25,49 @@ export function resolveCursorAuthPaths(homeDir: string = homedir()): string[] {
   ];
 }
 
+export function readCursorCliStatus(
+  command: string,
+  execFile: typeof execFileSync = execFileSync,
+): CursorStatusSnapshot {
+  const raw = execFile(command, ["status", "--format", "json"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+  }).trim();
+  if (!raw) throw new Error("Cursor status command returned no output");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Cursor status command returned malformed JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Cursor status command returned malformed JSON");
+  }
+  const record = parsed as Record<string, unknown>;
+  const isAuthenticated = record.isAuthenticated === true || record.status === "authenticated";
+  return { isAuthenticated };
+}
+
+/**
+ * Prefer the live-qualified `cursor-agent status --format json` contract.
+ * Credential-file presence alone is not enough. CURSOR_API_KEY remains a
+ * documented alternate authentication path.
+ */
 export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): boolean {
-  const homeDir = options.homeDir ?? homedir();
-  const exists = options.exists ?? existsSync;
   const env = options.env ?? process.env;
-  return resolveCursorAuthPaths(homeDir).some(exists) || Boolean(env.CURSOR_API_KEY?.trim());
+  if (env.CURSOR_API_KEY?.trim()) return true;
+
+  const readStatus = options.readStatus ?? (() => {
+    const command = options.command ?? loadBotsConfig(env).cursor.command;
+    return readCursorCliStatus(command);
+  });
+
+  try {
+    return readStatus().isAuthenticated;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -35,3 +80,4 @@ export function isCursorRouteable(options: CursorAvailabilityOptions = {}): bool
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
   return !failedProviders.has("cursor");
 }
+

@@ -81,7 +81,11 @@ describe("cursor invocation", () => {
     expect(invocation.nativeSessionMode).toBe("fresh");
     expect(invocation.args[0]).toBe("-p");
     expect(invocation.args[1]).toContain("hello");
-    expect(invocation.args.slice(2)).toEqual(["--output-format", "json"]);
+    expect(invocation.args.slice(2)).toEqual([
+      "--output-format", "json",
+      "--mode", "ask",
+      "--trust",
+    ]);
   });
 
   it("resumes with the exact qualified --resume <session-id> syntax", () => {
@@ -96,6 +100,8 @@ describe("cursor invocation", () => {
     expect(invocation.args.slice(2)).toEqual([
       "--output-format", "json",
       "--resume", "sess-abc",
+      "--mode", "ask",
+      "--trust",
     ]);
   });
 
@@ -126,7 +132,11 @@ describe("cursor invocation", () => {
       outputFormat: "stream-json",
       includeResponseContract: false,
     });
-    expect(invocation.args.slice(2)).toEqual(["--output-format", "stream-json"]);
+    expect(invocation.args.slice(2)).toEqual([
+      "--output-format", "stream-json",
+      "--mode", "ask",
+      "--trust",
+    ]);
   });
 
   it("rejects tool-free mode", () => {
@@ -208,11 +218,11 @@ describe("cursor result parsing", () => {
 });
 
 describe("cursor skill projection", () => {
-  it("uses one canonical Cursor-native skill directory and documents cross-CLI ambiguity", () => {
+  it("uses one canonical Cursor-native skill directory and documents no auto multi-provider projection", () => {
     const home = mkdtempSync(join(tmpdir(), "cursor-skills-"));
     const paths = resolveSkillPaths(home);
     expect(paths.cursorSkillsDir).toBe(join(home, ".cursor", "skills"));
-    expect(CURSOR_SKILL_DISCOVERY_NOTE).toMatch(/claude/i);
+    expect(CURSOR_SKILL_DISCOVERY_NOTE).toMatch(/does not auto-project/i);
     expect(CURSOR_SKILL_DISCOVERY_NOTE).toMatch(/\.cursor\/skills/i);
   });
 });

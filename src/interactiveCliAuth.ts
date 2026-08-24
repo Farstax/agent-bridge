@@ -4,7 +4,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
-import { isCursorRouteable, resolveCursorAuthPaths } from "./providers/cursorAvailability.js";
+import {
+  isCursorRouteable,
+  resolveCursorAuthPaths,
+  type CursorStatusSnapshot,
+} from "./providers/cursorAvailability.js";
 import { isGrokRouteable, resolveGrokAuthPaths } from "./providers/grokAvailability.js";
 import type { ProviderId } from "./providers/types.js";
 
@@ -22,6 +26,7 @@ export interface AvailableCliOptions {
   commandExists?: (command: string) => boolean;
   failedProviders?: ReadonlySet<ProviderId>;
   env?: Record<string, string | undefined>;
+  readCursorStatus?: () => CursorStatusSnapshot;
 }
 
 export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
@@ -60,7 +65,13 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
 
   if (isGrokRouteable({ homeDir: home, exists, env, failedProviders })) available.add("grok");
-  if (isCursorRouteable({ homeDir: home, exists, env, failedProviders })) available.add("cursor");
+  if (isCursorRouteable({
+    homeDir: home,
+    exists,
+    env,
+    failedProviders,
+    readStatus: options.readCursorStatus,
+  })) available.add("cursor");
 
   void commandExists; // retained for the existing injectable availability seam.
   return available;

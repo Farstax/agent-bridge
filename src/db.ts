@@ -168,7 +168,7 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
 
   // Expire sessions older than 7 days — prevents a stale/corrupt session from
   // being resumed indefinitely after a long gap without a /reset
-  for (const bot of ["codex", "antigravity", "claude", "grok"] as const) {
+  for (const bot of ["codex", "antigravity", "claude", "grok", "cursor"] as const) {
     raw.exec(
       `UPDATE bridge_state
        SET ${bot}_session_id = NULL, ${bot}_session_created_at = NULL
