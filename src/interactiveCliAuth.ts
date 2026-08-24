@@ -3,7 +3,11 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
-import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./providers/apiKeyAuth.js";
+import {
+  isProviderApiKeyConfigured,
+  isProviderApiKeyVerified,
+  verifyConfiguredProviderApiKeys,
+} from "./providers/apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import {
   isCursorRouteable,
@@ -30,6 +34,8 @@ export interface AvailableCliOptions {
   readCursorStatus?: () => CursorStatusSnapshot;
   verifyApiKey?: (provider: ProviderId) => boolean;
 }
+
+const primedApiKeyEnvironments = new WeakSet<object>();
 
 export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
   return {
@@ -61,6 +67,14 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const env = options.env ?? process.env;
   const paths = resolveInteractiveCliAuthPaths(home);
   const available = new Set<CliKind>();
+
+  // Key verification is deliberately detached from this synchronous routing
+  // check. The first availability pass primes bounded probes; later passes use
+  // only cached evidence, so a provider request never blocks the Node event loop.
+  if (!options.verifyApiKey && !primedApiKeyEnvironments.has(env)) {
+    primedApiKeyEnvironments.add(env);
+    void verifyConfiguredProviderApiKeys({ env });
+  }
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
     isProviderApiKeyVerified(provider, env));
 
