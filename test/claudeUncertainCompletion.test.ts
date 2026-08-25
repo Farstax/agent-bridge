@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +10,7 @@ import {
   ClaudeUncertainCompletionError,
   validateSuccessfulCliExit,
 } from "../src/cliSuccessfulExitValidation.js";
-import { runCli } from "../src/cli.js";
+import { abortCliProcessAndWait, runCli } from "../src/cli.js";
 import type { BridgeEvent } from "../src/events/types.js";
 
 const roots: string[] = [];
@@ -31,6 +31,14 @@ function makeClaudeScript(body: string): { root: string; script: string; count: 
   writeFileSync(script, `#!/usr/bin/env node\n${body}\n`);
   chmodSync(script, 0o755);
   return { root, script, count };
+}
+
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function invocationArgs(): string[] {
@@ -59,6 +67,11 @@ describe("Claude uncertain completion boundary", () => {
       expect((error as Error).message).not.toContain("provider-secret-signature");
       expect((error as Error).message).not.toContain("/private/worktree/path");
     }
+  });
+
+  it("fails closed on a malformed recognizable Claude protocol record", () => {
+    const stdout = '{"type":"stream_event","session_id":"sess-malformed","event":';
+    expect(() => parseClaudeStreamJsonOutput(stdout)).toThrow(ClaudeStructuredOutputMissingResultError);
   });
 
   it("classifies the stderr background-task ceiling while preserving the safe result", () => {
@@ -105,7 +118,7 @@ if (n === 1) {
     const stdout = await runCli(script, invocationArgs(), root, {
       bot: "claude",
       bypassWorkspaceLock: true,
-      eventContext: { runId: "run-574", bot: "claude", chatId: "chat-574" },
+      eventContext: { runId: "run-574", bot: "claude", chatId: "chat-574", chatKey: "chat-574" },
       onEvent: (event) => events.push(event),
     });
 
@@ -159,4 +172,39 @@ console.error("Background tasks still running after 3s; terminating.");
     expect(parsed?.text).toContain("Useful result that may be incomplete.");
     expect(parsed?.text).toMatch(/completion could not be verified/i);
   });
+
+  it("does not publish recovered completion after cancellation during reconciliation", async () => {
+    const { root, script, count } = makeClaudeScript(`
+const fs = require("node:fs");
+const countPath = ${JSON.stringify("__COUNT__")};
+const recoveryStarted = ${JSON.stringify("__RECOVERY_STARTED__")};
+let n = 0;
+try { n = Number(fs.readFileSync(countPath, "utf8")); } catch {}
+n += 1;
+fs.writeFileSync(countPath, String(n));
+if (n === 1) {
+  console.log(${JSON.stringify(claudeResult("Useful partial result."))});
+  console.error("Background tasks still running after 3s; terminating.");
+} else {
+  fs.writeFileSync(recoveryStarted, "1");
+  setTimeout(() => {}, 10_000);
+}
+`.replace("__COUNT__", count).replace("__RECOVERY_STARTED__", join(root, "recovery-started")));
+    const recoveryStarted = join(root, "recovery-started");
+    const events: BridgeEvent[] = [];
+    const execution = runCli(script, invocationArgs(), root, {
+      bot: "claude",
+      chatId: "claude-recovery-stop",
+      bypassWorkspaceLock: true,
+      eventContext: { runId: "run-574-stop", bot: "claude", chatId: "chat-574", chatKey: "chat-574" },
+      onEvent: (event) => events.push(event),
+    });
+
+    await waitForFile(recoveryStarted);
+    await abortCliProcessAndWait("claude-recovery-stop");
+    await execution;
+
+    expect(readFileSync(count, "utf8")).toBe("2");
+    expect(events.some((event) => event.type === "run.completed")).toBe(false);
+  }, 15_000);
 });
