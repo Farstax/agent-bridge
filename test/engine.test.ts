@@ -318,7 +318,7 @@ describe("BridgeEngine", () => {
       expect(db.getSession("100", "claude")).toBe("stream-session");
     });
 
-    it("streams the same safe Claude preview on the synchronous Telegram path", async () => {
+    it("streams the same safe Claude preview through the runCli compatibility adapter", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
         options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "sync answer" } } })}\n`);

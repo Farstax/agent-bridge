@@ -206,6 +206,7 @@ export async function sendMessageWithProgress({
   beforeFinalDelivery,
   afterFinalDelivery,
   propagateExecutionErrors = false,
+  propagateTimeoutErrors = false,
   runId,
   onEvent,
 }: {
@@ -220,6 +221,7 @@ export async function sendMessageWithProgress({
   beforeFinalDelivery?: () => boolean;
   afterFinalDelivery?: () => void | Promise<void>;
   propagateExecutionErrors?: boolean;
+  propagateTimeoutErrors?: boolean;
   runId?: string;
   onEvent?: (event: BridgeEvent) => void;
 }): Promise<CliResult | null> {
@@ -490,7 +492,7 @@ export async function sendMessageWithProgress({
     clearInterval(typingInterval);
     if (!finalDeliveryCompleted) await discardAnswerPreview();
     if (isAborted?.()) return null;
-    if (err instanceof CliTimeoutError) throw err;
+    if (propagateTimeoutErrors && err instanceof CliTimeoutError) throw err;
     if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;
     if (finalDeliveryPreparationFailed) throw err;
     if (isCapacityExhaustedError(err instanceof Error ? err : new Error(String(err)))) {

@@ -853,6 +853,7 @@ export class BridgeEngine {
           return finalDeliveryPhase !== null;
         },
         propagateExecutionErrors: false,
+        propagateTimeoutErrors: true,
         runId: input.runId,
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
