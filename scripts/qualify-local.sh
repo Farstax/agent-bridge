@@ -11,7 +11,11 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-echo "==> npm test"
+# Keep the local/default resource envelope identical to hosted CI. Callers may
+# still override NODE_OPTIONS explicitly when diagnosing a different envelope.
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}"
+
+echo "==> npm test (NODE_OPTIONS=${NODE_OPTIONS})"
 npm test
 
 echo "==> npm run typecheck"
