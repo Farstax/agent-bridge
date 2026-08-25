@@ -18,6 +18,7 @@
     "typecheck:unused": "tsc --noEmit -p tsconfig.unused.json",
     "cleanup:check": "knip",
     "skills": "tsx scripts/skill-manager.ts",
+    "qualify:local": "bash scripts/qualify-local.sh",
     "qualify:provider": "tsx scripts/provider-qualification.ts",
     "scan-token-savings": "tsx scripts/scan-token-savings.ts"
   },

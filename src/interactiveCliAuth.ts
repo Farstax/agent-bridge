@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
+import {
+  isProviderApiKeyConfigured,
+  isProviderApiKeyVerified,
+  verifyConfiguredProviderApiKeys,
+} from "./providers/apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import {
   isCursorRouteable,
@@ -27,7 +32,10 @@ export interface AvailableCliOptions {
   failedProviders?: ReadonlySet<ProviderId>;
   env?: Record<string, string | undefined>;
   readCursorStatus?: () => CursorStatusSnapshot;
+  verifyApiKey?: (provider: ProviderId) => boolean;
 }
+
+const primedApiKeyEnvironments = new WeakSet<object>();
 
 export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
   return {
@@ -60,17 +68,42 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const paths = resolveInteractiveCliAuthPaths(home);
   const available = new Set<CliKind>();
 
-  if (exists(paths.codex) && !failedProviders.has("codex")) available.add("codex");
-  if (exists(paths.claude) && !failedProviders.has("claude")) available.add("claude");
-  if (paths.antigravity.some(exists) && !failedProviders.has("agy")) available.add("antigravity");
+  // Key verification is deliberately detached from this synchronous routing
+  // check. The first availability pass primes bounded probes; later passes use
+  // only cached evidence, so a provider request never blocks the Node event loop.
+  if (!options.verifyApiKey && !primedApiKeyEnvironments.has(env)) {
+    primedApiKeyEnvironments.add(env);
+    void verifyConfiguredProviderApiKeys({ env });
+  }
+  const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
+    isProviderApiKeyVerified(provider, env));
 
-  if (isGrokRouteable({ homeDir: home, exists, env, failedProviders })) available.add("grok");
+  const codexAuthenticated = exists(paths.codex)
+    || (isProviderApiKeyConfigured("codex", env) && verifyApiKey("codex"));
+  if (codexAuthenticated && !failedProviders.has("codex")) available.add("codex");
+
+  const claudeAuthenticated = exists(paths.claude)
+    || (isProviderApiKeyConfigured("claude", env) && verifyApiKey("claude"));
+  if (claudeAuthenticated && !failedProviders.has("claude")) available.add("claude");
+
+  const agyAuthenticated = paths.antigravity.some(exists)
+    || (isProviderApiKeyConfigured("agy", env) && verifyApiKey("agy"));
+  if (agyAuthenticated && !failedProviders.has("agy")) available.add("antigravity");
+
+  if (isGrokRouteable({
+    homeDir: home,
+    exists,
+    env,
+    failedProviders,
+    verifyApiKey: () => verifyApiKey("grok"),
+  })) available.add("grok");
   if (isCursorRouteable({
     homeDir: home,
     exists,
     env,
     failedProviders,
     readStatus: options.readCursorStatus,
+    verifyApiKey: () => verifyApiKey("cursor"),
   })) available.add("cursor");
 
   void commandExists; // retained for the existing injectable availability seam.

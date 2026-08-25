@@ -7,6 +7,7 @@ import {
   type CliKind,
 } from "../src/interactiveBot.js";
 import { getAvailableCliKinds, resolveInteractiveCliAuthPaths } from "../src/interactiveCliAuth.js";
+import type { ProviderId } from "../src/providers/types.js";
 
 const cursorStatusUnavailable = () => {
   throw new Error("Cursor status unavailable in test");
@@ -114,20 +115,80 @@ describe("interactive CLI availability filtering", () => {
     expect(available).toEqual(new Set<CliKind>());
   });
 
-  it("accepts XAI_API_KEY as Grok authentication without requiring a positive qualification", () => {
+  it.each([
+    ["codex", "codex", "CODEX_API_KEY"],
+    ["claude", "claude", "ANTHROPIC_API_KEY"],
+    ["agy", "antigravity", "GEMINI_API_KEY"],
+    ["grok", "grok", "XAI_API_KEY"],
+    ["cursor", "cursor", "CURSOR_API_KEY"],
+  ] as const)("accepts only a verified %s API key", (provider, cliKind, envVar) => {
+    const env = { [envVar]: `candidate-${provider}-key` };
+    const verified = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => false,
+      failedProviders: new Set(),
+      env,
+      verifyApiKey: (candidate: ProviderId) => candidate === provider,
+      readCursorStatus: cursorStatusUnavailable,
+    });
+    const rejected = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => false,
+      failedProviders: new Set(),
+      env,
+      verifyApiKey: () => false,
+      readCursorStatus: cursorStatusUnavailable,
+    });
+
+    expect(verified).toEqual(new Set<CliKind>([cliKind]));
+    expect(rejected).toEqual(new Set<CliKind>());
+  });
+
+  it.each([
+    ["codex", "CODEX_API_KEY"],
+    ["claude", "ANTHROPIC_API_KEY"],
+    ["agy", "GEMINI_API_KEY"],
+    ["grok", "XAI_API_KEY"],
+  ] as const)("keeps an authenticated %s account available when its optional key is invalid", (provider, envVar) => {
+    const homeDir = "/home/tester";
+    const paths = resolveInteractiveCliAuthPaths(homeDir);
+    const accountPaths = provider === "codex"
+      ? [paths.codex]
+      : provider === "claude"
+        ? [paths.claude]
+        : provider === "agy"
+          ? [paths.antigravity[0]]
+          : [paths.grok[0]];
+    const expected = provider === "agy" ? "antigravity" : provider;
+    const available = getAvailableCliKinds({
+      homeDir,
+      exists: (path) => accountPaths.includes(path),
+      commandExists: () => false,
+      failedProviders: new Set(),
+      env: { [envVar]: `invalid-${provider}-key` },
+      verifyApiKey: () => false,
+      readCursorStatus: cursorStatusUnavailable,
+    });
+
+    expect(available.has(expected as CliKind)).toBe(true);
+  });
+
+  it("keeps an authenticated Cursor account available when its optional key is invalid", () => {
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => false,
       failedProviders: new Set(),
-      env: { XAI_API_KEY: "xai-test" },
-      readCursorStatus: cursorStatusUnavailable,
+      env: { CURSOR_API_KEY: "invalid-cursor-key" },
+      verifyApiKey: () => false,
+      readCursorStatus: () => ({ isAuthenticated: true }),
     });
-
-    expect(available).toEqual(new Set<CliKind>(["grok"]));
+    expect(available).toEqual(new Set<CliKind>(["cursor"]));
   });
 
-  it("treats Cursor as available only when status reports authenticated", () => {
+  it("treats Cursor as available only when account status reports authenticated without a verified API key", () => {
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,

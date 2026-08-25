@@ -36,16 +36,10 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Run tests
-        run: npm test
+      - name: Run repository qualification gate
+        run: npm run qualify:local
         env:
           NODE_OPTIONS: "--max-old-space-size=3072"
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Architecture lint
-        run: bash scripts/arch-lint.sh src
 
       - name: Compile runtime
         run: npm run build

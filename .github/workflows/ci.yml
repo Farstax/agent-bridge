@@ -35,11 +35,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npm test
+      - name: Run repository qualification gate
+        run: npm run qualify:local
         env:
           NODE_OPTIONS: "--max-old-space-size=3072"
-
-      - run: npm run typecheck
-
-      - name: Architecture lint
-        run: bash scripts/arch-lint.sh src

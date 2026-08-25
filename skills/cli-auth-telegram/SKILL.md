@@ -18,7 +18,7 @@ Use this skill whenever a user chatting over Telegram asks to connect, sign in, 
 
    If the file exists and is non-empty, tell the user it looks already connected and ask whether they want to re-authenticate anyway before proceeding.
 
-   For Grok, if neither credential file exists but `XAI_API_KEY` is non-empty, tell the user Grok is already authenticated through an operator-provided API key without printing its value. If they asked to connect their own Grok account, ask whether they want to continue with device authentication.
+   For Grok, a non-empty `XAI_API_KEY` is only a candidate automation credential, not proof that Grok is connected. Agent Bridge's shared API-key auth path verifies it with a bounded native headless request before routing. Never print the value. If the user asked to connect their own Grok account, continue with device authentication instead of substituting the operator key.
 3. Resolve the CLI binary with `command -v <cli>` (`claude`, `codex`, `agy`, or `grok`) rather than assuming a hardcoded install path — it can vary by environment.
 
 ## Running the login
@@ -72,7 +72,7 @@ mkdir -p "$RUNTIME_DIR"
 
 Poll the log briefly for the verification URL and code, reply with them as a Markdown link + code, and tell the user no further reply is needed. Then poll for either supported Grok credential path before confirming. On timeout, kill the PID recorded in `grok-auth.pid` if it is still running, then remove the Grok auth log/PID files.
 
-Do not use plain `grok login` in a headless/Telegram context because its default flow tries to launch a local browser. `XAI_API_KEY` is a supported Grok automation credential and Agent Bridge can route with it, but do not substitute it when the user asked to connect their own Grok account; use an API key only when the operator explicitly requested or approved that authentication method.
+Do not use plain `grok login` in a headless/Telegram context because its default flow tries to launch a local browser. `XAI_API_KEY` is a supported Grok automation credential and Agent Bridge can route with it after native verification, but do not substitute it when the user asked to connect their own Grok account; use an API key only when the operator explicitly requested or approved that authentication method.
 
 ## Safety rules
 
