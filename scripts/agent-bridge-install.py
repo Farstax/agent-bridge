@@ -35,7 +35,6 @@ CLEANUP_TIMER = "agent-bridge-tmp-cleanup.timer"
 DEFAULT_AGENT_BRIDGE_SKILLS = (
     "red-green-refactor-tdd",
     "requirements-to-acceptance",
-    "risk-based-test-strategy",
     "release-readiness-review",
     "systematic-debugging",
     "delivery-directives",
