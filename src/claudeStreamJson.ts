@@ -11,6 +11,30 @@ const MIME_MAP: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+const CLAUDE_STREAM_RECORD_TYPES = new Set([
+  "assistant",
+  "result",
+  "stream_event",
+  "system",
+  "user",
+]);
+
+export class ClaudeStructuredOutputMissingResultError extends Error {
+  readonly sessionId: string | null;
+
+  constructor(sessionId: string | null) {
+    super("Claude structured output ended without a valid terminal result");
+    this.name = "ClaudeStructuredOutputMissingResultError";
+    this.sessionId = sessionId;
+  }
+}
+
+export interface ClaudeStreamJsonInspection {
+  structured: boolean;
+  sessionId: string | null;
+  result: CliResult | null;
+}
+
 export async function encodeFileAsBase64(filePath: string): Promise<{ data: string; mimeType: string }> {
   const ext = extname(filePath).toLowerCase();
   const mimeType = MIME_MAP[ext] ?? "application/octet-stream";
@@ -127,15 +151,42 @@ export function parseClaudeResultObject(value: unknown): CliResult | null {
   };
 }
 
-export function parseClaudeStreamJsonOutput(stdout: string): CliResult | null {
-  let last: CliResult | null = null;
+export function inspectClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonInspection {
+  let result: CliResult | null = null;
+  let structured = false;
+  let sessionId: string | null = null;
+
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
     try {
-      last = parseClaudeResultObject(JSON.parse(trimmed)) ?? last;
+      const value = JSON.parse(trimmed);
+      const obj = record(value);
+      if (!obj) continue;
+      const type = typeof obj.type === "string" ? obj.type : null;
+      if (type && CLAUDE_STREAM_RECORD_TYPES.has(type)) {
+        structured = true;
+        if (typeof obj.session_id === "string" && obj.session_id.trim()) sessionId = obj.session_id;
+      }
+      const parsed = parseClaudeResultObject(obj);
+      if (parsed) {
+        result = parsed;
+        if (parsed.sessionId) sessionId = parsed.sessionId;
+      }
     } catch { /* skip non-JSON */ }
   }
-  if (last) captureParsedProviderOutput("claude", stdout, last.telemetry);
-  return last;
+
+  return { structured, sessionId, result };
+}
+
+export function parseClaudeStreamJsonOutput(stdout: string): CliResult | null {
+  const inspection = inspectClaudeStreamJsonOutput(stdout);
+  if (inspection.result) {
+    captureParsedProviderOutput("claude", stdout, inspection.result.telemetry);
+    return inspection.result;
+  }
+  if (inspection.structured) {
+    throw new ClaudeStructuredOutputMissingResultError(inspection.sessionId);
+  }
+  return null;
 }
