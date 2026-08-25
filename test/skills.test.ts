@@ -82,14 +82,17 @@ describe("shared skills catalog", () => {
     expect(() => listLocalCatalog(repoRoot)).toThrow(/name does not match folder/i);
   });
 
-  it("keeps the current bundled catalog in install and upgrade defaults", () => {
-    const catalog = listLocalCatalog().map((entry) => entry.name);
-    for (const scriptPath of ["scripts/install.sh", "scripts/upgrade.sh"]) {
-      const script = readFileSync(scriptPath, "utf8");
-      for (const name of catalog) expect(script).toContain(name);
-      expect(script).toContain("DEFAULT_AGENT_BRIDGE_SKILLS");
-      expect(script).not.toContain(retiredRiskStrategyAlias);
+  it("keeps the bundled catalog in install defaults and retires the alias from upgrade defaults", () => {
+    const installScript = readFileSync("scripts/install.sh", "utf8");
+    for (const name of listLocalCatalog().map((entry) => entry.name)) {
+      expect(installScript).toContain(name);
     }
+    expect(installScript).toContain("DEFAULT_AGENT_BRIDGE_SKILLS");
+    expect(installScript).not.toContain(retiredRiskStrategyAlias);
+
+    const upgradeScript = readFileSync("scripts/upgrade.sh", "utf8");
+    expect(upgradeScript).toContain("DEFAULT_AGENT_BRIDGE_SKILLS");
+    expect(upgradeScript).not.toContain(retiredRiskStrategyAlias);
   });
 
   it("prefers SHARED_MEMORY_HOME for path resolution", () => {
