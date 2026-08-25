@@ -13,6 +13,7 @@ import {
 } from "../src/skills.js";
 
 const tempHomes: string[] = [];
+const retiredRiskStrategyAlias = "risk-based-test-strategy";
 
 function makeHome(): string {
   const home = join(tmpdir(), `agent-bridge-skills-${process.pid}-${tempHomes.length}`);
@@ -34,13 +35,13 @@ afterEach(() => {
 });
 
 describe("shared skills catalog", () => {
-  it("lists the consolidated SDLC skills plus the legacy compatibility alias", () => {
+  it("lists the consolidated SDLC skills without the retired compatibility alias", () => {
     const names = listLocalCatalog().map((entry) => entry.name);
     expect(names).toContain("requirements-to-acceptance");
     expect(names).toContain("red-green-refactor-tdd");
     expect(names).toContain("release-readiness-review");
     expect(names).toContain("delivery-directives");
-    expect(names).toContain("risk-based-test-strategy");
+    expect(names).not.toContain(retiredRiskStrategyAlias);
   });
 
   it("accepts a standards-compatible SKILL.md without skill.json", () => {
@@ -81,12 +82,17 @@ describe("shared skills catalog", () => {
     expect(() => listLocalCatalog(repoRoot)).toThrow(/name does not match folder/i);
   });
 
-  it("keeps the bundled skills list in install.sh as the default", () => {
+  it("keeps the bundled catalog in install defaults and retires the alias from upgrade defaults", () => {
     const installScript = readFileSync("scripts/install.sh", "utf8");
     for (const name of listLocalCatalog().map((entry) => entry.name)) {
       expect(installScript).toContain(name);
     }
     expect(installScript).toContain("DEFAULT_AGENT_BRIDGE_SKILLS");
+    expect(installScript).not.toContain(retiredRiskStrategyAlias);
+
+    const upgradeScript = readFileSync("scripts/upgrade.sh", "utf8");
+    expect(upgradeScript).toContain("DEFAULT_AGENT_BRIDGE_SKILLS");
+    expect(upgradeScript).not.toContain(retiredRiskStrategyAlias);
   });
 
   it("prefers SHARED_MEMORY_HOME for path resolution", () => {
