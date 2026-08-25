@@ -71,6 +71,8 @@ import {
   registerProviderOutput,
 } from "./runTelemetry.js";
 import { wrapPromptContext } from "./promptWrapping.js";
+import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
+import { ClaudeUncertainCompletionError } from "./cliSuccessfulExitValidation.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
 
@@ -290,6 +292,95 @@ function eventChatKey(options: CliOptions): string | undefined {
   return options.eventContext?.chatKey;
 }
 
+const CLAUDE_UNCERTAIN_COMPLETION_RECOVERY_PROMPT = [
+  "Agent Bridge detected that the immediately preceding turn ended with uncertain native completion.",
+  "Reconcile the current Claude session state for that preceding user request.",
+  "Determine what work actually completed, finish any remaining safe work if needed, and return one final user-facing closure.",
+  "Do not repeat side effects that already completed.",
+  "If completion cannot be verified, state the concrete blocker or uncertainty.",
+].join(" ");
+
+function optionValue(args: string[], name: string): string | null {
+  const index = args.lastIndexOf(name);
+  return index >= 0 && index + 1 < args.length ? args[index + 1] : null;
+}
+
+function claudeEffortFromArgs(args: string[]): EffortLevel | null {
+  const value = optionValue(args, "--effort");
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max"
+    ? value
+    : null;
+}
+
+function serializeClaudeResult(result: CliResult): string {
+  return JSON.stringify({
+    type: "result",
+    subtype: "success",
+    result: result.text,
+    session_id: result.sessionId ?? null,
+  });
+}
+
+function incompleteClaudeResult(error: ClaudeUncertainCompletionError): CliResult {
+  const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
+  const note = "Claude stopped before confirming completion. Some work may have been applied, but completion could not be verified.";
+  return {
+    text: error.safeResult?.text.trim()
+      ? `${error.safeResult.text.trim()}\n\n${note}`
+      : note,
+    sessionId,
+    ...(error.safeResult?.telemetry ? { telemetry: error.safeResult.telemetry } : {}),
+  };
+}
+
+async function recoverClaudeUncertainCompletion(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: CliOptions,
+  error: ClaudeUncertainCompletionError,
+): Promise<{ stdout: string }> {
+  const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
+  if (!sessionId) return { stdout: serializeClaudeResult(incompleteClaudeResult(error)) };
+
+  const recoveryInvocation = buildCliInvocation({
+    bot: "claude",
+    prompt: CLAUDE_UNCERTAIN_COMPLETION_RECOVERY_PROMPT,
+    sessionId,
+    command,
+    model: optionValue(args, "--model"),
+    executionMode: args.includes("--dangerously-skip-permissions") ? "trusted" : "safe",
+    outputFormat: "stream-json",
+    soulContext: null,
+    includeResponseContract: false,
+    attachments: [],
+    outputDir: null,
+    effort: claudeEffortFromArgs(args),
+    nativeCompletion: true,
+  });
+
+  try {
+    const recovery = await runSupervisedProcess(
+      recoveryInvocation.command,
+      recoveryInvocation.args,
+      cwd,
+      {
+        ...options,
+        bot: "claude",
+        stdin: recoveryInvocation.stdin,
+        eventContext: undefined,
+        onEvent: undefined,
+        onProviderOutputChunk: undefined,
+      },
+    );
+    const parsed = parseClaudeStreamJsonOutput(recovery.stdout);
+    if (!parsed) return { stdout: serializeClaudeResult(incompleteClaudeResult(error)) };
+    return recovery;
+  } catch {
+    return { stdout: serializeClaudeResult(incompleteClaudeResult(error)) };
+  }
+}
+
 async function runConfiguredCli(
   command: string,
   args: string[],
@@ -312,16 +403,25 @@ async function runConfiguredCli(
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   };
-  const outcome = isAntigravityExecution(options)
-    ? await runAntigravitySerialized(
-        command,
-        args,
-        cwd,
-        executionOptions,
-        antigravityInvocationMetadata.get(args),
-        onProgress,
-      )
-    : await runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
+  let outcome: { stdout: string };
+  try {
+    outcome = isAntigravityExecution(options)
+      ? await runAntigravitySerialized(
+          command,
+          args,
+          cwd,
+          executionOptions,
+          antigravityInvocationMetadata.get(args),
+          onProgress,
+        )
+      : await runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
+  } catch (error) {
+    if (provider === "claude" && error instanceof ClaudeUncertainCompletionError) {
+      outcome = await recoverClaudeUncertainCompletion(command, args, cwd, executionOptions, error);
+    } else {
+      throw error;
+    }
+  }
   registerProviderOutput(options.eventContext?.runId, provider, outcome.stdout);
   return outcome;
 }
