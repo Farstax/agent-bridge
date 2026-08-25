@@ -370,7 +370,7 @@ export async function verifyProviderApiKey(
     } catch {
       verified = false;
     }
-    if (options.useCache !== false) verificationCache.set(key, verified);
+    if (options.useCache !== false && verified) verificationCache.set(key, true);
     return verified;
   })();
 
