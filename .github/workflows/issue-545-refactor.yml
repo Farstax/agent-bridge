@@ -45,6 +45,7 @@ jobs:
           python3 <<'PY'
           from pathlib import Path
           import subprocess
+
           engine = Path("src/engine.ts")
           text = engine.read_text()
           text = text.replace(
@@ -52,6 +53,19 @@ jobs:
               "          attachments,\n          laneHandle,",
           )
           engine.write_text(text)
+
+          delivery = Path("src/messageDelivery.ts")
+          text = delivery.read_text()
+          text = text.replace(
+              'import { toUserMessage, isCapacityExhaustedError } from "./cli.js";',
+              'import { toUserMessage, isCapacityExhaustedError, CliTimeoutError } from "./cli.js";',
+          )
+          text = text.replace(
+              "    if (isAborted?.()) return null;\n    if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;",
+              "    if (isAborted?.()) return null;\n    if (err instanceof CliTimeoutError) throw err;\n    if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;",
+          )
+          delivery.write_text(text)
+
           changed = subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines()
           for name in changed:
               path = Path(name)
