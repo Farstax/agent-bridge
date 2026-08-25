@@ -73,7 +73,9 @@ const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ProviderId, ReadonlySet<
   cursor: new Set(["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"]),
 };
 const PROBE_TIMEOUT_MS = 15_000;
+export const PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS = 30_000;
 const verificationCache = new Map<string, boolean>();
+const verificationFailures = new Map<string, number>();
 const verificationInFlight = new Map<string, Promise<boolean>>();
 
 interface ProbeExecOptions {
@@ -158,6 +160,7 @@ export function redactProviderApiKeySecrets(text: string, env: Env = process.env
 
 export function clearProviderApiKeyVerificationCache(): void {
   verificationCache.clear();
+  verificationFailures.clear();
   verificationInFlight.clear();
 }
 
@@ -357,7 +360,12 @@ export async function verifyProviderApiKey(
 
   const key = cacheKey(provider, apiKey);
   if (options.useCache !== false) {
-    if (verificationCache.has(key)) return verificationCache.get(key) === true;
+    if (verificationCache.get(key) === true) return true;
+    const failedAt = verificationFailures.get(key);
+    if (failedAt !== undefined) {
+      if (Date.now() - failedAt < PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS) return false;
+      verificationFailures.delete(key);
+    }
     const inFlight = verificationInFlight.get(key);
     if (inFlight) return inFlight;
   }
@@ -370,7 +378,14 @@ export async function verifyProviderApiKey(
     } catch {
       verified = false;
     }
-    if (options.useCache !== false && verified) verificationCache.set(key, true);
+    if (options.useCache !== false) {
+      if (verified) {
+        verificationCache.set(key, true);
+        verificationFailures.delete(key);
+      } else {
+        verificationFailures.set(key, Date.now());
+      }
+    }
     return verified;
   })();
 

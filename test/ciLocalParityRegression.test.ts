@@ -12,8 +12,9 @@ describe("local/hosted CI parity", () => {
     expect(pkg.scripts["qualify:local"]).toBe("bash scripts/qualify-local.sh");
   });
 
-  it("runs the full deterministic pack: tests, typecheck, architecture lint", () => {
+  it("owns the deterministic resource envelope and full pre-merge pack", () => {
     const script = readFileSync(join(root, "scripts/qualify-local.sh"), "utf8");
+    expect(script).toContain("--max-old-space-size=3072");
     expect(script).toContain("npm test");
     expect(script).toContain("npm run typecheck");
     expect(script).toContain("scripts/arch-lint.sh");

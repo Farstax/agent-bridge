@@ -2,11 +2,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import dotenv from "dotenv";
 import type { CliKind } from "./interactiveBot.js";
 import {
   isProviderApiKeyConfigured,
   isProviderApiKeyVerified,
   verifyConfiguredProviderApiKeys,
+  type ProviderApiKeyProbeExecutor,
 } from "./providers/apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import {
@@ -35,7 +37,28 @@ export interface AvailableCliOptions {
   verifyApiKey?: (provider: ProviderId) => boolean;
 }
 
-const primedApiKeyEnvironments = new WeakSet<object>();
+/**
+ * Establish bounded native API-key evidence before the interactive runtime
+ * makes its first synchronous routing decision. Tests may inject the probe
+ * executor; production uses the provider CLIs.
+ */
+export async function prepareInteractiveCliAuth(
+  env: Record<string, string | undefined> = process.env,
+  execFile?: ProviderApiKeyProbeExecutor,
+): Promise<void> {
+  await verifyConfiguredProviderApiKeys({ env, ...(execFile ? { execFile } : {}) });
+}
+
+// index-interactive imports this module before its own body executes. Load the
+// same env file here and complete configured-key verification during module
+// initialization so the first availability snapshot cannot race the probe.
+if (process.env.NODE_ENV !== "test") {
+  dotenv.config({
+    path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
+    override: false,
+  });
+  await prepareInteractiveCliAuth(process.env);
+}
 
 export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
   return {
@@ -67,14 +90,6 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const env = options.env ?? process.env;
   const paths = resolveInteractiveCliAuthPaths(home);
   const available = new Set<CliKind>();
-
-  // Key verification is deliberately detached from this synchronous routing
-  // check. The first availability pass primes bounded probes; later passes use
-  // only cached evidence, so a provider request never blocks the Node event loop.
-  if (!options.verifyApiKey && !primedApiKeyEnvironments.has(env)) {
-    primedApiKeyEnvironments.add(env);
-    void verifyConfiguredProviderApiKeys({ env });
-  }
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
     isProviderApiKeyVerified(provider, env));
 
