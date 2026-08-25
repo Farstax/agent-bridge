@@ -496,7 +496,8 @@ export async function runSupervisedProcess(
       } else {
         const validationError = validateSuccessfulCliExit(options.bot, { stdout, stderr });
         if (validationError) {
-          if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: validationError.message, category: "cli" }));
+          const deferRunFailure = (validationError as Error & { deferRunFailure?: boolean }).deferRunFailure === true;
+          if (evtCtx && !deferRunFailure) emit(evtType.runFailed({ ...evtCtx, error: validationError.message, category: "cli" }));
           (validationError as any).stdout = stdout;
           (validationError as any).stderr = stderr;
           doReject(validationError);
