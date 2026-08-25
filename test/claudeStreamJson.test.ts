@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildClaudeStreamJsonInput,
+  ClaudeStructuredOutputMissingResultError,
   parseClaudeStreamJsonOutput,
   encodeFileAsBase64,
 } from "../src/claudeStreamJson.js";
@@ -66,10 +67,14 @@ describe("parseClaudeStreamJsonOutput", () => {
     expect(result).toEqual({ text: "The image shows a chart.", sessionId: "sess_abc" });
   });
 
-  it("returns null when no result line is present", () => {
-    const stdout = '{"type":"system","subtype":"init"}\n{"type":"assistant"}';
-    const result = parseClaudeStreamJsonOutput(stdout);
-    expect(result).toBeNull();
+  it("fails closed when structured output has no result line", () => {
+    const stdout = '{"type":"system","subtype":"init","session_id":"sess_partial"}\n{"type":"assistant","session_id":"sess_partial"}';
+    expect(() => parseClaudeStreamJsonOutput(stdout)).toThrow(ClaudeStructuredOutputMissingResultError);
+  });
+
+  it("fails closed when a recognizable structured record is malformed", () => {
+    const stdout = '{"type":"stream_event","session_id":"sess_malformed","event":';
+    expect(() => parseClaudeStreamJsonOutput(stdout)).toThrow(ClaudeStructuredOutputMissingResultError);
   });
 
   it("uses the last result line when multiple present", () => {
