@@ -32,6 +32,7 @@ jobs:
               text = text.replace('async ({ mode, asyncEnabled }) => {', 'async ({ mode }) => {')
               text = re.sub(r',\s*asyncEnabled(?=\s*[,}])', '', text)
               text = re.sub(r'\basyncEnabled,\s*', '', text)
+              text = re.sub(r'\basyncEnabled:\s*(?:true|false|mode === "async")\s*,?', '', text)
               path.write_text(text)
           PY
       - name: Apply execution-path refactor
