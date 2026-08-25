@@ -17,8 +17,30 @@ jobs:
         with:
           ref: fix/545-unify-provider-execution
           fetch-depth: 0
+      - name: Collapse deleted mode fixtures
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          for target in ["test/executionLaneCorrectness.test.ts", "test/engine.test.ts"]:
+              path = Path(target)
+              text = path.read_text()
+              text = text.replace(
+                  '    { mode: "synchronous", asyncEnabled: false },\n    { mode: "asynchronous", asyncEnabled: true },',
+                  '    { mode: "canonical" },',
+              )
+              text = text.replace('async ({ mode, asyncEnabled }) => {', 'async ({ mode }) => {')
+              text = re.sub(r',\s*asyncEnabled(?=\s*[,}])', '', text)
+              text = re.sub(r'\basyncEnabled,\s*', '', text)
+              path.write_text(text)
+          PY
       - name: Apply execution-path refactor
-        run: python3 scripts/issue545-refactor.py
+        shell: bash
+        run: |
+          if ! python3 scripts/issue545-refactor.py; then
+            grep -RInE 'BRIDGE_ASYNC_ENABLED|asyncEnabled' src test docs .env.*.example 2>/dev/null || true
+            exit 1
+          fi
       - name: Validate candidate diff
         run: |
           git diff --check
