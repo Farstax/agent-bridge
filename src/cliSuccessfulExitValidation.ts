@@ -26,6 +26,7 @@ export class ClaudeUncertainCompletionError extends Error {
   readonly reason: ClaudeUncertainCompletionReason;
   readonly sessionId: string | null;
   readonly safeResult: CliResult | null;
+  readonly deferRunFailure = true;
 
   constructor(
     reason: ClaudeUncertainCompletionReason,
