@@ -18,6 +18,8 @@ const CLAUDE_STREAM_RECORD_TYPES = new Set([
   "system",
   "user",
 ]);
+const CLAUDE_STREAM_RECORD_PREFIX = /^\{\s*"type"\s*:\s*"(?:assistant|result|stream_event|system|user)"/;
+const CLAUDE_SESSION_ID_FIELD = /"session_id"\s*:\s*"([^"\\]+)"/;
 
 export class ClaudeStructuredOutputMissingResultError extends Error {
   readonly sessionId: string | null;
@@ -159,6 +161,11 @@ export function inspectClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonI
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
+    if (CLAUDE_STREAM_RECORD_PREFIX.test(trimmed)) {
+      structured = true;
+      const rawSessionId = trimmed.match(CLAUDE_SESSION_ID_FIELD)?.[1];
+      if (rawSessionId) sessionId = rawSessionId;
+    }
     try {
       const value = JSON.parse(trimmed);
       const obj = record(value);
@@ -173,7 +180,7 @@ export function inspectClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonI
         result = parsed;
         if (parsed.sessionId) sessionId = parsed.sessionId;
       }
-    } catch { /* skip non-JSON */ }
+    } catch { /* malformed protocol remains structured and therefore fails closed */ }
   }
 
   return { structured, sessionId, result };
