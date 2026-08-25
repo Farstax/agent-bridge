@@ -232,7 +232,6 @@ engine = new BridgeEngine(
     botConfig: { command: cliBotConfig.command, modelPreference: cliBotConfig.modelPreference },
     allowedUserIds,
     executionMode: resolveExecutionMode(cliBot, process.env),
-    asyncEnabled: false,
     pollIntervalMs: Number(process.env.POLL_INTERVAL_MS || 1000),
     soulContext,
     hooks: {

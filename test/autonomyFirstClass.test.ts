@@ -37,7 +37,7 @@ function mockEngine(db: ReturnType<typeof openDb>, run: (input: any) => Promise<
   const engine = new BridgeEngine({
     surfaceIdentity: "autonomous", kind: "autonomous", executionKind: "claude",
     botConfig: { command: "claude", modelPreference: ["default"] }, allowedUserIds: new Set(["1"]),
-    executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000,
+    executionMode: "safe", pollIntervalMs: 1000,
   }, db, {
     getUpdates: vi.fn(), sendMessage: vi.fn(), sendChatAction: vi.fn(), setMyCommands: vi.fn(),
     answerCallbackQuery: vi.fn(), editMessageText: vi.fn(), sendPhoto: vi.fn(), sendDocument: vi.fn(),

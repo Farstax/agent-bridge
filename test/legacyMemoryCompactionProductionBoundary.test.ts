@@ -60,7 +60,6 @@ function makeConfig(dbPath: string): BridgeConfig {
     serviceKind: null,
     pollIntervalMs: 1000,
     executionMode: "safe",
-    asyncEnabled: false,
     dbPath,
     bots: {
       codex: { token: undefined, command: "codex", modelPreference: [] },
@@ -94,7 +93,6 @@ function makeEngine(
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       busyMessageMode: "augment",
-      asyncEnabled: false,
       pollIntervalMs: 1000,
       fullConfig: makeConfig(dbPath),
       hooks: exhaustedChats ? {

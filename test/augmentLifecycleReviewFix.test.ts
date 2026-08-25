@@ -37,7 +37,6 @@ function options(mode: "augment" | "interrupt", hooks: any = {}) {
     allowedUserIds: new Set(["42"]),
     executionMode: "safe" as const,
     busyMessageMode: mode,
-    asyncEnabled: false,
     pollIntervalMs: 1000,
     hooks,
   };

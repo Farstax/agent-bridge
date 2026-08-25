@@ -30,7 +30,6 @@ describe("clean-droplet acceptance", () => {
         botConfig: { command: "codex", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "trusted",
-        asyncEnabled: false,
         pollIntervalMs: 1000,
       },
       db,

@@ -45,7 +45,6 @@ function options(mode: "augment" | "interrupt" | "queue", overrides: any = {}) {
     allowedUserIds: new Set(["42"]),
     executionMode: "safe" as const,
     busyMessageMode: mode === "queue" ? "queue" : mode,
-    asyncEnabled: false,
     pollIntervalMs: 1000,
     ...overrides,
   };

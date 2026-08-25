@@ -84,7 +84,6 @@ const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS || 1000);
 const executionMode = resolveExecutionMode(providerLock ?? "codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
-const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
 const integratedHealth = !providerLock && parseHealthBotMode(process.env) === "integrated";
 const {
   enabled: autonomyEnabled,
@@ -100,7 +99,6 @@ const config: BridgeConfig = {
   pollIntervalMs,
   executionMode,
   busyMessageMode,
-  asyncEnabled,
   dbPath,
   bots: loadBotsConfig(process.env),
 };
@@ -242,7 +240,6 @@ const engines = Object.fromEntries(
           allowedUserIds,
           executionMode: resolveExecutionMode(kind as BotKind, process.env),
           busyMessageMode,
-          asyncEnabled,
           pollIntervalMs,
           soulContext,
           fullConfig: config,
@@ -281,7 +278,6 @@ const autonomyEngines = autonomyDb && autonomyDir ? Object.fromEntries(
     botConfig: config.bots[kind as BotKind],
     allowedUserIds,
     executionMode: resolveExecutionMode(kind as BotKind, process.env),
-    asyncEnabled: true,
     pollIntervalMs,
     soulContext: autonomySoulContext,
     workingDir: join(autonomyDir, "work"),

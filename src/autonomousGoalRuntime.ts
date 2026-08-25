@@ -909,7 +909,7 @@ export function buildStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine 
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
   return new BridgeEngine({
     surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig,
-    allowedUserIds: new Set(["operator"]), executionMode, asyncEnabled: true, pollIntervalMs: 1000,
+    allowedUserIds: new Set(["operator"]), executionMode, pollIntervalMs: 1000,
     soulContext: standaloneSoulContext(),
   }, db, client);
 }
@@ -950,7 +950,7 @@ export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<
   const db = openProductionDb(databasePath, { serviceId: "autonomous-live-smoke", runId: randomUUID() });
   const command = process.env.AGENT_BRIDGE_AUTONOMOUS_PROVIDER_COMMAND ?? "claude";
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
-  const engine = new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1000 }, db, client);
+  const engine = new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", pollIntervalMs: 1000 }, db, client);
   let providerBoundaryReached = false;
   const executeSurfaceNeutralTurn = engine.executeSurfaceNeutralTurn.bind(engine);
   engine.executeSurfaceNeutralTurn = async (input) => {

@@ -66,4 +66,16 @@ describe("execution topology architecture lint", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("rejects a second ordinary provider execution mode", () => {
+    const dir = mkdtempSync(join(tmpdir(), "archlint-topology-provider-mode-"));
+    try {
+      writeFileSync(join(dir, "engine.ts"), 'const mode: "async" | "sync" = "async";\n');
+      const result = runLint(dir);
+      expect(result.code).toBe(1);
+      expect(result.output).toContain("execution topology ownership must remain with the engine");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
