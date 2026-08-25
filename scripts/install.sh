@@ -16,7 +16,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,risk-based-test-strategy,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting,advisor"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting,advisor"
 
 # Parse flags
 NON_INTERACTIVE=0
@@ -207,7 +207,7 @@ prompt ANTIGRAVITY_COMMAND "Antigravity command" "$(command -v agy    2>/dev/nul
 prompt CLAUDE_COMMAND      "Claude command"      "$(command -v claude 2>/dev/null || true)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""
-prompt CLAUDE_PROJECT_DIR      "Claude working directory (blank = BRIDGE_PROJECT_DIR)"      ""
+prompt CLAUDE_PROJECT_DIR      "Claude working directory (blank = BRIDGE_PROJECT_DIR)" ""
 prompt AGENT_BRIDGE_SKILLS "Bundled skills to install (comma-separated, none = skip)" "${DEFAULT_AGENT_BRIDGE_SKILLS}"
 prompt AGENT_BRIDGE_SKILL_LINK_MODE "Shared skill link mode (symlink|copy)" "symlink"
 prompt BRIDGE_EXECUTION_MODE "Execution mode (safe|trusted)" "trusted"
