@@ -207,7 +207,7 @@ prompt ANTIGRAVITY_COMMAND "Antigravity command" "$(command -v agy    2>/dev/nul
 prompt CLAUDE_COMMAND      "Claude command"      "$(command -v claude 2>/dev/null || true)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""
-prompt CLAUDE_PROJECT_DIR      "Claude working directory (blank = BRIDGE_PROJECT_DIR)" ""
+prompt CLAUDE_PROJECT_DIR      "Claude working directory (blank = BRIDGE_PROJECT_DIR)"      ""
 prompt AGENT_BRIDGE_SKILLS "Bundled skills to install (comma-separated, none = skip)" "${DEFAULT_AGENT_BRIDGE_SKILLS}"
 prompt AGENT_BRIDGE_SKILL_LINK_MODE "Shared skill link mode (symlink|copy)" "symlink"
 prompt BRIDGE_EXECUTION_MODE "Execution mode (safe|trusted)" "trusted"
