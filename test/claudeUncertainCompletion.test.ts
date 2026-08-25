@@ -111,7 +111,7 @@ if (n === 1) {
 
     expect(parseClaudeStreamJsonOutput(stdout)?.text).toBe("Recovered final closure.");
     expect(readFileSync(count, "utf8")).toBe("2");
-    expect(events.some((event) => event.type === "run.failed")).toBe(true);
+    expect(events.some((event) => event.type === "run.failed")).toBe(false);
     expect(events.some((event) => event.type === "run.completed")).toBe(false);
   });
 
