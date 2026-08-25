@@ -72,8 +72,8 @@ describe("parseClaudeStreamJsonOutput", () => {
     expect(() => parseClaudeStreamJsonOutput(stdout)).toThrow(ClaudeStructuredOutputMissingResultError);
   });
 
-  it("fails closed when a recognizable structured record is malformed", () => {
-    const stdout = '{"type":"stream_event","session_id":"sess_malformed","event":';
+  it("fails closed when a recognizable structured record is malformed regardless of field order", () => {
+    const stdout = '{"session_id":"sess_malformed","type":"stream_event","event":';
     expect(() => parseClaudeStreamJsonOutput(stdout)).toThrow(ClaudeStructuredOutputMissingResultError);
   });
 
