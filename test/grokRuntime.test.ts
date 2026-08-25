@@ -6,6 +6,7 @@ import { buildCliInvocation, parseCliResult } from "../src/cli.js";
 import { classifyProviderError } from "../src/providers/errorClassification.js";
 import { getProviderAdapter, PROVIDER_IDS, resolveProviderExecutable } from "../src/providers/registry.js";
 import { interactiveChainKinds, parseCliChain } from "../src/providers/selection.js";
+import { clearProviderApiKeyVerificationCache, verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
 import { loadBotsConfig } from "../src/config.js";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
@@ -338,6 +339,9 @@ describe("grok engine dispatch", () => {
     const client = makeMockClient();
     const previousApiKey = process.env.XAI_API_KEY;
     process.env.XAI_API_KEY = "test-grok-key";
+    // Routing requires a bounded native probe rather than trusting a non-empty
+    // XAI_API_KEY; prime the verification cache for this fingerprint first.
+    await verifyProviderApiKey("grok", { env: { XAI_API_KEY: "test-grok-key" }, execFile: async () => undefined });
     const runCli = vi.fn().mockImplementation(async (_command: string, _args: string[]) => grokStream([
       { type: "thought", data: "hide-me" },
       { type: "text", data: "Hello from Grok" },
@@ -387,6 +391,7 @@ describe("grok engine dispatch", () => {
     } finally {
       if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
       else process.env.XAI_API_KEY = previousApiKey;
+      clearProviderApiKeyVerificationCache();
       db.close();
       try { rmSync(dbPath); } catch {}
     }

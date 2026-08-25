@@ -196,11 +196,10 @@ describe("cursor auth readiness", () => {
     })).toBe(false);
   });
 
-  it("does not mention CURSOR_API_KEY in Cursor env examples or docs", () => {
+  it("documents CURSOR_API_KEY as a verified alternative to account auth, not a bare presence check", () => {
     const example = readFileSync(join(process.cwd(), ".env.cursor.example"), "utf8");
-    const docs = readFileSync(join(process.cwd(), "docs/PROVIDER-QUALIFICATION.md"), "utf8");
-    expect(example).not.toMatch(/CURSOR_API_KEY/);
-    expect(docs).not.toMatch(/CURSOR_API_KEY/);
+    expect(example).toMatch(/CURSOR_API_KEY/);
+    expect(example).toMatch(/verified/i);
   });
 });
 

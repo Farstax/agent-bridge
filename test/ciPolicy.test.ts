@@ -35,12 +35,17 @@ describe("CI qualification ownership policy", () => {
   it("has one owner for test, typecheck and architecture checks at each qualification boundary", () => {
     const ci = readRepoFile(".github/workflows/ci.yml");
     const releaseArtifact = readRepoFile(".github/workflows/release-artifact.yml");
+    const qualifyLocal = readRepoFile("scripts/qualify-local.sh");
 
+    // Both boundaries delegate to the same local script rather than each
+    // duplicating the test/typecheck/arch-lint commands, so local and hosted
+    // CI cannot drift apart.
     for (const workflow of [ci, releaseArtifact]) {
-      expect(workflow).toContain("npm test");
-      expect(workflow).toContain("npm run typecheck");
-      expect(workflow).toContain("bash scripts/arch-lint.sh src");
+      expect(workflow).toContain("npm run qualify:local");
     }
+    expect(qualifyLocal).toContain("npm test");
+    expect(qualifyLocal).toContain("npm run typecheck");
+    expect(qualifyLocal).toContain("bash scripts/arch-lint.sh src");
 
     expect(releaseArtifact).toContain("push:");
     expect(releaseArtifact).toContain("branches: [main]");

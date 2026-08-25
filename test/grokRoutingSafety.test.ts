@@ -1,13 +1,24 @@
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getCliWorkingDir } from "../src/bridge.js";
 import { buildCliInvocation } from "../src/cli.js";
 import { openDb } from "../src/db.js";
 import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { clearProviderApiKeyVerificationCache, verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
+
+// Routing now requires a bounded native probe rather than trusting a non-empty
+// XAI_API_KEY. Every test below shares the literal "test-key" value, so prime
+// the verification cache once for that fingerprint instead of re-probing per test.
+beforeAll(async () => {
+  await verifyProviderApiKey("grok", { env: { XAI_API_KEY: "test-key" }, execFile: async () => undefined });
+});
+afterAll(() => {
+  clearProviderApiKeyVerificationCache();
+});
 
 function withGrokEnvironment<T>(run: (root: string, evidencePath: string) => T): T {
   const root = mkdtempSync(join(tmpdir(), "grok-routing-safety-"));

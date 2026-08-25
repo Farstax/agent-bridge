@@ -99,6 +99,10 @@ Current CI ownership:
 
 Do not recreate a separate full-suite or artifact run for the same SHA unless it proves a distinct contract.
 
+### Local qualification before pushing
+
+Run `npm run qualify:local` before pushing or relying on hosted CI. It runs the same deterministic pack hosted CI runs — full test suite, typecheck, architecture lint — via `scripts/qualify-local.sh`, which `.github/workflows/ci.yml` also calls, so local and hosted CI cannot silently drift. It needs no network access or provider credentials and produces no interactive prompts. Provider qualification, live-provider smoke tests, and other credential/network/host-service-dependent checks are out of scope for this pack; they fail/skip explicitly on their own opt-in triggers (see "Provider qualification and CLI drift" above).
+
 ## Boundary qualification triggers
 
 Use the relevant evidence, not a universal checklist:
