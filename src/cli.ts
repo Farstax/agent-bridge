@@ -77,6 +77,7 @@ import {
   isClaudeUncertainCompletionFailureMessage,
 } from "./cliSuccessfulExitValidation.js";
 import { type as evtType } from "./events/types.js";
+import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
 
@@ -316,6 +317,13 @@ function claudeEffortFromArgs(args: string[]): EffortLevel | null {
     : null;
 }
 
+function safeClaudeRecoveryResult(options: CliOptions, result: CliResult): CliResult {
+  return {
+    ...result,
+    text: redactProviderApiKeySecrets(result.text, { ...process.env, ...(options.contextEnv ?? {}) }),
+  };
+}
+
 function serializeClaudeResult(result: CliResult): string {
   return JSON.stringify({
     type: "result",
@@ -358,7 +366,7 @@ async function recoverClaudeUncertainCompletion(
   error: ClaudeUncertainCompletionError,
 ): Promise<{ stdout: string }> {
   const finishIncomplete = (): { stdout: string } => {
-    const result = incompleteClaudeResult(error);
+    const result = safeClaudeRecoveryResult(options, incompleteClaudeResult(error));
     emitClaudeRecoveryCompleted(options, result);
     return { stdout: serializeClaudeResult(result) };
   };
@@ -397,8 +405,9 @@ async function recoverClaudeUncertainCompletion(
     );
     const parsed = parseClaudeStreamJsonOutput(recovery.stdout);
     if (!parsed) return finishIncomplete();
-    emitClaudeRecoveryCompleted(options, parsed);
-    return recovery;
+    const result = safeClaudeRecoveryResult(options, parsed);
+    emitClaudeRecoveryCompleted(options, result);
+    return { stdout: serializeClaudeResult(result) };
   } catch {
     return finishIncomplete();
   }

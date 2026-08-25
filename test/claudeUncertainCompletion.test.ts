@@ -11,12 +11,17 @@ import {
   validateSuccessfulCliExit,
 } from "../src/cliSuccessfulExitValidation.js";
 import { runCli } from "../src/cli.js";
+import {
+  clearProviderApiKeyVerificationCache,
+  verifyProviderApiKey,
+} from "../src/providers/apiKeyAuth.js";
 import type { BridgeEvent } from "../src/events/types.js";
 
 const roots: string[] = [];
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  clearProviderApiKeyVerificationCache();
 });
 
 function claudeResult(text: string, sessionId = "sess-574"): string {
@@ -28,7 +33,7 @@ function makeClaudeScript(body: string): { root: string; script: string; count: 
   roots.push(root);
   const script = join(root, "claude-fixture");
   const count = join(root, "count");
-  writeFileSync(script, `#!/usr/bin/env node\n${body}\n`);
+  writeFileSync(script, `#!/usr/bin/env node\n${body.replace("__COUNT__", count)}\n`);
   chmodSync(script, 0o755);
   return { root, script, count };
 }
@@ -99,7 +104,7 @@ if (n === 1) {
   if (resumeIndex < 0 || process.argv[resumeIndex + 1] !== "sess-574") process.exit(9);
   console.log(${JSON.stringify(claudeResult("Recovered final closure."))});
 }
-`.replace("__COUNT__", count));
+`);
     const events: BridgeEvent[] = [];
 
     const stdout = await runCli(script, invocationArgs(), root, {
@@ -130,7 +135,7 @@ if (n === 1) {
 } else {
   console.log(${JSON.stringify(claudeResult("Reconciled after partial stream."))});
 }
-`.replace("__COUNT__", count));
+`);
 
     const stdout = await runCli(script, invocationArgs(), root, { bot: "claude", bypassWorkspaceLock: true });
 
@@ -150,7 +155,7 @@ n += 1;
 fs.writeFileSync(countPath, String(n));
 console.log(${JSON.stringify(claudeResult("Useful result that may be incomplete."))});
 console.error("Background tasks still running after 3s; terminating.");
-`.replace("__COUNT__", count));
+`);
 
     const stdout = await runCli(script, invocationArgs(), root, { bot: "claude", bypassWorkspaceLock: true });
     const parsed = parseClaudeStreamJsonOutput(stdout);
@@ -158,6 +163,28 @@ console.error("Background tasks still running after 3s; terminating.");
     expect(readFileSync(count, "utf8")).toBe("2");
     expect(parsed?.text).toContain("Useful result that may be incomplete.");
     expect(parsed?.text).toMatch(/completion could not be verified/i);
+  });
+
+  it("redacts provider keys from the recovered result and terminal event", async () => {
+    const secret = "claude-recovery-secret-574";
+    await verifyProviderApiKey("claude", { env: { ANTHROPIC_API_KEY: secret }, execFile: async () => undefined });
+    const { root, script } = makeClaudeScript(`
+console.log(${JSON.stringify(claudeResult("Recovered result with " + secret + "."))});
+console.error("Background tasks still running after 3s; terminating.");
+`);
+    const events: BridgeEvent[] = [];
+
+    const stdout = await runCli(script, invocationArgs(), root, {
+      bot: "claude",
+      contextEnv: { ANTHROPIC_API_KEY: secret },
+      bypassWorkspaceLock: true,
+      eventContext: { runId: "run-574-redact", bot: "claude", chatId: "chat-574", chatKey: "chat-574" },
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(stdout).not.toContain(secret);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(stdout).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
   });
 
   it("does not suppress ordinary Claude CLI failures", async () => {
