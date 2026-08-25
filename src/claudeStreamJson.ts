@@ -18,7 +18,7 @@ const CLAUDE_STREAM_RECORD_TYPES = new Set([
   "system",
   "user",
 ]);
-const CLAUDE_STREAM_RECORD_PREFIX = /^\{\s*"type"\s*:\s*"(?:assistant|result|stream_event|system|user)"/;
+const CLAUDE_STREAM_TYPE_FIELD = /"type"\s*:\s*"(?:assistant|result|stream_event|system|user)"/;
 const CLAUDE_SESSION_ID_FIELD = /"session_id"\s*:\s*"([^"\\]+)"/;
 
 export class ClaudeStructuredOutputMissingResultError extends Error {
@@ -161,7 +161,7 @@ export function inspectClaudeStreamJsonOutput(stdout: string): ClaudeStreamJsonI
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
-    if (CLAUDE_STREAM_RECORD_PREFIX.test(trimmed)) {
+    if (CLAUDE_STREAM_TYPE_FIELD.test(trimmed)) {
       structured = true;
       const rawSessionId = trimmed.match(CLAUDE_SESSION_ID_FIELD)?.[1];
       if (rawSessionId) sessionId = rawSessionId;
