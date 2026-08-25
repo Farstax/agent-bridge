@@ -73,6 +73,7 @@ import {
 import { wrapPromptContext } from "./promptWrapping.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 import { ClaudeUncertainCompletionError } from "./cliSuccessfulExitValidation.js";
+import { type as evtType } from "./events/types.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
 
@@ -99,7 +100,6 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
   if (!outDir) return text;
   const lines = text.split("\n");
   const filtered = lines.filter((line) => !line.includes(outDir));
-  // Collapse runs of more than one consecutive blank line left by removed lines
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -113,13 +113,9 @@ function seedFreshExecutionContract(
   if (includeResponseContract) return prompt;
   const startsFresh = !sessionId || (bot === "codex" && attachments.length > 0);
   if (startsFresh) return wrapPromptContext(prompt, null, false, true);
-  // Resumed turns intentionally stay otherwise raw so the native session owns
-  // continuity. A leading slash is the one exception: native CLIs may consume
-  // it as their own command before the model or installed Skills can see it.
   return prompt.startsWith("/") ? `User request:\n${prompt}` : prompt;
 }
 
-/** Builds the CLI invocation for a bot. */
 export function buildCliInvocation({
   bot,
   prompt,
@@ -201,7 +197,6 @@ export function buildCliInvocation({
 
 export { validateBridgeConfig } from "./config.js";
 
-/** Resolve CLI execution options for a specific bot kind. */
 export function buildExecutionOptions(kind: BotKind): CliOptions {
   const t = resolveTimeoutsForKind(kind);
   return {
@@ -211,7 +206,6 @@ export function buildExecutionOptions(kind: BotKind): CliOptions {
   };
 }
 
-/** Parses the CLI result. */
 export function parseCliResult({
   bot,
   stdout,
@@ -233,8 +227,6 @@ export function parseCliResult({
   } else if (bot === "cursor") {
     result = cursorRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
-    // Keep null so parseResult can honor ANTIGRAVITY_OUTPUT_MODE. Only Grok's
-    // streaming-json is outside Agy's union and must be coerced.
     const agyFormat = outputFormat === "streaming-json" ? "text" : outputFormat;
     result = antigravityRuntime.parseResult(stdout, logContent, agyFormat);
     const telemetry = extractAntigravityRunTelemetry(stdout, agyFormat);
@@ -333,6 +325,19 @@ function incompleteClaudeResult(error: ClaudeUncertainCompletionError): CliResul
   };
 }
 
+function emitClaudeRecoveryCompleted(options: CliOptions, result: CliResult): void {
+  if (!options.eventContext || !options.onEvent) return;
+  try {
+    options.onEvent(evtType.runCompleted({
+      ...options.eventContext,
+      text: result.text,
+      sessionId: result.sessionId ?? null,
+    }));
+  } catch {
+    /* event observation must not break recovered execution */
+  }
+}
+
 async function recoverClaudeUncertainCompletion(
   command: string,
   args: string[],
@@ -340,8 +345,13 @@ async function recoverClaudeUncertainCompletion(
   options: CliOptions,
   error: ClaudeUncertainCompletionError,
 ): Promise<{ stdout: string }> {
+  const finishIncomplete = (): { stdout: string } => {
+    const result = incompleteClaudeResult(error);
+    emitClaudeRecoveryCompleted(options, result);
+    return { stdout: serializeClaudeResult(result) };
+  };
   const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
-  if (!sessionId) return { stdout: serializeClaudeResult(incompleteClaudeResult(error)) };
+  if (!sessionId) return finishIncomplete();
 
   const recoveryInvocation = buildCliInvocation({
     bot: "claude",
@@ -374,10 +384,11 @@ async function recoverClaudeUncertainCompletion(
       },
     );
     const parsed = parseClaudeStreamJsonOutput(recovery.stdout);
-    if (!parsed) return { stdout: serializeClaudeResult(incompleteClaudeResult(error)) };
+    if (!parsed) return finishIncomplete();
+    emitClaudeRecoveryCompleted(options, parsed);
     return recovery;
   } catch {
-    return { stdout: serializeClaudeResult(incompleteClaudeResult(error)) };
+    return finishIncomplete();
   }
 }
 
@@ -426,13 +437,11 @@ async function runConfiguredCli(
   return outcome;
 }
 
-/** Runs a CLI command and returns stdout. */
 export async function runCli(command: string, args: string[], cwd: string, options: CliOptions = {}): Promise<string> {
   const { stdout } = await runConfiguredCli(command, args, cwd, options);
   return stdout;
 }
 
-/** Runs a CLI command asynchronously with progress support. */
 export async function runCliAsync(
   command: string,
   args: string[],
