@@ -209,7 +209,6 @@ print(json.dumps({"calls": calls}))
     const defaults = [
       "red-green-refactor-tdd",
       "requirements-to-acceptance",
-      "risk-based-test-strategy",
       "release-readiness-review",
       "systematic-debugging",
       "delivery-directives",
@@ -240,6 +239,7 @@ print(json.dumps({"calls": calls}))
     const home = mkdtempSync(join(tmpdir(), "agent-bridge-initial-skills-"));
     try {
       const defaults = probe(`print(json.dumps(list(module.DEFAULT_AGENT_BRIDGE_SKILLS)))`) as string[];
+      expect(defaults).not.toContain("risk-based-test-strategy");
       expect(existsSync(join(home, ".agents/skills"))).toBe(false);
       const result = probe(`
 runtime_home = pathlib.Path(${JSON.stringify(home)})
