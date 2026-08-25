@@ -1,17 +1,21 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearProviderApiKeyVerificationCache,
   isProviderApiKeyVerified,
+  PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS,
   verifyProviderApiKey,
   type ProviderApiKeyProbeExecutor,
 } from "../src/providers/apiKeyAuth.js";
 
 afterEach(() => {
   clearProviderApiKeyVerificationCache();
+  vi.useRealTimers();
 });
 
 describe("provider API-key verification retry", () => {
-  it("retries a transient failure and caches the later success", async () => {
+  it("throttles a transient failure, then retries and caches the later success", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-25T10:00:00Z"));
     const env = {
       CODEX_API_KEY: "codex-retry-key",
       CODEX_COMMAND: "fake-codex",
@@ -25,6 +29,10 @@ describe("provider API-key verification retry", () => {
     await expect(verifyProviderApiKey("codex", { env, execFile })).resolves.toBe(false);
     expect(isProviderApiKeyVerified("codex", env)).toBe(false);
 
+    await expect(verifyProviderApiKey("codex", { env, execFile })).resolves.toBe(false);
+    expect(calls).toBe(1);
+
+    vi.advanceTimersByTime(PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS + 1);
     await expect(verifyProviderApiKey("codex", { env, execFile })).resolves.toBe(true);
     expect(isProviderApiKeyVerified("codex", env)).toBe(true);
 
