@@ -205,7 +205,7 @@ describe("structured compaction recovery", () => {
     expect(JSON.stringify(attempt)).not.toContain(rawSecret);
   });
 
-  it("repairs empty Antigravity parser output once, then falls back safely", async () => {
+  it("fails safely on retired empty Agy output without restoring a legacy repair path", async () => {
     const rawSecret = "agy-fallback-token=DO_NOT_PERSIST";
     const commands: string[] = [];
     const runCli = vi.fn().mockImplementation(async (command: string) => {
@@ -226,7 +226,7 @@ describe("structured compaction recovery", () => {
 
     expect(result.outcome).toBe("failed");
     expect(result.error).not.toContain(rawSecret);
-    expect(commands).toEqual(["agy", "agy", "codex"]);
+    expect(commands).toEqual(["agy"]);
     expect(db.getLatestConvSummary("chat:1")).toBeNull();
     expect(db.getMemoryCount()).toBe(0);
     expect(db.getRecentConvTurns("chat:1", 100)).toHaveLength(1);
@@ -234,11 +234,11 @@ describe("structured compaction recovery", () => {
       .get("chat:1")).toEqual({ count: 1 });
     const attempt = db.getLatestCompactionAttempt("chat:1");
     expect(attempt).toEqual(expect.objectContaining({
-      provider: "codex",
-      model: "gpt-fallback",
+      provider: "antigravity",
+      model: "gemini-primary",
       outcome: "failed",
-      error_category: "transient",
-      cli_call_count: 3,
+      error_category: "fatal",
+      cli_call_count: 1,
     }));
     expect(JSON.stringify(attempt)).not.toContain(rawSecret);
   });

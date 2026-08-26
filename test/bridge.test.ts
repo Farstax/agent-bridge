@@ -27,6 +27,13 @@ import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
 import type { TelegramMessage, BridgeConfig } from "../src/types.js";
 import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
 
+function agyStreamJsonResult(response: string, conversationId = "4229bce3-5009-429e-a3cb-d1bdaa8cfeed"): string {
+  return JSON.stringify({
+    event: "result",
+    result: { conversation_id: conversationId, status: "SUCCESS", response },
+  });
+}
+
 describe("agent bridge MVP", () => {
   it("authorizes only the configured telegram user id", () => {
     const allowed = new Set(["42"]);
@@ -242,7 +249,7 @@ describe("agent bridge MVP", () => {
     expect(args.indexOf("--dangerously-skip-permissions")).toBeLessThan(args.indexOf("--print"));
   });
 
-  it("wraps antigravity prompts with a JSON output instruction", () => {
+  it("wraps antigravity prompts without a retired JSON output instruction", () => {
     const { args } = buildCliInvocation({
       bot: "antigravity",
       prompt: "hello",
@@ -255,7 +262,7 @@ describe("agent bridge MVP", () => {
     expect(printedPrompt).toContain("hello");
     expect(printedPrompt).toContain("Execute directly. Do not get stuck in planning loops.");
     expect(printedPrompt).toContain("If a tool, search, or shell step fails twice");
-    expect(printedPrompt).toContain('"response"');
+    expect(printedPrompt).not.toContain('"response"');
     expect(printedPrompt).not.toContain('"reasoning"');
   });
 
@@ -411,137 +418,30 @@ describe("agent bridge MVP", () => {
     });
   });
 
-  it("parses antigravity output and extracts session ID from log content", () => {
-    const stdout = "hello from antigravity";
-    const logContent = "Created conversation 4229bce3-5009-429e-a3cb-d1bdaa8cfeed";
+  it("parses the Agy stream-json terminal result", () => {
     expect(
       parseCliResult({
         bot: "antigravity",
-        stdout,
-        logContent,
+        stdout: agyStreamJsonResult("hello from antigravity"),
       }),
     ).toEqual({ text: "hello from antigravity", sessionId: "4229bce3-5009-429e-a3cb-d1bdaa8cfeed" });
   });
 
-  it("parses antigravity output and extracts session ID using alternative pattern", () => {
-    const stdout = "hello";
-    const logContent = "some text\nconversation=019e1299-3d2c-7f11-8194-500feee6614e\nmore text";
-    expect(
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-        logContent,
-      }),
-    ).toEqual({ text: "hello", sessionId: "019e1299-3d2c-7f11-8194-500feee6614e" });
-  });
-
-  it("returns null sessionId for antigravity if logContent does not contain any ID", () => {
-    const stdout = "hello";
-    const logContent = "no conversation pattern here";
-    expect(
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-        logContent,
-      }),
-    ).toEqual({ text: "hello", sessionId: null });
-  });
-
-  it("parses antigravity output and strips thinking steps/HUD before the separator line", () => {
-    const stdout = [
-      "I will start by checking the current permissions.",
-      "📊 I. SYSTEM HUD",
-      "STATE: 🟢 (IDLE)",
-      "***",
-      "Hello! How can I help you today?",
-    ].join("\n");
-    const logContent = "Created conversation 4229bce3-5009-429e-a3cb-d1bdaa8cfeed";
-    expect(
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-        logContent,
-      }),
-    ).toEqual({
-      text: "Hello! How can I help you today?",
-      sessionId: "4229bce3-5009-429e-a3cb-d1bdaa8cfeed",
-    });
-  });
-
-  it("parses antigravity output using the last final-answer separator", () => {
-    const stdout = [
-      "***",
-      "Previous answer from resumed session.",
-      "***",
-      "Current answer from resumed session.",
-    ].join("\n");
-    expect(
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-      }),
-    ).toEqual({
-      text: "Current answer from resumed session.",
-      sessionId: null,
-    });
-  });
-
   it("throws an error if antigravity output indicates a print mode timeout", () => {
-    const stdout = [
-      "***",
-      "Previous answer.",
-      "I will run the tests...",
-      "Error: timed out waiting for response",
-    ].join("\n");
-    expect(() =>
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-      }),
-    ).toThrow(/timed out/);
-  });
-
-  it("throws an error if antigravity log content indicates a print mode timeout", () => {
-    const stdout = [
-      "***",
-      "Previous answer.",
-      "I will run the tests...",
-    ].join("\n");
-    const logContent = "Print mode: timed out after 45 polls";
-    expect(() =>
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-        logContent,
-      }),
-    ).toThrow(/timed out/);
-  });
-
-
-  it("parses antigravity output and strips thinking steps/HUD using the 🧠 Memory Loaded: separator", () => {
-    const stdout = [
-      "I am going to check the application directory to see if `.AGENTS.md` exists to follow the boot sequence protocol.",
-      "I will list the available permissions to find out which directories we can access.",
-      "I will list the contents of the allowed scratch directory to look for `.AGENTS.md`.",
-      "I will read `.AGENTS.md` to load long-term memory as required by PROTOCOL ZERO.",
-      "📊 I. SYSTEM HUD",
-      "STATE: 🟢 (IDLE)",
-      "CONTEXT: Chat",
-      "GATES: [Lint: ✅] | [Types: ✅] | [Security: ✅]",
-      "",
-      "🧠 Memory Loaded: 0 relevant constraints found.",
-      "",
-      "Hello.",
-    ].join("\n");
-    expect(
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-      }),
-    ).toEqual({
-      text: "Hello.",
-      sessionId: null,
+    const stdout = JSON.stringify({
+      event: "result",
+      result: {
+        conversation_id: "4229bce3-5009-429e-a3cb-d1bdaa8cfeed",
+        status: "ERROR",
+        error: "timed out waiting for response",
+      },
     });
+    expect(() =>
+      parseCliResult({
+        bot: "antigravity",
+        stdout,
+      }),
+    ).toThrow(/timed out/);
   });
 
   it("extracts antigravity conversation IDs from canonical Agy log lines", () => {

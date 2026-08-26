@@ -13,10 +13,6 @@ afterEach(() => {
   else process.env.ANTIGRAVITY_OUTPUT_MODE = originalOutputMode;
 });
 
-function useStreamJson(): void {
-  process.env.ANTIGRAVITY_OUTPUT_MODE = "stream-json";
-}
-
 const conversationId = "11111111-2222-3333-4444-555555555555";
 
 function stream(...records: unknown[]): string {
@@ -25,7 +21,6 @@ function stream(...records: unknown[]): string {
 
 describe("Agy stream-json invocation and parsing contract", () => {
   it("passes --output-format stream-json before --print", () => {
-    useStreamJson();
     const invocation = buildCliInvocation({
       bot: "antigravity",
       prompt: "hello",
@@ -41,8 +36,33 @@ describe("Agy stream-json invocation and parsing contract", () => {
     expect(formatIndex).toBeLessThan(printIndex);
   });
 
+  it("does not restore retired json or text output modes from legacy configuration", () => {
+    process.env.ANTIGRAVITY_OUTPUT_MODE = "json";
+    const jsonRequested = buildCliInvocation({
+      bot: "antigravity",
+      prompt: "hello",
+      sessionId: null,
+      command: "agy",
+      model: null,
+      outputFormat: "json",
+    });
+    process.env.ANTIGRAVITY_OUTPUT_MODE = "text";
+    const textRequested = buildCliInvocation({
+      bot: "antigravity",
+      prompt: "hello",
+      sessionId: null,
+      command: "agy",
+      model: null,
+      outputFormat: null,
+    });
+
+    for (const invocation of [jsonRequested, textRequested]) {
+      const formatIndex = invocation.args.indexOf("--output-format");
+      expect(invocation.args[formatIndex + 1]).toBe("stream-json");
+    }
+  });
+
   it("keeps stream-json mode when the CLI runner consumes the built invocation", async () => {
-    useStreamJson();
     const root = await mkdtemp(join(tmpdir(), "agy-cli-stream-json-"));
     const script = join(root, "agy-fixture");
     await writeFile(script, `#!/usr/bin/env bash
@@ -64,7 +84,6 @@ printf '%s\\n' '${JSON.stringify({ event: "result", result: { conversation_id: c
   });
 
   it("returns only the terminal result response and ignores tool/system telemetry", () => {
-    useStreamJson();
     const stdout = stream(
       { event: "init", conversation_id: conversationId, init: { cwd: "/tmp" } },
       { event: "step_update", step_update: { step_index: 1, state: "DONE", step_type: "tool", tool_info: { output: "SECRET TOOL STDOUT" } } },
@@ -79,7 +98,6 @@ printf '%s\\n' '${JSON.stringify({ event: "result", result: { conversation_id: c
   });
 
   it("fails closed for malformed, missing, duplicate, and invalid terminal results", () => {
-    useStreamJson();
     const cases = [
       "not-json\n",
       stream({ event: "init", conversation_id: conversationId }),
@@ -97,7 +115,6 @@ printf '%s\\n' '${JSON.stringify({ event: "result", result: { conversation_id: c
   });
 
   it("classifies a terminal timeout error through the existing timeout contract", () => {
-    useStreamJson();
     const stdout = stream({
       event: "result",
       result: {
@@ -118,28 +135,23 @@ printf '%s\\n' '${JSON.stringify({ event: "result", result: { conversation_id: c
     expect(caught?.category).toBe("timeout");
   });
 
-  it("carries explicit outputFormat into parsing and does not rely on stdout checks", () => {
-    // 1. Reordered keys, valid NDJSON stream:
+  it("parses stream-json regardless of a stale generic output-format hint", () => {
     const stdout = stream(
       { conversation_id: conversationId, event: "init", init: { cwd: "/tmp" } },
       { event: "result", result: { status: "SUCCESS", response: "Clean reordered keys response", conversation_id: conversationId } }
     );
 
-    // 2. Parse with explicit outputFormat='stream-json'
-    expect(parseCliResult({ bot: "antigravity", stdout, outputFormat: "stream-json" })).toEqual({
-      text: "Clean reordered keys response",
-      sessionId: conversationId,
-    });
-
-    // 3. Fallback when outputFormat='text' (should fall into legacy text parser and treat NDJSON as plain text)
-    const resultText = parseCliResult({ bot: "antigravity", stdout, outputFormat: "text" });
-    expect(resultText.text).toContain("SUCCESS");
+    for (const outputFormat of ["stream-json", "json", "text"] as const) {
+      expect(parseCliResult({ bot: "antigravity", stdout, outputFormat })).toEqual({
+        text: "Clean reordered keys response",
+        sessionId: conversationId,
+      });
+    }
   });
 });
 
 describe("Agy stream-json serialized execution boundary", () => {
   it("suppresses NDJSON progress and emits only the parsed terminal completion", async () => {
-    useStreamJson();
     const root = await mkdtemp(join(tmpdir(), "agy-stream-json-"));
     const homeDir = join(root, "home");
     const script = join(root, "agy-fixture");
@@ -161,7 +173,7 @@ describe("Agy stream-json serialized execution boundary", () => {
           eventContext: { runId: "stream-json-success", bot: "antigravity", chatId: "chat:stream-json" },
           onEvent: (event) => events.push(event),
         },
-        { homeDir, model: null, applyModel: false, outputMode: "stream-json" } as never,
+        { homeDir, model: null, applyModel: false },
         (chunk) => progress.push(chunk),
       );
 

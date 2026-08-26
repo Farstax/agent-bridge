@@ -12,7 +12,7 @@ The initial live contract is deliberately small and incident-driven:
 2. `fresh_prompt` — a bounded non-interactive prompt crosses the real Agent Bridge invocation/supervisor/parser boundary and returns the qualification marker.
 3. `session_resume` — when the fresh result exposes an invocation-attributable session ID, a second bounded prompt resumes that session and returns the resume marker. Providers that do not expose such an ID report `not_applicable`.
 
-Agy qualification uses its native JSON output mode even when normal runtime traffic is temporarily configured for the legacy text rollback path. This makes contradictory or malformed native envelopes visible during qualification. In particular, an Agy `ERROR` envelope carrying a non-empty `response` is a contract failure.
+Agy qualification uses the same native `stream-json` output contract as managed runtime execution. Fresh and resumed checks require a valid terminal result and invocation-attributable conversation ID. Contradictory or malformed terminal results fail qualification; in particular, an Agy `ERROR` result carrying a non-empty `response` is a contract failure.
 
 Check states are `pass`, `fail`, `not_applicable`, `unsupported`, and `not_authenticated`. A qualification record has `overall: pass|degraded|fail`. Authentication, capacity/model availability and transient upstream prerequisites are distinguished from deterministic contract failure rather than being collapsed into a boolean.
 

@@ -94,7 +94,6 @@ describe("BridgeEngine", () => {
     delete process.env.BRIDGE_COMPACTION_CHAIN;
     delete process.env.BRIDGE_ADVISOR_ENABLED;
     delete process.env.BRIDGE_ADVISOR_CHAIN;
-    delete process.env.ANTIGRAVITY_OUTPUT_MODE;
     db.close();
     try { rmSync(dbPath); } catch {}
   });
@@ -1968,7 +1967,6 @@ describe("BridgeEngine", () => {
 
   describe("thread vs non-thread parity", () => {
     it("replaces a stale Agy conversation only under the originating topic key", async () => {
-      process.env.ANTIGRAVITY_OUTPUT_MODE = "json";
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
       const staleId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -1979,9 +1977,12 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
         capturedArgs.push(args);
         return JSON.stringify({
-          conversation_id: replacementId,
-          status: "SUCCESS",
-          response: "native topic response",
+          event: "result",
+          result: {
+            conversation_id: replacementId,
+            status: "SUCCESS",
+            response: "native topic response",
+          },
         });
       });
       const engine = new BridgeEngine(

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterAll, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, toAntigravityModelLabel, setAntigravityModel, parseCliResult, toUserMessage, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv, normalizeCliArgs } from "../src/cli.js";
+import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, toAntigravityModelLabel, setAntigravityModel, parseCliResult, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv, normalizeCliArgs } from "../src/cli.js";
 import { isBridgeCommand, handleCommand } from "../src/commands.js";
 import { openDb } from "../src/db.js";
 import type { BridgeConfig } from "../src/types.js";
@@ -98,6 +98,7 @@ describe("CLI Runner", () => {
       model: "gemini-3.5-flash-high", outputFormat: "json", toolMode: "none",
     });
     expect(agy.args).toContain("--sandbox");
+    expect(agy.args).toEqual(expect.arrayContaining(["--output-format", "stream-json"]));
 
     const codex = buildCliInvocation({
       bot: "codex", prompt: "advise", sessionId: null, command: "codex",
@@ -351,7 +352,13 @@ sleep 5
   }, 4000);
 });
 
-describe("antigravity model mapping and settings override", () => {
+describe("antigravity model mapping and stream-json result contract", () => {
+  const conversationId = "11111111-2222-3333-4444-555555555555";
+
+  function streamResult(result: Record<string, unknown>): string {
+    return JSON.stringify({ event: "result", result });
+  }
+
   it("maps model IDs to Agy display names", () => {
     expect(toAntigravityModelLabel("gemini-3.5-flash-high")).toBe("Gemini 3.5 Flash (High)");
     expect(toAntigravityModelLabel("gemini-3.5-flash-medium")).toBe("Gemini 3.5 Flash (Medium)");
@@ -394,103 +401,48 @@ describe("antigravity model mapping and settings override", () => {
     }
   });
 
-  it("throws error when Antigravity returns empty response", () => {
-    expect(() => parseCliResult({ bot: "antigravity", stdout: "" })).toThrow(/empty response|JSON parse failed/i);
-    expect(() => parseCliResult({ bot: "antigravity", stdout: "   " })).toThrow(/empty response|JSON parse failed/i);
+  it("fails closed when Agy returns no terminal stream-json result", () => {
+    expect(() => parseCliResult({ bot: "antigravity", stdout: "" })).toThrow(/terminal result event was missing/i);
+    expect(() => parseCliResult({ bot: "antigravity", stdout: "   " })).toThrow(/terminal result event was missing/i);
   });
 
-  it("extracts response from clean JSON output", () => {
-    const stdout = JSON.stringify({ reasoning: "I checked the config.", response: "The server is running on port 3000." });
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).toBe("The server is running on port 3000.");
-  });
-
-  it("extracts response from pretty-printed JSON output", () => {
-    const stdout = JSON.stringify({ reasoning: "multi-step work done", response: "Done. **3 files** updated." }, null, 2);
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).toBe("Done. **3 files** updated.");
-  });
-
-  it("extracts response from JSON inside a markdown code fence", () => {
-    const stdout = "```json\n" + JSON.stringify({ reasoning: "internal notes", response: "Answer here." }) + "\n```";
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).toBe("Answer here.");
-  });
-
-  it("extracts response when JSON is surrounded by extra text", () => {
-    const inner = JSON.stringify({ reasoning: "thinking...", response: "Clean answer." });
-    const stdout = `Here is my output:\n${inner}\nEnd of output.`;
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).toBe("Clean answer.");
-  });
-
-  it("extracts response when preceding tool output contains braces", () => {
-    // Reproduces the reasoning-leak bug: tool-call outputs containing "}" before
-    // the response JSON cause strategy-3 (lastIndexOf) to span multiple objects
-    // → JSON.parse fails → raw blob returned to Telegram.
-    const inner = JSON.stringify({ reasoning: "done", response: "Fixed." });
-    const stdout = `Tool result: {status: "ok"}\n${inner}`;
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).toBe("Fixed.");
-  });
-
-  it("falls back to *** delimiter when JSON parse fails", () => {
-    // Reproduces the observed bug: Agy appended *** to the last STATUS line
-    // instead of putting it on its own line, causing the fallback path to return
-    // all STATUS lines as the final response.
+  it("extracts response and conversation from the terminal stream-json result", () => {
     const stdout = [
-      "STATUS: searching codebase",
-      "STATUS: listing directory",
-      "STATUS: compiling remediation options***",
-      "1. Do the thing",
-      "   - Command: systemctl restart foo",
+      JSON.stringify({ event: "init", conversation_id: conversationId }),
+      streamResult({ conversation_id: conversationId, status: "SUCCESS", response: "The server is running on port 3000." }),
     ].join("\n");
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).not.toMatch(/^STATUS:/m);
-    expect(result.text).toContain("1. Do the thing");
+    expect(parseCliResult({ bot: "antigravity", stdout })).toEqual({
+      text: "The server is running on port 3000.",
+      sessionId: conversationId,
+    });
   });
 
-  it("strips STATUS lines from final text even when *** is on its own line", () => {
-    // Defence-in-depth: if Agy somehow emits STATUS lines after ***, strip them.
-    const stdout = [
-      "STATUS: working",
-      "***",
-      "STATUS: should not appear",
-      "The real answer.",
-    ].join("\n");
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).not.toMatch(/^STATUS:/m);
-    expect(result.text).toContain("The real answer.");
-  });
-
-  it("strips STATUS lines in fallback path when no *** present", () => {
-    const stdout = [
-      "🧠 Memory Loaded: some context",
-      "STATUS: looking things up",
-      "STATUS: done",
-      "Here is the answer.",
-    ].join("\n");
-    const result = parseCliResult({ bot: "antigravity", stdout });
-    expect(result.text).not.toMatch(/^STATUS:/m);
-    expect(result.text).toContain("Here is the answer.");
-  });
-
-  it("extracts RESOURCE_EXHAUSTED log errors, de-duplicates them, and identifies capacity exhaustion", () => {
-    const logErr = "E0526 15:21:41.395478 3605783 log.go:398] agent executor error: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h.: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h.";
-
-    let caught: any;
-    try {
-      parseCliResult({ bot: "antigravity", stdout: "", logContent: logErr });
-    } catch (err: any) {
-      caught = err;
+  it("rejects legacy plain, fenced, and delimiter output instead of recovering it", () => {
+    for (const stdout of [
+      JSON.stringify({ reasoning: "old", response: "legacy object" }),
+      "```json\n{\"response\":\"legacy fenced\"}\n```",
+      "STATUS: working***\nlegacy delimiter answer",
+      "🧠 Memory Loaded: old context\nlegacy text",
+    ]) {
+      expect(() => parseCliResult({ bot: "antigravity", stdout })).toThrow(/Agy stream JSON/i);
     }
+  });
 
-    expect(caught).toBeDefined();
-    expect(isCapacityExhaustedError(caught)).toBe(true);
-
-    // Test that toUserMessage outputs the clean, de-duplicated message
-    const userMsg = toUserMessage(caught);
-    expect(userMsg).toBe("agent executor error: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h.");
+  it("preserves capacity classification from a terminal stream-json error", () => {
+    const stdout = streamResult({
+      conversation_id: conversationId,
+      status: "ERROR",
+      response: "",
+      error: "RESOURCE_EXHAUSTED: Individual quota reached",
+    });
+    let caught: Error | null = null;
+    try {
+      parseCliResult({ bot: "antigravity", stdout });
+    } catch (error) {
+      caught = error as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(isCapacityExhaustedError(caught!)).toBe(true);
   });
 });
 
@@ -768,7 +720,9 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     });
 
     expect(invocation.args).toContain("--sandbox");
-    expect(normalizeCliArgs(invocation.command, invocation.args)).toContain("--sandbox");
+    const normalized = normalizeCliArgs(invocation.command, invocation.args);
+    expect(normalized).toContain("--sandbox");
+    expect(normalized).toEqual(expect.arrayContaining(["--output-format", "stream-json"]));
   });
 
   it("keeps arguments unchanged for Claude commands", async () => {
@@ -778,11 +732,12 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     expect(normalizeCliArgs("/path/to/claude-cli", args)).toEqual(args);
   });
 
-  it("normalizes arguments for Antigravity command", async () => {
+  it("normalizes stale Antigravity text arguments to stream-json", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     const args = ["--print", "--output-format", "text", "--permission-mode", "acceptEdits", "hello"];
-    expect(normalizeCliArgs("agy", args)).toEqual(["--dangerously-skip-permissions", "--print", "hello"]);
-    expect(normalizeCliArgs("/usr/local/bin/antigravity", args)).toEqual(["--dangerously-skip-permissions", "--print", "hello"]);
+    const expected = ["--dangerously-skip-permissions", "--output-format", "stream-json", "--print", "hello"];
+    expect(normalizeCliArgs("agy", args)).toEqual(expected);
+    expect(normalizeCliArgs("/usr/local/bin/antigravity", args)).toEqual(expected);
   });
 
   it("normalizes arguments for Codex command", async () => {
@@ -816,25 +771,25 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     ]);
   });
 
-  it("handles basic arguments without permissions", async () => {
+  it("adds stream-json to basic Antigravity arguments without permissions", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     const args = ["--print", "--output-format", "text", "hello"];
-    expect(normalizeCliArgs("agy", args)).toEqual(["--print", "hello"]);
+    expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
     expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--skip-git-repo-check", "hello"]);
   });
 
-  it("translates --output-format json for Codex and preserves it for Antigravity", async () => {
+  it("translates json output for Codex and converges Antigravity to stream-json", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
-    const args1 = ["--print", "--output-format", "json", "hello"];
-    expect(normalizeCliArgs("codex", args1)).toEqual(["exec", "--skip-git-repo-check", "--json", "hello"]);
-    expect(normalizeCliArgs("agy", args1)).toEqual(["--output-format", "json", "--print", "hello"]);
-
-    const args2 = ["--print", "--output-format=json", "hello"];
-    expect(normalizeCliArgs("codex", args2)).toEqual(["exec", "--skip-git-repo-check", "--json", "hello"]);
-    expect(normalizeCliArgs("agy", args2)).toEqual(["--output-format", "json", "--print", "hello"]);
+    for (const args of [
+      ["--print", "--output-format", "json", "hello"],
+      ["--print", "--output-format=json", "hello"],
+    ]) {
+      expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--skip-git-repo-check", "--json", "hello"]);
+      expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
+    }
   });
 
-  it("preserves conversation, log-file, and print-timeout for Antigravity", async () => {
+  it("preserves conversation, log-file, and print-timeout for Antigravity while enforcing stream-json", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     const args = [
       "--conversation", "abc-123",
@@ -848,6 +803,7 @@ describe("normalizeCliArgs — CLI argument translator", () => {
       "--dangerously-skip-permissions",
       "--log-file", "/tmp/log.txt",
       "--print-timeout", "60s",
+      "--output-format", "stream-json",
       "--print", "hello"
     ]);
   });
@@ -896,9 +852,9 @@ describe("wrapAntigravityPrompt — liveness and narration", () => {
     expect(prompt).not.toMatch(/'PING'/);
   });
 
-  it("contains a JSON output instruction instead of STATUS narration", () => {
+  it("does not impose the retired inner JSON response envelope or STATUS narration", () => {
     const prompt = getAgyPrompt();
-    expect(prompt).toContain('"response"');
+    expect(prompt).not.toContain('"response"');
     expect(prompt).not.toContain('"reasoning"');
     expect(prompt).not.toContain("STATUS:");
   });
