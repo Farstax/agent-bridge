@@ -38,7 +38,6 @@ function makeEngine(
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       busyMessageMode: "augment",
-      asyncEnabled: false,
       pollIntervalMs: 1000,
     },
     db,

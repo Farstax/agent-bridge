@@ -127,7 +127,6 @@ export interface BridgeEngineOptions {
   executionMode: "safe" | "trusted";
   /** Busy-lane admission policy (Issue #217). Defaults to "augment" when unset. */
   busyMessageMode?: "augment" | "interrupt" | "queue";
-  asyncEnabled: boolean;
   pollIntervalMs: number;
   soulContext?: string | null;
   /** Optional explicit cwd for this engine instance. Never mutates process.cwd(). */
@@ -206,35 +205,6 @@ function trimTurnText(text: string): string {
   return `${normalized.slice(0, ENGINE_TURN_TEXT_LIMIT - 15).trimEnd()}... [truncated]`;
 }
 
-function createTypingTracker(client: MessagingPlatform, chatId: number, kind: string, body: any = {}, isAborted: () => boolean = () => false) {
-  let timer: NodeJS.Timeout | null = null;
-  let active = false;
-  const { message_thread_id: threadId } = body;
-
-  const sendTyping = async () => {
-    if (!active || isAborted()) return;
-    try {
-      await client.sendChatAction({ chat_id: chatId, message_thread_id: threadId, action: "typing" });
-    } catch (error: any) {
-      // typing indicator failure is non-fatal
-    }
-  };
-
-  return {
-    async start() {
-      if (active) return;
-      active = true;
-      await sendTyping();
-      timer = setInterval(() => { void sendTyping(); }, 4500);
-    },
-    async stop() {
-      active = false;
-      if (timer) clearInterval(timer);
-      timer = null;
-    },
-  };
-}
-
 // ── BridgeEngine ──────────────────────────────────────────────────────────────
 
 export class BridgeEngine {
@@ -269,9 +239,12 @@ export class BridgeEngine {
     this.client = client;
     this.hooks = opts.hooks ?? {};
     this.queuedMessageHandler = this.hooks.onQueuedMessage;
+    const runCliAsync = exec.runCliAsync ?? (exec.runCli
+      ? async (command, args, cwd, options) => ({ text: await exec.runCli!(command, args, cwd, options) })
+      : _runCliAsync);
     this.exec = {
       runCli: exec.runCli ?? _runCli,
-      runCliAsync: exec.runCliAsync ?? _runCliAsync,
+      runCliAsync,
     };
     this.mediaBuffer = new MediaGroupBuffer({
       timeoutMs: 1500,
@@ -733,7 +706,6 @@ export class BridgeEngine {
     if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
 
     const sessionId = isAgentKind(this.kind) ? this.db.getSession(chatKey, this.kind) : null;
-    const mode: "async" | "sync" = this.opts.asyncEnabled === true ? "async" : "sync";
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
 
@@ -790,7 +762,7 @@ export class BridgeEngine {
     try {
       const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
       const result = await this._executeAndDeliverTurn({
-        mode, prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
+        prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
       if (!result) return "fenced";
       finalize();
@@ -855,7 +827,6 @@ export class BridgeEngine {
   }
 
   private async _executeAndDeliverTurn(input: {
-    mode: "async" | "sync";
     prompt: string;
     sessionId: string | null;
     chatId: number;
@@ -875,13 +846,14 @@ export class BridgeEngine {
         kind: this._deliveryKind(),
         chatId: input.chatId,
         body: { message_thread_id: input.threadId },
-        showProgressNarration: input.mode === "async" && this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
+        showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
         isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
         beforeFinalDelivery: () => {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
-        propagateExecutionErrors: input.mode === "sync",
+        propagateExecutionErrors: false,
+        propagateTimeoutErrors: true,
         runId: input.runId,
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
@@ -893,13 +865,13 @@ export class BridgeEngine {
               : null;
           const body = {
             message_thread_id: input.threadId,
-            ...(input.mode === "sync" ? { skipProviderTyping: true } : {}),
             onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
             onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
           };
-          result = input.mode === "async"
-            ? await this.executePromptAsync(input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments, input.eventContext, input.runId, input.collect, input.chatKey, input.laneHandle)
-            : await this.executePrompt(input.prompt, input.sessionId, input.chatId, body, input.attachments, input.eventContext, input.runId, input.collect, input.chatKey, input.laneHandle);
+          result = await this.executePromptAsync(
+            input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments,
+            input.eventContext, input.runId, input.collect, input.chatKey, input.laneHandle,
+          );
           return result;
         },
         afterFinalDelivery: () => {
@@ -1426,7 +1398,6 @@ ${contextPrompt}` : contextPrompt);
     laneHandle: ExecutionLaneHandle = undefined as never,
   ): Promise<StagedCliResult> {
     return this._executeProviderAttempt(
-      "async",
       prompt,
       sessionId,
       chatId,
@@ -1476,36 +1447,7 @@ ${contextPrompt}` : contextPrompt);
     }
   }
 
-  async executePrompt(
-    prompt: string,
-    sessionId: string | null,
-    chatId: number,
-    body: any = {},
-    attachments: string[] = [],
-    eventContext: CliOptions["eventContext"] = undefined as any,
-    runId: string | null = null,
-    collect: ((e: BridgeEvent) => void) | null = null,
-    chatKey: string = String(chatId),
-    laneHandle: ExecutionLaneHandle = undefined as never,
-  ): Promise<StagedCliResult> {
-    return this._executeProviderAttempt(
-      "sync",
-      prompt,
-      sessionId,
-      chatId,
-      body,
-      () => {},
-      attachments,
-      eventContext,
-      runId,
-      collect,
-      chatKey,
-      laneHandle,
-    );
-  }
-
   private async _executeProviderAttempt(
-    mode: "async" | "sync",
     prompt: string,
     sessionId: string | null,
     chatId: number,
@@ -1558,7 +1500,6 @@ ${contextPrompt}` : contextPrompt);
       effort: resolveEffort(executionKind, this.db),
       prompt: promptForCli.prompt,
       sessionId,
-      ...(mode === "sync" ? { sessionMode: "resume" as const } : {}),
       executionMode: this.opts.executionMode,
       // Claude/Antigravity stream-json is retained for safe answer presentation; native
       // provider completion, not Bridge parsing, owns background task lifetime.
@@ -1576,39 +1517,20 @@ ${contextPrompt}` : contextPrompt);
     });
     const isClaudeStreamJson = executionKind === "claude"
       && invocation.args.includes("stream-json");
-    const typingTracker = mode === "sync" && !(body as { skipProviderTyping?: boolean }).skipProviderTyping
-      ? createTypingTracker(this.client, chatId, this.kind, { message_thread_id: threadId }, () => !this._canPublish(laneHandle))
-      : null;
-
     try {
-      if (typingTracker) await typingTracker.start();
-
       let stdout: string;
       try {
-        if (mode === "async") {
-          (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
-          stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
-            ...buildExecutionOptions(executionKind),
-            onProgress,
-            onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
-            chatId: this._executionLane(chatKey),
-            stdin: invocation.stdin,
-            contextEnv: promptForCli.contextEnv,
-            eventContext,
-            onEvent: collect ?? undefined,
-          })).text;
-        } else {
-          (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
-          stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
-            ...buildExecutionOptions(executionKind),
-            onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
-            chatId: this._executionLane(chatKey),
-            stdin: invocation.stdin,
-            contextEnv: promptForCli.contextEnv,
-            eventContext,
-            onEvent: collect ?? undefined,
-          });
-        }
+        (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
+        stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
+          ...buildExecutionOptions(executionKind),
+          onProgress,
+          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
+          chatId: this._executionLane(chatKey),
+          stdin: invocation.stdin,
+          contextEnv: promptForCli.contextEnv,
+          eventContext,
+          onEvent: collect ?? undefined,
+        })).text;
       } finally {
         (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
       }
@@ -1647,7 +1569,7 @@ ${contextPrompt}` : contextPrompt);
       }
       // The process runner emits run.completed before provider-specific session
       // recovery is known. Append the corrected terminal view for downstream
-      // collectors so both sync and async paths expose the resolved session id.
+      // collectors so downstream consumers see the resolved session id.
       if (collect && runId && eventContext) {
         collect({
           type: "run.completed",
@@ -1671,28 +1593,23 @@ ${contextPrompt}` : contextPrompt);
       if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
-        // Each public adapter injects conversation context itself — do not pre-wrap.
-        if (mode === "async") {
-          return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
-        }
-        return this.executePrompt(prompt, null, chatId, body, attachments, eventContext, runId, collect, chatKey, laneHandle);
+        // The canonical provider entrypoint injects conversation context itself — do not pre-wrap.
+        return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
-        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, onProgress, attachments, mode, laneHandle, eventContext, runId, collect, body.message_thread_id, body);
+        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, onProgress, attachments, laneHandle, eventContext, runId, collect, body.message_thread_id, body);
       }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
           return this._runWithFallback(
             prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress,
-            attachments, logFile, mode, laneHandle, eventContext, runId, collect, body,
+            attachments, logFile, laneHandle, eventContext, runId, collect, body,
           );
         }
       }
       this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
       throw error;
-    } finally {
-      if (typingTracker) await typingTracker.stop();
     }
   }
 
@@ -1703,7 +1620,6 @@ ${contextPrompt}` : contextPrompt);
     outDir: string,
     onProgress: (t: string) => void,
     attachments: string[],
-    mode: "async" | "sync",
     laneHandle: ExecutionLaneHandle,
     eventContext: CliOptions["eventContext"] = undefined as any,
     runId: string | null = null,
@@ -1745,24 +1661,15 @@ ${contextPrompt}` : contextPrompt);
     try {
       let rawResult: string;
       try {
-        rawResult = mode === "async"
-          ? (await this.exec.runCliAsync(retryInvocation.command, retryInvocation.args, retryCwd, {
-              ...buildExecutionOptions(executionKind),
-              onProgress,
-              onProviderOutputChunk: body.onProviderOutputChunk,
-              chatId: this._executionLane(chatKey),
-              stdin: retryInvocation.stdin,
-              eventContext,
-              onEvent: collect ?? undefined,
-            })).text
-          : await this.exec.runCli(retryInvocation.command, retryInvocation.args, retryCwd, {
-              ...buildExecutionOptions(executionKind),
-              onProviderOutputChunk: body.onProviderOutputChunk,
-              chatId: this._executionLane(chatKey),
-              stdin: retryInvocation.stdin,
-              eventContext,
-              onEvent: collect ?? undefined,
-            });
+        rawResult = (await this.exec.runCliAsync(retryInvocation.command, retryInvocation.args, retryCwd, {
+          ...buildExecutionOptions(executionKind),
+          onProgress,
+          onProviderOutputChunk: body.onProviderOutputChunk,
+          chatId: this._executionLane(chatKey),
+          stdin: retryInvocation.stdin,
+          eventContext,
+          onEvent: collect ?? undefined,
+        })).text;
       } finally {
         body.onProviderOutputFinished?.();
       }
@@ -1810,7 +1717,6 @@ ${contextPrompt}` : contextPrompt);
     outDir: string,
     onProgress: (t: string) => void,
     attachments: string[],
-    mode: "async" | "sync",
     laneHandle: ExecutionLaneHandle,
     eventContext: CliOptions["eventContext"] = undefined as any,
     runId: string | null = null,
@@ -1835,7 +1741,6 @@ ${contextPrompt}` : contextPrompt);
           outDir,
           onProgress,
           attachments,
-          mode,
           laneHandle,
           eventContext,
           runId,
@@ -1879,7 +1784,6 @@ ${contextPrompt}` : contextPrompt);
     onProgress: (t: string) => void,
     attachments: string[],
     _logFile: string | null,
-    mode: "async" | "sync",
     laneHandle: ExecutionLaneHandle,
     eventContext: CliOptions["eventContext"] = undefined as any,
     runId: string | null = null,
@@ -1924,26 +1828,16 @@ ${contextPrompt}` : contextPrompt);
       const fallbackStartedAtMs = Date.now();
       let rawResult: string;
       try {
-        rawResult = mode === "async"
-          ? (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
-              ...buildExecutionOptions(executionKind),
-              onProgress,
-              onProviderOutputChunk: body.onProviderOutputChunk,
-              chatId: this._executionLane(chatKey),
-              stdin: fallbackInvocation.stdin,
-              contextEnv: fallbackPromptForCli.contextEnv,
-              eventContext,
-              onEvent: collect ?? undefined,
-            })).text
-          : await this.exec.runCli(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
-              ...buildExecutionOptions(executionKind),
-              onProviderOutputChunk: body.onProviderOutputChunk,
-              chatId: this._executionLane(chatKey),
-              stdin: fallbackInvocation.stdin,
-              contextEnv: fallbackPromptForCli.contextEnv,
-              eventContext,
-              onEvent: collect ?? undefined,
-            });
+        rawResult = (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
+          ...buildExecutionOptions(executionKind),
+          onProgress,
+          onProviderOutputChunk: body.onProviderOutputChunk,
+          chatId: this._executionLane(chatKey),
+          stdin: fallbackInvocation.stdin,
+          contextEnv: fallbackPromptForCli.contextEnv,
+          eventContext,
+          onEvent: collect ?? undefined,
+        })).text;
       } finally {
         body.onProviderOutputFinished?.();
       }
@@ -2139,7 +2033,6 @@ ${contextPrompt}` : contextPrompt);
       serviceKind: isAgentKind(this.kind) ? kind : null,
       pollIntervalMs: this.opts.pollIntervalMs,
       executionMode: this.opts.executionMode,
-      asyncEnabled: this.opts.asyncEnabled,
       dbPath: "",
       bots: {
         codex: this.kind === "codex" ? { token: undefined, command: this.opts.botConfig.command, modelPreference: this.opts.botConfig.modelPreference } : emptyBot,

@@ -1,5 +1,5 @@
 import { splitTelegramText, toTelegramEntitiesText } from "./render.js";
-import { toUserMessage, isCapacityExhaustedError } from "./cli.js";
+import { toUserMessage, isCapacityExhaustedError, CliTimeoutError } from "./cli.js";
 import type { MessagingPlatform } from "./platform.js";
 import type { CliResult } from "./types.js";
 import { type as eventType } from "./events/types.js";
@@ -206,6 +206,7 @@ export async function sendMessageWithProgress({
   beforeFinalDelivery,
   afterFinalDelivery,
   propagateExecutionErrors = false,
+  propagateTimeoutErrors = false,
   runId,
   onEvent,
 }: {
@@ -220,6 +221,7 @@ export async function sendMessageWithProgress({
   beforeFinalDelivery?: () => boolean;
   afterFinalDelivery?: () => void | Promise<void>;
   propagateExecutionErrors?: boolean;
+  propagateTimeoutErrors?: boolean;
   runId?: string;
   onEvent?: (event: BridgeEvent) => void;
 }): Promise<CliResult | null> {
@@ -490,6 +492,7 @@ export async function sendMessageWithProgress({
     clearInterval(typingInterval);
     if (!finalDeliveryCompleted) await discardAnswerPreview();
     if (isAborted?.()) return null;
+    if (propagateTimeoutErrors && err instanceof CliTimeoutError) throw err;
     if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;
     if (finalDeliveryPreparationFailed) throw err;
     if (isCapacityExhaustedError(err instanceof Error ? err : new Error(String(err)))) {

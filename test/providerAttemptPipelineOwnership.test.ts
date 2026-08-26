@@ -15,30 +15,28 @@ function client() {
 }
 
 describe("BridgeEngine provider-attempt contract", () => {
-  it.each([["sync", false], ["async", true]] as const)("executes a %s provider attempt through the public runtime contract", async (_mode, asyncMode) => {
+  it("executes an ordinary provider attempt through the canonical native runtime", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-attempt-"));
     const db = openDb(join(root, "bridge.sqlite"));
-    const runCli = vi.fn().mockResolvedValue("provider response");
+    const runCli = vi.fn().mockResolvedValue("legacy response");
     const runCliAsync = vi.fn().mockResolvedValue({ text: "provider response" });
     const engine = new BridgeEngine({
       kind: "claude", surfaceIdentity: "test",
       botConfig: { command: "claude", modelPreference: ["claude-primary"] },
-      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: asyncMode, pollIntervalMs: 1_000,
+      allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1_000,
     }, db, client(), { runCli, runCliAsync });
     const handle = db.acquireLock("test", "100");
     try {
       expect(handle).not.toBeNull();
-      const result = asyncMode
-        ? await engine.executePromptAsync("hello", null, 100, {}, () => {}, [], undefined, null, null, "100", handle!)
-        : await engine.executePrompt("hello", null, 100, {}, [], undefined, null, null, "100", handle!);
+      const result = await engine.executePromptAsync("hello", null, 100, {}, () => {}, [], undefined, null, null, "100", handle!);
       expect(result.text).toBe("provider response");
       expect(result.sessionId).toBeNull();
-      expect(asyncMode ? runCliAsync : runCli).toHaveBeenCalledOnce();
+      expect(runCliAsync).toHaveBeenCalledOnce();
+      expect(runCli).not.toHaveBeenCalled();
     } finally {
       if (handle && db.ownsLock(handle)) db.unlock(handle);
       db.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
-
 });

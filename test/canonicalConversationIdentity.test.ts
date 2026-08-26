@@ -37,7 +37,6 @@ function fullConfig(allowedUserIds: ReadonlySet<string>): BridgeConfig {
     pollIntervalMs: 1,
     executionMode: "safe",
     busyMessageMode: "augment",
-    asyncEnabled: false,
     dbPath: ":memory:",
     bots: {
       codex: { token: undefined, command: "codex", modelPreference: ["default"] },
@@ -125,7 +124,6 @@ describe("canonical conversation identity", () => {
         allowedUserIds,
         executionMode: "safe",
         busyMessageMode: "augment",
-        asyncEnabled: false,
         pollIntervalMs: 1,
         fullConfig: fullConfig(allowedUserIds),
       }, db, fakePlatform());
@@ -173,7 +171,6 @@ describe("canonical conversation identity", () => {
           allowedUserIds: new Set(["7"]),
           executionMode: "safe",
           busyMessageMode: "queue",
-          asyncEnabled: false,
           pollIntervalMs: 1,
         }, second, fakePlatform());
         engine.setQueuedMessageHandler(async (message) => {

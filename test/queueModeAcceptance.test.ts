@@ -12,7 +12,7 @@ function client() {
 }
 
 function engine(db: any, c: any, runCli = vi.fn(), busyMessageMode: "augment" | "interrupt" | "queue" = "augment") {
-  return new BridgeEngine({ surfaceIdentity: "telegram:interactive", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode, asyncEnabled: false, pollIntervalMs: 1, fullConfig: { bots: { codex: { command: "codex", modelPreference: [] } } } as any }, db, c, { runCli });
+  return new BridgeEngine({ surfaceIdentity: "telegram:interactive", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode, pollIntervalMs: 1, fullConfig: { bots: { codex: { command: "codex", modelPreference: [] } } } as any }, db, c, { runCli });
 }
 
 function callback(data: string, from = 42, threadId = 7) {

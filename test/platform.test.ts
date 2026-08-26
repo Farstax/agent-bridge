@@ -35,7 +35,6 @@ describe("MessagingPlatform abstraction — Phase 1", () => {
           botConfig: { command: "claude", modelPreference: ["claude-opus-4-5"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
-          asyncEnabled: false,
           pollIntervalMs: 1000,
         },
         db,

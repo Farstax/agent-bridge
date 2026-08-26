@@ -47,7 +47,6 @@ describe("interactive capacity fallback durable admission", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         busyMessageMode: "augment",
-        asyncEnabled: false,
         pollIntervalMs: 1000,
         hooks: { onCapacityExhausted: async (chatKey: string) => { exhaustedChats.add(chatKey); } },
       },
@@ -104,7 +103,6 @@ describe("interactive capacity fallback durable admission", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         busyMessageMode: "augment",
-        asyncEnabled: false,
         pollIntervalMs: 1000,
         hooks: { onCapacityExhausted: async (chatKey: string) => { exhaustedChats.add(chatKey); } },
       },
@@ -165,7 +163,6 @@ describe("interactive capacity fallback durable admission", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         busyMessageMode: "augment",
-        asyncEnabled: false,
         pollIntervalMs: 1000,
         hooks: {
           onCapacityExhausted: async (chatKey: string) => {
@@ -262,7 +259,6 @@ describe("interactive capacity fallback durable admission", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         busyMessageMode: "augment",
-        asyncEnabled: false,
         pollIntervalMs: 1000,
         hooks: {
           onCapacityExhausted: async (chatKey: string) => {

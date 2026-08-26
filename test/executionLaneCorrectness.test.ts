@@ -22,7 +22,7 @@ function client() {
 }
 
 function options(kind: "codex" | "claude", hooks: any = {}) {
-  return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, busyMessageMode: "interrupt" as const, asyncEnabled: false, pollIntervalMs: 1000, hooks };
+  return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, busyMessageMode: "interrupt" as const,  pollIntervalMs: 1000, hooks };
 }
 
 async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
@@ -458,7 +458,7 @@ describe("execution lane correctness", () => {
     const runCli = vi.fn().mockResolvedValue('{"result":"must not run"}');
     const engine = new BridgeEngine({
       surfaceIdentity: "telegram:interactive", kind: "antigravity", botConfig: { command: "agy", modelPreference: ["gemini-3.5-flash-high"] },
-      allowedUserIds: new Set(["42"]), executionMode: "safe", asyncEnabled: false, pollIntervalMs: 1000,
+      allowedUserIds: new Set(["42"]), executionMode: "safe",  pollIntervalMs: 1000,
     }, db, c, { runCli });
 
     try {
@@ -664,9 +664,8 @@ describe("execution lane correctness", () => {
   });
 
   it.each([
-    { mode: "synchronous", asyncEnabled: false },
-    { mode: "asynchronous", asyncEnabled: true },
-  ])("does not persist a cancelled result during $mode finalisation", async ({ mode, asyncEnabled }) => {
+    { mode: "canonical" },
+  ])("does not persist a cancelled result during $mode finalisation", async ({ mode }) => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: `cancelled-finalisation-${mode}` });
     const c = client();
     const chatKey = "100:7";
@@ -698,7 +697,7 @@ describe("execution lane correctness", () => {
         }
       },
     };
-    const engine = new BridgeEngine({ ...options("claude", hooks), busyMessageMode: "interrupt", asyncEnabled }, db, c, {
+    const engine = new BridgeEngine({ ...options("claude", hooks), busyMessageMode: "interrupt" }, db, c, {
       runCli: vi.fn().mockResolvedValueOnce(cancelledResult).mockImplementationOnce(nextRun),
       runCliAsync: vi.fn().mockResolvedValueOnce({ text: cancelledResult }).mockImplementationOnce(async () => ({ text: await nextRun() })),
     });
@@ -722,9 +721,8 @@ describe("execution lane correctness", () => {
   });
 
   it.each([
-    { mode: "synchronous", asyncEnabled: false },
-    { mode: "asynchronous", asyncEnabled: true },
-  ])("fences /stop before a claimed $mode final-delivery phase settles", async ({ mode, asyncEnabled }) => {
+    { mode: "canonical" },
+  ])("fences /stop before a claimed $mode final-delivery phase settles", async ({ mode }) => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: `delivery-phase-${mode}` });
     let releaseDelivery!: () => void;
     let deliveryEntered!: () => void;
@@ -740,7 +738,7 @@ describe("execution lane correctness", () => {
     });
     db.setSession("100:7", "claude", "previous-session");
     const result = JSON.stringify({ type: "result", result: `delivery winner ${mode}`, session_id: "delivered-session" });
-    const engine = new BridgeEngine({ ...options("claude"), asyncEnabled }, db, c, {
+    const engine = new BridgeEngine({ ...options("claude") }, db, c, {
       runCli: vi.fn().mockResolvedValue(result),
       runCliAsync: vi.fn().mockResolvedValue({ text: result }),
     });
@@ -785,9 +783,8 @@ describe("execution lane correctness", () => {
   });
 
   it.each([
-    { mode: "synchronous", asyncEnabled: false },
-    { mode: "asynchronous", asyncEnabled: true },
-  ])("starts a separate turn for a message admitted after $mode final delivery begins", async ({ mode, asyncEnabled }) => {
+    { mode: "canonical" },
+  ])("starts a separate turn for a message admitted after $mode final delivery begins", async ({ mode }) => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: `augment-final-fence-${mode}` });
     const c = client();
     let releaseDelivery!: () => void;
@@ -802,7 +799,7 @@ describe("execution lane correctness", () => {
     const firstResult = JSON.stringify({ type: "result", result: `first final ${mode}`, session_id: "first-final" });
     const secondResult = JSON.stringify({ type: "result", result: `second turn ${mode}`, session_id: "second-turn" });
     const engine = new BridgeEngine({
-      ...options("claude"), busyMessageMode: "augment", asyncEnabled,
+      ...options("claude"), busyMessageMode: "augment",
       hooks: { onAfterExecute: async (prompt: string) => { executed.push(prompt); } },
     }, db, c, {
       runCli: vi.fn().mockResolvedValueOnce(firstResult).mockResolvedValueOnce(secondResult),
@@ -841,7 +838,7 @@ describe("execution lane correctness", () => {
     });
     const firstResult = JSON.stringify({ type: "result", result: "cancelled during upload", session_id: "cancelled-session" });
     const nextRun = vi.fn().mockResolvedValue({ text: JSON.stringify({ type: "result", result: "resumed", session_id: "resumed-session" }) });
-    const engine = new BridgeEngine({ ...options("claude"), asyncEnabled: true }, db, c, {
+    const engine = new BridgeEngine({ ...options("claude"), }, db, c, {
       runCliAsync: vi.fn().mockResolvedValueOnce({ text: firstResult }).mockImplementationOnce(nextRun),
     });
 

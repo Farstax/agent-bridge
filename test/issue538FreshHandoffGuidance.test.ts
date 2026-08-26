@@ -32,7 +32,6 @@ function makeEngine(db: ReturnType<typeof openDb>, dbPath: string, runCli: Retur
       botConfig: { command: "claude", modelPreference: [] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      asyncEnabled: false,
       pollIntervalMs: 1000,
       fullConfig: { dbPath } as any,
     },

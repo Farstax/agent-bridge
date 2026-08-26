@@ -84,7 +84,6 @@ describe("startup queue recovery", () => {
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       busyMessageMode: "queue",
-      asyncEnabled: false,
       pollIntervalMs: 1000,
     }, current, makeMockClient(), {});
     engine.setQueuedMessageHandler(async (queued) => {
@@ -149,7 +148,6 @@ describe("startup queue recovery", () => {
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       busyMessageMode: "queue",
-      asyncEnabled: false,
       pollIntervalMs: 1000,
     }, current, makeMockClient(), {});
     engine.setQueuedMessageHandler(async (queued) => {

@@ -53,6 +53,7 @@ check_topology_file "$TARGET_DIR/index-interactive.ts" 'fallbackChain\.addTurn|b
 check_topology_file "$TARGET_DIR/index-discord-interactive.ts" 'fallbackChain\.addTurn|buildContextPreamble|contextPreambles'
 check_topology_file "$TARGET_DIR/interactiveBot.ts" 'buildContextPreamble|contextPreambles'
 check_topology_file "$TARGET_DIR/providerFallback.ts" 'buildContextPreamble|contextPreambles'
+check_topology_file "$TARGET_DIR/engine.ts" 'mode: \"async\" \| \"sync\"|async executePrompt\('
 
 if [ -n "$topology_violations" ]; then
   echo "arch-lint: execution topology ownership must remain with the engine" >&2

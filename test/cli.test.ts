@@ -477,17 +477,17 @@ describe("antigravity model mapping and settings override", () => {
 
   it("extracts RESOURCE_EXHAUSTED log errors, de-duplicates them, and identifies capacity exhaustion", () => {
     const logErr = "E0526 15:21:41.395478 3605783 log.go:398] agent executor error: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h.: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h.";
-    
+
     let caught: any;
     try {
       parseCliResult({ bot: "antigravity", stdout: "", logContent: logErr });
     } catch (err: any) {
       caught = err;
     }
-    
+
     expect(caught).toBeDefined();
     expect(isCapacityExhaustedError(caught)).toBe(true);
-    
+
     // Test that toUserMessage outputs the clean, de-duplicated message
     const userMsg = toUserMessage(caught);
     expect(userMsg).toBe("agent executor error: RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 4h.");
@@ -911,7 +911,6 @@ const stubConfig: BridgeConfig = {
   serviceKind: null,
   pollIntervalMs: 1000,
   executionMode: "safe",
-  asyncEnabled: false,
   dbPath: ":memory:",
   bots: {
     codex: { token: undefined, command: "codex", modelPreference: [] },

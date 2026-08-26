@@ -287,7 +287,6 @@ function makeEngine(
       botConfig: { command: "claude", modelPreference: ["default-model"] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      asyncEnabled: true,
       pollIntervalMs: 1000,
     },
     db,

@@ -51,7 +51,6 @@ function makeResetEngine(db: ReturnType<typeof openDb>, client: ReturnType<typeo
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       busyMessageMode: "augment",
-      asyncEnabled: false,
       pollIntervalMs: 1000,
       fullConfig: { allowedUserIds: new Set(["42"]), bots: {} } as any,
     },

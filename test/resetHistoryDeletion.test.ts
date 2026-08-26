@@ -19,7 +19,6 @@ describe("/reset conversation evidence deletion", () => {
         serviceKind: "claude",
         pollIntervalMs: 1000,
         executionMode: "safe",
-        asyncEnabled: false,
         dbPath: ":memory:",
         bots: {
           codex: { command: "codex", modelPreference: [] },

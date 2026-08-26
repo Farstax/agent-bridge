@@ -771,7 +771,6 @@ describe("/models command returns keyboard_message", () => {
     pollIntervalMs: 1000,
     executionMode: "safe",
     cliTimeoutMs: 300000,
-    asyncEnabled: true,
     dbPath: ":memory:",
     bots: {
       codex: { token: "t", command: "codex", modelPreference: prefs },
@@ -816,7 +815,6 @@ describe("/effort command returns keyboard_message", () => {
     serviceKind: "codex",
     pollIntervalMs: 1000,
     executionMode: "safe",
-    asyncEnabled: true,
     dbPath: ":memory:",
     bots: {
       codex: { token: "t", command: "codex", modelPreference: [] },
@@ -849,7 +847,7 @@ describe("/effort command returns keyboard_message", () => {
 describe("/queue_mode command", () => {
   const config = {
     allowedUserIds: new Set(["1"]), serviceEnvFile: null, serviceKind: "codex", pollIntervalMs: 1000,
-    executionMode: "safe", asyncEnabled: true, dbPath: ":memory:",
+    executionMode: "safe", dbPath: ":memory:",
     bots: { codex: { token: "t", command: "codex", modelPreference: [] }, antigravity: { token: "t", command: "agy", modelPreference: [] }, claude: { token: "t", command: "claude", modelPreference: [] } },
   } as any;
 

@@ -20,7 +20,6 @@ export interface BridgeConfig {
   executionMode: "safe" | "trusted";
   /** Busy-lane admission policy (Issue #217): augment (default), interrupt, or queue. */
   busyMessageMode?: "augment" | "interrupt" | "queue";
-  asyncEnabled: boolean;
   dbPath: string;
   bots: {
     codex: BotConfig;

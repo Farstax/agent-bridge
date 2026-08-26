@@ -356,7 +356,6 @@ describe("grok engine dispatch", () => {
           botConfig: { command: "grok", modelPreference: ["grok-4"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
-          asyncEnabled: false,
           pollIntervalMs: 1000,
         },
         db,

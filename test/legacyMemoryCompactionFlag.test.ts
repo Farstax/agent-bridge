@@ -20,7 +20,6 @@ function makeConfig(dbPath = ":memory:"): BridgeConfig {
     serviceKind: null,
     pollIntervalMs: 1000,
     executionMode: "safe",
-    asyncEnabled: false,
     dbPath,
     bots: { codex: emptyBot, antigravity: emptyBot, claude: emptyBot, grok: emptyBot, cursor: emptyBot },
   };

@@ -13,7 +13,7 @@ describe("autonomous engine isolation (#466)", () => {
     const engine = new BridgeEngine({
       kind: "autonomous", surfaceIdentity: "autonomous", executionKind: "claude",
       botConfig: { command: "claude", modelPreference: ["default"] }, allowedUserIds: new Set(["1"]),
-      executionMode: "safe", asyncEnabled: true, pollIntervalMs: 1,
+      executionMode: "safe", pollIntervalMs: 1,
       workingDir: "/tmp/autonomy-work", workspaceContext: "canonical context",
     }, db, { getUpdates: vi.fn(), sendMessage: vi.fn(), sendChatAction: vi.fn() } as any);
     expect((engine as any)._workingDir("claude")).toBe("/tmp/autonomy-work");

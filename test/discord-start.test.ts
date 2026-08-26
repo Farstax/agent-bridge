@@ -81,7 +81,6 @@ describe("Discord /start ingress", () => {
       botConfig: { command: "claude", modelPreference: [] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      asyncEnabled: false,
       pollIntervalMs: 1000,
     }, db, mockClient(), { runCli });
     const resolved = resolveDiscordStartInteraction(interaction("incident-42"), { chatId: 100, userId: 42 });

@@ -15,7 +15,6 @@
  *   CODEX_COMMAND / CLAUDE_COMMAND / ANTIGRAVITY_COMMAND — CLI binary paths
  *   DB_PATH                      — SQLite for session/lock/CLI-preference state
  *   BRIDGE_EXECUTION_MODE        — "safe" | "trusted"
- *   BRIDGE_ASYNC_ENABLED         — "true" | "false"
  */
 
 import dotenv from "dotenv";
@@ -70,8 +69,6 @@ const dbPath = process.env.DB_PATH || `${getBridgeProjectDir()}/.data/discord-in
 const executionMode = resolveExecutionMode("codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
-const asyncEnabled = process.env.BRIDGE_ASYNC_ENABLED !== "false";
-
 const config: BridgeConfig = {
   allowedUserIds: engineAllowedUserIds,
   serviceEnvFile: null,
@@ -79,7 +76,6 @@ const config: BridgeConfig = {
   pollIntervalMs: 1_000,
   executionMode,
   busyMessageMode,
-  asyncEnabled,
   dbPath,
   bots: loadBotsConfig(process.env),
 };
@@ -156,7 +152,6 @@ const engines = Object.fromEntries(
         allowedUserIds: engineAllowedUserIds,
         executionMode: resolveExecutionMode(kind as BotKind, process.env),
         busyMessageMode,
-        asyncEnabled,
         pollIntervalMs: 1_000,
         soulContext,
         fullConfig: config,
