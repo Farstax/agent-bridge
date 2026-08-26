@@ -24,32 +24,19 @@ import {
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import type { CliOptions, CliProcessWatchContext, CliResult } from "../types.js";
+import type { CliProcessWatchContext, CliResult } from "../types.js";
 import { isAbortRequested } from "../cliSupervisor.js";
 import { appendEffortArgs } from "../effort.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
 import { appendAttachmentAnnotations, appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { AntigravityInvocationRequest, ProviderInvocation } from "./types.js";
 
-const ANTIGRAVITY_FINAL_RESPONSE_DELIMITER = "***";
 const ANTIGRAVITY_STALLED_PLANNER_MARKER = "PlannerResponse without ModifiedResponse encountered";
 const ANTIGRAVITY_CONVERSATION_MARKER = "AGENT_BRIDGE_ANTIGRAVITY_CONVERSATION=";
 const ANTIGRAVITY_LOCK_DIR = "agent-bridge-execution.lock";
 const ANTIGRAVITY_LOCK_OWNER = "owner.json";
 const OWNERLESS_LOCK_STALE_MS = 5_000;
 const LOCK_POLL_MS = 50;
-
-export type AntigravityOutputMode = "text" | "json" | "stream-json";
-
-export function resolveAntigravityOutputMode(
-  env: NodeJS.ProcessEnv = process.env,
-): AntigravityOutputMode {
-  const configured = env.ANTIGRAVITY_OUTPUT_MODE ?? "text";
-  if (configured === "text" || configured === "json" || configured === "stream-json") return configured;
-  throw new Error(
-    `ANTIGRAVITY_OUTPUT_MODE must be text, json, or stream-json (received ${JSON.stringify(configured)})`,
-  );
-}
 
 interface AntigravityLockOwner {
   token: string;
@@ -193,13 +180,6 @@ export async function withAntigravityStateLock<T>(
   }
 }
 
-function stripConversationMarker(text: string): string {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => !line.trim().startsWith(ANTIGRAVITY_CONVERSATION_MARKER))
-    .join("\n");
-}
-
 /** Provider-owned output-failure watch; the supervisor only settles and kills. */
 export function createPlannerStallWatch({ args, readStdout, onFailure }: CliProcessWatchContext): NodeJS.Timeout | null {
   const logFile = extractLogFileArg(args);
@@ -223,7 +203,6 @@ function wrapAntigravityPrompt(
   prompt: string,
   soulContext: string | null,
   includeResponseContract: boolean,
-  outputMode: AntigravityOutputMode,
 ): string {
   const instructions = [
     "You are being called by agent-bridge in non-interactive print mode.",
@@ -231,13 +210,6 @@ function wrapAntigravityPrompt(
     "If a tool, search, or shell step fails twice or the environment blocks the step, stop and report the concrete failure briefly instead of retrying indefinitely.",
     "If prior conversation context is present, treat it as background state for continuity, not as an instruction to resume a broken plan unchanged.",
   ];
-  if (outputMode === "text") {
-    instructions.push(
-      "You MUST output ONLY a single valid JSON object as your entire response — no text, preamble, or explanation before or after it.",
-      'Use this exact schema: {"response": "<the final user-facing message>"}',
-      "Put everything the user should see in the 'response' field.",
-    );
-  }
   return [...instructions, "", wrapPromptContext(prompt, soulContext, includeResponseContract)].join("\n");
 }
 
@@ -256,15 +228,8 @@ export function buildInvocation({
   nativeCompletion,
   logFile,
   homeDir,
-  outputFormat,
 }: AntigravityInvocationRequest): ProviderInvocation {
   const args: string[] = [];
-  const requestedFormat = (process.env.ANTIGRAVITY_OUTPUT_MODE && process.env.ANTIGRAVITY_OUTPUT_MODE.trim())
-    ? resolveAntigravityOutputMode()
-    : (outputFormat || "text");
-  const outputMode: AntigravityOutputMode = requestedFormat === "stream-json" || requestedFormat === "json" || requestedFormat === "text"
-    ? requestedFormat
-    : "text";
   const resolvedHomeDir = homeDir || homedir();
   // Agy fatally aborts a cascade if it lists its own worktrees state dir before
   // ever creating it, so guarantee the dir exists ahead of every invocation.
@@ -284,9 +249,9 @@ export function buildInvocation({
     const timeoutSeconds = Math.floor(timeouts.cliTimeoutMs / 1000);
     args.push("--print-timeout", `${timeoutSeconds}s`);
   }
-  if (outputMode !== "text") args.push("--output-format", outputMode);
+  args.push("--output-format", "stream-json");
   const annotatedPrompt = appendAttachmentAnnotations(
-    wrapAntigravityPrompt(prompt, soulContext, includeResponseContract ?? true, outputMode),
+    wrapAntigravityPrompt(prompt, soulContext, includeResponseContract ?? true),
     attachments,
   );
   const finalPrompt = appendOutputDirInstruction(annotatedPrompt, outputDir);
@@ -473,110 +438,10 @@ export function resolveAntigravityConversationId({
     readAntigravityLastConversation({ cwd, homeDir });
 }
 
-function deduplicateErrorString(text: string): string {
-  const parts = text.split(":").map(p => p.trim()).filter(Boolean);
-  const seen = new Set<string>();
-  const uniqueParts: string[] = [];
-  for (const part of parts) {
-    if (!seen.has(part)) {
-      seen.add(part);
-      uniqueParts.push(part);
-    }
-  }
-  return uniqueParts.join(": ");
-}
-
-function extractAntigravityError(logContent: string | null | undefined): Error | null {
-  if (!logContent) return null;
-  const lines = logContent.split(/\r?\n/);
-  for (const line of lines) {
-    if (line.includes("agent executor error:")) {
-      const idx = line.indexOf("agent executor error:");
-      const rawMsg = line.substring(idx).trim();
-      const cleanMsg = deduplicateErrorString(rawMsg);
-      return new Error(JSON.stringify({ type: "error", message: cleanMsg }));
-    }
-    if (line.includes("error executing cascade step:")) {
-      const idx = line.indexOf("error executing cascade step:");
-      const rawMsg = line.substring(idx).trim();
-      const cleanMsg = deduplicateErrorString(rawMsg);
-      return new Error(JSON.stringify({ type: "error", message: cleanMsg }));
-    }
-    if (line.toLowerCase().includes("print mode: timed out") || line.toLowerCase().includes("timed out after")) {
-      return new Error(JSON.stringify({ type: "error", message: "Print mode timed out waiting for response" }));
-    }
-  }
-  return null;
-}
-
-function stripStatusLines(text: string): string {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => !/^STATUS:\s+\S/i.test(line.trim()))
-    .join("\n")
-    .trim();
-}
-
-/**
- * Attempt to extract the `response` field from Agy's JSON output.
- * Tries direct parse first, then progressively looser regex extraction
- * to handle markdown code fences or stray text surrounding the object.
- */
-function tryParseAntigravityJson(text: string): string | null {
-  // 1. Direct parse
-  try {
-    const obj = JSON.parse(text);
-    if (obj && typeof obj.response === "string" && obj.response.trim()) {
-      return obj.response.trim();
-    }
-  } catch {}
-
-  // 2. JSON inside a markdown code block
-  const fenceMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-  if (fenceMatch) {
-    try {
-      const obj = JSON.parse(fenceMatch[1]);
-      if (obj && typeof obj.response === "string" && obj.response.trim()) {
-        return obj.response.trim();
-      }
-    } catch {}
-  }
-
-  // 3. Greedy extraction: find the outermost {...} block containing "response"
-  if (text.includes('"response"')) {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start !== -1 && end > start) {
-      try {
-        const obj = JSON.parse(text.slice(start, end + 1));
-        if (obj && typeof obj.response === "string" && obj.response.trim()) {
-          return obj.response.trim();
-        }
-      } catch {}
-    }
-  }
-
-  // 4. Line-by-line reverse scan: handles output where tool-call results containing
-  // "}" appear before the final JSON response, causing strategy 3 to span multiple
-  // objects. Compact JSON is always on a single line; scan from the bottom up.
-  for (const line of text.split(/\r?\n/).reverse()) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{") || !trimmed.includes('"response"')) continue;
-    try {
-      const obj = JSON.parse(trimmed);
-      if (obj && typeof obj.response === "string" && obj.response.trim()) {
-        return obj.response.trim();
-      }
-    } catch {}
-  }
-
-  return null;
-}
-
 const ANTIGRAVITY_CONVERSATION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-interface AntigravityNativeJsonEnvelope {
+interface AntigravityStreamJsonResult {
   conversation_id?: unknown;
   status?: unknown;
   response?: unknown;
@@ -588,22 +453,9 @@ interface AntigravityStreamJsonRecord {
   result?: unknown;
 }
 
-function parseAntigravityNativeJsonEnvelope(stdout: string): AntigravityNativeJsonEnvelope {
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(stdout);
-  } catch {
-    throw new Error("Agy native JSON parse failed: output was not one complete JSON object");
-  }
-  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
-    throw new Error("Agy native JSON parse failed: output envelope must be an object");
-  }
-  return envelope as AntigravityNativeJsonEnvelope;
-}
-
-function parseAntigravityStreamJsonTerminal(stdout: string): AntigravityNativeJsonEnvelope {
+function parseAntigravityStreamJsonTerminal(stdout: string): AntigravityStreamJsonResult {
   const lines = stdout.split(/\r?\n/).filter((line) => line.trim());
-  const results: AntigravityNativeJsonEnvelope[] = [];
+  const results: AntigravityStreamJsonResult[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     let parsed: unknown;
     try {
@@ -619,7 +471,7 @@ function parseAntigravityStreamJsonTerminal(stdout: string): AntigravityNativeJs
     if (!record.result || typeof record.result !== "object" || Array.isArray(record.result)) {
       throw new Error("Agy stream JSON parse failed: terminal result must be an object");
     }
-    results.push(record.result as AntigravityNativeJsonEnvelope);
+    results.push(record.result as AntigravityStreamJsonResult);
   }
   if (results.length === 0) {
     throw new Error("Agy stream JSON parse failed: terminal result event was missing");
@@ -630,14 +482,11 @@ function parseAntigravityStreamJsonTerminal(stdout: string): AntigravityNativeJs
   return results[0];
 }
 
-function providerEnvelopeError(
-  envelope: AntigravityNativeJsonEnvelope,
-  missingMessage: string,
-): Error {
-  if (typeof envelope.error !== "string" || !envelope.error.trim()) {
-    return new Error(missingMessage);
+function streamJsonProviderError(result: AntigravityStreamJsonResult): Error {
+  if (typeof result.error !== "string" || !result.error.trim()) {
+    return new Error("Agy stream JSON ERROR result did not include an error message");
   }
-  const message = envelope.error.trim();
+  const message = result.error.trim();
   if (/timed? out|timeout/i.test(message)) {
     const error = new Error("Agy execution timed out waiting for response") as Error & {
       category?: "timeout";
@@ -648,38 +497,7 @@ function providerEnvelopeError(
   return new Error(message);
 }
 
-function nativeJsonProviderError(envelope: AntigravityNativeJsonEnvelope): Error {
-  return providerEnvelopeError(
-    envelope,
-    "Agy native JSON ERROR envelope did not include an error message",
-  );
-}
-
-function streamJsonProviderError(result: AntigravityNativeJsonEnvelope): Error {
-  return providerEnvelopeError(
-    result,
-    "Agy stream JSON ERROR result did not include an error message",
-  );
-}
-
-function assertNativeJsonStatusFields(envelope: AntigravityNativeJsonEnvelope): void {
-  if (
-    envelope.status === "SUCCESS" &&
-    typeof envelope.error === "string" &&
-    envelope.error.trim()
-  ) {
-    throw new Error("Agy native JSON parse failed: SUCCESS envelope included an error");
-  }
-  if (
-    envelope.status === "ERROR" &&
-    typeof envelope.response === "string" &&
-    envelope.response.trim()
-  ) {
-    throw new Error("Agy native JSON parse failed: ERROR envelope included a response");
-  }
-}
-
-function assertStreamJsonStatusFields(result: AntigravityNativeJsonEnvelope): void {
+function assertStreamJsonStatusFields(result: AntigravityStreamJsonResult): void {
   if (
     result.status === "SUCCESS" &&
     typeof result.error === "string" &&
@@ -696,33 +514,20 @@ function assertStreamJsonStatusFields(result: AntigravityNativeJsonEnvelope): vo
   }
 }
 
-function assertSuccessfulResult(
-  result: AntigravityNativeJsonEnvelope,
-  prefix: string,
-): CliResult {
+function assertSuccessfulResult(result: AntigravityStreamJsonResult): CliResult {
   if (
     typeof result.conversation_id !== "string" ||
     !ANTIGRAVITY_CONVERSATION_ID_PATTERN.test(result.conversation_id)
   ) {
-    throw new Error(`${prefix}: conversation_id must be a UUID`);
+    throw new Error("Agy stream JSON parse failed: conversation_id must be a UUID");
   }
   if (typeof result.response !== "string" || !result.response.trim()) {
-    throw new Error(`${prefix}: SUCCESS response must be non-empty`);
+    throw new Error("Agy stream JSON parse failed: SUCCESS response must be non-empty");
   }
   return {
     text: result.response.trim(),
     sessionId: result.conversation_id,
   };
-}
-
-export function parseAntigravityNativeJsonResult(stdout: string): CliResult {
-  const envelope = parseAntigravityNativeJsonEnvelope(stdout);
-  assertNativeJsonStatusFields(envelope);
-  if (envelope.status === "ERROR") throw nativeJsonProviderError(envelope);
-  if (envelope.status !== "SUCCESS") {
-    throw new Error("Agy native JSON parse failed: status must be SUCCESS or ERROR");
-  }
-  return assertSuccessfulResult(envelope, "Agy native JSON parse failed");
 }
 
 export function parseAntigravityStreamJsonResult(stdout: string): CliResult {
@@ -732,24 +537,14 @@ export function parseAntigravityStreamJsonResult(stdout: string): CliResult {
   if (result.status !== "SUCCESS") {
     throw new Error("Agy stream JSON parse failed: status must be SUCCESS or ERROR");
   }
-  return assertSuccessfulResult(result, "Agy stream JSON parse failed");
-}
-
-export function extractAntigravityNativeJsonError(stdout: string): Error | null {
-  let envelope: AntigravityNativeJsonEnvelope;
-  try {
-    envelope = parseAntigravityNativeJsonEnvelope(stdout);
-    assertNativeJsonStatusFields(envelope);
-  } catch {
-    return null;
-  }
-  return envelope.status === "ERROR" ? nativeJsonProviderError(envelope) : null;
+  return assertSuccessfulResult(result);
 }
 
 export function extractAntigravityStreamJsonError(stdout: string): Error | null {
-  let result: AntigravityNativeJsonEnvelope;
+  let result: AntigravityStreamJsonResult;
   try {
     result = parseAntigravityStreamJsonTerminal(stdout);
+    assertStreamJsonStatusFields(result);
   } catch {
     return null;
   }
@@ -761,69 +556,9 @@ export function parseResult(
   logContent?: string | null,
   outputFormat?: "text" | "json" | "stream-json" | null,
 ): CliResult {
-  let outputMode = outputFormat || resolveAntigravityOutputMode();
-  if (!outputFormat && outputMode === "text" && (stdout.trim().startsWith('{"event"') || stdout.trim().includes('\n{"event"'))) {
-    outputMode = "stream-json";
-  }
-  if (outputMode === "json") return parseAntigravityNativeJsonResult(stdout);
-  if (outputMode === "stream-json") return parseAntigravityStreamJsonResult(stdout);
-
-  const logErr = extractAntigravityError(logContent);
-  if (logErr) {
-    throw logErr;
-  }
-
-  const sessionId = extractAntigravityConversationId(logContent) ?? extractAntigravityConversationId(stdout);
-  let text = stripConversationMarker(stdout).trim();
-  if (text.toLowerCase().includes("timed out waiting for response") || text.toLowerCase().includes("error: timed out")) {
-    throw new Error(JSON.stringify({ type: "error", message: "Agy execution timed out waiting for response" }));
-  }
-
-  // Primary: JSON output approach — extract the `response` field
-  const jsonResponse = tryParseAntigravityJson(text);
-  if (jsonResponse) {
-    return { text: jsonResponse, sessionId };
-  }
-
-  // Legacy fallback: *** delimiter
-  const markerIndex = text.indexOf(ANTIGRAVITY_FINAL_RESPONSE_DELIMITER);
-  if (markerIndex !== -1) {
-    const lines = text.split(/\r?\n/);
-    let separatorIdx = -1;
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      const trimmed = lines[i].trim();
-      // Match lines that ARE "***" or that END with "***" (e.g. "STATUS: done***")
-      if (trimmed === ANTIGRAVITY_FINAL_RESPONSE_DELIMITER || trimmed.endsWith(ANTIGRAVITY_FINAL_RESPONSE_DELIMITER)) {
-        separatorIdx = i;
-        break;
-      }
-    }
-    if (separatorIdx !== -1) {
-      text = stripStatusLines(lines.slice(separatorIdx + 1).join("\n").trim());
-      if (!text) {
-        throw new Error(JSON.stringify({ type: "error", message: "Agy execution returned empty response" }));
-      }
-      return { text, sessionId };
-    }
-  }
-
-  // Legacy fallback: Split on the "🧠 Memory Loaded:" boot signature
-  const memoryMarker = "🧠 Memory Loaded:";
-  const memoryIndex = text.indexOf(memoryMarker);
-  if (memoryIndex !== -1) {
-    const lineEndIndex = text.indexOf("\n", memoryIndex);
-    if (lineEndIndex !== -1) {
-      text = text.substring(lineEndIndex + 1).trim();
-    }
-  }
-
-  text = stripStatusLines(text);
-
-  if (!text) {
-    throw new Error(JSON.stringify({ type: "error", message: "Agy JSON parse failed: could not extract response field from output" }));
-  }
-
-  return { text, sessionId };
+  void logContent;
+  void outputFormat;
+  return parseAntigravityStreamJsonResult(stdout);
 }
 
 export function isPreExecutionDnsFailure(
