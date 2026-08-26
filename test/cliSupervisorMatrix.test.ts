@@ -561,7 +561,7 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
     const script = `
       const fs = require('node:fs');
       if (fs.existsSync('${stateFile}')) {
-        console.log('{"response": "success output"}');
+        console.log('{"event":"result","result":{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"SUCCESS","response":"success output"}}');
         process.exit(0);
       } else {
         fs.writeFileSync('${stateFile}', 'failed-once');
@@ -715,7 +715,7 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
 
   it("does not let observer event callback throwing break CLI execution", async () => {
     const script = `
-      console.log('{"response": "success output"}');
+      console.log('{"event":"result","result":{"conversation_id":"22222222-3333-4444-5555-666666666666","status":"SUCCESS","response":"success output"}}');
       process.exit(0);
     `;
 
@@ -791,9 +791,9 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
     expect((failEvents[0] as any).category).toBe("timeout");
   }, 10_000);
 
-  it("Agy stdout -> text.delta still reaches the collector", async () => {
+  it("Agy stream-json stdout is not re-emitted as raw text.delta", async () => {
     const script = `
-      console.log("hello stdout delta");
+      console.log('{"event":"result","result":{"conversation_id":"33333333-4444-5555-6666-777777777777","status":"SUCCESS","response":"hello stdout delta"}}');
       process.exit(0);
     `;
 
@@ -805,8 +805,7 @@ describe("13. Antigravity DNS retry and cancellation behavior", () => {
       onEvent: (e) => events.push(e),
     });
 
-    const deltaEvents = events.filter((e) => e.type === "text.delta");
-    expect(deltaEvents.length).toBeGreaterThan(0);
-    expect((deltaEvents[0] as any).text).toContain("hello stdout delta");
+    expect(events.filter((e) => e.type === "text.delta")).toEqual([]);
+    expect(events.some((e) => e.type === "run.completed")).toBe(true);
   }, 10_000);
 });

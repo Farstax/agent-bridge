@@ -81,7 +81,7 @@ describe("runtime isolation", () => {
     const script = join(root, "agy-fixture");
     await mkdir(join(homeDir, ".gemini", "antigravity-cli"), { recursive: true });
     await writeFile(settingsPath, JSON.stringify({ model: "Gemini 3.5 Flash (High)" }));
-    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
+    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"event\":\"result\",\"result\":{\"conversation_id\":\"44444444-5555-6666-7777-888888888888\",\"status\":\"SUCCESS\",\"response\":\"ok\"}}\\n'\n", { mode: 0o700 });
     try {
       await runAntigravitySerialized(script, ["--print", "hello"], root, {
         bot: "antigravity",
@@ -106,7 +106,7 @@ describe("runtime isolation", () => {
       join(cacheDir, "last_conversations.json"),
       JSON.stringify({ [root]: otherChatConversationId }),
     );
-    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
+    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"event\":\"result\",\"result\":{\"conversation_id\":\"55555555-6666-7777-8888-999999999999\",\"status\":\"SUCCESS\",\"response\":\"ok\"}}\\n'\n", { mode: 0o700 });
 
     try {
       const { stdout } = await runAntigravitySerialized(script, ["--print", "hello"], root, {
@@ -117,7 +117,7 @@ describe("runtime isolation", () => {
       }, { homeDir, model: null, applyModel: false });
       const result = parseCliResult({ bot: "antigravity", stdout });
 
-      expect(result).toEqual({ text: "ok", sessionId: null });
+      expect(result).toEqual({ text: "ok", sessionId: "55555555-6666-7777-8888-999999999999" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -134,7 +134,7 @@ describe("runtime isolation", () => {
       join(cacheDir, "last_conversations.json"),
       JSON.stringify({ [root]: otherChatConversationId }),
     );
-    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"response\":\"ok\"}\\n'\n", { mode: 0o700 });
+    await writeFile(script, "#!/usr/bin/env bash\nprintf '{\"event\":\"result\",\"result\":{\"conversation_id\":\"55555555-6666-7777-8888-999999999999\",\"status\":\"SUCCESS\",\"response\":\"ok\"}}\\n'\n", { mode: 0o700 });
 
     try {
       const { stdout } = await runAntigravitySerialized(script, ["--print", "hello"], root, {
@@ -149,7 +149,7 @@ describe("runtime isolation", () => {
       }, { homeDir, model: null, applyModel: false });
       const result = parseCliResult({ bot: "antigravity", stdout });
 
-      expect(result).toEqual({ text: "ok", sessionId: null });
+      expect(result).toEqual({ text: "ok", sessionId: "55555555-6666-7777-8888-999999999999" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -162,7 +162,7 @@ describe("runtime isolation", () => {
     const script = join(root, "agy-fixture");
     const conversationId = "11111111-2222-3333-4444-555555555555";
     await mkdir(homeDir, { recursive: true });
-    await writeFile(script, `#!/usr/bin/env bash\nset -euo pipefail\nlog_file=\"\"\nwhile (( $# )); do\n  if [[ \"$1\" == \"--log-file\" ]]; then log_file=\"$2\"; shift 2; else shift; fi\ndone\nprintf 'Print mode: conversation=${conversationId}\\n' > \"$log_file\"\nprintf '{\"response\":\"ok\"}\\n'\n`, { mode: 0o700 });
+    await writeFile(script, `#!/usr/bin/env bash\nset -euo pipefail\nlog_file=\"\"\nwhile (( $# )); do\n  if [[ \"$1\" == \"--log-file\" ]]; then log_file=\"$2\"; shift 2; else shift; fi\ndone\nprintf 'Print mode: conversation=${conversationId}\\n' > \"$log_file\"\nprintf '{\"event\":\"result\",\"result\":{\"conversation_id\":\"${conversationId}\",\"status\":\"SUCCESS\",\"response\":\"ok\"}}\\n'\n`, { mode: 0o700 });
 
     try {
       const invocation = buildCliInvocation({
