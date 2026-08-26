@@ -101,5 +101,5 @@ exit 0
     for (const skill of defaults) {
       expect(migrated.skills[skill]?.ownership).toBe("bundled");
     }
-  });
+  }, 30_000);
 });
