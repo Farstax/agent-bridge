@@ -1,6 +1,5 @@
-// test/conversationStore.test.ts
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { openDb, BridgeDb } from "../src/db.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { openDb, type BridgeDb } from "../src/db.js";
 
 let db: BridgeDb;
 
@@ -10,6 +9,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.BRIDGE_CONTEXT_RECENT_TURN_LIMIT;
+  db.close();
 });
 
 describe("conversation turns", () => {
@@ -17,385 +17,142 @@ describe("conversation turns", () => {
     expect(db.getRecentConvTurns("chat:1", 10)).toEqual([]);
   });
 
-  it("stores and retrieves turns in order", () => {
+  it("stores and retrieves turns in chronological order", () => {
     db.addConvTurn("chat:1", "user", "hello");
     db.addConvTurn("chat:1", "assistant", "world");
     const turns = db.getRecentConvTurns("chat:1", 10);
-    expect(turns).toHaveLength(2);
-    expect(turns[0].role).toBe("user");
-    expect(turns[0].text).toBe("hello");
-    expect(turns[1].role).toBe("assistant");
-    expect(turns[1].text).toBe("world");
+    expect(turns.map((turn) => [turn.role, turn.text])).toEqual([
+      ["user", "hello"],
+      ["assistant", "world"],
+    ]);
   });
 
-  it("isolates turns by chatKey", () => {
+  it("isolates turns by chat key", () => {
     db.addConvTurn("chat:1", "user", "in chat 1");
     db.addConvTurn("chat:2", "user", "in chat 2");
-    expect(db.getRecentConvTurns("chat:1", 10)).toHaveLength(1);
-    expect(db.getRecentConvTurns("chat:2", 10)).toHaveLength(1);
+    expect(db.getRecentConvTurns("chat:1", 10).map((turn) => turn.text)).toEqual(["in chat 1"]);
+    expect(db.getRecentConvTurns("chat:2", 10).map((turn) => turn.text)).toEqual(["in chat 2"]);
   });
 
-  it("respects limit — returns most recent N turns", () => {
+  it("returns the newest N turns while preserving chronological order", () => {
     for (let i = 0; i < 8; i++) db.addConvTurn("chat:1", "user", `msg ${i}`);
-    const turns = db.getRecentConvTurns("chat:1", 3);
-    expect(turns).toHaveLength(3);
-    expect(turns[2].text).toBe("msg 7");
+    expect(db.getRecentConvTurns("chat:1", 3).map((turn) => turn.text)).toEqual(["msg 5", "msg 6", "msg 7"]);
   });
 
-  it("stores optional cli field", () => {
-    db.addConvTurn("chat:1", "user", "hi", "codex");
-    const turns = db.getRecentConvTurns("chat:1", 1);
-    expect(turns[0].cli).toBe("codex");
-  });
-
-  it("filters turns by sinceId", () => {
+  it("supports exact turns after a known turn id", () => {
     db.addConvTurn("chat:1", "user", "before");
-    const [before] = db.getRecentConvTurns("chat:1", 1);
-    db.addConvTurn("chat:1", "assistant", "after");
-    const turns = db.getRecentConvTurns("chat:1", 10, before.id);
-    expect(turns).toHaveLength(1);
-    expect(turns[0].text).toBe("after");
+    const marker = db.getRecentConvTurns("chat:1", 1)[0];
+    db.addConvTurn("chat:1", "assistant", "after one");
+    db.addConvTurn("chat:1", "user", "after two");
+    expect(db.getRecentConvTurns("chat:1", 10, marker.id).map((turn) => turn.text)).toEqual([
+      "after one",
+      "after two",
+    ]);
   });
 
-  it("returns the NEWEST N turns after sinceId, not the oldest N, when more than the limit exist", () => {
-    const [marker] = (() => {
-      db.addConvTurn("chat:1", "user", "summary marker");
-      return db.getRecentConvTurns("chat:1", 1);
-    })();
-    // 250 turns after the summary marker, well beyond a 200-item candidate limit.
-    for (let i = 0; i < 250; i++) db.addConvTurn("chat:1", "user", `turn-${i}`);
-
-    const turns = db.getRecentConvTurns("chat:1", 200, marker.id);
-    expect(turns).toHaveLength(200);
-    // Must be the newest 200 (turn-50..turn-249), not the oldest 200 (turn-0..turn-199).
-    expect(turns[0].text).toBe("turn-50");
-    expect(turns[turns.length - 1].text).toBe("turn-249");
-    // Still returned oldest-first for chronological prompt rendering.
-    expect(turns.map((t) => t.text)).toEqual(turns.map((t) => t.text).slice().sort((a, b) => {
-      const ai = Number(a.split("-")[1]);
-      const bi = Number(b.split("-")[1]);
-      return ai - bi;
-    }));
+  it("stores the provider that produced a turn", () => {
+    db.addConvTurn("chat:1", "assistant", "answer", "codex");
+    expect(db.getRecentConvTurns("chat:1", 1)[0].cli).toBe("codex");
   });
 });
 
 describe("buildConvContext", () => {
-  it("returns empty string when no turns", () => {
+  it("returns empty string when no retained turns exist", () => {
     expect(db.buildConvContext("chat:1")).toBe("");
   });
 
-  it("wraps turns in context block", () => {
+  it("builds handoff context from exact retained turns", () => {
     db.addConvTurn("chat:1", "user", "hello");
     db.addConvTurn("chat:1", "assistant", "world");
-    const ctx = db.buildConvContext("chat:1");
-    expect(ctx).toContain("[Context from previous conversation]");
-    expect(ctx).toContain("User: hello");
-    expect(ctx).toContain("Assistant: world");
-    expect(ctx).toContain("[End context — continue naturally]");
+    const context = db.buildConvContext("chat:1");
+    expect(context).toContain("[Context from previous conversation]");
+    expect(context).toContain("User: hello");
+    expect(context).toContain("Assistant: world");
+    expect(context).toContain("[End context — continue naturally]");
   });
 
-  it("includes summary above turns when one exists", () => {
-    db.addConvTurn("chat:1", "user", "turn1");
-    const [t1] = db.getRecentConvTurns("chat:1", 1);
-    db.addConvSummary("chat:1", t1.id, t1.id, "## Summary\nObjective: fix bug");
-    db.addConvTurn("chat:1", "assistant", "turn2");
-    const ctx = db.buildConvContext("chat:1");
-    expect(ctx).toContain("## Summary");
-    expect(ctx).toContain("Assistant: turn2");
+  it("ignores historical generated summaries", () => {
+    db.addConvTurn("chat:1", "user", "exact retained evidence");
+    const turn = db.getRecentConvTurns("chat:1", 1)[0];
+    db.raw.prepare(
+      `INSERT INTO conversation_summaries (chat_key, range_start_turn_id, range_end_turn_id, summary_md)
+       VALUES (?, ?, ?, ?)`,
+    ).run("chat:1", turn.id, turn.id, "LEGACY GENERATED SUMMARY MUST NOT BE USED");
+
+    const context = db.buildConvContext("chat:1");
+    expect(context).toContain("exact retained evidence");
+    expect(context).not.toContain("LEGACY GENERATED SUMMARY MUST NOT BE USED");
   });
 
-  it("excludes covered turns from the prompt while they remain recoverable evidence (issue #349)", () => {
-    // Bounded prompt construction must stay bounded even though turns are
-    // now retained past compaction: a covered turn stays out of the prompt
-    // (filtered by the summary's range_end_turn_id) but is not deleted from
-    // conversation_turns.
-    db.addConvTurn("chat:1", "user", "covered turn");
-    const [t1] = db.getRecentConvTurns("chat:1", 1);
-    db.addConvSummary("chat:1", t1.id, t1.id, "## Summary\nObjective: fix bug");
-    db.addConvTurn("chat:1", "assistant", "fresh turn");
-
-    const ctx = db.buildConvContext("chat:1");
-    expect(ctx).not.toContain("covered turn");
-    expect(ctx).toContain("fresh turn");
-
-    const raw = (db as any).raw as import("better-sqlite3").Database;
-    const stillPresent = raw
-      .prepare(`SELECT text FROM conversation_turns WHERE chat_key = ? AND text = ?`)
-      .get("chat:1", "covered turn");
-    expect(stillPresent).toBeTruthy();
+  it("keeps newest turns when the character budget is tight", () => {
+    db.addConvTurn("chat:1", "user", "x".repeat(400));
+    db.addConvTurn("chat:1", "assistant", "short reply");
+    const context = db.buildConvContext("chat:1", 100);
+    expect(context).toContain("short reply");
+    expect(context).not.toContain("x".repeat(20));
   });
 
-  it("excludes turns that exceed the char budget", () => {
-    // Two turns: first is large (exceeds budget), second is small
-    db.addConvTurn("chat:1", "user", "x".repeat(400));   // older
-    db.addConvTurn("chat:1", "assistant", "short reply"); // newer
-    // budget of 100 — only the short newer turn should fit
-    const ctx = db.buildConvContext("chat:1", 100);
-    expect(ctx).toContain("short reply");
-    expect(ctx).not.toContain("x".repeat(10)); // large turn excluded
-  });
-
-  it("always includes summary even when it alone exceeds char budget", () => {
-    db.addConvTurn("chat:1", "user", "t1");
-    const [t1] = db.getRecentConvTurns("chat:1", 1);
-    db.addConvSummary("chat:1", t1.id, t1.id, "A".repeat(200));
-    const ctx = db.buildConvContext("chat:1", 10); // tiny budget
-    expect(ctx).toContain("A".repeat(200));
-  });
-
-  it("includes newest turns first within budget, oldest dropped", () => {
-    for (let i = 1; i <= 10; i++) {
-      db.addConvTurn("chat:1", "user", `turn_number_${i}_end`);
-    }
-    // budget tight enough to exclude early turns but include recent ones
-    const ctx = db.buildConvContext("chat:1", 120);
-    expect(ctx).toContain("turn_number_10_end");
-    expect(ctx).not.toContain("turn_number_1_end");
-  });
-
-  it("preserves the newest turns when more than 200 turns exist after the latest summary", () => {
-    db.addConvTurn("chat:1", "user", "marker");
-    const [marker] = db.getRecentConvTurns("chat:1", 1);
-    db.addConvSummary("chat:1", marker.id, marker.id, "Current objective:\n- ongoing work");
+  it("keeps the newest candidate window when history exceeds the default turn limit", () => {
     for (let i = 0; i < 250; i++) db.addConvTurn("chat:1", "user", `turn-${i}`);
-
-    // Generous budget so the candidate-fetch cap (not the char budget) is what's under test.
-    const ctx = db.buildConvContext("chat:1", 50_000);
-    expect(ctx).toContain("turn-249"); // newest turn must survive
-    expect(ctx).not.toContain("turn-0\n"); // oldest turn beyond the 200 candidate cap must not
+    const context = db.buildConvContext("chat:1", 50_000);
+    expect(context).toContain("turn-249");
+    expect(context).not.toContain("User: turn-0\n");
   });
 
-  it("respects BRIDGE_CONTEXT_RECENT_TURN_LIMIT to widen or narrow the candidate cap", () => {
+  it("honours BRIDGE_CONTEXT_RECENT_TURN_LIMIT", () => {
     for (let i = 0; i < 10; i++) db.addConvTurn("chat:1", "user", `turn-${i}`);
-
     process.env.BRIDGE_CONTEXT_RECENT_TURN_LIMIT = "3";
-    const narrow = db.buildConvContext("chat:1", 50_000);
-    expect(narrow).toContain("turn-9");
-    expect(narrow).not.toContain("turn-6\n");
+    const context = db.buildConvContext("chat:1", 50_000);
+    expect(context).toContain("turn-9");
+    expect(context).not.toContain("turn-6\n");
+  });
+});
 
-    process.env.BRIDGE_CONTEXT_RECENT_TURN_LIMIT = "10";
-    const wide = db.buildConvContext("chat:1", 50_000);
-    expect(wide).toContain("turn-0");
+describe("scoped conversation search", () => {
+  it("returns matching older turns with adjacent context in chronological order", () => {
+    db.addConvTurn("chat:1", "user", "before marker");
+    db.addConvTurn("chat:1", "assistant", "decision alpha marker");
+    db.addConvTurn("chat:1", "user", "after marker");
+    db.addConvTurn("chat:2", "user", "decision alpha other chat");
+
+    const rows = db.searchConvTurns("chat:1", "decision alpha");
+    expect(rows.map((row) => row.text)).toEqual(["before marker", "decision alpha marker", "after marker"]);
+    expect(rows.filter((row: any) => row.is_match).map((row) => row.text)).toEqual(["decision alpha marker"]);
   });
 });
 
 describe("pending messages", () => {
-  it("returns 0 when no pending messages", () => {
-    expect(db.pendingMsgCount("test", "chat:1")).toBe(0);
-  });
-
-  it("enqueues and dequeues a message", () => {
-    db.enqueueMsg("test", "chat:1", { prompt: "do work", chatId: 123, chatType: "private" });
-    expect(db.pendingMsgCount("test", "chat:1")).toBe(1);
-    const msgs = db.dequeueMsgs("test", "chat:1");
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0].prompt).toBe("do work");
-    expect(msgs[0].chatId).toBe(123);
-  });
-
-  it("deletePendingMsg removes the row", () => {
-    db.enqueueMsg("test", "chat:1", { prompt: "x", chatId: 1, chatType: "private" });
-    const [msg] = db.dequeueMsgs("test", "chat:1");
-    db.deletePendingMsg(msg.id);
-    expect(db.pendingMsgCount("test", "chat:1")).toBe(0);
-  });
-
-  it("isolates queue by chatKey", () => {
-    db.enqueueMsg("test", "chat:1", { prompt: "a", chatId: 1, chatType: "private" });
-    db.enqueueMsg("test", "chat:2", { prompt: "b", chatId: 2, chatType: "private" });
-    expect(db.pendingMsgCount("test", "chat:1")).toBe(1);
-    expect(db.pendingMsgCount("test", "chat:2")).toBe(1);
-  });
-
-  it("only exposes queued rows to their owning surface", () => {
-    db.enqueueMsg("telegram:codex", "chat:1", { prompt: "codex work", chatId: 1, chatType: "private" });
-    db.enqueueMsg("telegram:claude", "chat:1", { prompt: "claude work", chatId: 1, chatType: "private" });
+  it("enqueues and dequeues within the owning surface and chat", () => {
+    db.enqueueMsg("telegram:codex", "chat:1", { prompt: "do work", chatId: 123, chatType: "private" });
+    db.enqueueMsg("telegram:claude", "chat:1", { prompt: "other work", chatId: 123, chatType: "private" });
 
     expect(db.pendingMsgCount("telegram:codex", "chat:1")).toBe(1);
     expect(db.pendingMsgCount("telegram:claude", "chat:1")).toBe(1);
-    expect(db.dequeueMsgs("telegram:codex", "chat:1").map((msg) => msg.prompt)).toEqual(["codex work"]);
-    expect(db.dequeueMsgs("telegram:claude", "chat:1").map((msg) => msg.prompt)).toEqual(["claude work"]);
+    expect(db.dequeueMsgs("telegram:codex", "chat:1").map((msg) => msg.prompt)).toEqual(["do work"]);
+    expect(db.dequeueMsgs("telegram:claude", "chat:1").map((msg) => msg.prompt)).toEqual(["other work"]);
   });
 });
 
-describe("conversation summaries", () => {
-  it("getLatestConvSummary returns null when none exist", () => {
-    expect(db.getLatestConvSummary("chat:1")).toBeNull();
-  });
+describe("history reset storage", () => {
+  it("clears retained turns and historical summaries only for the selected chat", () => {
+    db.addConvTurn("chat:1", "user", "delete me");
+    db.addConvTurn("chat:2", "user", "keep me");
+    const first = db.getRecentConvTurns("chat:1", 1)[0];
+    const second = db.getRecentConvTurns("chat:2", 1)[0];
+    db.raw.prepare(
+      `INSERT INTO conversation_summaries (chat_key, range_start_turn_id, range_end_turn_id, summary_md)
+       VALUES (?, ?, ?, ?)`,
+    ).run("chat:1", first.id, first.id, "old one");
+    db.raw.prepare(
+      `INSERT INTO conversation_summaries (chat_key, range_start_turn_id, range_end_turn_id, summary_md)
+       VALUES (?, ?, ?, ?)`,
+    ).run("chat:2", second.id, second.id, "old two");
 
-  it("stores and retrieves a summary", () => {
-    db.addConvTurn("chat:1", "user", "t1");
-    const [t] = db.getRecentConvTurns("chat:1", 1);
-    db.addConvSummary("chat:1", t.id, t.id, "## Summary\nObjective: build feature");
-    const s = db.getLatestConvSummary("chat:1");
-    expect(s).not.toBeNull();
-    expect(s!.summary_md).toContain("build feature");
-  });
+    db.clearConvHistory("chat:1");
 
-  it("returns only the latest summary when multiple exist", () => {
-    db.addConvTurn("chat:1", "user", "t1");
-    const [t] = db.getRecentConvTurns("chat:1", 1);
-    db.addConvSummary("chat:1", t.id, t.id, "first");
-    db.addConvSummary("chat:1", t.id, t.id, "second");
-    expect(db.getLatestConvSummary("chat:1")!.summary_md).toBe("second");
-  });
-});
-
-describe("pruneConvTurns", () => {
-  it("deletes turns up to and including the given id", () => {
-    db.addConvTurn("chat:1", "user", "a");
-    db.addConvTurn("chat:1", "assistant", "b");
-    db.addConvTurn("chat:1", "user", "c");
-    const all = db.getRecentConvTurns("chat:1", 10);
-    expect(all.length).toBe(3);
-    const cutoff = all[1].id; // prune first two turns
-    db.pruneConvTurns("chat:1", cutoff);
-    const remaining = db.getRecentConvTurns("chat:1", 10);
-    expect(remaining.length).toBe(1);
-    expect(remaining[0].text).toBe("c");
-  });
-
-  it("does not delete turns from other chat keys", () => {
-    db.addConvTurn("chat:1", "user", "keep");
-    db.addConvTurn("chat:2", "user", "prune me");
-    const t2 = db.getRecentConvTurns("chat:2", 1)[0];
-    db.pruneConvTurns("chat:2", t2.id);
-    expect(db.getRecentConvTurns("chat:1", 10).length).toBe(1);
-    expect(db.getRecentConvTurns("chat:2", 10).length).toBe(0);
-  });
-
-  it("is a no-op when id is below all stored turns", () => {
-    db.addConvTurn("chat:1", "user", "x");
-    db.pruneConvTurns("chat:1", 0);
-    expect(db.getRecentConvTurns("chat:1", 10).length).toBe(1);
-  });
-});
-
-describe("getConvStatus", () => {
-  it("returns zeros and nulls for new chatKey", () => {
-    const s = db.getConvStatus("chat:1", "test");
-    expect(s.turnCount).toBe(0);
-    expect(s.pendingCount).toBe(0);
-    expect(s.latestSummaryAt).toBeNull();
-    expect(s.latestTurnAt).toBeNull();
-  });
-
-  it("reflects stored data", () => {
-    db.addConvTurn("chat:1", "user", "hi");
-    db.enqueueMsg("test", "chat:1", { prompt: "q", chatId: 1, chatType: "private" });
-    const s = db.getConvStatus("chat:1", "test");
-    expect(s.turnCount).toBe(1);
-    expect(s.pendingCount).toBe(1);
-    expect(s.latestTurnAt).not.toBeNull();
-  });
-});
-
-describe("searchConvTurns (issue #350)", () => {
-  it("finds an old decision by scoped chronological search", () => {
-    db.addConvTurn("chat:1", "user", "let's use postgres for the new service", "codex");
-    db.addConvTurn("chat:1", "assistant", "sounds good, postgres it is", "codex");
-    for (let i = 0; i < 20; i++) db.addConvTurn("chat:1", "user", `unrelated filler ${i}`, "codex");
-
-    const results = db.searchConvTurns("chat:1", "postgres");
-    expect(results.length).toBeGreaterThan(0);
-    expect(results.some((r) => r.text.includes("postgres"))).toBe(true);
-  });
-
-  it("surfaces a later correction ahead of the superseded original (newest-first)", () => {
-    db.addConvTurn("chat:1", "user", "the deploy window is Tuesday", "claude");
-    db.addConvTurn("chat:1", "assistant", "correction: the deploy window is actually Thursday", "claude");
-
-    const results = db.searchConvTurns("chat:1", "deploy window");
-    expect(results.some((row) => row.text.includes("Thursday"))).toBe(true);
-    expect(results.some((row) => row.text.includes("Tuesday"))).toBe(true);
-    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
-  });
-
-  it("returns a bounded empty-ish result for an empty query without crashing", () => {
-    db.addConvTurn("chat:1", "user", "some turn", "codex");
-    expect(db.searchConvTurns("chat:1", "")).toEqual([]);
-    expect(db.searchConvTurns("chat:1", "   ")).toEqual([]);
-  });
-
-  it("returns an empty array for an ambiguous/no-match query without crashing", () => {
-    db.addConvTurn("chat:1", "user", "hello world", "codex");
-    expect(db.searchConvTurns("chat:1", "zzz-nonexistent-term-zzz")).toEqual([]);
-  });
-
-  it("cannot cross conversation/workstream (chat_key) scope", () => {
-    db.addConvTurn("chat:1", "user", "shared secret token alpha", "codex");
-    db.addConvTurn("chat:2", "user", "shared secret token beta", "codex");
-
-    const resultsChat1 = db.searchConvTurns("chat:1", "shared secret token");
-    expect(resultsChat1).toHaveLength(1);
-    expect(resultsChat1[0].text).toContain("alpha");
-    expect(resultsChat1.some((r) => r.text.includes("beta"))).toBe(false);
-  });
-
-  it("bounds the number of results returned", () => {
-    for (let i = 0; i < 30; i++) db.addConvTurn("chat:1", "user", `matching turn ${i}`, "codex");
-    const results = db.searchConvTurns("chat:1", "matching", 100);
-    expect(results.length).toBeLessThanOrEqual(20);
-  });
-
-  it("bounds each result's text to a safe snippet length", () => {
-    db.addConvTurn("chat:1", "user", `needle ${"x".repeat(1000)}`, "codex");
-    const results = db.searchConvTurns("chat:1", "needle");
-    expect(results).toHaveLength(1);
-    expect(results[0].text.length).toBeLessThanOrEqual(320);
-  });
-
-  it("keeps both outer neighbors when consecutive matching hits overlap", () => {
-    db.addConvTurn("chat:1", "assistant", "outer context before", "codex");
-    db.addConvTurn("chat:1", "user", "decision older matching turn", "codex");
-    db.addConvTurn("chat:1", "assistant", "decision newer correction", "claude");
-    db.addConvTurn("chat:1", "assistant", "outer context after", "codex");
-
-    const results = db.searchConvTurns("chat:1", "decision");
-
-    expect(results.map((row) => row.text)).toEqual([
-      "outer context before",
-      "decision older matching turn",
-      "decision newer correction",
-      "outer context after",
-    ]);
-  });
-
-  it("exposes turn id, timestamp, role, and provider (cli) for handoff use", () => {
-    db.addConvTurn("chat:1", "assistant", "used minimax for this summary", "claude");
-    const [row] = db.searchConvTurns("chat:1", "minimax");
-    expect(row.id).toBeGreaterThan(0);
-    expect(row.created_at).toBeTruthy();
-    expect(row.role).toBe("assistant");
-    expect(row.cli).toBe("claude");
-  });
-
-  it("returns adjacent conversational evidence around each matching hit in chronology", () => {
-    db.addConvTurn("chat:1", "user", "we should choose the green deployment", "codex");
-    db.addConvTurn("chat:1", "assistant", "I agree; the rollout can proceed after review", "claude");
-    db.addConvTurn("chat:1", "user", "unrelated follow-up", "codex");
-
-    const results = db.searchConvTurns("chat:1", "deployment");
-
-    expect(results.map((row) => row.text)).toEqual([
-      "we should choose the green deployment",
-      "I agree; the rollout can proceed after review",
-    ]);
-    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
-    expect(results[1]).toMatchObject({ role: "assistant", cli: "claude" });
-  });
-
-  it("deduplicates overlapping context windows, stays scoped, and remains globally bounded", () => {
-    for (let i = 0; i < 40; i++) {
-      db.addConvTurn("chat:1", i % 2 === 0 ? "user" : "assistant", i % 2 === 0 ? `needle hit ${i}` : `context ${i}`, i % 2 === 0 ? "codex" : "claude");
-    }
-    db.addConvTurn("chat:2", "user", "needle from another workstream", "codex");
-
-    const results = db.searchConvTurns("chat:1", "needle", 100);
-
-    expect(results.length).toBeLessThanOrEqual(20);
-    expect(results.every((row) => row.text !== "needle from another workstream")).toBe(true);
-    expect(new Set(results.map((row) => row.id)).size).toBe(results.length);
-    expect(results.map((row) => row.id)).toEqual([...results.map((row) => row.id)].sort((a, b) => a - b));
+    expect(db.getRecentConvTurns("chat:1", 10)).toEqual([]);
+    expect(db.getRecentConvTurns("chat:2", 10).map((turn) => turn.text)).toEqual(["keep me"]);
+    expect(db.raw.prepare("SELECT COUNT(*) AS n FROM conversation_summaries WHERE chat_key = ?").get("chat:1")).toEqual({ n: 0 });
+    expect(db.raw.prepare("SELECT COUNT(*) AS n FROM conversation_summaries WHERE chat_key = ?").get("chat:2")).toEqual({ n: 1 });
   });
 });

@@ -24,46 +24,30 @@ describe("/context operator diagnostics", () => {
   });
 
   afterEach(() => {
-    delete process.env.BRIDGE_PRESEED_COMPACT_MODE;
-    delete process.env.BRIDGE_PRESEED_COMPACT_CHARS;
     db.close();
   });
 
-  it("shows off pre-seed mode by default", () => {
+  it("shows retained exact-turn status and the supported retrieval path", () => {
+    db.addConvTurn("100", "user", "hello there");
+    db.addConvTurn("100", "assistant", "hi");
+
     const result = handleCommand("claude", "/context", { db, chatId: "100", config: makeConfig() });
     expect(result?.kind).toBe("message");
     const text = (result as any).text as string;
-    expect(text).toContain("Pre-seed compact: off");
+
+    expect(text).toContain("Stored: 2 turns");
+    expect(text).toContain("Pending queue: 0");
+    expect(text).toContain("Retrieval: retained exact turns (`--recent` / `--search`)");
+    expect(text).not.toContain("Memory count");
+    expect(text).not.toContain("compact");
   });
 
-  it("shows the configured auto pre-seed threshold", () => {
-    process.env.BRIDGE_PRESEED_COMPACT_MODE = "auto";
-    process.env.BRIDGE_PRESEED_COMPACT_CHARS = "12345";
-
-    const result = handleCommand("claude", "/context", { db, chatId: "100", config: makeConfig() });
-    const text = (result as any).text as string;
-
-    expect(text).toContain("Pre-seed compact: auto (threshold 12345 chars)");
-  });
-
-  it("shows uncompacted turn/char counts and memory count", () => {
-    db.addConvTurn("100", "user", "hello there");
-    db.addConvTurn("100", "assistant", "hi");
-    db.addMemory({ id: "mem-1", type: "decision", text: "some durable fact" });
-
-    const result = handleCommand("claude", "/context", { db, chatId: "100", config: makeConfig() });
-    const text = (result as any).text as string;
-
-    expect(text).toContain("Uncompacted: 2 turns, 13 chars");
-    expect(text).toContain("Memory count: 1");
-  });
-
-  it("reports zero uncompacted turns and zero memory count for a fresh chat", () => {
+  it("reports zero stored turns for a fresh chat", () => {
     const result = handleCommand("claude", "/context", { db, chatId: "brand-new-chat", config: makeConfig() });
     const text = (result as any).text as string;
 
-    expect(text).toContain("Uncompacted: 0 turns, 0 chars");
-    expect(text).toContain("Memory count: 0");
+    expect(text).toContain("Stored: 0 turns");
+    expect(text).toContain("Latest turn: none");
   });
 });
 

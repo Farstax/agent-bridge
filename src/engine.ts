@@ -39,23 +39,18 @@ import { createAntigravityAnswerPresentationDecoder } from "./providers/antigrav
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { PreviewCleanupError, sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
-import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible, compactInProgressSettingKey } from "./commands.js";
+import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible } from "./commands.js";
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel } from "./effort.js";
 import { getCodexUsageText } from "./codexUsage.js";
-import { chunkCompactTurns, type CompactProfile } from "./compactSummary.js";
-import { compactConversation } from "./compactConversation.js";
-import { parseCompactionProviderChain, resolveCompactionRecoveryTargets } from "./fallbackCompaction.js";
 import { clearHandoffRequired } from "./handoffState.js";
-import { preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
-import type { BridgeConfig, BotKind, BotConfig, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
+import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { extractProjectMemorySidecars, storeProjectMemoryCandidate, type ProjectMemoryCandidate } from "./projectMemory.js";
 import { prependHandoffModel } from "./promptWrapping.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
 import {
@@ -66,8 +61,6 @@ import {
   type LaneDrainer,
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
-
-// ── Public types ──────────────────────────────────────────────────────────────
 
 export interface HookContext {
   chatId: number;
@@ -82,15 +75,10 @@ export interface HookCommandResult {
 }
 
 export interface BridgeEngineHooks {
-  /** Called before the built-in command handler. Return non-null to handle the command. */
   onCommand?: (cmd: string, ctx: HookContext) => Promise<HookCommandResult | null>;
-  /** Called before CLI execution. Return the (optionally transformed) prompt. */
   onBeforeExecute?: (prompt: string, ctx: HookContext) => Promise<string>;
-  /** Called when the CLI throws a capacity/rate-limit error after all model fallbacks are exhausted. */
   onCapacityExhausted?: (chatKey: string) => void | Promise<void>;
-  /** Called after a successful CLI execution. */
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
-  /** Re-enters the owning surface router for a transactionally claimed queue row. */
   onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
 }
 
@@ -105,7 +93,6 @@ export interface PendingMessage {
 export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
 
 type StagedCliResult = CliResult & {
-  memoryCandidates: ProjectMemoryCandidate[];
   nativeSessionMode?: "fresh" | "resume";
 };
 
@@ -115,34 +102,23 @@ class LostExecutionLeaseError extends Error {
   constructor() { super("execution lane ownership lost"); }
 }
 
-
 export interface BridgeEngineOptions {
   kind: string;
-  /** Stable delivery surface. Providers within one interactive bot share this value. */
   surfaceIdentity: string;
-  /** CLI kind to invoke for non-agent engines such as health. Defaults to claude. */
   executionKind?: BotKind;
   botConfig: { command: string; modelPreference: string[]; token?: string };
   allowedUserIds: ReadonlySet<string>;
   executionMode: "safe" | "trusted";
-  /** Busy-lane admission policy (Issue #217). Defaults to "augment" when unset. */
   busyMessageMode?: "augment" | "interrupt" | "queue";
   pollIntervalMs: number;
   soulContext?: string | null;
-  /** Optional explicit cwd for this engine instance. Never mutates process.cwd(). */
   workingDir?: string;
-  /** Optional frozen/static managed workspace context for this engine instance. */
   workspaceContext?: string | null;
-  /** Required for built-in /models command on agent bot kinds */
   fullConfig?: BridgeConfig;
   hooks?: BridgeEngineHooks;
-  /** Compact summary profile: "engineering" (default) for coding-agent bots, "companion" for the interactive/companion bot. */
-  compactProfile?: CompactProfile;
-  /** Bridge-owned issuer; absent when advisor is disabled or misconfigured. */
   advisorCapabilities?: AdvisorCapabilityIssuer;
 }
 
-/** Injected execution functions — replace real CLI for unit tests. */
 export interface ExecFns {
   runCli: typeof _runCli;
   runCliAsync: typeof _runCliAsync;
@@ -157,11 +133,8 @@ export interface SurfaceNeutralTurnInput {
   runId: string;
   eventContext: NonNullable<CliOptions["eventContext"]>;
   collect: (event: BridgeEvent) => void;
-  /** Called at the exact provider-attempt boundary, after lifecycle setup. */
   onProviderExecutionStarted?: () => void;
 }
-
-// ── Internals ────────────────────────────────────────────────────────────────
 
 const MAX_QUEUE_DEPTH = 5;
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
@@ -204,8 +177,6 @@ function trimTurnText(text: string): string {
   if (normalized.length <= ENGINE_TURN_TEXT_LIMIT) return normalized;
   return `${normalized.slice(0, ENGINE_TURN_TEXT_LIMIT - 15).trimEnd()}... [truncated]`;
 }
-
-// ── BridgeEngine ──────────────────────────────────────────────────────────────
 
 export class BridgeEngine {
   readonly kind: string;
@@ -353,9 +324,6 @@ export class BridgeEngine {
     if (rawText === "/stop" || rawText === "/cancel") {
       const chatId = message.chat.id;
       const threadId = message.message_thread_id;
-      // Stop admission establishes its abort fence before this handler makes
-      // any asynchronous call. Cleanup retains the execution lane until all
-      // writable work is gone, but must not delay the user-visible stop.
       void this._cancelLane(chatKey, "stop").catch((error) =>
         console.error(`[${this.kind}] stop cleanup failed`, error)
       );
@@ -367,12 +335,6 @@ export class BridgeEngine {
     await this.mediaBuffer.push(message);
   }
 
-  /**
-   * Telegram can replay an update or expose the same message under another
-   * update id. Claim both identities before any asynchronous dispatch starts.
-   * The bounded process-local cache is intentionally a hotfix: the persisted
-   * polling offset remains the restart boundary, so this needs no migration.
-   */
   private claimTelegramMessage(update: TelegramUpdate): boolean {
     const message = update.message;
     if (!message) return true;
@@ -392,13 +354,10 @@ export class BridgeEngine {
 
   async handleMessages(messages: TelegramMessage[], providedChatKey?: string): Promise<void> {
     const primaryMessage = messages.find((m) => m.text || m.caption) || messages[0];
-
-    // Auth check — defence-in-depth; handleUpdate also checks before buffering
     if (!isAuthorizedMessage(primaryMessage, this.opts.allowedUserIds)) return;
 
     const threadId = extractThreadId(messages);
     const rawText = (primaryMessage.text || primaryMessage.caption || "").trim();
-    // A slash command is any text starting with /; isBridgeCommand only covers built-ins
     const isSlashCmd = rawText.startsWith("/");
     const commandText = isSlashCmd ? rawText : null;
     const hasAttachment = !!(primaryMessage.photo?.length || primaryMessage.document);
@@ -416,9 +375,7 @@ export class BridgeEngine {
 
     const hookCtx: HookContext = { chatId, chatKey, threadId, userId };
 
-    // ── Command handling ──────────────────────────────────────────────────────
     if (commandText) {
-      // Plugin hook first
       if (this.hooks.onCommand) {
         const hookResult = await this.hooks.onCommand(commandText, hookCtx);
         if (hookResult !== null) {
@@ -433,10 +390,6 @@ export class BridgeEngine {
         }
       }
 
-      // Built-in handler for known agent kinds. Route every slash command
-      // through handleCommand, not just recognized ones: handleCommand's own
-      // fallback sends unrecognized slash commands to the native CLI as a
-      // normal prompt (isBridgeCommand alone only identifies built-ins).
       if (isAgentKind(this.kind) && isSlashCmd) {
         let resetHandle: ExecutionLaneHandle | null = null;
         if (commandText === "/reset") {
@@ -491,7 +444,6 @@ export class BridgeEngine {
             return;
           }
           if (commandResponse.kind === "execute") {
-            // Fall through to execution with the overridden prompt
             await this._executeAndSend(commandResponse.prompt, chatId, chatKey, primaryMessage.chat.type, threadId, userId, hookCtx, []);
             return;
           }
@@ -499,97 +451,12 @@ export class BridgeEngine {
             await this._executeBtw(commandResponse.prompt, chatId, chatKey, threadId);
             return;
           }
-          if (commandResponse.kind === "compact") {
-            const ck = commandResponse.chatKey;
-            const compactHandle = this.db.acquireLock(this.surfaceIdentity, ck);
-            if (!compactHandle) {
-              await this.sendText(chatId, { text: "Execution lane busy — stop or wait for the active turn before compacting.", message_thread_id: threadId });
-              return;
-            }
-            const compactHeartbeat = setInterval(() => {
-              if (!this.db.heartbeatLock(compactHandle)) abortCliProcess(this._executionLane(ck));
-            }, this.db.lockHeartbeatMs);
-            compactHeartbeat.unref();
-            const inProgressKey = compactInProgressSettingKey(ck);
-            const activeSince = this.db.getSetting(inProgressKey);
-            if (activeSince) {
-              await this.sendText(chatId, {
-                text: `Compact already in progress since ${activeSince}. Run /context to check status.`,
-                message_thread_id: threadId,
-              });
-              clearInterval(compactHeartbeat);
-              this.db.unlock(compactHandle);
-              return;
-            }
-            const pendingTurns = this.db.getConvTurnsForCompaction(ck);
-            if (pendingTurns.length === 0) {
-              await this.sendText(chatId, { text: "Nothing to compact — no conversation turns yet.", message_thread_id: threadId });
-              clearInterval(compactHeartbeat);
-              this.db.unlock(compactHandle);
-              return;
-            }
-            const chunks = chunkCompactTurns(pendingTurns);
-            const startedAt = new Date().toISOString();
-            await this.sendText(chatId, {
-              text: `Compacting context... ${pendingTurns.length} turn${pendingTurns.length === 1 ? "" : "s"} across ${chunks.length} chunk${chunks.length === 1 ? "" : "s"}. /context will show progress.`,
-              message_thread_id: threadId,
-            });
-            this.db.setSetting(inProgressKey, startedAt);
-            console.log(`[compact] start chatKey=${ck} bot=${this.kind} turns=${pendingTurns.length} chunks=${chunks.length}`);
-
-            try {
-              const result = await compactConversation(ck, {
-                db: this.db,
-                runCli: (command, args, cwd, options) => this.exec.runCli(command, args, cwd, options),
-                ...this._compactionRecoveryDeps(),
-                trigger: "manual",
-                compactProfile: this.opts.compactProfile ?? "engineering",
-                assertCanCommit: () => this._renewLaneOrThrow(compactHandle),
-              });
-              this._renewLaneOrThrow(compactHandle);
-
-              if (result.outcome === "compacted") {
-                this._runWithFence(compactHandle, () => {
-                  this.db.setSetting(`ctx_suppress:${ck}`, null);
-                  if (isAgentKind(this.kind)) db_setSession(this.db, ck, this.kind, null);
-                });
-                console.log(`[compact] success chatKey=${ck} summaryRange=${result.startId}-${result.endId} promoted=${result.promotedMemoryIds?.length ?? 0} rejected=${result.rejectedCandidateCount ?? 0}`);
-                this._renewLaneOrThrow(compactHandle);
-                await this.sendText(chatId, {
-                  text: `Context compacted. ${result.turnCount} turn${result.turnCount === 1 ? "" : "s"} summarised. Session reset — next message starts fresh, seeded with this summary.`,
-                  message_thread_id: threadId,
-                });
-              } else if (result.outcome === "failed") {
-                // Non-destructive failure: no summary stored, no turns pruned — the
-                // previous summary and raw turns remain available so the conversation
-                // can continue uninterrupted.
-                console.warn(`[compact] failed chatKey=${ck} bot=${this.kind} error=${result.error}`);
-                await this.sendText(chatId, {
-                  text: `Compaction failed — conversation history was left unchanged. You can try /compact again or keep working normally.`,
-                  message_thread_id: threadId,
-                });
-              } else {
-                await this.sendText(chatId, {
-                  text: "Nothing to compact — no conversation turns yet.",
-                  message_thread_id: threadId,
-                });
-              }
-            } finally {
-              this.db.setSetting(inProgressKey, null);
-              clearInterval(compactHeartbeat);
-              this.db.unlock(compactHandle);
-            }
-            return;
-          }
         }
-        return; // Unrecognised command for agent bot — ignore
+        return;
       }
-
-      // For non-agent kinds with no hook match — ignore
       return;
     }
 
-    // ── Prompt execution ──────────────────────────────────────────────────────
     const inputRunId = randomUUID();
     const uploadDir = join(tmpdir(), `bridge-uploads-${this.kind}-${chatKey}-${inputRunId}`);
     let attachmentLocalPath: string | null = null;
@@ -925,12 +792,6 @@ export class BridgeEngine {
     }
   }
 
-  /**
-   * Own cancellation per execution lane. Every caller observes the same
-   * process-tree/lifecycle fence and only the owner may continue the lane.
-   * Messages received after /stop begins remain queued for the successor;
-   * messages already pending at /stop admission are discarded.
-   */
   private _cancelLane(chatKey: string, mode: "augment" | "interrupt" | "stop"): Promise<void> {
     const executionLane = this._executionLane(chatKey);
     const existing = this.laneCoordinator.getCancellation(executionLane);
@@ -943,10 +804,6 @@ export class BridgeEngine {
     }
 
     const record = { mode, promise: Promise.resolve() } as LaneCancellation;
-
-    // /stop is a publication and persistence fence, not merely process
-    // cleanup. Install it synchronously so a final delivery already in
-    // flight cannot commit once its send resolves.
     if (mode === "stop") this._installStopFence(chatKey, executionLane);
     this.laneCoordinator.setCancellation(executionLane, record);
 
@@ -965,23 +822,12 @@ export class BridgeEngine {
       try {
         if (record.mode === "stop") this._discardPendingMessages(chatKey);
         handle = await abortExecutionAndWait(executionLane);
-
-        // abortExecutionAndWait has confirmed both process-tree termination
-        // and lifecycle completion, so the old turn can no longer commit.
         this.laneCoordinator.clearAborted(executionLane);
         this.laneCoordinator.clearResetting(executionLane);
         const activeDrainer = this.laneCoordinator.getDrainer(executionLane);
-        // A fresh augment must abort a running successor before waiting for
-        // its drainer; otherwise the existing cancellation promise hides the
-        // new arrival until the successor has already delivered.
         if (activeDrainer && record.mode !== "augment") await activeDrainer.promise;
-        // Give messages already admitted during the cancellation boundary one
-        // turn to reach durable FIFO before the augmented batch is claimed.
         if (record.mode === "augment") await new Promise<void>((resolve) => setImmediate(resolve));
         if (activeDrainer) await activeDrainer.promise;
-        // Keep cancellation coalescing active until the old drainer has
-        // released its claimed row. Only then may a successor become the
-        // target of a fresh interrupt.
         if (record.mode === "augment") this.laneCoordinator.markAugmentTransferred(executionLane);
         this.laneCoordinator.clearCancellation(executionLane, record);
         if (handle) await this._drainQueueAndUnlock(handle, undefined, 0, false, record.mode === "augment");
@@ -995,9 +841,6 @@ export class BridgeEngine {
         if (handle && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(handle)) this.db.unlock(handle);
       }
     })().finally(() => {
-      // The augment/final-delivery race returns before the inner cleanup
-      // boundary. Every cancellation exit must still release its lane record
-      // so later messages can acquire and drain normally.
       if (this.laneCoordinator.getCancellation(executionLane) === record) {
         this.laneCoordinator.clearAborted(executionLane);
         this.laneCoordinator.clearResetting(executionLane);
@@ -1131,7 +974,7 @@ export class BridgeEngine {
     const timer = setTimeout(() => {
       this.queueRecoveryTimers.delete(chatKey);
       try {
-          const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
+        const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
         if (!handle) return;
         void this._drainQueueAndUnlock(handle, undefined, attempt).catch((error) =>
           console.error(`[${this.kind}] queue recovery failed chatKey=${chatKey}`, error)
@@ -1209,8 +1052,7 @@ export class BridgeEngine {
   }
 
   private _stageResultState(result: CliResult): StagedCliResult {
-    const extracted = extractProjectMemorySidecars(result.text);
-    return { ...result, text: extracted.cleanText, memoryCandidates: extracted.candidates };
+    return { ...result };
   }
 
   private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult): void {
@@ -1221,13 +1063,6 @@ export class BridgeEngine {
         if (result.nativeSessionMode === "fresh") clearHandoffRequired(this.db, chatKey, this.kind);
       }
       if (isAgentKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
-      for (const candidate of result.memoryCandidates) {
-        storeProjectMemoryCandidate(this.db, candidate, {
-          chatKey,
-          cliKind: this.kind,
-          repoPath: process.cwd(),
-        });
-      }
       if (isAgentKind(this.kind)) this._rememberTurn(chatKey, prompt, result.text);
     });
   }
@@ -1251,7 +1086,6 @@ export class BridgeEngine {
     this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind);
   }
 
-  /** Injects Bridge context only when the provider starts fresh native state. */
   private _shouldInjectContext(chatKey: string, nativeSessionMode: "fresh" | "resume"): boolean {
     if (this.db.getSetting(`ctx_suppress:${chatKey}`)) return false;
     return nativeSessionMode === "fresh";
@@ -1266,8 +1100,7 @@ export class BridgeEngine {
   private _buildContextAccess(chatKey: string): { prompt: string; env: Record<string, string> } | null {
     const dbPath = this.opts.fullConfig?.dbPath;
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
-    const memoryCount = this.db.getMemoryCount();
-    const hasContext = !!dbPath && (status.turnCount > 0 || !!status.latestSummaryAt || memoryCount > 0);
+    const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
     const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
     const turnKey = `${chatKey}:${randomUUID()}`;
@@ -1286,20 +1119,13 @@ export class BridgeEngine {
       }
     }
     if (!hasContext && !advisorCapability) return null;
-    const memoryHint = memoryCount > 0 ? [
-      '"$AGENT_BRIDGE_CONTEXT_COMMAND" --memory',
-      '"$AGENT_BRIDGE_CONTEXT_COMMAND" --memory-query "<specific query>"',
-      '"$AGENT_BRIDGE_CONTEXT_COMMAND" --memory-add-json \'<json>\'',
-    ] : [];
     const contextPrompt = hasContext ? [
-        "[Agent Bridge context]",
-        "More conversation history is available if needed:",
-        '"$AGENT_BRIDGE_CONTEXT_COMMAND" --summary',
-        '"$AGENT_BRIDGE_CONTEXT_COMMAND" --recent 20',
-        '"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>"',
-        ...memoryHint,
-        "",
-      ].join("\n") : "";
+      "[Agent Bridge context]",
+      "More retained conversation turns are available if needed:",
+      '"$AGENT_BRIDGE_CONTEXT_COMMAND" --recent 20',
+      '"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>"',
+      "",
+    ].join("\n") : "";
     return {
       prompt: contextPrompt,
       env: {
@@ -1308,8 +1134,6 @@ export class BridgeEngine {
           AGENT_BRIDGE_CONTEXT_COMMAND: commandPath,
           AGENT_BRIDGE_CONTEXT_DB: dbPath!,
           AGENT_BRIDGE_CHAT_KEY: chatKey,
-          AGENT_BRIDGE_CLI_KIND: this.kind,
-          AGENT_BRIDGE_REPO_PATH: process.cwd(),
         } : {}),
         ...(advisorCapability ? {
           AGENT_BRIDGE_ADVISOR_COMMAND: advisorCommandPath,
@@ -1319,63 +1143,16 @@ export class BridgeEngine {
     };
   }
 
-  /**
-   * Minimal pre-seed compaction: when a fresh-session turn is about to inject
-   * full context into a fresh provider session and the un-compacted backlog
-   * exceeds BRIDGE_PRESEED_COMPACT_CHARS, compact it first so the injected
-   * context is a summary rather than a large raw-turn dump. Off by default
-   * (BRIDGE_PRESEED_COMPACT_MODE=auto opts in). Never blocks the user's turn:
-   * skipped when a compaction is already in progress, a no-op with zero
-   * un-compacted turns, and any failure is logged and swallowed.
-   */
-  private async _maybePreseedCompact(chatKey: string, nativeSessionMode: "fresh" | "resume", laneHandle: ExecutionLaneHandle): Promise<void> {
-    if (preseedCompactMode() !== "auto") return;
-    if (!this._shouldInjectContext(chatKey, nativeSessionMode)) return;
-
-    const inProgressKey = compactInProgressSettingKey(chatKey);
-    if (this.db.getSetting(inProgressKey)) return;
-
-    const stats = this.db.getUncompactedConvStats(chatKey);
-    if (stats.turnCount === 0) return;
-    if (stats.charCount <= preseedCompactCharThreshold()) return;
-
-    this.db.setSetting(inProgressKey, new Date().toISOString());
-    try {
-      const result = await compactConversation(chatKey, {
-        db: this.db,
-        runCli: (command, args, cwd, options) => this.exec.runCli(command, args, cwd, options),
-        ...this._compactionRecoveryDeps(),
-        trigger: "preseed",
-        compactProfile: this.opts.compactProfile ?? "engineering",
-        assertCanCommit: () => this._renewLaneOrThrow(laneHandle),
-      });
-      this._renewLaneOrThrow(laneHandle);
-      if (result.outcome === "failed") {
-        console.warn(`[preseed-compact] failed outcome chatKey=${chatKey} cliKind=${this.kind} error=${result.error}`);
-      }
-    } catch (error) {
-      if (error instanceof LostExecutionLeaseError) throw error;
-      console.warn(`[preseed-compact] failed chatKey=${chatKey} cliKind=${this.kind}`, error);
-    } finally {
-      this.db.setSetting(inProgressKey, null);
-    }
-  }
-
-  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", laneHandle: ExecutionLaneHandle, model: string | null): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
-    await this._maybePreseedCompact(chatKey, nativeSessionMode, laneHandle);
+  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
     const shouldInject = this._shouldInjectContext(chatKey, nativeSessionMode);
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, nativeSessionMode);
     const access = this._buildContextAccess(chatKey);
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt)
-      : (this.opts.workspaceContext ? `[Managed workspace context]
-${this.opts.workspaceContext}
-
-${contextPrompt}` : contextPrompt);
+      : (this.opts.workspaceContext ? `[Managed workspace context]\n${this.opts.workspaceContext}\n\n${contextPrompt}` : contextPrompt);
     const handoffPrompt = shouldInject ? prependHandoffModel(workspacePrompt, model) : workspacePrompt;
     const soulContext = shouldInject ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: shouldInject };
-    // Context env stays available so the CLI can self-serve query durable evidence.
     return {
       prompt: shouldInject ? `${access.prompt}${handoffPrompt}` : handoffPrompt,
       contextEnv: access.env,
@@ -1412,7 +1189,6 @@ ${contextPrompt}` : contextPrompt);
     );
   }
 
-  /** Executes one ordinary provider turn for a non-messaging surface. */
   async executeSurfaceNeutralTurn(input: SurfaceNeutralTurnInput): Promise<StagedCliResult> {
     const executionLane = this._executionLane(input.chatKey);
     const lifecycleToken = beginExecutionLifecycle(executionLane, input.laneHandle);
@@ -1492,7 +1268,7 @@ ${contextPrompt}` : contextPrompt);
       attachments,
       outputDir: null,
     }).nativeSessionMode;
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, laneHandle, model);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -1501,8 +1277,6 @@ ${contextPrompt}` : contextPrompt);
       prompt: promptForCli.prompt,
       sessionId,
       executionMode: this.opts.executionMode,
-      // Claude/Antigravity stream-json is retained for safe answer presentation; native
-      // provider completion, not Bridge parsing, owns background task lifetime.
       outputFormat: executionKind === "antigravity" || executionKind === "claude"
         ? "stream-json"
         : executionKind === "grok"
@@ -1567,9 +1341,6 @@ ${contextPrompt}` : contextPrompt);
           console.error(`[${this.kind}] output file upload failed`, err)
         );
       }
-      // The process runner emits run.completed before provider-specific session
-      // recovery is known. Append the corrected terminal view for downstream
-      // collectors so downstream consumers see the resolved session id.
       if (collect && runId && eventContext) {
         collect({
           type: "run.completed",
@@ -1593,7 +1364,6 @@ ${contextPrompt}` : contextPrompt);
       if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
-        // The canonical provider entrypoint injects conversation context itself — do not pre-wrap.
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
@@ -1644,7 +1414,6 @@ ${contextPrompt}` : contextPrompt);
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      // Keep the same answer-streaming format as the primary attempt and its fallback.
       outputFormat: executionKind === "antigravity" || executionKind === "claude"
         ? "stream-json"
         : executionKind === "grok"
@@ -1725,11 +1494,10 @@ ${contextPrompt}` : contextPrompt);
     body: any = {},
   ): Promise<StagedCliResult> {
     if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
-    // Fresh-session retry: sessionId is null, so this always injects under handoff_once too.
     const model = isAgentKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
-    const retryPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", laneHandle, model);
+    const retryPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", model);
     const maxFreshAttempts = 2;
     let retryResult: StagedCliResult | null = null;
     for (let attempt = 1; attempt <= maxFreshAttempts; attempt++) {
@@ -1756,10 +1524,6 @@ ${contextPrompt}` : contextPrompt);
         console.warn(`[${this.kind}] fresh-session retry ${attempt}/${maxFreshAttempts} failed with recoverable Agy error`, err.message);
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
         if (attempt === maxFreshAttempts) {
-          // Agy flake (e.g. cascade COMMAND_STATUS losing its own background
-          // command) persisted across fresh sessions — surface a clean message
-          // instead of the raw cascade error. Keep it colon-free so
-          // toUserMessage does not truncate it.
           throw new Error("Agy failed repeatedly with an internal cascade error. The session was reset — please resend your message.");
         }
       }
@@ -1796,18 +1560,16 @@ ${contextPrompt}` : contextPrompt);
       fallbackLogFile = join(tmpdir(), `antigravity-${randomUUID()}.log`);
     }
     if (executionKind === "antigravity") setAntigravityModel(fallbackModel);
-    const fallbackPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", laneHandle, fallbackModel);
+    const fallbackPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", fallbackModel);
     const fallbackInvocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
       model: fallbackModel,
       effort: resolveEffort(executionKind, this.db),
-      // Fresh-session fallback retry: sessionId is null, so this always injects under handoff_once too.
       prompt: fallbackPromptForCli.prompt,
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      // Keep the same answer-streaming format on a fresh fallback attempt.
       outputFormat: executionKind === "antigravity" || executionKind === "claude"
         ? "stream-json"
         : executionKind === "grok"
@@ -1995,34 +1757,6 @@ ${contextPrompt}` : contextPrompt);
     return this._executionKind();
   }
 
-  private _compactionRecoveryDeps(): {
-    botConfig: { command: string; modelPreference: string[] };
-    cliKind: BotKind;
-    model: string | null;
-    fallbackTargets: import("./compactConversation.js").CompactionFallbackTarget[];
-  } {
-    const executionKind = this._executionKind();
-    const config = this._effectiveConfig();
-    const targets = resolveCompactionRecoveryTargets({
-      db: this.db,
-      activeProvider: executionKind,
-      bots: { ...config.bots, [executionKind]: this.opts.botConfig },
-      configuredChain: parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN),
-    });
-    const primary = targets[0] ?? {
-      provider: executionKind,
-      command: this.opts.botConfig.command,
-      model: this.db.getSetting(executionKind) ?? this.opts.botConfig.modelPreference[0] ?? null,
-    };
-    return {
-      botConfig: { command: primary.command, modelPreference: primary.model ? [primary.model] : [] },
-      cliKind: primary.provider,
-      model: primary.model,
-      fallbackTargets: targets.slice(1),
-    };
-  }
-
-  /** Returns fullConfig if provided, otherwise builds a minimal BridgeConfig from engine options. */
   private _effectiveConfig(): BridgeConfig {
     if (this.opts.fullConfig) return this.opts.fullConfig;
     const kind = this.kind as BotKind;
@@ -2044,8 +1778,6 @@ ${contextPrompt}` : contextPrompt);
     };
   }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function db_setSession(db: BridgeDb, chatKey: string, kind: BotKind, sessionId: string | null) {
   try {

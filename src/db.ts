@@ -12,16 +12,10 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { LockRepository, type ExecutionLaneHandle, type ExecutionLockRecord } from "./repositories/lockRepository.js";
 export type { ExecutionLaneHandle } from "./repositories/lockRepository.js";
-import { MemoryRepository } from "./repositories/memoryRepository.js";
 import { RunRepository, type RunningRun } from "./repositories/runRepository.js";
 import { SessionRepository } from "./repositories/sessionRepository.js";
 import { SettingsRepository } from "./repositories/settingsRepository.js";
 import { EventReceiptRepository } from "./repositories/eventReceiptRepository.js";
-import {
-  CompactionRepository,
-  type CompactionAttemptInput,
-  type CompactionAttemptRecord,
-} from "./repositories/compactionRepository.js";
 import { AdvisorRepository } from "./repositories/advisorRepository.js";
 
 type OrphanProcessState = "live" | "absent" | "ambiguous";
@@ -52,6 +46,7 @@ export interface ControlledRolloutReconciliationOptions {
   nowMs?: number;
   reason: string;
 }
+
 import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS } from "./repositories/conversationRepository.js";
 export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./repositories/conversationRepository.js";
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
@@ -61,46 +56,6 @@ import type { BotKind } from "./types.js";
 
 // Sentinel row keys stored in bridge_state for non-chat state
 const pollingKey = (bot: string) => `$polling:${bot}`;
-
-const MEMORY_SYNONYMS: Record<string, string[]> = {
-  affordance: ["helper", "command", "context"],
-  compact: ["compact", "compaction", "summary", "summarise", "summarize"],
-  compaction: ["compact", "compaction", "summary", "summarise", "summarize"],
-  context: ["context", "conversation", "history", "turns"],
-  fallback: ["fallback", "switch", "promotion", "persistent", "preference"],
-  histories: ["history", "conversation", "context", "turns"],
-  history: ["history", "conversation", "context", "turns"],
-  memory: ["memory", "memories", "remember", "recall"],
-  memories: ["memory", "memories", "remember", "recall"],
-  persistent: ["persistent", "preference", "fallback", "promotion"],
-  promote: ["promotion", "fallback", "switch", "persistent"],
-  promotion: ["promotion", "fallback", "switch", "persistent"],
-  summaries: ["summary", "summaries", "summarise", "summarize", "compact", "compaction"],
-  summarisation: ["summary", "summaries", "summarise", "summarize", "compact", "compaction"],
-  summarization: ["summary", "summaries", "summarise", "summarize", "compact", "compaction"],
-  summary: ["summary", "summaries", "summarise", "summarize", "compact", "compaction"],
-  switch: ["switch", "fallback", "promotion", "persistent"],
-};
-
-function normalizeMemoryTokens(raw: string): string[] {
-  const base = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
-  const tokens = new Set<string>();
-  for (const word of base) {
-    tokens.add(word);
-    if (word.endsWith("ies") && word.length > 4) tokens.add(`${word.slice(0, -3)}y`);
-    if (word.endsWith("s") && word.length > 4) tokens.add(word.slice(0, -1));
-    for (const alias of MEMORY_SYNONYMS[word] ?? []) tokens.add(alias);
-  }
-  return [...tokens].slice(0, 32);
-}
-
-export function buildMemoryFtsQuery(raw: string): string {
-  return normalizeMemoryTokens(raw).map((w) => `${w}*`).join(" OR ");
-}
 
 function assertExecutionScope(surface: string, chatKey: string): void {
   if (!surface?.trim()) throw new Error("surface is required");
@@ -153,18 +108,10 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
   raw.pragma("foreign_keys = ON");
   applyMigrations(raw, undefined, options.databaseRole);
 
-  // ── Non-schema runtime maintenance ────────────────────────────────────────
-  // Issue #349: startup maintenance used to DELETE conversation_turns already
-  // covered by a compact summary's range_end_turn_id. That made the summary
-  // the only surviving copy of that evidence, which violates the
-  // turns-are-recoverable-source-evidence contract (summaries are disposable
-  // handoff caches, not the archive). Turns are intentionally left in place
-  // on every open, including for a database that already existed before this
-  // change — bounded context construction is unaffected because
-  // ConversationRepository already filters covered turns out of prompts via
-  // the summary's range_end_turn_id (buildConvContext/getConvTurnsForCompaction),
-  // independent of whether the rows still physically exist. Turn retention is
-  // an explicit, separately owned policy; nothing here prunes automatically.
+  // Retained conversation turns are source evidence. Historical summary,
+  // compaction-attempt, and project-memory tables remain in the schema so #544
+  // does not perform a destructive migration, but startup does not read,
+  // regenerate, or prune through those retired execution paths.
 
   // Expire sessions older than 7 days — prevents a stale/corrupt session from
   // being resumed indefinitely after a long gap without a /reset
@@ -293,8 +240,6 @@ export class BridgeDb {
   private readonly settings: SettingsRepository;
   private readonly runs: RunRepository;
   private readonly eventReceipts: EventReceiptRepository;
-  private readonly memories: MemoryRepository;
-  private readonly compactions: CompactionRepository;
   private readonly advisorCalls: AdvisorRepository;
   private readonly conversations: ConversationRepository;
 
@@ -308,8 +253,6 @@ export class BridgeDb {
     this.settings = new SettingsRepository(raw);
     this.runs = new RunRepository(raw);
     this.eventReceipts = new EventReceiptRepository(raw);
-    this.memories = new MemoryRepository(raw);
-    this.compactions = new CompactionRepository(raw);
     this.advisorCalls = new AdvisorRepository(raw);
     this.conversations = new ConversationRepository(raw);
   }
@@ -498,7 +441,7 @@ export class BridgeDb {
     if (!Number.isFinite(options.minAgeMs) || options.minAgeMs < 0) {
       throw new Error("minAgeMs must be a finite non-negative number");
     }
-      const nowMs = options.nowMs ?? Date.now();
+    const nowMs = options.nowMs ?? Date.now();
     const reconciled: Array<RunningRun & { ended_at: string }> = [];
     for (const run of options.candidateRuns ?? this.runs.listRunningRuns()) {
       const startedMs = Date.parse(run.started_at);
@@ -656,6 +599,7 @@ export class BridgeDb {
   }
 
   // ── Conversation turns ──────────────────────────────────────────────────
+
   addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string): void {
     this.conversations.addConvTurn(chatKey, role, text, cli);
   }
@@ -673,6 +617,7 @@ export class BridgeDb {
   }
 
   // ── Pending messages ────────────────────────────────────────────────────
+
   pendingMsgCount(surface: string, chatKey: string): number {
     assertExecutionScope(surface, chatKey);
     const row = this.raw
@@ -889,7 +834,7 @@ export class BridgeDb {
       .all(surface) as Array<{ chatKey: string }>).map((row) => row.chatKey);
   }
 
-  // ── Conversation summaries ──────────────────────────────────────────────
+  // Historical summaries remain only for schema/data compatibility and /reset cleanup.
   addConvSummary(chatKey: string, startTurnId: number, endTurnId: number, summaryMd: string): void {
     this.conversations.addConvSummary(chatKey, startTurnId, endTurnId, summaryMd);
   }
@@ -900,21 +845,9 @@ export class BridgeDb {
     return this.conversations.getLatestConvSummary(chatKey);
   }
 
-  getConvTurnsForCompaction(chatKey: string): Array<{ id: number; role: string; text: string; cli: string | null; created_at: string }> {
-    return this.conversations.getConvTurnsForCompaction(chatKey);
-  }
-
-  /** Issue #350 — see ConversationRepository.searchConvTurns for the full contract. */
+  /** Issue #350 — scoped exact-turn search. */
   searchConvTurns(chatKey: string, query: string, limit?: number): Array<{ id: number; role: string; text: string; cli: string | null; created_at: string }> {
     return this.conversations.searchConvTurns(chatKey, query, limit);
-  }
-
-  getUncompactedConvStats(chatKey: string): { turnCount: number; charCount: number } {
-    return this.conversations.getUncompactedConvStats(chatKey);
-  }
-
-  pruneConvTurns(chatKey: string, upToTurnId: number): void {
-    this.conversations.pruneConvTurns(chatKey, upToTurnId);
   }
 
   clearConvHistory(chatKey: string): void {
@@ -925,8 +858,6 @@ export class BridgeDb {
     turnCount: number; pendingCount: number; latestSummaryAt: string | null; latestTurnAt: string | null;
   } {
     assertExecutionScope(surface, chatKey);
-    // Pending-message SQL stays local to BridgeDb (out of Phase 4B scope);
-    // conversation-side counts come from ConversationRepository.
     const pc = this.raw
       .prepare(`SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ?`)
       .get(surface, chatKey) as { n: number };
@@ -936,42 +867,6 @@ export class BridgeDb {
       latestSummaryAt: this.conversations.getLatestSummaryAt(chatKey),
       latestTurnAt: this.conversations.getLatestTurnAt(chatKey),
     };
-  }
-
-  addCompactionAttempt(input: CompactionAttemptInput): void {
-    this.compactions.addAttempt(input);
-  }
-
-  getLatestCompactionAttempt(chatKey: string): CompactionAttemptRecord | null {
-    return this.compactions.getLatestAttempt(chatKey);
-  }
-
-  // ── Project memory ────────────────────────────────────────────────────────
-
-  addMemory(mem: { id: string; type: string; scope?: string; text: string; source_chat_key?: string; source_cli?: string; source_turn_id?: number; source_repo_path?: string; confidence?: number }): void {
-    this.memories.addMemory(mem);
-  }
-
-  findMemoryByText(text: string): { id: string } | null {
-    return this.memories.findMemoryByText(text);
-  }
-
-  getLatestConvTurnId(chatKey: string): number | null {
-    return this.memories.getLatestConvTurnId(chatKey);
-  }
-
-  searchMemories(query: string, limit = 5, chatKey?: string): Array<{ id: string; type: string; text: string; score: number; snippet: string }> {
-    return chatKey === undefined
-      ? this.memories.searchMemories(query, limit)
-      : this.memories.searchMemories(query, limit, chatKey);
-  }
-
-  getMemoryCount(): number {
-    return this.memories.getMemoryCount();
-  }
-
-  resolveMemory(id: string, resolvedBy: string): void {
-    this.memories.resolveMemory(id, resolvedBy);
   }
 
   close(): void {

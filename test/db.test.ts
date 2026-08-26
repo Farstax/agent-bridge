@@ -47,18 +47,39 @@ describe("BridgeDb ordinary Run state", () => {
     expect(db.getEventReceiptByIdempotencyKey(input.idempotency_key)?.id).toBe(first.id);
   });
 
-  it("retains recoverable turns and project memories", () => {
+  it("retains exact conversation turns for fresh-session continuity", () => {
     db.addConvTurn("chat-1", "user", "hello", "codex");
     db.addConvTurn("chat-1", "assistant", "hi", "codex");
-    expect(db.buildConvContext("chat-1")).toContain("hello");
-    db.addMemory({ id: "memory-1", type: "note", text: "keep this", source_chat_key: "chat-1" });
-    expect(db.searchMemories("keep", 5, "chat-1")).toHaveLength(1);
+    const context = db.buildConvContext("chat-1");
+    expect(context).toContain("User: hello");
+    expect(context).toContain("Assistant: hi");
+  });
+
+  it("keeps historical legacy tables without exposing retired runtime APIs", () => {
+    for (const table of ["conversation_summaries", "compaction_attempts", "project_memories"]) {
+      expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeTruthy();
+    }
+
+    for (const method of [
+      "getConvTurnsForCompaction",
+      "getUncompactedConvStats",
+      "pruneConvTurns",
+      "addCompactionAttempt",
+      "getLatestCompactionAttempt",
+      "addMemory",
+      "findMemoryByText",
+      "searchMemories",
+      "getMemoryCount",
+      "resolveMemory",
+    ]) {
+      expect(method in db).toBe(false);
+    }
   });
 });
 
 describe("db.ts public export compatibility", () => {
-  it("keeps conversation context constants stable", () => {
-    expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(8_000);
+  it("keeps retained-turn context constants stable", () => {
+    expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(24_000);
     expect(DEFAULT_CONTEXT_RECENT_TURN_LIMIT).toBe(200);
   });
 });

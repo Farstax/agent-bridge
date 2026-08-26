@@ -196,16 +196,16 @@ Supported effort levels: `low`, `medium`, `high`, `xhigh`, `max`; default `mediu
 
 Use `git-sandbox` for substantial isolation when useful/requested. After merge, the merging agent owns safe cleanup: verify the PR merged, ensure no unpreserved work, remove its worktree, delete merged local/remote feature branches where safe, prune worktrees, and verify stale state is gone. Never force-delete unknown work or active/protected branches.
 
-## Persistent project context
+## Retained conversation context
 
-When `AGENT_BRIDGE_CONTEXT_COMMAND` is available, query it before important architecture/behavior changes and add durable non-secret project facts when learned:
+When `AGENT_BRIDGE_CONTEXT_COMMAND` is available, use it only for read-only retrieval of retained exact conversation turns when earlier context matters:
 
 ```bash
-"$AGENT_BRIDGE_CONTEXT_COMMAND" --memory-query "<query>"
-"$AGENT_BRIDGE_CONTEXT_COMMAND" --memory-add-json '{"type":"decision","scope":"project","text":"<fact>","confidence":0.8}'
+"$AGENT_BRIDGE_CONTEXT_COMMAND" --recent 20
+"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>"
 ```
 
-Never save credentials, transient logs, or private personal information.
+The helper does not create or mutate project memory. Durable repository rules, architecture decisions, and reusable engineering guidance belong in the repository's normal owned documentation, instructions, or Skills rather than a hidden generated-memory store. Never use conversation context to persist credentials, transient logs, or private personal information.
 
 ## Prompt optimization
 
