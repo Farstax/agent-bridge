@@ -41,7 +41,6 @@ import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./pr
 import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseHealthBotMode } from "./health/config.js";
@@ -208,7 +207,6 @@ const fallbackChain = new ProviderFallbackChain(
   providerLock ? runtimePolicy.cliKinds : configuredCliChain,
   db,
 );
-const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
@@ -243,7 +241,6 @@ const engines = Object.fromEntries(
           pollIntervalMs,
           soulContext,
           fullConfig: config,
-          compactProfile: "companion",
           advisorCapabilities: advisorBroker ?? undefined,
           hooks: {
             onCapacityExhausted: async (chatKey: string) => {
@@ -262,7 +259,6 @@ const defaultPref = providerLock
   ?? resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds())
   ?? "codex";
 
-// Autonomy engines run all providers on the unlocked interactive runtime.
 const AUTONOMY_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const autonomyWorkspaceContext = autonomyDir
   ? loadWorkspaceContext({ ...process.env, AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: join(autonomyDir, "CONTEXT.md") })
@@ -336,9 +332,6 @@ for (const engine of Object.values(engines)) {
         await registerGlobalCommands(newCli, " during queued fallback");
         if (queued.chatType === "group" || queued.chatType === "supergroup") await registerGroupChatCommands(newCli, queued.chatId);
       },
-      compactBeforeSwitch: (request) => runCapacityFallbackCompaction(request, {
-        db, runCli, bots: config.bots, configuredChain: compactionProviderChain, compactProfile: "companion",
-      }),
     });
   });
 }
@@ -440,7 +433,6 @@ for (;;) {
             await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text, message_thread_id: message.message_thread_id } });
             continue;
           }
-
 
           if (autonomyController && autonomyDb) {
             const supervisorReply = matchAutonomousTelegramSupervisorReply(autonomyDb, message);
@@ -566,14 +558,6 @@ for (;;) {
                   await registerGroupChatCommands(newCli, chatId);
                 }
               },
-              compactBeforeSwitch: (request) =>
-                runCapacityFallbackCompaction(request, {
-                  db,
-                  runCli,
-                  bots: config.bots,
-                  configuredChain: compactionProviderChain,
-                  compactProfile: "companion",
-                }),
             }).catch((err: unknown) => console.error("[interactive] dispatch error", err));
           } else {
             engines[pref].handleUpdate(typedUpdate)

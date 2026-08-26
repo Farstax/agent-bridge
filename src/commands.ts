@@ -3,7 +3,7 @@
  * INPUTS: Chat messages and bot kind, configuration, and database instances.
  * OUTPUTS: A CommandResult specifying messages to send or prompt execution overrides.
  * NEIGHBORS: src/index.ts, src/bridge.ts, src/types.ts
- * LOGIC: Normalizes user commands and routes "/start", "/reset", "/models", "/skills" to appropriate action structures.
+ * LOGIC: Normalizes user commands and routes built-ins to action structures.
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -13,24 +13,16 @@ import type { BridgeDb } from "./db.js";
 import { buildModelKeyboard, buildModelsText } from "./bridge.js";
 import { listLocalCatalog } from "./skills.js";
 import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js";
-import { preseedCompactMode, preseedCompactCharThreshold } from "./contextPolicy.js";
 import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
-import {
-  LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE,
-  legacyMemoryCompactionEnabled,
-} from "./legacyMemoryCompaction.js";
-
-const CONTEXT_COMPACT_NUDGE_TURNS = 100;
 
 export type CommandResult =
   | { kind: "message"; text: string }
   | { kind: "keyboard_message"; text: string; reply_markup: any }
   | { kind: "execute"; prompt: string }
   | { kind: "codex_usage" }
-  | { kind: "compact"; chatKey: string }
   | { kind: "btw"; prompt: string };
 
-const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/queue_mode", "/skills", "/usage", "/narration", "/compact", "/context", "/btw"]);
+const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/queue_mode", "/skills", "/usage", "/narration", "/context", "/btw"]);
 export const START_PAYLOAD_MAX_LENGTH = 64;
 export const START_PAYLOAD_PATTERN = /^[a-z0-9-]+$/;
 
@@ -46,9 +38,6 @@ export function parseStartPayload(prompt: string): string | null {
   return payload;
 }
 
-// The alert token is "app-<name-slug>-2x-<reason-code>-<investigationId>": a
-// bounded correlation key, not evidence. This pulls out the trailing 12-hex
-// investigation id so the real evidence can be looked up locally.
 const INVESTIGATION_ID_PATTERN = /\bapp-[a-z0-9-]+-2x-[a-z0-9-]+-([a-f0-9]{12})$/;
 
 export function extractInvestigationId(payload: string): string | null {
@@ -81,22 +70,11 @@ function defaultInvestigationsDir(): string {
   return process.env.AGENT_BRIDGE_INVESTIGATIONS_DIR || "/var/lib/agent-bridge/investigations";
 }
 
-// Length-bounding alone doesn't stop a field from forging extra "lines" in
-// the built prompt (e.g. an applicationName containing "\nRegistered
-// application: something-else"). Evidence fields are single-line facts, so
-// strip control characters before they ever reach prompt text.
 function sanitizeEvidenceField(value: string): string {
   // eslint-disable-next-line no-control-regex
   return value.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
 }
 
-/**
- * Reads the small, bounded, non-secret evidence record a control plane
- * already wrote locally (over the existing authenticated appliance channel)
- * when it opened the health gap that triggered this investigation. Never
- * throws — a missing, oversized, or malformed record degrades to null so a
- * corrupt/stale file can't be mistaken for real evidence.
- */
 export function readInvestigationEvidence(
   investigationId: string,
   dir: string = defaultInvestigationsDir(),
@@ -161,10 +139,6 @@ export function isBridgeCommand(text: string): boolean {
 
 export function antigravityNarrationSettingKey(chatId: string): string {
   return `antigravity:narration:${chatId}`;
-}
-
-export function compactInProgressSettingKey(chatId: string): string {
-  return `compact_in_progress:${chatId}`;
 }
 
 export function isAntigravityNarrationVisible(db: BridgeDb, chatId: string): boolean {
@@ -277,10 +251,7 @@ export function handleCommand(
   }
 
   if (text === "/skills") {
-    return {
-      kind: "message",
-      text: buildSkillsText(),
-    };
+    return { kind: "message", text: buildSkillsText() };
   }
 
   if (text === "/narration") {
@@ -289,19 +260,9 @@ export function handleCommand(
 
   if (text === "/usage") {
     if (kind !== "codex") {
-      return {
-        kind: "message",
-        text: "/usage is only available on the Codex bridge.",
-      };
+      return { kind: "message", text: "/usage is only available on the Codex bridge." };
     }
     return { kind: "codex_usage" };
-  }
-
-  if (text === "/compact") {
-    if (!legacyMemoryCompactionEnabled()) {
-      return { kind: "message", text: LEGACY_MEMORY_COMPACTION_DISABLED_MESSAGE };
-    }
-    return { kind: "compact", chatKey: chatId };
   }
 
   if (text === "/btw") {
@@ -313,53 +274,18 @@ export function handleCommand(
   }
 
   if (text === "/context") {
-    const legacyEnabled = legacyMemoryCompactionEnabled();
     const status = db.getConvStatus(chatId, surfaceIdentity);
-    const summary = db.getLatestConvSummary(chatId);
-    const latestAttempt = db.getLatestCompactionAttempt(chatId);
-    const compactStartedAt = db.getSetting(compactInProgressSettingKey(chatId));
     const turnWord = status.turnCount === 1 ? "1 turn" : `${status.turnCount} turns`;
-    const lines = [
-      `**Context status** for \`${chatId}\``,
-      `Stored: ${turnWord}`,
-      `Pending queue: ${status.pendingCount}`,
-      `Latest turn: ${status.latestTurnAt ?? "none"}`,
-      `Legacy memory/compaction: ${legacyEnabled ? "enabled" : "disabled"}`,
-      `Latest successful compact: ${status.latestSummaryAt ?? "never"}`,
-      `Latest compact attempt: ${latestAttempt?.ended_at ?? "never"}`,
-    ];
-    if (latestAttempt) {
-      lines.push(
-        `Outcome: ${latestAttempt.outcome}${latestAttempt.error_category ? ` (${latestAttempt.error_category})` : ""}`,
-        `Trigger: ${latestAttempt.trigger}`,
-        `Provider/model: ${latestAttempt.provider} / ${latestAttempt.model ?? "default"}`,
-        `Calls/chunks: ${latestAttempt.cli_call_count} / ${latestAttempt.chunk_count}`,
-        `Duration: ${latestAttempt.duration_ms} ms`,
-        `Turn range: ${latestAttempt.range_start_turn_id ?? "none"}-${latestAttempt.range_end_turn_id ?? "none"}`,
-      );
-    }
-    if (compactStartedAt) {
-      lines.push(`Compact: in progress since ${compactStartedAt}`);
-    }
-    if (summary) {
-      const turnsSince = db.getRecentConvTurns(chatId, 1000, summary.range_end_turn_id).length;
-      lines.push(`Turns since last compact: ${turnsSince}`);
-    }
-    if (legacyEnabled && status.turnCount > CONTEXT_COMPACT_NUDGE_TURNS) {
-      lines.push("High turn count - consider /compact");
-    }
-
-    const preseedMode = preseedCompactMode();
-    const uncompacted = db.getUncompactedConvStats(chatId);
-    const memoryCount = db.getMemoryCount();
-    lines.push(
-      "",
-      `Pre-seed compact: ${preseedMode === "auto" ? `auto (threshold ${preseedCompactCharThreshold()} chars)` : "off"}`,
-      `Uncompacted: ${uncompacted.turnCount} turns, ${uncompacted.charCount} chars`,
-      `Memory count: ${memoryCount}`,
-    );
-
-    return { kind: "message", text: lines.join("\n") };
+    return {
+      kind: "message",
+      text: [
+        `**Context status** for \`${chatId}\``,
+        `Stored: ${turnWord}`,
+        `Pending queue: ${status.pendingCount}`,
+        `Latest turn: ${status.latestTurnAt ?? "none"}`,
+        "Retrieval: retained exact turns (`--recent` / `--search`)",
+      ].join("\n"),
+    };
   }
 
   if (String(prompt || "").trim().startsWith("/") && text !== "/stop" && text !== "/cancel") {
@@ -375,7 +301,6 @@ export function buildTelegramCommands(kind: BotKind): Array<{ command: string; d
     { command: "queue_mode", description: "Set busy-message handling" },
     { command: "reset",    description: "Reset session and clear conversation history" },
     { command: "stop",     description: "Abort running execution" },
-    { command: "compact",  description: "Compact conversation context" },
     { command: "context",  description: "Show context status" },
     { command: "btw",      description: "Fresh read-only side question" },
   ];

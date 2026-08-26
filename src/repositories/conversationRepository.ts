@@ -1,10 +1,6 @@
 import type Database from "better-sqlite3";
-import {
-  TURN_HISTORY_CONTEXT_MAX_CHARS,
-  legacyMemoryCompactionEnabled,
-} from "../legacyMemoryCompaction.js";
 
-export const DEFAULT_CONTEXT_MAX_CHARS = 8_000;
+export const DEFAULT_CONTEXT_MAX_CHARS = 24_000;
 export const DEFAULT_CONTEXT_RECENT_TURN_LIMIT = 200;
 
 // Issue #350: bounds for scoped chronological search over conversation_turns.
@@ -24,10 +20,6 @@ function recentTurnCandidateLimit(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CONTEXT_RECENT_TURN_LIMIT;
 }
 
-// Same tokenization shape as db.ts's buildMemoryFtsQuery — lowercase,
-// alphanumeric words longer than one character, deduped, capped — but
-// without the FTS5-specific prefix-wildcard suffix, since this feeds a
-// plain LIKE query rather than an fts5 MATCH expression.
 function tokenizeSearchQuery(raw: string): string[] {
   return [...new Set(
     raw
@@ -62,12 +54,7 @@ export interface ConvSummaryRow {
   created_at: string;
 }
 
-/**
- * Connection-bound SQL owner for conversation_turns/conversation_summaries.
- * None of these methods begin their own transaction — the pre-extraction
- * BridgeDb methods were all single-statement (or, for buildConvContext,
- * pure in-memory composition over two read methods), so none needed one.
- */
+/** Connection-bound SQL owner for retained conversation evidence. */
 export class ConversationRepository {
   constructor(private readonly db: Database.Database) {}
 
@@ -79,10 +66,6 @@ export class ConversationRepository {
 
   getRecentConvTurns(chatKey: string, limit: number, sinceId?: number): ConvTurnRow[] {
     if (sinceId != null) {
-      // Fetch the newest `limit` turns after sinceId (not the oldest), then
-      // re-sort chronologically — mirrors the no-summary branch below so the
-      // most recent context is never silently dropped once a chat exceeds
-      // the candidate limit.
       return this.db
         .prepare(
           `SELECT id, role, text, cli, created_at FROM (
@@ -105,22 +88,10 @@ export class ConversationRepository {
   }
 
   buildConvContext(chatKey: string, maxChars = DEFAULT_CONTEXT_MAX_CHARS): string {
-    const legacyEnabled = legacyMemoryCompactionEnabled();
-    const effectiveMaxChars = !legacyEnabled
-      && !process.env.BRIDGE_CONTEXT_MAX_CHARS
-      && maxChars === DEFAULT_CONTEXT_MAX_CHARS
-      ? TURN_HISTORY_CONTEXT_MAX_CHARS
-      : maxChars;
-    const summary = legacyEnabled ? this.getLatestConvSummary(chatKey) : null;
-    const sinceId = summary?.range_end_turn_id;
-    // Fetch the newest N candidates (configurable via BRIDGE_CONTEXT_RECENT_TURN_LIMIT);
-    // char budget below further culls them. This is a prompt-context cap only —
-    // compaction (getConvTurnsForCompaction) always processes the full backlog.
-    const candidates = this.getRecentConvTurns(chatKey, recentTurnCandidateLimit(), sinceId);
-    if (!summary && candidates.length === 0) return "";
+    const candidates = this.getRecentConvTurns(chatKey, recentTurnCandidateLimit());
+    if (candidates.length === 0) return "";
 
-    // Walk newest-first, accumulate until char budget is exhausted
-    let budget = effectiveMaxChars - (summary ? summary.summary_md.length : 0);
+    let budget = maxChars;
     const selected: Array<{ role: string; text: string }> = [];
     for (let i = candidates.length - 1; i >= 0; i--) {
       const t = candidates[i];
@@ -132,10 +103,6 @@ export class ConversationRepository {
     }
 
     const lines = ["[Context from previous conversation]"];
-    if (summary) {
-      lines.push(summary.summary_md);
-      lines.push("");
-    }
     for (const t of selected) {
       lines.push(`${t.role === "user" ? "User" : "Assistant"}: ${t.text}`);
     }
@@ -143,6 +110,8 @@ export class ConversationRepository {
     return lines.join("\n") + "\n\n";
   }
 
+  // Historical summaries are retained only for non-destructive schema/data
+  // compatibility and scoped /reset cleanup. They are not prompt inputs.
   addConvSummary(chatKey: string, startTurnId: number, endTurnId: number, summaryMd: string): void {
     this.db
       .prepare(
@@ -161,48 +130,10 @@ export class ConversationRepository {
       .get(chatKey) as ConvSummaryRow | undefined) ?? null;
   }
 
-  getConvTurnsForCompaction(chatKey: string): ConvTurnRow[] {
-    const summary = this.getLatestConvSummary(chatKey);
-    return this.db
-      .prepare(
-        `SELECT id, role, text, cli, created_at FROM conversation_turns
-         WHERE chat_key = ? AND id > ?
-         ORDER BY id ASC`
-      )
-      .all(chatKey, summary?.range_end_turn_id ?? 0) as ConvTurnRow[];
-  }
-
   /**
-   * Issue #350: read-only, chat-scoped chronological search over
-   * conversation_turns. Supplements — never replaces — the bounded
-   * recent-turn window that buildConvContext/getRecentConvTurns already
-   * construct; this is a separate retrieval path for older evidence that
-   * has scrolled out of that window (or out of a compact summary's covered
-   * range, since issue #349 stops those turns from ever being deleted).
-   *
-   * Scoping: strictly scoped to `chatKey` via the same WHERE clause every
-   * other conversation_turns query in this class uses — matches can never
-   * cross conversations/workstreams. Deliberately not additionally scoped
-   * by `cli`/provider: buildConvContext and getRecentConvTurns already
-   * blend turns from every CLI a chat has used (that is what makes
-   * provider handoff continuity work), so a provider-scoped search here
-   * would be a narrower, inconsistent contract than the context callers
-   * already rely on. The `cli` column is still returned on every row so a
-   * caller can see provenance and reason about it explicitly.
-   *
-   * Matching hits are selected newest-first so later corrections win when the
-   * hit bound is reached. Each selected hit contributes its nearest preceding
-   * and following turn in the same chat, then the deduplicated evidence is
-   * returned in chronological order for unambiguous inspection.
-   *
-   * Bounds: an empty/whitespace-only query returns `[]` without querying
-   * the database. Matching uses a plain indexed LIKE over
-   * `conversation_turns(chat_key, id)` — no FTS5 virtual table — since
-   * search is already scoped to one chat's turns, a volume plain LIKE
-   * comfortably handles; result count is capped at MAX_SEARCH_TURN_LIMIT
-   * and the complete context result is capped at MAX_SEARCH_CONTEXT_TURNS;
-   * each returned turn's text is truncated to MAX_SEARCH_SNIPPET_CHARS so
-   * results are always safe to inline into a prompt.
+   * Issue #350: read-only, chat-scoped chronological search over exact
+   * conversation turns. Supplements — never replaces — the bounded recent
+   * turn window used for fresh-session continuity.
    */
   searchConvTurns(chatKey: string, query: string, limit = DEFAULT_SEARCH_TURN_LIMIT): ConvTurnRow[] {
     const tokens = tokenizeSearchQuery(query);
@@ -233,10 +164,6 @@ export class ConversationRepository {
         .get(chatKey, id) as ConvTurnRow | undefined;
     };
 
-    // Select newest hits first, but stop adding windows once the global
-    // evidence bound is reached. The hit itself is always admitted before its
-    // optional context, so the bound cannot silently replace a selected hit
-    // with surrounding non-matches.
     for (const hit of matchingRows) {
       const existing = evidence.get(hit.id);
       if (existing) {
@@ -259,31 +186,6 @@ export class ConversationRepository {
           ? `${row.text.slice(0, MAX_SEARCH_SNIPPET_CHARS)}…`
           : row.text,
     }));
-  }
-
-  getUncompactedConvStats(chatKey: string): { turnCount: number; charCount: number } {
-    const summary = this.getLatestConvSummary(chatKey);
-    return this.db
-      .prepare(
-        `SELECT COUNT(*) AS turnCount, COALESCE(SUM(LENGTH(text)), 0) AS charCount
-         FROM conversation_turns WHERE chat_key = ? AND id > ?`
-      )
-      .get(chatKey, summary?.range_end_turn_id ?? 0) as { turnCount: number; charCount: number };
-  }
-
-  /**
-   * Deletes turns up to and including `upToTurnId`. As of issue #349, this is
-   * no longer invoked by normal compaction or startup maintenance — a
-   * summary must never become the only surviving copy of the turns it
-   * covers. This remains available as the primitive an explicit, separately
-   * owned retention policy would call (e.g. a bounded age/size-based sweep),
-   * not as something callers should reach for casually. `/reset`'s full
-   * history clear uses clearConvHistory below, not this method.
-   */
-  pruneConvTurns(chatKey: string, upToTurnId: number): void {
-    this.db
-      .prepare(`DELETE FROM conversation_turns WHERE chat_key = ? AND id <= ?`)
-      .run(chatKey, upToTurnId);
   }
 
   clearConvHistory(chatKey: string): void {

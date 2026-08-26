@@ -8,7 +8,7 @@ Canonical architecture documentation.
 
 The Companion Runtime is the domain-agnostic conversational runtime inside Agent Bridge OSS.
 
-It exposes one or more AI runtimes through chat or future TUI surfaces and manages conversation routing, sessions, fallback, memory use, and response delivery.
+It exposes one or more AI runtimes through chat or future TUI surfaces and manages conversation routing, sessions, fallback, retained conversation history, and response delivery.
 
 ## Responsibilities
 
@@ -22,7 +22,7 @@ The Companion Runtime owns:
 - per-conversation session management
 - usage monitoring
 - provider/model fallback
-- memory retrieval/write seams
+- retained conversation-turn retrieval and handoff
 - capability invocation through the Shared Runtime
 - response rendering and delivery
 
@@ -112,7 +112,7 @@ Transport
 → Session management
 → Usage monitoring
 → Fallback
-→ Memory
+→ Retained turn handoff/retrieval
 → Capability/tool execution
 → Response
 ```
@@ -129,27 +129,25 @@ The Companion Runtime should support domain-agnostic requests such as:
 - explain a technical concept
 - answer questions using configured capabilities
 
-## Memory and Provider Handoff
+## Conversation History and Provider Handoff
 
-The Companion Runtime should preserve continuity across provider switching without repeatedly injecting full Agent Bridge context into every turn.
+The Companion Runtime preserves continuity across provider switching without repeatedly injecting full Agent Bridge context into every turn.
 
-**Current implementation (issue #69 PR 6):**
+Current behavior:
 
-- manual provider switching and capacity fallback both clear the target CLI's session (`db.setSession(chatKey, targetCli, null)`) so it starts fresh rather than resuming a possibly stale, long-abandoned native session;
-- fallback additionally compacts the outgoing CLI's conversation first (rate-limited by `fallbackCompactCooldown.ts`) and promotes durable memory candidates, so the target CLI's context is a fresh summary rather than raw un-compacted turns; compaction failure never blocks the fallback itself;
-- a one-time `handoff_required:<chatKey>:<cliKind>` flag (`src/handoffState.ts`) is set on the target;
-- `BridgeEngine` injects context only for a fresh provider invocation. The provider adapter reports the invocation mode, including Codex attachment turns that cannot resume. A pending handoff never overrides a resumed invocation. Handoff markers clear only after provider-session evidence is persisted.
-- Minimal pre-seed compaction (`BRIDGE_PRESEED_COMPACT_MODE`, default `off`) runs before an oversized fresh-session handoff when mode is `auto`. It uses `BRIDGE_PRESEED_COMPACT_CHARS` (default `30000`) and never blocks a turn when compaction fails.
-- `/context` (`handleCommand`, `src/commands.ts`) is an operator diagnostics command, not a memory browser: it reports pre-seed compact mode/threshold, uncompacted turn/char counts, and a memory *count*. It never lists or renders memory contents. Durable memory is agent-facing only — subprocess CLIs read it via `agent-bridge-context --memory`/`--memory-query`/`--memory-add-json` (`src/contextCommand.ts`). There is no human-facing `/memory` Telegram command, and none is currently planned; memory is long-term recall for agents, not an operator-facing notes feature.
+- provider-native session IDs are the primary same-provider continuity mechanism;
+- manual provider switching and capacity fallback clear the target provider session for the current chat/thread and mark a one-time handoff requirement;
+- no generated-summary or project-memory compaction call runs before switching or fallback;
+- a fresh provider invocation receives a bounded handoff built from exact retained `conversation_turns`;
+- the provider adapter decides whether the invocation is genuinely fresh or resumable; a resumed invocation does not receive a repeated history preamble;
+- handoff markers clear only after provider-session evidence is persisted;
+- `agent-bridge-context --recent <n>` and `--search <query>` provide scoped exact-turn retrieval for agents when older evidence is needed;
+- `/context` is operator diagnostics only: it reports retained-turn/pending-queue status and the supported exact-turn retrieval path;
+- historical `conversation_summaries` and `project_memories` rows may remain in databases, but the Companion Runtime does not generate, promote, or inject them into current conversation continuity.
 
-Handoff context should be built from:
+Fresh handoff should orient the provider around the user goal, completed work/evidence, current state, pending next steps, and key constraints. It should also tell the provider how to query older retained turns instead of attempting to fit the full history into every prompt.
 
-- the latest compact summary;
-- the latest N recent turns after that summary, bounded by the configured context budget;
-- memory-search instructions and guidance;
-- persistent memories only when searched or explicitly selected by the agent.
-
-The canonical memory and handoff design is `docs/architecture/memory-and-handoff.md`.
+The canonical continuity design is `docs/architecture/memory-and-handoff.md`.
 
 ## Explicit Non-Responsibilities
 

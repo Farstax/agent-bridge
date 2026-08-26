@@ -9,9 +9,6 @@ import type { TelegramUpdate } from "./types.js";
 import { buildTelegramCommands } from "./commands.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { markHandoffRequired } from "./handoffState.js";
-import { shouldCompactBeforeFallback, recordFallbackCompactSuccess } from "./fallbackCompactCooldown.js";
-import type { CompactConversationResult } from "./compactConversation.js";
-import type { CapacityFallbackCompactionRequest } from "./fallbackCompaction.js";
 import type { ExecutionOutcome, PendingMessage } from "./engine.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
@@ -36,28 +33,21 @@ export interface InteractiveUpdateLogSummary {
   contentDetail: string | null;
 }
 
-// ── DB helpers ────────────────────────────────────────────────────────────────
-
 export function getUserCliPreference(db: BridgeDb, chatId: string): CliKind {
   try {
-    db.raw
-      .prepare(`ALTER TABLE bridge_state ADD COLUMN interactive_cli_preference TEXT`)
-      .run();
+    db.raw.prepare(`ALTER TABLE bridge_state ADD COLUMN interactive_cli_preference TEXT`).run();
   } catch { /* column already exists */ }
 
   const row = db.raw
     .prepare(`SELECT interactive_cli_preference AS pref FROM bridge_state WHERE chat_id = ?`)
     .get(chatId) as { pref: string | null } | undefined;
-
   const stored = row?.pref ?? null;
   return isValidCliKind(stored) ? stored : DEFAULT_CLI;
 }
 
 export function setUserCliPreference(db: BridgeDb, chatId: string, cli: CliKind): void {
   try {
-    db.raw
-      .prepare(`ALTER TABLE bridge_state ADD COLUMN interactive_cli_preference TEXT`)
-      .run();
+    db.raw.prepare(`ALTER TABLE bridge_state ADD COLUMN interactive_cli_preference TEXT`).run();
   } catch { /* column already exists */ }
 
   db.raw
@@ -68,7 +58,6 @@ export function setUserCliPreference(db: BridgeDb, chatId: string, cli: CliKind)
     .run(chatId, cli);
 }
 
-/** Parses a cli:* callback_data string into a CliKind, or returns null. */
 export function handleCliSwitchCallback(data: string): CliKind | null {
   if (!data.startsWith("cli:")) return null;
   const kind = data.slice(4);
@@ -131,17 +120,13 @@ export function buildCliKeyboard(
   };
 }
 
-// ── Telegram command registration ─────────────────────────────────────────────
-
-/** Returns the merged command list for setMyCommands: interactive commands + active CLI commands. */
 export function buildInteractiveCommands(pref: CliKind, options: { integratedHealth?: boolean; autonomy?: boolean } = {}): Array<{ command: string; description: string }> {
   const interactiveOnly = [
     { command: "cli", description: "Show active CLI and switch with one tap" },
     ...(options.integratedHealth ? [{ command: "health", description: "Run health checks or show the latest report" }] : []),
     ...(options.autonomy ? [{ command: "autonomy", description: "Approve, inspect, or stop autonomy" }] : []),
   ];
-  const cliKind = pref;
-  const cliCmds = buildTelegramCommands(cliKind);
+  const cliCmds = buildTelegramCommands(pref);
   const seen = new Set(interactiveOnly.map(c => c.command));
   const merged = [...interactiveOnly];
   for (const cmd of cliCmds) {
@@ -170,9 +155,6 @@ export function buildChatInteractiveCommandRegistrations(pref: CliKind, chatId: 
   ];
 }
 
-// ── Update routing helpers ────────────────────────────────────────────────────
-
-/** Returns the conversation scope from an update. Any Telegram topic returns "chatId:threadId". */
 export function resolveUpdateChatKey(update: TelegramUpdate): string | null {
   const msg = update.message;
   const cbqMsg = update.callback_query?.message;
@@ -184,12 +166,10 @@ export function resolveUpdateChatKey(update: TelegramUpdate): string | null {
   return String(chatId);
 }
 
-/** Returns the message_thread_id from a message or callback_query update, or undefined. */
 export function resolveMessageThreadId(update: TelegramUpdate): number | undefined {
   return update.message?.message_thread_id ?? update.callback_query?.message?.message_thread_id;
 }
 
-/** Returns true if the update's sender (message.from or callback_query.from) is in the allowed set. */
 export function isAuthorizedInteractiveUpdate(
   update: TelegramUpdate,
   allowedUserIds: ReadonlySet<string>,
@@ -220,8 +200,6 @@ export function isGroupInteractiveUpdate(update: TelegramUpdate): boolean {
   const chatType = update.message?.chat?.type ?? update.callback_query?.message?.chat?.type;
   return chatType === "group" || chatType === "supergroup";
 }
-
-// ── Internal ──────────────────────────────────────────────────────────────────
 
 function isValidCliKind(value: unknown): value is CliKind {
   return VALID_CLI_KINDS.includes(value as CliKind);
@@ -269,12 +247,9 @@ function isResetUpdate(update: TelegramUpdate): boolean {
   return command === "/reset" || command.startsWith("/reset@");
 }
 
-// ── Interactive Dispatch with Fallback ────────────────────────────────────────
-
 export interface InteractiveDispatchEngine {
   handleUpdate(update: TelegramUpdate, chatKey?: string): Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
-  /** Recovers durable work for one chat after ordinary admission yields to fallback. */
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
 
@@ -285,21 +260,8 @@ export interface InteractiveDispatchDeps {
   db: BridgeDb;
   notify: (msg: string) => Promise<void> | void;
   onCliSwitched?: (newCli: CliKind) => Promise<void> | void;
-  /**
-   * Called after resolving the incoming CLI and all exhausted CLIs. The
-   * callback must select a healthy provider for database-owned compaction.
-   * A rejection or failed outcome must never block the provider switch.
-   */
-  compactBeforeSwitch?: (request: CapacityFallbackCompactionRequest) => Promise<CompactConversationResult>;
 }
 
-/**
- * The first provider attempt enters through normal Telegram admission, which
- * owns the durable pending row. If it exhausts capacity, queue recovery must
- * re-enter with the already-tried provider set instead of resetting routing
- * from the persisted preference. Scope the transient state to the fallback
- * chain instance so identical chat IDs on other surfaces cannot collide.
- */
 const pendingFallbackTries = new WeakMap<ProviderFallbackChain, Map<string, Set<string>>>();
 
 function fallbackTryMap(chain: ProviderFallbackChain): Map<string, Set<string>> {
@@ -331,18 +293,15 @@ function clearPendingFallbackResume(chain: ProviderFallbackChain, chatKey: strin
   if (pending.size === 0) pendingFallbackTries.delete(chain);
 }
 
-/** Invalidates one lane's process-local capacity-fallback resume state. */
 export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chatKey: string): void {
   clearPendingFallbackResume(chain, chatKey);
 }
 
-/** Clears the target CLI's session and marks one-time handoff for it. Used by both manual /cli switch and capacity fallback. */
 function prepareCliHandoff(db: BridgeDb, chatKey: string, targetCli: CliKind, reason: string): void {
   db.setSession(chatKey, targetCli, null);
   markHandoffRequired(db, chatKey, targetCli, reason);
 }
 
-/** Manual /cli switch: atomically prepares the fresh target handoff, persists preference, then lifts reset suppression. */
 export function applyManualCliSwitchHandoff(db: BridgeDb, chatKey: string, newCli: CliKind): void {
   db.raw.transaction(() => {
     prepareCliHandoff(db, chatKey, newCli, "manual_switch");
@@ -358,7 +317,7 @@ export async function dispatchInteractiveWithFallback(
   tried = new Set<string>(),
   claimedMessage?: PendingMessage,
 ): Promise<ExecutionOutcome> {
-  const { engines, fallbackChain, exhaustedChats, db, notify, onCliSwitched, compactBeforeSwitch } = deps;
+  const { engines, fallbackChain, exhaustedChats, db, notify, onCliSwitched } = deps;
 
   exhaustedChats.delete(chatKey);
   if (!claimedMessage && isResetUpdate(update)) clearInteractiveFallbackState(fallbackChain, chatKey);
@@ -385,35 +344,12 @@ export async function dispatchInteractiveWithFallback(
       }
     }
     if (next) {
-      if (compactBeforeSwitch && shouldCompactBeforeFallback(db, chatKey)) {
-        try {
-          const result = await compactBeforeSwitch({
-            chatKey,
-            fromCli: activeCli,
-            toCli: next,
-            exhaustedClis: [...tried] as CliKind[],
-          });
-          if (result.outcome === "compacted") {
-            recordFallbackCompactSuccess(db, chatKey);
-          } else if (result.outcome === "failed") {
-            console.warn(`[fallback] compact-before-switch failed outcome chatKey=${chatKey} fromCli=${activeCli} error=${result.error}`);
-          }
-        } catch (err) {
-          console.warn(`[fallback] compact-before-switch failed chatKey=${chatKey} fromCli=${activeCli}`, err);
-        }
-      }
       prepareCliHandoff(db, chatKey, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
       await notify(`Switching to ${next} (${activeCli} at capacity)`);
-      if (onCliSwitched) {
-        await onCliSwitched(next);
-      }
+      if (onCliSwitched) await onCliSwitched(next);
 
       if (!claimedMessage && engines[next].recoverPendingQueue) {
-        // The ordinary augment path already admitted this logical turn. Wake
-        // only this chat's durable queue instead of replaying the Telegram
-        // update or scanning unrelated lanes on the same surface. If the lane
-        // is currently busy, its scheduled recovery retains this `tried` set.
         markPendingFallbackResume(fallbackChain, chatKey, tried);
         try {
           const hasPending = await engines[next].recoverPendingQueue!(chatKey);
@@ -422,23 +358,17 @@ export async function dispatchInteractiveWithFallback(
           clearPendingFallbackResume(fallbackChain, chatKey);
           throw error;
         }
-        // Non-augment paths may have no pending row. Preserve their old direct
-        // retry behavior and discard the unused resume marker.
         clearPendingFallbackResume(fallbackChain, chatKey);
       }
 
       return dispatchInteractiveWithFallback(update, chatKey, deps, tried, claimedMessage);
-    } else {
-      await notify("All CLIs are currently unavailable. Please try again later.");
-      // The durable queue owns a claimed fallback turn. The terminal capacity
-      // notice is its final handled outcome; retire that row rather than asking
-      // generic queue recovery to retry the exhausted providers automatically.
-      return claimedMessage ? "committed" : "failed";
     }
-  } else if (tried.size > 1) {
-    // Persist only the CLI that actually completed the fallback turn.
-    setUserCliPreference(db, chatKey, activeCli);
+
+    await notify("All CLIs are currently unavailable. Please try again later.");
+    return claimedMessage ? "committed" : "failed";
   }
+
+  if (tried.size > 1) setUserCliPreference(db, chatKey, activeCli);
   return outcome;
 }
 

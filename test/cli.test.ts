@@ -1,9 +1,6 @@
 import { describe, expect, it, vi, afterAll, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, toAntigravityModelLabel, setAntigravityModel, parseCliResult, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv, normalizeCliArgs } from "../src/cli.js";
-import { isBridgeCommand, handleCommand } from "../src/commands.js";
-import { openDb } from "../src/db.js";
-import type { BridgeConfig } from "../src/types.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -857,102 +854,6 @@ describe("wrapAntigravityPrompt — liveness and narration", () => {
     expect(prompt).not.toContain('"response"');
     expect(prompt).not.toContain('"reasoning"');
     expect(prompt).not.toContain("STATUS:");
-  });
-});
-
-// Minimal config stub for command handler tests
-const stubConfig: BridgeConfig = {
-  allowedUserIds: new Set(),
-  serviceEnvFile: null,
-  serviceKind: null,
-  pollIntervalMs: 1000,
-  executionMode: "safe",
-  dbPath: ":memory:",
-  bots: {
-    codex: { token: undefined, command: "codex", modelPreference: [] },
-    antigravity: { token: undefined, command: "agy", modelPreference: [] },
-    claude: { token: undefined, command: "claude", modelPreference: [] },
-    grok: { token: undefined, command: "grok", modelPreference: [] },
-  },
-};
-
-describe("/compact command", () => {
-  it("is recognised as a bridge command", () => {
-    expect(isBridgeCommand("/compact")).toBe(true);
-  });
-
-  it("returns compact result kind", () => {
-    const db = openDb(":memory:");
-    const result = handleCommand("claude", "/compact", { db, chatId: "chat:1", config: stubConfig });
-    expect(result?.kind).toBe("compact");
-  });
-});
-
-describe("/context command", () => {
-  it("is recognised as a bridge command", () => {
-    expect(isBridgeCommand("/context")).toBe(true);
-  });
-
-  it("returns context_status result with turn count", () => {
-    const db = openDb(":memory:");
-    db.addConvTurn("chat:1", "user", "hello");
-    const result = handleCommand("claude", "/context", { db, chatId: "chat:1", config: stubConfig });
-    expect(result?.kind).toBe("message");
-    expect(result?.text).toContain("1 turn");
-    expect(result?.text).toContain("Latest compact attempt: never");
-  });
-
-  it("distinguishes the latest attempt from the latest successful compaction", () => {
-    const db = openDb(":memory:");
-    db.addConvTurn("chat:1", "user", "hello");
-    db.addConvSummary("chat:1", 1, 1, "successful summary");
-    db.addCompactionAttempt({
-      chatKey: "chat:1",
-      trigger: "capacity_fallback",
-      provider: "claude",
-      model: "claude-sonnet-5",
-      outcome: "failed",
-      errorCategory: "timeout",
-      durationMs: 1500,
-      chunkCount: 2,
-      cliCallCount: 2,
-      rangeStartTurnId: 2,
-      rangeEndTurnId: 4,
-      startedAt: "2026-07-13T10:00:00.000Z",
-      endedAt: "2026-07-13T10:00:01.500Z",
-    });
-
-    const result = handleCommand("claude", "/context", { db, chatId: "chat:1", config: stubConfig });
-
-    expect(result?.kind).toBe("message");
-    expect(result?.text).toContain("Latest successful compact:");
-    expect(result?.text).toContain("Latest compact attempt: 2026-07-13T10:00:01.500Z");
-    expect(result?.text).toContain("Outcome: failed (timeout)");
-    expect(result?.text).toContain("Trigger: capacity_fallback");
-    expect(result?.text).toContain("Provider/model: claude / claude-sonnet-5");
-    expect(result?.text).toContain("Calls/chunks: 2 / 2");
-    expect(result?.text).toContain("Duration: 1500 ms");
-    expect(result?.text).toContain("Turn range: 2-4");
-  });
-
-  it("nudges users to compact when stored turns are high", () => {
-    const db = openDb(":memory:");
-    for (let i = 0; i < 101; i++) {
-      db.addConvTurn("chat:1", "user", `turn ${i}`);
-    }
-    const result = handleCommand("claude", "/context", { db, chatId: "chat:1", config: stubConfig });
-    expect(result?.kind).toBe("message");
-    expect(result?.text).toContain("High turn count - consider /compact");
-  });
-
-  it("shows when compact is already in progress", () => {
-    const db = openDb(":memory:");
-    db.setSetting("compact_in_progress:chat:1", "2026-06-27T13:35:20.000Z");
-
-    const result = handleCommand("claude", "/context", { db, chatId: "chat:1", config: stubConfig });
-
-    expect(result?.kind).toBe("message");
-    expect(result?.text).toContain("Compact: in progress since 2026-06-27T13:35:20.000Z");
   });
 });
 
