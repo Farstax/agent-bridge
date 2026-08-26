@@ -203,11 +203,15 @@ describe("compactConversation", () => {
     expect(options).toEqual(buildExecutionOptions("claude"));
   });
 
-  it("keeps Agy wrapped extraction compatible and runs tool-free", async () => {
+  it("parses the Agy stream-json result and runs tool-free", async () => {
     db.addConvTurn("chat:1", "user", "fix the Agy contract");
     const runCli = vi.fn().mockResolvedValue(JSON.stringify({
-      reasoning: "bounded transformation",
-      response: compactJson("Current objective:\n- fix Agy contract"),
+      event: "result",
+      result: {
+        conversation_id: "11111111-1111-4111-8111-111111111111",
+        status: "SUCCESS",
+        response: compactJson("Current objective:\n- fix Agy contract"),
+      },
     }));
 
     const result = await compactConversation("chat:1", {
@@ -427,14 +431,18 @@ describe("compactConversation", () => {
     expect(capturedPrompt).toContain("preferences");
   });
 
-  it("succeeds when antigravity wrapped output has valid compact JSON", async () => {
+  it("succeeds when Agy stream-json output has valid compact JSON", async () => {
     db.addConvTurn("chat:1", "user", "fix the bug");
     db.addConvTurn("chat:1", "assistant", "fixed");
 
     const innerJson = compactJson("Current objective:\n- antigravity fixed bug");
     const rawOutput = JSON.stringify({
-      reasoning: "thinking about the turns",
-      response: innerJson,
+      event: "result",
+      result: {
+        conversation_id: "11111111-1111-4111-8111-111111111111",
+        status: "SUCCESS",
+        response: innerJson,
+      },
     });
 
     const runCli = vi.fn().mockResolvedValue(rawOutput);
@@ -457,13 +465,17 @@ describe("compactConversation", () => {
     expect(db.getConvTurnsForCompaction("chat:1")).toHaveLength(0);
   });
 
-  it("fails safely without pruning turns when antigravity wrapped output response has invalid compact JSON", async () => {
+  it("fails safely without pruning turns when Agy stream-json response has invalid compact JSON", async () => {
     db.addConvTurn("chat:1", "user", "hello");
     db.addConvTurn("chat:1", "assistant", "hi");
 
     const rawOutput = JSON.stringify({
-      reasoning: "bad output",
-      response: "not compact json at all",
+      event: "result",
+      result: {
+        conversation_id: "11111111-1111-4111-8111-111111111111",
+        status: "SUCCESS",
+        response: "not compact json at all",
+      },
     });
 
     const runCli = vi.fn().mockResolvedValue(rawOutput);
