@@ -20,12 +20,11 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
     return args;
   }
 
-  // Parse original args to extract prompt, permissions, and output-format
+  // Parse original args to extract prompt, permissions, and provider options.
   let prompt = "";
   let conversationId: string | null = null;
   let logFile: string | null = null;
   let printTimeout: string | null = null;
-  let agyOutputFormat: "json" | "stream-json" | null = null;
   let model: string | null = null;
   let effort: EffortLevel | null = null;
   let resumeSessionId: string | null = null;
@@ -71,10 +70,10 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
         printTimeout = args[i + 1] ?? null;
         i++;
       } else if (arg === "--output-format") {
-        if (args[i + 1] === "json" || args[i + 1] === "stream-json") agyOutputFormat = args[i + 1] as "json" | "stream-json";
+        // Consume stale provider-mode hints. Agy is normalized to stream-json below.
         i++;
-      } else if (arg === "--output-format=json" || arg === "--output-format=stream-json") {
-        agyOutputFormat = arg.slice("--output-format=".length) as "json" | "stream-json";
+      } else if (arg.startsWith("--output-format=")) {
+        // Consume stale provider-mode hints. Agy is normalized to stream-json below.
       } else if (arg === "--model") {
         model = args[i + 1] ?? null;
         i++;
@@ -151,9 +150,7 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
     if (printTimeout) {
       newArgs.push("--print-timeout", printTimeout);
     }
-    if (agyOutputFormat) {
-      newArgs.push("--output-format", agyOutputFormat);
-    }
+    newArgs.push("--output-format", "stream-json");
     newArgs.push("--print", prompt);
     return newArgs;
   }
