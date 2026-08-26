@@ -42,7 +42,13 @@ describe("agent-bridge-context helper", () => {
     const { db, path } = makeDb();
     try {
       db.addConvSummary("chat:1", 1, 1, "retired generated summary marker");
-      db.addMemory({ id: "mem_retired", type: "decision", scope: "project", text: "retired project memory marker" });
+      // Simulates a pre-retirement row left in the schema (#544 is a
+      // subtraction-only migration, so no addMemory API remains to write it).
+      db.raw
+        .prepare(
+          `INSERT INTO project_memories (id, scope, type, text) VALUES (?, 'project', 'decision', ?)`
+        )
+        .run("mem_retired", "retired project memory marker");
 
       const env = {
         AGENT_BRIDGE_CONTEXT_DB: path,

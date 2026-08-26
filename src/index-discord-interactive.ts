@@ -38,7 +38,6 @@ import {
   type CliKind,
 } from "./interactiveBot.js";
 import { runCli } from "./cli.js";
-import { parseCompactionProviderChain, runCapacityFallbackCompaction } from "./fallbackCompaction.js";
 import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
@@ -101,7 +100,6 @@ const cliChain = parseCliChain(
   { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "grok", "antigravity", "cursor"] },
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db);
-const compactionProviderChain = parseCompactionProviderChain(process.env.BRIDGE_COMPACTION_CHAIN);
 const exhaustedChats = new Set<string>();
 // ── DiscordClient ─────────────────────────────────────────────────────────────
 
@@ -155,7 +153,6 @@ const engines = Object.fromEntries(
         pollIntervalMs: 1_000,
         soulContext,
         fullConfig: config,
-        compactProfile: "companion",
         advisorCapabilities: advisorBroker ?? undefined,
         hooks: {
           onCapacityExhausted: async (chatKey: string) => {
@@ -178,9 +175,6 @@ for (const engine of Object.values(engines)) {
       engines, fallbackChain, exhaustedChats, db,
       notify: async (msg) => { await client.sendMessage({ chat_id: deliveryQueued.chatKey, text: msg }); },
       onCliSwitched: async (newCli) => setUserCliPreference(db, queued.chatKey, newCli),
-      compactBeforeSwitch: (request) => runCapacityFallbackCompaction(request, {
-        db, runCli, bots: config.bots, configuredChain: compactionProviderChain, compactProfile: "companion",
-      }),
     });
   });
 }
@@ -330,14 +324,6 @@ async function handleMessage(d: any): Promise<void> {
     onCliSwitched: async (_newCli) => {
       // Slash command list doesn't change per-CLI on Discord — no-op
     },
-    compactBeforeSwitch: (request) =>
-      runCapacityFallbackCompaction(request, {
-        db,
-        runCli,
-        bots: config.bots,
-        configuredChain: compactionProviderChain,
-        compactProfile: "companion",
-      }),
   });
 }
 

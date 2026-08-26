@@ -147,20 +147,20 @@ describe("execution lane correctness", () => {
     db.close(); rmSync(path, { force: true });
   });
 
-  it("returns busy for /compact in an active topic lane while another topic remains independent", async () => {
-    const path = join(tmpdir(), `compact-lane-${Date.now()}-${Math.random()}.sqlite`);
+  it("queues a message in an active topic lane while another topic remains independent", async () => {
+    const path = join(tmpdir(), `busy-lane-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
     const c = client();
-    const engine = new BridgeEngine(options("claude"), db, c, { runCli: vi.fn().mockResolvedValue('{"summary_md":"topic eight summary","memory_candidates":[]}') });
+    const engine = new BridgeEngine(options("claude"), db, c, { runCli: vi.fn().mockResolvedValue('{"type":"result","result":"topic eight done","session_id":"s8"}') });
     db.addConvTurn("100", "user", "quarantined flat history");
     db.addConvTurn("100:7", "user", "topic seven"); db.addConvTurn("100:8", "user", "topic eight");
     db.acquireLock("telegram:interactive", "100:7");
-    await engine.handleMessages([message("/compact", 7)]);
-    expect(c.sendMessage.mock.calls.some((call: any[]) => /busy|active/i.test(call[0].text))).toBe(true);
-    await engine.handleMessages([message("/compact", 8)]);
-    expect(db.getConvTurnsForCompaction("100:8")).toHaveLength(0);
-    expect(db.getConvTurnsForCompaction("100:7")).toHaveLength(1);
-    expect(db.getConvTurnsForCompaction("100").map((turn) => turn.text)).toEqual(["quarantined flat history"]);
+    await engine.handleMessages([message("busy check", 7)]);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(1);
+    await engine.handleMessages([message("independent action", 8)]);
+    expect(db.getRecentConvTurns("100:8", 10)).toHaveLength(3);
+    expect(db.getRecentConvTurns("100:7", 10)).toHaveLength(1);
+    expect(db.getRecentConvTurns("100", 10).map((turn) => turn.text)).toEqual(["quarantined flat history"]);
     db.close(); rmSync(path, { force: true });
   });
 
@@ -677,15 +677,13 @@ describe("execution lane correctness", () => {
     ] as const;
     for (const [role, text] of oldTurns) db.addConvTurn(chatKey, role, text, "claude");
     db.setSession(chatKey, "claude", oldSession);
-    db.addMemory({ id: "previous-memory", type: "decision", scope: "project", text: "previous durable memory" });
-    const turnsBefore = db.getConvTurnsForCompaction(chatKey).map(({ role, text, cli }) => ({ role, text, cli }));
-    const memoryCountBefore = db.getMemoryCount();
+    const turnsBefore = db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }));
     let releaseFinalisation!: () => void;
     let finalisationEntered!: () => void;
     const finalisation = new Promise<void>((resolve) => { releaseFinalisation = resolve; });
     const entered = new Promise<void>((resolve) => { finalisationEntered = resolve; });
     const cancelledResult = JSON.stringify({
-      result: `cancelled ${mode} result\n<!-- agent-bridge-memory [{"type":"decision","scope":"project","text":"must not persist ${mode}"}] -->`,
+      result: `cancelled ${mode} result`,
       session_id: nextSession,
     });
     const nextRun = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "next result", session_id: "after-cancel" }));
@@ -710,8 +708,7 @@ describe("execution lane correctness", () => {
     await Promise.all([cancelled, stopping]);
 
     expect(db.getSession(chatKey, "claude")).toBe(oldSession);
-    expect(db.getConvTurnsForCompaction(chatKey).map(({ role, text, cli }) => ({ role, text, cli }))).toEqual(turnsBefore);
-    expect(db.getMemoryCount()).toBe(memoryCountBefore);
+    expect(db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }))).toEqual(turnsBefore);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text?.includes(`cancelled ${mode} result`))).toBe(false);
 
     await engine.handleMessages([message("resume after cancellation", 7)]);
@@ -825,9 +822,7 @@ describe("execution lane correctness", () => {
     db.setSession(chatKey, "claude", "previous-session");
     db.addConvTurn(chatKey, "user", "previous request", "claude");
     db.addConvTurn(chatKey, "assistant", "previous answer", "claude");
-    db.addMemory({ id: "upload-previous-memory", type: "decision", scope: "project", text: "previous upload memory" });
-    const turnsBefore = db.getConvTurnsForCompaction(chatKey).map(({ role, text, cli }) => ({ role, text, cli }));
-    const memoryCountBefore = db.getMemoryCount();
+    const turnsBefore = db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }));
     let releaseUpload!: () => void;
     let uploadEntered!: () => void;
     const uploadBarrier = new Promise<void>((resolve) => { releaseUpload = resolve; });
@@ -851,8 +846,7 @@ describe("execution lane correctness", () => {
 
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "cancelled during upload")).toBe(false);
     expect(db.getSession(chatKey, "claude")).toBe("previous-session");
-    expect(db.getConvTurnsForCompaction(chatKey).map(({ role, text, cli }) => ({ role, text, cli }))).toEqual(turnsBefore);
-    expect(db.getMemoryCount()).toBe(memoryCountBefore);
+    expect(db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }))).toEqual(turnsBefore);
     const runs = db.raw.prepare("SELECT run_id, status FROM bridge_runs").all() as Array<{ run_id: string; status: string }>;
     expect(runs.every((run) => run.status !== "done")).toBe(true);
     expect(runs.flatMap((run) => db.getEventsForRun(run.run_id)).some((event) => event.type === "run.completed")).toBe(false);
@@ -1039,31 +1033,8 @@ describe("execution lane correctness", () => {
     });
     await engine.handleMessages([message("race commit", 7)]);
     expect(runB.getSession("100:7", "claude")).toBeNull();
-    expect(runB.getConvTurnsForCompaction("100:7")).toHaveLength(0);
+    expect(runB.getRecentConvTurns("100:7", 10)).toHaveLength(0);
     expect(c.sendMessage.mock.calls.some((call: any[]) => String(call[0].text).includes("parsed but fenced"))).toBe(false);
-    runA.close(); runB.close(); rmSync(path, { force: true });
-  });
-
-  it("fences post-compaction session reset and success notification", async () => {
-    const path = join(tmpdir(), `compact-publish-fence-${Date.now()}-${Math.random()}.sqlite`);
-    let now = Date.parse("2026-07-15T10:00:00.000Z");
-    const runA = openDb(path, { serviceId: "telegram:interactive", runId: "a", lockLeaseMs: 100, clock: () => now });
-    const runB = openDb(path, { serviceId: "telegram:interactive", runId: "b", lockLeaseMs: 100, clock: () => now });
-    runA.addConvTurn("100:7", "user", "compact me");
-    runA.setSession("100:7", "claude", "keep-on-fence");
-    const c = client();
-    const original = (runA as any).runWithLockFence?.bind(runA);
-    (runA as any).runWithLockFence = (handle: any, operation: () => unknown) => {
-      now += 101;
-      expect(runB.acquireLock(handle.surface, handle.chatKey)).not.toBeNull();
-      return original(handle, operation);
-    };
-    const engine = new BridgeEngine(options("claude"), runA, c, {
-      runCli: vi.fn().mockResolvedValue('{"summary_md":"safe summary","memory_candidates":[]}'),
-    });
-    await expect(engine.handleMessages([message("/compact", 7)])).rejects.toThrow();
-    expect(runB.getSession("100:7", "claude")).toBe("keep-on-fence");
-    expect(c.sendMessage.mock.calls.some((call: any[]) => String(call[0].text).includes("Context compacted"))).toBe(false);
     runA.close(); runB.close(); rmSync(path, { force: true });
   });
 

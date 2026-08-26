@@ -1,6 +1,6 @@
 /**
  * PURPOSE: Small shared concurrency helper for fan-out CLI calls (compact chunking, etc.).
- * NEIGHBORS: src/engine.ts, src/compactConversation.ts
+ * NEIGHBORS: src/engine.ts, src/interactiveBot.ts
  */
 
 export async function mapWithConcurrency<T, R>(
