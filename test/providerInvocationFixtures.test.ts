@@ -20,19 +20,14 @@ function withTempImage(fn: (path: string) => void): void {
 //
 // This file locks in buildCliInvocation()/parseCliResult()'s current
 // per-provider behaviour across the dimensions the Phase 3 plan calls out
-// (invocation snapshots per provider/mode, tool-free flags, attachment/stdin
-// contracts, trusted/safe flags, session resume/fresh-session rules, stream-
-// json handling, malformed/legacy output parsing, and fallback
-// classification) BEFORE any provider branch is moved out of src/cli.ts in
-// PR 3B/3C. A behavioural difference introduced by that later move must show
-// up here first.
+// (invocation snapshots per provider, tool-free flags, attachment/stdin
+// contracts, trusted/safe flags, session resume/fresh-session rules, native
+// structured output handling, and fallback classification).
 
 // Wrapped prompts embed the full soul contract + Telegram response-style
-// block, which is itself characterized elsewhere (wrapAntigravityPrompt /
-// wrapTelegramPrompt tests in test/cli.test.ts) — matched positionally here
+// block, which is itself characterized elsewhere — matched positionally here
 // with expect.stringContaining() rather than reproduced verbatim, so these
-// stay exact on flag identity, order, and count (catching a duplicated flag,
-// reordering, or an unexpected extra argument) without being brittle against
+// stay exact on flag identity, order, and count without being brittle against
 // unrelated prompt-wrapping copy changes.
 const anyPrompt = () => expect.stringContaining("hi") as unknown as string;
 
@@ -181,37 +176,37 @@ describe("provider invocation fixtures — antigravity", () => {
     const inv = buildCliInvocation({ bot: "antigravity", prompt, sessionId: null, command: "agy" });
     expect(inv.args.join("\n")).toContain("selected-owner/selected-repo");
   });
-  it("fresh session — exact arg order, no --conversation or disabled timeout flags", () => {
+
+  it("fresh session — exact stream-json arg order", () => {
     const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: null, command: "agy" });
-    expect(inv.args[0]).toBe("--print");
-    expect(inv.args).toHaveLength(2);
+    expect(inv.args).toEqual(["--output-format", "stream-json", "--print", anyPrompt()]);
   });
 
-  it("resumes an existing conversation — exact arg order", () => {
+  it("resumes an existing conversation — exact stream-json arg order", () => {
     const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: "conv-1", command: "agy" });
-    expect(inv.args[0]).toBe("--conversation");
-    expect(inv.args[1]).toBe("conv-1");
-    expect(inv.args[2]).toBe("--print");
-    expect(inv.args).toHaveLength(4);
+    expect(inv.args).toEqual([
+      "--conversation", "conv-1", "--output-format", "stream-json", "--print", anyPrompt(),
+    ]);
   });
 
-  it("trusted mode — exact arg order", () => {
+  it("trusted mode — exact stream-json arg order", () => {
     const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: null, command: "agy", executionMode: "trusted" });
-    expect(inv.args[0]).toBe("--dangerously-skip-permissions");
-    expect(inv.args[1]).toBe("--print");
+    expect(inv.args).toEqual([
+      "--dangerously-skip-permissions", "--output-format", "stream-json", "--print", anyPrompt(),
+    ]);
   });
 
-  it("tool-free mode — exact arg order, --sandbox present", () => {
+  it("tool-free mode — exact stream-json arg order, --sandbox present", () => {
     const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: null, command: "agy", toolMode: "none" });
-    expect(inv.args[0]).toBe("--sandbox");
-    expect(inv.args[1]).toBe("--print");
+    expect(inv.args).toEqual(["--sandbox", "--output-format", "stream-json", "--print", anyPrompt()]);
   });
 
   it("attachments are annotated inline into the prompt text, not passed as separate flags", () => {
     const inv = buildCliInvocation({
       bot: "antigravity", prompt: "hi", sessionId: null, command: "agy", attachments: ["/tmp/a.png"],
     });
-    expect(inv.args).toHaveLength(2);
+    expect(inv.args).toHaveLength(4);
+    expect(inv.args.slice(0, 3)).toEqual(["--output-format", "stream-json", "--print"]);
     expect(inv.args[inv.args.length - 1]).toContain("/tmp/a.png");
     expect(inv.stdin).toBeUndefined();
   });
@@ -252,28 +247,26 @@ describe("provider result parsing fixtures", () => {
   });
 });
 
-describe("provider result parsing fixtures — antigravity gaps (CTO review blocker 3)", () => {
-  // Antigravity's JSON/fenced-JSON/legacy-***-delimiter/🧠-memory-marker/
-  // STATUS-line-stripping/RESOURCE_EXHAUSTED-error parsing is
-  // already exhaustively characterized in test/cli.test.ts ("antigravity
-  // model mapping and settings override") and
-  // test/bridge.test.ts (ensureAntigravityStateDirs, readAntigravityLastConversation,
-  // readLatestAntigravityConversationFromLogs, resolveAntigravityConversationId,
-  // extractAntigravityConversationId). These three were genuinely missing:
+describe("provider result parsing fixtures — antigravity", () => {
+  const sessionId = "c107dfbd-181e-4cf0-a840-894662adee43";
 
-  it("timeout: stdout containing a timed-out marker throws a structured timeout error, not silent success", () => {
-    expect(() => parseCliResult({ bot: "antigravity", stdout: "Error: timed out waiting for response from model" }))
-      .toThrow(/timed out/i);
-    expect(() => parseCliResult({ bot: "antigravity", stdout: "  error: timed out  " }))
-      .toThrow(/timed out/i);
+  it("uses the stream-json terminal response and native session id", () => {
+    const stdout = [
+      JSON.stringify({ event: "init", conversation_id: sessionId }),
+      JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "The answer." } }),
+    ].join("\n");
+    expect(parseCliResult({ bot: "antigravity", stdout })).toEqual({
+      text: "The answer.",
+      sessionId,
+    });
   });
 
-  it("session: sessionId is extracted from logContent alongside the parsed text, not just text alone", () => {
-    const stdout = JSON.stringify({ reasoning: "ok", response: "The answer." });
-    const logContent = "Print mode: conversation=c107dfbd-181e-4cf0-a840-894662adee43, sending message";
-    const result = parseCliResult({ bot: "antigravity", stdout, logContent });
-    expect(result.text).toBe("The answer.");
-    expect(result.sessionId).toBe("c107dfbd-181e-4cf0-a840-894662adee43");
+  it("timeout: terminal stream-json ERROR throws a timeout error", () => {
+    const stdout = JSON.stringify({
+      event: "result",
+      result: { conversation_id: sessionId, status: "ERROR", response: "", error: "timeout waiting for response" },
+    });
+    expect(() => parseCliResult({ bot: "antigravity", stdout })).toThrow(/timed out/i);
   });
 
   it("settings-file preservation: setAntigravityModel only touches the 'model' key, leaving unrelated settings intact", () => {
