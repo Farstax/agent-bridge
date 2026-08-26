@@ -282,11 +282,9 @@ async function runQualificationInvocation({
     });
   }
 
-  // Production Agy execution deliberately recovers a usable provider error from
-  // a non-zero terminal ERROR result that may contain partial response text.
-  // Qualification must additionally detect that raw contradiction as provider-
-  // contract drift, so bypass the runtime recovery shim but keep the same
-  // invocation, supervisor, process watch, state lock and strict result parser.
+  // Qualification bypasses runtime recovery so contradictory terminal results
+  // remain visible as provider-contract drift. It keeps the same invocation,
+  // supervisor, process watch, state lock and strict stream-json result parser.
   return withAntigravityStateLock(homeDir, async () =>
     withAntigravityApiKeyProvider(homeDir, process.env, async () => {
       try {
@@ -302,9 +300,6 @@ async function runQualificationInvocation({
         const error = caught instanceof Error ? caught : new Error(String(caught));
         const stdout = (error as Error & { stdout?: string }).stdout ?? "";
         if (stdout.trim()) {
-          // A valid ERROR result throws a classifiable provider error here; a
-          // contradictory ERROR + response result throws the stricter contract
-          // error before runtime recovery can normalize it.
           parseCliResult({
             bot,
             stdout,
@@ -341,7 +336,7 @@ async function executeNativeQualificationCheck({
     command: executable,
     model: null,
     executionMode: "safe",
-    outputFormat: "json",
+    outputFormat: providerId === "agy" ? "stream-json" : "json",
     soulContext: null,
     includeResponseContract: false,
     attachments: [],
@@ -408,11 +403,8 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const checks: ProviderQualificationCheck[] = [];
   let providerVersion = options.expectedVersion ? normalizeProviderVersion(options.expectedVersion) : "unknown";
   let overall: ProviderQualificationRecord["overall"] = "pass";
-  const previousAgyMode = process.env.ANTIGRAVITY_OUTPUT_MODE;
 
   try {
-    if (options.providerId === "agy") process.env.ANTIGRAVITY_OUTPUT_MODE = "stream-json";
-
     try {
       const versionOutput = execFileSync(executable, [...adapter.versionArgs], {
         cwd,
@@ -507,10 +499,6 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
     writeQualificationRecord(record, evidencePath);
     return record;
   } finally {
-    if (options.providerId === "agy") {
-      if (previousAgyMode === undefined) delete process.env.ANTIGRAVITY_OUTPUT_MODE;
-      else process.env.ANTIGRAVITY_OUTPUT_MODE = previousAgyMode;
-    }
     if (ownsWorkspace) rmSync(cwd, { recursive: true, force: true });
   }
 }
