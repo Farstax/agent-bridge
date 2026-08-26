@@ -239,7 +239,7 @@ export function parseCliResult({
   } else if (bot === "antigravity") {
     void outputFormat;
     result = antigravityRuntime.parseResult(stdout);
-    const telemetry = extractAntigravityRunTelemetry(stdout, "stream-json");
+    const telemetry = extractAntigravityRunTelemetry(stdout);
     if (telemetry) result = { ...result, telemetry };
   } else {
     throw new Error(`Unknown bot type: ${bot}`);
