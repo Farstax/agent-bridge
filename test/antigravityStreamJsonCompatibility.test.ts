@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   abortCliProcessAndWait,
   isCapacityExhaustedError,
@@ -10,20 +10,12 @@ import {
 import type { BridgeEvent } from "../src/events/types.js";
 import { runAntigravitySerialized } from "../src/providers/antigravitySerializedRunner.js";
 
-const originalOutputMode = process.env.ANTIGRAVITY_OUTPUT_MODE;
-
-afterEach(() => {
-  if (originalOutputMode === undefined) delete process.env.ANTIGRAVITY_OUTPUT_MODE;
-  else process.env.ANTIGRAVITY_OUTPUT_MODE = originalOutputMode;
-});
-
 function stream(...records: unknown[]): string {
   return records.map((record) => JSON.stringify(record)).join("\n") + "\n";
 }
 
 describe("Agy stream-json compatibility invariants", () => {
   it("preserves capacity classification from a terminal ERROR result", () => {
-    process.env.ANTIGRAVITY_OUTPUT_MODE = "stream-json";
     const stdout = stream({
       event: "result",
       result: {
@@ -45,7 +37,6 @@ describe("Agy stream-json compatibility invariants", () => {
   });
 
   it("uses the terminal replacement conversation id for a resumed run", () => {
-    process.env.ANTIGRAVITY_OUTPUT_MODE = "stream-json";
     const replacementId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
     const stdout = stream(
       { event: "init", conversation_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
@@ -66,7 +57,6 @@ describe("Agy stream-json compatibility invariants", () => {
   });
 
   it("keeps cancellation authoritative over a partial stream before terminal result", async () => {
-    process.env.ANTIGRAVITY_OUTPUT_MODE = "stream-json";
     const root = await mkdtemp(join(tmpdir(), "agy-stream-json-cancel-"));
     const homeDir = join(root, "home");
     const script = join(root, "agy-fixture");
@@ -90,7 +80,7 @@ describe("Agy stream-json compatibility invariants", () => {
           eventContext: { runId: "stream-json-cancel", bot: "antigravity", chatId: "chat:stream-json-cancel" },
           onEvent: (event) => events.push(event),
         },
-        { homeDir, model: null, applyModel: false, outputMode: "stream-json" } as never,
+        { homeDir, model: null, applyModel: false },
         (chunk) => progress.push(chunk),
       ).then(
         () => null,
