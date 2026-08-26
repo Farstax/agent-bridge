@@ -28,7 +28,6 @@ import {
 } from "./providers/antigravityRuntime.js";
 import {
   runAntigravitySerialized,
-  outputModeFromArgs,
   type AntigravityExecutionContext,
 } from "./providers/antigravitySerializedRunner.js";
 
@@ -197,7 +196,6 @@ export function buildCliInvocation({
       homeDir,
       model: model ?? null,
       applyModel: true,
-      outputMode: outputModeFromArgs(invocation.args),
     });
     return invocation;
   }
@@ -228,6 +226,7 @@ export function parseCliResult({
   logContent?: string | null;
   outputFormat?: "text" | "json" | "stream-json" | "streaming-json" | null;
 }): CliResult {
+  void logContent;
   let result: CliResult;
   if (bot === "codex") {
     result = codexRuntime.parseResult(stdout);
@@ -238,11 +237,9 @@ export function parseCliResult({
   } else if (bot === "cursor") {
     result = cursorRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
-    // Keep null so parseResult can honor ANTIGRAVITY_OUTPUT_MODE. Only Grok's
-    // streaming-json is outside Agy's union and must be coerced.
-    const agyFormat = outputFormat === "streaming-json" ? "text" : outputFormat;
-    result = antigravityRuntime.parseResult(stdout, logContent, agyFormat);
-    const telemetry = extractAntigravityRunTelemetry(stdout, agyFormat);
+    void outputFormat;
+    result = antigravityRuntime.parseResult(stdout);
+    const telemetry = extractAntigravityRunTelemetry(stdout, "stream-json");
     if (telemetry) result = { ...result, telemetry };
   } else {
     throw new Error(`Unknown bot type: ${bot}`);
