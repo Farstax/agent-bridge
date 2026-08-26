@@ -1,15 +1,8 @@
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { qualifyProvider } from "../src/providers/qualification.js";
-
-const originalAgyMode = process.env.ANTIGRAVITY_OUTPUT_MODE;
-
-afterEach(() => {
-  if (originalAgyMode === undefined) delete process.env.ANTIGRAVITY_OUTPUT_MODE;
-  else process.env.ANTIGRAVITY_OUTPUT_MODE = originalAgyMode;
-});
 
 function executable(path: string, body: string): string {
   writeFileSync(path, `#!/usr/bin/env bash\nset -euo pipefail\n${body}`, { mode: 0o755 });
