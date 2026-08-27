@@ -89,6 +89,26 @@ describe("agent-bridge-context helper", () => {
       }
     });
 
+    it("surfaces distinctive evidence for a natural-language query despite newer stopword matches", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "deployment window is Friday at 15:00", "codex");
+        for (let i = 0; i < 5; i++) {
+          db.addConvTurn("chat:1", "assistant", `what was the status update ${i}`, "codex");
+        }
+
+        const output = renderAgentBridgeContext(["--search", "what was the deployment window"], {
+          AGENT_BRIDGE_CONTEXT_DB: path,
+          AGENT_BRIDGE_CHAT_KEY: "chat:1",
+        });
+
+        expect(output).toContain("deployment window is Friday at 15:00");
+      } finally {
+        db.close();
+        rmSync(path, { force: true });
+      }
+    });
+
     it("cannot cross chat scope", () => {
       const { db, path } = makeDb();
       try {
