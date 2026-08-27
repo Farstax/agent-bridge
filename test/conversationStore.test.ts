@@ -132,6 +132,18 @@ describe("scoped conversation search", () => {
     ]);
   });
 
+  it("ignores natural query scaffolding that would otherwise outrank the distinctive term", () => {
+    db.addConvTurn("chat:1", "user", "deployment moved to Friday at 15:00");
+    for (let i = 0; i < 5; i++) {
+      db.addConvTurn("chat:1", "assistant", `we did a note about status ${i}`);
+    }
+
+    const rows = db.searchConvTurns("chat:1", "what did we ask about deployment", 1);
+    expect(rows.filter((row: any) => row.is_match).map((row) => row.text)).toEqual([
+      "deployment moved to Friday at 15:00",
+    ]);
+  });
+
   it("ranks broader distinctive term coverage ahead of newer competing partial matches", () => {
     db.addConvTurn("chat:1", "user", "deployment window is Friday at 15:00");
     for (let i = 0; i < 6; i++) {
