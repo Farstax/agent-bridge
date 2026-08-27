@@ -1,5 +1,5 @@
 import { mkdir, chmod } from "node:fs/promises";
-import { join, extname } from "node:path";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TelegramMessage } from "./types.js";
 import type { MessagingPlatform } from "./platform.js";
 
@@ -32,10 +32,22 @@ export interface AttachmentInfo {
   mimeType: string;
 }
 
+function resolveContainedUploadPath(destDir: string, fileName: string): string | null {
+  if (!fileName || fileName.includes("\0") || fileName.includes("/") || fileName.includes("\\")) {
+    return null;
+  }
+  const root = resolve(destDir);
+  const candidate = resolve(root, fileName);
+  const rel = relative(root, candidate);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  return candidate;
+}
+
 export async function downloadTelegramAttachment(
   client: Pick<MessagingPlatform, "getFilePath" | "downloadFile">,
   message: TelegramMessage,
   destDir: string,
+  fileNamePrefix = "",
 ): Promise<AttachmentInfo | null> {
   await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   await chmod(destDir, PRIVATE_DIR_MODE);
@@ -45,10 +57,11 @@ export async function downloadTelegramAttachment(
     if (largest.file_size !== undefined && largest.file_size > MAX_FILE_SIZE) {
       return null;
     }
+    const fileName = `${fileNamePrefix}photo_${largest.file_id}.jpg`;
+    const localPath = resolveContainedUploadPath(destDir, fileName);
+    if (!localPath) return null;
     try {
       const filePath = await client.getFilePath(largest.file_id);
-      const fileName = `photo_${largest.file_id}.jpg`;
-      const localPath = join(destDir, fileName);
       await client.downloadFile(filePath, localPath);
       return { localPath, mimeType: "image/jpeg" };
     } catch {
@@ -61,12 +74,14 @@ export async function downloadTelegramAttachment(
     if (doc.file_size !== undefined && doc.file_size > MAX_FILE_SIZE) {
       return null;
     }
+    const displayFileName = doc.file_name ?? `document_${doc.file_id}`;
+    const fileName = `${fileNamePrefix}${displayFileName}`;
+    const localPath = resolveContainedUploadPath(destDir, fileName);
+    if (!localPath) return null;
     try {
       const filePath = await client.getFilePath(doc.file_id);
-      const fileName = doc.file_name ?? `document_${doc.file_id}`;
-      const localPath = join(destDir, fileName);
       await client.downloadFile(filePath, localPath);
-      const mimeType = doc.mime_type ?? mimeTypeFromExtension(fileName);
+      const mimeType = doc.mime_type ?? mimeTypeFromExtension(displayFileName);
       return { localPath, mimeType };
     } catch {
       return null;

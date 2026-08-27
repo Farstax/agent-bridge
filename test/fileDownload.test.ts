@@ -76,11 +76,41 @@ describe("downloadTelegramAttachment", () => {
       expect(getFilePath).toHaveBeenCalledWith("doc_id");
       expect(result).not.toBeNull();
       expect(result!.mimeType).toBe("application/pdf");
-      expect(result!.localPath).toContain("report.pdf");
+      expect(result!.localPath).toBe(join(dir, "report.pdf"));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it.each(["../../outside.txt", "foo/bar.txt", "foo\\bar.txt"])(
+    "fails closed before download for unsafe document filename %s",
+    async (fileName) => {
+      const dir = await mkdtemp(join(tmpdir(), "bridge-test-"));
+      try {
+        const getFilePath = vi.fn().mockResolvedValue("documents/file.txt");
+        const downloadFile = vi.fn().mockResolvedValue(undefined);
+        const client = makeClient({ getFilePath, downloadFile });
+        const msg: TelegramMessage = {
+          message_id: 20,
+          chat: { id: 42, type: "private" },
+          document: {
+            file_id: "unsafe_doc",
+            file_unique_id: "unsafe",
+            file_name: fileName,
+            mime_type: "text/plain",
+          },
+        };
+
+        const result = await downloadTelegramAttachment(client, msg, dir);
+
+        expect(result).toBeNull();
+        expect(getFilePath).not.toHaveBeenCalled();
+        expect(downloadFile).not.toHaveBeenCalled();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("returns null if photo file_size exceeds 20 MB without calling the API", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bridge-test-"));

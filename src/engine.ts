@@ -360,7 +360,8 @@ export class BridgeEngine {
     const rawText = (primaryMessage.text || primaryMessage.caption || "").trim();
     const isSlashCmd = rawText.startsWith("/");
     const commandText = isSlashCmd ? rawText : null;
-    const hasAttachment = !!(primaryMessage.photo?.length || primaryMessage.document);
+    const attachmentMessages = messages.filter((message) => !!(message.photo?.length || message.document));
+    const hasAttachment = attachmentMessages.length > 0;
     const rawPrompt = commandText ? null : extractPromptText(primaryMessage);
     const prompt = commandText ? null : (rawPrompt || (hasAttachment ? "Describe the attached file." : null));
     if (!commandText && !prompt) return;
@@ -459,16 +460,33 @@ export class BridgeEngine {
 
     const inputRunId = randomUUID();
     const uploadDir = join(tmpdir(), `bridge-uploads-${this.kind}-${chatKey}-${inputRunId}`);
-    let attachmentLocalPath: string | null = null;
+    const attachments: string[] = [];
+    let attachmentDownloadFailed = false;
     if (hasAttachment) {
       try {
-        const info = await downloadTelegramAttachment(this.client, primaryMessage, uploadDir);
-        attachmentLocalPath = info?.localPath ?? null;
+        for (let index = 0; index < attachmentMessages.length; index += 1) {
+          const fileNamePrefix = attachmentMessages.length > 1 ? `attachment-${index + 1}-` : "";
+          const info = await downloadTelegramAttachment(this.client, attachmentMessages[index], uploadDir, fileNamePrefix);
+          if (!info) {
+            attachmentDownloadFailed = true;
+            break;
+          }
+          attachments.push(info.localPath);
+        }
       } catch (err) {
+        attachmentDownloadFailed = true;
         console.error(`[${this.kind}] attachment download failed`, err);
       }
     }
-    const attachments: string[] = attachmentLocalPath ? [attachmentLocalPath] : [];
+    if (attachmentDownloadFailed) {
+      try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
+      await this.sendText(chatId, {
+        text: "Could not download all attachments. Please upload the album again.",
+        message_thread_id: threadId,
+      });
+      return;
+    }
+    const attachmentLocalPath = attachments[0] ?? null;
 
     const executionPrompt = prompt!;
     let executionOutcome: ExecutionOutcome = "failed";
@@ -569,6 +587,7 @@ export class BridgeEngine {
     notifyCapacityFailure = true,
     claimedPendingIds: number[] = [],
   ): Promise<ExecutionOutcome> {
+    void attachmentLocalPath;
     let prompt = rawPrompt;
     if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
 
@@ -1030,9 +1049,10 @@ export class BridgeEngine {
   private _deleteQueuedAttachments(attachments: string[]): void {
     const uploadDirs = new Set<string>();
     for (const attachment of attachments) {
-      try { unlinkSync(attachment); } catch {}
       const parent = dirname(attachment);
-      if (basename(parent).startsWith("bridge-uploads-")) uploadDirs.add(parent);
+      if (dirname(parent) !== tmpdir() || !basename(parent).startsWith("bridge-uploads-")) continue;
+      try { unlinkSync(attachment); } catch {}
+      uploadDirs.add(parent);
     }
     for (const dir of uploadDirs) {
       try { rmSync(dir, { recursive: true, force: true }); } catch {}

@@ -48,14 +48,14 @@ describe("interactive CLI availability filtering", () => {
     expect(buildCliStatusText("codex", available)).toContain("Available: none");
   });
 
-  it("detects provider credential files", () => {
+  it("detects provider credential files when the runtimes exist", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const existing = new Set([paths.codex, paths.claude]);
     const available = getAvailableCliKinds({
       homeDir,
       exists: (path) => existing.has(path),
-      commandExists: () => false,
+      commandExists: () => true,
       readCursorStatus: cursorStatusUnavailable,
     });
 
@@ -68,26 +68,26 @@ describe("interactive CLI availability filtering", () => {
     ]);
   });
 
-  it("detects the current Antigravity OAuth token path", () => {
+  it("detects the current Antigravity OAuth token path when the runtime exists", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
       homeDir,
       exists: (path) => path === paths.antigravity[0],
-      commandExists: () => false,
+      commandExists: () => true,
       readCursorStatus: cursorStatusUnavailable,
     });
 
     expect(available).toEqual(new Set<CliKind>(["antigravity"]));
   });
 
-  it("treats authenticated Grok as available without qualification evidence", () => {
+  it("treats authenticated Grok as available without qualification evidence when the runtime exists", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
       homeDir,
       exists: (path) => path === paths.grok[0],
-      commandExists: () => false,
+      commandExists: () => true,
       failedProviders: new Set(),
       readCursorStatus: cursorStatusUnavailable,
     });
@@ -107,7 +107,7 @@ describe("interactive CLI availability filtering", () => {
     const available = getAvailableCliKinds({
       homeDir,
       exists: (path) => path === paths.grok[0],
-      commandExists: () => false,
+      commandExists: () => true,
       failedProviders: new Set(["grok"]),
       readCursorStatus: cursorStatusUnavailable,
     });
@@ -121,12 +121,12 @@ describe("interactive CLI availability filtering", () => {
     ["agy", "antigravity", "GEMINI_API_KEY"],
     ["grok", "grok", "XAI_API_KEY"],
     ["cursor", "cursor", "CURSOR_API_KEY"],
-  ] as const)("accepts only a verified %s API key", (provider, cliKind, envVar) => {
+  ] as const)("accepts only a verified %s API key when its runtime exists", (provider, cliKind, envVar) => {
     const env = { [envVar]: `candidate-${provider}-key` };
     const verified = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
-      commandExists: () => false,
+      commandExists: () => true,
       failedProviders: new Set(),
       env,
       verifyApiKey: (candidate: ProviderId) => candidate === provider,
@@ -135,7 +135,7 @@ describe("interactive CLI availability filtering", () => {
     const rejected = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
-      commandExists: () => false,
+      commandExists: () => true,
       failedProviders: new Set(),
       env,
       verifyApiKey: () => false,
@@ -144,6 +144,102 @@ describe("interactive CLI availability filtering", () => {
 
     expect(verified).toEqual(new Set<CliKind>([cliKind]));
     expect(rejected).toEqual(new Set<CliKind>());
+  });
+
+  it.each([
+    ["codex", "CODEX_API_KEY"],
+    ["claude", "ANTHROPIC_API_KEY"],
+    ["agy", "GEMINI_API_KEY"],
+    ["grok", "XAI_API_KEY"],
+    ["cursor", "CURSOR_API_KEY"],
+  ] as const)("does not advertise %s from a verified API key when its executable is missing", (provider, envVar) => {
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => false,
+      failedProviders: new Set(),
+      env: { [envVar]: `candidate-${provider}-key` },
+      verifyApiKey: (candidate: ProviderId) => candidate === provider,
+      readCursorStatus: cursorStatusUnavailable,
+    });
+
+    expect(available).toEqual(new Set<CliKind>());
+  });
+
+  it("does not advertise executable providers without valid authentication", () => {
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => false,
+      commandExists: () => true,
+      failedProviders: new Set(),
+      env: {},
+      verifyApiKey: () => false,
+      readCursorStatus: () => ({ isAuthenticated: false }),
+    });
+
+    expect(available).toEqual(new Set<CliKind>());
+  });
+
+  it("uses the configured provider command as the executable availability contract", () => {
+    const homeDir = "/home/tester";
+    const paths = resolveInteractiveCliAuthPaths(homeDir);
+    const commands = {
+      codex: "/runtime/codex-custom",
+      claude: "/runtime/claude-custom",
+      agy: "/runtime/agy-custom",
+      grok: "/runtime/grok-custom",
+      cursor: "/runtime/cursor-custom",
+    } as const;
+    const seen: string[] = [];
+    const available = getAvailableCliKinds({
+      homeDir,
+      exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0]].includes(path),
+      commandExists: (command) => {
+        seen.push(command);
+        return true;
+      },
+      failedProviders: new Set(),
+      env: {
+        CODEX_COMMAND: commands.codex,
+        CLAUDE_COMMAND: commands.claude,
+        ANTIGRAVITY_COMMAND: commands.agy,
+        GROK_COMMAND: commands.grok,
+        CURSOR_COMMAND: commands.cursor,
+      },
+      readCursorStatus: () => ({ isAuthenticated: true }),
+    });
+
+    expect(available).toEqual(new Set<CliKind>(["codex", "claude", "antigravity", "grok", "cursor"]));
+    expect(new Set(seen)).toEqual(new Set(Object.values(commands)));
+  });
+
+  it.each([
+    ["codex", "codex", "/runtime/codex-custom"],
+    ["claude", "claude", "/runtime/claude-custom"],
+    ["agy", "antigravity", "/runtime/agy-custom"],
+    ["grok", "grok", "/runtime/grok-custom"],
+    ["cursor", "cursor", "/runtime/cursor-custom"],
+  ] as const)("requires the executable for authenticated %s", (provider, cliKind, missingCommand) => {
+    const homeDir = "/home/tester";
+    const paths = resolveInteractiveCliAuthPaths(homeDir);
+    const available = getAvailableCliKinds({
+      homeDir,
+      exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0]].includes(path),
+      commandExists: (command) => command !== missingCommand,
+      failedProviders: new Set(),
+      env: {
+        CODEX_COMMAND: "/runtime/codex-custom",
+        CLAUDE_COMMAND: "/runtime/claude-custom",
+        ANTIGRAVITY_COMMAND: "/runtime/agy-custom",
+        GROK_COMMAND: "/runtime/grok-custom",
+        CURSOR_COMMAND: "/runtime/cursor-custom",
+      },
+      readCursorStatus: () => ({ isAuthenticated: true }),
+    });
+
+    expect(available.has(cliKind as CliKind)).toBe(false);
+    expect(available.size).toBe(4);
+    expect(provider).toBeTruthy();
   });
 
   it.each([
@@ -165,7 +261,7 @@ describe("interactive CLI availability filtering", () => {
     const available = getAvailableCliKinds({
       homeDir,
       exists: (path) => accountPaths.includes(path),
-      commandExists: () => false,
+      commandExists: () => true,
       failedProviders: new Set(),
       env: { [envVar]: `invalid-${provider}-key` },
       verifyApiKey: () => false,
@@ -175,11 +271,11 @@ describe("interactive CLI availability filtering", () => {
     expect(available.has(expected as CliKind)).toBe(true);
   });
 
-  it("keeps an authenticated Cursor account available when its optional key is invalid", () => {
+  it("keeps an authenticated Cursor account available when its optional key is invalid and runtime exists", () => {
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
-      commandExists: () => false,
+      commandExists: () => true,
       failedProviders: new Set(),
       env: { CURSOR_API_KEY: "invalid-cursor-key" },
       verifyApiKey: () => false,
@@ -192,7 +288,7 @@ describe("interactive CLI availability filtering", () => {
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       exists: () => false,
-      commandExists: () => false,
+      commandExists: () => true,
       failedProviders: new Set(),
       readCursorStatus: () => ({ isAuthenticated: true }),
     });
