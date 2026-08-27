@@ -72,13 +72,21 @@ import {
 import { wrapPromptContext } from "./promptWrapping.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 import {
+  AntigravityUncertainCompletionError,
   ClaudeUncertainCompletionError,
+  CursorUncertainCompletionError,
+  GrokUncertainCompletionError,
+  isAntigravityUncertainCompletionFailureMessage,
   isClaudeUncertainCompletionFailureMessage,
+  isCursorUncertainCompletionFailureMessage,
+  isGrokUncertainCompletionFailureMessage,
 } from "./cliSuccessfulExitValidation.js";
 import { type as evtType } from "./events/types.js";
 import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
+
+type RecoverableProvider = "codex" | "antigravity" | "grok" | "cursor";
 
 export {
   getExecutionProcessState,
@@ -302,19 +310,41 @@ const CLAUDE_UNCERTAIN_COMPLETION_RECOVERY_PROMPT = [
   "If completion cannot be verified, state the concrete blocker or uncertainty.",
 ].join(" ");
 
+function providerRecoveryPrompt(provider: RecoverableProvider): string {
+  const name = provider === "antigravity" ? "Agy" : provider === "codex" ? "Codex" : provider === "grok" ? "Grok" : "Cursor";
+  return [
+    "Agent Bridge detected that the immediately preceding turn ended with uncertain completion.",
+    `Reconcile the current ${name} session state for that preceding user request.`,
+    "Inspect what actually completed and return one final user-facing closure.",
+    "Do not repeat side effects that already completed.",
+    "Finish remaining safe work only when the current session state proves it is still required.",
+    "If completion cannot be verified, state the concrete blocker or uncertainty.",
+  ].join(" ");
+}
+
 function optionValue(args: string[], name: string): string | null {
   const index = args.lastIndexOf(name);
   return index >= 0 && index + 1 < args.length ? args[index + 1] : null;
 }
 
-function claudeEffortFromArgs(args: string[]): EffortLevel | null {
-  const value = optionValue(args, "--effort");
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max"
-    ? value
-    : null;
+function hasOptionPair(args: string[], name: string, value: string): boolean {
+  return args.some((arg, index) => arg === name && args[index + 1] === value);
 }
 
-function safeClaudeRecoveryResult(options: CliOptions, result: CliResult): CliResult {
+function effortFromArgs(args: string[]): EffortLevel | null {
+  const direct = optionValue(args, "--effort");
+  if (direct === "low" || direct === "medium" || direct === "high" || direct === "xhigh" || direct === "max") {
+    return direct;
+  }
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (args[index] !== "-c" && args[index] !== "--config") continue;
+    const match = args[index + 1]?.match(/^model_reasoning_effort="?(low|medium|high|xhigh|max)"?$/);
+    if (match) return match[1] as EffortLevel;
+  }
+  return null;
+}
+
+function safeRecoveryResult(options: CliOptions, result: CliResult): CliResult {
   return {
     ...result,
     text: redactProviderApiKeySecrets(result.text, { ...process.env, ...(options.contextEnv ?? {}) }),
@@ -330,6 +360,37 @@ function serializeClaudeResult(result: CliResult): string {
   });
 }
 
+function serializeProviderResult(
+  provider: RecoverableProvider,
+  result: CliResult,
+): string {
+  if (provider === "codex") {
+    return [
+      JSON.stringify({ type: "thread.started", thread_id: result.sessionId }),
+      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: result.text } }),
+    ].join("\n") + "\n";
+  }
+  if (provider === "antigravity") {
+    return JSON.stringify({
+      event: "result",
+      result: { conversation_id: result.sessionId, status: "SUCCESS", response: result.text },
+    }) + "\n";
+  }
+  if (provider === "grok") {
+    return [
+      JSON.stringify({ type: "text", data: result.text }),
+      JSON.stringify({ type: "end", sessionId: result.sessionId, stopReason: "end_turn" }),
+    ].join("\n") + "\n";
+  }
+  return JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: result.text,
+    session_id: result.sessionId,
+  }) + "\n";
+}
+
 function incompleteClaudeResult(error: ClaudeUncertainCompletionError): CliResult {
   const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
   const note = "Claude stopped before confirming completion. Some work may have been applied, but completion could not be verified.";
@@ -342,7 +403,12 @@ function incompleteClaudeResult(error: ClaudeUncertainCompletionError): CliResul
   };
 }
 
-function emitClaudeRecoveryCompleted(options: CliOptions, result: CliResult): void {
+function incompleteProviderText(provider: RecoverableProvider): string {
+  const name = provider === "antigravity" ? "Agy" : provider === "codex" ? "Codex" : provider === "grok" ? "Grok" : "Cursor";
+  return `${name} stopped before confirming completion. Some work may have been applied, but completion could not be verified.`;
+}
+
+function emitRecoveryCompleted(options: CliOptions, result: CliResult): void {
   if (!options.eventContext || !options.onEvent) return;
   try {
     options.onEvent(evtType.runCompleted({
@@ -355,6 +421,37 @@ function emitClaudeRecoveryCompleted(options: CliOptions, result: CliResult): vo
   }
 }
 
+function emitRecoveryFailed(options: CliOptions, message: string): void {
+  if (!options.eventContext || !options.onEvent) return;
+  try {
+    options.onEvent(evtType.runFailed({
+      ...options.eventContext,
+      error: message,
+      category: "cli",
+    }));
+  } catch {
+    /* event observation must not break recovered execution */
+  }
+}
+
+function recoveryWasCancelled(options: CliOptions): boolean {
+  return options.chatId != null && isAbortRequested(options.chatId);
+}
+
+function finishRecoveryCancelled(options: CliOptions): { stdout: string } {
+  if (options.eventContext && options.onEvent) {
+    try {
+      options.onEvent(evtType.runCancelled({
+        ...options.eventContext,
+        reason: "user",
+      }));
+    } catch {
+      /* event observation must not break cancelled execution */
+    }
+  }
+  return { stdout: "" };
+}
+
 async function recoverClaudeUncertainCompletion(
   command: string,
   args: string[],
@@ -363,10 +460,11 @@ async function recoverClaudeUncertainCompletion(
   error: ClaudeUncertainCompletionError,
 ): Promise<{ stdout: string }> {
   const finishIncomplete = (): { stdout: string } => {
-    const result = safeClaudeRecoveryResult(options, incompleteClaudeResult(error));
-    emitClaudeRecoveryCompleted(options, result);
+    const result = safeRecoveryResult(options, incompleteClaudeResult(error));
+    emitRecoveryCompleted(options, result);
     return { stdout: serializeClaudeResult(result) };
   };
+  if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
   const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
   if (!sessionId) return finishIncomplete();
 
@@ -382,7 +480,7 @@ async function recoverClaudeUncertainCompletion(
     includeResponseContract: false,
     attachments: [],
     outputDir: null,
-    effort: claudeEffortFromArgs(args),
+    effort: effortFromArgs(args),
     nativeCompletion: true,
   });
 
@@ -400,12 +498,175 @@ async function recoverClaudeUncertainCompletion(
         onProviderOutputChunk: undefined,
       },
     );
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
     const parsed = parseClaudeStreamJsonOutput(recovery.stdout);
     if (!parsed) return finishIncomplete();
-    const result = safeClaudeRecoveryResult(options, parsed);
-    emitClaudeRecoveryCompleted(options, result);
+    const result = safeRecoveryResult(options, parsed);
+    emitRecoveryCompleted(options, result);
     return { stdout: serializeClaudeResult(result) };
   } catch {
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
+    return finishIncomplete();
+  }
+}
+
+type NonClaudeUncertainCompletionError =
+  | codexRuntime.CodexUncertainCompletionError
+  | AntigravityUncertainCompletionError
+  | GrokUncertainCompletionError
+  | CursorUncertainCompletionError;
+
+function uncertainSessionId(error: NonClaudeUncertainCompletionError): string | null {
+  return error.sessionId;
+}
+
+function originalSessionId(
+  provider: RecoverableProvider,
+  args: string[],
+): string | null {
+  if (provider === "codex") {
+    if (args[0] !== "exec") return null;
+    for (let index = 1; index < args.length; ) {
+      const arg = args[index];
+      if ((arg === "-c" || arg === "--config") && index + 1 < args.length) {
+        index += 2;
+        continue;
+      }
+      if (arg === "resume") {
+        const sessionId = args[index + 1];
+        return typeof sessionId === "string" && sessionId.trim() ? sessionId : null;
+      }
+      return null;
+    }
+    return null;
+  }
+  if (provider === "antigravity") return optionValue(args, "--conversation");
+  return optionValue(args, "--resume");
+}
+
+function providerExecutionMode(
+  provider: RecoverableProvider,
+  args: string[],
+): "safe" | "trusted" {
+  if (provider === "codex") return args.includes("--dangerously-bypass-approvals-and-sandbox") ? "trusted" : "safe";
+  if (provider === "antigravity") return args.includes("--dangerously-skip-permissions") ? "trusted" : "safe";
+  if (provider === "grok") return args.includes("--always-approve") ? "trusted" : "safe";
+  return optionValue(args, "--sandbox") === "disabled" ? "trusted" : "safe";
+}
+
+function providerToolMode(
+  provider: RecoverableProvider,
+  args: string[],
+): "default" | "none" {
+  if (provider === "codex") return hasOptionPair(args, "--disable", "shell_tool") ? "none" : "default";
+  if (provider === "antigravity") return args.includes("--sandbox") ? "none" : "default";
+  return "default";
+}
+
+function providerOutputFormat(
+  provider: RecoverableProvider,
+): ProviderInvocationRequest["outputFormat"] {
+  if (provider === "codex") return "json";
+  if (provider === "cursor") return "stream-json";
+  if (provider === "grok") return "streaming-json";
+  return "stream-json";
+}
+
+function isRecoverableProvider(provider: string | undefined): provider is RecoverableProvider {
+  return provider === "codex" || provider === "antigravity" || provider === "grok" || provider === "cursor";
+}
+
+function isNonClaudeUncertainCompletion(
+  provider: RecoverableProvider,
+  error: unknown,
+): error is NonClaudeUncertainCompletionError {
+  return (provider === "codex" && error instanceof codexRuntime.CodexUncertainCompletionError)
+    || (provider === "antigravity" && error instanceof AntigravityUncertainCompletionError)
+    || (provider === "grok" && error instanceof GrokUncertainCompletionError)
+    || (provider === "cursor" && error instanceof CursorUncertainCompletionError);
+}
+
+function isProviderUncertainCompletionFailureMessage(provider: string | undefined, message: string): boolean {
+  if (provider === "claude") return isClaudeUncertainCompletionFailureMessage(message);
+  if (provider === "codex") return codexRuntime.isCodexUncertainCompletionFailureMessage(message);
+  if (provider === "antigravity") return isAntigravityUncertainCompletionFailureMessage(message);
+  if (provider === "grok") return isGrokUncertainCompletionFailureMessage(message);
+  if (provider === "cursor") return isCursorUncertainCompletionFailureMessage(message);
+  return false;
+}
+
+async function recoverProviderUncertainCompletion(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: CliOptions,
+  provider: RecoverableProvider,
+  error: NonClaudeUncertainCompletionError,
+): Promise<{ stdout: string }> {
+  const sessionId = uncertainSessionId(error) ?? originalSessionId(provider, args);
+  const finishIncomplete = (): { stdout: string } => {
+    const message = incompleteProviderText(provider);
+    if (!sessionId) {
+      emitRecoveryFailed(options, message);
+      throw new Error(message);
+    }
+    const result = safeRecoveryResult(options, { text: message, sessionId });
+    emitRecoveryCompleted(options, result);
+    return { stdout: serializeProviderResult(provider, result) };
+  };
+  if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
+  if (!sessionId) return finishIncomplete();
+
+  const agyMetadata = provider === "antigravity" ? antigravityInvocationMetadata.get(args) : undefined;
+  const recoveryInvocation = buildCliInvocation({
+    bot: provider,
+    prompt: providerRecoveryPrompt(provider),
+    sessionId,
+    command,
+    model: provider === "antigravity" ? agyMetadata?.model ?? null : optionValue(args, "--model"),
+    executionMode: providerExecutionMode(provider, args),
+    outputFormat: providerOutputFormat(provider),
+    logFile: provider === "antigravity" ? optionValue(args, "--log-file") : null,
+    soulContext: null,
+    includeResponseContract: false,
+    attachments: [],
+    outputDir: null,
+    effort: effortFromArgs(args),
+    homeDir: provider === "antigravity" ? agyMetadata?.homeDir ?? homedir() : homedir(),
+    toolMode: providerToolMode(provider, args),
+    nativeCompletion: provider === "antigravity" && Boolean(optionValue(args, "--print")?.startsWith("/goal ")),
+  });
+
+  try {
+    const recoveryOptions: CliOptions = {
+      ...options,
+      bot: provider,
+      stdin: recoveryInvocation.stdin,
+      eventContext: undefined,
+      onEvent: undefined,
+      onProviderOutputChunk: undefined,
+    };
+    const recovery = provider === "antigravity"
+      ? await runAntigravitySerialized(
+          recoveryInvocation.command,
+          recoveryInvocation.args,
+          cwd,
+          recoveryOptions,
+          antigravityInvocationMetadata.get(recoveryInvocation.args),
+        )
+      : await runSupervisedProcess(
+          recoveryInvocation.command,
+          recoveryInvocation.args,
+          cwd,
+          recoveryOptions,
+        );
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
+    const parsed = parseCliResult({ bot: provider, stdout: recovery.stdout, outputFormat: providerOutputFormat(provider) });
+    const result = safeRecoveryResult(options, parsed);
+    emitRecoveryCompleted(options, result);
+    return { stdout: serializeProviderResult(provider, result) };
+  } catch {
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
     return finishIncomplete();
   }
 }
@@ -432,10 +693,10 @@ async function runConfiguredCli(
     ...options,
     processWatch: options.processWatch ?? getProcessWatchForCommand(command),
   };
-  if (provider === "claude" && executionOptions.onEvent) {
+  if (executionOptions.onEvent) {
     const onEvent = executionOptions.onEvent;
     executionOptions.onEvent = (event) => {
-      if (event.type === "run.failed" && isClaudeUncertainCompletionFailureMessage(event.error)) return;
+      if (event.type === "run.failed" && isProviderUncertainCompletionFailureMessage(provider, event.error)) return;
       onEvent(event);
     };
   }
@@ -455,6 +716,8 @@ async function runConfiguredCli(
   } catch (error) {
     if (provider === "claude" && error instanceof ClaudeUncertainCompletionError) {
       outcome = await recoverClaudeUncertainCompletion(command, args, cwd, executionOptions, error);
+    } else if (isRecoverableProvider(provider) && isNonClaudeUncertainCompletion(provider, error)) {
+      outcome = await recoverProviderUncertainCompletion(command, args, cwd, executionOptions, provider, error);
     } else {
       throw error;
     }

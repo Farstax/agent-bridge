@@ -10,7 +10,7 @@ import {
   ClaudeUncertainCompletionError,
   validateSuccessfulCliExit,
 } from "../src/cliSuccessfulExitValidation.js";
-import { runCli } from "../src/cli.js";
+import { abortCliProcess, runCli } from "../src/cli.js";
 import {
   clearProviderApiKeyVerificationCache,
   verifyProviderApiKey,
@@ -118,6 +118,36 @@ if (n === 1) {
     expect(readFileSync(count, "utf8")).toBe("2");
     expect(events.some((event) => event.type === "run.failed")).toBe(false);
     expect(events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+  });
+
+  it("preserves cancellation instead of completing an uncertain Claude recovery", async () => {
+    const { root, script } = makeClaudeScript(`
+if (process.argv.includes("--resume")) {
+  setInterval(() => {}, 1000);
+} else {
+  console.log(${JSON.stringify(claudeResult("Useful partial result."))});
+  console.error("Background tasks still running after 3s; terminating.");
+}
+`);
+    const executionChatId = "claude-cancel-recovery";
+    const events: BridgeEvent[] = [];
+
+    const stdout = await runCli(script, invocationArgs(), root, {
+      bot: "claude",
+      chatId: executionChatId,
+      bypassWorkspaceLock: true,
+      eventContext: { runId: "run-574-cancel", bot: "claude", chatId: "chat-574", chatKey: "chat-574" },
+      onEvent: (event) => events.push(event),
+      processWatch: ({ args }) => {
+        if (args.includes("--resume")) abortCliProcess(executionChatId);
+        return null;
+      },
+    });
+
+    expect(stdout).toBe("");
+    expect(events.filter((event) =>
+      event.type === "run.completed" || event.type === "run.failed" || event.type === "run.cancelled"
+    ).map((event) => event.type)).toEqual(["run.cancelled"]);
   });
 
   it("recovers partial structured output without exposing protocol records", async () => {
