@@ -158,6 +158,33 @@ describe("scoped conversation search", () => {
   });
 });
 
+
+describe("authorized conversation search", () => {
+  it("finds another conversation only through the same mechanically authorized owner scope", () => {
+    const ownerA = "owner-a";
+    db.addConvTurn("chat:1", "user", "current local note", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: ownerA });
+    db.addConvTurn("chat:2", "user", "authorized remote evidence", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: ownerA });
+    db.addConvTurn("chat:3", "user", "unauthorized remote evidence", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-b" });
+    const rows = db.searchAuthorizedConvTurns({ scope: "owner", ownerKey: ownerA }, "remote evidence");
+    expect(rows.filter((row) => row.is_match).map((row) => row.text)).toEqual(["authorized remote evidence"]);
+  });
+
+  it("keeps adjacency inside each originating canonical conversation", () => {
+    db.addConvTurn("same-native-id", "assistant", "telegram before", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+    db.addConvTurn("same-native-id", "user", "decision marker telegram", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+    db.addConvTurn("same-native-id", "assistant", "telegram after", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+    db.addConvTurn("same-native-id", "assistant", "discord neighbor must not leak", "codex", { surfaceIdentity: "discord:interactive", ownerKey: "owner-b" });
+    const rows = db.searchAuthorizedConvTurns({ scope: "conversation", surfaceIdentity: "telegram:interactive", chatKey: "same-native-id" }, "decision marker");
+    expect(rows.map((row) => row.text)).toEqual(["telegram before", "decision marker telegram", "telegram after"]);
+  });
+
+  it("keeps legacy rows searchable only from conversation scope after migration", () => {
+    db.addConvTurn("legacy-chat", "user", "legacy retained evidence", "codex");
+    expect(db.searchAuthorizedConvTurns({ scope: "conversation", surfaceIdentity: "telegram:interactive", chatKey: "legacy-chat" }, "legacy retained").some((row) => row.text === "legacy retained evidence")).toBe(true);
+    expect(db.searchAuthorizedConvTurns({ scope: "owner", ownerKey: "owner-a" }, "legacy retained")).toEqual([]);
+  });
+});
+
 describe("pending messages", () => {
   it("enqueues and dequeues within the owning surface and chat", () => {
     db.enqueueMsg("telegram:codex", "chat:1", { prompt: "do work", chatId: 123, chatType: "private" });

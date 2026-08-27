@@ -47,7 +47,7 @@ export interface ControlledRolloutReconciliationOptions {
   reason: string;
 }
 
-import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS } from "./repositories/conversationRepository.js";
+import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS, type AuthorizedConversationSearchScope, type ConversationTurnProvenance } from "./repositories/conversationRepository.js";
 export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./repositories/conversationRepository.js";
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
 import { assertDatabaseForeignKeyIntegrity } from "./db/roleAssignmentsMigration.js";
@@ -600,20 +600,21 @@ export class BridgeDb {
 
   // ── Conversation turns ──────────────────────────────────────────────────
 
-  addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string): void {
-    this.conversations.addConvTurn(chatKey, role, text, cli);
+  addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string, provenance?: ConversationTurnProvenance): void {
+    this.conversations.addConvTurn(chatKey, role, text, cli, provenance);
   }
 
   getRecentConvTurns(
     chatKey: string,
     limit: number,
     sinceId?: number,
+    surfaceIdentity?: string,
   ): Array<{ id: number; role: string; text: string; cli: string | null; created_at: string }> {
-    return this.conversations.getRecentConvTurns(chatKey, limit, sinceId);
+    return this.conversations.getRecentConvTurns(chatKey, limit, sinceId, surfaceIdentity);
   }
 
-  buildConvContext(chatKey: string, maxChars = DEFAULT_CONTEXT_MAX_CHARS): string {
-    return this.conversations.buildConvContext(chatKey, maxChars);
+  buildConvContext(chatKey: string, maxChars = DEFAULT_CONTEXT_MAX_CHARS, surfaceIdentity?: string): string {
+    return this.conversations.buildConvContext(chatKey, maxChars, surfaceIdentity);
   }
 
   // ── Pending messages ────────────────────────────────────────────────────
@@ -845,13 +846,18 @@ export class BridgeDb {
     return this.conversations.getLatestConvSummary(chatKey);
   }
 
-  /** Issue #350 — scoped exact-turn search. */
-  searchConvTurns(chatKey: string, query: string, limit?: number): Array<{ id: number; role: string; text: string; cli: string | null; created_at: string }> {
+  /** Issue #350 — legacy chat-key exact-turn search. */
+  searchConvTurns(chatKey: string, query: string, limit?: number) {
     return this.conversations.searchConvTurns(chatKey, query, limit);
   }
 
-  clearConvHistory(chatKey: string): void {
-    this.conversations.clearConvHistory(chatKey);
+  /** Explicit mechanically authorized exact-turn search. */
+  searchAuthorizedConvTurns(scope: AuthorizedConversationSearchScope, query: string, limit?: number) {
+    return this.conversations.searchAuthorizedConvTurns(scope, query, limit);
+  }
+
+  clearConvHistory(chatKey: string, surfaceIdentity?: string): void {
+    this.conversations.clearConvHistory(chatKey, surfaceIdentity);
   }
 
   getConvStatus(chatKey: string, surface: string): {
@@ -862,10 +868,10 @@ export class BridgeDb {
       .prepare(`SELECT COUNT(*) AS n FROM pending_messages WHERE surface = ? AND chat_key = ?`)
       .get(surface, chatKey) as { n: number };
     return {
-      turnCount: this.conversations.getTurnCount(chatKey),
+      turnCount: this.conversations.getTurnCount(chatKey, surface),
       pendingCount: pc.n,
-      latestSummaryAt: this.conversations.getLatestSummaryAt(chatKey),
-      latestTurnAt: this.conversations.getLatestTurnAt(chatKey),
+      latestSummaryAt: this.conversations.getLatestSummaryAt(chatKey, surface),
+      latestTurnAt: this.conversations.getLatestTurnAt(chatKey, surface),
     };
   }
 

@@ -10,9 +10,10 @@ import { applyAutonomousGoalsMigration } from "./autonomousGoalsMigration.js";
 import { dropLegacyWorkerTablesMigration } from "./dropLegacyWorkerTablesMigration.js";
 import { applyGrokSessionColumnsMigration } from "./grokSessionColumnsMigration.js";
 import { applyCursorSessionColumnsMigration } from "./cursorSessionColumnsMigration.js";
+import { applyConversationScopeMigration } from "./conversationScopeMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 11;
+export const CURRENT_SCHEMA_VERSION = 12;
 
 export interface Migration {
   version: number;
@@ -155,6 +156,7 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 9 removes the obsolete Engineering Worker persistence model.
  * Version 10 adds Grok Build session identity and failure columns.
  * Version 11 adds Cursor session identity and failure columns.
+ * Version 12 adds canonical conversation provenance for authorized cross-conversation search.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -169,4 +171,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 9, name: "drop-legacy-worker-tables", up: dropLegacyWorkerTablesMigration },
   { version: 10, name: "add-grok-session-columns", up: applyGrokSessionColumnsMigration },
   { version: 11, name: "add-cursor-session-columns", up: applyCursorSessionColumnsMigration },
+  { version: 12, name: "add-conversation-search-scope", up: applyConversationScopeMigration },
 ];

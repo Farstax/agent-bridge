@@ -1968,7 +1968,7 @@ describe("BridgeEngine", () => {
   });
 
   describe("/reset command", () => {
-    it("deletes conversation turns and historical summaries only for the reset conversation", async () => {
+    it("clears surface-visible retained history without deleting ambiguous retired summaries", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
 
@@ -1994,7 +1994,8 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makeMessage("/reset")]);
       expect(db.getConvStatus("100", "test").turnCount).toBe(0);
-      expect(db.getLatestConvSummary("100")).toBeNull();
+      expect(db.getConvStatus("100", "test").latestSummaryAt).toBeNull();
+      expect(db.getLatestConvSummary("100")?.summary_md).toContain("important work");
       expect(db.getSession("100", "claude")).toBeNull();
       expect(db.getConvStatus("200", "test").turnCount).toBe(1);
       expect(db.getLatestConvSummary("200")?.summary_md).toContain("other work");

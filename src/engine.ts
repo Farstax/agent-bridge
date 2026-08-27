@@ -44,6 +44,7 @@ import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBus
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel } from "./effort.js";
 import { getCodexUsageText } from "./codexUsage.js";
 import { clearHandoffRequired } from "./handoffState.js";
+import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
@@ -1101,9 +1102,15 @@ export class BridgeEngine {
     return JSON.stringify([this.surfaceIdentity, chatKey]);
   }
 
+  private _conversationOwnerKey(): string | null {
+    return deriveConversationOwnerKey(this.surfaceIdentity, this.opts.allowedUserIds);
+  }
+
   private _rememberTurn(chatKey: string, userPrompt: string, assistantText: string): void {
-    this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind);
-    this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind);
+    const ownerKey = this._conversationOwnerKey();
+    const provenance = { surfaceIdentity: this.surfaceIdentity, ...(ownerKey ? { ownerKey } : {}) };
+    this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind, provenance);
+    this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind, provenance);
   }
 
   private _shouldInjectContext(chatKey: string, nativeSessionMode: "fresh" | "resume"): boolean {
@@ -1113,7 +1120,7 @@ export class BridgeEngine {
 
   private _buildRecentContextPrompt(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume"): string {
     if (!this._shouldInjectContext(chatKey, nativeSessionMode)) return prompt;
-    const ctx = this.db.buildConvContext(chatKey, ENGINE_CONTEXT_MAX_CHARS);
+    const ctx = this.db.buildConvContext(chatKey, ENGINE_CONTEXT_MAX_CHARS, this.surfaceIdentity);
     return ctx ? `${ctx}${prompt}` : prompt;
   }
 
@@ -1139,11 +1146,13 @@ export class BridgeEngine {
       }
     }
     if (!hasContext && !advisorCapability) return null;
+    const ownerKey = this._conversationOwnerKey();
     const contextPrompt = hasContext ? [
       "[Agent Bridge context]",
       "More retained conversation turns are available if needed:",
       '"$AGENT_BRIDGE_CONTEXT_COMMAND" --recent 20',
       '"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>"',
+      ...(ownerKey ? ['"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>" --scope owner'] : []),
       "",
     ].join("\n") : "";
     return {
@@ -1154,6 +1163,8 @@ export class BridgeEngine {
           AGENT_BRIDGE_CONTEXT_COMMAND: commandPath,
           AGENT_BRIDGE_CONTEXT_DB: dbPath!,
           AGENT_BRIDGE_CHAT_KEY: chatKey,
+          AGENT_BRIDGE_SURFACE_IDENTITY: this.surfaceIdentity,
+          ...(ownerKey ? { AGENT_BRIDGE_OWNER_KEY: ownerKey } : {}),
         } : {}),
         ...(advisorCapability ? {
           AGENT_BRIDGE_ADVISOR_COMMAND: advisorCommandPath,

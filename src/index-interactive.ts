@@ -48,6 +48,7 @@ import { createHealthRuntime } from "./health/runtime.js";
 import { handleIntegratedHealthCommand } from "./health/integrated.js";
 import { autoUpdateClis } from "./health/autoRemediate.js";
 import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
+import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { loadWorkspaceContext } from "./workspaceContext.js";
 import { AutonomyController, isFirstClassAutonomyBot } from "./autonomyController.js";
 import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } from "./autonomyTelegram.js";
@@ -137,7 +138,11 @@ const ownerNotificationIngress = ownerNotificationSocketPath
         sendMessage: (chatId, text) => client.sendMessage({ chat_id: chatId, text }),
       },
       recordDeliveredAssistantTurn: (chatKey, text) => {
-        db.addConvTurn(chatKey, "assistant", text);
+        const ownerKey = deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds);
+        db.addConvTurn(chatKey, "assistant", text, undefined, {
+          surfaceIdentity: runtimePolicy.surfaceIdentity,
+          ...(ownerKey ? { ownerKey } : {}),
+        });
       },
     })
   : null;

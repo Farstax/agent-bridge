@@ -219,7 +219,7 @@ export function handleCommand(
 
   if (text === "/reset") {
     db.setSession(chatId, kind, null);
-    db.clearConvHistory(chatId);
+    db.clearConvHistory(chatId, surfaceIdentity);
     return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };
   }
 

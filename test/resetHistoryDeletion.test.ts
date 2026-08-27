@@ -40,7 +40,8 @@ describe("/reset conversation evidence deletion", () => {
       });
       expect(db.getSession("chat:1", "claude")).toBeNull();
       expect(db.getRecentConvTurns("chat:1", 100)).toEqual([]);
-      expect(db.getLatestConvSummary("chat:1")).toBeNull();
+      expect(db.getConvStatus("chat:1", "telegram:interactive").latestSummaryAt).toBeNull();
+      expect(db.getLatestConvSummary("chat:1")?.summary_md).toContain("current conversation");
 
       expect(db.getSession("chat:2", "claude")).toBe("session-other");
       expect(db.getRecentConvTurns("chat:2", 100).map((turn) => turn.text)).toEqual(["other conversation evidence"]);

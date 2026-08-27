@@ -93,12 +93,29 @@ function escapeLikeTerm(term: string): string {
   return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
+export interface ConversationTurnProvenance {
+  surfaceIdentity: string;
+  ownerKey?: string;
+}
+
+export type AuthorizedConversationSearchScope =
+  | { scope: "conversation"; surfaceIdentity: string; chatKey: string }
+  | { scope: "owner"; ownerKey: string };
+
+type SearchAdjacencyScope =
+  | { scope: "legacy" }
+  | { scope: "conversation"; surfaceIdentity: string }
+  | { scope: "owner" };
+
 export interface ConvTurnRow {
   id: number;
   role: string;
   text: string;
   cli: string | null;
   created_at: string;
+  chat_key?: string;
+  surface_identity?: string | null;
+  owner_key?: string | null;
   /** True when this row was a selected search hit rather than adjacent context. */
   is_match?: boolean;
 }
@@ -115,37 +132,57 @@ export interface ConvSummaryRow {
 export class ConversationRepository {
   constructor(private readonly db: Database.Database) {}
 
-  addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string): void {
+  addConvTurn(
+    chatKey: string,
+    role: "user" | "assistant",
+    text: string,
+    cli?: string,
+    provenance?: ConversationTurnProvenance,
+  ): void {
     this.db
-      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli) VALUES (?, ?, ?, ?)`)
-      .run(chatKey, role, text, cli ?? null);
+      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli, surface_identity, owner_key) VALUES (?, ?, ?, ?, ?, ?)`) 
+      .run(chatKey, role, text, cli ?? null, provenance?.surfaceIdentity ?? null, provenance?.ownerKey ?? null);
   }
 
-  getRecentConvTurns(chatKey: string, limit: number, sinceId?: number): ConvTurnRow[] {
+  getRecentConvTurns(
+    chatKey: string,
+    limit: number,
+    sinceId?: number,
+    surfaceIdentity?: string,
+  ): ConvTurnRow[] {
+    const surface = surfaceIdentity?.trim();
+    const scopeSql = surface
+      ? "chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)"
+      : "chat_key = ?";
+    const scopeParams: unknown[] = surface ? [chatKey, surface] : [chatKey];
     if (sinceId != null) {
       return this.db
         .prepare(
           `SELECT id, role, text, cli, created_at FROM (
              SELECT id, role, text, cli, created_at FROM conversation_turns
-             WHERE chat_key = ? AND id > ?
+             WHERE ${scopeSql} AND id > ?
              ORDER BY id DESC LIMIT ?
            ) ORDER BY id ASC`
         )
-        .all(chatKey, sinceId, limit) as ConvTurnRow[];
+        .all(...scopeParams, sinceId, limit) as ConvTurnRow[];
     }
     return this.db
       .prepare(
         `SELECT id, role, text, cli, created_at FROM (
            SELECT id, role, text, cli, created_at FROM conversation_turns
-           WHERE chat_key = ?
+           WHERE ${scopeSql}
            ORDER BY id DESC LIMIT ?
          ) ORDER BY id ASC`
       )
-      .all(chatKey, limit) as ConvTurnRow[];
+      .all(...scopeParams, limit) as ConvTurnRow[];
   }
 
-  buildConvContext(chatKey: string, maxChars = DEFAULT_CONTEXT_MAX_CHARS): string {
-    const candidates = this.getRecentConvTurns(chatKey, recentTurnCandidateLimit());
+  buildConvContext(
+    chatKey: string,
+    maxChars = DEFAULT_CONTEXT_MAX_CHARS,
+    surfaceIdentity?: string,
+  ): string {
+    const candidates = this.getRecentConvTurns(chatKey, recentTurnCandidateLimit(), undefined, surfaceIdentity);
     if (candidates.length === 0) return "";
 
     let budget = maxChars;
@@ -187,12 +224,44 @@ export class ConversationRepository {
       .get(chatKey) as ConvSummaryRow | undefined) ?? null;
   }
 
-  /**
-   * Issue #350: read-only, chat-scoped chronological search over exact
-   * conversation turns. Supplements — never replaces — the bounded recent
-   * turn window used for fresh-session continuity.
-   */
+  /** Issue #350 legacy chat-key search retained for compatibility. */
   searchConvTurns(chatKey: string, query: string, limit = DEFAULT_SEARCH_TURN_LIMIT): ConvTurnRow[] {
+    return this.searchConvTurnsWhere("chat_key = ?", [chatKey], query, limit, { scope: "legacy" });
+  }
+
+  /**
+   * Explicit authorized search. Conversation is the default canonical scope;
+   * owner scope requires a mechanically issued owner key. Legacy rows without
+   * surface provenance remain visible only to conversation scope.
+   */
+  searchAuthorizedConvTurns(
+    scope: AuthorizedConversationSearchScope,
+    query: string,
+    limit = DEFAULT_SEARCH_TURN_LIMIT,
+  ): ConvTurnRow[] {
+    if (scope.scope === "owner") {
+      if (!scope.ownerKey.trim()) return [];
+      return this.searchConvTurnsWhere("owner_key = ?", [scope.ownerKey], query, limit, { scope: "owner" });
+    }
+    const surfaceIdentity = scope.surfaceIdentity.trim();
+    const chatKey = scope.chatKey.trim();
+    if (!surfaceIdentity || !chatKey) return [];
+    return this.searchConvTurnsWhere(
+      "chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)",
+      [chatKey, surfaceIdentity],
+      query,
+      limit,
+      { scope: "conversation", surfaceIdentity },
+    );
+  }
+
+  private searchConvTurnsWhere(
+    scopeSql: string,
+    scopeParams: unknown[],
+    query: string,
+    limit: number,
+    adjacencyScope: SearchAdjacencyScope,
+  ): ConvTurnRow[] {
     const tokens = tokenizeSearchQuery(query);
     if (tokens.length === 0) return [];
     const boundedLimit = Math.min(Math.max(1, Math.trunc(limit) || DEFAULT_SEARCH_TURN_LIMIT), MAX_SEARCH_TURN_LIMIT);
@@ -202,24 +271,38 @@ export class ConversationRepository {
 
     const matchingRows = this.db
       .prepare(
-        `SELECT id, role, text, cli, created_at FROM conversation_turns
-         WHERE chat_key = ? AND (${clauses})
+        `SELECT id, chat_key, surface_identity, owner_key, role, text, cli, created_at FROM conversation_turns
+         WHERE (${scopeSql}) AND (${clauses})
          ORDER BY (${coverage}) DESC, id DESC
          LIMIT ?`
       )
-      .all(chatKey, ...params, ...params, boundedLimit) as ConvTurnRow[];
+      .all(...scopeParams, ...params, ...params, boundedLimit) as ConvTurnRow[];
 
     const evidence = new Map<number, ConvTurnRow>();
-    const adjacent = (id: number, direction: "before" | "after"): ConvTurnRow | undefined => {
+    const adjacent = (hit: ConvTurnRow, direction: "before" | "after"): ConvTurnRow | undefined => {
+      if (!hit.chat_key) return undefined;
       const operator = direction === "before" ? "<" : ">";
       const order = direction === "before" ? "DESC" : "ASC";
+      let originSql = "chat_key = ?";
+      const originParams: unknown[] = [hit.chat_key];
+
+      if (adjacencyScope.scope === "conversation") {
+        originSql += " AND (surface_identity = ? OR surface_identity IS NULL)";
+        originParams.push(adjacencyScope.surfaceIdentity);
+      } else if (adjacencyScope.scope === "owner") {
+        if (hit.surface_identity == null || hit.owner_key == null) return undefined;
+        originSql += " AND surface_identity = ? AND owner_key = ?";
+        originParams.push(hit.surface_identity, hit.owner_key);
+      }
+
+      originParams.push(hit.id);
       return this.db
         .prepare(
-          `SELECT id, role, text, cli, created_at FROM conversation_turns
-           WHERE chat_key = ? AND id ${operator} ?
+          `SELECT id, chat_key, surface_identity, owner_key, role, text, cli, created_at FROM conversation_turns
+           WHERE ${originSql} AND id ${operator} ?
            ORDER BY id ${order} LIMIT 1`
         )
-        .get(chatKey, id) as ConvTurnRow | undefined;
+        .get(...originParams) as ConvTurnRow | undefined;
     };
 
     for (const hit of matchingRows) {
@@ -230,7 +313,7 @@ export class ConversationRepository {
         if (evidence.size >= MAX_SEARCH_CONTEXT_TURNS) break;
         evidence.set(hit.id, { ...hit, is_match: true });
       }
-      for (const context of [adjacent(hit.id, "before"), adjacent(hit.id, "after")]) {
+      for (const context of [adjacent(hit, "before"), adjacent(hit, "after")]) {
         if (context && !evidence.has(context.id) && evidence.size < MAX_SEARCH_CONTEXT_TURNS) {
           evidence.set(context.id, { ...context, is_match: false });
         }
@@ -239,31 +322,45 @@ export class ConversationRepository {
 
     return [...evidence.values()].sort((a, b) => a.id - b.id).map((row) => ({
       ...row,
-      text:
-        row.text.length > MAX_SEARCH_SNIPPET_CHARS
-          ? `${row.text.slice(0, MAX_SEARCH_SNIPPET_CHARS)}…`
-          : row.text,
+      text: row.text.length > MAX_SEARCH_SNIPPET_CHARS
+        ? `${row.text.slice(0, MAX_SEARCH_SNIPPET_CHARS)}…`
+        : row.text,
     }));
   }
 
-  clearConvHistory(chatKey: string): void {
+  clearConvHistory(chatKey: string, surfaceIdentity?: string): void {
+    const surface = surfaceIdentity?.trim();
+    if (surface) {
+      this.db.prepare(`DELETE FROM conversation_turns WHERE chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)`).run(chatKey, surface);
+      // Historical summaries predate canonical surface provenance. A scoped reset
+      // cannot mechanically attribute them, so leave them intact instead of
+      // deleting another surface's compatibility data.
+      return;
+    }
     this.db.prepare(`DELETE FROM conversation_turns WHERE chat_key = ?`).run(chatKey);
     this.db.prepare(`DELETE FROM conversation_summaries WHERE chat_key = ?`).run(chatKey);
   }
 
-  getTurnCount(chatKey: string): number {
-    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM conversation_turns WHERE chat_key = ?`).get(chatKey) as { n: number };
+  getTurnCount(chatKey: string, surfaceIdentity?: string): number {
+    const surface = surfaceIdentity?.trim();
+    const row = surface
+      ? this.db.prepare(`SELECT COUNT(*) AS n FROM conversation_turns WHERE chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)`).get(chatKey, surface) as { n: number }
+      : this.db.prepare(`SELECT COUNT(*) AS n FROM conversation_turns WHERE chat_key = ?`).get(chatKey) as { n: number };
     return row.n;
   }
 
-  getLatestTurnAt(chatKey: string): string | null {
-    const row = this.db
-      .prepare(`SELECT created_at FROM conversation_turns WHERE chat_key = ? ORDER BY id DESC LIMIT 1`)
-      .get(chatKey) as { created_at: string } | undefined;
+  getLatestTurnAt(chatKey: string, surfaceIdentity?: string): string | null {
+    const surface = surfaceIdentity?.trim();
+    const row = surface
+      ? this.db.prepare(`SELECT created_at FROM conversation_turns WHERE chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL) ORDER BY id DESC LIMIT 1`).get(chatKey, surface) as { created_at: string } | undefined
+      : this.db.prepare(`SELECT created_at FROM conversation_turns WHERE chat_key = ? ORDER BY id DESC LIMIT 1`).get(chatKey) as { created_at: string } | undefined;
     return row?.created_at ?? null;
   }
 
-  getLatestSummaryAt(chatKey: string): string | null {
+  getLatestSummaryAt(chatKey: string, surfaceIdentity?: string): string | null {
+    // Historical summaries do not carry canonical surface provenance. Never
+    // expose one through a surface-scoped status query.
+    if (surfaceIdentity?.trim()) return null;
     const row = this.db
       .prepare(`SELECT created_at FROM conversation_summaries WHERE chat_key = ? ORDER BY id DESC LIMIT 1`)
       .get(chatKey) as { created_at: string } | undefined;

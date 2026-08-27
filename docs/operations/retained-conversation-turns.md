@@ -43,3 +43,8 @@ Current recovery evidence should cover:
 - guarded rollout backup/integrity checks providing recoverable database copies, file/hash restoration, schema validation, and post-restore verification.
 
 The removal of legacy compaction/project-memory execution in #544 does not perform a destructive schema migration or delete historical summary/memory rows.
+
+
+## Explicit cross-conversation search
+
+Search stays conversation-scoped by default. When the runtime has exactly one authenticated owner, it exposes an explicit `--scope owner` search. Owner scope is derived by the runtime from the authenticated surface allowlist, not accepted from prompt text, and matches only turns written with that durable owner key. Results retain their canonical surface, conversation key, timestamp, and adjacent exact turns. Legacy pre-migration rows remain available to conversation scope but are never widened into owner scope. Project scope is intentionally not implemented until Agent Bridge has a concrete project identity.
