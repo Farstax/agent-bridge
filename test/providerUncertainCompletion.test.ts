@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildCliInvocation, parseCliResult, runCli } from "../src/cli.js";
+import { abortCliProcess, buildCliInvocation, parseCliResult, runCli } from "../src/cli.js";
 import { validateSuccessfulCliExit } from "../src/cliSuccessfulExitValidation.js";
 import type { BridgeEvent } from "../src/events/types.js";
 
@@ -203,6 +203,55 @@ describe("provider uncertain completion contract", () => {
       expect(stdout).not.toContain("SECRET_INTERNAL_MESSAGE");
       expect(stdout).not.toContain("/private/provider/path");
       expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.completed"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves cancellation instead of completing an uncertain Grok recovery", async () => {
+    const root = await mkdtemp(join(tmpdir(), "grok-cancel-recovery-"));
+    const command = join(root, "grok-cancel-fixture");
+    const executionChatId = "grok-cancel-recovery";
+    const source = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const emit = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+if (!args.includes("--resume")) {
+  emit({ type: "end", sessionId: ${JSON.stringify(GROK_SESSION)}, stopReason: "end_turn" });
+  process.exit(0);
+}
+setInterval(() => {}, 1000);
+`;
+    await writeFile(command, source, { mode: 0o700 });
+    const events: BridgeEvent[] = [];
+
+    try {
+      const invocation = buildCliInvocation({
+        bot: "grok",
+        prompt: "perform side effect",
+        sessionId: null,
+        command,
+        model: null,
+        outputFormat: "streaming-json",
+      });
+      const stdout = await runCli(command, invocation.args, root, {
+        bot: "grok",
+        chatId: executionChatId,
+        bypassWorkspaceLock: true,
+        eventContext: {
+          runId: "uncertain-grok-cancel",
+          bot: "grok",
+          chatId: "chat:575",
+          chatKey: "chat:575",
+        },
+        onEvent: (event) => events.push(event),
+        processWatch: ({ args }) => {
+          if (args.includes("--resume")) abortCliProcess(executionChatId);
+          return null;
+        },
+      });
+
+      expect(stdout).toBe("");
+      expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.cancelled"]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
