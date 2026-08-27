@@ -6,6 +6,7 @@ on:
       - agent/oss-482-authorized-turn-search
     paths-ignore:
       - .oss-482-test-failure.txt
+      - scripts/issue482-finalize.py
 
 permissions:
   contents: write
