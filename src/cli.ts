@@ -332,10 +332,16 @@ function hasOptionPair(args: string[], name: string, value: string): boolean {
 }
 
 function effortFromArgs(args: string[]): EffortLevel | null {
-  const value = optionValue(args, "--effort");
-  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max"
-    ? value
-    : null;
+  const direct = optionValue(args, "--effort");
+  if (direct === "low" || direct === "medium" || direct === "high" || direct === "xhigh" || direct === "max") {
+    return direct;
+  }
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (args[index] !== "-c" && args[index] !== "--config") continue;
+    const match = args[index + 1]?.match(/^model_reasoning_effort="?(low|medium|high|xhigh|max)"?$/);
+    if (match) return match[1] as EffortLevel;
+  }
+  return null;
 }
 
 function safeRecoveryResult(options: CliOptions, result: CliResult): CliResult {
@@ -498,9 +504,20 @@ function originalSessionId(
   args: string[],
 ): string | null {
   if (provider === "codex") {
-    return args[0] === "exec" && args[1] === "resume" && typeof args[2] === "string" && args[2].trim()
-      ? args[2]
-      : null;
+    if (args[0] !== "exec") return null;
+    for (let index = 1; index < args.length; ) {
+      const arg = args[index];
+      if ((arg === "-c" || arg === "--config") && index + 1 < args.length) {
+        index += 2;
+        continue;
+      }
+      if (arg === "resume") {
+        const sessionId = args[index + 1];
+        return typeof sessionId === "string" && sessionId.trim() ? sessionId : null;
+      }
+      return null;
+    }
+    return null;
   }
   if (provider === "antigravity") return optionValue(args, "--conversation");
   return optionValue(args, "--resume");
@@ -595,7 +612,7 @@ async function recoverProviderUncertainCompletion(
     effort: effortFromArgs(args),
     homeDir: provider === "antigravity" ? agyMetadata?.homeDir ?? homedir() : homedir(),
     toolMode: providerToolMode(provider, args),
-    nativeCompletion: provider === "antigravity",
+    nativeCompletion: provider === "antigravity" && Boolean(optionValue(args, "--print")?.startsWith("/goal ")),
   });
 
   try {
