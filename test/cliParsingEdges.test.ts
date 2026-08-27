@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { parseCliResult } from "../src/cli.js";
 
 describe("parseCliResult edge cases", () => {
-  it("uses Codex deltas only when no final text event is present", () => {
+  it("requires a Codex final text event instead of using deltas", () => {
     const deltas = [
       JSON.stringify({ type: "response.output_text.delta", delta: "Hello " }),
       JSON.stringify({ type: "response.output_text.delta", delta: "world" }),
     ].join("\n");
-    expect(parseCliResult({ bot: "codex", stdout: deltas }).text).toBe("Hello world");
+    expect(() => parseCliResult({ bot: "codex", stdout: deltas }))
+      .toThrow(/completion could not be verified/i);
 
     const withFinal = [
       deltas,
@@ -16,8 +17,9 @@ describe("parseCliResult edge cases", () => {
     expect(parseCliResult({ bot: "codex", stdout: withFinal }).text).toBe("Final answer");
   });
 
-  it("returns an empty Codex result for empty stdout", () => {
-    expect(parseCliResult({ bot: "codex", stdout: "" })).toMatchObject({ text: "", sessionId: null });
+  it("fails closed for empty Codex stdout", () => {
+    expect(() => parseCliResult({ bot: "codex", stdout: "" }))
+      .toThrow(/completion could not be verified/i);
   });
 
   it("uses the final Claude result line and trims its text", () => {

@@ -223,10 +223,10 @@ describe("provider result parsing fixtures", () => {
     expect(result.text).toBe("done");
   });
 
-  it("codex: malformed/non-JSON lines are skipped without throwing", () => {
+  it("codex: malformed structured lines fail closed even with a later final", () => {
     const stdout = "not json\n{\"broken\n" + JSON.stringify({ type: "response.completed", output_text: "ok" });
-    expect(() => parseCliResult({ bot: "codex", stdout })).not.toThrow();
-    expect(parseCliResult({ bot: "codex", stdout }).text).toBe("ok");
+    expect(() => parseCliResult({ bot: "codex", stdout }))
+      .toThrow(/completion could not be verified/i);
   });
 
   it("claude: parses the last JSON object with a result field", () => {
