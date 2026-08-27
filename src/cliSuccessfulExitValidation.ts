@@ -141,11 +141,9 @@ function extractCursorSessionId(stdout: string): string | null {
 function inspectGrok(stdout: string): {
   sessionId: string | null;
   sawExplicitFailure: boolean;
-  sawSuccessfulEnd: boolean;
 } {
   let sessionId: string | null = null;
   let sawExplicitFailure = false;
-  let sawSuccessfulEnd = false;
   for (const record of parseObjectLines(stdout)) {
     if (record.type === "error" || record.type === "max_turns_reached") sawExplicitFailure = true;
     if (record.type !== "end") continue;
@@ -153,10 +151,9 @@ function inspectGrok(stdout: string): {
     const reason = typeof record.stopReason === "string"
       ? record.stopReason.trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/-/g, "_").toLowerCase()
       : "";
-    if (reason === "end_turn" || reason === "success") sawSuccessfulEnd = true;
-    else if (reason) sawExplicitFailure = true;
+    if (reason && reason !== "end_turn" && reason !== "success") sawExplicitFailure = true;
   }
-  return { sessionId, sawExplicitFailure, sawSuccessfulEnd };
+  return { sessionId, sawExplicitFailure };
 }
 
 function cursorHasExplicitFailure(stdout: string): boolean {
@@ -223,7 +220,7 @@ function validateGrokSuccessfulExit(output: Readonly<{ stdout: string; stderr: s
     return null;
   } catch (error) {
     const inspection = inspectGrok(output.stdout);
-    if (inspection.sawExplicitFailure && !inspection.sawSuccessfulEnd) {
+    if (inspection.sawExplicitFailure) {
       return error instanceof Error ? error : new Error("Grok reported an error");
     }
     return new GrokUncertainCompletionError(inspection.sessionId);
