@@ -179,7 +179,7 @@ describe("provider uncertain completion contract", () => {
         model: null,
         outputFormat,
         homeDir,
-        nativeCompletion: provider === "antigravity",
+        effort: provider === "codex" ? "high" : null,
       });
       const stdout = await runCli(command, invocation.args, root, {
         bot,
@@ -193,10 +193,61 @@ describe("provider uncertain completion contract", () => {
       const recoveryArgs = JSON.parse(await readFile(join(root, "recovery-args.json"), "utf8")) as string[];
       expect(recoveryArgs).toContain(sessionId);
       expect(recoveryArgs.join(" ")).toMatch(/Do not repeat side effects/i);
+      if (provider === "codex") expect(recoveryArgs).toContain('model_reasoning_effort="high"');
+      if (provider === "antigravity") {
+        const printIndex = recoveryArgs.lastIndexOf("--print");
+        expect(printIndex).toBeGreaterThan(-1);
+        expect(recoveryArgs[printIndex + 1]).not.toMatch(/^\/goal\s/);
+      }
       expect(stdout).not.toContain("SECRET_TOOL_OUTPUT");
       expect(stdout).not.toContain("SECRET_INTERNAL_MESSAGE");
       expect(stdout).not.toContain("/private/provider/path");
       expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.completed"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a resumed Codex session with effort when stdout omits thread evidence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-resume-uncertain-"));
+    const command = join(root, "codex-resume-fixture");
+    const source = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const countPath = path.join(process.cwd(), "attempt-count.txt");
+const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, "utf8")) : 0;
+fs.writeFileSync(countPath, String(count + 1));
+const emit = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+if (count === 0) {
+  emit({ type: "item.completed", item: { type: "command_execution", text: "SECRET_TOOL_OUTPUT" } });
+} else {
+  fs.writeFileSync(path.join(process.cwd(), "recovery-args.json"), JSON.stringify(process.argv.slice(2)));
+  emit({ type: "thread.started", thread_id: ${JSON.stringify(CODEX_SESSION)} });
+  emit({ type: "item.completed", item: { type: "agent_message", text: "verified resumed answer" } });
+}
+`;
+    await writeFile(command, source, { mode: 0o700 });
+
+    try {
+      const invocation = buildCliInvocation({
+        bot: "codex",
+        prompt: "continue prior work",
+        sessionId: CODEX_SESSION,
+        command,
+        model: null,
+        outputFormat: "json",
+        effort: "high",
+      });
+      const stdout = await runCli(command, invocation.args, root, {
+        bot: "codex",
+        bypassWorkspaceLock: true,
+      });
+
+      expect(parseCliResult({ bot: "codex", stdout }).text).toBe("verified resumed answer");
+      expect(await readFile(join(root, "attempt-count.txt"), "utf8")).toBe("2");
+      const recoveryArgs = JSON.parse(await readFile(join(root, "recovery-args.json"), "utf8")) as string[];
+      expect(recoveryArgs).toContain(CODEX_SESSION);
+      expect(recoveryArgs).toContain('model_reasoning_effort="high"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
