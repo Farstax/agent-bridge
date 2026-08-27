@@ -107,6 +107,11 @@ export type AuthorizedConversationSearchScope =
   | { scope: "conversation"; surfaceIdentity: string; chatKey: string }
   | { scope: "owner"; ownerKey: string };
 
+type SearchAdjacencyScope =
+  | { scope: "legacy" }
+  | { scope: "conversation"; surfaceIdentity: string }
+  | { scope: "owner" };
+
 export interface ConvTurnRow {
   id: number;
   role: string;
@@ -140,7 +145,7 @@ export class ConversationRepository {
     provenance?: ConversationTurnProvenance,
   ): void {
     this.db
-      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli, surface_identity, owner_key) VALUES (?, ?, ?, ?, ?, ?)`)
+      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli, surface_identity, owner_key) VALUES (?, ?, ?, ?, ?, ?)`) 
       .run(chatKey, role, text, cli ?? null, provenance?.surfaceIdentity ?? null, provenance?.ownerKey ?? null);
   }
 
@@ -226,7 +231,7 @@ export class ConversationRepository {
 
   /** Issue #350 legacy chat-key search retained for compatibility. */
   searchConvTurns(chatKey: string, query: string, limit = DEFAULT_SEARCH_TURN_LIMIT): ConvTurnRow[] {
-    return this.searchConvTurnsWhere("chat_key = ?", [chatKey], query, limit);
+    return this.searchConvTurnsWhere("chat_key = ?", [chatKey], query, limit, { scope: "legacy" });
   }
 
   /**
@@ -241,14 +246,17 @@ export class ConversationRepository {
   ): ConvTurnRow[] {
     if (scope.scope === "owner") {
       if (!scope.ownerKey.trim()) return [];
-      return this.searchConvTurnsWhere("owner_key = ?", [scope.ownerKey], query, limit);
+      return this.searchConvTurnsWhere("owner_key = ?", [scope.ownerKey], query, limit, { scope: "owner" });
     }
-    if (!scope.surfaceIdentity.trim() || !scope.chatKey.trim()) return [];
+    const surfaceIdentity = scope.surfaceIdentity.trim();
+    const chatKey = scope.chatKey.trim();
+    if (!surfaceIdentity || !chatKey) return [];
     return this.searchConvTurnsWhere(
       "chat_key = ? AND (surface_identity = ? OR surface_identity IS NULL)",
-      [scope.chatKey, scope.surfaceIdentity],
+      [chatKey, surfaceIdentity],
       query,
       limit,
+      { scope: "conversation", surfaceIdentity },
     );
   }
 
@@ -257,6 +265,7 @@ export class ConversationRepository {
     scopeParams: unknown[],
     query: string,
     limit: number,
+    adjacencyScope: SearchAdjacencyScope,
   ): ConvTurnRow[] {
     const tokens = tokenizeSearchQuery(query);
     if (tokens.length === 0) return [];
@@ -276,18 +285,26 @@ export class ConversationRepository {
 
     const evidence = new Map<number, ConvTurnRow>();
     const adjacent = (hit: ConvTurnRow, direction: "before" | "after"): ConvTurnRow | undefined => {
+      if (!hit.chat_key) return undefined;
       const operator = direction === "before" ? "<" : ">";
       const order = direction === "before" ? "DESC" : "ASC";
-      const surfaceClause = hit.surface_identity == null ? "surface_identity IS NULL" : "surface_identity = ?";
-      const ownerClause = hit.owner_key == null ? "owner_key IS NULL" : "owner_key = ?";
+      let originSql = "chat_key = ?";
       const originParams: unknown[] = [hit.chat_key];
-      if (hit.surface_identity != null) originParams.push(hit.surface_identity);
-      if (hit.owner_key != null) originParams.push(hit.owner_key);
+
+      if (adjacencyScope.scope === "conversation") {
+        originSql += " AND (surface_identity = ? OR surface_identity IS NULL)";
+        originParams.push(adjacencyScope.surfaceIdentity);
+      } else if (adjacencyScope.scope === "owner") {
+        if (hit.surface_identity == null || hit.owner_key == null) return undefined;
+        originSql += " AND surface_identity = ? AND owner_key = ?";
+        originParams.push(hit.surface_identity, hit.owner_key);
+      }
+
       originParams.push(hit.id);
       return this.db
         .prepare(
           `SELECT id, chat_key, surface_identity, owner_key, role, text, cli, created_at FROM conversation_turns
-           WHERE chat_key = ? AND ${surfaceClause} AND ${ownerClause} AND id ${operator} ?
+           WHERE ${originSql} AND id ${operator} ?
            ORDER BY id ${order} LIMIT 1`
         )
         .get(...originParams) as ConvTurnRow | undefined;
