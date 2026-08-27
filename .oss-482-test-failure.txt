@@ -1,0 +1,500 @@
+  npx tsx scripts/skill-manager.ts project-cursor <skill-name> [--link-mode symlink|copy]
+  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]
+  npx tsx scripts/skill-manager.ts uninstall-user <skill-name>
+  npx tsx scripts/skill-manager.ts uninstall <skill-name>
+Native skill path already exists and is not this managed projection: /tmp/agent-bridge-cursor-skill-collision-57155-0/.cursor/skills/red-green-refactor-tdd
+ [32m✓[39m test/cursorSkillManager.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1379[2mms[22m[39m
+     [33m[2m✓[22m[39m projects Cursor through the explicit project-cursor command [33m 359[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses to overwrite an unmanaged Cursor skill through project-cursor [33m 376[2mms[22m[39m
+ [32m✓[39m test/optimizePromptLoop.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m test/ownerNotificationIngress.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 69[2mms[22m[39m
+ [32m✓[39m test/eventStore.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 151[2mms[22m[39m
+ [32m✓[39m test/providerNativeCompletion.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m test/releasePromotion.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 175[2mms[22m[39m
+ [32m✓[39m test/workspaceContext.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m test/surfaceNeutralProviderRouter.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 41[2mms[22m[39m
+ [32m✓[39m test/releaseNotes.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 312[2mms[22m[39m
+ [32m✓[39m test/queueStartupRecovery.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 47[2mms[22m[39m
+ [32m✓[39m test/providerLock.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+rollout-db: --resolving-unit must be PATH=unit-name, got: not-a-valid-pair
+ [32m✓[39m test/rolloutDbResolvingUnits.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 955[2mms[22m[39m
+ [32m✓[39m test/rolloutAutonomyDb.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 12543[2mms[22m[39m
+     [33m[2m✓[22m[39m bootstraps a configured-but-missing autonomy database strictly between containment and pointer activation [33m 4057[2mms[22m[39m
+     [33m[2m✓[22m[39m does not create a second database and leaves single-DB behavior unchanged when the env var is absent [33m 3611[2mms[22m[39m
+     [33m[2m✓[22m[39m flows an already-existing autonomy database through as an ordinary database with no bootstrap call [33m 3757[2mms[22m[39m
+     [33m[2m✓[22m[39m still dies on the inventory bijection when the autonomy path is in the unit env but missing from the fixed allowlist [33m 365[2mms[22m[39m
+     [33m[2m✓[22m[39m still dies on the inventory bijection when the autonomy path is in the fixed allowlist but not resolved from the unit env [33m 375[2mms[22m[39m
+     [33m[2m✓[22m[39m still rejects duplicate allowlist entries for a missing autonomy database [33m 376[2mms[22m[39m
+ [32m✓[39m test/fileDownload.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m test/skillOwnership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m test/config.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m test/healthAutoRemediate.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 96[2mms[22m[39m
+ [32m✓[39m test/ciPolicy.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m test/providerQualificationHealth.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m test/soulTemplates.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m test/providers/doctor.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m test/claudeStreamJson.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m test/unknownSlashCommand.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 118[2mms[22m[39m
+rollout-authorization: authorization principal is required
+rollout-authorization: authorization target commit does not match expected commit
+rollout-authorization: authorization is expired
+rollout-authorization: authorization reference is required
+rollout-authorization: authorization scope is required
+rollout-authorization: authorization approved_artifact_sha256 does not match expected artifact_sha256
+rollout-authorization: authorization approved_evidence_sha256 is required
+rollout-authorization: authorization approved_environment does not match expected environment
+rollout-authorization: authorization approved_rollout_helper_sha256 does not match expected rollout_helper_sha256
+rollout-authorization: authorization approved_rollout_config_sha256 does not match expected rollout_config_sha256
+rollout-authorization: authorization approved_activation_helper_sha256 does not match expected activation_helper_sha256
+rollout-authorization: authorization approved_authorization_validator_sha256 does not match expected authorization_validator_sha256
+rollout-authorization: authorization approved_acceptance_validator_sha256 does not match expected acceptance_validator_sha256
+rollout-authorization: authorization approved_release_stage_sha256 does not match expected release_stage_sha256
+rollout-authorization: authorization approved_rollout_restore_sha256 does not match expected rollout_restore_sha256
+ [32m✓[39m test/rolloutAuthorization.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 754[2mms[22m[39m
+ [32m✓[39m test/rolloutDbSchema9.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 755[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps an unmigrated populated version-8 database out of reconciliation [33m 753[2mms[22m[39m
+ [32m✓[39m test/ownerNotificationDurability.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m test/claudeSettings.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 39[2mms[22m[39m
+release-activate: current pointer must be a symlink or absent
+release-activate: target release is writable: /tmp/agent-bridge-pointer-DxxUFK/releases/2222222222222222222222222222222222222222/entrypoint
+release-activate: same target pointer is a no-op activation; refusing POINTER_SWITCHED
+release-activate: release manifest paths do not match the archived filesystem
+ [32m✓[39m test/releaseActivation.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 280[2mms[22m[39m
+ [32m✓[39m test/issue538FreshHandoffGuidance.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 83[2mms[22m[39m
+ [32m✓[39m test/freshSessionExecutionContract.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m test/healthReports.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 64[2mms[22m[39m
+[90mstdout[2m | test/cliSupervisorSecretRedaction.test.ts[2m > [22m[2mprovider credential redaction[2m > [22m[2mverifies the active key at the shared boundary and passes no unrelated provider key to its child
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 199chars]"
+
+ [32m✓[39m test/autonomyConfigConvergence.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 4536[2mms[22m[39m
+     [33m[2m✓[22m[39m converges a legacy deployer-managed rollout config before strict inventory validation [33m 4107[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps ordinary manually-authorized rollout fail-closed when the fixed allowlist was not converged [33m 372[2mms[22m[39m
+[90mstdout[2m | test/cliSupervisorSecretRedaction.test.ts[2m > [22m[2mprovider credential redaction[2m > [22m[2mverifies the active key at the shared boundary and passes no unrelated provider key to its child
+[22m[39m[close] pid=60320 code=0 signal=none
+
+ [32m✓[39m test/cliSupervisorSecretRedaction.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 120[2mms[22m[39m
+ [32m✓[39m test/commands.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 119[2mms[22m[39m
+ [32m✓[39m test/discord-start.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 46[2mms[22m[39m
+[90mstdout[2m | test/antigravityStreamJsonCompatibility.test.ts[2m > [22m[2mAgy stream-json compatibility invariants[2m > [22m[2mkeeps cancellation authoritative over a partial stream before terminal result
+[22m[39m[spawn] chatId=telegram:interactive:stream-json-cancel cwd=/tmp/agy-stream-json-cancel-4enJyG command=/tmp/agy-stream-json-cancel-4enJyG/agy-fixture args=--output-format stream-json --print hello
+[event] run.started runId=stream-json-cancel bot=antigravity chatId=chat:stream-json-cancel
+
+[90mstdout[2m | test/antigravityStreamJsonCompatibility.test.ts[2m > [22m[2mAgy stream-json compatibility invariants[2m > [22m[2mkeeps cancellation authoritative over a partial stream before terminal result
+[22m[39m[close] chatId=telegram:interactive:stream-json-cancel pid=60376 code=null signal=SIGTERM
+[event] run.cancelled runId=stream-json-cancel reason=user
+
+ [32m✓[39m test/antigravityStreamJsonCompatibility.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 145[2mms[22m[39m
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mpreserves a successful final response despite the stale-session diagnostic
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 235chars]"
+[event] run.started runId=codex-warning-success-0.14958434605699067 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mpreserves a successful final response despite the stale-session diagnostic
+[22m[39m[stderr] pid=60436 ERROR codex_core::util: Custom tool call output is missing for call id: call_stale
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mpreserves a successful final response despite the stale-session diagnostic
+[22m[39m[close] pid=60436 code=0 signal=none
+[event] run.completed runId=codex-warning-success-0.14958434605699067 sessionId=null
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mfails an exit-zero turn when the exact diagnostic has no usable final response
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 220chars]"
+[event] run.started runId=codex-warning-empty-0.041219782264689364 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mfails an exit-zero turn when the exact diagnostic has no usable final response
+[22m[39m[stderr] pid=60444 ERROR codex_core::util: Custom tool call output is missing for call id: call_stale
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mfails an exit-zero turn when the exact diagnostic has no usable final response
+[22m[39m[close] pid=60444 code=0 signal=none
+[event] run.failed runId=codex-warning-empty-0.041219782264689364 category=cli error="Codex custom tool call output is missing and no usable final response was produced"
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not treat a text delta as a completed final response
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 206chars]"
+[event] run.started runId=codex-warning-delta-only-0.9380196937064408 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not treat a text delta as a completed final response
+[22m[39m[stderr] pid=60465 ERROR codex_core::util: Custom tool call output is missing for call id: call_stale
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not treat a text delta as a completed final response
+[22m[39m[close] pid=60465 code=0 signal=none
+[event] run.failed runId=codex-warning-delta-only-0.9380196937064408 category=cli error="Codex custom tool call output is missing and no usable final response was produced"
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 181chars]"
+[event] run.started runId=codex-ordinary-stderr-0.641801154415912 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[stderr] pid=60473 WARN codex_core::util: unrelated diagnostic
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[close] pid=60473 code=0 signal=none
+[event] run.failed runId=codex-ordinary-stderr-0.641801154415912 category=cli error="Codex completion could not be verified from structured output"
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=exec resume 019fce12-b227-7563-b9a8-41dfc5ba1b15 --skip-git-repo-check --json "[prompt: 459chars]"
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[stderr] pid=60490 node:internal/modules/cjs/loader:1479
+  throw err;
+  ^
+
+Error: Cannot find module '/home/runner/work/agent-bridge/agent-bridge/exec'
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1476:15)
+    at wrapResolveFilename (node:internal/modules/cjs/loader:1049:27)
+    at defaultResolveImplForCJSLoading (node:internal/modules/cjs/loader:1073:10)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1094:12)
+    at Module._load (node:internal/modules/cjs/loader:1262:25)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: []
+}
+
+Node.js v24.15.0
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCli'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[close] pid=60490 code=1 signal=none
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mpreserves a successful final response despite the stale-session diagnostic
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 235chars]"
+[event] run.started runId=codex-warning-success-0.6523043066355766 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mpreserves a successful final response despite the stale-session diagnostic
+[22m[39m[stderr] pid=60498 ERROR codex_core::util: Custom tool call output is missing for call id: call_stale
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mpreserves a successful final response despite the stale-session diagnostic
+[22m[39m[close] pid=60498 code=0 signal=none
+[event] run.completed runId=codex-warning-success-0.6523043066355766 sessionId=null
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mfails an exit-zero turn when the exact diagnostic has no usable final response
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 220chars]"
+[event] run.started runId=codex-warning-empty-0.8103410389078529 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mfails an exit-zero turn when the exact diagnostic has no usable final response
+[22m[39m[stderr] pid=60505 ERROR codex_core::util: Custom tool call output is missing for call id: call_stale
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mfails an exit-zero turn when the exact diagnostic has no usable final response
+[22m[39m[close] pid=60505 code=0 signal=none
+[event] run.failed runId=codex-warning-empty-0.8103410389078529 category=cli error="Codex custom tool call output is missing and no usable final response was produced"
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not treat a text delta as a completed final response
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 206chars]"
+[event] run.started runId=codex-warning-delta-only-0.4900720898125055 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not treat a text delta as a completed final response
+[22m[39m[stderr] pid=60516 ERROR codex_core::util: Custom tool call output is missing for call id: call_stale
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not treat a text delta as a completed final response
+[22m[39m[close] pid=60516 code=0 signal=none
+[event] run.failed runId=codex-warning-delta-only-0.4900720898125055 category=cli error="Codex custom tool call output is missing and no usable final response was produced"
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=-e "[prompt: 181chars]"
+[event] run.started runId=codex-ordinary-stderr-0.6492815342977265 bot=codex chatId=123
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[stderr] pid=60533 WARN codex_core::util: unrelated diagnostic
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[close] pid=60533 code=0 signal=none
+[event] run.failed runId=codex-ordinary-stderr-0.6492815342977265 category=cli error="Codex completion could not be verified from structured output"
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[spawn] cwd=/home/runner/work/agent-bridge/agent-bridge command=/opt/hostedtoolcache/node/24.15.0/x64/bin/node args=exec resume 019fce12-b227-7563-b9a8-41dfc5ba1b15 --skip-git-repo-check --json "[prompt: 459chars]"
+
+[90mstderr[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[stderr] pid=60545 node:internal/modules/cjs/loader:1479
+  throw err;
+  ^
+
+Error: Cannot find module '/home/runner/work/agent-bridge/agent-bridge/exec'
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1476:15)
+    at wrapResolveFilename (node:internal/modules/cjs/loader:1049:27)
+    at defaultResolveImplForCJSLoading (node:internal/modules/cjs/loader:1073:10)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1094:12)
+    at Module._load (node:internal/modules/cjs/loader:1262:25)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:255:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: []
+}
+
+Node.js v24.15.0
+
+[90mstdout[2m | test/codexMissingToolOutput.test.ts[2m > [22m[2mCodex missing custom-tool output classification via 'runCliAsync'[2m > [22m[2mdoes not fail an ordinary exit-zero Codex stderr diagnostic
+[22m[39m[close] pid=60545 code=1 signal=none
+
+ [32m✓[39m test/codexMissingToolOutput.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 382[2mms[22m[39m
+ [32m✓[39m test/codexUsage.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 41[2mms[22m[39m
+ [32m✓[39m test/rolloutDbCorrelation.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 529[2mms[22m[39m
+     [33m[2m✓[22m[39m rejects a replacement run with unchanged queue/status counts [33m 527[2mms[22m[39m
+ [32m✓[39m test/db.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 75[2mms[22m[39m
+ [32m✓[39m test/riskStrategyAliasRetirement.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 2042[2mms[22m[39m
+     [33m[2m✓[22m[39m runs the supported upgrade path from a legacy v3 home without an alias source [33m 2040[2mms[22m[39m
+ [32m✓[39m test/providers.errorClassification.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32m✓[39m test/antigravityAnswerPresentation.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+arch-lint: execution topology ownership must remain with the engine
+/tmp/archlint-topology-turns-U2X4cX/index-interactive.ts:1:fallbackChain.addTurn('user', 'hello');
+arch-lint: execution topology ownership must remain with the engine
+/tmp/archlint-topology-context-IkACFB/providerFallback.ts:1:buildContextPreamble();
+arch-lint: Engineering Worker execution path must not be reintroduced
+/tmp/archlint-topology-worker-entry-HUIvIr/index-worker.ts
+arch-lint: Engineering Worker execution path must not be reintroduced
+/tmp/archlint-topology-worker-api-sOwsRh/worker.ts:1:export const chain = process.env.WORKER_CLI_CHAIN;
+arch-lint: execution topology ownership must remain with the engine
+/tmp/archlint-topology-provider-mode-6hUuLR/engine.ts:1:const mode: "async" | "sync" = "async";
+ [32m✓[39m test/arch/executionTopologyLint.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 62[2mms[22m[39m
+[90mstderr[2m | test/mediaGroup.test.ts[2m > [22m[2mMediaGroupBuffer[2m > [22m[2mdoes not propagate an unhandled rejection when onFlush rejects
+[22m[39m[MediaGroupBuffer] onFlush error Error: flush failed
+    at MediaGroupBuffer.onFlush [90m(/home/runner/work/agent-bridge/agent-bridge/[39mtest/mediaGroup.test.ts:70:15[90m)[39m
+    at Timeout._onTimeout [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/telegram.ts:333:28[90m)[39m
+[90m    at listOnTimeout (node:internal/timers:605:17)[39m
+[90m    at processTimers (node:internal/timers:541:7)[39m
+
+ [32m✓[39m test/mediaGroup.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 672[2mms[22m[39m
+ [32m✓[39m test/schemaContract.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 391[2mms[22m[39m
+     [33m[2m✓[22m[39m accepts a canonical health table without a rollout-validator table-list edit [33m 346[2mms[22m[39m
+ [32m✓[39m test/userMessage.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m test/claudeAnswerPresentation.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m test/manualCliSwitchResetSuppression.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 52[2mms[22m[39m
+ [32m✓[39m test/roleAssignmentMigrationRollback.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m test/providerFallback.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 119[2mms[22m[39m
+ [32m✓[39m test/forum.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m test/capabilityManagementSkills.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/polling.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+[90mstdout[2m | test/cliSupervisorParity.test.ts[2m > [22m[2msync/async timeout settlement parity[2m > [22m[2mdoes not settle the promise before the killed child has actually exited
+[22m[39m[spawn] cwd=/tmp/agent-bridge-timeout-parity-WSIgzV command=/tmp/agent-bridge-timeout-parity-WSIgzV/slow-to-die.sh args=
+
+ [32m✓[39m test/healthEventRestartDurability.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 38[2mms[22m[39m
+[90mstderr[2m | test/cliSupervisorParity.test.ts[2m > [22m[2msync/async timeout settlement parity[2m > [22m[2mdoes not settle the promise before the killed child has actually exited
+[22m[39m[HARD TIMEOUT] CLI hard timeout after 100ms - killing process
+[spawn] cwd=/tmp/agent-bridge-timeout-parity-WSIgzV command=/tmp/agent-bridge-timeout-parity-WSIgzV/slow-to-die.sh args=
+
+[90mstdout[2m | test/cliSupervisorParity.test.ts[2m > [22m[2msync/async timeout settlement parity[2m > [22m[2mdoes not settle the promise before the killed child has actually exited
+[22m[39m[close] pid=60962 code=0 signal=none
+
+ [32m✓[39m test/platform.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 97[2mms[22m[39m
+[90mstdout[2m | test/cliSupervisorParity.test.ts[2m > [22m[2msync/async timeout settlement parity[2m > [22m[2mrunCliAsync also does not settle before the killed child has actually exited
+[22m[39m[spawn] cwd=/tmp/agent-bridge-timeout-parity-async-OfTOPw command=/tmp/agent-bridge-timeout-parity-async-OfTOPw/slow-to-die.sh args=
+
+[90mstderr[2m | test/cliSupervisorParity.test.ts[2m > [22m[2msync/async timeout settlement parity[2m > [22m[2mrunCliAsync also does not settle before the killed child has actually exited
+[22m[39m[HARD TIMEOUT] CLI hard timeout after 100ms - killing process
+[spawn] cwd=/tmp/agent-bridge-timeout-parity-async-OfTOPw command=/tmp/agent-bridge-timeout-parity-async-OfTOPw/slow-to-die.sh args=
+
+ [32m✓[39m test/grokManagedInstall.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 56[2mms[22m[39m
+[90mstdout[2m | test/cliSupervisorParity.test.ts[2m > [22m[2msync/async timeout settlement parity[2m > [22m[2mrunCliAsync also does not settle before the killed child has actually exited
+[22m[39m[close] pid=60979 code=0 signal=none
+
+ [32m✓[39m test/cliSupervisorParity.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 673[2mms[22m[39m
+     [33m[2m✓[22m[39m does not settle the promise before the killed child has actually exited [33m 339[2mms[22m[39m
+     [33m[2m✓[22m[39m runCliAsync also does not settle before the killed child has actually exited [33m 333[2mms[22m[39m
+ [32m✓[39m test/providers.registry.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+rollout-acceptance: database integrity is not ok: /tmp/bridge.sqlite
+rollout-acceptance: database schema is not current: /tmp/bridge.sqlite
+ [32m✓[39m test/rolloutAcceptance.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 174[2mms[22m[39m
+ [32m✓[39m test/rolloutDbTestHooks.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 581[2mms[22m[39m
+     [33m[2m✓[22m[39m ignores inherited migration barrier variables without an explicit rollout test root [33m 338[2mms[22m[39m
+ [32m✓[39m test/autonomousGoalCancellationFence.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m test/healthDbRelocation.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 335[2mms[22m[39m
+     [33m[2m✓[22m[39m copies an existing legacy database only when the target is absent [33m 331[2mms[22m[39m
+ [32m✓[39m test/cursorDefaultFallbackRegression.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/upgradeQualificationFull.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 181[2mms[22m[39m
+[90mstderr[2m | test/telegram-poll-liveness.test.ts[2m > [22m[2mTelegramClient poll liveness[2m > [22m[2mterminates the process if getUpdates remains pending beyond its request deadline plus grace
+[22m[39m[telegram] getUpdates exceeded 75000ms liveness deadline; exiting for supervised restart
+
+ [32m✓[39m test/antigravityConversationIsolation.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m test/telegram-poll-liveness.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m test/integratedHealth.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [31m❯[39m test/resetHistoryDeletion.test.ts [2m([22m[2m1 test[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 29[2mms[22m[39m
+[31m     [31m×[31m clears turns and summaries only for the current conversation scope[39m[32m 28[2mms[22m[39m
+[90mstdout[2m | test/providerQualificationStreamJson.test.ts[2m > [22m[2mAgy provider qualification stream-json contract[2m > [22m[2mqualifies fresh and resumed prompts through stream-json terminal results
+[22m[39m[spawn] cwd=/tmp/provider-qualification-agy-stream-5LSedb command=/tmp/provider-qualification-agy-stream-5LSedb/agy args=--sandbox --output-format stream-json --print "[prompt: 1184chars]"
+
+[90mstdout[2m | test/providerQualificationStreamJson.test.ts[2m > [22m[2mAgy provider qualification stream-json contract[2m > [22m[2mqualifies fresh and resumed prompts through stream-json terminal results
+[22m[39m[close] pid=61331 code=0 signal=none
+
+[90mstdout[2m | test/providerQualificationStreamJson.test.ts[2m > [22m[2mAgy provider qualification stream-json contract[2m > [22m[2mqualifies fresh and resumed prompts through stream-json terminal results
+[22m[39m[spawn] cwd=/tmp/provider-qualification-agy-stream-5LSedb command=/tmp/provider-qualification-agy-stream-5LSedb/agy args=--conversation 22222222-3333-4444-5555-666666666666 --sandbox --output-format stream-json --print "[prompt: 482chars]"
+
+[90mstdout[2m | test/providerQualificationStreamJson.test.ts[2m > [22m[2mAgy provider qualification stream-json contract[2m > [22m[2mqualifies fresh and resumed prompts through stream-json terminal results
+[22m[39m[close] pid=61332 code=0 signal=none
+
+ [32m✓[39m test/providerQualificationStreamJson.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 30[2mms[22m[39m
+ [32m✓[39m test/execution-paths.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 34[2mms[22m[39m
+ [32m✓[39m test/cursorManagedInstall.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 58[2mms[22m[39m
+ [32m✓[39m test/providerAttemptPipelineOwnership.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m test/executionLaneCoordinator.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/guardedCleanupDeployment.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/discord-interactive.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m test/autonomousWorkSkill.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/handoffState.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 78[2mms[22m[39m
+ [32m✓[39m test/ciLocalParityRegression.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m test/claudeLeadingHyphenPrompt.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m test/dependencySecurity.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m test/grokReviewRegression.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m test/initialInstallArtifact.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/telegram-upload-envelope.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 36[2mms[22m[39m
+ [32m✓[39m test/providerApiKeyAuthRetry.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m test/autonomyConfigSafety.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 173[2mms[22m[39m
+ [32m✓[39m test/cliParsingEdges.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m test/healthRuntime.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m test/healthServiceLifecycle.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 1308[2mms[22m[39m
+     [33m[2m✓[22m[39m stays alive with the default disabled scheduler [33m 1306[2mms[22m[39m
+ [32m✓[39m test/providers/boundary.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+[90mstderr[2m | test/issue387NativeSession.test.ts[2m > [22m[2mIssue #387 native invocation boundary[2m > [22m[2mreports fresh when Codex uses attachments despite a stored session
+[22m[39m[bridge] Codex: starting fresh session for attachment turn because resume does not support -i
+
+ [32m✓[39m test/issue387NativeSession.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+[90mstderr[2m | test/cleanDropletAcceptance.test.ts[2m > [22m[2mclean-droplet acceptance[2m > [22m[2mstarts the first Codex invocation with codex exec after database startup
+[22m[39m[codex] execution error CodexUncertainCompletionError: Codex completion could not be verified from structured output
+    at Module.parseResult [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/providers/codexRuntime.ts:165:11[90m)[39m
+    at parseCliResult [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/cli.ts:240:27[90m)[39m
+    at BridgeEngine._executeProviderAttempt [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/engine.ts:1338:18[90m)[39m
+    at execution [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/engine.ts:739:20[90m)[39m
+    at sendMessageWithProgress [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/messageDelivery.ts:453:16[90m)[39m
+    at BridgeEngine._executeAndDeliverTurn [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/engine.ts:712:25[90m)[39m
+    at BridgeEngine._executeAndSend [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/engine.ts:632:22[90m)[39m
+    at BridgeEngine.handleMessages [90m(/home/runner/work/agent-bridge/agent-bridge/[39msrc/engine.ts:481:26[90m)[39m
+    at [90m/home/runner/work/agent-bridge/agent-bridge/[39mtest/cleanDropletAcceptance.test.ts:39:5
+    at [90mfile:///home/runner/work/agent-bridge/agent-bridge/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:1903:20 {
+  sessionId: [1mnull[22m
+}
+
+ [32m✓[39m test/cleanDropletAcceptance.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m test/providers/selection.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/ossProductNeutrality.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m test/concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 55[2mms[22m[39m
+ [32m✓[39m test/cleanupConfig.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/orphanCleanup.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/restoreAgentBridgeSudo.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/autonomyEngineIsolation.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 24[2mms[22m[39m
+usage: autonomy continue|done|blocked [--notify]
+ [32m✓[39m test/autonomyDispositionOverwrite.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 142[2mms[22m[39m
+ [32m✓[39m test/issue482.red.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m test/interactiveCliAuthStartup.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m test/antigravityTimeoutContract.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/advisorRouting.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m test/uiEngineeringSkill.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m test/systematicDebuggingSkill.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m test/grokDiscordSelectionRegression.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 18[2mms[22m[39m
+ [2m[90m↓[39m[22m test/autonomousGoalLiveProvider.smoke.test.ts [2m([22m[2m1 test[22m[2m | [22m[33m1 skipped[39m[2m)[22m
+ [32m✓[39m test/deliveryDirectivesSkill.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m test/discordExecutionModePolicy.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/envIsolation.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/restartHelper.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/healthRunSkillSeam.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/autonomyConfigCompatibility.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 4036[2mms[22m[39m
+     [33m[2m✓[22m[39m does not impose migration-only sibling placement on an already configured safe autonomy database [33m 4035[2mms[22m[39m
+ [32m✓[39m test/bundledSkillInstallerDefaults.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/autonomyConfig.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m test/qualifyLocalNodeOptions.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/claudeVersion.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/codexVersion.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m test/autonomyTelegramRouting.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 3[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 4 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m test/engine.test.ts[2m > [22mBridgeEngine[2m > [22m/reset command[2m > [22mdeletes conversation turns and historical summaries only for the reset conversation
+[31m[1mAssertionError[22m: expected { id: 1, range_start_turn_id: 1, …(3) } to be null[39m
+
+[32m- Expected:[39m
+null
+
+[31m+ Received:[39m
+{
+  "created_at": "2026-08-27T17:13:48.453Z",
+  "id": 1,
+  "range_end_turn_id": 1,
+  "range_start_turn_id": 1,
+  "summary_md": "Current objective:
+- important work",
+}
+
+[36m [2m❯[22m test/engine.test.ts:[2m1997:46[22m[39m
+    [90m1995|[39m       [35mawait[39m engine[33m.[39m[34mhandleMessages[39m([[34mmakeMessage[39m([32m"/reset"[39m)])[33m;[39m
+    [90m1996|[39m       [34mexpect[39m(db[33m.[39m[34mgetConvStatus[39m([32m"100"[39m[33m,[39m [32m"test"[39m)[33m.[39mturnCount)[33m.[39m[34mtoBe[39m([34m0[39m)[33m;[39m
+    [90m1997|[39m       [34mexpect[39m(db[33m.[39m[34mgetLatestConvSummary[39m([32m"100"[39m))[33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m   |[39m                                              [31m^[39m
+    [90m1998|[39m       [34mexpect[39m(db[33m.[39m[34mgetSession[39m([32m"100"[39m[33m,[39m [32m"claude"[39m))[33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m1999|[39m       [34mexpect[39m(db[33m.[39m[34mgetConvStatus[39m([32m"200"[39m[33m,[39m [32m"test"[39m)[33m.[39mturnCount)[33m.[39m[34mtoBe[39m([34m1[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m test/resetHistoryDeletion.test.ts[2m > [22m/reset conversation evidence deletion[2m > [22mclears turns and summaries only for the current conversation scope
+[31m[1mAssertionError[22m: expected { id: 1, range_start_turn_id: 1, …(3) } to be null[39m
+
+[32m- Expected:[39m
+null
+
+[31m+ Received:[39m
+{
+  "created_at": "2026-08-27T17:17:11.979Z",
+  "id": 1,
+  "range_end_turn_id": 1,
+  "range_start_turn_id": 1,
+  "summary_md": "Current objective:
+- current conversation",
+}
+
+[36m [2m❯[22m test/resetHistoryDeletion.test.ts:[2m43:49[22m[39m
+    [90m 41|[39m       [34mexpect[39m(db[33m.[39m[34mgetSession[39m([32m"chat:1"[39m[33m,[39m [32m"claude"[39m))[33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m 42|[39m       [34mexpect[39m(db[33m.[39m[34mgetRecentConvTurns[39m([32m"chat:1"[39m[33m,[39m [34m100[39m))[33m.[39m[34mtoEqual[39m([])[33m;[39m
+    [90m 43|[39m       [34mexpect[39m(db[33m.[39m[34mgetLatestConvSummary[39m([32m"chat:1"[39m))[33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m   |[39m                                                 [31m^[39m
+    [90m 44|[39m
+    [90m 45|[39m       [34mexpect[39m(db[33m.[39m[34mgetSession[39m([32m"chat:2"[39m[33m,[39m [32m"claude"[39m))[33m.[39m[34mtoBe[39m([32m"session-other"[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m test/arch/archLint.test.ts[2m > [22march-lint[2m > [22mpasses on the real src/ tree
+[31m[1mAssertionError[22m: expected 1 to be +0 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 0[39m
+[31m+ 1[39m
+
+[36m [2m❯[22m test/arch/archLint.test.ts:[2m92:62[22m[39m
+    [90m 90|[39m
+    [90m 91|[39m   [34mit[39m([32m"passes on the real src/ tree"[39m[33m,[39m () [33m=>[39m {
+    [90m 92|[39m     [34mexpect[39m([34mrunLint[39m([34mjoin[39m(__dirname[33m,[39m [32m".."[39m[33m,[39m [32m".."[39m[33m,[39m [32m"src"[39m))[33m.[39mcode)[33m.[39m[34mtoBe[39m([34m0[39m)[33m;[39m
+    [90m   |[39m                                                              [31m^[39m
+    [90m 93|[39m   })[33m;[39m
+    [90m 94|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m test/arch/archLint.test.ts[2m > [22march-lint[2m > [22mmigration-primitive ownership guard (Phase 4C.2, issue #135)[2m > [22mpasses on the real src/ tree
+[31m[1mAssertionError[22m: expected 1 to be +0 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 0[39m
+[31m+ 1[39m
+
+[36m [2m❯[22m test/arch/archLint.test.ts:[2m605:64[22m[39m
+    [90m603|[39m
+    [90m604|[39m     [34mit[39m([32m"passes on the real src/ tree"[39m[33m,[39m () [33m=>[39m {
+    [90m605|[39m       [34mexpect[39m([34mrunLint[39m([34mjoin[39m(__dirname[33m,[39m [32m".."[39m[33m,[39m [32m".."[39m[33m,[39m [32m"src"[39m))[33m.[39mcode)[33m.[39m[34mtoBe[39m([34m0[39m)[33m;[39m
+    [90m   |[39m                                                                [31m^[39m
+    [90m606|[39m     })[33m;[39m
+    [90m607|[39m   })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m193 passed[39m[22m[2m | [22m[33m2 skipped[39m[90m (198)[39m
+[2m      Tests [22m [1m[31m4 failed[39m[22m[2m | [22m[1m[32m1922 passed[39m[22m[2m | [22m[33m10 skipped[39m[90m (1936)[39m
+[2m   Start at [22m 17:13:46
+[2m   Duration [22m 213.16s[2m (transform 2.67s, setup 0ms, import 10.81s, tests 388.51s, environment 21ms)[22m
+
+
+::error file=/home/runner/work/agent-bridge/agent-bridge/test/engine.test.ts,title=test/engine.test.ts > BridgeEngine > /reset command > deletes conversation turns and historical summaries only for the reset conversation,line=1997,column=46::AssertionError: expected { id: 1, range_start_turn_id: 1, …(3) } to be null%0A%0A- Expected:%0Anull%0A%0A+ Received:%0A{%0A  "created_at": "2026-08-27T17:13:48.453Z",%0A  "id": 1,%0A  "range_end_turn_id": 1,%0A  "range_start_turn_id": 1,%0A  "summary_md": "Current objective:%0A- important work",%0A}%0A%0A ❯ test/engine.test.ts:1997:46%0A%0A
+
+::error file=/home/runner/work/agent-bridge/agent-bridge/test/resetHistoryDeletion.test.ts,title=test/resetHistoryDeletion.test.ts > /reset conversation evidence deletion > clears turns and summaries only for the current conversation scope,line=43,column=49::AssertionError: expected { id: 1, range_start_turn_id: 1, …(3) } to be null%0A%0A- Expected:%0Anull%0A%0A+ Received:%0A{%0A  "created_at": "2026-08-27T17:17:11.979Z",%0A  "id": 1,%0A  "range_end_turn_id": 1,%0A  "range_start_turn_id": 1,%0A  "summary_md": "Current objective:%0A- current conversation",%0A}%0A%0A ❯ test/resetHistoryDeletion.test.ts:43:49%0A%0A
+
+::error file=/home/runner/work/agent-bridge/agent-bridge/test/arch/archLint.test.ts,title=test/arch/archLint.test.ts > arch-lint > passes on the real src/ tree,line=92,column=62::AssertionError: expected 1 to be +0 // Object.is equality%0A%0A- Expected%0A+ Received%0A%0A- 0%0A+ 1%0A%0A ❯ test/arch/archLint.test.ts:92:62%0A%0A
+
+::error file=/home/runner/work/agent-bridge/agent-bridge/test/arch/archLint.test.ts,title=test/arch/archLint.test.ts > arch-lint > migration-primitive ownership guard (Phase 4C.2%2C issue #135) > passes on the real src/ tree,line=605,column=64::AssertionError: expected 1 to be +0 // Object.is equality%0A%0A- Expected%0A+ Received%0A%0A- 0%0A+ 1%0A%0A ❯ test/arch/archLint.test.ts:605:64%0A%0A
