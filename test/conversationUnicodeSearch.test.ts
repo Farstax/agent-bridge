@@ -32,4 +32,14 @@ describe("Unicode retained-conversation search", () => {
       "次回の展開は金曜日です",
     ]);
   });
+
+  it("keeps a meaningful single-character non-ASCII search term", () => {
+    db.addConvTurn("chat:1", "assistant", "次回は金曜日です");
+
+    const rows = db.searchConvTurns("chat:1", "金");
+
+    expect(rows.filter((row: any) => row.is_match).map((row) => row.text)).toEqual([
+      "次回は金曜日です",
+    ]);
+  });
 });
