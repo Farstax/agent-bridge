@@ -8,6 +8,7 @@ import type { BridgeEvent } from "../src/events/types.js";
 
 const AGY_SESSION = "11111111-2222-3333-4444-555555555555";
 const CODEX_SESSION = "codex-session-575";
+const GROK_SESSION = "grok-session-575";
 const CURSOR_SESSION = "cursor-session-575";
 
 function terminalEvents(events: BridgeEvent[]): BridgeEvent[] {
@@ -18,7 +19,7 @@ function terminalEvents(events: BridgeEvent[]): BridgeEvent[] {
 
 async function providerFixture(
   root: string,
-  provider: "codex" | "antigravity" | "cursor",
+  provider: "codex" | "antigravity" | "grok" | "cursor",
   sessionId: string,
 ): Promise<string> {
   const script = join(root, `${provider}-fixture`);
@@ -39,6 +40,9 @@ if (!resumed) {
   } else if (provider === "antigravity") {
     emit({ event: "init", conversation_id: sessionId, init: { cwd: "/private/provider/path" } });
     emit({ event: "step_update", step_update: { step_type: "tool", tool_info: { output: "SECRET_TOOL_OUTPUT" } } });
+  } else if (provider === "grok") {
+    emit({ type: "tool", data: "SECRET_TOOL_OUTPUT /private/provider/path" });
+    emit({ type: "end", sessionId, stopReason: "end_turn" });
   } else {
     emit({ type: "assistant", session_id: sessionId, message: "SECRET_INTERNAL_MESSAGE" });
   }
@@ -50,6 +54,9 @@ if (provider === "codex") {
   emit({ type: "item.completed", item: { type: "agent_message", text: "verified final answer" } });
 } else if (provider === "antigravity") {
   emit({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "verified final answer" } });
+} else if (provider === "grok") {
+  emit({ type: "text", data: "verified final answer" });
+  emit({ type: "end", sessionId, stopReason: "end_turn" });
 } else {
   emit({ type: "result", subtype: "success", is_error: false, result: "verified final answer", session_id: sessionId });
 }
@@ -97,9 +104,21 @@ describe("provider uncertain completion contract", () => {
     expect(error?.message).toMatch(/completion could not be verified/i);
   });
 
+  it("preserves an explicit Grok failure instead of reconciling it", () => {
+    const error = validateSuccessfulCliExit("grok", {
+      stdout: [
+        JSON.stringify({ type: "error", message: "provider rejected the turn" }),
+        JSON.stringify({ type: "end", sessionId: GROK_SESSION, stopReason: "end_turn" }),
+      ].join("\n") + "\n",
+      stderr: "",
+    });
+    expect(error?.message).toBe("provider rejected the turn");
+  });
+
   it.each([
     { provider: "codex" as const, bot: "codex" as const, sessionId: CODEX_SESSION, outputFormat: "json" as const },
     { provider: "antigravity" as const, bot: "antigravity" as const, sessionId: AGY_SESSION, outputFormat: "stream-json" as const },
+    { provider: "grok" as const, bot: "grok" as const, sessionId: GROK_SESSION, outputFormat: "streaming-json" as const },
     { provider: "cursor" as const, bot: "cursor" as const, sessionId: CURSOR_SESSION, outputFormat: "stream-json" as const },
   ])("reconciles $provider exactly once in the same native session without replaying side effects", async ({ provider, bot, sessionId, outputFormat }) => {
     const root = await mkdtemp(join(tmpdir(), `provider-uncertain-${provider}-`));
@@ -131,7 +150,7 @@ describe("provider uncertain completion contract", () => {
       expect(recoveryArgs.join(" ")).toMatch(/Do not repeat side effects/i);
       expect(stdout).not.toContain("SECRET_TOOL_OUTPUT");
       expect(stdout).not.toContain("SECRET_INTERNAL_MESSAGE");
-      expect(stdout).not.toContain("\/private\/provider\/path");
+      expect(stdout).not.toContain("/private/provider/path");
       expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.completed"]);
     } finally {
       await rm(root, { recursive: true, force: true });
