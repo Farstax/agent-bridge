@@ -132,10 +132,11 @@ describe("scoped conversation search", () => {
     ]);
   });
 
-  it("ranks broader distinctive term coverage ahead of newer partial matches", () => {
+  it("ranks broader distinctive term coverage ahead of newer competing partial matches", () => {
     db.addConvTurn("chat:1", "user", "deployment window is Friday at 15:00");
-    for (let i = 0; i < 5; i++) {
-      db.addConvTurn("chat:1", "assistant", `deployment status update ${i}`);
+    for (let i = 0; i < 6; i++) {
+      const term = i % 2 === 0 ? "deployment" : "window";
+      db.addConvTurn("chat:1", "assistant", `${term} status update ${i}`);
     }
 
     const rows = db.searchConvTurns("chat:1", "deployment window", 1);
