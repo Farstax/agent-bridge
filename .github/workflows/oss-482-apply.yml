@@ -21,7 +21,7 @@ jobs:
           node-version: 24.15.0
           cache: npm
       - run: npm ci
-      - name: Observe RED
+      - name: Observe base RED
         shell: bash
         run: |
           python scripts/issue482-apply.py red
@@ -30,24 +30,54 @@ jobs:
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
-            echo "Expected RED test to fail before implementation" >&2
+            echo "Expected base RED test to fail before implementation" >&2
             exit 1
           fi
           git reset --hard HEAD
-      - name: Apply implementation
+      - name: Apply base implementation
         run: python scripts/issue482-apply.py apply
       - name: Tighten owner-scope fixture
         run: sed -i 's/current conversation evidence/current local note/' test/conversationStore.test.ts
-      - name: Focused GREEN
+      - name: Focused base GREEN
         run: npx vitest run test/contextCommand.test.ts test/conversationStore.test.ts test/canonicalConversationIdentity.test.ts
-      - name: Repository qualification
+      - name: Observe canonical-scope RED
+        shell: bash
+        run: |
+          python scripts/issue482-repair.py red
+          set +e
+          npx vitest run test/issue482.repair.red.test.ts
+          status=$?
+          set -e
+          rm -f test/issue482.repair.red.test.ts
+          if [ "$status" -eq 0 ]; then
+            echo "Expected canonical-scope RED test to fail before repair" >&2
+            exit 1
+          fi
+      - name: Apply canonical-scope repair
+        run: python scripts/issue482-repair.py apply
+      - name: Audit retained-turn writers
+        shell: bash
+        run: grep -R -n --include='*.ts' 'addConvTurn(' src
+      - name: Focused repair GREEN
+        run: npx vitest run test/contextCommand.test.ts test/conversationStore.test.ts test/canonicalConversationIdentity.test.ts test/retainedConversationScope.test.ts test/dbSchema.test.ts test/commands.test.ts test/ownerNotificationIngress.test.ts
+      - name: Full tests diagnostic
+        run: npm test
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+      - name: TypeScript diagnostic
+        run: npm run typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+      - name: Architecture lint diagnostic
+        run: bash scripts/arch-lint.sh src
+      - name: Authoritative repository qualification
         run: npm run qualify:local
         env:
           NODE_OPTIONS: --max-old-space-size=3072
       - name: Commit candidate
         shell: bash
         run: |
-          rm .github/workflows/oss-482-apply.yml scripts/issue482-apply.py
+          rm .github/workflows/oss-482-apply.yml scripts/issue482-apply.py scripts/issue482-repair.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
