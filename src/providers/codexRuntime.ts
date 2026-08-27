@@ -14,6 +14,22 @@ import { appendEffortArgs } from "../effort.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 
+const CODEX_UNCERTAIN_COMPLETION = "Codex completion could not be verified from structured output";
+
+export class CodexUncertainCompletionError extends Error {
+  readonly sessionId: string | null;
+
+  constructor(sessionId: string | null) {
+    super(CODEX_UNCERTAIN_COMPLETION);
+    this.name = "CodexUncertainCompletionError";
+    this.sessionId = sessionId;
+  }
+}
+
+export function isCodexUncertainCompletionFailureMessage(message: string): boolean {
+  return message === CODEX_UNCERTAIN_COMPLETION;
+}
+
 export function buildInvocation({
   prompt,
   sessionId,
@@ -98,68 +114,61 @@ function parseUsage(value: unknown): RunTelemetry | undefined {
   };
 }
 
+function parseStructuredLine(line: string, sessionId: string | null): Record<string, unknown> {
+  if (!line.startsWith("{")) throw new CodexUncertainCompletionError(sessionId);
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new CodexUncertainCompletionError(sessionId);
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof CodexUncertainCompletionError) throw error;
+    throw new CodexUncertainCompletionError(sessionId);
+  }
+}
+
 export function parseResult(stdout: string): CliResult {
   let sessionId: string | null = null;
   let finalText: string | null = null;
   let telemetry: RunTelemetry | undefined;
-  const deltaChunks: string[] = [];
 
   const lines = stdout.split("\n").map((v) => v.trim()).filter(Boolean);
   for (const line of lines) {
-    if (!line.startsWith("{")) continue;
-    try {
-      const e = JSON.parse(line);
-      if (e.type === "thread.started" && e.thread_id) {
-        sessionId = e.thread_id;
-      } else if (
-        (e.type === "item.completed" || e.type === "item.updated") &&
-        e.item?.type === "agent_message" &&
-        typeof e.item.text === "string"
-      ) {
-        finalText = e.item.text;
-      } else if (e.type === "response.completed" && typeof e.output_text === "string") {
-        finalText = e.output_text;
-      } else if (e.type === "response.output_text.delta" && e.delta) {
-        deltaChunks.push(e.delta);
-      } else if (e.type === "turn.completed") {
-        telemetry = parseUsage(e.usage);
-      }
-    } catch {
-      // not JSON, skip
+    const e = parseStructuredLine(line, sessionId);
+    if (e.type === "thread.started" && typeof e.thread_id === "string" && e.thread_id.trim()) {
+      sessionId = e.thread_id;
+    } else if (
+      e.type === "item.completed" &&
+      e.item &&
+      typeof e.item === "object" &&
+      !Array.isArray(e.item) &&
+      (e.item as Record<string, unknown>).type === "agent_message" &&
+      typeof (e.item as Record<string, unknown>).text === "string"
+    ) {
+      finalText = (e.item as Record<string, unknown>).text as string;
+    } else if (e.type === "response.completed" && typeof e.output_text === "string") {
+      finalText = e.output_text;
+    } else if (e.type === "turn.completed") {
+      telemetry = parseUsage(e.usage);
     }
   }
 
+  if (!finalText?.trim()) {
+    throw new CodexUncertainCompletionError(sessionId);
+  }
+
   return {
-    text: (finalText ?? deltaChunks.join("")).trim(),
+    text: finalText.trim(),
     sessionId,
     ...(telemetry ? { telemetry } : {}),
   };
 }
 
 export function hasUsableFinalResponse(stdout: string): boolean {
-  const lines = stdout.split("\n").map((v) => v.trim()).filter(Boolean);
-  for (const line of lines) {
-    if (!line.startsWith("{")) continue;
-    try {
-      const e = JSON.parse(line);
-      if (
-        e.type === "item.completed" &&
-        e.item?.type === "agent_message" &&
-        typeof e.item.text === "string" &&
-        e.item.text.trim()
-      ) {
-        return true;
-      }
-      if (
-        e.type === "response.completed" &&
-        typeof e.output_text === "string" &&
-        e.output_text.trim()
-      ) {
-        return true;
-      }
-    } catch {
-      // not JSON, skip
-    }
+  try {
+    return Boolean(parseResult(stdout).text.trim());
+  } catch {
+    return false;
   }
-  return false;
 }
