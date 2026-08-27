@@ -128,6 +128,20 @@ function parseStructuredLine(line: string, sessionId: string | null): Record<str
   }
 }
 
+function isAgentMessage(event: Record<string, unknown>): boolean {
+  return Boolean(
+    event.item &&
+    typeof event.item === "object" &&
+    !Array.isArray(event.item) &&
+    (event.item as Record<string, unknown>).type === "agent_message" &&
+    typeof (event.item as Record<string, unknown>).text === "string"
+  );
+}
+
+function agentMessageText(event: Record<string, unknown>): string {
+  return ((event.item as Record<string, unknown>).text as string);
+}
+
 export function parseResult(stdout: string): CliResult {
   let sessionId: string | null = null;
   let finalText: string | null = null;
@@ -138,15 +152,8 @@ export function parseResult(stdout: string): CliResult {
     const e = parseStructuredLine(line, sessionId);
     if (e.type === "thread.started" && typeof e.thread_id === "string" && e.thread_id.trim()) {
       sessionId = e.thread_id;
-    } else if (
-      (e.type === "item.completed" || e.type === "item.updated") &&
-      e.item &&
-      typeof e.item === "object" &&
-      !Array.isArray(e.item) &&
-      (e.item as Record<string, unknown>).type === "agent_message" &&
-      typeof (e.item as Record<string, unknown>).text === "string"
-    ) {
-      finalText = (e.item as Record<string, unknown>).text as string;
+    } else if ((e.type === "item.completed" || e.type === "item.updated") && isAgentMessage(e)) {
+      finalText = agentMessageText(e);
     } else if (e.type === "response.completed" && typeof e.output_text === "string") {
       finalText = e.output_text;
     } else if (e.type === "turn.completed") {
@@ -166,9 +173,22 @@ export function parseResult(stdout: string): CliResult {
 }
 
 export function hasUsableFinalResponse(stdout: string): boolean {
+  let sessionId: string | null = null;
+  let sawTerminalFinal = false;
+  const lines = stdout.split("\n").map((v) => v.trim()).filter(Boolean);
   try {
-    return Boolean(parseResult(stdout).text.trim());
+    for (const line of lines) {
+      const e = parseStructuredLine(line, sessionId);
+      if (e.type === "thread.started" && typeof e.thread_id === "string" && e.thread_id.trim()) {
+        sessionId = e.thread_id;
+      } else if (e.type === "item.completed" && isAgentMessage(e) && agentMessageText(e).trim()) {
+        sawTerminalFinal = true;
+      } else if (e.type === "response.completed" && typeof e.output_text === "string" && e.output_text.trim()) {
+        sawTerminalFinal = true;
+      }
+    }
   } catch {
     return false;
   }
+  return sawTerminalFinal;
 }
