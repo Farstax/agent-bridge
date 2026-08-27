@@ -17,6 +17,7 @@ import {
   type CursorStatusSnapshot,
 } from "./providers/cursorAvailability.js";
 import { isGrokRouteable, resolveGrokAuthPaths } from "./providers/grokAvailability.js";
+import { resolveProviderExecutable } from "./providers/registry.js";
 import type { ProviderId } from "./providers/types.js";
 
 export interface InteractiveCliAuthPaths {
@@ -92,27 +93,29 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const available = new Set<CliKind>();
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
     isProviderApiKeyVerified(provider, env));
+  const hasRuntime = (provider: ProviderId): boolean =>
+    commandExists(resolveProviderExecutable(provider, env));
 
   const codexAuthenticated = exists(paths.codex)
     || (isProviderApiKeyConfigured("codex", env) && verifyApiKey("codex"));
-  if (codexAuthenticated && !failedProviders.has("codex")) available.add("codex");
+  if (codexAuthenticated && hasRuntime("codex") && !failedProviders.has("codex")) available.add("codex");
 
   const claudeAuthenticated = exists(paths.claude)
     || (isProviderApiKeyConfigured("claude", env) && verifyApiKey("claude"));
-  if (claudeAuthenticated && !failedProviders.has("claude")) available.add("claude");
+  if (claudeAuthenticated && hasRuntime("claude") && !failedProviders.has("claude")) available.add("claude");
 
   const agyAuthenticated = paths.antigravity.some(exists)
     || (isProviderApiKeyConfigured("agy", env) && verifyApiKey("agy"));
-  if (agyAuthenticated && !failedProviders.has("agy")) available.add("antigravity");
+  if (agyAuthenticated && hasRuntime("agy") && !failedProviders.has("agy")) available.add("antigravity");
 
-  if (isGrokRouteable({
+  if (hasRuntime("grok") && isGrokRouteable({
     homeDir: home,
     exists,
     env,
     failedProviders,
     verifyApiKey: () => verifyApiKey("grok"),
   })) available.add("grok");
-  if (isCursorRouteable({
+  if (hasRuntime("cursor") && isCursorRouteable({
     homeDir: home,
     exists,
     env,
@@ -121,7 +124,6 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
     verifyApiKey: () => verifyApiKey("cursor"),
   })) available.add("cursor");
 
-  void commandExists; // retained for the existing injectable availability seam.
   return available;
 }
 
