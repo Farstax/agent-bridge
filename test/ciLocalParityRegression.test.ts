@@ -26,4 +26,11 @@ describe("local/hosted CI parity", () => {
     expect(workflow).not.toMatch(/run:\s*npm test\s*$/m);
     expect(workflow).not.toMatch(/run:\s*npm run typecheck\s*$/m);
   });
+
+  it("keeps hosted CI cancellation stable per PR or ref", () => {
+    const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
+    expect(workflow).toContain("group: ci-${{ github.event.pull_request.number || github.ref }}");
+    expect(workflow).toContain("cancel-in-progress: true");
+    expect(workflow).not.toContain("github.run_id");
+  });
 });
