@@ -24,6 +24,7 @@ const CLAUDE_MISSING_TERMINAL_RESULT = "Claude structured output ended before co
 const AGY_UNCERTAIN_COMPLETION = "Agy completion could not be verified from structured output";
 const GROK_UNCERTAIN_COMPLETION = "Grok completion could not be verified from structured output";
 const CURSOR_UNCERTAIN_COMPLETION = "Cursor completion could not be verified from structured output";
+const AGY_CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class CodexMissingToolOutputError extends Error {
   constructor() {
@@ -107,12 +108,11 @@ function parseObjectLines(stdout: string): Record<string, unknown>[] {
     if (!trimmed) continue;
     try {
       const value = JSON.parse(trimmed) as unknown;
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        records.push(value as Record<string, unknown>);
-      }
+      if (!value || typeof value !== "object" || Array.isArray(value)) break;
+      records.push(value as Record<string, unknown>);
     } catch {
-      // Classification helpers use only trustworthy records parsed before a
-      // malformed boundary. They never treat raw fragments as user output.
+      // Only records before the malformed boundary are trustworthy evidence.
+      break;
     }
   }
   return records;
@@ -120,12 +120,15 @@ function parseObjectLines(stdout: string): Record<string, unknown>[] {
 
 function extractAgySessionId(stdout: string): string | null {
   for (const record of parseObjectLines(stdout)) {
-    if (typeof record.conversation_id === "string" && record.conversation_id.trim()) {
+    if (
+      typeof record.conversation_id === "string" &&
+      AGY_CONVERSATION_ID_PATTERN.test(record.conversation_id)
+    ) {
       return record.conversation_id;
     }
     if (record.result && typeof record.result === "object" && !Array.isArray(record.result)) {
       const id = (record.result as Record<string, unknown>).conversation_id;
-      if (typeof id === "string" && id.trim()) return id;
+      if (typeof id === "string" && AGY_CONVERSATION_ID_PATTERN.test(id)) return id;
     }
   }
   return null;
