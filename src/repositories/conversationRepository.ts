@@ -82,7 +82,7 @@ function recentTurnCandidateLimit(): number {
 
 function tokenizeSearchQuery(raw: string): string[] {
   const words = raw.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const tokens = [...new Set(words.filter((word) => word.length > 1))];
+  const tokens = [...new Set(words.filter((word) => word.length > 1 || /[^\x00-\x7F]/u.test(word)))];
   const distinctiveTokens = tokens.filter((token) => !SEARCH_STOPWORDS.has(token));
   return (distinctiveTokens.length > 0 ? distinctiveTokens : tokens).slice(0, 8);
 }
@@ -117,7 +117,7 @@ export class ConversationRepository {
 
   addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string): void {
     this.db
-      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli) VALUES (?, ?, ?, ?)`)
+      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli) VALUES (?, ?, ?, ?)`) 
       .run(chatKey, role, text, cli ?? null);
   }
 
