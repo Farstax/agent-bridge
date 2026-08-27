@@ -117,7 +117,7 @@ export class ConversationRepository {
 
   addConvTurn(chatKey: string, role: "user" | "assistant", text: string, cli?: string): void {
     this.db
-      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli) VALUES (?, ?, ?, ?)`) 
+      .prepare(`INSERT INTO conversation_turns (chat_key, role, text, cli) VALUES (?, ?, ?, ?)`)
       .run(chatKey, role, text, cli ?? null);
   }
 
