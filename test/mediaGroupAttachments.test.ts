@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 
@@ -154,5 +155,40 @@ describe("Telegram media group attachment ownership", () => {
     expect(attachmentArgs(runCli, 1)).toEqual(retainedPaths);
     expect(retainedPaths.every((value) => !existsSync(value))).toBe(true);
     db.close();
+  });
+
+  it("does not delete a legacy queued attachment path outside a run-owned upload directory", async () => {
+    const db = openDb(":memory:");
+    const c = client();
+    const runCli = vi.fn();
+    const subject = engine(db, c, runCli);
+    const sentinelDir = await mkdtemp(join(tmpdir(), "bridge-cleanup-sentinel-"));
+    const sentinelPath = join(sentinelDir, "outside.txt");
+    await writeFile(sentinelPath, "keep", "utf8");
+
+    try {
+      db.enqueueMsg("telegram:interactive", "100:7", {
+        prompt: "legacy queued upload",
+        chatId: 100,
+        threadId: 7,
+        chatType: "private",
+        attachments: [sentinelPath],
+      });
+
+      await subject.handleMessages([{
+        message_id: 20,
+        chat: { id: 100, type: "private" },
+        from: { id: 42 },
+        message_thread_id: 7,
+        text: "/reset",
+      } as any]);
+
+      expect(existsSync(sentinelPath)).toBe(true);
+      expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+      expect(runCli).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+      await rm(sentinelDir, { recursive: true, force: true });
+    }
   });
 });
