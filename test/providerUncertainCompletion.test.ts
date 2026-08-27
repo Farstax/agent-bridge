@@ -100,6 +100,26 @@ describe("provider uncertain completion contract", () => {
     expect(error?.message).toMatch(/completion could not be verified/i);
   });
 
+  it("does not trust an invalid Agy conversation id for recovery", () => {
+    const error = validateSuccessfulCliExit("antigravity", {
+      stdout: `${JSON.stringify({ event: "init", conversation_id: "not-a-uuid" })}\n`,
+      stderr: "",
+    }) as Error & { sessionId?: string | null };
+
+    expect(error.message).toMatch(/completion could not be verified/i);
+    expect(error.sessionId).toBeNull();
+  });
+
+  it("does not trust session evidence after a malformed structured boundary", () => {
+    const error = validateSuccessfulCliExit("antigravity", {
+      stdout: `not-json\n${JSON.stringify({ event: "init", conversation_id: AGY_SESSION })}\n`,
+      stderr: "",
+    }) as Error & { sessionId?: string | null };
+
+    expect(error.message).toMatch(/completion could not be verified/i);
+    expect(error.sessionId).toBeNull();
+  });
+
   it("rejects exit-zero Grok output without terminal evidence before run.completed", () => {
     const error = validateSuccessfulCliExit("grok", {
       stdout: `${JSON.stringify({ type: "text", data: "partial answer" })}\n`,
