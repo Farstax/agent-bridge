@@ -63,7 +63,28 @@ jobs:
         run: grep -R -n --include='*.ts' 'addConvTurn(' src
       - name: Focused repair GREEN
         run: npx vitest run test/contextCommand.test.ts test/conversationStore.test.ts test/canonicalConversationIdentity.test.ts test/retainedConversationScope.test.ts test/dbSchema.test.ts test/commands.test.ts test/ownerNotificationIngress.test.ts
-      - name: Full tests diagnostic
+      - name: Observe final RED
+        shell: bash
+        run: |
+          set +e
+          npx vitest run test/resetHistoryDeletion.test.ts test/engine.test.ts
+          reset_status=$?
+          bash scripts/arch-lint.sh src
+          arch_status=$?
+          set -e
+          if [ "$reset_status" -eq 0 ]; then
+            echo "Expected surfaced reset regression to fail before final repair" >&2
+            exit 1
+          fi
+          if [ "$arch_status" -eq 0 ]; then
+            echo "Expected SQL ownership lint to fail before final repair" >&2
+            exit 1
+          fi
+      - name: Apply final review repairs
+        run: python scripts/issue482-finalize.py apply
+      - name: Focused final GREEN
+        run: npx vitest run test/resetHistoryDeletion.test.ts test/engine.test.ts test/arch/archLint.test.ts test/retainedConversationLegacyCompatibility.test.ts test/retainedConversationScope.test.ts test/contextCommand.test.ts test/conversationStore.test.ts test/canonicalConversationIdentity.test.ts test/dbSchema.test.ts test/commands.test.ts test/ownerNotificationIngress.test.ts
+      - name: Full tests
         shell: bash
         env:
           NODE_OPTIONS: --max-old-space-size=3072
@@ -73,7 +94,7 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
-            tail -n 500 /tmp/oss-482-vitest.log > .oss-482-test-failure.txt
+            { echo "run=${GITHUB_RUN_ID}"; tail -n 500 /tmp/oss-482-vitest.log; } > .oss-482-test-failure.txt
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
             git add .oss-482-test-failure.txt
@@ -81,11 +102,11 @@ jobs:
             git push origin HEAD:agent/oss-482-authorized-turn-search
             exit "$status"
           fi
-      - name: TypeScript diagnostic
+      - name: TypeScript
         run: npm run typecheck
         env:
           NODE_OPTIONS: --max-old-space-size=3072
-      - name: Architecture lint diagnostic
+      - name: Architecture lint
         run: bash scripts/arch-lint.sh src
       - name: Authoritative repository qualification
         run: npm run qualify:local
@@ -94,7 +115,8 @@ jobs:
       - name: Commit candidate
         shell: bash
         run: |
-          rm .github/workflows/oss-482-apply.yml scripts/issue482-apply.py scripts/issue482-repair.py
+          rm -f .oss-482-test-failure.txt
+          rm .github/workflows/oss-482-apply.yml scripts/issue482-apply.py scripts/issue482-repair.py scripts/issue482-finalize.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
