@@ -147,6 +147,17 @@ describe("canonical conversation identity", () => {
     }
   });
 
+
+  it("keeps retained turn search isolated when different surfaces share the same native chat id", () => {
+    const db = openDb(":memory:", { serviceId: "canonical-turn-search-test" });
+    try {
+      db.addConvTurn("42", "user", "telegram marker", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "telegram-owner" });
+      db.addConvTurn("42", "user", "discord marker", "codex", { surfaceIdentity: "discord:interactive", ownerKey: "discord-owner" });
+      expect(db.searchAuthorizedConvTurns({ scope: "conversation", surfaceIdentity: "telegram:interactive", chatKey: "42" }, "marker").filter((row) => row.is_match).map((row) => row.text)).toEqual(["telegram marker"]);
+      expect(db.searchAuthorizedConvTurns({ scope: "conversation", surfaceIdentity: "discord:interactive", chatKey: "42" }, "marker").filter((row) => row.is_match).map((row) => row.text)).toEqual(["discord marker"]);
+    } finally { db.close(); }
+  });
+
   it("recovers a queued Discord conversation from its durable native key after database reopen", async () => {
     const dbPath = join(tmpdir(), `canonical-chat-key-${process.pid}-${Date.now()}.sqlite`);
     const surface = "discord:interactive";

@@ -305,5 +305,43 @@ describe("agent-bridge-context helper", () => {
         rmSync(path, { force: true });
       }
     });
+
+    it("uses conversation scope by default and explicit owner scope for authorized cross-conversation evidence", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "local deployment note", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+        db.addConvTurn("chat:2", "assistant", "remote deployment decision Friday", "claude", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+        db.addConvTurn("chat:3", "assistant", "remote deployment decision Saturday SECRET", "claude", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-b" });
+        const env = { AGENT_BRIDGE_CONTEXT_DB: path, AGENT_BRIDGE_CHAT_KEY: "chat:1", AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive", AGENT_BRIDGE_OWNER_KEY: "owner-a" };
+        const local = renderAgentBridgeContext(["--search", "remote deployment"], env);
+        expect(local).not.toContain("Friday");
+        const owner = renderAgentBridgeContext(["--search", "remote deployment", "--scope", "owner"], env);
+        expect(owner).toContain("Friday");
+        expect(owner).not.toContain("SECRET");
+        expect(owner).toContain("telegram:interactive chat:2");
+      } finally { db.close(); rmSync(path, { force: true }); }
+    });
+
+    it("fails owner scope closed when the runtime cannot prove one owner", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("chat:1", "user", "evidence", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+        const output = renderAgentBridgeContext(["--search", "evidence", "--scope", "owner"], { AGENT_BRIDGE_CONTEXT_DB: path, AGENT_BRIDGE_CHAT_KEY: "chat:1", AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive" });
+        expect(output).toContain("cannot mechanically prove one authenticated owner");
+      } finally { db.close(); rmSync(path, { force: true }); }
+    });
+
+    it("preserves cross-conversation correction chronology and source provenance", () => {
+      const { db, path } = makeDb();
+      try {
+        db.addConvTurn("topic:old", "user", "release decision is Thursday", "codex", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+        db.addConvTurn("thread:new", "assistant", "correction release decision is Friday", "claude", { surfaceIdentity: "telegram:interactive", ownerKey: "owner-a" });
+        const output = renderAgentBridgeContext(["--search", "release decision", "--scope", "owner"], { AGENT_BRIDGE_CONTEXT_DB: path, AGENT_BRIDGE_CHAT_KEY: "topic:old", AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive", AGENT_BRIDGE_OWNER_KEY: "owner-a" });
+        expect(output.indexOf("Thursday")).toBeLessThan(output.indexOf("Friday"));
+        expect(output).toContain("topic:old");
+        expect(output).toContain("thread:new");
+      } finally { db.close(); rmSync(path, { force: true }); }
+    });
+
   });
 });
