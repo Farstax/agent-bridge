@@ -22,6 +22,8 @@ describe("interactive API-key startup", () => {
       homeDir: "/home/tester",
       env,
       exists: () => false,
+      commandExists: () => true,
+      readCursorStatus: () => ({ isAuthenticated: false }),
       failedProviders: new Set(),
     });
 

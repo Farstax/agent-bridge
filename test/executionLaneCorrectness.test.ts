@@ -897,7 +897,8 @@ describe("execution lane correctness", () => {
 
   it("executes a recovered durable row before a new arrival and preserves its attachment", async () => {
     const path = join(tmpdir(), `restart-fifo-${Date.now()}-${Math.random()}.sqlite`);
-    const attachment = join(tmpdir(), `queued-attachment-${Date.now()}.txt`);
+    const uploadDir = mkdtempSync(join(tmpdir(), "bridge-uploads-"));
+    const attachment = join(uploadDir, `queued-attachment-${Date.now()}.txt`);
     writeFileSync(attachment, "durable attachment");
     const db = openDb(path);
     db.setSetting("ctx_suppress:100:7", "1");
@@ -916,7 +917,7 @@ describe("execution lane correctness", () => {
     expect(seen.map((entry) => entry.prompt.includes("oldest after restart") ? "oldest" : "new")).toEqual(["oldest", "new"]);
     expect(seen[0].hasAttachment).toBe(true);
     expect(existsSync(attachment)).toBe(false);
-    db.close(); rmSync(path, { force: true }); rmSync(attachment, { force: true });
+    db.close(); rmSync(path, { force: true }); rmSync(uploadDir, { recursive: true, force: true });
   });
 
   it("persists a downloaded busy-lane attachment and delivers it after the lane becomes free", async () => {
