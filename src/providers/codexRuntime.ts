@@ -139,7 +139,7 @@ export function parseResult(stdout: string): CliResult {
     if (e.type === "thread.started" && typeof e.thread_id === "string" && e.thread_id.trim()) {
       sessionId = e.thread_id;
     } else if (
-      e.type === "item.completed" &&
+      (e.type === "item.completed" || e.type === "item.updated") &&
       e.item &&
       typeof e.item === "object" &&
       !Array.isArray(e.item) &&
