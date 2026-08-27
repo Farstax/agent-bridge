@@ -92,6 +92,19 @@ describe("provider uncertain completion contract", () => {
     });
   });
 
+  it("does not treat Codex item.updated as terminal evidence for the missing-tool diagnostic", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: CODEX_SESSION }),
+      JSON.stringify({ type: "item.updated", item: { type: "agent_message", text: "interim answer" } }),
+    ].join("\n") + "\n";
+    const error = validateSuccessfulCliExit("codex", {
+      stdout,
+      stderr: "ERROR codex_core::util: Custom tool call output is missing for call id: call_stale\n",
+    });
+
+    expect(error?.message).toMatch(/custom tool call output is missing/i);
+  });
+
   it("rejects exit-zero Agy output without a terminal result before run.completed", () => {
     const error = validateSuccessfulCliExit("antigravity", {
       stdout: `${JSON.stringify({ event: "init", conversation_id: AGY_SESSION })}\n`,
