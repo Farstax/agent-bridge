@@ -119,6 +119,31 @@ describe("scoped conversation search", () => {
     expect(rows.map((row) => row.text)).toEqual(["before marker", "decision alpha marker", "after marker"]);
     expect(rows.filter((row: any) => row.is_match).map((row) => row.text)).toEqual(["decision alpha marker"]);
   });
+
+  it("ranks distinctive multi-term evidence ahead of newer common-term matches", () => {
+    db.addConvTurn("chat:1", "user", "deployment window is Friday at 15:00");
+    for (let i = 0; i < 5; i++) {
+      db.addConvTurn("chat:1", "assistant", `what was the status update ${i}`);
+    }
+
+    const rows = db.searchConvTurns("chat:1", "what was the deployment window", 1);
+    expect(rows.filter((row: any) => row.is_match).map((row) => row.text)).toEqual([
+      "deployment window is Friday at 15:00",
+    ]);
+  });
+
+  it("ranks broader distinctive term coverage ahead of newer competing partial matches", () => {
+    db.addConvTurn("chat:1", "user", "deployment window is Friday at 15:00");
+    for (let i = 0; i < 6; i++) {
+      const term = i % 2 === 0 ? "deployment" : "window";
+      db.addConvTurn("chat:1", "assistant", `${term} status update ${i}`);
+    }
+
+    const rows = db.searchConvTurns("chat:1", "deployment window", 1);
+    expect(rows.filter((row: any) => row.is_match).map((row) => row.text)).toEqual([
+      "deployment window is Friday at 15:00",
+    ]);
+  });
 });
 
 describe("pending messages", () => {

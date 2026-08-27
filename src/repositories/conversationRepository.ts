@@ -13,6 +13,34 @@ export const MAX_SEARCH_TURN_LIMIT = 20;
 export const MAX_SEARCH_CONTEXT_TURNS = 20;
 export const MAX_SEARCH_SNIPPET_CHARS = 300;
 
+const SEARCH_STOPWORDS = new Set([
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "been",
+  "being",
+  "by",
+  "for",
+  "from",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "this",
+  "to",
+  "was",
+  "were",
+  "what",
+  "with",
+]);
+
 function recentTurnCandidateLimit(): number {
   const raw = process.env.BRIDGE_CONTEXT_RECENT_TURN_LIMIT;
   if (!raw) return DEFAULT_CONTEXT_RECENT_TURN_LIMIT;
@@ -21,13 +49,15 @@ function recentTurnCandidateLimit(): number {
 }
 
 function tokenizeSearchQuery(raw: string): string[] {
-  return [...new Set(
+  const tokens = [...new Set(
     raw
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, " ")
       .split(/\s+/)
       .filter((w) => w.length > 1)
-  )].slice(0, 8);
+  )];
+  const distinctiveTokens = tokens.filter((token) => !SEARCH_STOPWORDS.has(token));
+  return (distinctiveTokens.length > 0 ? distinctiveTokens : tokens).slice(0, 8);
 }
 
 // Escapes SQLite LIKE metacharacters (% _ and the escape character itself)
@@ -140,16 +170,17 @@ export class ConversationRepository {
     if (tokens.length === 0) return [];
     const boundedLimit = Math.min(Math.max(1, Math.trunc(limit) || DEFAULT_SEARCH_TURN_LIMIT), MAX_SEARCH_TURN_LIMIT);
     const clauses = tokens.map(() => `text LIKE ? ESCAPE '\\'`).join(" OR ");
+    const coverage = tokens.map(() => `CASE WHEN text LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END`).join(" + ");
     const params = tokens.map((t) => `%${escapeLikeTerm(t)}%`);
 
     const matchingRows = this.db
       .prepare(
         `SELECT id, role, text, cli, created_at FROM conversation_turns
          WHERE chat_key = ? AND (${clauses})
-         ORDER BY id DESC
+         ORDER BY (${coverage}) DESC, id DESC
          LIMIT ?`
       )
-      .all(chatKey, ...params, boundedLimit) as ConvTurnRow[];
+      .all(chatKey, ...params, ...params, boundedLimit) as ConvTurnRow[];
 
     const evidence = new Map<number, ConvTurnRow>();
     const adjacent = (id: number, direction: "before" | "after"): ConvTurnRow | undefined => {
