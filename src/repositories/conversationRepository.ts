@@ -81,13 +81,8 @@ function recentTurnCandidateLimit(): number {
 }
 
 function tokenizeSearchQuery(raw: string): string[] {
-  const tokens = [...new Set(
-    raw
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w.length > 1)
-  )];
+  const words = raw.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const tokens = [...new Set(words.filter((word) => word.length > 1))];
   const distinctiveTokens = tokens.filter((token) => !SEARCH_STOPWORDS.has(token));
   return (distinctiveTokens.length > 0 ? distinctiveTokens : tokens).slice(0, 8);
 }
