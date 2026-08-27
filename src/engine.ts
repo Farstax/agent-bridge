@@ -1049,9 +1049,10 @@ export class BridgeEngine {
   private _deleteQueuedAttachments(attachments: string[]): void {
     const uploadDirs = new Set<string>();
     for (const attachment of attachments) {
-      try { unlinkSync(attachment); } catch {}
       const parent = dirname(attachment);
-      if (basename(parent).startsWith("bridge-uploads-")) uploadDirs.add(parent);
+      if (dirname(parent) !== tmpdir() || !basename(parent).startsWith("bridge-uploads-")) continue;
+      try { unlinkSync(attachment); } catch {}
+      uploadDirs.add(parent);
     }
     for (const dir of uploadDirs) {
       try { rmSync(dir, { recursive: true, force: true }); } catch {}
