@@ -36,6 +36,8 @@ jobs:
           git reset --hard HEAD
       - name: Apply implementation
         run: python scripts/issue482-apply.py apply
+      - name: Tighten owner-scope fixture
+        run: sed -i 's/current conversation evidence/current local note/' test/conversationStore.test.ts
       - name: Focused GREEN
         run: npx vitest run test/contextCommand.test.ts test/conversationStore.test.ts test/canonicalConversationIdentity.test.ts
       - name: Repository qualification
