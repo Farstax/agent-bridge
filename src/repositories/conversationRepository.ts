@@ -169,29 +169,18 @@ export class ConversationRepository {
     const tokens = tokenizeSearchQuery(query);
     if (tokens.length === 0) return [];
     const boundedLimit = Math.min(Math.max(1, Math.trunc(limit) || DEFAULT_SEARCH_TURN_LIMIT), MAX_SEARCH_TURN_LIMIT);
-    const params = tokens.map((t) => `%${escapeLikeTerm(t)}%`);
-    const candidateQueries = tokens
-      .map(
-        () =>
-          `SELECT id, role, text, cli, created_at FROM (
-             SELECT id, role, text, cli, created_at FROM conversation_turns
-             WHERE chat_key = ? AND text LIKE ? ESCAPE '\\'
-             ORDER BY id DESC
-             LIMIT ?
-           )`
-      )
-      .join(" UNION ");
-    const candidateParams = params.flatMap((param) => [chatKey, param, boundedLimit]);
+    const clauses = tokens.map(() => `text LIKE ? ESCAPE '\\'`).join(" OR ");
     const coverage = tokens.map(() => `CASE WHEN text LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END`).join(" + ");
+    const params = tokens.map((t) => `%${escapeLikeTerm(t)}%`);
 
     const matchingRows = this.db
       .prepare(
-        `WITH candidates AS (${candidateQueries})
-         SELECT id, role, text, cli, created_at FROM candidates
+        `SELECT id, role, text, cli, created_at FROM conversation_turns
+         WHERE chat_key = ? AND (${clauses})
          ORDER BY (${coverage}) DESC, id DESC
          LIMIT ?`
       )
-      .all(...candidateParams, ...params, boundedLimit) as ConvTurnRow[];
+      .all(chatKey, ...params, ...params, boundedLimit) as ConvTurnRow[];
 
     const evidence = new Map<number, ConvTurnRow>();
     const adjacent = (id: number, direction: "before" | "after"): ConvTurnRow | undefined => {
