@@ -434,6 +434,24 @@ function emitRecoveryFailed(options: CliOptions, message: string): void {
   }
 }
 
+function recoveryWasCancelled(options: CliOptions): boolean {
+  return options.chatId != null && isAbortRequested(options.chatId);
+}
+
+function finishRecoveryCancelled(options: CliOptions): { stdout: string } {
+  if (options.eventContext && options.onEvent) {
+    try {
+      options.onEvent(evtType.runCancelled({
+        ...options.eventContext,
+        reason: "user",
+      }));
+    } catch {
+      /* event observation must not break cancelled execution */
+    }
+  }
+  return { stdout: "" };
+}
+
 async function recoverClaudeUncertainCompletion(
   command: string,
   args: string[],
@@ -446,6 +464,7 @@ async function recoverClaudeUncertainCompletion(
     emitRecoveryCompleted(options, result);
     return { stdout: serializeClaudeResult(result) };
   };
+  if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
   const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
   if (!sessionId) return finishIncomplete();
 
@@ -479,12 +498,14 @@ async function recoverClaudeUncertainCompletion(
         onProviderOutputChunk: undefined,
       },
     );
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
     const parsed = parseClaudeStreamJsonOutput(recovery.stdout);
     if (!parsed) return finishIncomplete();
     const result = safeRecoveryResult(options, parsed);
     emitRecoveryCompleted(options, result);
     return { stdout: serializeClaudeResult(result) };
   } catch {
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
     return finishIncomplete();
   }
 }
@@ -593,6 +614,7 @@ async function recoverProviderUncertainCompletion(
     emitRecoveryCompleted(options, result);
     return { stdout: serializeProviderResult(provider, result) };
   };
+  if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
   if (!sessionId) return finishIncomplete();
 
   const agyMetadata = provider === "antigravity" ? antigravityInvocationMetadata.get(args) : undefined;
@@ -638,11 +660,13 @@ async function recoverProviderUncertainCompletion(
           cwd,
           recoveryOptions,
         );
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
     const parsed = parseCliResult({ bot: provider, stdout: recovery.stdout, outputFormat: providerOutputFormat(provider) });
     const result = safeRecoveryResult(options, parsed);
     emitRecoveryCompleted(options, result);
     return { stdout: serializeProviderResult(provider, result) };
   } catch {
+    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
     return finishIncomplete();
   }
 }
