@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { parseCliResult } from "../src/cli.js";
 import { runSupervisedProcess, shutdownCliProcessesAndWait } from "../src/cliSupervisor.js";
 import {
   clearProviderApiKeyVerificationCache,
@@ -80,12 +81,16 @@ describe("provider credential redaction", () => {
       ANTHROPIC_API_KEY: "claude-secret-572",
     };
 
-    const script = 'process.stdout.write(JSON.stringify({codex:Boolean(process.env.CODEX_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY)}));';
+    const script = [
+      'const text=JSON.stringify({codex:Boolean(process.env.CODEX_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY)});',
+      'process.stdout.write(JSON.stringify({type:"response.completed",output_text:text}));',
+    ].join("");
     const result = await runSupervisedProcess(process.execPath, ["-e", script], process.cwd(), {
       contextEnv: env,
       bot: "codex",
     });
 
-    expect(JSON.parse(result.stdout)).toEqual({ codex: true, claude: false });
+    const parsed = parseCliResult({ bot: "codex", stdout: result.stdout });
+    expect(JSON.parse(parsed.text)).toEqual({ codex: true, claude: false });
   });
 });
