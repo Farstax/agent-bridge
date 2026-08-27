@@ -80,6 +80,18 @@ describe("provider uncertain completion contract", () => {
     })).toThrow(/completion could not be verified/i);
   });
 
+  it("preserves Codex item.updated agent-message finals", () => {
+    const stdout = [
+      JSON.stringify({ type: "thread.started", thread_id: CODEX_SESSION }),
+      JSON.stringify({ type: "item.updated", item: { type: "agent_message", text: "updated final answer" } }),
+    ].join("\n") + "\n";
+
+    expect(parseCliResult({ bot: "codex", stdout })).toEqual({
+      text: "updated final answer",
+      sessionId: CODEX_SESSION,
+    });
+  });
+
   it("rejects exit-zero Agy output without a terminal result before run.completed", () => {
     const error = validateSuccessfulCliExit("antigravity", {
       stdout: `${JSON.stringify({ event: "init", conversation_id: AGY_SESSION })}\n`,
