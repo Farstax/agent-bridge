@@ -1,17 +1,21 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import { createCiFixture } from "./support/ciFixture.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const ciFixture = createCiFixture(repoRoot);
 
-function readRepoFile(path: string): string {
-  return readFileSync(join(repoRoot, path), "utf8");
+function readFixtureFile(path: string): string {
+  return readFileSync(ciFixture.path(path), "utf8");
 }
+
+afterAll(() => ciFixture.cleanup());
 
 describe("CI qualification ownership policy", () => {
   it("runs full PR qualification only for a non-draft merge candidate", () => {
-    const ci = readRepoFile(".github/workflows/ci.yml");
+    const ci = readFixtureFile(".github/workflows/ci.yml");
 
     expect(ci).toContain("pull_request:");
     expect(ci).toContain("ready_for_review");
@@ -24,9 +28,9 @@ describe("CI qualification ownership policy", () => {
   });
 
   it("runs the PR and release qualification on the release Node version", () => {
-    const ci = readRepoFile(".github/workflows/ci.yml");
-    const releaseArtifact = readRepoFile(".github/workflows/release-artifact.yml");
-    const packageJson = JSON.parse(readRepoFile("package.json")) as { engines?: { node?: string } };
+    const ci = readFixtureFile(".github/workflows/ci.yml");
+    const releaseArtifact = readFixtureFile(".github/workflows/release-artifact.yml");
+    const packageJson = JSON.parse(readFixtureFile("package.json")) as { engines?: { node?: string } };
 
     expect(packageJson.engines?.node).toBe(">=24");
     expect(ci).toContain("node-version: 24.15.0");
@@ -34,9 +38,9 @@ describe("CI qualification ownership policy", () => {
   });
 
   it("has one owner for test, typecheck and architecture checks at each qualification boundary", () => {
-    const ci = readRepoFile(".github/workflows/ci.yml");
-    const releaseArtifact = readRepoFile(".github/workflows/release-artifact.yml");
-    const qualifyLocal = readRepoFile("scripts/qualify-local.sh");
+    const ci = readFixtureFile(".github/workflows/ci.yml");
+    const releaseArtifact = readFixtureFile(".github/workflows/release-artifact.yml");
+    const qualifyLocal = readFixtureFile("scripts/qualify-local.sh");
 
     // Both boundaries delegate to the same local script rather than each
     // duplicating the test/typecheck/arch-lint commands, so local and hosted
@@ -54,10 +58,10 @@ describe("CI qualification ownership policy", () => {
   });
 
   it("qualifies test-runtime changes with bounded resource stress only when the PR is ready", () => {
-    const ci = readRepoFile(".github/workflows/ci.yml");
-    const stress = readRepoFile(".github/workflows/resource-stress.yml");
-    const vitest = readRepoFile("vitest.config.ts");
-    const packageJson = JSON.parse(readRepoFile("package.json")) as { scripts?: Record<string, string> };
+    const ci = readFixtureFile(".github/workflows/ci.yml");
+    const stress = readFixtureFile(".github/workflows/resource-stress.yml");
+    const vitest = readFixtureFile("vitest.config.ts");
+    const packageJson = JSON.parse(readFixtureFile("package.json")) as { scripts?: Record<string, string> };
 
     const workerMatch = vitest.match(/maxWorkers:\s*(\d+)/);
     expect(workerMatch).not.toBeNull();
@@ -84,10 +88,21 @@ describe("CI qualification ownership policy", () => {
   });
 
   it("keeps release-artifact evidence truthful for the qualified main state", () => {
-    const releaseArtifact = readRepoFile(".github/workflows/release-artifact.yml");
+    const releaseArtifact = readFixtureFile(".github/workflows/release-artifact.yml");
 
     expect(releaseArtifact).toContain("checks_json='[\"test\",\"typecheck\",\"architecture-lint\",\"compile\",\"manifest\"]'");
     expect(releaseArtifact).toContain('"checks": ${checks_json}');
     expect(releaseArtifact).toContain("Upload qualified release artifact");
+  });
+
+  it("keeps fixture workflow mutations out of the repository checkout", () => {
+    const liveWorkflow = join(repoRoot, ".github/workflows/ci.yml");
+    const before = readFileSync(liveWorkflow, "utf8");
+    const fixtureWorkflow = ciFixture.path(".github/workflows/ci.yml");
+
+    writeFileSync(fixtureWorkflow, before.replace("cancel-in-progress: true", "cancel-in-progress: fixture-only"));
+
+    expect(readFileSync(fixtureWorkflow, "utf8")).toContain("cancel-in-progress: fixture-only");
+    expect(readFileSync(liveWorkflow, "utf8")).toBe(before);
   });
 });
