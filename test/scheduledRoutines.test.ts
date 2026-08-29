@@ -33,7 +33,7 @@ function weekly(overrides: Partial<ScheduledRoutine> = {}): ScheduledRoutine {
     kind: "companion",
     surfaceIdentity: "telegram:interactive",
     chatKey: "-100:42",
-    userId: "123",
+    ownerKey: "owner:test",
     timezone: "Europe/Madrid",
     schedule: { type: "weekly", weekdays: [1, 2, 3, 4, 5], time: "08:00" },
     enabled: true,
@@ -118,7 +118,7 @@ describe("scheduled companion routines", () => {
     const db = setup();
     const routine = weekly();
     const occurrence = "2026-08-31T06:00:00.000Z";
-    const update = buildScheduledInteractiveUpdate(routine, occurrence);
+    const update = buildScheduledInteractiveUpdate(routine, occurrence, "123");
     expect(update.message?.chat.id).toBe(-100);
     expect(update.message?.message_thread_id).toBe(42);
     expect(update.message?.from?.id).toBe(123);
@@ -148,10 +148,10 @@ describe("scheduled companion routines", () => {
       id: "discord-routine",
       surfaceIdentity: "discord:interactive",
       chatKey: "123456789012345678",
-      userId: "987654321098765432",
     });
-    const update = buildScheduledInteractiveUpdate(routine, "2026-08-31T06:00:00.000Z");
+    const actor = "987654321098765432";
+    const update = buildScheduledInteractiveUpdate(routine, "2026-08-31T06:00:00.000Z", actor);
     expect(String(update.message?.chat.id)).toBe(routine.chatKey);
-    expect(String(update.message?.from?.id)).toBe(routine.userId);
+    expect(String(update.message?.from?.id)).toBe(actor);
   });
 });
