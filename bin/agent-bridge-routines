@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "$ROOT/node_modules/.bin/tsx" "$ROOT/scripts/agent-bridge-routines.ts" "$@"
