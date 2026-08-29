@@ -94,25 +94,26 @@ Evidence is a fact about a technical state, not a conversational phase. Reuse va
 Current CI ownership:
 
 - draft/intermediate PR states: focused/local evidence; superseded Actions work should be cancelled where safe;
-- ready PR candidate: one authoritative PR qualification owns tests, typecheck, and architecture lint; specialized checks run only when their paths/boundaries trigger them;
-- `main`: Release Artifact owns one complete tests + typecheck + architecture lint + build/manifest qualification and emits the immutable artifact used by release publication.
+- ready PR candidate: one authoritative exact-head PR qualification owns tests, typecheck, and architecture lint; specialized checks run only when their paths/boundaries trigger them;
+- `main`: Release Artifact owns one complete tests + typecheck + architecture lint + build/manifest qualification and emits the immutable artifact used by release publication. A merged push may reuse the successful PR qualification only when automation proves the merged commit and PR candidate have identical Git trees and the source `verify` job succeeded. If that proof is absent or ambiguous, run the complete main/release gate.
 
-Do not recreate a separate full-suite or artifact run for the same SHA unless it proves a distinct contract.
+Do not recreate a separate full-suite or artifact run for the same SHA unless it proves a distinct contract. A successful result from a different tree does not qualify the current head.
 
 ### Local qualification before pushing
 
-Run `npm run qualify:local` before pushing or relying on hosted CI. It runs the same deterministic pack hosted CI runs — full test suite, typecheck, architecture lint — via `scripts/qualify-local.sh`, which `.github/workflows/ci.yml` also calls, so local and hosted CI cannot silently drift. It needs no network access or provider credentials and produces no interactive prompts. Provider qualification, live-provider smoke tests, and other credential/network/host-service-dependent checks are out of scope for this pack; they fail/skip explicitly on their own opt-in triggers (see "Provider qualification and CLI drift" above).
+During implementation, run focused local checks at the owning boundary. Before relying on hosted CI for a final ready candidate, `npm run qualify:local` may provide early deterministic evidence. The authoritative final result remains the exact-head hosted qualification. The local command runs the same pack hosted CI uses — full test suite, typecheck, architecture lint — via `scripts/qualify-local.sh`, which `.github/workflows/ci.yml` also calls, so local and hosted CI cannot silently drift. It needs no network access or provider credentials and produces no interactive prompts. Provider qualification, live-provider smoke tests, and other credential/network/host-service-dependent checks are out of scope for this pack; they fail/skip explicitly on their own opt-in triggers (see "Provider qualification and CLI drift" above).
 
 ## Boundary qualification triggers
 
 Use the relevant evidence, not a universal checklist:
 
-- persistent state/startup/provision/deploy/reconcile → select relevant fresh, existing-production, restart/reconcile, and rollback transitions;
+- persistent state/startup/provision/deploy/reconcile → select relevant fresh, existing-production, restart/reconcile, rollback, interruption/retry, and true second-run/no-op transitions;
 - security/identity/credential/permission/account selection → trace `actor -> authentication -> selection -> durable state -> credential -> target -> operation` and prove final effective authority;
 - external API/CLI/browser → use production-shaped contract evidence when mocks cannot prove the real request/protocol;
 - timeout/network/concurrency → exercise hostile failure, cancellation, non-settling operations, retry/replay, or races as relevant;
 - shared/provider/sibling implementation → sweep the violated invariant across sibling paths;
-- runtime/install/systemd/PATH/env → verify the effective process environment/state, not only generated source text.
+- runtime/install/systemd/PATH/env → verify the effective process environment/state, not only generated source text;
+- expensive install/build/deploy/appliance → qualify against the smallest supported resource envelope when it affects correctness.
 
 Tests should assert observable contracts rather than implementation shape. Do not duplicate production decision logic in test oracles, rely on arbitrary sleeps/retries as flake fixes, or leave resources/global state behind. Test topology should shrink when runtime/process topology shrinks.
 
