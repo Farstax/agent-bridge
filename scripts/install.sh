@@ -16,7 +16,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting,advisor"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting,advisor,scheduled-routines"
 
 # Parse flags
 NON_INTERACTIVE=0
@@ -237,6 +237,9 @@ install_shared_skills() {
   fi
   if [[ ",${skills_csv}," != *",advisor,"* ]]; then
     skills_csv="${skills_csv},advisor"
+  fi
+  if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then
+    skills_csv="${skills_csv},scheduled-routines"
   fi
   if [[ "${link_mode}" != "symlink" && "${link_mode}" != "copy" ]]; then
     echo "Invalid AGENT_BRIDGE_SKILL_LINK_MODE: ${link_mode}" >&2
