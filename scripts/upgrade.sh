@@ -15,7 +15,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,autonomous-work,advisor"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,autonomous-work,advisor,scheduled-routines"
 
 if [[ -z "${NODE_BIN}" ]]; then
   echo "node not found on PATH" >&2
@@ -179,6 +179,9 @@ install_shared_skills() {
   fi
   if [[ ",${skills_csv}," != *",advisor,"* ]]; then
     skills_csv="${skills_csv},advisor"
+  fi
+  if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then
+    skills_csv="${skills_csv},scheduled-routines"
   fi
   if [[ -z "${TARGET_HOME}" ]]; then
     echo "Unable to resolve target home for ${TARGET_USER}" >&2

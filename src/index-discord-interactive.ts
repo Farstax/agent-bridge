@@ -43,6 +43,8 @@ import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { resolveDiscordStartInteraction } from "./discordStart.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
+import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
+import { ScheduledRoutineRunner, buildScheduledInteractiveUpdate } from "./scheduledRoutines.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -101,6 +103,7 @@ const cliChain = parseCliChain(
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db);
 const exhaustedChats = new Set<string>();
+let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 // ── DiscordClient ─────────────────────────────────────────────────────────────
 
 let reconciliationReady: Promise<void> = new Promise(() => {});
@@ -132,6 +135,7 @@ const client = new DiscordClient({
        console.error("[discord-interactive] orphan reconciliation failed", err);
        throw err;
      });
+    void reconciliationReady.then(() => scheduledRoutineRunner?.start());
   },
   onError: (err) => console.error("[discord-interactive] gateway error", err),
 });
@@ -180,6 +184,37 @@ for (const engine of Object.values(engines)) {
 }
 
 await engines.codex.recoverPendingQueues();
+
+const scheduledOwnerKey = deriveConversationOwnerKey("discord:interactive", engineAllowedUserIds);
+const scheduledActorId = allowedUserIds.values().next().value;
+if (scheduledOwnerKey && scheduledActorId) {
+  scheduledRoutineRunner = new ScheduledRoutineRunner(
+    db,
+    "discord:interactive",
+    async (routine, intendedAt) => {
+      if (routine.ownerKey !== scheduledOwnerKey) {
+        console.warn(`[scheduled-routines] owner mismatch for ${routine.id}; Discord occurrence skipped`);
+        return;
+      }
+      if (routine.kind !== "companion") {
+        await client.sendMessage({
+          chat_id: routine.chatKey,
+          text: `Scheduled autonomous routine **${routine.name}** was skipped because first-class autonomy supervision is not available on Discord.`,
+        });
+        return;
+      }
+      const update = buildScheduledInteractiveUpdate(routine, intendedAt, scheduledActorId);
+      await dispatchInteractiveWithFallback(update, routine.chatKey, {
+        engines,
+        fallbackChain,
+        exhaustedChats,
+        db,
+        notify: async (msg) => { await client.sendMessage({ chat_id: routine.chatKey, text: msg }); },
+        onCliSwitched: async (newCli) => setUserCliPreference(db, routine.chatKey, newCli),
+      });
+    },
+  );
+}
 
 // ── Slash command registration ────────────────────────────────────────────────
 
@@ -463,6 +498,7 @@ async function handleInteraction(d: any): Promise<void> {
 
 const shutdown = async (signal: string) => {
   console.log(`[discord-interactive] ${signal} received, shutting down...`);
+  scheduledRoutineRunner?.stop();
   client.destroy();
   shutdownCliProcesses();
   await advisorBroker?.close();

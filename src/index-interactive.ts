@@ -53,6 +53,11 @@ import { loadWorkspaceContext } from "./workspaceContext.js";
 import { AutonomyController, isFirstClassAutonomyBot } from "./autonomyController.js";
 import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } from "./autonomyTelegram.js";
 import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
+import {
+  ScheduledRoutineRunner,
+  buildScheduledInteractiveUpdate,
+  scheduledTelegramDestination,
+} from "./scheduledRoutines.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
@@ -342,6 +347,72 @@ for (const engine of Object.values(engines)) {
 }
 
 await engines[defaultPref].recoverPendingQueues();
+
+const scheduledOwnerKey = deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds);
+const scheduledActorId = allowedUserIds.values().next().value;
+const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new ScheduledRoutineRunner(
+  db,
+  runtimePolicy.surfaceIdentity,
+  async (routine, intendedAt) => {
+    if (routine.ownerKey !== scheduledOwnerKey) {
+      console.warn(`[scheduled-routines] owner mismatch for ${routine.id}; occurrence skipped`);
+      return;
+    }
+    const destination = scheduledTelegramDestination(routine);
+    const sendNotice = async (text: string) => {
+      await sendTelegramMessage({
+        client,
+        kind: "interactive",
+        chatId: destination.chatId,
+        body: { text, message_thread_id: destination.threadId },
+      });
+    };
+
+    if (routine.kind === "autonomous") {
+      if (!autonomyController) {
+        await sendNotice(`Scheduled autonomous routine **${routine.name}** was skipped because autonomy is not configured.`);
+        return;
+      }
+      if (autonomyController.status().state === "running") {
+        await sendNotice(`Scheduled autonomous routine **${routine.name}** was skipped because another autonomous Episode is already running.`);
+        return;
+      }
+      const { pref } = resolveCredentialCheckedPreference(routine.chatKey);
+      if (!pref || !isFirstClassAutonomyBot(pref)) {
+        await sendNotice(`Scheduled autonomous routine **${routine.name}** was skipped because no supported autonomous provider is currently available.`);
+        return;
+      }
+      const started = await autonomyController.start({
+        bot: pref,
+        policyInstruction: `[Scheduled routine: ${routine.name}]\n${routine.instruction}`,
+        supervisorRoute: {
+          surface: "telegram",
+          address: String(destination.chatId),
+          identity: scheduledActorId,
+          ...(destination.threadId === undefined ? {} : { thread: String(destination.threadId) }),
+        },
+      });
+      if (!started.created) {
+        await sendNotice(`Scheduled autonomous routine **${routine.name}** was skipped because another autonomous Episode became active.`);
+      }
+      return;
+    }
+
+    const update = buildScheduledInteractiveUpdate(routine, intendedAt, scheduledActorId);
+    await dispatchInteractiveWithFallback(update, routine.chatKey, {
+      engines,
+      fallbackChain,
+      exhaustedChats,
+      db,
+      notify: sendNotice,
+      onCliSwitched: async (newCli) => {
+        await registerGlobalCommands(newCli, " during scheduled fallback");
+        if (destination.chatId < 0) await registerGroupChatCommands(newCli, destination.chatId);
+      },
+    });
+  },
+) : null;
+scheduledRoutineRunner?.start();
 
 await registerGlobalCommands(defaultPref, "");
 const registeredGroupChats = new Set<number>();
