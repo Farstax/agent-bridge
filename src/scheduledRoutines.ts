@@ -177,7 +177,8 @@ function validateRoutine(routine: ScheduledRoutine): ScheduledRoutine {
   assertTimezone(normalized.timezone);
   if (normalized.kind !== "companion" && normalized.kind !== "autonomous") throw new Error("invalid routine kind");
   if (normalized.schedule.type === "once") {
-    localWallTimeToUtc(parseLocalDateTime(normalized.schedule.localDateTime), normalized.timezone);
+    const intendedMs = localWallTimeToUtc(parseLocalDateTime(normalized.schedule.localDateTime), normalized.timezone);
+    if (intendedMs < Date.parse(normalized.createdAt)) throw new Error("one-shot schedule cannot predate routine creation");
   } else if (normalized.schedule.type === "weekly") {
     parseTime(normalized.schedule.time);
     const weekdays = [...new Set(normalized.schedule.weekdays)].sort((a, b) => a - b);
@@ -208,14 +209,20 @@ export function createScheduledRoutine(db: BridgeDb, routine: ScheduledRoutine):
   return normalized;
 }
 
-export function listScheduledRoutines(db: BridgeDb, surfaceIdentity?: string, chatKey?: string): ScheduledRoutine[] {
+export function listScheduledRoutines(
+  db: BridgeDb,
+  surfaceIdentity?: string,
+  chatKey?: string,
+  ownerKey?: string,
+): ScheduledRoutine[] {
   const rows = db.raw.prepare("SELECT value FROM settings WHERE key LIKE ? ORDER BY key ASC")
     .all(`${ROUTINE_PREFIX}%`) as Array<{ value: string }>;
   return rows
     .map((row) => parseRoutine(row.value))
     .filter((routine): routine is ScheduledRoutine => !!routine)
     .filter((routine) => surfaceIdentity === undefined || routine.surfaceIdentity === surfaceIdentity)
-    .filter((routine) => chatKey === undefined || routine.chatKey === chatKey);
+    .filter((routine) => chatKey === undefined || routine.chatKey === chatKey)
+    .filter((routine) => ownerKey === undefined || routine.ownerKey === ownerKey);
 }
 
 function replaceRoutine(db: BridgeDb, routine: ScheduledRoutine): void {
@@ -223,15 +230,15 @@ function replaceRoutine(db: BridgeDb, routine: ScheduledRoutine): void {
     .run(JSON.stringify(validateRoutine(routine)), routineKey(routine.id));
 }
 
-export function disableScheduledRoutine(db: BridgeDb, id: string, surfaceIdentity: string, chatKey: string): boolean {
-  const routine = listScheduledRoutines(db, surfaceIdentity, chatKey).find((item) => item.id === id);
+export function disableScheduledRoutine(db: BridgeDb, id: string, surfaceIdentity: string, chatKey: string, ownerKey?: string): boolean {
+  const routine = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey).find((item) => item.id === id);
   if (!routine) return false;
   replaceRoutine(db, { ...routine, enabled: false });
   return true;
 }
 
-export function deleteScheduledRoutine(db: BridgeDb, id: string, surfaceIdentity: string, chatKey: string): boolean {
-  const routine = listScheduledRoutines(db, surfaceIdentity, chatKey).find((item) => item.id === id);
+export function deleteScheduledRoutine(db: BridgeDb, id: string, surfaceIdentity: string, chatKey: string, ownerKey?: string): boolean {
+  const routine = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey).find((item) => item.id === id);
   if (!routine) return false;
   return db.raw.prepare("DELETE FROM settings WHERE key = ?").run(routineKey(id)).changes === 1;
 }
