@@ -48,20 +48,24 @@ afterEach(() => {
 });
 
 describe("scheduled companion routines", () => {
-  it("stores only an explicitly supplied agreed instruction and scopes management to its conversation", () => {
+  it("stores only an explicitly supplied agreed instruction and scopes management to its conversation owner", () => {
     const db = setup();
     createScheduledRoutine(db, weekly());
-    createScheduledRoutine(db, weekly({ id: "other", chatKey: "999", name: "Other" }));
+    createScheduledRoutine(db, weekly({ id: "other-chat", chatKey: "999", name: "Other chat" }));
+    createScheduledRoutine(db, weekly({ id: "other-owner", ownerKey: "owner:other", name: "Other owner" }));
 
-    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42")).toEqual([
+    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42", "owner:test")).toEqual([
       expect.objectContaining({ id: "routine-1", instruction: "Review current work and tell me the top three priorities.", enabled: true }),
     ]);
+    expect(disableScheduledRoutine(db, "other-owner", "telegram:interactive", "-100:42", "owner:test")).toBe(false);
+    expect(deleteScheduledRoutine(db, "other-owner", "telegram:interactive", "-100:42", "owner:test")).toBe(false);
+    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42", "owner:other")).toHaveLength(1);
 
-    expect(disableScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42")).toBe(true);
-    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42")[0].enabled).toBe(false);
-    expect(deleteScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42")).toBe(true);
-    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42")).toEqual([]);
-    expect(listScheduledRoutines(db, "telegram:interactive", "999")).toHaveLength(1);
+    expect(disableScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42", "owner:test")).toBe(true);
+    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42", "owner:test")[0].enabled).toBe(false);
+    expect(deleteScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42", "owner:test")).toBe(true);
+    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42", "owner:test")).toEqual([]);
+    expect(listScheduledRoutines(db, "telegram:interactive", "999", "owner:test")).toHaveLength(1);
     db.close();
   });
 
@@ -75,7 +79,7 @@ describe("scheduled companion routines", () => {
     expect(latestDueScheduledOccurrence(routine, Date.parse("2026-08-31T06:31:00.000Z"))).toBeNull();
   });
 
-  it("resolves one-shot local time and rejects nonexistent DST wall times", () => {
+  it("resolves one-shot local time and rejects nonexistent or pre-authority wall times", () => {
     const routine = weekly({
       schedule: { type: "once", localDateTime: "2026-08-30T10:00" },
     });
@@ -87,6 +91,11 @@ describe("scheduled companion routines", () => {
       id: "bad-dst",
       schedule: { type: "once", localDateTime: "2026-03-29T02:30" },
     }))).toThrow(/time|timezone|wall/i);
+    expect(() => createScheduledRoutine(setup(), weekly({
+      id: "before-authority",
+      createdAt: "2026-08-30T08:01:00.000Z",
+      schedule: { type: "once", localDateTime: "2026-08-30T10:00" },
+    }))).toThrow(/predate routine creation/);
   });
 
   it("claims one intended occurrence only once across repeated scans", () => {
