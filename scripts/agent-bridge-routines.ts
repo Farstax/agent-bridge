@@ -111,8 +111,8 @@ function main(args: string[]): string {
     const timezone = option(args, "--timezone") ?? fail("create requires --timezone");
     const kind = (option(args, "--kind") ?? "companion") as ScheduledRoutineKind;
     if (kind !== "companion" && kind !== "autonomous") return fail("--kind must be companion or autonomous");
-    if (kind === "autonomous" && !scope.surfaceIdentity.startsWith("telegram:")) {
-      return fail("scheduled autonomy is currently supported only on Telegram, where first-class autonomy supervision exists");
+    if (kind === "autonomous" && scope.surfaceIdentity !== "telegram:interactive") {
+      return fail("scheduled autonomy is currently supported only on the Telegram interactive surface with first-class autonomy supervision");
     }
     const routine = createScheduledRoutine(scope.db, {
       id: randomUUID(),
