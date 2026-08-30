@@ -348,8 +348,8 @@ for (const engine of Object.values(engines)) {
 
 await engines[defaultPref].recoverPendingQueues();
 
-const scheduledOwnerKey = !providerLock ? deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds) : null;
-const scheduledActorId = !providerLock ? allowedUserIds.values().next().value : undefined;
+const scheduledOwnerKey = deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds);
+const scheduledActorId = allowedUserIds.values().next().value;
 const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new ScheduledRoutineRunner(
   db,
   runtimePolicy.surfaceIdentity,
@@ -393,7 +393,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
         },
       });
       if (!started.created) {
-        throw new Error(`scheduled routine ${routine.id} unexpectedly reused an active autonomous Episode`);
+        await sendNotice(`Scheduled autonomous routine **${routine.name}** was skipped because another autonomous Episode became active.`);
       }
       return;
     }
