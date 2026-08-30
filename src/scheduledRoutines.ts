@@ -242,6 +242,22 @@ export function claimScheduledRoutineOccurrence(db: BridgeDb, id: string, intend
   return result.changes === 1;
 }
 
+function claimScheduledRoutineForDispatch(
+  db: BridgeDb,
+  routine: ScheduledRoutine,
+  intendedAt: string,
+): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(routineKey(routine.id)) as { value: string } | undefined;
+    const current = row ? parseRoutine(row.value) : null;
+    if (!current || !current.enabled) return false;
+    if (current.surfaceIdentity !== routine.surfaceIdentity || current.chatKey !== routine.chatKey || current.ownerKey !== routine.ownerKey) return false;
+    if (!claimScheduledRoutineOccurrence(db, routine.id, intendedAt)) return false;
+    if (current.schedule.type === "once") replaceRoutine(db, { ...current, enabled: false });
+    return true;
+  });
+}
+
 export function latestDueScheduledOccurrence(
   routine: ScheduledRoutine,
   nowMs = Date.now(),
@@ -254,16 +270,17 @@ export function latestDueScheduledOccurrence(
     if (intendedMs > nowMs) return null;
   } else {
     const { hour, minute } = parseTime(routine.schedule.time);
+    const createdMs = Date.parse(routine.createdAt);
     const currentDate = calendarDateAt(nowMs, routine.timezone);
     for (let daysBack = 0; daysBack <= 7; daysBack += 1) {
       const date = previousCalendarDate(currentDate, daysBack);
       if (!routine.schedule.weekdays.includes(weekday(date))) continue;
       try {
         const candidate = localWallTimeToUtc({ ...date, hour, minute }, routine.timezone);
-        if (candidate <= nowMs) {
-          intendedMs = candidate;
-          break;
-        }
+        if (candidate > nowMs) continue;
+        if (candidate < createdMs) return null;
+        intendedMs = candidate;
+        break;
       } catch {
         // A recurring wall time can be nonexistent during a DST jump. Skip that occurrence.
       }
@@ -285,8 +302,7 @@ export async function scanScheduledRoutines(
   for (const routine of listScheduledRoutines(db, surfaceIdentity).filter((item) => item.enabled)) {
     const occurrence = latestDueScheduledOccurrence(routine, nowMs);
     if (!occurrence) continue;
-    if (!claimScheduledRoutineOccurrence(db, routine.id, occurrence.intendedAt)) continue;
-    if (routine.schedule.type === "once") replaceRoutine(db, { ...routine, enabled: false });
+    if (!claimScheduledRoutineForDispatch(db, routine, occurrence.intendedAt)) continue;
     if (occurrence.stale) continue;
     await dispatch(routine, occurrence.intendedAt);
   }
@@ -363,7 +379,7 @@ export function buildScheduledInteractiveUpdate(
       update_id: syntheticId,
       message: {
         message_id: syntheticId,
-        chat: { id: destination.chatId, type: "private" },
+        chat: { id: destination.chatId, type: destination.chatId < 0 ? "supergroup" : "private" },
         from: { id: userId, first_name: "Scheduled routine" },
         ...(destination.threadId === undefined ? {} : { message_thread_id: destination.threadId }),
         text,
