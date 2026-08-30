@@ -70,6 +70,11 @@ describe("scheduled companion routines", () => {
     expect(due).toEqual({ intendedAt: "2026-08-31T06:00:00.000Z", stale: false });
   });
 
+  it("does not catch up a recurring occurrence that predates routine creation", () => {
+    const routine = weekly({ createdAt: "2026-08-31T06:30:00.000Z" });
+    expect(latestDueScheduledOccurrence(routine, Date.parse("2026-08-31T06:31:00.000Z"))).toBeNull();
+  });
+
   it("resolves one-shot local time and rejects nonexistent DST wall times", () => {
     const routine = weekly({
       schedule: { type: "once", localDateTime: "2026-08-30T10:00" },
@@ -114,12 +119,37 @@ describe("scheduled companion routines", () => {
     db.close();
   });
 
+  it("atomically rolls back a one-shot claim when disabling cannot commit", async () => {
+    const db = setup();
+    createScheduledRoutine(db, weekly({
+      schedule: { type: "once", localDateTime: "2026-08-30T10:00" },
+    }));
+    db.raw.exec(`
+      CREATE TRIGGER block_one_shot_disable
+      BEFORE UPDATE ON settings
+      WHEN OLD.key = 'scheduled-routine:v1:routine-1'
+      BEGIN
+        SELECT RAISE(ABORT, 'blocked one-shot disable');
+      END;
+    `);
+
+    await expect(scanScheduledRoutines(
+      db,
+      "telegram:interactive",
+      vi.fn(async () => undefined),
+      Date.parse("2026-08-30T08:01:00.000Z"),
+    )).rejects.toThrow(/blocked one-shot disable/);
+    expect(claimScheduledRoutineOccurrence(db, "routine-1", "2026-08-30T08:00:00.000Z")).toBe(true);
+    db.close();
+  });
+
   it("normalizes a scheduled Telegram turn back into the exact canonical companion conversation", async () => {
     const db = setup();
     const routine = weekly();
     const occurrence = "2026-08-31T06:00:00.000Z";
     const update = buildScheduledInteractiveUpdate(routine, occurrence, "123");
     expect(update.message?.chat.id).toBe(-100);
+    expect(update.message?.chat.type).toBe("supergroup");
     expect(update.message?.message_thread_id).toBe(42);
     expect(update.message?.from?.id).toBe(123);
     expect(update.message?.text).toContain(routine.instruction);
