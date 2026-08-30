@@ -79,8 +79,8 @@ function renderSchedule(schedule: ScheduledRoutineSchedule): string {
     : `weekly ${schedule.weekdays.join(",")} at ${schedule.time}`;
 }
 
-function renderList(db: BridgeDb, surfaceIdentity: string, chatKey: string): string {
-  const routines = listScheduledRoutines(db, surfaceIdentity, chatKey);
+function renderList(db: BridgeDb, surfaceIdentity: string, chatKey: string, ownerKey: string): string {
+  const routines = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey);
   if (!routines.length) return "No scheduled routines in this conversation.";
   return routines.map((routine) => [
     `${routine.id}\t${routine.enabled ? "active" : "disabled"}\t${routine.kind}\t${routine.name}`,
@@ -94,13 +94,13 @@ function main(args: string[]): string {
   if (!command) return fail("usage: agent-bridge-routines <list|create|disable|delete> ...");
   const scope = openScopedDb();
   try {
-    if (command === "list") return renderList(scope.db, scope.surfaceIdentity, scope.chatKey);
+    if (command === "list") return renderList(scope.db, scope.surfaceIdentity, scope.chatKey, scope.ownerKey);
     if (command === "disable" || command === "delete") {
       const id = args[1]?.trim();
       if (!id) return fail(`${command} requires a routine id`);
       const changed = command === "disable"
-        ? disableScheduledRoutine(scope.db, id, scope.surfaceIdentity, scope.chatKey)
-        : deleteScheduledRoutine(scope.db, id, scope.surfaceIdentity, scope.chatKey);
+        ? disableScheduledRoutine(scope.db, id, scope.surfaceIdentity, scope.chatKey, scope.ownerKey)
+        : deleteScheduledRoutine(scope.db, id, scope.surfaceIdentity, scope.chatKey, scope.ownerKey);
       if (!changed) return fail(`routine not found in this conversation: ${id}`);
       return command === "disable" ? `Disabled scheduled routine ${id}.` : `Deleted scheduled routine ${id}.`;
     }
