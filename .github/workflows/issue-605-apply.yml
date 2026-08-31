@@ -1,0 +1,55 @@
+name: Issue 605 apply
+
+on:
+  push:
+    branches: [ship/605-surface-neutral-ingress]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-605-apply
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ship/605-surface-neutral-ingress
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: npm
+      - run: npm ci
+      - name: Add regression tests
+        run: node scripts/issue-605-transform.mjs --tests
+      - name: Confirm regression tests are red
+        shell: bash
+        run: |
+          set +e
+          npx vitest run test/interactiveIngress.test.ts test/scheduledRoutines.test.ts test/interactiveBot.test.ts test/platform.test.ts test/discord-interactive.test.ts > /tmp/red.log 2>&1
+          status=$?
+          cat /tmp/red.log
+          if [ "$status" -eq 0 ]; then
+            echo "Expected issue 605 regression suite to fail before implementation"
+            exit 1
+          fi
+          echo "Observed RED as expected (exit $status)"
+      - name: Apply implementation
+        run: node scripts/issue-605-transform.mjs --implementation
+      - name: Run full repository qualification
+        run: npm run qualify:local
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+      - name: Commit implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src test
+          git commit -m "refactor: make interactive ingress surface neutral (#605)"
+          git push origin HEAD:ship/605-surface-neutral-ingress
