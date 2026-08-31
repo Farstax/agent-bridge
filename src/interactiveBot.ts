@@ -10,7 +10,7 @@ import { buildTelegramCommands } from "./commands.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { markHandoffRequired } from "./handoffState.js";
 import type { ExecutionOutcome, PendingMessage } from "./engine.js";
-import type { InteractiveTurnInput } from "./interactiveIngress.js";
+import { adaptTelegramUpdate, type InteractiveTurnInput } from "./interactiveIngress.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
 export type InteractiveCommandRegistration = {
@@ -344,6 +344,19 @@ export async function dispatchInteractiveTurnWithFallback(
   }
   if (tried.size > 1) setUserCliPreference(db, chatKey, activeCli);
   return outcome;
+}
+
+/** Compatibility boundary for legacy Telegram callers. New surfaces pass a neutral turn. */
+export function dispatchInteractiveWithFallback(
+  update: TelegramUpdate,
+  chatKey: string,
+  deps: InteractiveDispatchDeps,
+  tried = new Set<string>(),
+  claimedMessage?: PendingMessage,
+): Promise<ExecutionOutcome> {
+  const turn = adaptTelegramUpdate(update, "telegram:interactive", chatKey);
+  if (!turn) return Promise.resolve(claimedMessage ? "committed" : "failed");
+  return dispatchInteractiveTurnWithFallback(turn, deps, tried, claimedMessage);
 }
 
 function isResetTurn(turn: InteractiveTurnInput): boolean {
