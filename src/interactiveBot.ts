@@ -10,6 +10,7 @@ import { buildTelegramCommands } from "./commands.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { markHandoffRequired } from "./handoffState.js";
 import type { ExecutionOutcome, PendingMessage } from "./engine.js";
+import type { InteractiveTurnInput } from "./interactiveIngress.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
 export type InteractiveCommandRegistration = {
@@ -248,7 +249,7 @@ function isResetUpdate(update: TelegramUpdate): boolean {
 }
 
 export interface InteractiveDispatchEngine {
-  handleUpdate(update: TelegramUpdate, chatKey?: string): Promise<void>;
+  handleInteractiveTurn(turn: InteractiveTurnInput): Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
@@ -310,66 +311,50 @@ export function applyManualCliSwitchHandoff(db: BridgeDb, chatKey: string, newCl
   })();
 }
 
-export async function dispatchInteractiveWithFallback(
-  update: TelegramUpdate,
-  chatKey: string,
+export async function dispatchInteractiveTurnWithFallback(
+  turn: InteractiveTurnInput,
   deps: InteractiveDispatchDeps,
   tried = new Set<string>(),
   claimedMessage?: PendingMessage,
 ): Promise<ExecutionOutcome> {
+  const chatKey = turn.chatKey;
   const { engines, fallbackChain, exhaustedChats, db, notify, onCliSwitched } = deps;
-
   exhaustedChats.delete(chatKey);
-  if (!claimedMessage && isResetUpdate(update)) clearInteractiveFallbackState(fallbackChain, chatKey);
-
-  if (tried.size === 0) {
-    const pref = getUserCliPreference(db, chatKey);
-    fallbackChain.setActiveCli(chatKey, pref);
-  }
-
+  if (!claimedMessage && isResetTurn(turn)) clearInteractiveFallbackState(fallbackChain, chatKey);
+  if (tried.size === 0) { const pref = getUserCliPreference(db, chatKey); fallbackChain.setActiveCli(chatKey, pref); }
   const activeCli = fallbackChain.getActiveCli(chatKey) as CliKind;
   tried.add(activeCli);
   let outcome: ExecutionOutcome = "committed";
   if (claimedMessage) outcome = await engines[activeCli].executeClaimedMessage(claimedMessage);
-  else await engines[activeCli].handleUpdate(update, chatKey);
+  else await engines[activeCli].handleInteractiveTurn(turn);
 
   if (exhaustedChats.has(chatKey)) {
     exhaustedChats.delete(chatKey);
     let next: CliKind | null = null;
-    const chain = fallbackChain.getChain();
-    for (const cli of chain) {
-      if (!tried.has(cli)) {
-        next = cli as CliKind;
-        break;
-      }
-    }
+    for (const cli of fallbackChain.getChain()) if (!tried.has(cli)) { next = cli as CliKind; break; }
     if (next) {
       prepareCliHandoff(db, chatKey, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
       await notify(`Switching to ${next} (${activeCli} at capacity)`);
       if (onCliSwitched) await onCliSwitched(next);
-
       if (!claimedMessage && engines[next].recoverPendingQueue) {
         markPendingFallbackResume(fallbackChain, chatKey, tried);
-        try {
-          const hasPending = await engines[next].recoverPendingQueue!(chatKey);
-          if (hasPending) return "queued";
-        } catch (error) {
-          clearPendingFallbackResume(fallbackChain, chatKey);
-          throw error;
-        }
+        try { const hasPending = await engines[next].recoverPendingQueue!(chatKey); if (hasPending) return "queued"; }
+        catch (error) { clearPendingFallbackResume(fallbackChain, chatKey); throw error; }
         clearPendingFallbackResume(fallbackChain, chatKey);
       }
-
-      return dispatchInteractiveWithFallback(update, chatKey, deps, tried, claimedMessage);
+      return dispatchInteractiveTurnWithFallback(turn, deps, tried, claimedMessage);
     }
-
     await notify("All CLIs are currently unavailable. Please try again later.");
     return claimedMessage ? "committed" : "failed";
   }
-
   if (tried.size > 1) setUserCliPreference(db, chatKey, activeCli);
   return outcome;
+}
+
+function isResetTurn(turn: InteractiveTurnInput): boolean {
+  const command = turn.text.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+  return command === "/reset" || command.startsWith("/reset@");
 }
 
 export function dispatchClaimedInteractiveWithFallback(
@@ -377,16 +362,18 @@ export function dispatchClaimedInteractiveWithFallback(
   chatKey: string,
   deps: InteractiveDispatchDeps,
 ): Promise<ExecutionOutcome> {
-  const update: TelegramUpdate = {
-    update_id: 0,
-    message: {
-      message_id: 0,
-      chat: { id: message.chatId, type: message.chatType },
-      from: { id: message.userId ?? 0, first_name: "queue" },
-      message_thread_id: message.threadId ?? undefined,
-      text: message.prompt,
-    },
-  };
   const resumedTries = consumePendingFallbackResume(deps.fallbackChain, chatKey);
-  return dispatchInteractiveWithFallback(update, chatKey, deps, resumedTries ?? new Set(), message);
+  const turn: InteractiveTurnInput = {
+    surfaceIdentity: message.laneHandle?.surface ?? "queue",
+    chatKey,
+    actorId: String(message.userId ?? "queue"),
+    messageId: `pending:${message.id}`,
+    text: message.prompt,
+    ...(message.threadId == null ? {} : { threadId: String(message.threadId) }),
+    delivery: { chatId: message.chatId, chatType: message.chatType },
+    attachments: [],
+  };
+  return dispatchInteractiveTurnWithFallback(turn, deps, resumedTries ?? new Set(), message);
+}
+
 }

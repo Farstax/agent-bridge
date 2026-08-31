@@ -4,9 +4,9 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
-import { dispatchInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
+import { dispatchInteractiveTurnWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
 import {
-  buildScheduledInteractiveUpdate,
+  buildScheduledInteractiveTurn,
   claimScheduledRoutineOccurrence,
   createScheduledRoutine,
   deleteScheduledRoutine,
@@ -156,20 +156,19 @@ describe("scheduled companion routines", () => {
     const db = setup();
     const routine = weekly();
     const occurrence = "2026-08-31T06:00:00.000Z";
-    const update = buildScheduledInteractiveUpdate(routine, occurrence, "123");
-    expect(update.message?.chat.id).toBe(-100);
-    expect(update.message?.chat.type).toBe("supergroup");
-    expect(update.message?.message_thread_id).toBe(42);
-    expect(update.message?.from?.id).toBe(123);
-    expect(update.message?.text).toContain(routine.instruction);
+    const turn = buildScheduledInteractiveTurn(routine, occurrence, "123");
+    expect(turn.delivery).toEqual({ chatId: -100, chatType: "supergroup" });
+    expect(turn.threadId).toBe("42");
+    expect(turn.actorId).toBe("123");
+    expect(turn.text).toContain(routine.instruction);
 
     let observedChatKey: string | null = null;
     setUserCliPreference(db, routine.chatKey, "codex");
     const fallbackChain = new ProviderFallbackChain(["codex"], db);
-    await dispatchInteractiveWithFallback(update, routine.chatKey, {
+    await dispatchInteractiveTurnWithFallback(turn, {
       engines: {
         codex: {
-          handleUpdate: async (_u, chatKey) => { observedChatKey = chatKey ?? null; },
+          handleInteractiveTurn: async (input) => { observedChatKey = input.chatKey; },
           executeClaimedMessage: async () => "committed",
         },
       },
@@ -189,8 +188,9 @@ describe("scheduled companion routines", () => {
       chatKey: "123456789012345678",
     });
     const actor = "987654321098765432";
-    const update = buildScheduledInteractiveUpdate(routine, "2026-08-31T06:00:00.000Z", actor);
-    expect(String(update.message?.chat.id)).toBe(routine.chatKey);
-    expect(String(update.message?.from?.id)).toBe(actor);
+    const turn = buildScheduledInteractiveTurn(routine, "2026-08-31T06:00:00.000Z", actor);
+    expect(turn.delivery.chatId).toBe(routine.chatKey);
+    expect(turn.actorId).toBe(actor);
+    expect(typeof turn.delivery.chatId).toBe("string");
   });
 });

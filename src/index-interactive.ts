@@ -31,7 +31,7 @@ import {
   isCliCommandText,
   describeInteractiveUpdateForLog,
   isGroupInteractiveUpdate,
-  dispatchInteractiveWithFallback,
+  dispatchInteractiveTurnWithFallback,
   dispatchClaimedInteractiveWithFallback,
   resolveAvailableCliPreference,
   applyManualCliSwitchHandoff,
@@ -42,6 +42,7 @@ import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
+import { adaptTelegramUpdate } from "./interactiveIngress.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseHealthBotMode } from "./health/config.js";
 import { createHealthRuntime } from "./health/runtime.js";
@@ -55,7 +56,7 @@ import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } 
 import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
 import {
   ScheduledRoutineRunner,
-  buildScheduledInteractiveUpdate,
+  buildScheduledInteractiveTurn,
   scheduledTelegramDestination,
 } from "./scheduledRoutines.js";
 
@@ -398,8 +399,8 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       return;
     }
 
-    const update = buildScheduledInteractiveUpdate(routine, intendedAt, scheduledActorId);
-    await dispatchInteractiveWithFallback(update, routine.chatKey, {
+    const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId);
+    await dispatchInteractiveTurnWithFallback(turn, {
       engines,
       fallbackChain,
       exhaustedChats,
@@ -620,7 +621,9 @@ for (;;) {
           }
 
           if (chatId != null) {
-            dispatchInteractiveWithFallback(typedUpdate, chatKey, {
+            const turn = adaptTelegramUpdate(typedUpdate, runtimePolicy.surfaceIdentity, chatKey);
+            if (!turn) continue;
+            dispatchInteractiveTurnWithFallback(turn, {
               engines,
               fallbackChain,
               exhaustedChats,

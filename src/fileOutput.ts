@@ -34,7 +34,7 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
 export async function uploadOutputFiles(
   outDir: string,
-  chatId: number,
+  chatId: number | string,
   client: Pick<MessagingPlatform, "sendPhoto" | "sendDocument">,
   options?: FileSendOptions,
   canPublish: () => boolean = () => true,

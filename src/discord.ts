@@ -15,7 +15,7 @@
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import type { MessagingPlatform } from "./platform.js";
+import { DISCORD_SURFACE_CAPABILITIES, type MessagingPlatform } from "./platform.js";
 import { DiscordGateway, type GatewayPayload } from "./discord-gateway.js";
 import { discordMarkdownIrEnabled, parseMarkdownToIR, renderMarkerString, DISCORD_MARKERS } from "./markdownIR.js";
 
@@ -66,6 +66,7 @@ export interface DiscordClientOptions {
 }
 
 export class DiscordClient implements MessagingPlatform {
+  readonly capabilities = DISCORD_SURFACE_CAPABILITIES;
   private readonly opts: DiscordClientOptions;
   private readonly gateway: DiscordGateway;
   private readonly fetchFn: typeof fetch;
@@ -194,27 +195,7 @@ export class DiscordClient implements MessagingPlatform {
     await this._sendFile(String(chatId), filePath, caption);
   }
 
-  /**
-   * getFilePath / downloadFile are Telegram-specific attachment APIs.
-   * Discord sends file URLs in message payloads directly — these are stubs.
-   */
-  async getFilePath(_fileId: string): Promise<string> {
-    throw new Error("getFilePath is not supported on Discord; use attachment.url from the message payload");
-  }
-
-  async downloadFile(_remotePath: string, _destPath: string): Promise<void> {
-    throw new Error("downloadFile is not supported on Discord; fetch the attachment.url directly");
-  }
-
-  /**
-   * getUpdates — Discord uses WebSocket push, not HTTP polling.
-   * This stub allows BridgeEngine.run() to short-circuit on Discord.
-   */
-  async getUpdates(_options: any): Promise<any> {
-    return { result: [], ok: true };
-  }
-
-  // ── Private REST helpers ─────────────────────────────────────────────────
+  // ── Private REST helpers  // ── Private REST helpers ─────────────────────────────────────────────────
 
   private async _restPost(path: string, body: object): Promise<any> {
     const res = await this.fetchFn(`${DISCORD_API}${path}`, {

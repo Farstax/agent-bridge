@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 import type { BridgeDb } from "./db.js";
-import type { TelegramUpdate } from "./types.js";
+import type { InteractiveTurnInput } from "./interactiveIngress.js";
 
 export type ScheduledRoutineKind = "companion" | "autonomous";
 export type ScheduledRoutineSchedule =
@@ -363,11 +363,11 @@ export function scheduledTelegramDestination(routine: ScheduledRoutine): { chatI
   return { chatId, ...(threadId === undefined ? {} : { threadId }) };
 }
 
-export function buildScheduledInteractiveUpdate(
+export function buildScheduledInteractiveTurn(
   routine: ScheduledRoutine,
   intendedAt: string,
   authorizedUserId: string,
-): TelegramUpdate {
+): InteractiveTurnInput {
   const syntheticId = deterministicSyntheticId(routine.id, intendedAt);
   const text = [
     `[Scheduled routine: ${routine.name}]`,
@@ -377,34 +377,25 @@ export function buildScheduledInteractiveUpdate(
     "",
     routine.instruction,
   ].join("\n");
+  const messageId = `scheduled:${routine.id}:${intendedAt}:${syntheticId}`;
 
   if (routine.surfaceIdentity.startsWith("telegram:")) {
     const destination = scheduledTelegramDestination(routine);
-    const userId = Number(authorizedUserId);
-    if (!Number.isSafeInteger(userId)) throw new Error("scheduled Telegram routine has invalid authorised user");
+    if (!/^-?\d+$/.test(authorizedUserId)) throw new Error("scheduled Telegram routine has invalid authorised user");
     return {
-      update_id: syntheticId,
-      message: {
-        message_id: syntheticId,
-        chat: { id: destination.chatId, type: destination.chatId < 0 ? "supergroup" : "private" },
-        from: { id: userId, first_name: "Scheduled routine" },
-        ...(destination.threadId === undefined ? {} : { message_thread_id: destination.threadId }),
-        text,
-      },
+      surfaceIdentity: routine.surfaceIdentity,
+      chatKey: routine.chatKey,
+      actorId: authorizedUserId,
+      messageId,
+      text,
+      ...(destination.threadId === undefined ? {} : { threadId: String(destination.threadId) }),
+      delivery: { chatId: destination.chatId, chatType: destination.chatId < 0 ? "supergroup" : "private" },
+      attachments: [],
     };
   }
-
   if (routine.surfaceIdentity.startsWith("discord:")) {
-    return {
-      update_id: syntheticId,
-      message: {
-        message_id: syntheticId,
-        chat: { id: routine.chatKey as unknown as number, type: "private" },
-        from: { id: authorizedUserId as unknown as number, first_name: "Scheduled routine" },
-        text,
-      },
-    };
+    return { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text, delivery: { chatId: routine.chatKey, chatType: "private" }, attachments: [] };
   }
-
   throw new Error(`unsupported scheduled routine surface: ${routine.surfaceIdentity}`);
+}
 }

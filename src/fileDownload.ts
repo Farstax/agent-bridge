@@ -1,7 +1,8 @@
 import { mkdir, chmod } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TelegramMessage } from "./types.js";
-import type { MessagingPlatform } from "./platform.js";
+import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
+import type { InteractiveAttachment } from "./interactiveIngress.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB — Telegram bot API limit
 const PRIVATE_DIR_MODE = 0o700;
@@ -41,6 +42,26 @@ function resolveContainedUploadPath(destDir: string, fileName: string): string |
   const rel = relative(root, candidate);
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
   return candidate;
+}
+
+export async function downloadSurfaceAttachment(
+  client: MessagingPlatform,
+  attachment: InteractiveAttachment,
+  destDir: string,
+  fileNamePrefix = "",
+): Promise<AttachmentInfo | null> {
+  const capabilities = surfaceCapabilities(client);
+  if (!capabilities.remoteFileDownload || !client.getFilePath || !client.downloadFile) return null;
+  await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmod(destDir, PRIVATE_DIR_MODE);
+  if (attachment.fileSize !== undefined && attachment.fileSize > MAX_FILE_SIZE) return null;
+  const localPath = resolveContainedUploadPath(destDir, `${fileNamePrefix}${attachment.fileName}`);
+  if (!localPath) return null;
+  try {
+    const filePath = await client.getFilePath(attachment.fileId);
+    await client.downloadFile(filePath, localPath);
+    return { localPath, mimeType: attachment.mimeType ?? mimeTypeFromExtension(attachment.fileName) };
+  } catch { return null; }
 }
 
 export async function downloadTelegramAttachment(

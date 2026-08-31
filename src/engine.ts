@@ -29,16 +29,16 @@ import {
 } from "./cli.js";
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
-import { MediaGroupBuffer } from "./telegram.js";
 import type { MessagingPlatform } from "./platform.js";
-import { downloadTelegramAttachment } from "./fileDownload.js";
+import { adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
+import { downloadSurfaceAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 import { createClaudeAnswerPresentationDecoder } from "./providers/claudeAnswerPresentation.js";
 import { createAntigravityAnswerPresentationDecoder } from "./providers/antigravityAnswerPresentation.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
-import { PreviewCleanupError, sendTelegramMessage, sendMessageWithProgress } from "./messageDelivery.js";
-import { buildModelKeyboard, buildModelsText, getCliWorkingDir, extractPromptText, extractThreadId, isAuthorizedMessage } from "./bridge.js";
+import { sendSurfaceMessage, sendMessageWithProgress, PreviewCleanupError } from "./messageDelivery.js";
+import { buildModelKeyboard, buildModelsText, getCliWorkingDir } from "./bridge.js";
 import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible } from "./commands.js";
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel } from "./effort.js";
@@ -48,7 +48,7 @@ import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
-import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
+import type { BridgeConfig, BotKind, TelegramUpdate, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
@@ -64,7 +64,7 @@ import {
 } from "./executionLaneCoordinator.js";
 
 export interface HookContext {
-  chatId: number;
+  chatId: number | string;
   chatKey: string;
   threadId?: number;
   userId?: number;
@@ -84,7 +84,7 @@ export interface BridgeEngineHooks {
 }
 
 export interface PendingMessage {
-  id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
+  id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
   pendingIds?: number[];
   queueRecoveryAttempt?: number;
   laneHandle?: ExecutionLaneHandle;
@@ -128,7 +128,7 @@ export interface ExecFns {
 export interface SurfaceNeutralTurnInput {
   prompt: string;
   sessionId: string | null;
-  chatId: number;
+  chatId: number | string;
   chatKey: string;
   laneHandle: ExecutionLaneHandle;
   runId: string;
@@ -154,7 +154,7 @@ function isRecoverableAntigravityExecutionError(error: Error): boolean {
   return /error executing cascade step:|agent executor error:|PlannerResponse without ModifiedResponse|Agy stalled in planner loop without usable output|Agy JSON parse failed/i.test(message);
 }
 
-function topicChatKey(chatId: number, chatType: string, threadId?: number): string {
+function topicChatKey(chatId: number | string, chatType: string, threadId?: number): string {
   return threadId != null ? `${chatId}:${threadId}` : String(chatId);
 }
 
@@ -164,13 +164,8 @@ function telegramUpdateChatKey(update: TelegramUpdate): string | null {
   return topicChatKey(source.chat.id, source.chat.type ?? "private", source.message_thread_id);
 }
 
-function hookContext(chatId: number, chatKey: string, threadId?: number | string): HookContext {
-  const numericThreadId = typeof threadId === "string" ? Number(threadId) : threadId;
-  return {
-    chatId,
-    chatKey,
-    threadId: Number.isFinite(numericThreadId) ? numericThreadId : undefined,
-  };
+function hookContext(chatId: number | string, chatKey: string, threadId?: number | string): HookContext {
+  return { chatId, chatKey, threadId };
 }
 
 function trimTurnText(text: string): string {
@@ -182,7 +177,7 @@ function trimTurnText(text: string): string {
 export class BridgeEngine {
   readonly kind: string;
   readonly client: MessagingPlatform;
-  readonly mediaBuffer: MediaGroupBuffer;
+  readonly mediaBuffer: InteractiveTurnBuffer;
 
   private readonly opts: BridgeEngineOptions;
   private readonly surfaceIdentity: string;
@@ -193,8 +188,7 @@ export class BridgeEngine {
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly laneCoordinator: ExecutionLaneCoordinator;
-  private readonly seenTelegramMessageKeys = new Set<string>();
-  private readonly messageChatKeys = new WeakMap<TelegramMessage, string>();
+  private readonly seenInteractiveMessageKeys = new Set<string>();
 
   constructor(
     opts: BridgeEngineOptions,
@@ -218,12 +212,11 @@ export class BridgeEngine {
       runCli: exec.runCli ?? _runCli,
       runCliAsync,
     };
-    this.mediaBuffer = new MediaGroupBuffer({
-      timeoutMs: 1500,
-      onFlush: (_groupId, messages) => {
-        return this.handleMessages(messages, this.messageChatKeys.get(messages[0])).catch((err) => {
-          console.error(`[${this.kind}] mediaBuffer flush error`, err);
-        });
+    this.mediaBuffer = new InteractiveTurnBuffer((_groupId, turns) => {
+      return this.handleInteractiveMessages(turns).catch((err) => {
+        console.error(`[${this.kind}] mediaBuffer flush error`, err);
+      });
+    }, 1500);    });
       },
     });
   }
@@ -315,144 +308,87 @@ export class BridgeEngine {
       await this.handleCallback(update.callback_query, chatKey);
       return;
     }
+    const turn = adaptTelegramUpdate(update, this.surfaceIdentity, chatKey);
+    if (turn) await this.handleInteractiveTurn(turn);
+  }
 
-    const message = update.message;
-    if (!message) return;
-    if (!isAuthorizedMessage(message, this.opts.allowedUserIds)) return;
-    if (!this.claimTelegramMessage(update)) return;
-
-    const rawText = (message.text || message.caption || "").trim().toLowerCase();
+  async handleInteractiveTurn(turn: InteractiveTurnInput): Promise<void> {
+    if (turn.surfaceIdentity !== this.surfaceIdentity) throw new Error(`interactive turn surface mismatch: ${turn.surfaceIdentity}`);
+    if (!this.opts.allowedUserIds.has(turn.actorId)) return;
+    const dedupeKey = `${turn.surfaceIdentity}:${turn.chatKey}:${turn.messageId}`;
+    if (this.seenInteractiveMessageKeys.has(dedupeKey)) return;
+    this.seenInteractiveMessageKeys.add(dedupeKey);
+    while (this.seenInteractiveMessageKeys.size > 4096) {
+      const oldest = this.seenInteractiveMessageKeys.values().next().value;
+      if (oldest === undefined) break;
+      this.seenInteractiveMessageKeys.delete(oldest);
+    }
+    const rawText = turn.text.trim().toLowerCase();
     if (rawText === "/stop" || rawText === "/cancel") {
-      const chatId = message.chat.id;
-      const threadId = message.message_thread_id;
-      void this._cancelLane(chatKey, "stop").catch((error) =>
-        console.error(`[${this.kind}] stop cleanup failed`, error)
-      );
-      await this.sendText(chatId, { text: "🛑 Execution aborted by user.", message_thread_id: threadId });
+      void this._cancelLane(turn.chatKey, "stop").catch((error) => console.error(`[${this.kind}] stop cleanup failed`, error));
+      await this.sendText(turn.delivery.chatId, { text: "🛑 Execution aborted by user.", message_thread_id: turn.threadId });
       return;
     }
-
-    this.messageChatKeys.set(message, chatKey);
-    await this.mediaBuffer.push(message);
+    await this.mediaBuffer.push(turn);
   }
 
-  private claimTelegramMessage(update: TelegramUpdate): boolean {
-    const message = update.message;
-    if (!message) return true;
-    const keys = [
-      `${this.surfaceIdentity}:update:${update.update_id}`,
-      `${this.surfaceIdentity}:message:${message.chat.id}:${message.message_id}`,
-    ];
-    if (keys.some((key) => this.seenTelegramMessageKeys.has(key))) return false;
-    for (const key of keys) this.seenTelegramMessageKeys.add(key);
-    while (this.seenTelegramMessageKeys.size > 4096) {
-      const oldest = this.seenTelegramMessageKeys.values().next().value;
-      if (oldest === undefined) break;
-      this.seenTelegramMessageKeys.delete(oldest);
+  async handleInteractiveMessages(messages: InteractiveTurnInput[]): Promise<void> {
+    const primaryMessage = messages.find((message) => message.text) ?? messages[0];
+    if (!primaryMessage || !this.opts.allowedUserIds.has(primaryMessage.actorId)) return;
+    if (messages.some((message) => message.surfaceIdentity !== this.surfaceIdentity || message.chatKey !== primaryMessage.chatKey)) {
+      throw new Error("interactive media group crossed surface or conversation boundary");
     }
-    return true;
-  }
-
-  async handleMessages(messages: TelegramMessage[], providedChatKey?: string): Promise<void> {
-    const primaryMessage = messages.find((m) => m.text || m.caption) || messages[0];
-    if (!isAuthorizedMessage(primaryMessage, this.opts.allowedUserIds)) return;
-
-    const threadId = extractThreadId(messages);
-    const rawText = (primaryMessage.text || primaryMessage.caption || "").trim();
+    const threadId = primaryMessage.threadId;
+    const rawText = primaryMessage.text.trim();
     const isSlashCmd = rawText.startsWith("/");
     const commandText = isSlashCmd ? rawText : null;
-    const attachmentMessages = messages.filter((message) => !!(message.photo?.length || message.document));
-    const hasAttachment = attachmentMessages.length > 0;
-    const rawPrompt = commandText ? null : extractPromptText(primaryMessage);
-    const prompt = commandText ? null : (rawPrompt || (hasAttachment ? "Describe the attached file." : null));
+    const attachmentInputs = messages.flatMap((message) => message.attachments);
+    const hasAttachment = attachmentInputs.length > 0;
+    const prompt = commandText ? null : (rawText || (hasAttachment ? "Describe the attached file." : null));
     if (!commandText && !prompt) return;
 
-    const chatId = primaryMessage.chat.id;
-    const userId = primaryMessage.from?.id;
-    const chatKey = providedChatKey ?? this.messageChatKeys.get(primaryMessage) ?? topicChatKey(chatId, primaryMessage.chat.type, threadId);
+    const chatId = primaryMessage.delivery.chatId;
+    const userId = primaryMessage.actorId;
+    const chatKey = primaryMessage.chatKey;
     const executionLane = this._executionLane(chatKey);
-    if (!this.laneCoordinator.isResetting(executionLane) && !this.laneCoordinator.hasCancellation(executionLane)) {
-      this.laneCoordinator.clearAborted(executionLane);
-    }
-
+    if (!this.laneCoordinator.isResetting(executionLane) && !this.laneCoordinator.hasCancellation(executionLane)) this.laneCoordinator.clearAborted(executionLane);
     const hookCtx: HookContext = { chatId, chatKey, threadId, userId };
 
     if (commandText) {
       if (this.hooks.onCommand) {
         const hookResult = await this.hooks.onCommand(commandText, hookCtx);
         if (hookResult !== null) {
-          if (hookResult.text) {
-            await this.sendText(chatId, {
-              text: hookResult.text,
-              reply_markup: hookResult.reply_markup,
-              message_thread_id: threadId,
-            });
-          }
+          if (hookResult.text) await this.sendText(chatId, { text: hookResult.text, reply_markup: hookResult.reply_markup, message_thread_id: threadId });
           return;
         }
       }
-
       if (isAgentKind(this.kind) && isSlashCmd) {
         let resetHandle: ExecutionLaneHandle | null = null;
         if (commandText === "/reset") {
-          const executionLane = this._executionLane(chatKey);
           this.laneCoordinator.markResetting(executionLane);
           this.laneCoordinator.markAborted(executionLane);
           resetHandle = await abortExecutionAndWait(executionLane);
           const pending = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
-          for (const queued of pending) {
-            this._deleteQueuedAttachments(queued.attachments);
-            this.db.deletePendingMsg(queued.id);
-          }
+          for (const queued of pending) { this._deleteQueuedAttachments(queued.attachments); this.db.deletePendingMsg(queued.id); }
           this.db.setSetting(`ctx_suppress:${chatKey}`, "1");
         }
-        const commandResponse = handleCommand(this.kind, commandText, {
-          db: this.db,
-          chatId: chatKey,
-          config: this._effectiveConfig(),
-          surfaceIdentity: this.surfaceIdentity,
-          defaultBusyMessageMode: this.opts.busyMessageMode ?? "augment",
-        });
+        const commandResponse = handleCommand(this.kind, commandText, { db: this.db, chatId: chatKey, config: this._effectiveConfig(), surfaceIdentity: this.surfaceIdentity, defaultBusyMessageMode: this.opts.busyMessageMode ?? "augment" });
         if (commandResponse) {
           if (commandResponse.kind === "message") {
             if (commandText === "/reset") {
-              try {
-                await this.sendText(chatId, { text: commandResponse.text, message_thread_id: threadId });
-              } finally {
-                this.laneCoordinator.clearResetting(this._executionLane(chatKey));
-                if (resetHandle) this.db.unlock(resetHandle);
-              }
-            } else {
-              await this.sendText(chatId, { text: commandResponse.text, message_thread_id: threadId });
-            }
+              try { await this.sendText(chatId, { text: commandResponse.text, message_thread_id: threadId }); }
+              finally { this.laneCoordinator.clearResetting(executionLane); if (resetHandle) this.db.unlock(resetHandle); }
+            } else await this.sendText(chatId, { text: commandResponse.text, message_thread_id: threadId });
             return;
           }
-          if (commandResponse.kind === "keyboard_message") {
-            await this.sendText(chatId, {
-              text: commandResponse.text,
-              reply_markup: commandResponse.reply_markup,
-              message_thread_id: threadId,
-            });
-            return;
-          }
+          if (commandResponse.kind === "keyboard_message") { await this.sendText(chatId, { text: commandResponse.text, reply_markup: commandResponse.reply_markup, message_thread_id: threadId }); return; }
           if (commandResponse.kind === "codex_usage") {
-            try {
-              const text = await getCodexUsageText();
-              await this.sendText(chatId, { text, message_thread_id: threadId });
-            } catch (error) {
-              const userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
-              await this.sendText(chatId, { text: `Error: ${userText}`, message_thread_id: threadId });
-            }
+            try { await this.sendText(chatId, { text: await getCodexUsageText(), message_thread_id: threadId }); }
+            catch (error) { await this.sendText(chatId, { text: `Error: ${toUserMessage(error instanceof Error ? error : new Error(String(error)))}`, message_thread_id: threadId }); }
             return;
           }
-          if (commandResponse.kind === "execute") {
-            await this._executeAndSend(commandResponse.prompt, chatId, chatKey, primaryMessage.chat.type, threadId, userId, hookCtx, []);
-            return;
-          }
-          if (commandResponse.kind === "btw") {
-            await this._executeBtw(commandResponse.prompt, chatId, chatKey, threadId);
-            return;
-          }
+          if (commandResponse.kind === "execute") { await this._executeAndSend(commandResponse.prompt, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx, []); return; }
+          if (commandResponse.kind === "btw") { await this._executeBtw(commandResponse.prompt, chatId, chatKey, threadId); return; }
         }
         return;
       }
@@ -465,54 +401,37 @@ export class BridgeEngine {
     let attachmentDownloadFailed = false;
     if (hasAttachment) {
       try {
-        for (let index = 0; index < attachmentMessages.length; index += 1) {
-          const fileNamePrefix = attachmentMessages.length > 1 ? `attachment-${index + 1}-` : "";
-          const info = await downloadTelegramAttachment(this.client, attachmentMessages[index], uploadDir, fileNamePrefix);
-          if (!info) {
-            attachmentDownloadFailed = true;
-            break;
-          }
+        for (let index = 0; index < attachmentInputs.length; index += 1) {
+          const prefix = attachmentInputs.length > 1 ? `attachment-${index + 1}-` : "";
+          const info = await downloadSurfaceAttachment(this.client, attachmentInputs[index], uploadDir, prefix);
+          if (!info) { attachmentDownloadFailed = true; break; }
           attachments.push(info.localPath);
         }
-      } catch (err) {
-        attachmentDownloadFailed = true;
-        console.error(`[${this.kind}] attachment download failed`, err);
-      }
+      } catch (error) { attachmentDownloadFailed = true; console.error(`[${this.kind}] attachment download failed`, error); }
     }
     if (attachmentDownloadFailed) {
       try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
-      await this.sendText(chatId, {
-        text: "Could not download all attachments. Please upload the album again.",
-        message_thread_id: threadId,
-      });
+      await this.sendText(chatId, { text: "Could not download all attachments. Please upload the album again.", message_thread_id: threadId });
       return;
     }
     const attachmentLocalPath = attachments[0] ?? null;
-
-    const executionPrompt = prompt!;
     let executionOutcome: ExecutionOutcome = "failed";
     const finalDeliveryActive = this.laneCoordinator.hasFinalDelivery(executionLane);
     const augmentMode = (this.opts.busyMessageMode ?? "augment") === "augment";
     const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.laneCoordinator.hasAugmentedTask(executionLane);
-    if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt: executionPrompt, attachments: [...attachments] });
+    if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt: prompt!, attachments: [...attachments] });
     try {
-      executionOutcome = await this._executeAndSend(
-        executionPrompt, chatId, chatKey, primaryMessage.chat.type, threadId, userId, hookCtx, attachments, attachmentLocalPath,
-        null, true, true, !finalDeliveryActive,
-        ownsAugmentedTask,
-      );
+      executionOutcome = await this._executeAndSend(prompt!, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx, attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive, ownsAugmentedTask);
     } finally {
       const transferred = this.laneCoordinator.isAugmentTransferred(executionLane);
       const retainedByCancellation = this.laneCoordinator.hasCancellation(executionLane);
-      if (executionOutcome !== "queued" && !transferred && !retainedByCancellation) {
-        try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
-      }
+      if (executionOutcome !== "queued" && !transferred && !retainedByCancellation) { try { rmSync(uploadDir, { recursive: true, force: true }); } catch {} }
       if (transferred) this.laneCoordinator.clearAugmentTransferred(executionLane);
       if (ownsAugmentedTask && !retainedByCancellation && !transferred) this.laneCoordinator.clearAugmentedTask(executionLane);
     }
   }
 
-  private async _executeBtw(prompt: string, chatId: number, chatKey: string, threadId?: number): Promise<void> {
+  private async _executeBtw(prompt: string, chatId: number | string, chatKey: string, threadId?: number): Promise<void> {
     const executionKind = this._executionKind();
     if (executionKind === "antigravity") {
       await this.sendText(chatId, {
@@ -572,11 +491,11 @@ export class BridgeEngine {
 
   private async _executeAndSend(
     rawPrompt: string,
-    chatId: number,
+    chatId: number | string,
     chatKey: string,
     chatType: string,
-    threadId: number | undefined,
-    userId: number | undefined,
+    threadId: number | string | undefined,
+    userId: number | string | undefined,
     hookCtx: HookContext,
     attachments: string[],
     attachmentLocalPath: string | null = null,
@@ -687,7 +606,7 @@ export class BridgeEngine {
       } else if (!capacityExhausted || notifyCapacityFailure) {
         let userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
         if (capacityExhausted) userText += `\n\n💡 All models for ${this.kind} are currently exhausted. Please try again later.`;
-        await sendTelegramMessage({
+        await sendSurfaceMessage({
           client: this.client,
           kind: this._deliveryKind(),
           chatId,
@@ -716,9 +635,9 @@ export class BridgeEngine {
   private async _executeAndDeliverTurn(input: {
     prompt: string;
     sessionId: string | null;
-    chatId: number;
+    chatId: number | string;
     chatKey: string;
-    threadId: number | undefined;
+    threadId: number | string | undefined;
     attachments: string[];
     laneHandle: ExecutionLaneHandle;
     runId: string;
@@ -772,7 +691,7 @@ export class BridgeEngine {
     }
   }
 
-  private _createEventContext(chatId: number, chatKey: string, threadId: number | undefined, laneHandle: ExecutionLaneHandle, existingRunId?: string): {
+  private _createEventContext(chatId: number | string, chatKey: string, threadId: number | string | undefined, laneHandle: ExecutionLaneHandle, existingRunId?: string): {
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (e: BridgeEvent) => void;
@@ -1195,7 +1114,7 @@ export class BridgeEngine {
   async executePromptAsync(
     prompt: string,
     sessionId: string | null,
-    chatId: number,
+    chatId: number | string,
     body: any = {},
     onProgress = (_text: string) => {},
     attachments: string[] = [],
@@ -1257,7 +1176,7 @@ export class BridgeEngine {
   private async _executeProviderAttempt(
     prompt: string,
     sessionId: string | null,
-    chatId: number,
+    chatId: number | string,
     body: any,
     onProgress: (text: string) => void,
     attachments: string[],
@@ -1416,7 +1335,7 @@ export class BridgeEngine {
 
   private async _runFreshAntigravityRetry(
     prompt: string,
-    chatId: number,
+    chatId: number | string,
     chatKey: string,
     outDir: string,
     onProgress: (t: string) => void,
@@ -1512,7 +1431,7 @@ export class BridgeEngine {
 
   private async _retryAntigravityFreshSession(
     prompt: string,
-    chatId: number,
+    chatId: number | string,
     chatKey: string,
     outDir: string,
     onProgress: (t: string) => void,
@@ -1570,7 +1489,7 @@ export class BridgeEngine {
   private async _runWithFallback(
     prompt: string,
     sessionId: string | null,
-    chatId: number,
+    chatId: number | string,
     chatKey: string,
     fallbackModel: string,
     outDir: string,
@@ -1772,8 +1691,8 @@ export class BridgeEngine {
     await this.sendText(chatId, { text: `✓ Model set to ${value}`, message_thread_id: threadId });
   }
 
-  async sendText(chatId: number, body: any): Promise<number | null> {
-    return sendTelegramMessage({ client: this.client, kind: this._deliveryKind(), chatId, body });
+  async sendText(chatId: number | string, body: any): Promise<number | null> {
+    return sendSurfaceMessage({ client: this.client, kind: this._deliveryKind(), chatId, body });
   }
 
   private _busyMessageMode(chatKey: string): BusyMessageMode {

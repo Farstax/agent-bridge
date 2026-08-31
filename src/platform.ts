@@ -1,23 +1,67 @@
-/**
- * MessagingPlatform — minimal interface shared by TelegramClient and future Discord/other clients.
- * BridgeEngine accepts this interface so it can be wired with any conforming transport.
- */
-/**
- * Transport request payload. Transport-shaped (Telegram/Discord) fields stay at
- * the adapter boundary; runtime code passes plain keyed objects.
- */
+/** Explicit messaging-surface contract shared by runtime delivery policy and adapters. */
 export type TransportRequest = Record<string, unknown>;
-
-/**
- * Transport response. Responses remain transport-shaped; callers narrow the
- * fields they read (e.g. Telegram's `result.message_id`) at the call site.
- */
 export type TransportResponse = any;
 
+export type SurfaceFormattingDialect = "telegram-html" | "discord-markdown" | "plain";
+export interface SurfaceCapabilities {
+  maxMessageLength: number;
+  editMessages: boolean;
+  deleteMessages: boolean;
+  previewStreaming: boolean;
+  threads: boolean;
+  attachments: boolean;
+  typing: boolean;
+  polling: boolean;
+  remoteFileDownload: boolean;
+  richMessages: boolean;
+  formatting: SurfaceFormattingDialect;
+}
+
+export const SAFE_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze({
+  maxMessageLength: 2000,
+  editMessages: false,
+  deleteMessages: false,
+  previewStreaming: false,
+  threads: false,
+  attachments: false,
+  typing: false,
+  polling: false,
+  remoteFileDownload: false,
+  richMessages: false,
+  formatting: "plain",
+});
+
+export const TELEGRAM_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze({
+  maxMessageLength: 4096,
+  editMessages: true,
+  deleteMessages: true,
+  previewStreaming: true,
+  threads: true,
+  attachments: true,
+  typing: true,
+  polling: true,
+  remoteFileDownload: true,
+  richMessages: true,
+  formatting: "telegram-html",
+});
+
+export const DISCORD_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze({
+  maxMessageLength: 1990,
+  editMessages: true,
+  deleteMessages: false,
+  previewStreaming: false,
+  threads: false,
+  attachments: true,
+  typing: true,
+  polling: false,
+  remoteFileDownload: false,
+  richMessages: false,
+  formatting: "discord-markdown",
+});
+
 export interface MessagingPlatform {
-  // Polling (Telegram long-poll; Discord implementations should stub / no-op)
-  getUpdates(options: TransportRequest): Promise<TransportResponse>;
-  // Core messaging
+  readonly capabilities?: SurfaceCapabilities;
+  getUpdates?(options: TransportRequest): Promise<TransportResponse>;
   sendMessage(body: TransportRequest): Promise<TransportResponse>;
   sendRichMessage?(body: TransportRequest): Promise<TransportResponse>;
   sendRichMessageDraft?(body: TransportRequest): Promise<TransportResponse>;
@@ -25,24 +69,16 @@ export interface MessagingPlatform {
   deleteMessage?(body: TransportRequest): Promise<TransportResponse>;
   sendChatAction(body: TransportRequest): Promise<TransportResponse>;
   answerCallbackQuery(body: TransportRequest): Promise<TransportResponse>;
-  // Bot metadata
   setMyCommands(body: TransportRequest): Promise<TransportResponse>;
-  // File delivery
   sendDocument(chatId: number | string, filePath: string, caption?: string, options?: FileSendOptions): Promise<void>;
-  sendDocumentBuffer?(body: {
-    chat_id: number | string;
-    bytes: Buffer;
-    filename: string;
-    mime_type?: string;
-    caption?: string;
-    [key: string]: any;
-  }): Promise<any>;
+  sendDocumentBuffer?(body: { chat_id: number | string; bytes: Buffer; filename: string; mime_type?: string; caption?: string; [key: string]: any }): Promise<any>;
   sendPhoto(chatId: number | string, filePath: string, caption?: string, options?: FileSendOptions): Promise<void>;
-  // Attachment download (Telegram-specific; Discord stubs may throw or no-op)
-  getFilePath(fileId: string): Promise<string>;
-  downloadFile(filePath: string, destPath: string): Promise<void>;
+  getFilePath?(fileId: string): Promise<string>;
+  downloadFile?(filePath: string, destPath: string): Promise<void>;
 }
 
-export interface FileSendOptions {
-  message_thread_id?: number;
+export interface FileSendOptions { message_thread_id?: number | string; }
+
+export function surfaceCapabilities(platform: MessagingPlatform): SurfaceCapabilities {
+  return platform.capabilities ?? SAFE_SURFACE_CAPABILITIES;
 }

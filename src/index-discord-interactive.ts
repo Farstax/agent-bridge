@@ -31,20 +31,21 @@ import {
   setUserCliPreference,
   buildCliStatusText,
   handleCliSwitchCallback,
-  dispatchInteractiveWithFallback,
+  dispatchInteractiveTurnWithFallback,
   dispatchClaimedInteractiveWithFallback,
   clearInteractiveFallbackState,
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
 import { runCli } from "./cli.js";
-import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage } from "./types.js";
+import type { BridgeConfig, BotKind } from "./types.js";
+import { adaptDiscordMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { resolveDiscordStartInteraction } from "./discordStart.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
-import { ScheduledRoutineRunner, buildScheduledInteractiveUpdate } from "./scheduledRoutines.js";
+import { ScheduledRoutineRunner, buildScheduledInteractiveTurn } from "./scheduledRoutines.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -172,12 +173,9 @@ const engines = Object.fromEntries(
 
 for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
-    // pending_messages keeps legacy numeric delivery columns; the durable chatKey
-    // is authoritative, so restart recovery restores the native Discord destination.
-    const deliveryQueued = { ...queued, chatId: queued.chatKey as unknown as number };
-    return dispatchClaimedInteractiveWithFallback(deliveryQueued, deliveryQueued.chatKey, {
+    return dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
       engines, fallbackChain, exhaustedChats, db,
-      notify: async (msg) => { await client.sendMessage({ chat_id: deliveryQueued.chatKey, text: msg }); },
+      notify: async (msg) => { await client.sendMessage({ chat_id: queued.chatKey, text: msg }); },
       onCliSwitched: async (newCli) => setUserCliPreference(db, queued.chatKey, newCli),
     });
   });
@@ -203,8 +201,8 @@ if (scheduledOwnerKey && scheduledActorId) {
         });
         return;
       }
-      const update = buildScheduledInteractiveUpdate(routine, intendedAt, scheduledActorId);
-      await dispatchInteractiveWithFallback(update, routine.chatKey, {
+      const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId);
+      await dispatchInteractiveTurnWithFallback(turn, {
         engines,
         fallbackChain,
         exhaustedChats,
@@ -335,20 +333,10 @@ async function handleMessage(d: any): Promise<void> {
   const channelId = String(d.channel_id ?? "");
   const chatKey = channelId; // Discord: channel IS the conversation unit
 
-  const chatId = channelId as unknown as number;
-  const userId = authorId as unknown as number;
+  const turn = adaptDiscordMessage(d, "discord:interactive");
+  if (!turn) return;
 
-  const update: TelegramUpdate = {
-    update_id: numericId(d.id ?? "0"),
-    message: {
-      message_id: numericId(d.id ?? "0"),
-      chat: { id: chatId, type: d.guild_id ? "supergroup" : "private" },
-      from: { id: userId, first_name: d.author?.username ?? "User" },
-      text: content,
-    } satisfies TelegramMessage,
-  };
-
-  await dispatchInteractiveWithFallback(update, chatKey, {
+  await dispatchInteractiveTurnWithFallback(turn, {
     engines,
     fallbackChain,
     exhaustedChats,
@@ -440,11 +428,10 @@ async function handleInteraction(d: any): Promise<void> {
     }
 
     if (commandName === "start") {
-      const chatId = channelId as unknown as number;
-      const numUserId = userId as unknown as number;
       const resolution = resolveDiscordStartInteraction(d, {
-        chatId,
-        userId: numUserId,
+        surfaceIdentity: "discord:interactive",
+        chatKey: channelId,
+        userId,
         username: d.member?.user?.username ?? d.user?.username,
         chatType: d.guild_id ? "supergroup" : "private",
       });
@@ -462,7 +449,7 @@ async function handleInteraction(d: any): Promise<void> {
         interaction_token: d.token,
         type: 5,
       }).catch((err) => console.warn("[discord-interactive] /start ACK failed", err));
-      await engines[getUserCliPreference(db, channelId)].handleUpdate(resolution.update, channelId);
+      await engines[getUserCliPreference(db, channelId)].handleInteractiveTurn(resolution.turn);
       return;
     }
 
@@ -475,22 +462,19 @@ async function handleInteraction(d: any): Promise<void> {
     }).catch((err) => console.warn("[discord-interactive] slash ACK failed", err));
 
     const promptText = d.data?.options?.[0]?.value as string | undefined ?? commandName;
-    const chatId = channelId as unknown as number;
-    const numUserId = userId as unknown as number;
     const chatKey = channelId;
-
-    const update: TelegramUpdate = {
-      update_id: numericId(d.id ?? "0"),
-      message: {
-        message_id: numericId(d.id ?? "0"),
-        chat: { id: chatId, type: d.guild_id ? "supergroup" : "private" },
-        from: { id: numUserId, first_name: d.member?.user?.username ?? d.user?.username ?? "User" },
-        text: `/${promptText}`,
-      } satisfies TelegramMessage,
+    const turn: InteractiveTurnInput = {
+      surfaceIdentity: "discord:interactive",
+      chatKey,
+      actorId: userId,
+      messageId: String(d.id ?? ""),
+      text: `/${promptText}`,
+      delivery: { chatId: channelId, chatType: d.guild_id ? "supergroup" : "private" },
+      attachments: [],
     };
 
     if (commandName === "reset") clearInteractiveFallbackState(fallbackChain, chatKey);
-    await engines[getUserCliPreference(db, chatKey)].handleUpdate(update, chatKey);
+    await engines[getUserCliPreference(db, chatKey)].handleInteractiveTurn(turn);
   }
 }
 
@@ -515,10 +499,3 @@ client.connect();
 await new Promise(() => {}); // keep process alive — gateway drives everything
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
-
-function numericId(snowflake: string): number {
-  // Discord update/message IDs only satisfy the Telegram-shaped adapter type.
-  // They are never used as conversation identity or durable routing keys.
-  const value = BigInt(snowflake || "0");
-  return Number(value % BigInt(Number.MAX_SAFE_INTEGER));
-}

@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { sendTelegramMessage, sendMessageWithProgress } from "../src/messageDelivery.js";
 import type { TelegramClient } from "../src/telegram.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import type { CliResult } from "../src/types.js";
 import * as telegramAdapter from "../src/events/telegramAdapter.js";
 
 const createMockClient = () => ({
+  capabilities: TELEGRAM_SURFACE_CAPABILITIES,
   sendMessage: vi.fn(async (body: any) => ({ ok: true, result: { message_id: 456, ...body } })),
   sendChatAction: vi.fn(async () => ({ ok: true, result: true })),
   editMessageText: vi.fn(async () => ({ ok: true, result: true })),
