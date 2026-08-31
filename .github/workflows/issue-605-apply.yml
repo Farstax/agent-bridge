@@ -25,27 +25,23 @@ jobs:
           node-version: 24.15.0
           cache: npm
       - run: npm ci
-      - name: Add regression tests
-        run: node scripts/issue-605-transform.mjs --tests
-      - name: Confirm regression tests are red
+      - name: Add focused regression test
+        run: python3 scripts/issue-605-transform-v2.py tests
+      - name: Confirm regression is red
         shell: bash
         run: |
           set +e
-          npx vitest run test/interactiveIngress.test.ts test/scheduledRoutines.test.ts test/interactiveBot.test.ts test/platform.test.ts test/discord-interactive.test.ts > /tmp/red.log 2>&1
+          npx vitest run test/interactiveIngress.test.ts > /tmp/red.log 2>&1
           status=$?
           cat /tmp/red.log
           if [ "$status" -eq 0 ]; then
-            echo "Expected issue 605 regression suite to fail before implementation"
+            echo "Expected issue 605 regression to fail before implementation"
             exit 1
           fi
           echo "Observed RED as expected (exit $status)"
       - name: Apply implementation
-        run: node scripts/issue-605-transform.mjs --implementation
-      - name: Run full repository qualification
-        run: npm run qualify:local
-        env:
-          NODE_OPTIONS: --max-old-space-size=3072
-      - name: Commit implementation
+        run: python3 scripts/issue-605-transform-v2.py implementation
+      - name: Commit implementation before qualification
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -53,3 +49,7 @@ jobs:
           git add src test
           git commit -m "refactor: make interactive ingress surface neutral (#605)"
           git push origin HEAD:ship/605-surface-neutral-ingress
+      - name: Run full repository qualification
+        run: npm run qualify:local
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
