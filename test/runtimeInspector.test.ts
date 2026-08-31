@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
+import { applyMigrations } from "../src/db/schema.js";
 import { createScheduledRoutine } from "../src/scheduledRoutines.js";
 import { createAutonomousGoal } from "../src/autonomousGoalRuntime.js";
 import { HealthReportStore } from "../src/health/reports.js";
@@ -14,13 +16,16 @@ import {
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "agent-bridge-inspect-"));
   const path = join(dir, "bridge.sqlite");
+  const healthPath = join(dir, "health.sqlite");
   const db = openDb(path, { serviceId: "test-service", runId: "run-active", lockLeaseMs: 90_000 });
-  return { dir, path, db };
+  const healthDb = new Database(healthPath);
+  applyMigrations(healthDb, undefined, "health");
+  return { dir, path, healthPath, db, healthDb };
 }
 
 describe("runtime inspector", () => {
   it("projects representative runtime state without exposing secret-bearing fields", () => {
-    const { dir, path, db } = fixture();
+    const { dir, path, healthPath, db, healthDb } = fixture();
     try {
       db.insertRun("run-active", "chat-1", "codex");
       db.insertRun("run-failed", "chat-1", "claude");
@@ -47,7 +52,7 @@ describe("runtime inspector", () => {
         bot: "codex",
         maxCycles: 4,
       });
-      new HealthReportStore(db.raw).saveReport({
+      new HealthReportStore(healthDb).saveReport({
         pluginName: "self",
         status: "amber",
         checks: [{ name: "runtime", status: "amber", message: "private health detail ghp_supersecret" }],
@@ -63,6 +68,7 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_RUN_ID: "run-active",
         HEALTH_MONITOR_ENABLED: "true",
         HEALTH_SERVER_MONITOR_ENABLED: "0",
+        HEALTH_DB_PATH: healthPath,
         HOME: dir,
       });
       const view = JSON.parse(text);
@@ -95,27 +101,29 @@ describe("runtime inspector", () => {
       }
     } finally {
       db.close();
+      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("uses unknown/unavailable states instead of inventing missing or stale evidence", () => {
-    const { dir, path, db } = fixture();
+    const { dir, path, healthPath, db, healthDb } = fixture();
     try {
-      new HealthReportStore(db.raw).saveReport({
+      new HealthReportStore(healthDb).saveReport({
         pluginName: "self",
         status: "green",
         checks: [],
         summary: "old",
         timestamp: new Date(0).toISOString(),
       });
-      db.raw.prepare("UPDATE health_plugin_reports SET saved_at = 1 WHERE plugin_name = 'self'").run();
+      healthDb.prepare("UPDATE health_plugin_reports SET saved_at = 1 WHERE plugin_name = 'self'").run();
       db.close();
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,
         HEALTH_MONITOR_ENABLED: "true",
         HEALTH_SERVER_MONITOR_ENABLED: "0",
+        HEALTH_DB_PATH: healthPath,
         HOME: dir,
       }));
 
@@ -128,12 +136,13 @@ describe("runtime inspector", () => {
       ]));
     } finally {
       try { db.close(); } catch {}
+      try { healthDb.close(); } catch {}
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("supports a capability-only bounded JSON projection", () => {
-    const { dir, path, db } = fixture();
+    const { dir, path, db, healthDb } = fixture();
     try {
       const view = JSON.parse(renderAgentBridgeInspection(["capabilities", "--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,
@@ -144,6 +153,7 @@ describe("runtime inspector", () => {
       expect(JSON.stringify(view).length).toBeLessThanOrEqual(MAX_INSPECTION_OUTPUT_CHARS);
     } finally {
       db.close();
+      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
