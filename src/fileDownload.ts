@@ -70,11 +70,11 @@ export async function downloadTelegramAttachment(
   destDir: string,
   fileNamePrefix = "",
 ): Promise<AttachmentInfo | null> {
+  await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmod(destDir, PRIVATE_DIR_MODE);
   if (!client.getFilePath || !client.downloadFile) return null;
   const getFilePath = client.getFilePath;
   const downloadFile = client.downloadFile;
-  await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-  await chmod(destDir, PRIVATE_DIR_MODE);
 
   if (message.photo && message.photo.length > 0) {
     const largest = message.photo[message.photo.length - 1];

@@ -356,7 +356,11 @@ export function dispatchInteractiveWithFallback(
 ): Promise<ExecutionOutcome> {
   const turn = adaptTelegramUpdate(update, "telegram:interactive", chatKey);
   if (!turn) return Promise.resolve(claimedMessage ? "committed" : "failed");
-  return dispatchInteractiveTurnWithFallback(turn, deps, tried, claimedMessage);
+  const compatibilityEngines = Object.fromEntries(Object.entries(deps.engines).map(([kind, engine]) => [kind, {
+    ...engine,
+    handleInteractiveTurn: engine.handleInteractiveTurn ?? (() => engine.handleUpdate(update)),
+  }])) as InteractiveDispatchDeps["engines"];
+  return dispatchInteractiveTurnWithFallback(turn, { ...deps, engines: compatibilityEngines }, tried, claimedMessage);
 }
 
 function isResetTurn(turn: InteractiveTurnInput): boolean {

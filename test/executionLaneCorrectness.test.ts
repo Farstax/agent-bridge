@@ -9,6 +9,7 @@ import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
 import { dispatchClaimedInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import * as fileOutput from "../src/fileOutput.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 function message(text: string, threadId: number) {
   return { message_id: Math.random(), chat: { id: 100, type: "private" }, from: { id: 42, first_name: "T" }, message_thread_id: threadId, text } as any;
@@ -16,6 +17,7 @@ function message(text: string, threadId: number) {
 
 function client() {
   return {
+    capabilities: TELEGRAM_SURFACE_CAPABILITIES,
     sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }), sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
     sendPhoto: vi.fn(), sendDocument: vi.fn(), getUpdates: vi.fn(), setMyCommands: vi.fn(), answerCallbackQuery: vi.fn(), editMessageText: vi.fn(),
   } as any;
