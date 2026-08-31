@@ -225,7 +225,6 @@ export function buildInvocation({
   outputDir,
   effort,
   toolMode,
-  nativeCompletion,
   logFile,
   homeDir,
 }: AntigravityInvocationRequest): ProviderInvocation {
@@ -255,7 +254,7 @@ export function buildInvocation({
     attachments,
   );
   const finalPrompt = appendOutputDirInstruction(annotatedPrompt, outputDir);
-  args.push("--print", nativeCompletion ? `/goal ${finalPrompt}` : finalPrompt);
+  args.push("--print", finalPrompt);
 
   const providerArgs = appendEffortArgs(command, args, effort);
   return { command, args: providerArgs, nativeSessionMode: sessionId ? "resume" : "fresh" };
