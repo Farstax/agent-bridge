@@ -29,8 +29,8 @@ import {
 } from "./cli.js";
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
-import type { MessagingPlatform } from "./platform.js";
-import { adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
+import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
+import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { downloadSurfaceAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
@@ -48,7 +48,7 @@ import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
 import { EventStore } from "./events/store.js";
-import type { BridgeConfig, BotKind, TelegramUpdate, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
+import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
@@ -66,8 +66,8 @@ import {
 export interface HookContext {
   chatId: number | string;
   chatKey: string;
-  threadId?: number;
-  userId?: number;
+  threadId?: number | string;
+  userId?: number | string;
 }
 
 export interface HookCommandResult {
@@ -154,7 +154,7 @@ function isRecoverableAntigravityExecutionError(error: Error): boolean {
   return /error executing cascade step:|agent executor error:|PlannerResponse without ModifiedResponse|Agy stalled in planner loop without usable output|Agy JSON parse failed/i.test(message);
 }
 
-function topicChatKey(chatId: number | string, chatType: string, threadId?: number): string {
+function topicChatKey(chatId: number | string, chatType: string, threadId?: number | string): string {
   return threadId != null ? `${chatId}:${threadId}` : String(chatId);
 }
 
@@ -216,9 +216,7 @@ export class BridgeEngine {
       return this.handleInteractiveMessages(turns).catch((err) => {
         console.error(`[${this.kind}] mediaBuffer flush error`, err);
       });
-    }, 1500);    });
-      },
-    });
+    }, 1500);
   }
 
   private _workingDir(executionKind: BotKind = this._executionKind()): string {
@@ -226,6 +224,11 @@ export class BridgeEngine {
   }
 
   async run(): Promise<void> {
+    const capabilities = surfaceCapabilities(this.client);
+    const getUpdates = this.client.getUpdates;
+    if (!capabilities.polling || typeof getUpdates !== "function") {
+      throw new Error(`[${this.kind}] polling is not supported by this messaging surface`);
+    }
     if (isAgentKind(this.kind)) {
       await this.client.setMyCommands({
         commands: buildTelegramCommands(this.kind),
@@ -241,7 +244,7 @@ export class BridgeEngine {
 
     for (;;) {
       try {
-        const updates = await this.client.getUpdates({
+        const updates = await getUpdates.call(this.client, {
           offset,
           timeout: 30,
           allowed_updates: ["message", "callback_query"],
@@ -330,6 +333,15 @@ export class BridgeEngine {
       return;
     }
     await this.mediaBuffer.push(turn);
+  }
+
+  /** Compatibility boundary for direct Telegram callers. New surfaces use handleInteractiveTurn. */
+  async handleMessages(messages: TelegramMessage[], providedChatKey?: string): Promise<void> {
+    const first = messages[0];
+    if (!first?.chat) return;
+    const chatKey = providedChatKey ?? topicChatKey(first.chat.id, first.chat.type ?? "private", first.message_thread_id);
+    const turns = messages.map((message) => adaptTelegramMessage(message, this.surfaceIdentity, chatKey)).filter((turn): turn is InteractiveTurnInput => turn !== null);
+    if (turns.length > 0) await this.handleInteractiveMessages(turns);
   }
 
   async handleInteractiveMessages(messages: InteractiveTurnInput[]): Promise<void> {
@@ -431,7 +443,7 @@ export class BridgeEngine {
     }
   }
 
-  private async _executeBtw(prompt: string, chatId: number | string, chatKey: string, threadId?: number): Promise<void> {
+  private async _executeBtw(prompt: string, chatId: number | string, chatKey: string, threadId?: number | string): Promise<void> {
     const executionKind = this._executionKind();
     if (executionKind === "antigravity") {
       await this.sendText(chatId, {
@@ -1691,7 +1703,7 @@ export class BridgeEngine {
     await this.sendText(chatId, { text: `✓ Model set to ${value}`, message_thread_id: threadId });
   }
 
-  async sendText(chatId: number | string, body: any): Promise<number | null> {
+  async sendText(chatId: number | string, body: any): Promise<number | string | null> {
     return sendSurfaceMessage({ client: this.client, kind: this._deliveryKind(), chatId, body });
   }
 

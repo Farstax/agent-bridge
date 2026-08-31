@@ -79,6 +79,34 @@ export interface MessagingPlatform {
 
 export interface FileSendOptions { message_thread_id?: number | string; }
 
+export type MessagingPlatformKind = "telegram" | "discord";
+
+export interface SurfaceIdentity {
+  kind: MessagingPlatformKind;
+  accountId: string;
+}
+
+export function formatSurfaceIdentity(identity: SurfaceIdentity): string {
+  return `${identity.kind}:${identity.accountId}`;
+}
+
+export function parseSurfaceIdentity(identity: string): SurfaceIdentity | null {
+  const separator = identity.indexOf(":");
+  if (separator <= 0 || separator === identity.length - 1) return null;
+  const kind = identity.slice(0, separator);
+  if (kind !== "telegram" && kind !== "discord") return null;
+  return { kind, accountId: identity.slice(separator + 1) };
+}
+
 export function surfaceCapabilities(platform: MessagingPlatform): SurfaceCapabilities {
-  return platform.capabilities ?? SAFE_SURFACE_CAPABILITIES;
+  const candidate = platform.capabilities;
+  if (!candidate || typeof candidate !== "object") return SAFE_SURFACE_CAPABILITIES;
+  const booleanKeys: Array<keyof SurfaceCapabilities> = [
+    "editMessages", "deleteMessages", "previewStreaming", "threads", "attachments",
+    "typing", "polling", "remoteFileDownload", "richMessages",
+  ];
+  if (!Number.isSafeInteger(candidate.maxMessageLength) || candidate.maxMessageLength <= 0) return SAFE_SURFACE_CAPABILITIES;
+  if (booleanKeys.some((key) => typeof candidate[key] !== "boolean")) return SAFE_SURFACE_CAPABILITIES;
+  if (candidate.formatting !== "telegram-html" && candidate.formatting !== "discord-markdown" && candidate.formatting !== "plain") return SAFE_SURFACE_CAPABILITIES;
+  return candidate;
 }

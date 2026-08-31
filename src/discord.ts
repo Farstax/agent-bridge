@@ -22,32 +22,6 @@ import { discordMarkdownIrEnabled, parseMarkdownToIR, renderMarkerString, DISCOR
 const DISCORD_API = "https://discord.com/api/v10";
 export const MAX_DISCORD_MESSAGE_LENGTH = 1990;
 
-function decodeHtmlEntities(text: string): string {
-  return text
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
-    .replaceAll("&amp;", "&");
-}
-
-function telegramHtmlToDiscordMarkdown(text: string): string {
-  return text
-    .replace(/<pre(?:\s+language="([^"]*)")?>([\s\S]*?)<\/pre>/gi, (_m, language: string | undefined, value: string) => {
-      const lang = decodeHtmlEntities(language ?? "").trim();
-      return "```" + lang + "\n" + decodeHtmlEntities(value).trimEnd() + "\n```";
-    })
-    .replace(/<code>([\s\S]*?)<\/code>/gi, (_m, value: string) => `\`${decodeHtmlEntities(value)}\``)
-    .replace(/<b>([\s\S]*?)<\/b>/gi, (_m, value: string) => `**${decodeHtmlEntities(value)}**`)
-    .replace(/<strong>([\s\S]*?)<\/strong>/gi, (_m, value: string) => `**${decodeHtmlEntities(value)}**`)
-    .replace(/<i>([\s\S]*?)<\/i>/gi, (_m, value: string) => `*${decodeHtmlEntities(value)}*`)
-    .replace(/<em>([\s\S]*?)<\/em>/gi, (_m, value: string) => `*${decodeHtmlEntities(value)}*`)
-    .replace(/<[^>]+>/g, "")
-    .split("\n")
-    .map(decodeHtmlEntities)
-    .join("\n");
-}
-
 export interface DiscordUpdate {
   type: "MESSAGE_CREATE" | "INTERACTION_CREATE" | string;
   data: any;
@@ -108,10 +82,9 @@ export class DiscordClient implements MessagingPlatform {
   }): Promise<any> {
     const channelId = String(body.channel_id ?? body.chat_id ?? "");
     const rawText = String(body.text ?? body.content ?? "");
-    const discordText = telegramHtmlToDiscordMarkdown(rawText);
     const text = discordMarkdownIrEnabled()
-      ? renderMarkerString(parseMarkdownToIR(discordText), DISCORD_MARKERS)
-      : discordText;
+      ? renderMarkerString(parseMarkdownToIR(rawText), DISCORD_MARKERS)
+      : rawText;
     const chunks = chunkText(text);
     let last: any = null;
     for (const chunk of chunks) {
@@ -131,7 +104,7 @@ export class DiscordClient implements MessagingPlatform {
   }): Promise<any> {
     const channelId = String(body.channel_id ?? body.chat_id ?? "");
     const messageId = String(body.message_id ?? "");
-    const text = telegramHtmlToDiscordMarkdown(String(body.text ?? body.content ?? ""));
+    const text = String(body.text ?? body.content ?? "");
     return this._restPatch(`/channels/${channelId}/messages/${messageId}`, { content: truncate(text) });
   }
 
@@ -195,7 +168,7 @@ export class DiscordClient implements MessagingPlatform {
     await this._sendFile(String(chatId), filePath, caption);
   }
 
-  // ── Private REST helpers  // ── Private REST helpers ─────────────────────────────────────────────────
+  // ── Private REST helpers ─────────────────────────────────────────────────
 
   private async _restPost(path: string, body: object): Promise<any> {
     const res = await this.fetchFn(`${DISCORD_API}${path}`, {

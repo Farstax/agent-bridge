@@ -53,7 +53,7 @@ describe("DiscordClient", () => {
       expect(JSON.parse(init.body).content).toBe("hello");
     });
 
-    it("converts Telegram HTML formatting before posting to Discord", async () => {
+    it("preserves native Discord markdown when posting", async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
@@ -62,15 +62,13 @@ describe("DiscordClient", () => {
       const client = new DiscordClient(baseOpts, fetchMock);
       await client.sendMessage({
         chat_id: "999",
-        text: '<b>Blocker:</b>\n<pre language="text">bwrap: loopback: Failed RTM_NEWADDR</pre>\nUse <code>/repo</code>',
+        text: "**Blocker:**\n```text\nbwrap: loopback: Failed RTM_NEWADDR\n```\nUse `/repo`",
       });
       const [, init] = fetchMock.mock.calls[0];
-      expect(JSON.parse(init.body).content).toBe(
-        "**Blocker:**\n```text\nbwrap: loopback: Failed RTM_NEWADDR\n```\nUse `/repo`",
-      );
+      expect(JSON.parse(init.body).content).toBe("**Blocker:**\n```text\nbwrap: loopback: Failed RTM_NEWADDR\n```\nUse `/repo`");
     });
 
-    it("converts Telegram HTML formatting before editing Discord messages", async () => {
+    it("preserves native Discord markdown when editing", async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
@@ -80,7 +78,7 @@ describe("DiscordClient", () => {
       await client.editMessageText({
         chat_id: "999",
         message_id: "123",
-        text: "<b>Done</b> with <code>npm test</code>",
+        text: "**Done** with `npm test`",
       });
       const [, init] = fetchMock.mock.calls[0];
       expect(JSON.parse(init.body).content).toBe("**Done** with `npm test`");
@@ -177,23 +175,19 @@ describe("DiscordClient", () => {
     });
   });
 
-  describe("getFilePath / downloadFile", () => {
-    it("throws a clear error since Discord does not have Telegram's getFilePath", async () => {
+  describe("Telegram-only APIs", () => {
+    it("does not expose Telegram file APIs", () => {
       const client = new DiscordClient(baseOpts, vi.fn());
-      await expect(client.getFilePath("file-id")).rejects.toThrow(/not supported on Discord/);
-    });
-
-    it("throws a clear error for downloadFile", async () => {
-      const client = new DiscordClient(baseOpts, vi.fn());
-      await expect(client.downloadFile("remote", "/tmp/dest")).rejects.toThrow(/not supported on Discord/);
+      expect(client.getFilePath).toBeUndefined();
+      expect(client.downloadFile).toBeUndefined();
     });
   });
 
-  describe("getUpdates (stub)", () => {
-    it("returns empty result immediately — Discord uses WebSocket push", async () => {
+  describe("polling", () => {
+    it("does not expose Telegram polling", () => {
       const client = new DiscordClient(baseOpts, vi.fn());
-      const result = await client.getUpdates({});
-      expect(result).toEqual({ result: [], ok: true });
+      expect(client.getUpdates).toBeUndefined();
+      expect(client.capabilities.polling).toBe(false);
     });
   });
 });

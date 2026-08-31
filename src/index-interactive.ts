@@ -341,7 +341,10 @@ for (const engine of Object.values(engines)) {
       },
       onCliSwitched: async (newCli) => {
         await registerGlobalCommands(newCli, " during queued fallback");
-        if (queued.chatType === "group" || queued.chatType === "supergroup") await registerGroupChatCommands(newCli, queued.chatId);
+        if (queued.chatType === "group" || queued.chatType === "supergroup") {
+          const groupChatId = typeof queued.chatId === "number" ? queued.chatId : Number(queued.chatId);
+          if (Number.isSafeInteger(groupChatId)) await registerGroupChatCommands(newCli, groupChatId);
+        }
       },
     });
   });

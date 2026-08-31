@@ -453,7 +453,7 @@ async function handleInteraction(d: any): Promise<void> {
       return;
     }
 
-    // Other commands → forward to the active CLI engine as a TelegramUpdate
+    // Other commands → forward to the active CLI engine as a neutral turn
     // ACK immediately with deferred response (3-second window)
     await client.answerCallbackQuery({
       interaction_id: d.id,

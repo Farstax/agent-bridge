@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { adaptDiscordMessage, adaptTelegramUpdate } from "../src/interactiveIngress.js";
-import { DISCORD_SURFACE_CAPABILITIES, TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
+import { DISCORD_SURFACE_CAPABILITIES, SAFE_SURFACE_CAPABILITIES, TELEGRAM_SURFACE_CAPABILITIES, surfaceCapabilities } from "../src/platform.js";
 import { buildScheduledInteractiveTurn, type ScheduledRoutine } from "../src/scheduledRoutines.js";
 import { DiscordClient } from "../src/discord.js";
 
@@ -82,5 +82,10 @@ describe("surface-neutral interactive ingress", () => {
     expect((client as any).getUpdates).toBeUndefined();
     expect((client as any).getFilePath).toBeUndefined();
     expect((client as any).downloadFile).toBeUndefined();
+  });
+
+  it("fails closed for incomplete or unknown capability declarations", () => {
+    const client = { capabilities: { formatting: "unknown" }, sendMessage: vi.fn() } as any;
+    expect(surfaceCapabilities(client)).toBe(SAFE_SURFACE_CAPABILITIES);
   });
 });

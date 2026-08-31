@@ -433,6 +433,7 @@ describe("sendMessageWithProgress", () => {
   it("truncates progress text to 4096 chars to stay within Telegram API limits", async () => {
     const edits: string[] = [];
     const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
       sendMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
       sendChatAction: vi.fn(async () => ({ ok: true })),
       editMessageText: vi.fn(async (body: any) => { edits.push(body.text); return { ok: true }; }),
@@ -494,6 +495,7 @@ describe("sendMessageWithProgress", () => {
 
   it("does not duplicate a Claude preview when the final edit is already applied", async () => {
     const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
       sendMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
       sendChatAction: vi.fn(async () => ({ ok: true })),
       editMessageText: vi.fn(async () => {

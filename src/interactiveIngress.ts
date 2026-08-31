@@ -30,9 +30,8 @@ function telegramAttachments(message: TelegramMessage): InteractiveAttachment[] 
   return [];
 }
 
-export function adaptTelegramUpdate(update: TelegramUpdate, surfaceIdentity: string, chatKey: string): InteractiveTurnInput | null {
-  const message = update.message;
-  if (!message?.chat || !message.from) return null;
+export function adaptTelegramMessage(message: TelegramMessage, surfaceIdentity: string, chatKey: string): InteractiveTurnInput | null {
+  if (!message.chat || !message.from) return null;
   return {
     surfaceIdentity,
     chatKey,
@@ -44,6 +43,11 @@ export function adaptTelegramUpdate(update: TelegramUpdate, surfaceIdentity: str
     attachments: telegramAttachments(message),
     ...(message.media_group_id ? { mediaGroupId: message.media_group_id } : {}),
   };
+}
+
+export function adaptTelegramUpdate(update: TelegramUpdate, surfaceIdentity: string, chatKey: string): InteractiveTurnInput | null {
+  const message = update.message;
+  return message ? adaptTelegramMessage(message, surfaceIdentity, chatKey) : null;
 }
 
 export function adaptDiscordMessage(data: any, surfaceIdentity = "discord:interactive"): InteractiveTurnInput | null {

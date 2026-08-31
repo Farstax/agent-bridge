@@ -70,6 +70,9 @@ export async function downloadTelegramAttachment(
   destDir: string,
   fileNamePrefix = "",
 ): Promise<AttachmentInfo | null> {
+  if (!client.getFilePath || !client.downloadFile) return null;
+  const getFilePath = client.getFilePath;
+  const downloadFile = client.downloadFile;
   await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   await chmod(destDir, PRIVATE_DIR_MODE);
 
@@ -82,8 +85,8 @@ export async function downloadTelegramAttachment(
     const localPath = resolveContainedUploadPath(destDir, fileName);
     if (!localPath) return null;
     try {
-      const filePath = await client.getFilePath(largest.file_id);
-      await client.downloadFile(filePath, localPath);
+      const filePath = await getFilePath(largest.file_id);
+      await downloadFile(filePath, localPath);
       return { localPath, mimeType: "image/jpeg" };
     } catch {
       return null;
@@ -100,8 +103,8 @@ export async function downloadTelegramAttachment(
     const localPath = resolveContainedUploadPath(destDir, fileName);
     if (!localPath) return null;
     try {
-      const filePath = await client.getFilePath(doc.file_id);
-      await client.downloadFile(filePath, localPath);
+      const filePath = await getFilePath(doc.file_id);
+      await downloadFile(filePath, localPath);
       const mimeType = doc.mime_type ?? mimeTypeFromExtension(displayFileName);
       return { localPath, mimeType };
     } catch {

@@ -398,4 +398,3 @@ export function buildScheduledInteractiveTurn(
   }
   throw new Error(`unsupported scheduled routine surface: ${routine.surfaceIdentity}`);
 }
-}
