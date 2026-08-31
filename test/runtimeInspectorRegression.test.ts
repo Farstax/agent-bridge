@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -22,7 +22,7 @@ describe("runtime inspector review regressions", () => {
       expect(db.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
       mkdirSync(join(dir, "bin"), { recursive: true });
       const repoRoutine = readFileSync(join(process.cwd(), "bin", "agent-bridge-routines"), "utf8");
-      require("node:fs").writeFileSync(join(dir, "bin", "agent-bridge-routines"), repoRoutine);
+      writeFileSync(join(dir, "bin", "agent-bridge-routines"), repoRoutine);
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
         BRIDGE_PROJECT_DIR: dir,
