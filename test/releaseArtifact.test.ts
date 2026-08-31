@@ -245,6 +245,8 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/upgrade.sh');
     expect(workflow).toContain('scripts/upgrade.sh');
     expect(workflow).toContain('scripts/skill-manager.ts');
+    expect(workflow).toContain('scripts/agent-bridge-routines.ts');
+    expect(workflow).toContain('bin/agent-bridge-routines');
     expect(workflow).toContain('cp -a skills/. "$root/skills/"');
     expect(workflow).not.toContain('cp -a skills "$root/skills/"');
     expect(workflow).toContain('tsconfig.json');
