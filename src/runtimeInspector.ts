@@ -6,7 +6,7 @@
  */
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,7 +66,7 @@ function scope(db: Database.Database, env: Env) {
   let surface = text(env.AGENT_BRIDGE_SURFACE_IDENTITY, 160);
   let provider: ProviderId | null = null;
   if (runId && hasTable(db, "bridge_runs")) {
-    const run = db.prepare("SELECT chat_id,bot FROM bridge_runs WHERE run_id=?").get(runId) as Row | undefined;
+    const run = db.prepare("SELECT chat_id,bot FROM bridge_runs WHERE run_id=? AND status='running'").get(runId) as Row | undefined;
     chatKey ||= text(run?.chat_id, 240);
     provider = pid(run?.bot);
   }
@@ -264,17 +264,27 @@ function runtimeCommand(env: Env, name: string, configured?: string): string {
   return join(projectRoot(env), "bin", name);
 }
 
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function capabilityIndex(s: ReturnType<typeof scope>, env: Env, h: ReturnType<typeof health>, sk: ReturnType<typeof skills>, a: ReturnType<typeof autonomy>, ps: ReturnType<typeof providers>) {
   const inspect = runtimeCommand(env, "agent-bridge-inspect");
   const context = runtimeCommand(env, "agent-bridge-context");
   const routine = runtimeCommand(env, "agent-bridge-routines", env.AGENT_BRIDGE_ROUTINES_COMMAND);
+  const routineExecutable = isExecutable(routine);
   const scoped=Boolean(s.chatKey&&s.surface);
   const cap=(id:string,status:string,reasonCode:string|null,scope:string,risk:string,authorityRequired:string,iface:string)=>({id,owner:"agent-bridge",status,reasonCode,scope,risk,authorityRequired,interface:iface});
   return [
     cap("runtime-inspection","ready",null,"runtime","read-only","none",`${inspect} --json`),
     cap("retained-context",scoped?"ready":"unavailable",scoped?null:"conversation_scope_unavailable","conversation","read-only","current conversation or proved owner",context),
     cap("advisor",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?"ready":"unavailable",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?null:"turn_capability_unavailable","turn","read-only-advice","turn capability",env.AGENT_BRIDGE_ADVISOR_COMMAND?.trim()||"agent-bridge-advisor"),
-    cap("scheduled-routines",scoped&&existsSync(routine)?"ready":"unavailable",!scoped?"conversation_scope_unavailable":existsSync(routine)?null:"routine_command_unavailable","conversation","state-change","authenticated owner",routine),
+    cap("scheduled-routines",scoped&&routineExecutable?"ready":"unavailable",!scoped?"conversation_scope_unavailable":routineExecutable?null:"routine_command_unavailable","conversation","state-change","authenticated owner",routine),
     cap("autonomous-work",s.surface==="telegram:interactive"&&a.status==="ready"?"ready":"unavailable",s.surface!=="telegram:interactive"?"surface_not_supported":a.status==="ready"?null:a.reasonCode,"goal","execution","authenticated owner","first-class autonomy"),
     cap("health-investigation",h.enabled?"ready":"unavailable",h.enabled?null:"health_monitor_disabled","runtime","read-only","none","runtime inspector health projection"),
     cap("installed-skills",sk.installedStatus,sk.installedReasonCode,"runtime","read-only","none",sk.root),
