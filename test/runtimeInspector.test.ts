@@ -61,7 +61,6 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_OWNER_KEY: "owner-1",
         AGENT_BRIDGE_RUN_ID: "run-active",
-        AGENT_BRIDGE_ROUTINES_COMMAND: "/runtime/bin/agent-bridge-routines",
         HEALTH_MONITOR_ENABLED: "true",
         HEALTH_SERVER_MONITOR_ENABLED: "0",
         HOME: dir,
