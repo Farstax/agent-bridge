@@ -16,7 +16,8 @@ function skillsContext(env: NodeJS.ProcessEnv): string {
 
 export function runtimeInspectorContext(env: NodeJS.ProcessEnv = process.env, repoRoot = process.cwd()): string {
   if (!env.DB_PATH && !env.AGENT_BRIDGE_CONTEXT_DB && env.NODE_ENV !== "production") return "";
-  const command = join(repoRoot, "bin", "agent-bridge-inspect");
+  const runtimeRoot = env.BRIDGE_PROJECT_DIR?.trim() || repoRoot;
+  const command = join(runtimeRoot, "bin", "agent-bridge-inspect");
   if (!existsSync(command)) return "";
   return [
     "[Agent Bridge runtime]",
