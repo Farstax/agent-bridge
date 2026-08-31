@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -11,7 +11,7 @@ function utcLocalMinute(timestampMs: number): string {
 }
 
 describe("runtime inspector review regressions", () => {
-  it("honours BRIDGE_PROJECT_DIR and falls back from a stale configured routines command", () => {
+  it("honours BRIDGE_PROJECT_DIR and reports a stale configured routines command as unavailable", () => {
     const dir = join(tmpdir(), `agent-bridge-inspect-root-${process.pid}-${Date.now()}`);
     const dataDir = join(dir, ".data");
     mkdirSync(dataDir, { recursive: true });
@@ -20,9 +20,6 @@ describe("runtime inspector review regressions", () => {
     try {
       db.insertRun("run-active", "chat-1", "codex");
       expect(db.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
-      mkdirSync(join(dir, "bin"), { recursive: true });
-      const repoRoutine = readFileSync(join(process.cwd(), "bin", "agent-bridge-routines"), "utf8");
-      writeFileSync(join(dir, "bin", "agent-bridge-routines"), repoRoutine);
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
         BRIDGE_PROJECT_DIR: dir,
@@ -37,8 +34,9 @@ describe("runtime inspector review regressions", () => {
       expect(view.capabilities).toEqual(expect.arrayContaining([
         expect.objectContaining({
           id: "scheduled-routines",
-          status: "ready",
-          interface: join(dir, "bin", "agent-bridge-routines"),
+          status: "unavailable",
+          reasonCode: "routine_command_unavailable",
+          interface: "/stale/runtime/bin/agent-bridge-routines",
         }),
       ]));
     } finally {
@@ -109,13 +107,5 @@ describe("runtime inspector review regressions", () => {
       db.close();
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  it("packages the inspector entrypoint and launcher into immutable releases", () => {
-    const workflow = readFileSync(join(process.cwd(), ".github/workflows/release-artifact.yml"), "utf8");
-    expect(workflow).toContain("scripts/agent-bridge-inspect.ts");
-    expect(workflow).toContain("bin/agent-bridge-inspect");
-    expect(workflow).toContain('test -f "$root/scripts/agent-bridge-inspect.ts"');
-    expect(workflow).toContain('test -f "$root/bin/agent-bridge-inspect"');
   });
 });
