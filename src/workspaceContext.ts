@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getSharedSkillsHomeDir, resolveSkillPaths } from "./skills.js";
 
 const MAX_CONTEXT_CHARS = 8_000;
@@ -10,6 +11,19 @@ function skillsContext(env: NodeJS.ProcessEnv): string {
     "",
     `- Shared skills root: \`${paths.agentsSkillsDir}\``,
     "- Each installed skill has instructions at `<shared-skills-root>/<skill-name>/SKILL.md`; inspect and follow relevant skills before starting work.",
+  ].join("\n");
+}
+
+export function runtimeInspectorContext(env: NodeJS.ProcessEnv = process.env, repoRoot = process.cwd()): string {
+  if (!env.DB_PATH && !env.AGENT_BRIDGE_CONTEXT_DB && env.NODE_ENV !== "production") return "";
+  const runtimeRoot = env.BRIDGE_PROJECT_DIR?.trim() || repoRoot;
+  const command = join(runtimeRoot, "bin", "agent-bridge-inspect");
+  if (!existsSync(command)) return "";
+  return [
+    "[Agent Bridge runtime]",
+    `Read-only runtime state and capabilities: \`${command} --json\``,
+    `Capabilities only: \`${command} capabilities --json\``,
+    "The inspector is a projection only; it does not grant mutation authority.",
   ].join("\n");
 }
 
@@ -28,6 +42,11 @@ export function loadWorkspaceContext(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 export function prependWorkspaceContext(prompt: string, env: NodeJS.ProcessEnv = process.env): string {
-  const context = loadWorkspaceContext(env);
-  return context ? `[Managed workspace context]\n${context}\n\n${prompt}` : prompt;
+  const managed = loadWorkspaceContext(env);
+  const inspector = runtimeInspectorContext(env);
+  const context = [
+    managed ? `[Managed workspace context]\n${managed}` : "",
+    inspector,
+  ].filter(Boolean).join("\n\n");
+  return context ? `${context}\n\n${prompt}` : prompt;
 }
