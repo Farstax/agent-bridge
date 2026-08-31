@@ -14,7 +14,7 @@ function agyPrintPrompt(args: string[]): string {
 }
 
 describe("provider-native terminal completion", () => {
-  it("enables a Claude Stop gate only for provider-owned terminal completion", () => {
+  it("does not override Claude's native Stop lifecycle", () => {
     const ordinary = buildCliInvocation({
       bot: "claude",
       prompt: "run the tests",
@@ -23,100 +23,20 @@ describe("provider-native terminal completion", () => {
       model: null,
       nativeCompletion: true,
     });
-    const bounded = buildCliInvocation({
+    const native = buildCliInvocation({
       bot: "claude",
-      prompt: "one bounded probe",
+      prompt: "run the tests",
       sessionId: null,
       command: "claude",
       model: null,
       nativeCompletion: false,
     });
 
-    const settings = claudeSettings(ordinary.args) as {
-      hooks?: { Stop?: Array<{ hooks?: Array<{ type?: string; prompt?: string; timeout?: number }> }> };
-    };
-    expect(settings.hooks?.Stop?.[0]?.hooks?.[0]).toMatchObject({
-      type: "prompt",
-      timeout: 30,
-    });
-    expect(settings.hooks?.Stop?.[0]?.hooks?.[0]?.prompt).toMatch(/background|monitor|asynchronous/i);
-    expect(claudeSettings(bounded.args)).not.toHaveProperty("hooks.Stop");
+    expect(claudeSettings(ordinary.args)).not.toHaveProperty("hooks.Stop");
+    expect(ordinary).toEqual(native);
   });
 
-  it("binds Claude Stop evaluation to the exact current Agent Bridge request", () => {
-    const currentRequest = "deploy only PR #519 after its exact-head review";
-    const invocation = buildCliInvocation({
-      bot: "claude",
-      prompt: currentRequest,
-      sessionId: null,
-      command: "claude",
-      model: null,
-      nativeCompletion: true,
-    });
-
-    const prompt = (claudeSettings(invocation.args).hooks as {
-      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
-    }).Stop[0].hooks[0].prompt ?? "";
-    expect(prompt).toMatch(/current Agent Bridge.*request/i);
-    expect(prompt).toContain(JSON.stringify(currentRequest));
-    expect(prompt).toMatch(/session-scoped/i);
-    expect(prompt).toMatch(/treat.*request.*data|request.*not.*instructions/i);
-  });
-
-  it("does not treat conditional authorization offers as committed outstanding work", () => {
-    const invocation = buildCliInvocation({
-      bot: "claude",
-      prompt: "offer to run the deployment after I approve it",
-      sessionId: null,
-      command: "claude",
-      model: null,
-      nativeCompletion: true,
-    });
-
-    const prompt = (claudeSettings(invocation.args).hooks as {
-      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
-    }).Stop[0].hooks[0].prompt;
-    expect(prompt).toMatch(/conditional|authorization|permission/i);
-    expect(prompt).toMatch(/accepted|committed|authorized/i);
-  });
-
-  it("does not claim unrelated processes observed during diagnostics", () => {
-    const invocation = buildCliInvocation({
-      bot: "claude",
-      prompt: "inspect the current processes and report",
-      sessionId: null,
-      command: "claude",
-      model: null,
-      nativeCompletion: true,
-    });
-
-    const prompt = (claudeSettings(invocation.args).hooks as {
-      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
-    }).Stop[0].hooks[0].prompt;
-    expect(prompt).toMatch(/observed|diagnostic|process listing/i);
-    expect(prompt).toMatch(/initiated|current turn|this turn/i);
-  });
-
-  it("re-evaluates repeated Stop hooks from fresh evidence", () => {
-    const invocation = buildCliInvocation({
-      bot: "claude",
-      prompt: "run the requested check",
-      sessionId: null,
-      command: "claude",
-      model: null,
-      nativeCompletion: true,
-    });
-
-    const prompt = (claudeSettings(invocation.args).hooks as {
-      Stop: Array<{ hooks: Array<{ prompt?: string }> }>;
-    }).Stop[0].hooks[0].prompt;
-    expect(prompt).toMatch(/stop_hook_active/i);
-    expect(prompt).toMatch(/earlier|previous|prior/i);
-    expect(prompt).toMatch(/fresh|current.*evidence/i);
-    expect(prompt).toMatch(/ok=true/i);
-  });
-
-  it("uses Agy's native goal lifecycle only for provider-owned terminal completion", () => {
+  it("does not rewrite ordinary Agy prompts into /goal", () => {
     const ordinary = buildCliInvocation({
       bot: "antigravity",
       prompt: "run the tests",
@@ -125,17 +45,17 @@ describe("provider-native terminal completion", () => {
       model: null,
       nativeCompletion: true,
     });
-    const bounded = buildCliInvocation({
+    const native = buildCliInvocation({
       bot: "antigravity",
-      prompt: "one bounded probe",
+      prompt: "run the tests",
       sessionId: null,
       command: "agy",
       model: null,
       nativeCompletion: false,
     });
 
-    expect(agyPrintPrompt(ordinary.args)).toMatch(/^\/goal\s/);
-    expect(agyPrintPrompt(bounded.args)).not.toMatch(/^\/goal\s/);
+    expect(agyPrintPrompt(ordinary.args)).not.toMatch(/^\/goal\s/);
+    expect(ordinary).toEqual(native);
   });
 
   it("does not invent a native completion wrapper for Codex", () => {
