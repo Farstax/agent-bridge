@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,6 +37,42 @@ describe("runtime inspector review regressions", () => {
           status: "unavailable",
           reasonCode: "routine_command_unavailable",
           interface: "/stale/runtime/bin/agent-bridge-routines",
+        }),
+      ]));
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not advertise a routines command that exists but is not executable", () => {
+    const dir = join(tmpdir(), `agent-bridge-inspect-routines-mode-${process.pid}-${Date.now()}`);
+    const binDir = join(dir, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const command = join(binDir, "agent-bridge-routines");
+    writeFileSync(command, "#!/usr/bin/env bash\nexit 0\n", "utf8");
+    chmodSync(command, 0o644);
+    const dbPath = join(dir, "bridge.sqlite");
+    const db = openDb(dbPath, { serviceId: "test-service", runId: "run-active", lockLeaseMs: 90_000 });
+    try {
+      db.insertRun("run-active", "chat-1", "codex");
+      expect(db.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
+
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: dbPath,
+        AGENT_BRIDGE_CHAT_KEY: "chat-1",
+        AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
+        AGENT_BRIDGE_RUN_ID: "run-active",
+        AGENT_BRIDGE_ROUTINES_COMMAND: command,
+        HOME: dir,
+      }));
+
+      expect(view.capabilities).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "scheduled-routines",
+          status: "unavailable",
+          reasonCode: "routine_command_unavailable",
+          interface: command,
         }),
       ]));
     } finally {
@@ -103,6 +139,43 @@ describe("runtime inspector review regressions", () => {
       }));
       expect(view.execution).toEqual(expect.objectContaining({ status: "unknown", reasonCode: "current_run_not_active" }));
       expect(view.runtime.service).toEqual({ status: "unknown", reasonCode: "current_run_not_active" });
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not derive current provider readiness from a terminal historical run", () => {
+    const dir = join(tmpdir(), `agent-bridge-inspect-historical-run-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const dbPath = join(dir, "bridge.sqlite");
+    const db = openDb(dbPath, { serviceId: "test-service", runId: "other-run", lockLeaseMs: 90_000 });
+    try {
+      db.insertRun("historical-run", "chat-1", "codex");
+      db.raw.prepare("UPDATE bridge_runs SET status='done', ended_at=? WHERE run_id=?").run(new Date().toISOString(), "historical-run");
+
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: dbPath,
+        AGENT_BRIDGE_RUN_ID: "historical-run",
+        HOME: dir,
+      }));
+
+      expect(view.execution).toEqual(expect.objectContaining({ status: "unknown", reasonCode: "current_run_not_active" }));
+      expect(view.providers).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "codex",
+          selected: false,
+          availability: "unknown",
+          availabilityReasonCode: "not_live_probed",
+        }),
+      ]));
+      expect(view.capabilities).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "provider-execution",
+          status: "unknown",
+          reasonCode: "no_current_run_context",
+        }),
+      ]));
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });
