@@ -243,7 +243,8 @@ function describeMessageContentDetail(message: TelegramUpdate["message"]): strin
 }
 
 export interface InteractiveDispatchEngine {
-  handleInteractiveTurn(turn: InteractiveTurnInput): Promise<void>;
+  handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<void>;
+  handleUpdate?: (update: TelegramUpdate) => Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
@@ -255,6 +256,7 @@ export interface InteractiveDispatchDeps {
   db: BridgeDb;
   notify: (msg: string) => Promise<void> | void;
   onCliSwitched?: (newCli: CliKind) => Promise<void> | void;
+  legacyUpdate?: TelegramUpdate;
 }
 
 const pendingFallbackTries = new WeakMap<ProviderFallbackChain, Map<string, Set<string>>>();
@@ -320,7 +322,10 @@ export async function dispatchInteractiveTurnWithFallback(
   tried.add(activeCli);
   let outcome: ExecutionOutcome = "committed";
   if (claimedMessage) outcome = await engines[activeCli].executeClaimedMessage(claimedMessage);
-  else await engines[activeCli].handleInteractiveTurn(turn);
+  else if (deps.legacyUpdate && !engines[activeCli].handleInteractiveTurn && engines[activeCli].handleUpdate) {
+    await engines[activeCli].handleUpdate(deps.legacyUpdate);
+  } else if (engines[activeCli].handleInteractiveTurn) await engines[activeCli].handleInteractiveTurn(turn);
+  else throw new Error(`interactive engine ${activeCli} does not accept neutral turns`);
 
   if (exhaustedChats.has(chatKey)) {
     exhaustedChats.delete(chatKey);
@@ -356,11 +361,7 @@ export function dispatchInteractiveWithFallback(
 ): Promise<ExecutionOutcome> {
   const turn = adaptTelegramUpdate(update, "telegram:interactive", chatKey);
   if (!turn) return Promise.resolve(claimedMessage ? "committed" : "failed");
-  const compatibilityEngines = Object.fromEntries(Object.entries(deps.engines).map(([kind, engine]) => [kind, {
-    ...engine,
-    handleInteractiveTurn: engine.handleInteractiveTurn ?? (() => engine.handleUpdate(update)),
-  }])) as InteractiveDispatchDeps["engines"];
-  return dispatchInteractiveTurnWithFallback(turn, { ...deps, engines: compatibilityEngines }, tried, claimedMessage);
+  return dispatchInteractiveTurnWithFallback(turn, { ...deps, legacyUpdate: update }, tried, claimedMessage);
 }
 
 function isResetTurn(turn: InteractiveTurnInput): boolean {
