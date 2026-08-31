@@ -584,7 +584,7 @@ describe("dispatchInteractiveWithFallback", () => {
     codex = { handleCount: 0, handleInteractiveTurn: async () => { codex.handleCount++; } };
     claude = { handleCount: 0, handleInteractiveTurn: async () => { claude.handleCount++; } };
     antigravity = { handleCount: 0, handleInteractiveTurn: async () => { antigravity.handleCount++; } };
-    fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
+    fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, () => true);
     exhaustedChats = new Set();
     sentMessages = [];
     onCliSwitchedCalls = [];

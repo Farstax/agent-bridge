@@ -242,12 +242,6 @@ function describeMessageContentDetail(message: TelegramUpdate["message"]): strin
   return subtypeKeys.find((key) => record[key] != null) ?? "unknown_non_text";
 }
 
-function isResetUpdate(update: TelegramUpdate): boolean {
-  const raw = (update.message?.text ?? update.message?.caption ?? "").trim();
-  const command = raw.split(/\s+/, 1)[0]?.toLowerCase() ?? "";
-  return command === "/reset" || command.startsWith("/reset@");
-}
-
 export interface InteractiveDispatchEngine {
   handleInteractiveTurn(turn: InteractiveTurnInput): Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
