@@ -260,7 +260,7 @@ function skills(env: Env) {
 
 function runtimeCommand(env: Env, name: string, configured?: string): string {
   const requested = configured?.trim();
-  if (requested && existsSync(requested)) return requested;
+  if (requested) return requested;
   return join(projectRoot(env), "bin", name);
 }
 
