@@ -1,55 +1,26 @@
-name: Issue 605 apply
+name: Issue 605 qualification
 
 on:
   push:
     branches: [ship/605-surface-neutral-ingress]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: issue-605-apply
+  group: issue-605-qualification
   cancel-in-progress: true
 
 jobs:
-  apply:
-    if: github.actor != 'github-actions[bot]'
+  qualify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ship/605-surface-neutral-ingress
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24.15.0
           cache: npm
       - run: npm ci
-      - name: Add focused regression test
-        run: python3 scripts/issue-605-transform-v3.py tests
-      - name: Confirm regression is red
-        shell: bash
-        run: |
-          set +e
-          npx vitest run test/interactiveIngress.test.ts > /tmp/red.log 2>&1
-          status=$?
-          cat /tmp/red.log
-          if [ "$status" -eq 0 ]; then
-            echo "Expected issue 605 regression to fail before implementation"
-            exit 1
-          fi
-          echo "Observed RED as expected (exit $status)"
-      - name: Apply implementation
-        run: python3 scripts/issue-605-transform-v3.py implementation
-      - name: Commit implementation before qualification
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src test
-          git commit -m "refactor: make interactive ingress surface neutral (#605)"
-          git push origin HEAD:ship/605-surface-neutral-ingress
-      - name: Run full repository qualification
-        run: npm run qualify:local
+      - run: npm run qualify:local
         env:
           NODE_OPTIONS: --max-old-space-size=3072
