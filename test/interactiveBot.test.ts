@@ -21,7 +21,7 @@ import {
   buildInteractiveCommands,
   buildGlobalInteractiveCommandRegistrations,
   buildChatInteractiveCommandRegistrations,
-  dispatchInteractiveWithFallback,
+  dispatchInteractiveTurnWithFallback,
   applyManualCliSwitchHandoff,
   getSelectableCliKinds,
   type CliKind,
@@ -571,9 +571,9 @@ describe("handleCliSwitchCallback", () => {
 
 describe("dispatchInteractiveWithFallback", () => {
   let db: BridgeDb;
-  let codex: { handleUpdate: any; handleCount: number };
-  let claude: { handleUpdate: any; handleCount: number };
-  let antigravity: { handleUpdate: any; handleCount: number };
+  let codex: { handleInteractiveTurn: any; handleCount: number };
+  let claude: { handleInteractiveTurn: any; handleCount: number };
+  let antigravity: { handleInteractiveTurn: any; handleCount: number };
   let fallbackChain: ProviderFallbackChain;
   let exhaustedChats: Set<string>;
   let sentMessages: string[];
@@ -581,10 +581,10 @@ describe("dispatchInteractiveWithFallback", () => {
 
   beforeEach(() => {
     db = openDb(":memory:");
-    codex = { handleCount: 0, handleUpdate: async () => { codex.handleCount++; } };
-    claude = { handleCount: 0, handleUpdate: async () => { claude.handleCount++; } };
-    antigravity = { handleCount: 0, handleUpdate: async () => { antigravity.handleCount++; } };
-    fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
+    codex = { handleCount: 0, handleInteractiveTurn: async () => { codex.handleCount++; } };
+    claude = { handleCount: 0, handleInteractiveTurn: async () => { claude.handleCount++; } };
+    antigravity = { handleCount: 0, handleInteractiveTurn: async () => { antigravity.handleCount++; } };
+    fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, () => true);
     exhaustedChats = new Set();
     sentMessages = [];
     onCliSwitchedCalls = [];
@@ -601,19 +601,19 @@ describe("dispatchInteractiveWithFallback", () => {
 
   it("routes to the user's preferred CLI from DB", async () => {
     setUserCliPreference(db, "chat:1", "claude");
-    await dispatchInteractiveWithFallback({ update_id: 1, message: { text: "hello", chat: { id: 1 } } } as any, "chat:1", deps());
+    await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
     expect(claude.handleCount).toBe(1);
     expect(codex.handleCount).toBe(0);
   });
 
   it("automatically falls back to the next CLI when exhausted", async () => {
     setUserCliPreference(db, "chat:1", "codex");
-    codex.handleUpdate = async () => {
+    codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
     };
 
-    await dispatchInteractiveWithFallback({ update_id: 1, message: { text: "hello", chat: { id: 1 } } } as any, "chat:1", deps());
+    await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
 
     expect(codex.handleCount).toBe(1);
     expect(claude.handleCount).toBe(1);
@@ -624,12 +624,12 @@ describe("dispatchInteractiveWithFallback", () => {
 
   it("auto-fallback promotes the successful fallback CLI into the stored DB preference", async () => {
     setUserCliPreference(db, "chat:1", "codex");
-    codex.handleUpdate = async () => {
+    codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
     };
 
-    await dispatchInteractiveWithFallback({ update_id: 1, message: { text: "hello", chat: { id: 1 } } } as any, "chat:1", deps());
+    await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
 
     expect(onCliSwitchedCalls).toContain("claude");
     expect(getUserCliPreference(db, "chat:1")).toBe("claude");
@@ -637,20 +637,20 @@ describe("dispatchInteractiveWithFallback", () => {
 
   it("second message after fallback starts from the promoted CLI instead of retrying the exhausted one", async () => {
     setUserCliPreference(db, "chat:1", "codex");
-    codex.handleUpdate = async () => {
+    codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
     };
 
     // First message: codex exhausted → falls back to claude
-    await dispatchInteractiveWithFallback({ update_id: 1, message: { text: "hello", chat: { id: 1 } } } as any, "chat:1", deps());
+    await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
     expect(codex.handleCount).toBe(1);
     expect(claude.handleCount).toBe(1);
 
     // Codex stays available, but the promoted preference should start with claude.
-    codex.handleUpdate = async () => { codex.handleCount++; };
+    codex.handleInteractiveTurn = async () => { codex.handleCount++; };
 
-    await dispatchInteractiveWithFallback({ update_id: 2, message: { text: "next", chat: { id: 1 } } } as any, "chat:1", deps());
+    await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "2", text: "next", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
     expect(codex.handleCount).toBe(1);
     expect(claude.handleCount).toBe(2);
   });
@@ -658,12 +658,12 @@ describe("dispatchInteractiveWithFallback", () => {
   it("clears the target CLI's stale session and marks handoff required on fallback", async () => {
     setUserCliPreference(db, "chat:1", "codex");
     db.setSession("chat:1", "claude", "stale-claude-session-from-weeks-ago");
-    codex.handleUpdate = async () => {
+    codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
     };
 
-    await dispatchInteractiveWithFallback({ update_id: 1, message: { text: "hello", chat: { id: 1 } } } as any, "chat:1", deps());
+    await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
 
     expect(db.getSession("chat:1", "claude")).toBeNull();
     expect(isHandoffRequired(db, "chat:1", "claude")).toBe(true);

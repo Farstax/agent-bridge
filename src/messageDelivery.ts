@@ -1,6 +1,6 @@
 import { splitTelegramText, toTelegramEntitiesText } from "./render.js";
 import { toUserMessage, isCapacityExhaustedError, CliTimeoutError } from "./cli.js";
-import type { MessagingPlatform } from "./platform.js";
+import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import type { CliResult } from "./types.js";
 import { type as eventType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
@@ -56,7 +56,7 @@ export async function sendTelegramMessage({
 }: {
   client: MessagingPlatform;
   kind: string;
-  chatId: number;
+  chatId: number | string;
   body: any;
 }): Promise<number | null> {
   const text = String(body.text || "");
@@ -92,13 +92,24 @@ export async function sendTelegramMessage({
   return sendEntityMessages({ client, chatId, body: { ...rest, text } });
 }
 
+export async function sendSurfaceMessage({ client, kind, chatId, body }: { client: MessagingPlatform; kind: string; chatId: number | string; body: any }): Promise<number | string | null> {
+  const capabilities = surfaceCapabilities(client);
+  if (capabilities.formatting === "telegram-html") {
+    const numericChatId = typeof chatId === "number" ? chatId : Number(chatId);
+    if (!Number.isSafeInteger(numericChatId)) throw new Error("Telegram delivery requires a numeric chat id");
+    return sendTelegramMessage({ client, kind, chatId: numericChatId, body });
+  }
+  const response = await client.sendMessage({ chat_id: chatId, ...body });
+  return response?.result?.message_id ?? response?.id ?? null;
+}
+
 async function sendEntityMessages({
   client,
   chatId,
   body,
 }: {
   client: MessagingPlatform;
-  chatId: number;
+  chatId: number | string;
   body: any;
 }): Promise<number | null> {
   const chunks = splitTelegramText(String(body.text || ""));
@@ -131,7 +142,7 @@ function validateParity({
   sessionId,
 }: {
   kind: string;
-  chatId: number;
+  chatId: number | string;
   runId?: string;
   finalText?: string;
   errorText?: string;
@@ -212,7 +223,7 @@ export async function sendMessageWithProgress({
 }: {
   client: MessagingPlatform;
   kind: string;
-  chatId: number;
+  chatId: number | string;
   execution: ((onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => Promise<CliResult>) | Promise<CliResult>;
   onProgress?: (text: string) => void;
   body?: any;
@@ -226,9 +237,10 @@ export async function sendMessageWithProgress({
   onEvent?: (event: BridgeEvent) => void;
 }): Promise<CliResult | null> {
   const { text: _ignored, ...rest } = body;
+  const capabilities = surfaceCapabilities(client);
 
   const sendTyping = async () => {
-    if (isAborted?.()) return;
+    if (isAborted?.() || !capabilities.typing) return;
     try {
       await client.sendChatAction({ chat_id: chatId, ...rest, action: "typing" });
     } catch {
@@ -246,6 +258,7 @@ export async function sendMessageWithProgress({
   // Abandoned previews must be removable before fallback can publish the
   // authoritative answer. Clients without deletion support stay final-only.
   let answerPreviewEnabled = (kind === "claude" || kind === "antigravity")
+    && capabilities.previewStreaming && capabilities.editMessages && capabilities.deleteMessages
     && typeof client.deleteMessage === "function";
   let answerPreviewMessageId: number | null = null;
   let answerPreviewText = "";
@@ -268,14 +281,10 @@ export async function sendMessageWithProgress({
   const originalOnProgress = onProgress;
 
   const renderAnswerPreview = (text: string): any => {
-    const bounded = text.length > MAX_TELEGRAM_TEXT
-      ? `${text.slice(0, MAX_TELEGRAM_TEXT - 1)}…`
-      : text;
-    try {
-      return { text: renderTelegramHtml(bounded), parse_mode: "HTML" };
-    } catch {
-      return { text: bounded };
-    }
+    const maxLength = capabilities.maxMessageLength;
+    const bounded = text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+    if (capabilities.formatting !== "telegram-html") return { text: bounded };
+    try { return { text: renderTelegramHtml(bounded), parse_mode: "HTML" }; } catch { return { text: bounded }; }
   };
 
   const publishAnswerPreview = async (): Promise<void> => {
@@ -411,7 +420,8 @@ export async function sendMessageWithProgress({
     }
     await waitForAnswerPreview();
     if (answerPreviewEnabled && answerPreviewMessageId != null
-      && text.length <= MAX_TELEGRAM_TEXT
+      && capabilities.editMessages
+      && text.length <= capabilities.maxMessageLength
       && routeNativeLayout(text, { documentEnabled: documentFallbackEnabled() }).kind === "plain") {
       try {
         await client.editMessageText({
@@ -426,7 +436,7 @@ export async function sendMessageWithProgress({
         answerPreviewEnabled = false;
       }
     }
-    if (streamingEnabled && progressMsgId != null) {
+    if (streamingEnabled && capabilities.editMessages && progressMsgId != null) {
       try {
         await client.editMessageText({
           chat_id: chatId,
@@ -442,7 +452,7 @@ export async function sendMessageWithProgress({
         /* fall through to sendTelegramMessage if edit fails */
       }
     }
-    await sendTelegramMessage({ client, kind, chatId, body: { ...body, text } });
+    await sendSurfaceMessage({ client, kind, chatId, body: { ...body, text } });
   }
 
   let finalDeliveryPreparationFailed = false;

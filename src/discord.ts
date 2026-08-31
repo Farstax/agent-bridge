@@ -15,38 +15,12 @@
 
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import type { MessagingPlatform } from "./platform.js";
+import { DISCORD_SURFACE_CAPABILITIES, type MessagingPlatform } from "./platform.js";
 import { DiscordGateway, type GatewayPayload } from "./discord-gateway.js";
 import { discordMarkdownIrEnabled, parseMarkdownToIR, renderMarkerString, DISCORD_MARKERS } from "./markdownIR.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 export const MAX_DISCORD_MESSAGE_LENGTH = 1990;
-
-function decodeHtmlEntities(text: string): string {
-  return text
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
-    .replaceAll("&amp;", "&");
-}
-
-function telegramHtmlToDiscordMarkdown(text: string): string {
-  return text
-    .replace(/<pre(?:\s+language="([^"]*)")?>([\s\S]*?)<\/pre>/gi, (_m, language: string | undefined, value: string) => {
-      const lang = decodeHtmlEntities(language ?? "").trim();
-      return "```" + lang + "\n" + decodeHtmlEntities(value).trimEnd() + "\n```";
-    })
-    .replace(/<code>([\s\S]*?)<\/code>/gi, (_m, value: string) => `\`${decodeHtmlEntities(value)}\``)
-    .replace(/<b>([\s\S]*?)<\/b>/gi, (_m, value: string) => `**${decodeHtmlEntities(value)}**`)
-    .replace(/<strong>([\s\S]*?)<\/strong>/gi, (_m, value: string) => `**${decodeHtmlEntities(value)}**`)
-    .replace(/<i>([\s\S]*?)<\/i>/gi, (_m, value: string) => `*${decodeHtmlEntities(value)}*`)
-    .replace(/<em>([\s\S]*?)<\/em>/gi, (_m, value: string) => `*${decodeHtmlEntities(value)}*`)
-    .replace(/<[^>]+>/g, "")
-    .split("\n")
-    .map(decodeHtmlEntities)
-    .join("\n");
-}
 
 export interface DiscordUpdate {
   type: "MESSAGE_CREATE" | "INTERACTION_CREATE" | string;
@@ -66,6 +40,7 @@ export interface DiscordClientOptions {
 }
 
 export class DiscordClient implements MessagingPlatform {
+  readonly capabilities = DISCORD_SURFACE_CAPABILITIES;
   private readonly opts: DiscordClientOptions;
   private readonly gateway: DiscordGateway;
   private readonly fetchFn: typeof fetch;
@@ -107,10 +82,9 @@ export class DiscordClient implements MessagingPlatform {
   }): Promise<any> {
     const channelId = String(body.channel_id ?? body.chat_id ?? "");
     const rawText = String(body.text ?? body.content ?? "");
-    const discordText = telegramHtmlToDiscordMarkdown(rawText);
     const text = discordMarkdownIrEnabled()
-      ? renderMarkerString(parseMarkdownToIR(discordText), DISCORD_MARKERS)
-      : discordText;
+      ? renderMarkerString(parseMarkdownToIR(rawText), DISCORD_MARKERS)
+      : rawText;
     const chunks = chunkText(text);
     let last: any = null;
     for (const chunk of chunks) {
@@ -130,7 +104,7 @@ export class DiscordClient implements MessagingPlatform {
   }): Promise<any> {
     const channelId = String(body.channel_id ?? body.chat_id ?? "");
     const messageId = String(body.message_id ?? "");
-    const text = telegramHtmlToDiscordMarkdown(String(body.text ?? body.content ?? ""));
+    const text = String(body.text ?? body.content ?? "");
     return this._restPatch(`/channels/${channelId}/messages/${messageId}`, { content: truncate(text) });
   }
 
@@ -192,26 +166,6 @@ export class DiscordClient implements MessagingPlatform {
   /** Sends an image to a Discord channel as an attachment. */
   async sendPhoto(chatId: number | string, filePath: string, caption?: string, _options?: unknown): Promise<void> {
     await this._sendFile(String(chatId), filePath, caption);
-  }
-
-  /**
-   * getFilePath / downloadFile are Telegram-specific attachment APIs.
-   * Discord sends file URLs in message payloads directly — these are stubs.
-   */
-  async getFilePath(_fileId: string): Promise<string> {
-    throw new Error("getFilePath is not supported on Discord; use attachment.url from the message payload");
-  }
-
-  async downloadFile(_remotePath: string, _destPath: string): Promise<void> {
-    throw new Error("downloadFile is not supported on Discord; fetch the attachment.url directly");
-  }
-
-  /**
-   * getUpdates — Discord uses WebSocket push, not HTTP polling.
-   * This stub allows BridgeEngine.run() to short-circuit on Discord.
-   */
-  async getUpdates(_options: any): Promise<any> {
-    return { result: [], ok: true };
   }
 
   // ── Private REST helpers ─────────────────────────────────────────────────

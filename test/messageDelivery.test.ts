@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { sendTelegramMessage, sendMessageWithProgress } from "../src/messageDelivery.js";
 import type { TelegramClient } from "../src/telegram.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import type { CliResult } from "../src/types.js";
 import * as telegramAdapter from "../src/events/telegramAdapter.js";
 
 const createMockClient = () => ({
+  capabilities: TELEGRAM_SURFACE_CAPABILITIES,
   sendMessage: vi.fn(async (body: any) => ({ ok: true, result: { message_id: 456, ...body } })),
   sendChatAction: vi.fn(async () => ({ ok: true, result: true })),
   editMessageText: vi.fn(async () => ({ ok: true, result: true })),
@@ -431,6 +433,7 @@ describe("sendMessageWithProgress", () => {
   it("truncates progress text to 4096 chars to stay within Telegram API limits", async () => {
     const edits: string[] = [];
     const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
       sendMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
       sendChatAction: vi.fn(async () => ({ ok: true })),
       editMessageText: vi.fn(async (body: any) => { edits.push(body.text); return { ok: true }; }),
@@ -492,6 +495,7 @@ describe("sendMessageWithProgress", () => {
 
   it("does not duplicate a Claude preview when the final edit is already applied", async () => {
     const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
       sendMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
       sendChatAction: vi.fn(async () => ({ ok: true })),
       editMessageText: vi.fn(async () => {

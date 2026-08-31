@@ -1,6 +1,6 @@
 import { mkdir, readdir, unlink, rm, chmod } from "node:fs/promises";
 import { join, extname, basename } from "node:path";
-import type { FileSendOptions, MessagingPlatform } from "./platform.js";
+import { surfaceCapabilities, type FileSendOptions, type MessagingPlatform } from "./platform.js";
 
 const BRIDGE_OUT_BASE = "/tmp/bridge-out";
 const PRIVATE_DIR_MODE = 0o700;
@@ -34,11 +34,16 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
 export async function uploadOutputFiles(
   outDir: string,
-  chatId: number,
+  chatId: number | string,
   client: Pick<MessagingPlatform, "sendPhoto" | "sendDocument">,
   options?: FileSendOptions,
   canPublish: () => boolean = () => true,
 ): Promise<void> {
+  const capabilities = surfaceCapabilities(client as MessagingPlatform);
+  if (!capabilities.attachments || typeof client.sendPhoto !== "function" || typeof client.sendDocument !== "function") {
+    await cleanOutputDir(outDir);
+    return;
+  }
   const files = await collectOutputFiles(outDir);
   if (files.length > 0) {
     console.log(`[fileOutput] uploading ${files.length} file(s) for chatId=${chatId}: ${files.map((f) => basename(f)).join(", ")}`);

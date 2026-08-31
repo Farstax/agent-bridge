@@ -64,7 +64,7 @@ describe("/reset queue escape hatch", () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const engine = makeResetEngine(db, client);
-    const fallbackChain = new ProviderFallbackChain(["codex"], db);
+    const fallbackChain = new ProviderFallbackChain(["codex"], db, () => true);
 
     db.setSession("100", "codex", "stuck-session");
     db.setSession("200", "codex", "other-session");
@@ -107,7 +107,7 @@ describe("/reset queue escape hatch", () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const exhaustedChats = new Set<string>();
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, () => true);
 
     const codexInitial = {
       handleUpdate: vi.fn(async () => { exhaustedChats.add("100"); }),

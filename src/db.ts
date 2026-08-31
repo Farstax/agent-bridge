@@ -630,7 +630,7 @@ export class BridgeDb {
   enqueueMsg(
     surface: string,
     chatKey: string,
-    msg: { prompt: string; chatId: number; threadId?: number; chatType: string; userId?: number; attachments?: string[] },
+    msg: { prompt: string; chatId: number | string; threadId?: number | string; chatType: string; userId?: number | string; attachments?: string[] },
   ): void {
     assertExecutionScope(surface, chatKey);
     this.raw
@@ -642,7 +642,7 @@ export class BridgeDb {
   }
 
   dequeueMsgs(surface: string, chatKey: string): Array<{
-    id: number; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
+    id: number; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
   }> {
     assertExecutionScope(surface, chatKey);
     return (this.raw
@@ -678,7 +678,7 @@ export class BridgeDb {
   }
 
   claimNextPendingMsg(handle: ExecutionLaneHandle): {
-    id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
+    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
   } | null {
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);
@@ -710,7 +710,7 @@ export class BridgeDb {
   }
 
   claimPendingMsgs(handle: ExecutionLaneHandle): Array<{
-    id: number; chatKey: string; prompt: string; chatId: number; threadId: number | null; chatType: string; userId: number | null; attachments: string[];
+    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
   }> {
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);
@@ -783,7 +783,7 @@ export class BridgeDb {
   admitMessage(
     surface: string,
     chatKey: string,
-    msg: { prompt: string; chatId: number; threadId?: number; chatType: string; userId?: number; attachments?: string[] },
+    msg: { prompt: string; chatId: number | string; threadId?: number | string; chatType: string; userId?: number | string; attachments?: string[] },
     maxDepth: number,
     forceQueue = false,
   ): { kind: "execute_current"; handle: ExecutionLaneHandle } | { kind: "queued"; position: number } | { kind: "full" } |

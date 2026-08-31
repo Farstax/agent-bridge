@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 function codexResult(text = "done", sessionId = "session-1"): string {
   return [
@@ -15,6 +16,7 @@ function codexResult(text = "done", sessionId = "session-1"): string {
 
 function client() {
   return {
+    capabilities: TELEGRAM_SURFACE_CAPABILITIES,
     sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
     sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
     sendPhoto: vi.fn(),

@@ -28,6 +28,19 @@ function makePrivateTopicMessage(text: string, threadId: number, userId = 42, ch
 
 function makeMockClient() {
   return {
+    capabilities: {
+      maxMessageLength: 4096,
+      editMessages: true,
+      deleteMessages: true,
+      previewStreaming: true,
+      threads: true,
+      attachments: true,
+      typing: true,
+      polling: true,
+      remoteFileDownload: true,
+      richMessages: true,
+      formatting: "telegram-html",
+    },
     getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),
     sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
     sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
@@ -1545,7 +1558,7 @@ describe("BridgeEngine", () => {
       expect(client.sendPhoto).toHaveBeenCalledOnce();
       expect(client.sendPhoto.mock.calls[0][0]).toBe(100);
       expect(client.sendPhoto.mock.calls[0][1]).toBe(join(runOutputDir, "chart.png"));
-      expect(client.sendPhoto.mock.calls[0][3]).toEqual({ message_thread_id: 7 });
+      expect(client.sendPhoto.mock.calls[0][3]).toEqual({ message_thread_id: "7" });
     });
 
     it("sends callback confirmation messages to the callback's source thread", async () => {
@@ -1632,7 +1645,7 @@ describe("BridgeEngine", () => {
       expect(client.sendMessage).toHaveBeenCalledOnce();
       const body = client.sendMessage.mock.calls[0][0];
       expect(body.text).toContain("aborted");
-      expect(body.message_thread_id).toBe(7);
+      expect(body.message_thread_id).toBe("7");
     });
   });
 
@@ -1669,7 +1682,7 @@ describe("BridgeEngine", () => {
       expect(db.getSession("100", "antigravity")).toBeNull();
       expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
         chat_id: 100,
-        message_thread_id: 7,
+        message_thread_id: "7",
         text: expect.stringContaining("native topic response"),
       }));
     });

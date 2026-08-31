@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import type { TelegramMessage } from "./types.js";
-import type { FileSendOptions, MessagingPlatform } from "./platform.js";
+import { TELEGRAM_SURFACE_CAPABILITIES, type FileSendOptions, type MessagingPlatform } from "./platform.js";
 
 const TELEGRAM_FILE_BASE_URL = "https://api.telegram.org/file/bot";
 const TELEGRAM_LONG_POLL_HEADROOM_MS = 30_000;
@@ -34,6 +34,7 @@ export interface TelegramResponse<T> {
 }
 
 export class TelegramClient implements MessagingPlatform {
+  readonly capabilities = TELEGRAM_SURFACE_CAPABILITIES;
   private readonly token: string;
   fetch: typeof fetch;
   baseUrl: string;

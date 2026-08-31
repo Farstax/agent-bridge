@@ -8,11 +8,13 @@ import {
   setUserCliPreference,
 } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 const SURFACE = "telegram:interactive";
 
 function makeMockClient() {
   return {
+    capabilities: TELEGRAM_SURFACE_CAPABILITIES,
     getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),
     sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
     sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
@@ -94,7 +96,7 @@ describe("cross-engine queue recovery", () => {
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db),
+      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db, () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -145,7 +147,7 @@ describe("cross-engine queue recovery", () => {
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db),
+      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db, () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),

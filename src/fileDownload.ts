@@ -1,7 +1,8 @@
 import { mkdir, chmod } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TelegramMessage } from "./types.js";
-import type { MessagingPlatform } from "./platform.js";
+import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
+import type { InteractiveAttachment } from "./interactiveIngress.js";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB — Telegram bot API limit
 const PRIVATE_DIR_MODE = 0o700;
@@ -43,6 +44,26 @@ function resolveContainedUploadPath(destDir: string, fileName: string): string |
   return candidate;
 }
 
+export async function downloadSurfaceAttachment(
+  client: MessagingPlatform,
+  attachment: InteractiveAttachment,
+  destDir: string,
+  fileNamePrefix = "",
+): Promise<AttachmentInfo | null> {
+  const capabilities = surfaceCapabilities(client);
+  if (!capabilities.remoteFileDownload || !client.getFilePath || !client.downloadFile) return null;
+  await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+  await chmod(destDir, PRIVATE_DIR_MODE);
+  if (attachment.fileSize !== undefined && attachment.fileSize > MAX_FILE_SIZE) return null;
+  const localPath = resolveContainedUploadPath(destDir, `${fileNamePrefix}${attachment.fileName}`);
+  if (!localPath) return null;
+  try {
+    const filePath = await client.getFilePath(attachment.fileId);
+    await client.downloadFile(filePath, localPath);
+    return { localPath, mimeType: attachment.mimeType ?? mimeTypeFromExtension(attachment.fileName) };
+  } catch { return null; }
+}
+
 export async function downloadTelegramAttachment(
   client: Pick<MessagingPlatform, "getFilePath" | "downloadFile">,
   message: TelegramMessage,
@@ -51,6 +72,9 @@ export async function downloadTelegramAttachment(
 ): Promise<AttachmentInfo | null> {
   await mkdir(destDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   await chmod(destDir, PRIVATE_DIR_MODE);
+  if (!client.getFilePath || !client.downloadFile) return null;
+  const getFilePath = client.getFilePath;
+  const downloadFile = client.downloadFile;
 
   if (message.photo && message.photo.length > 0) {
     const largest = message.photo[message.photo.length - 1];
@@ -61,8 +85,8 @@ export async function downloadTelegramAttachment(
     const localPath = resolveContainedUploadPath(destDir, fileName);
     if (!localPath) return null;
     try {
-      const filePath = await client.getFilePath(largest.file_id);
-      await client.downloadFile(filePath, localPath);
+      const filePath = await getFilePath(largest.file_id);
+      await downloadFile(filePath, localPath);
       return { localPath, mimeType: "image/jpeg" };
     } catch {
       return null;
@@ -79,8 +103,8 @@ export async function downloadTelegramAttachment(
     const localPath = resolveContainedUploadPath(destDir, fileName);
     if (!localPath) return null;
     try {
-      const filePath = await client.getFilePath(doc.file_id);
-      await client.downloadFile(filePath, localPath);
+      const filePath = await getFilePath(doc.file_id);
+      await downloadFile(filePath, localPath);
       const mimeType = doc.mime_type ?? mimeTypeFromExtension(displayFileName);
       return { localPath, mimeType };
     } catch {

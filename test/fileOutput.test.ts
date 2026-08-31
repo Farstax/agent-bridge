@@ -8,6 +8,7 @@ import {
   cleanOutputDir,
   uploadOutputFiles,
 } from "../src/fileOutput.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 async function dirExists(p: string): Promise<boolean> {
   try { await access(p); return true; } catch { return false; }
@@ -102,7 +103,7 @@ describe("uploadOutputFiles", () => {
 
     const sendPhoto = vi.fn().mockResolvedValue(undefined);
     const sendDocument = vi.fn().mockResolvedValue(undefined);
-    const client = { sendPhoto, sendDocument } as any;
+    const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument } as any;
 
     await uploadOutputFiles(dir, 42, client);
 
@@ -125,7 +126,7 @@ describe("uploadOutputFiles", () => {
 
     const sendPhoto = vi.fn().mockResolvedValue(undefined);
     const sendDocument = vi.fn().mockResolvedValue(undefined);
-    const client = { sendPhoto, sendDocument } as any;
+    const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument } as any;
 
     await uploadOutputFiles(dir, 42, client, { message_thread_id: 99 });
 
@@ -143,7 +144,7 @@ describe("uploadOutputFiles", () => {
       callCount++;
       if (callCount === 1) throw new Error("upload failed");
     });
-    const client = { sendPhoto, sendDocument: vi.fn() } as any;
+    const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument: vi.fn() } as any;
 
     await uploadOutputFiles(dir, 1, client);
     expect(sendPhoto).toHaveBeenCalledTimes(2);
@@ -157,7 +158,7 @@ describe("uploadOutputFiles", () => {
     await writeFile(join(dir, "b.png"), "y");
     let canPublish = true;
     const sendPhoto = vi.fn().mockImplementation(async () => { canPublish = false; });
-    const client = { sendPhoto, sendDocument: vi.fn() } as any;
+    const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument: vi.fn() } as any;
 
     await uploadOutputFiles(dir, 1, client, undefined, () => canPublish);
 
