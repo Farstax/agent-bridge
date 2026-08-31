@@ -10,10 +10,20 @@ if mode == "implementation":
     text = text.replace('sendTelegramMessage({', '__ISSUE605_SEND_SURFACE__({')
     path.write_text(text)
 
+    transform = Path("scripts/issue-605-transform-v2.py")
+    source = transform.read_text()
+    source = source.replace(
+        'text = read("src/engine.ts").replace(\', TelegramMessage\', \'\').replace(\'TelegramMessage, \', \'\')',
+        'text = read("src/engine.ts")',
+        1,
+    )
+    transform.write_text(source)
+
 subprocess.check_call(["python3", "scripts/issue-605-transform-v2.py", mode])
 
 if mode == "implementation":
     path = Path("src/engine.ts")
     text = path.read_text().replace('import { TelegramClient } from "./telegram.js";\n', '')
     text = text.replace('__ISSUE605_SEND_SURFACE__({', 'sendSurfaceMessage({')
+    text = text.replace(', TelegramMessage, TelegramCallbackQuery', ', TelegramCallbackQuery', 1)
     path.write_text(text)
