@@ -161,9 +161,27 @@ function routines(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
     if (!id) continue;
     const occurrencePrefix = `${OCCURRENCE_PREFIX}${id}:`;
     const occurrence = db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key DESC LIMIT 1").get(`${occurrencePrefix}%`) as Row | undefined;
+    const claimedAt = text(occurrence?.value, 60);
+    let correlatedRun: Row | null = null;
+    let correlationReasonCode: string | null = occurrence ? "run_correlation_unavailable" : null;
+    if (claimedAt && hasTable(db, "bridge_runs")) {
+      const claimedMs = Date.parse(claimedAt);
+      if (Number.isFinite(claimedMs)) {
+        const cutoff = new Date(claimedMs + 30_000).toISOString();
+        const candidates = db.prepare(`SELECT run_id,status,bot,started_at FROM bridge_runs
+          WHERE chat_id=? AND started_at>=? AND started_at<=?
+          ORDER BY started_at ASC, rowid ASC LIMIT 2`).all(s.chatKey, claimedAt, cutoff) as Row[];
+        if (candidates.length === 1) {
+          correlatedRun = candidates[0];
+          correlationReasonCode = null;
+        } else if (candidates.length > 1) {
+          correlationReasonCode = "run_correlation_ambiguous";
+        }
+      }
+    }
     const schedule = r.schedule && typeof r.schedule === "object" ? r.schedule as Row : null;
     const next = nextRoutineOccurrence(r);
-    out.push({ id, name: text(r.name, 120), kind: r.kind === "autonomous" ? "autonomous" : "companion", enabled: r.enabled === true, schedule: schedule?.type === "once" ? { type: "once", localDateTime: text(schedule.localDateTime, 40) } : schedule?.type === "weekly" ? { type: "weekly", weekdays: Array.isArray(schedule.weekdays) ? schedule.weekdays.slice(0,7) : [], time: text(schedule.time, 20) } : null, timezone: text(r.timezone, 100), ...next, recentOccurrence: occurrence ? { intendedAt: text(String(occurrence.key).slice(occurrencePrefix.length), 60), claimedAt: text(occurrence.value, 60), runId: null, reasonCode: "run_correlation_unavailable" } : null });
+    out.push({ id, name: text(r.name, 120), kind: r.kind === "autonomous" ? "autonomous" : "companion", enabled: r.enabled === true, schedule: schedule?.type === "once" ? { type: "once", localDateTime: text(schedule.localDateTime, 40) } : schedule?.type === "weekly" ? { type: "weekly", weekdays: Array.isArray(schedule.weekdays) ? schedule.weekdays.slice(0,7) : [], time: text(schedule.time, 20) } : null, timezone: text(r.timezone, 100), ...next, recentOccurrence: occurrence ? { intendedAt: text(String(occurrence.key).slice(occurrencePrefix.length), 60), claimedAt, runId: text(correlatedRun?.run_id, 120), runStatus: text(correlatedRun?.status, 40), provider: pid(correlatedRun?.bot), reasonCode: correlationReasonCode } : null });
   }
   return out;
 }
