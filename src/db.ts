@@ -630,24 +630,24 @@ export class BridgeDb {
   enqueueMsg(
     surface: string,
     chatKey: string,
-    msg: { prompt: string; chatId: number | string; threadId?: number | string; chatType: string; userId?: number | string; attachments?: string[] },
+    msg: { prompt: string; chatId: number | string; threadId?: number | string; chatType: string; userId?: number | string; attachments?: string[]; scheduledOccurrenceKey?: string },
   ): void {
     assertExecutionScope(surface, chatKey);
     this.raw
       .prepare(
-        `INSERT INTO pending_messages (surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id, attachments_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO pending_messages (surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id, attachments_json, scheduled_occurrence_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(surface, chatKey, msg.prompt, msg.chatId, msg.threadId ?? null, msg.chatType, msg.userId ?? null, JSON.stringify(msg.attachments ?? []));
+      .run(surface, chatKey, msg.prompt, msg.chatId, msg.threadId ?? null, msg.chatType, msg.userId ?? null, JSON.stringify(msg.attachments ?? []), msg.scheduledOccurrenceKey ?? null);
   }
 
   dequeueMsgs(surface: string, chatKey: string): Array<{
-    id: number; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
+    id: number; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[]; scheduledOccurrenceKey: string | null;
   }> {
     assertExecutionScope(surface, chatKey);
     return (this.raw
       .prepare(`SELECT id, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
-                       attachments_json AS attachmentsJson
+                       attachments_json AS attachmentsJson, scheduled_occurrence_key AS scheduledOccurrenceKey
                 FROM pending_messages WHERE surface = ? AND chat_key = ? ORDER BY id ASC`)
       .all(surface, chatKey) as any[]).map(({ attachmentsJson, ...row }) => ({ ...row, attachments: JSON.parse(attachmentsJson || "[]") }));
   }
@@ -678,7 +678,7 @@ export class BridgeDb {
   }
 
   claimNextPendingMsg(handle: ExecutionLaneHandle): {
-    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
+    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[]; scheduledOccurrenceKey: string | null;
   } | null {
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);
@@ -695,7 +695,8 @@ export class BridgeDb {
       if (active) return null;
       const row = this.raw.prepare(`
         SELECT id, chat_key AS chatKey, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
-               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson
+               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson,
+               scheduled_occurrence_key AS scheduledOccurrenceKey
         FROM pending_messages WHERE surface = ? AND chat_key = ? AND state = 'queued' ORDER BY id ASC LIMIT 1
       `).get(surface, chatKey) as any;
       if (!row) return null;
@@ -710,7 +711,7 @@ export class BridgeDb {
   }
 
   claimPendingMsgs(handle: ExecutionLaneHandle): Array<{
-    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
+    id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[]; scheduledOccurrenceKey: string | null;
   }> {
     const { surface, chatKey } = handle;
     assertExecutionScope(surface, chatKey);
@@ -722,7 +723,8 @@ export class BridgeDb {
       `).run(surface, chatKey, handle.runId, handle.acquisitionId);
       const rows = this.raw.prepare(`
         SELECT id, chat_key AS chatKey, prompt, chat_id AS chatId, thread_id AS threadId, chat_type AS chatType, user_id AS userId,
-               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson
+               state, claim_run_id AS claimRunId, claim_acquisition_id AS claimAcquisitionId, attachments_json AS attachmentsJson,
+               scheduled_occurrence_key AS scheduledOccurrenceKey
         FROM pending_messages
         WHERE surface = ? AND chat_key = ?
           AND (state = 'queued' OR (state = 'claimed' AND claim_run_id = ? AND claim_acquisition_id = ?))
@@ -783,7 +785,7 @@ export class BridgeDb {
   admitMessage(
     surface: string,
     chatKey: string,
-    msg: { prompt: string; chatId: number | string; threadId?: number | string; chatType: string; userId?: number | string; attachments?: string[] },
+    msg: { prompt: string; chatId: number | string; threadId?: number | string; chatType: string; userId?: number | string; attachments?: string[]; scheduledOccurrenceKey?: string },
     maxDepth: number,
     forceQueue = false,
   ): { kind: "execute_current"; handle: ExecutionLaneHandle } | { kind: "queued"; position: number } | { kind: "full" } |

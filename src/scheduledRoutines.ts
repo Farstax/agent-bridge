@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import type { BridgeDb } from "./db.js";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
+import { encodeScheduledOccurrenceEvidence, scheduledOccurrenceKey } from "./scheduledRunCorrelation.js";
 
 export type ScheduledRoutineKind = "companion" | "autonomous";
 export type ScheduledRoutineSchedule =
@@ -33,10 +34,9 @@ export interface ScheduledOccurrence {
   stale: boolean;
 }
 
-export type ScheduledRoutineDispatch = (routine: ScheduledRoutine, intendedAt: string) => Promise<void>;
+export type ScheduledRoutineDispatch = (routine: ScheduledRoutine, intendedAt: string, occurrenceKey: string) => Promise<void>;
 
 const ROUTINE_PREFIX = "scheduled-routine:v1:";
-const OCCURRENCE_PREFIX = "scheduled-routine-occurrence:v1:";
 const MAX_NAME_CHARS = 120;
 const MAX_INSTRUCTION_CHARS = 1_800;
 const DEFAULT_CATCH_UP_MS = 6 * 60 * 60 * 1_000;
@@ -54,10 +54,6 @@ interface LocalParts {
 
 function routineKey(id: string): string {
   return `${ROUTINE_PREFIX}${id}`;
-}
-
-function occurrenceKey(id: string, intendedAt: string): string {
-  return `${OCCURRENCE_PREFIX}${id}:${intendedAt}`;
 }
 
 function bounded(value: string, label: string, max: number): string {
@@ -244,8 +240,9 @@ export function deleteScheduledRoutine(db: BridgeDb, id: string, surfaceIdentity
 }
 
 export function claimScheduledRoutineOccurrence(db: BridgeDb, id: string, intendedAt: string): boolean {
+  const claimedAt = new Date().toISOString();
   const result = db.raw.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
-    .run(occurrenceKey(id, intendedAt), new Date().toISOString());
+    .run(scheduledOccurrenceKey(id, intendedAt), encodeScheduledOccurrenceEvidence(claimedAt));
   return result.changes === 1;
 }
 
@@ -253,15 +250,15 @@ function claimScheduledRoutineForDispatch(
   db: BridgeDb,
   routine: ScheduledRoutine,
   intendedAt: string,
-): boolean {
+): string | null {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(routineKey(routine.id)) as { value: string } | undefined;
     const current = row ? parseRoutine(row.value) : null;
-    if (!current || !current.enabled) return false;
-    if (current.surfaceIdentity !== routine.surfaceIdentity || current.chatKey !== routine.chatKey || current.ownerKey !== routine.ownerKey) return false;
-    if (!claimScheduledRoutineOccurrence(db, routine.id, intendedAt)) return false;
+    if (!current || !current.enabled) return null;
+    if (current.surfaceIdentity !== routine.surfaceIdentity || current.chatKey !== routine.chatKey || current.ownerKey !== routine.ownerKey) return null;
+    if (!claimScheduledRoutineOccurrence(db, routine.id, intendedAt)) return null;
     if (current.schedule.type === "once") replaceRoutine(db, { ...current, enabled: false });
-    return true;
+    return scheduledOccurrenceKey(routine.id, intendedAt);
   });
 }
 
@@ -309,9 +306,10 @@ export async function scanScheduledRoutines(
   for (const routine of listScheduledRoutines(db, surfaceIdentity).filter((item) => item.enabled)) {
     const occurrence = latestDueScheduledOccurrence(routine, nowMs);
     if (!occurrence) continue;
-    if (!claimScheduledRoutineForDispatch(db, routine, occurrence.intendedAt)) continue;
+    const occurrenceKey = claimScheduledRoutineForDispatch(db, routine, occurrence.intendedAt);
+    if (!occurrenceKey) continue;
     if (occurrence.stale) continue;
-    await dispatch(routine, occurrence.intendedAt);
+    await dispatch(routine, occurrence.intendedAt, occurrenceKey);
   }
 }
 
@@ -367,6 +365,7 @@ export function buildScheduledInteractiveTurn(
   routine: ScheduledRoutine,
   intendedAt: string,
   authorizedUserId: string,
+  claimedOccurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt),
 ): InteractiveTurnInput {
   const syntheticId = deterministicSyntheticId(routine.id, intendedAt);
   const text = [
@@ -388,13 +387,14 @@ export function buildScheduledInteractiveTurn(
       actorId: authorizedUserId,
       messageId,
       text,
+      scheduledOccurrenceKey: claimedOccurrenceKey,
       ...(destination.threadId === undefined ? {} : { threadId: String(destination.threadId) }),
       delivery: { chatId: destination.chatId, chatType: destination.chatId < 0 ? "supergroup" : "private" },
       attachments: [],
     };
   }
   if (routine.surfaceIdentity.startsWith("discord:")) {
-    return { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text, delivery: { chatId: routine.chatKey, chatType: "private" }, attachments: [] };
+    return { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text, scheduledOccurrenceKey: claimedOccurrenceKey, delivery: { chatId: routine.chatKey, chatType: "private" }, attachments: [] };
   }
   throw new Error(`unsupported scheduled routine surface: ${routine.surfaceIdentity}`);
 }

@@ -51,6 +51,7 @@ import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
+import { linkScheduledOccurrenceRun } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { prependHandoffModel } from "./promptWrapping.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
@@ -84,7 +85,8 @@ export interface BridgeEngineHooks {
 }
 
 export interface PendingMessage {
-  id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[];
+  id: number; chatKey: string; prompt: string; chatId: number | string; threadId: number | string | null; chatType: string; userId: number | string | null; attachments: string[]; scheduledOccurrenceKey: string | null;
+  scheduledOccurrenceKeys?: string[];
   pendingIds?: number[];
   queueRecoveryAttempt?: number;
   laneHandle?: ExecutionLaneHandle;
@@ -362,6 +364,8 @@ export class BridgeEngine {
     const chatId = primaryMessage.delivery.chatId;
     const userId = primaryMessage.actorId;
     const chatKey = primaryMessage.chatKey;
+    const scheduledOccurrenceKeys = [...new Set(messages.map((message) => message.scheduledOccurrenceKey).filter((key): key is string => Boolean(key)))];
+    if (scheduledOccurrenceKeys.length > 1) throw new Error("interactive group crossed scheduled occurrence boundary");
     const executionLane = this._executionLane(chatKey);
     if (!this.laneCoordinator.isResetting(executionLane) && !this.laneCoordinator.hasCancellation(executionLane)) this.laneCoordinator.clearAborted(executionLane);
     const hookCtx: HookContext = { chatId, chatKey, threadId, userId };
@@ -433,7 +437,7 @@ export class BridgeEngine {
     const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.laneCoordinator.hasAugmentedTask(executionLane);
     if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt: prompt!, attachments: [...attachments] });
     try {
-      executionOutcome = await this._executeAndSend(prompt!, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx, attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive, ownsAugmentedTask);
+      executionOutcome = await this._executeAndSend(prompt!, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx, attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive, ownsAugmentedTask, true, [], scheduledOccurrenceKeys);
     } finally {
       const transferred = this.laneCoordinator.isAugmentTransferred(executionLane);
       const retainedByCancellation = this.laneCoordinator.hasCancellation(executionLane);
@@ -518,6 +522,7 @@ export class BridgeEngine {
     ownsActiveTask = false,
     notifyCapacityFailure = true,
     claimedPendingIds: number[] = [],
+    scheduledOccurrenceKeys: string[] = [],
   ): Promise<ExecutionOutcome> {
     void attachmentLocalPath;
     let prompt = rawPrompt;
@@ -530,6 +535,7 @@ export class BridgeEngine {
     if (!laneHandle) {
       const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
         prompt, chatId, threadId, chatType, userId, attachments,
+        scheduledOccurrenceKey: scheduledOccurrenceKeys[0],
       }, MAX_QUEUE_DEPTH, honorBusyMode && !ownsActiveTask && this.laneCoordinator.hasAugmentedTask(this._executionLane(chatKey)));
       if (admission.kind === "full") {
         await this.sendText(chatId, { text: `⏳ Queue is full (max ${MAX_QUEUE_DEPTH}). Please wait.`, message_thread_id: threadId });
@@ -556,7 +562,7 @@ export class BridgeEngine {
 
     this._assertLaneOwned(laneHandle);
     if (ownsActiveTask && honorBusyMode) {
-      this.db.enqueueMsg(this.surfaceIdentity, chatKey, { prompt, chatId, threadId, chatType, userId, attachments });
+      this.db.enqueueMsg(this.surfaceIdentity, chatKey, { prompt, chatId, threadId, chatType, userId, attachments, scheduledOccurrenceKey: scheduledOccurrenceKeys[0] });
       const persisted = this.db.claimNextPendingMsg(laneHandle);
       if (!persisted) throw new Error("failed to persist and claim active augmented task");
       activePendingIds.push(persisted.id);
@@ -579,6 +585,11 @@ export class BridgeEngine {
 
     try {
       const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
+      for (const occurrenceKey of scheduledOccurrenceKeys) {
+        if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {
+          throw new Error(`scheduled occurrence correlation unavailable: ${occurrenceKey}`);
+        }
+      }
       const result = await this._executeAndDeliverTurn({
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
@@ -881,6 +892,7 @@ export class BridgeEngine {
         prompt: [...(augmentation ? [augmentation.prompt] : []), ...claimed.map((row) => row.prompt)].join("\n\n"),
         attachments: [...(augmentation?.attachments ?? []), ...claimed.flatMap((row) => row.attachments)],
         pendingIds: claimed.map((row) => row.id),
+        scheduledOccurrenceKeys: [...new Set(claimed.map((row) => row.scheduledOccurrenceKey).filter((key): key is string => Boolean(key)))],
         queueRecoveryAttempt: recoveryAttempt,
       };
       nextPending = undefined;
@@ -975,6 +987,7 @@ export class BridgeEngine {
       false, !next.laneLifecycleManaged, false, false,
       next.queueRecoveryAttempt == null || next.queueRecoveryAttempt >= MAX_QUEUE_RECOVERY_ATTEMPTS,
       next.pendingIds ?? [next.id],
+      next.scheduledOccurrenceKeys ?? (next.scheduledOccurrenceKey ? [next.scheduledOccurrenceKey] : []),
     );
   }
 

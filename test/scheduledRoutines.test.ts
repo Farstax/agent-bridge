@@ -16,6 +16,7 @@ import {
   scanScheduledRoutines,
   type ScheduledRoutine,
 } from "../src/scheduledRoutines.js";
+import { parseScheduledOccurrenceEvidence, scheduledOccurrenceKey } from "../src/scheduledRunCorrelation.js";
 
 const paths: string[] = [];
 
@@ -103,6 +104,29 @@ describe("scheduled companion routines", () => {
     createScheduledRoutine(db, weekly());
     expect(claimScheduledRoutineOccurrence(db, "routine-1", "2026-08-31T06:00:00.000Z")).toBe(true);
     expect(claimScheduledRoutineOccurrence(db, "routine-1", "2026-08-31T06:00:00.000Z")).toBe(false);
+    db.close();
+  });
+
+  it("persists the claimed occurrence key through the pending queue", () => {
+    const db = setup();
+    const intendedAt = "2026-08-31T06:00:00.000Z";
+    expect(claimScheduledRoutineOccurrence(db, "routine-1", intendedAt)).toBe(true);
+    const key = scheduledOccurrenceKey("routine-1", intendedAt);
+    const evidence = parseScheduledOccurrenceEvidence(db.getSetting(key));
+    expect(evidence).toEqual(expect.objectContaining({ version: 1, runId: null }));
+
+    db.enqueueMsg("telegram:interactive", "-100:42", {
+      prompt: "scheduled prompt",
+      chatId: -100,
+      threadId: 42,
+      chatType: "supergroup",
+      userId: 123,
+      scheduledOccurrenceKey: key,
+    });
+    const handle = db.acquireLock("telegram:interactive", "-100:42");
+    expect(handle).not.toBeNull();
+    const claimed = db.claimNextPendingMsg(handle!);
+    expect(claimed?.scheduledOccurrenceKey).toBe(key);
     db.close();
   });
 
