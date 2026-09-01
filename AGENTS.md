@@ -18,10 +18,6 @@ Agent Bridge coordinates capable native agent CLIs; it is not a competing agent 
 
 For questions about how this repository works or other implementation-specific behavior, inspect the relevant implementation source with the active provider's native repository/search/file tools before describing it. Prefer verified implementation over plausible inference. Treat native source inspection as the normal first step; use retained conversation context only to locate likely areas, not as evidence for current implementation. If the relevant source cannot be inspected, state that limitation instead of presenting an inferred implementation as verified.
 
-### Repository-grounded implementation explanations
-
-For questions about how this repository works or other implementation-specific behavior, inspect the relevant implementation source with the active provider's native repository/search/file tools before describing it. Prefer verified implementation over plausible inference. Treat native source inspection as the normal first step; use retained conversation context only to locate likely areas, not as evidence for current implementation. If the relevant source cannot be inspected, state that limitation instead of presenting an inferred implementation as verified.
-
 ### Provider-owned completion
 
 Ordinary Claude and Agy Runs delegate provider-owned background/task completion to the provider CLI. Bridge owns the Run, lane, cancellation/process fence, fallback, delivery, and restart reconciliation; it must not persist or infer a second provider-task lifecycle. Codex remains unchanged until it exposes an equivalent native completion boundary. While a provider invocation is alive, messaging surfaces keep typing refreshed until it settles or is fenced.
