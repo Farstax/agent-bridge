@@ -3,6 +3,18 @@ import { describe, expect, it } from "vitest";
 import { applyPendingSurfaceCoordinatesMigration } from "../src/db/pendingSurfaceCoordinatesMigration.js";
 
 describe("pending surface-coordinate migration", () => {
+  it("leaves role-specific databases without pending_messages unchanged", () => {
+    const raw = new Database(":memory:");
+    try {
+      raw.exec("CREATE TABLE health_plugin_reports (plugin_name TEXT PRIMARY KEY, report_json TEXT NOT NULL, saved_at INTEGER NOT NULL)");
+      applyPendingSurfaceCoordinatesMigration(raw);
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_messages'").get()).toBeUndefined();
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'health_plugin_reports'").get()).toBeTruthy();
+    } finally {
+      raw.close();
+    }
+  });
+
   it("preserves Telegram numbers and repairs/prevents Discord Snowflake coercion", () => {
     const raw = new Database(":memory:");
     try {

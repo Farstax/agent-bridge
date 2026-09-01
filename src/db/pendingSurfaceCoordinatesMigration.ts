@@ -12,6 +12,11 @@ import type Database from "better-sqlite3";
  * old INTEGER affinity may already have coerced their original strings.
  */
 export function applyPendingSurfaceCoordinatesMigration(raw: Database.Database): void {
+  const pendingMessages = raw.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_messages'",
+  ).get() as { name: string } | undefined;
+  if (!pendingMessages) return;
+
   raw.pragma("legacy_alter_table = ON");
   try {
     raw.exec(`
