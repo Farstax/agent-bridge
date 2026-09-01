@@ -1,29 +1,26 @@
-name: Focused fix 627
+name: focused-fix-627
 
-on:
+"on":
   push:
-    branches: [fix/627-cleanup-permissions]
+    branches:
+      - fix/627-cleanup-permissions
 
 permissions:
   contents: write
 
 jobs:
-  apply-test-commit:
-    if: contains(github.event.head_commit.message, '[focused-fix]')
+  focused:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24.15.0
           cache: npm
-      - name: Apply #627 fix and regression coverage
+      - name: Apply fix and tests
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           script = Path('scripts/reap-tmp-artifacts.sh')
           text = script.read_text()
           text = text.replace('DRY_RUN=0\n[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1\n', 'DRY_RUN=0\nFAILURES=0\n[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1\n', 1)
@@ -43,23 +40,16 @@ jobs:
               log "would remove ($reason): $entry"
               return 0
             fi
-
             log "removing ($reason): $entry"
             if rm_error="$(rm -rf -- "$entry" 2>&1)"; then
               return 0
             fi
-
-            # The runtime account is contractually host-admin capable. A bounded
-            # janitor entry can therefore retry through non-interactive sudo when
-            # sticky-directory/root ownership blocks the ordinary unlink. Keep
-            # the elevated operation scoped to the exact already-qualified entry.
             if command -v sudo >/dev/null 2>&1; then
               if sudo_error="$(sudo -n /usr/bin/rm -rf -- "$entry" 2>&1)"; then
                 log "removed with administrative fallback: $entry"
                 return 0
               fi
             fi
-
             [[ -n "$rm_error" ]] && printf '%s\\n' "$rm_error" >&2
             [[ -n "$sudo_error" ]] && printf '%s\\n' "$sudo_error" >&2
             log "failed to remove eligible artifact: $entry" >&2
@@ -92,46 +82,32 @@ jobs:
             mkdirSync(staleScratch, { recursive: true });
             mkdirSync(fakeBin, { recursive: true });
             ageEntry(staleScratch, 48);
-
             const fakeRm = join(fakeBin, "rm");
             writeFileSync(fakeRm, "#!/usr/bin/env bash\necho 'simulated permission denied' >&2\nexit 1\n");
             chmodSync(fakeRm, 0o755);
             const fakeSudo = join(fakeBin, "sudo");
             writeFileSync(fakeSudo, "#!/usr/bin/env bash\n[[ \"$1\" == \"-n\" ]] && shift\nexec \"$@\"\n");
             chmodSync(fakeSudo, 0o755);
-
-            const result = run({
-              REAP_TMP_ROOT: tmpRoot,
-              REAP_MAX_AGE_HOURS: "24",
-              PATH: `${fakeBin}:${process.env.PATH}`,
-            });
-
+            const result = run({ REAP_TMP_ROOT: tmpRoot, REAP_MAX_AGE_HOURS: "24", PATH: `${fakeBin}:${process.env.PATH}` });
             expect(result.status).toBe(0);
             expect(existsSync(staleScratch)).toBe(false);
             expect(result.stdout).toContain("administrative fallback");
             expect(result.stderr).not.toContain("simulated permission denied");
           });
 
-          it("fails the cleanup service when both ordinary and administrative removal fail", () => {
+          it("fails cleanup when ordinary and administrative removal both fail", () => {
             const tmpRoot = makeRoot();
             const staleScratch = join(tmpRoot, "agent-bridge-unremovable-rollout");
             const fakeBin = join(tmpRoot, "bin");
             mkdirSync(staleScratch, { recursive: true });
             mkdirSync(fakeBin, { recursive: true });
             ageEntry(staleScratch, 48);
-
             for (const name of ["rm", "sudo"]) {
               const executable = join(fakeBin, name);
               writeFileSync(executable, `#!/usr/bin/env bash\necho '${name} denied' >&2\nexit 1\n`);
               chmodSync(executable, 0o755);
             }
-
-            const result = run({
-              REAP_TMP_ROOT: tmpRoot,
-              REAP_MAX_AGE_HOURS: "24",
-              PATH: `${fakeBin}:${process.env.PATH}`,
-            });
-
+            const result = run({ REAP_TMP_ROOT: tmpRoot, REAP_MAX_AGE_HOURS: "24", PATH: `${fakeBin}:${process.env.PATH}` });
             expect(result.status).toBe(1);
             expect(existsSync(staleScratch)).toBe(true);
             expect(result.stderr).toContain("cleanup incomplete");
@@ -140,11 +116,10 @@ jobs:
 '''
           if marker not in t:
               raise SystemExit('test insertion marker not found')
-          t = t.replace(marker, addition + marker, 1)
-          test.write_text(t)
+          test.write_text(t.replace(marker, addition + marker, 1))
           PY
       - run: npm ci
-      - name: Run focused #627 tests only
+      - name: Focused tests
         run: npx vitest run test/reapTmpArtifacts.test.ts
       - name: Commit tested fix
         run: |
@@ -153,4 +128,4 @@ jobs:
           git add scripts/reap-tmp-artifacts.sh test/reapTmpArtifacts.test.ts
           git rm .github/workflows/focused-fix-627.yml .focused-fix-627
           git commit -m 'fix: clean root-owned bounded artifacts safely (#627)'
-          git push origin HEAD:${GITHUB_REF_NAME}
+          git push origin HEAD:fix/627-cleanup-permissions
