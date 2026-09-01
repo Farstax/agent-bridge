@@ -1,0 +1,49 @@
+name: Temporary issue 637 patch
+
+on:
+  push:
+    branches: [oss-637-fallback-continuation-intent]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply exact engine seam
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/engine.ts')
+          s = p.read_text()
+          old = 'import { clearHandoffRequired } from "./handoffState.js";'
+          new = 'import { clearHandoffRequired, isProviderFallbackHandoffRequired } from "./handoffState.js";'
+          assert s.count(old) == 1, 'handoff import seam changed'
+          s = s.replace(old, new)
+          old = 'import { prependHandoffModel } from "./promptWrapping.js";'
+          new = 'import { prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";'
+          assert s.count(old) == 1, 'prompt wrapping import seam changed'
+          s = s.replace(old, new)
+          old = '    const handoffPrompt = shouldInject ? prependHandoffModel(workspacePrompt, model) : workspacePrompt;'
+          new = '''    const fallbackPrompt = shouldInject && isAgentKind(this.kind) && isProviderFallbackHandoffRequired(this.db, chatKey, this.kind)\n      ? prependProviderFallbackContinuation(workspacePrompt)\n      : workspacePrompt;\n    const handoffPrompt = shouldInject ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;'''
+          assert s.count(old) == 1, 'prompt construction seam changed'
+          s = s.replace(old, new)
+          p.write_text(s)
+          PY
+          git diff --check
+          git diff -- src/engine.ts
+      - name: Commit product patch
+        shell: bash
+        run: |
+          if git diff --quiet -- src/engine.ts; then exit 0; fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/engine.ts
+          git commit -m 'fix: preserve provider fallback continuation intent'
+          git push origin HEAD:${GITHUB_REF_NAME}
