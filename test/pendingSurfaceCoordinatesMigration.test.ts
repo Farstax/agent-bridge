@@ -26,17 +26,17 @@ describe("pending surface-coordinate migration", () => {
         CREATE INDEX idx_pending_msgs_surface_chat_key
           ON pending_messages(surface, chat_key, id);
       `);
-      const insert = raw.prepare(`
+      const insertBefore = raw.prepare(`
         INSERT INTO pending_messages (
           surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
-      insert.run("telegram:interactive", "100", "legacy numeric", 100, 200, "private", 300);
+      insertBefore.run("telegram:interactive", "100", "legacy numeric", 100, 200, "private", 300);
 
       const chatId = "1234567890123456789";
       const threadId = "2234567890123456789";
       const userId = "3234567890123456789";
-      insert.run("discord:interactive", chatId, "pre-migration snowflakes", chatId, threadId, "private", userId);
+      insertBefore.run("discord:interactive", chatId, "pre-migration snowflakes", chatId, threadId, "private", userId);
 
       expect(raw.prepare(`
         SELECT typeof(chat_id) AS chatIdType, typeof(thread_id) AS threadIdType, typeof(user_id) AS userIdType
@@ -63,7 +63,12 @@ describe("pending surface-coordinate migration", () => {
         FROM pending_messages WHERE prompt = 'pre-migration snowflakes'
       `).get()).toEqual({ chatId, threadId, userId });
 
-      insert.run("discord:interactive", chatId, "post-migration snowflakes", chatId, threadId, "private", userId);
+      const insertAfter = raw.prepare(`
+        INSERT INTO pending_messages (
+          surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertAfter.run("discord:interactive", chatId, "post-migration snowflakes", chatId, threadId, "private", userId);
       expect(raw.prepare(`
         SELECT chat_id AS chatId, thread_id AS threadId, user_id AS userId
         FROM pending_messages WHERE prompt = 'post-migration snowflakes'
