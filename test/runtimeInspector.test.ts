@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { applyMigrations } from "../src/db/schema.js";
-import { createScheduledRoutine } from "../src/scheduledRoutines.js";
+import { claimScheduledRoutineOccurrence, createScheduledRoutine } from "../src/scheduledRoutines.js";
 import { createAutonomousGoal } from "../src/autonomousGoalRuntime.js";
 import { HealthReportStore } from "../src/health/reports.js";
 import {
@@ -45,6 +45,9 @@ describe("runtime inspector", () => {
         enabled: true,
         createdAt: new Date().toISOString(),
       });
+      const routineOccurrence = new Date().toISOString();
+      expect(claimScheduledRoutineOccurrence(db, "routine-1", routineOccurrence)).toBe(true);
+      db.insertRun("run-routine", "chat-1", "codex");
       createAutonomousGoal(db, {
         goalId: "goal-1",
         prompt: "private objective ghp_supersecret",
@@ -85,7 +88,17 @@ describe("runtime inspector", () => {
         expect.objectContaining({ provider: "codex", exists: true }),
       ]));
       expect(view.scheduledRoutines).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: "routine-1", name: "Daily status", kind: "companion" }),
+        expect.objectContaining({
+          id: "routine-1",
+          name: "Daily status",
+          kind: "companion",
+          recentOccurrence: expect.objectContaining({
+            runId: "run-routine",
+            runStatus: "running",
+            provider: "codex",
+            reasonCode: null,
+          }),
+        }),
       ]));
       expect(view.autonomy.goals).toEqual(expect.arrayContaining([
         expect.objectContaining({ goalId: "goal-1", provider: "codex", status: "active", maxCycles: 4 }),
@@ -99,6 +112,45 @@ describe("runtime inspector", () => {
       for (const secret of ["ghp_supersecret", "secret-session-id", "private routine instruction", "private objective", "private health detail"]) {
         expect(text).not.toContain(secret);
       }
+    } finally {
+      db.close();
+      healthDb.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when more than one Run could match a scheduled occurrence", () => {
+    const { dir, path, db, healthDb } = fixture();
+    try {
+      createScheduledRoutine(db, {
+        id: "routine-ambiguous",
+        name: "Ambiguous routine",
+        instruction: "bounded instruction",
+        kind: "companion",
+        surfaceIdentity: "telegram:interactive",
+        chatKey: "chat-ambiguous",
+        ownerKey: "owner-1",
+        timezone: "UTC",
+        schedule: { type: "weekly", weekdays: [1], time: "09:00" },
+        enabled: true,
+        createdAt: new Date().toISOString(),
+      });
+      const intendedAt = new Date().toISOString();
+      expect(claimScheduledRoutineOccurrence(db, "routine-ambiguous", intendedAt)).toBe(true);
+      db.insertRun("run-a", "chat-ambiguous", "codex");
+      db.insertRun("run-b", "chat-ambiguous", "claude");
+
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        AGENT_BRIDGE_CHAT_KEY: "chat-ambiguous",
+        AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
+        AGENT_BRIDGE_OWNER_KEY: "owner-1",
+        HOME: dir,
+      }));
+      expect(view.scheduledRoutines[0].recentOccurrence).toEqual(expect.objectContaining({
+        runId: null,
+        reasonCode: "run_correlation_ambiguous",
+      }));
     } finally {
       db.close();
       healthDb.close();
