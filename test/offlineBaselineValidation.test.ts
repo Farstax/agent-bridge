@@ -180,7 +180,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     database.exec(`
       INSERT INTO pending_messages
         (surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id, state, claim_run_id, claim_acquisition_id, claimed_at, attachments_json)
-      VALUES ('discord', 'chat:claimed', 'claimed prompt', 42, 7, 'private', 99, 'claimed', 'run-claimed', 'acq-claimed', '2026-07-27T00:00:00Z', '["attachment.txt"]');
+      VALUES ('telegram:interactive', 'chat:claimed', 'claimed prompt', 42, 7, 'private', 99, 'claimed', 'run-claimed', 'acq-claimed', '2026-07-27T00:00:00Z', '["attachment.txt"]');
       INSERT INTO bridge_runs
         (run_id, chat_id, bot, status, started_at, ended_at, session_id, final_text_preview, error)
       VALUES ('run-claimed', '42', 'codex', 'failed', '2026-07-27T00:00:00Z', '2026-07-27T00:01:00Z', 'session-claimed', 'result preview', 'failure detail');
