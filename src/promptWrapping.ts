@@ -26,6 +26,15 @@ export function wrapPromptContext(
   ].join("\n");
 }
 
+export function prependProviderFallbackContinuation(prompt: string): string {
+  return [
+    "[Agent Bridge provider fallback]",
+    "The previous provider became unavailable while working on this same user action. Continue the existing work rather than restarting it blindly. Previous providers may have left valid progress in the current shared working directory. Before repeating work, inspect the repository, worktree and generated artifacts, preserve valid existing work, and continue the remaining requested scope.",
+    "",
+    prompt,
+  ].join("\n");
+}
+
 export function prependHandoffModel(prompt: string, model: string | null): string {
   return [
     "[Agent Bridge handoff]",
