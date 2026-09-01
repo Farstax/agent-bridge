@@ -112,6 +112,40 @@ describe("startup queue recovery", () => {
     expect(current.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(0);
   });
 
+  it("preserves string surface coordinates losslessly across restart", () => {
+    const surface = "discord:interactive";
+    const chatKey = "1234567890123456789";
+    const chatId = "1234567890123456789";
+    const threadId = "2234567890123456789";
+    const userId = "3234567890123456789";
+    const dbPath = join(tmpdir(), `queue-surface-id-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    paths.push(dbPath);
+
+    const previous = openDb(dbPath, {
+      serviceId: surface,
+      runId: "old-process-generation",
+    });
+    previous.enqueueMsg(surface, chatKey, {
+      prompt: "snowflake-sized coordinates",
+      chatId,
+      threadId,
+      chatType: "private",
+      userId,
+    });
+    previous.close();
+
+    const current = openDb(dbPath, {
+      serviceId: surface,
+      runId: "new-process-generation",
+    });
+    dbs.push(current);
+
+    expect(current.dequeueMsgs(surface, chatKey)[0]).toMatchObject({ chatId, threadId, userId });
+    const handle = current.acquireLock(surface, chatKey);
+    expect(handle).not.toBeNull();
+    expect(current.claimNextPendingMsg(handle!)).toMatchObject({ chatId, threadId, userId });
+  });
+
   it("does not steal a lane while the previous owner keeps its lease live", async () => {
     vi.useFakeTimers();
     let now = START;
