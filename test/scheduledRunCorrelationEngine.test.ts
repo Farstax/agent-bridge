@@ -93,7 +93,7 @@ describe("authoritative scheduled Run correlation", () => {
         run_id: evidence!.runId,
         chat_id: routine.chatKey,
         bot: "claude",
-        status: "completed",
+        status: "done",
       }));
     } finally {
       db.close();
