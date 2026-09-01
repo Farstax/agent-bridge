@@ -12,9 +12,10 @@ import { applyGrokSessionColumnsMigration } from "./grokSessionColumnsMigration.
 import { applyCursorSessionColumnsMigration } from "./cursorSessionColumnsMigration.js";
 import { applyConversationScopeMigration } from "./conversationScopeMigration.js";
 import { applyPendingMessageIdentityMigration } from "./pendingMessageIdentityMigration.js";
+import { applyPendingMessageIdentityRepairMigration } from "./pendingMessageIdentityRepairMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 export interface Migration {
   version: number;
@@ -159,6 +160,8 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 11 adds Cursor session identity and failure columns.
  * Version 12 adds canonical conversation provenance for authorized cross-conversation search.
  * Version 13 stores queued transport identities as lossless text.
+ * Version 14 restores transport-native queued coordinate types without a
+ * JavaScript numeric round-trip for databases already upgraded to v13.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -175,4 +178,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 11, name: "add-cursor-session-columns", up: applyCursorSessionColumnsMigration },
   { version: 12, name: "add-conversation-search-scope", up: applyConversationScopeMigration },
   { version: 13, name: "preserve-pending-message-identities", up: applyPendingMessageIdentityMigration },
+  { version: 14, name: "restore-pending-message-native-types", up: applyPendingMessageIdentityRepairMigration },
 ];
