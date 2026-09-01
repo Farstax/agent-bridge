@@ -1,0 +1,33 @@
+name: Focused authoritative fix 629
+
+on:
+  push:
+    branches: [fix/629-authoritative-run-correlation]
+
+permissions:
+  contents: write
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: npm
+      - name: Apply authoritative correlation fix
+        run: python3 scripts/focused-fix-629-authoritative.py
+      - run: npm ci
+      - name: Focused tests
+        run: npx vitest run test/scheduledRoutines.test.ts test/runtimeInspector.test.ts test/scheduledOccurrenceCorrelationMigration.test.ts
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Commit tested fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src test
+          git rm -f .github/workflows/focused-fix-629-authoritative.yml scripts/focused-fix-629-authoritative.py
+          git commit -m 'fix: make scheduled Run correlation authoritative (#629)'
+          git push origin HEAD:fix/629-authoritative-run-correlation
