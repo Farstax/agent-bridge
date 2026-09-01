@@ -1143,7 +1143,7 @@ export class BridgeEngine {
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt)
       : (this.opts.workspaceContext ? `[Managed workspace context]\n${this.opts.workspaceContext}\n\n${contextPrompt}` : contextPrompt);
-    const fallbackPrompt = shouldInject && isAgentKind(this.kind) && isProviderFallbackHandoffRequired(this.db, chatKey, this.kind)
+    const fallbackPrompt = nativeSessionMode === "fresh" && isAgentKind(this.kind) && isProviderFallbackHandoffRequired(this.db, chatKey, this.kind)
       ? prependProviderFallbackContinuation(workspacePrompt)
       : workspacePrompt;
     const handoffPrompt = shouldInject ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
