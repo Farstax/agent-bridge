@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { applyMigrations, CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
+import { applyPendingMessageIdentityMigration } from "../src/db/pendingMessageIdentityMigration.js";
 import { openDb } from "../src/db.js";
 
 const DISCORD_CHAT_ID = "1234567890123456789";
@@ -13,6 +14,18 @@ function columnTypes(db: Database.Database): Map<string, string> {
 }
 
 describe("pending message surface identities", () => {
+  it("leaves a role-specific database without pending_messages unchanged", () => {
+    const raw = new Database(":memory:");
+    try {
+      raw.exec("CREATE TABLE health_plugin_reports (plugin_name TEXT PRIMARY KEY, report_json TEXT NOT NULL, saved_at INTEGER NOT NULL)");
+      applyPendingMessageIdentityMigration(raw);
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_messages'").get()).toBeUndefined();
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'health_plugin_reports'").get()).toBeTruthy();
+    } finally {
+      raw.close();
+    }
+  });
+
   it("stores fresh queued delivery identities as lossless text", () => {
     const db = openDb(":memory:");
     try {
