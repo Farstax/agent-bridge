@@ -174,7 +174,7 @@ describe("canonical conversation identity", () => {
 
       const second = openDb(dbPath, { serviceId: "canonical-queue-after-restart" });
       try {
-        const recovered: Array<{ chatKey: string; chatId: number }> = [];
+        const recovered: Array<{ chatKey: string; chatId: string }> = [];
         const engine = new BridgeEngine({
           kind: "codex",
           surfaceIdentity: surface,
@@ -190,7 +190,7 @@ describe("canonical conversation identity", () => {
         });
 
         expect(await engine.recoverPendingQueue(nativeKey)).toBe(true);
-        expect(recovered).toEqual([{ chatKey: nativeKey, chatId: 1 }]);
+        expect(recovered).toEqual([{ chatKey: nativeKey, chatId: "1.0" }]);
         expect(second.pendingMsgCount(surface, nativeKey)).toBe(0);
       } finally {
         second.close();
