@@ -6,4 +6,4 @@ Type=oneshot
 User=BRIDGE_USER
 EnvironmentFile=-/etc/default/agent-bridge-shared
 EnvironmentFile=/etc/default/agent-bridge-release
-ExecStart=/usr/bin/env bash -lc 'set -euo pipefail; [[ -L "${BRIDGE_CURRENT_RELEASE_DIR:?}" ]] || { echo "active release pointer is not a symlink" >&2; exit 78; }; release="$(/usr/bin/realpath -e "${BRIDGE_CURRENT_RELEASE_DIR:?}")"; [[ -f "$release/scripts/reap-tmp-artifacts.sh" && ! -L "$release/scripts/reap-tmp-artifacts.sh" ]] || { echo "cleanup executable is missing from active release" >&2; exit 78; }; exec /usr/bin/env bash "$release/scripts/reap-tmp-artifacts.sh"'
+ExecStart=+/usr/bin/env bash -lc 'set -euo pipefail; [[ -L "${BRIDGE_CURRENT_RELEASE_DIR:?}" ]] || { echo "active release pointer is not a symlink" >&2; exit 78; }; release="$(/usr/bin/realpath -e "${BRIDGE_CURRENT_RELEASE_DIR:?}")"; [[ -f "$release/scripts/reap-tmp-artifacts.sh" && ! -L "$release/scripts/reap-tmp-artifacts.sh" ]] || { echo "cleanup executable is missing from active release" >&2; exit 78; }; exec /usr/bin/env bash "$release/scripts/reap-tmp-artifacts.sh"'
