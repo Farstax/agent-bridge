@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { applyPendingSurfaceCoordinatesMigration } from "../src/db/pendingSurfaceCoordinatesMigration.js";
 
 describe("pending surface-coordinate migration", () => {
-  it("preserves numeric Telegram rows while preventing string Snowflake coercion", () => {
+  it("preserves Telegram numbers and repairs/prevents Discord Snowflake coercion", () => {
     const raw = new Database(":memory:");
     try {
       raw.exec(`
@@ -26,11 +26,22 @@ describe("pending surface-coordinate migration", () => {
         CREATE INDEX idx_pending_msgs_surface_chat_key
           ON pending_messages(surface, chat_key, id);
       `);
-      raw.prepare(`
+      const insert = raw.prepare(`
         INSERT INTO pending_messages (
           surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run("telegram:interactive", "100", "legacy numeric", 100, 200, "private", 300);
+      `);
+      insert.run("telegram:interactive", "100", "legacy numeric", 100, 200, "private", 300);
+
+      const chatId = "1234567890123456789";
+      const threadId = "2234567890123456789";
+      const userId = "3234567890123456789";
+      insert.run("discord:interactive", chatId, "pre-migration snowflakes", chatId, threadId, "private", userId);
+
+      expect(raw.prepare(`
+        SELECT typeof(chat_id) AS chatIdType, typeof(thread_id) AS threadIdType, typeof(user_id) AS userIdType
+        FROM pending_messages WHERE prompt = 'pre-migration snowflakes'
+      `).get()).toEqual({ chatIdType: "integer", threadIdType: "integer", userIdType: "integer" });
 
       applyPendingSurfaceCoordinatesMigration(raw);
 
@@ -47,19 +58,15 @@ describe("pending surface-coordinate migration", () => {
         SELECT chat_id AS chatId, thread_id AS threadId, user_id AS userId
         FROM pending_messages WHERE surface = 'telegram:interactive'
       `).get()).toEqual({ chatId: 100, threadId: 200, userId: 300 });
-
-      const chatId = "1234567890123456789";
-      const threadId = "2234567890123456789";
-      const userId = "3234567890123456789";
-      raw.prepare(`
-        INSERT INTO pending_messages (
-          surface, chat_key, prompt, chat_id, thread_id, chat_type, user_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run("discord:interactive", chatId, "snowflake strings", chatId, threadId, "private", userId);
-
       expect(raw.prepare(`
         SELECT chat_id AS chatId, thread_id AS threadId, user_id AS userId
-        FROM pending_messages WHERE surface = 'discord:interactive'
+        FROM pending_messages WHERE prompt = 'pre-migration snowflakes'
+      `).get()).toEqual({ chatId, threadId, userId });
+
+      insert.run("discord:interactive", chatId, "post-migration snowflakes", chatId, threadId, "private", userId);
+      expect(raw.prepare(`
+        SELECT chat_id AS chatId, thread_id AS threadId, user_id AS userId
+        FROM pending_messages WHERE prompt = 'post-migration snowflakes'
       `).get()).toEqual({ chatId, threadId, userId });
     } finally {
       raw.close();
