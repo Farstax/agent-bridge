@@ -16,13 +16,13 @@ import { parseCadenceSeconds } from "./health/config.js";
 import { PROVIDER_CONTRACT_VERSION, qualificationEvidencePath, readQualificationEvidence } from "./providers/qualification.js";
 import { getProviderAdapters } from "./providers/registry.js";
 import { latestDueScheduledOccurrence, type ScheduledRoutine } from "./scheduledRoutines.js";
+import { parseScheduledOccurrenceEvidence, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
 import { getSharedSkillsHomeDir, listLocalCatalog, resolveSkillPaths } from "./skills.js";
 
 export const MAX_INSPECTION_OUTPUT_CHARS = 32_000;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_HEALTH_DB_PATH = "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 const ROUTINE_PREFIX = "scheduled-routine:v1:";
-const OCCURRENCE_PREFIX = "scheduled-routine-occurrence:v1:";
 const HOUR_MS = 60 * 60 * 1_000;
 const WEEKLY_PROJECTION_HORIZON_MS = 8 * 24 * HOUR_MS;
 type Env = Record<string, string | undefined>;
@@ -159,25 +159,22 @@ function routines(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
     if (r.surfaceIdentity !== s.surface || r.chatKey !== s.chatKey || (owner && r.ownerKey !== owner)) continue;
     const id = text(r.id, 100);
     if (!id) continue;
-    const occurrencePrefix = `${OCCURRENCE_PREFIX}${id}:`;
+    const occurrencePrefix = `${SCHEDULED_OCCURRENCE_PREFIX}${id}:`;
     const occurrence = db.prepare("SELECT key,value FROM settings WHERE key LIKE ? ORDER BY key DESC LIMIT 1").get(`${occurrencePrefix}%`) as Row | undefined;
-    const claimedAt = text(occurrence?.value, 60);
+    const evidence = parseScheduledOccurrenceEvidence(occurrence?.value);
+    const claimedAt = evidence?.claimedAt ?? null;
     let correlatedRun: Row | null = null;
-    let correlationReasonCode: string | null = occurrence ? "run_correlation_unavailable" : null;
-    if (claimedAt && hasTable(db, "bridge_runs")) {
-      const claimedMs = Date.parse(claimedAt);
-      if (Number.isFinite(claimedMs)) {
-        const cutoff = new Date(claimedMs + 30_000).toISOString();
-        const candidates = db.prepare(`SELECT run_id,status,bot,started_at FROM bridge_runs
-          WHERE chat_id=? AND started_at>=? AND started_at<=?
-          ORDER BY started_at ASC, rowid ASC LIMIT 2`).all(s.chatKey, claimedAt, cutoff) as Row[];
-        if (candidates.length === 1) {
-          correlatedRun = candidates[0];
-          correlationReasonCode = null;
-        } else if (candidates.length > 1) {
-          correlationReasonCode = "run_correlation_ambiguous";
-        }
-      }
+    let correlationReasonCode: string | null = occurrence
+      ? evidence
+        ? evidence.runId
+          ? "linked_run_unavailable"
+          : evidence.version === 0 ? "run_correlation_legacy_unavailable" : "run_not_created"
+        : "occurrence_evidence_invalid"
+      : null;
+    if (evidence?.runId && hasTable(db, "bridge_runs")) {
+      correlatedRun = db.prepare(`SELECT run_id,status,bot,started_at,ended_at FROM bridge_runs
+        WHERE run_id=? AND chat_id=? LIMIT 1`).get(evidence.runId, s.chatKey) as Row | undefined ?? null;
+      if (correlatedRun) correlationReasonCode = null;
     }
     const schedule = r.schedule && typeof r.schedule === "object" ? r.schedule as Row : null;
     const next = nextRoutineOccurrence(r);

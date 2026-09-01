@@ -189,7 +189,7 @@ if (scheduledOwnerKey && scheduledActorId) {
   scheduledRoutineRunner = new ScheduledRoutineRunner(
     db,
     "discord:interactive",
-    async (routine, intendedAt) => {
+    async (routine, intendedAt, occurrenceKey) => {
       if (routine.ownerKey !== scheduledOwnerKey) {
         console.warn(`[scheduled-routines] owner mismatch for ${routine.id}; Discord occurrence skipped`);
         return;
@@ -201,7 +201,7 @@ if (scheduledOwnerKey && scheduledActorId) {
         });
         return;
       }
-      const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId);
+      const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId, occurrenceKey);
       await dispatchInteractiveTurnWithFallback(turn, {
         engines,
         fallbackChain,

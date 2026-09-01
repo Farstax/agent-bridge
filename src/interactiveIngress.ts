@@ -16,6 +16,8 @@ export interface InteractiveTurnInput {
   delivery: { chatId: number | string; chatType: string };
   attachments: InteractiveAttachment[];
   mediaGroupId?: string;
+  /** Internal authoritative correlation for a previously claimed scheduled occurrence. */
+  scheduledOccurrenceKey?: string;
 }
 
 function telegramAttachments(message: TelegramMessage): InteractiveAttachment[] {

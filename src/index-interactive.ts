@@ -357,7 +357,7 @@ const scheduledActorId = allowedUserIds.values().next().value;
 const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new ScheduledRoutineRunner(
   db,
   runtimePolicy.surfaceIdentity,
-  async (routine, intendedAt) => {
+  async (routine, intendedAt, occurrenceKey) => {
     if (routine.ownerKey !== scheduledOwnerKey) {
       console.warn(`[scheduled-routines] owner mismatch for ${routine.id}; occurrence skipped`);
       return;
@@ -402,7 +402,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       return;
     }
 
-    const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId);
+    const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId, occurrenceKey);
     await dispatchInteractiveTurnWithFallback(turn, {
       engines,
       fallbackChain,

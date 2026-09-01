@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { applyMigrations } from "../src/db/schema.js";
 import { claimScheduledRoutineOccurrence, createScheduledRoutine } from "../src/scheduledRoutines.js";
+import { linkScheduledOccurrenceRun, scheduledOccurrenceKey } from "../src/scheduledRunCorrelation.js";
 import { createAutonomousGoal } from "../src/autonomousGoalRuntime.js";
 import { HealthReportStore } from "../src/health/reports.js";
 import {
@@ -47,6 +48,8 @@ describe("runtime inspector", () => {
       });
       const routineOccurrence = new Date().toISOString();
       expect(claimScheduledRoutineOccurrence(db, "routine-1", routineOccurrence)).toBe(true);
+      const occurrenceKey = scheduledOccurrenceKey("routine-1", routineOccurrence);
+      expect(linkScheduledOccurrenceRun(db, occurrenceKey, "run-routine")).toBe(true);
       db.insertRun("run-routine", "chat-1", "codex");
       createAutonomousGoal(db, {
         goalId: "goal-1",
@@ -119,16 +122,16 @@ describe("runtime inspector", () => {
     }
   });
 
-  it("fails closed when more than one Run could match a scheduled occurrence", () => {
+  it("never infers a scheduled Run from nearby conversation timing", () => {
     const { dir, path, db, healthDb } = fixture();
     try {
       createScheduledRoutine(db, {
-        id: "routine-ambiguous",
-        name: "Ambiguous routine",
+        id: "routine-unlinked",
+        name: "Unlinked routine",
         instruction: "bounded instruction",
         kind: "companion",
         surfaceIdentity: "telegram:interactive",
-        chatKey: "chat-ambiguous",
+        chatKey: "chat-unlinked",
         ownerKey: "owner-1",
         timezone: "UTC",
         schedule: { type: "weekly", weekdays: [1], time: "09:00" },
@@ -136,20 +139,19 @@ describe("runtime inspector", () => {
         createdAt: new Date().toISOString(),
       });
       const intendedAt = new Date().toISOString();
-      expect(claimScheduledRoutineOccurrence(db, "routine-ambiguous", intendedAt)).toBe(true);
-      db.insertRun("run-a", "chat-ambiguous", "codex");
-      db.insertRun("run-b", "chat-ambiguous", "claude");
+      expect(claimScheduledRoutineOccurrence(db, "routine-unlinked", intendedAt)).toBe(true);
+      db.insertRun("nearby-user-run", "chat-unlinked", "codex");
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,
-        AGENT_BRIDGE_CHAT_KEY: "chat-ambiguous",
+        AGENT_BRIDGE_CHAT_KEY: "chat-unlinked",
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_OWNER_KEY: "owner-1",
         HOME: dir,
       }));
       expect(view.scheduledRoutines[0].recentOccurrence).toEqual(expect.objectContaining({
         runId: null,
-        reasonCode: "run_correlation_ambiguous",
+        reasonCode: "run_not_created",
       }));
     } finally {
       db.close();
