@@ -583,18 +583,14 @@ export class BridgeEngine {
     }, this.db.lockHeartbeatMs) : null;
     lockHeartbeat?.unref();
 
+    const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
     try {
-      const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
-      for (const occurrenceKey of scheduledOccurrenceKeys) {
-        if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {
-          throw new Error(`scheduled occurrence correlation unavailable: ${occurrenceKey}`);
-        }
-      }
       const result = await this._executeAndDeliverTurn({
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
       if (!result) return "fenced";
       finalize();
+      this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
       activeTaskCommitted = true;
       return "committed";
@@ -622,6 +618,11 @@ export class BridgeEngine {
           this._deleteQueuedAttachments(queued.attachments);
           this.db.deletePendingMsg(queued.id);
         }
+      }
+      try {
+        this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+      } catch (linkError) {
+        console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
       }
       const capacityExhausted = isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)));
       if (capacityExhausted && this.hooks.onCapacityExhausted) {
@@ -711,6 +712,18 @@ export class BridgeEngine {
       return delivered ? result : null;
     } finally {
       this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
+    }
+  }
+
+  private _linkScheduledOccurrences(scheduledOccurrenceKeys: string[], runId: string): void {
+    if (scheduledOccurrenceKeys.length === 0) return;
+    // Only bind when a durable Run row exists. Fence/pre-start failures leave
+    // run_not_created instead of inventing an unreachable Run ID.
+    if (!this.db.getRun(runId)) return;
+    for (const occurrenceKey of scheduledOccurrenceKeys) {
+      if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {
+        throw new Error(`scheduled occurrence correlation unavailable: ${occurrenceKey}`);
+      }
     }
   }
 

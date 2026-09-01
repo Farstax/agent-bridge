@@ -39,14 +39,20 @@ export function parseScheduledOccurrenceEvidence(value: unknown): ParsedSchedule
   }
 }
 
+function canReplaceLinkedRun(db: BridgeDb, previousRunId: string): boolean {
+  const run = db.getRun(previousRunId) as { status?: string } | undefined;
+  if (!run) return true;
+  return run.status === "failed" || run.status === "cancelled";
+}
+
 export function linkScheduledOccurrenceRun(db: BridgeDb, key: string, runId: string): boolean {
   if (!key.startsWith(SCHEDULED_OCCURRENCE_PREFIX) || !runId.trim()) return false;
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value?: string } | undefined;
     const evidence = parseScheduledOccurrenceEvidence(row?.value);
     if (!row?.value || !evidence) return false;
-    if (evidence.runId && evidence.runId !== runId) return false;
     if (evidence.runId === runId) return true;
+    if (evidence.runId && !canReplaceLinkedRun(db, evidence.runId)) return false;
     const next = encodeScheduledOccurrenceEvidence(evidence.claimedAt, runId);
     return db.raw.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
       .run(next, key, row.value).changes === 1;
