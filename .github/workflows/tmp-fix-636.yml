@@ -1,0 +1,41 @@
+name: Temporary issue 636 duplicate fix
+
+on:
+  push:
+    branches: [oss-636-native-repo-grounding]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Remove duplicate grounding invariant
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('AGENTS.md')
+          s = p.read_text()
+          section = '''### Repository-grounded implementation explanations\n\nFor questions about how this repository works or other implementation-specific behavior, inspect the relevant implementation source with the active provider's native repository/search/file tools before describing it. Prefer verified implementation over plausible inference. Treat native source inspection as the normal first step; use retained conversation context only to locate likely areas, not as evidence for current implementation. If the relevant source cannot be inspected, state that limitation instead of presenting an inferred implementation as verified.\n\n'''
+          assert s.count(section) == 2, f'expected duplicate section, found {s.count(section)}'
+          first = s.find(section)
+          second = s.find(section, first + len(section))
+          s = s[:second] + s[second + len(section):]
+          assert s.count(section) == 1
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Commit duplicate fix
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add AGENTS.md
+          git commit -m 'fix: keep one repository-grounding invariant'
+          git push origin HEAD:${GITHUB_REF_NAME}
