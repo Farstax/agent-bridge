@@ -11,9 +11,10 @@ import { dropLegacyWorkerTablesMigration } from "./dropLegacyWorkerTablesMigrati
 import { applyGrokSessionColumnsMigration } from "./grokSessionColumnsMigration.js";
 import { applyCursorSessionColumnsMigration } from "./cursorSessionColumnsMigration.js";
 import { applyConversationScopeMigration } from "./conversationScopeMigration.js";
+import { applyPendingMessageIdentityMigration } from "./pendingMessageIdentityMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
 
 export interface Migration {
   version: number;
@@ -157,6 +158,7 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 10 adds Grok Build session identity and failure columns.
  * Version 11 adds Cursor session identity and failure columns.
  * Version 12 adds canonical conversation provenance for authorized cross-conversation search.
+ * Version 13 stores queued transport identities as lossless text.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -172,4 +174,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 10, name: "add-grok-session-columns", up: applyGrokSessionColumnsMigration },
   { version: 11, name: "add-cursor-session-columns", up: applyCursorSessionColumnsMigration },
   { version: 12, name: "add-conversation-search-scope", up: applyConversationScopeMigration },
+  { version: 13, name: "preserve-pending-message-identities", up: applyPendingMessageIdentityMigration },
 ];
