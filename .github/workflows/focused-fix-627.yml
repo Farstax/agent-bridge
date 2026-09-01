@@ -5,6 +5,9 @@ on:
     branches:
       - fix/627-cleanup-permissions
 
+permissions:
+  contents: write
+
 jobs:
   focused:
     runs-on: ubuntu-latest
