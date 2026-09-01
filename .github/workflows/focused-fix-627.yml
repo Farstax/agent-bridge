@@ -12,4 +12,20 @@ jobs:
   focused:
     runs-on: ubuntu-latest
     steps:
-      - run: echo focused
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: npm
+      - run: python3 scripts/focused-fix-627.py
+      - run: npm ci
+      - name: Focused tests only
+        run: npx vitest run test/reapTmpArtifacts.test.ts
+      - name: Commit tested fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add scripts/reap-tmp-artifacts.sh test/reapTmpArtifacts.test.ts
+          git rm -f .github/workflows/focused-fix-627.yml scripts/focused-fix-627.py .focused-fix-627
+          git commit -m 'fix: clean root-owned bounded artifacts safely (#627)'
+          git push origin HEAD:fix/627-cleanup-permissions
