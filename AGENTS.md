@@ -143,6 +143,12 @@ Restore the confirmed production/release-blocking failure with the smallest safe
 
 ## Production/release safety
 
+### Host filesystem hygiene
+
+When operating the host, leave disposable state created by the operation cleaned up when it is safe to identify and remove. Put transient clones, downloads, archives, diagnostics, generated files, scratch scripts, and similar work in appropriate temporary or lifecycle-owned locations, and remove them after successful or failed work once they are no longer needed.
+
+Do not create unmanaged long-lived state when an existing lifecycle owner exists. Manage Agent Bridge releases, application revisions, logs, databases, retained conversation evidence, service state, and other lifecycle-owned data through their owning lifecycle and retention rules rather than ad-hoc deletion. Never delete unknown, active, dirty, protected, persistent, or user-owned state merely for tidiness. Automated cleanup must remain bounded to artifact classes with a proven ownership/safety contract; do not add a generic filesystem sweeper. The canonical host-administration contract is `docs/operations/host-administration.md`.
+
 ### GitHub CLI authentication
 
 On the managed host, `gh` uses `GH_TOKEN` from `~/.secrets/GITHUB_TOKEN.TXT`, not an interactive OAuth login. Verify identity before GitHub mutation. Git SSH authentication is separate.
