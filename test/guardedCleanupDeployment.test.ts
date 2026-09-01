@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const workflow = readFileSync(new URL("../.github/workflows/release-artifact.yml", import.meta.url), "utf8");
 const historicalWorkflow = readFileSync(new URL("../.github/workflows/historical-release-artifact.yml", import.meta.url), "utf8");
 const rollout = readFileSync(new URL("../scripts/rollout-agent-bridge.sh", import.meta.url), "utf8");
+const cleanupService = readFileSync(new URL("../systemd/agent-bridge-tmp-cleanup.service", import.meta.url), "utf8");
 
 describe("guarded cleanup deployment contract", () => {
   it("packages the cleanup executable and both units into the immutable release", () => {
@@ -30,5 +31,12 @@ describe("guarded cleanup deployment contract", () => {
     expect(rollout).toContain("manifest.json");
     expect(rollout).toContain("sha256sum");
     expect(rollout).toContain("rollback cleanup timer");
+  });
+
+  it("runs only the bounded immutable cleanup command with elevated service authority", () => {
+    expect(cleanupService).toContain("User=BRIDGE_USER");
+    expect(cleanupService).toContain("ExecStart=+/usr/bin/env bash");
+    expect(cleanupService).toContain("scripts/reap-tmp-artifacts.sh");
+    expect(cleanupService).not.toContain("ExecStart=/usr/bin/env bash");
   });
 });
