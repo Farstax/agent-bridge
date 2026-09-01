@@ -183,6 +183,69 @@ describe("authoritative scheduled Run correlation", () => {
     }
   });
 
+  it("links a durable failed Run when provider errors are swallowed as null delivery", async () => {
+    const path = join(tmpdir(), `scheduled-run-failed-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(path);
+    const db = openDb(path, { serviceId: "scheduled-failed-test", runId: "process-test" });
+    try {
+      const routine = routineFixture({ id: "failed-correlation" });
+      createScheduledRoutine(db, routine);
+      const intendedAt = "2026-09-01T20:10:00.000Z";
+      expect(claimScheduledRoutineOccurrence(db, routine.id, intendedAt)).toBe(true);
+      const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
+      const runCli = vi.fn().mockImplementation(async (_command: string, _args: string[], _cwd: string, options: any) => {
+        options?.onEvent?.({
+          type: "run.started",
+          version: 1,
+          id: "evt-start",
+          runId: options.eventContext.runId,
+          timestamp: new Date().toISOString(),
+          bot: "claude",
+          chatId: String(routine.chatKey),
+          chatKey: routine.chatKey,
+          command: "claude",
+          cwd: "/tmp",
+          model: null,
+        });
+        options?.onEvent?.({
+          type: "run.failed",
+          version: 1,
+          id: "evt-fail",
+          runId: options.eventContext.runId,
+          timestamp: new Date().toISOString(),
+          bot: "claude",
+          chatId: String(routine.chatKey),
+          chatKey: routine.chatKey,
+          category: "provider",
+          error: "provider blew up",
+        });
+        throw new Error("provider blew up");
+      });
+      const engine = new BridgeEngine({
+        surfaceIdentity: "telegram:interactive",
+        kind: "claude",
+        botConfig: { command: "claude", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+      }, db, mockClient(), { runCli });
+
+      await engine.handleInteractiveTurn(buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey));
+
+      const evidence = parseScheduledOccurrenceEvidence(db.getSetting(occurrenceKey));
+      expect(evidence?.runId).toBeTruthy();
+      const run = db.getRun(evidence!.runId!);
+      expect(run).toEqual(expect.objectContaining({
+        run_id: evidence!.runId,
+        chat_id: routine.chatKey,
+        bot: "claude",
+        status: "failed",
+      }));
+    } finally {
+      db.close();
+    }
+  });
+
   it("allows rebinding only when the previously linked Run is missing, failed, or cancelled", () => {
     const path = join(tmpdir(), `scheduled-run-rebind-${Date.now()}-${Math.random()}.sqlite`);
     paths.push(path);

@@ -588,7 +588,12 @@ export class BridgeEngine {
       const result = await this._executeAndDeliverTurn({
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
-      if (!result) return "fenced";
+      if (!result) {
+        // Non-capacity provider failures are swallowed as null after a durable
+        // run.failed row may already exist. Link that Run when present.
+        this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+        return "fenced";
+      }
       finalize();
       this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
