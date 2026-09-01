@@ -3,7 +3,7 @@ status: authoritative
 type: operations
 authority: canonical
 implementation_status: implemented
-last_validated_against: 99d25309ec2a743901d982f9d21c2bb1ec281709
+last_validated_against: issue-623
 ---
 
 # Host Administration Authority
@@ -49,6 +49,32 @@ boundaries. Depending on the task, that can include:
 Restricting the runtime account to a small sudo command set would materially
 weaken that operating model and should not be presented as a security
 improvement within the current product contract.
+
+## Host filesystem hygiene invariant
+
+Host administration includes responsibility for the filesystem state created by
+the agent. Leave the host free of disposable artifacts created while doing the
+work rather than relying on a later janitor to discover arbitrary leftovers.
+
+- Put transient clones, downloads, archives, diagnostics, generated files,
+  scratch scripts, and similar disposable work in an appropriate temporary or
+  lifecycle-owned location.
+- After successful or failed work, remove disposable artifacts created by that
+  work when they are no longer needed and can be identified safely.
+- Do not create unmanaged long-lived state when an existing owner already
+  manages that class of data. Agent Bridge releases, application revisions,
+  logs, databases, retained conversation evidence, service state, and other
+  lifecycle-owned data must be managed through their owning lifecycle and
+  retention rules rather than ad-hoc deletion.
+- Never delete unknown, active, dirty, protected, persistent, or user-owned
+  state merely to make the host look clean. When ownership or safety is
+  ambiguous, preserve the state and diagnose it before mutation.
+- Automated cleanup remains deliberately bounded to paths and artifact classes
+  with a proven ownership/safety contract. Do not introduce a generic
+  filesystem sweeper as a substitute for agents cleaning up what they create.
+
+The expected end state of a host operation is therefore both functionally
+correct and free of unnecessary transient state introduced by that operation.
 
 ## Bounded helpers do not reduce authority
 
