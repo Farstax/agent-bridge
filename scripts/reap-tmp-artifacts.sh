@@ -11,6 +11,7 @@ TMP_ROOT="${REAP_TMP_ROOT:-/tmp}"
 MAX_AGE_HOURS="${REAP_MAX_AGE_HOURS:-24}"
 MAX_AGE_MIN=$(( MAX_AGE_HOURS * 60 ))
 DRY_RUN=0
+FAILURES=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
 if [[ ! "$MAX_AGE_HOURS" =~ ^[1-9][0-9]*$ ]]; then
@@ -21,13 +22,32 @@ fi
 log() { echo "[reap-tmp-artifacts] $*"; }
 
 remove_entry() {
-  local entry="$1" reason="$2"
+  local entry="$1" reason="$2" rm_error="" sudo_error=""
   if (( DRY_RUN )); then
     log "would remove ($reason): $entry"
-  else
-    log "removing ($reason): $entry"
-    rm -rf -- "$entry"
+    return 0
   fi
+
+  log "removing ($reason): $entry"
+  if rm_error="$(rm -rf -- "$entry" 2>&1)"; then
+    return 0
+  fi
+
+  # Keep privileged cleanup bounded to the exact entry that already passed
+  # the janitor's path/age/ownership checks. The runtime account is required
+  # by the host-administration contract to have non-interactive admin sudo.
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo_error="$(sudo -n /usr/bin/rm -rf -- "$entry" 2>&1)"; then
+      log "removed with administrative fallback: $entry"
+      return 0
+    fi
+  fi
+
+  [[ -n "$rm_error" ]] && printf '%s\n' "$rm_error" >&2
+  [[ -n "$sudo_error" ]] && printf '%s\n' "$sudo_error" >&2
+  log "failed to remove eligible artifact: $entry" >&2
+  FAILURES=$((FAILURES + 1))
+  return 0
 }
 
 has_live_pid_marker() {
@@ -152,5 +172,10 @@ IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
 for repo in "${REPOS[@]}"; do
   [[ -n "$repo" ]] && reap_worktree_repo "$repo"
 done
+
+if (( FAILURES > 0 )); then
+  log "cleanup incomplete: ${FAILURES} eligible artifact(s) could not be removed" >&2
+  exit 1
+fi
 
 exit 0

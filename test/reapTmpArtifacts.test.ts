@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -149,6 +149,58 @@ describe("reap-tmp-artifacts.sh", () => {
     expect(branches).not.toContain("feat/merged-clean");
     expect(branches).toContain("feat/merged-dirty");
     expect(branches).toContain("feat/unmerged-clean");
+  });
+
+  it("uses a bounded non-interactive admin fallback when ordinary removal is denied", () => {
+    const tmpRoot = makeRoot();
+    const staleScratch = join(tmpRoot, "agent-bridge-root-owned-rollout");
+    const fakeBin = join(tmpRoot, "bin");
+    mkdirSync(staleScratch, { recursive: true });
+    mkdirSync(fakeBin, { recursive: true });
+    ageEntry(staleScratch, 48);
+
+    const fakeRm = join(fakeBin, "rm");
+    writeFileSync(fakeRm, "#!/usr/bin/env bash\necho 'simulated permission denied' >&2\nexit 1\n");
+    chmodSync(fakeRm, 0o755);
+    const fakeSudo = join(fakeBin, "sudo");
+    writeFileSync(fakeSudo, "#!/usr/bin/env bash\n[[ \"$1\" == \"-n\" ]] && shift\nexec \"$@\"\n");
+    chmodSync(fakeSudo, 0o755);
+
+    const result = run({
+      REAP_TMP_ROOT: tmpRoot,
+      REAP_MAX_AGE_HOURS: "24",
+      PATH: `${fakeBin}:${process.env.PATH}`,
+    });
+
+    expect(result.status).toBe(0);
+    expect(existsSync(staleScratch)).toBe(false);
+    expect(result.stdout).toContain("administrative fallback");
+    expect(result.stderr).not.toContain("simulated permission denied");
+  });
+
+  it("fails cleanup when ordinary and administrative removal both fail", () => {
+    const tmpRoot = makeRoot();
+    const staleScratch = join(tmpRoot, "agent-bridge-unremovable-rollout");
+    const fakeBin = join(tmpRoot, "bin");
+    mkdirSync(staleScratch, { recursive: true });
+    mkdirSync(fakeBin, { recursive: true });
+    ageEntry(staleScratch, 48);
+
+    for (const name of ["rm", "sudo"]) {
+      const executable = join(fakeBin, name);
+      writeFileSync(executable, `#!/usr/bin/env bash\necho '${name} denied' >&2\nexit 1\n`);
+      chmodSync(executable, 0o755);
+    }
+
+    const result = run({
+      REAP_TMP_ROOT: tmpRoot,
+      REAP_MAX_AGE_HOURS: "24",
+      PATH: `${fakeBin}:${process.env.PATH}`,
+    });
+
+    expect(result.status).toBe(1);
+    expect(existsSync(staleScratch)).toBe(true);
+    expect(result.stderr).toContain("cleanup incomplete");
   });
 
   it("dry-run reports actions without deleting anything", () => {
