@@ -77,6 +77,16 @@ describe("Issue #637 provider fallback continuation intent", () => {
     expect(await buildPrompt(engine, "resume")).not.toContain(FALLBACK_NOTE);
   });
 
+  it("preserves fallback intent when reset has suppressed retained context", async () => {
+    db.setSetting("ctx_suppress:100", "1");
+    markHandoffRequired(db, "100", "claude", "fallback_from_codex");
+
+    const prompt = await buildPrompt(makeEngine(db, "claude"), "fresh");
+
+    expect(prompt).toContain(FALLBACK_NOTE);
+    expect(prompt).not.toContain("[Agent Bridge handoff]");
+  });
+
   it("keeps the durable fallback marker until a successful fresh provider result owns clearing it", () => {
     markHandoffRequired(db, "100", "claude", "fallback_from_codex");
     expect(isHandoffRequired(db, "100", "claude")).toBe(true);
