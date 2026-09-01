@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { applyMigrations } from "../src/db/schema.js";
@@ -137,6 +137,39 @@ describe("runtime inspector", () => {
     } finally {
       try { db.close(); } catch {}
       try { healthDb.close(); } catch {}
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("projects the exact deployed commit from the active release manifest", () => {
+    const { dir, path, db, healthDb } = fixture();
+    try {
+      const deployed = "c405eb15d742bff21c00f8747d60719b2ed0416b";
+      const staleHint = "1111111111111111111111111111111111111111";
+      writeFileSync(join(dir, "manifest.json"), JSON.stringify({ schema_version: 1, commit: deployed }));
+
+      const env = {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        BRIDGE_PROJECT_DIR: dir,
+        AGENT_BRIDGE_COMMIT: staleHint,
+        HOME: dir,
+      };
+      const full = JSON.parse(renderAgentBridgeInspection(["--json"], env));
+      const capabilities = JSON.parse(renderAgentBridgeInspection(["capabilities", "--json"], env));
+      expect(full.runtime.commit).toBe(deployed);
+      expect(capabilities.runtime.commit).toBe(deployed);
+
+      writeFileSync(join(dir, "manifest.json"), JSON.stringify({ schema_version: 1, commit: "not-a-sha" }));
+      expect(JSON.parse(renderAgentBridgeInspection(["--json"], env)).runtime.commit).toBe(staleHint);
+
+      expect(JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        BRIDGE_PROJECT_DIR: dir,
+        HOME: dir,
+      })).runtime.commit).toBeNull();
+    } finally {
+      db.close();
+      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
