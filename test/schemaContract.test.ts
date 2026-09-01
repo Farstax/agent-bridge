@@ -35,6 +35,10 @@ describe("canonical production schema contract", () => {
     const path = join(root, "health.sqlite");
     try {
       openDb(path, { databaseRole: "health" }).close();
+      const rawBeforeValidate = new Database(path, { readonly: true });
+      const pendingColumns = (rawBeforeValidate.prepare("PRAGMA table_info(pending_messages)").all() as Array<{ name: string }>).map((row) => row.name);
+      rawBeforeValidate.close();
+      expect(pendingColumns).toContain("scheduled_occurrence_key");
       const output = execFileSync(process.execPath, ["--import", "tsx", rolloutScript, "validate", "--db", path, "--database-role", `${path}=health`, "--evidence", "-"], { encoding: "utf8" });
       expect(JSON.parse(output).databases[0].schema).toBe("current");
       const raw = new Database(path);

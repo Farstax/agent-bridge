@@ -74,6 +74,7 @@ const LEGACY_PENDING_COLUMNS = new Set([
 const CURRENT_PENDING_COLUMNS = new Set([
   ...LEGACY_PENDING_COLUMNS,
   "surface", "state", "claim_run_id", "claim_acquisition_id", "claimed_at", "attachments_json",
+  "scheduled_occurrence_key",
 ]);
 const CURRENT_LOCK_COLUMNS = new Set([
   "surface", "chat_key", "service_id", "run_id", "acquisition_id", "acquired_at", "lease_expires_at",
