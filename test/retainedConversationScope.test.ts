@@ -95,8 +95,8 @@ describe("authorized retained conversation scope", () => {
     db.close();
   });
 
-  it("migrates the conversation turn table and indexes to schema v12", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(12);
+  it("keeps the conversation turn migration registered before schema v13", () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(13);
     const raw = new Database(":memory:");
     raw.exec(`CREATE TABLE conversation_turns (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

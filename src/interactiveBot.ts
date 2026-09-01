@@ -307,48 +307,108 @@ export function applyManualCliSwitchHandoff(db: BridgeDb, chatKey: string, newCl
   })();
 }
 
-export async function dispatchInteractiveTurnWithFallback(
-  turn: InteractiveTurnInput,
+interface InteractiveFallbackExecution {
+  chatKey: string;
+  execute: (engine: InteractiveDispatchEngine) => Promise<ExecutionOutcome>;
+  recoverPendingQueue: boolean;
+  exhaustedOutcome: ExecutionOutcome;
+}
+
+async function dispatchInteractiveExecutionWithFallback(
+  execution: InteractiveFallbackExecution,
   deps: InteractiveDispatchDeps,
-  tried = new Set<string>(),
-  claimedMessage?: PendingMessage,
+  tried: Set<string>,
 ): Promise<ExecutionOutcome> {
-  const chatKey = turn.chatKey;
+  const { chatKey } = execution;
   const { engines, fallbackChain, exhaustedChats, db, notify, onCliSwitched } = deps;
   exhaustedChats.delete(chatKey);
-  if (!claimedMessage && isResetTurn(turn)) clearInteractiveFallbackState(fallbackChain, chatKey);
-  if (tried.size === 0) { const pref = getUserCliPreference(db, chatKey); fallbackChain.setActiveCli(chatKey, pref); }
+  if (tried.size === 0) {
+    const pref = getUserCliPreference(db, chatKey);
+    fallbackChain.setActiveCli(chatKey, pref);
+  }
+
   const activeCli = fallbackChain.getActiveCli(chatKey) as CliKind;
   tried.add(activeCli);
-  let outcome: ExecutionOutcome = "committed";
-  if (claimedMessage) outcome = await engines[activeCli].executeClaimedMessage(claimedMessage);
-  else if (deps.legacyUpdate && !engines[activeCli].handleInteractiveTurn && engines[activeCli].handleUpdate) {
-    await engines[activeCli].handleUpdate(deps.legacyUpdate);
-  } else if (engines[activeCli].handleInteractiveTurn) await engines[activeCli].handleInteractiveTurn(turn);
-  else throw new Error(`interactive engine ${activeCli} does not accept neutral turns`);
+  const engine = engines[activeCli];
+  if (!engine) throw new Error(`No engine configured for CLI ${activeCli}`);
+  const outcome = await execution.execute(engine);
 
   if (exhaustedChats.has(chatKey)) {
     exhaustedChats.delete(chatKey);
     let next: CliKind | null = null;
-    for (const cli of fallbackChain.getChain()) if (!tried.has(cli)) { next = cli as CliKind; break; }
+    for (const cli of fallbackChain.getChain()) {
+      if (!tried.has(cli)) {
+        next = cli as CliKind;
+        break;
+      }
+    }
     if (next) {
       prepareCliHandoff(db, chatKey, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
       await notify(`Switching to ${next} (${activeCli} at capacity)`);
       if (onCliSwitched) await onCliSwitched(next);
-      if (!claimedMessage && engines[next].recoverPendingQueue) {
+      if (execution.recoverPendingQueue && engines[next].recoverPendingQueue) {
         markPendingFallbackResume(fallbackChain, chatKey, tried);
-        try { const hasPending = await engines[next].recoverPendingQueue!(chatKey); if (hasPending) return "queued"; }
-        catch (error) { clearPendingFallbackResume(fallbackChain, chatKey); throw error; }
+        try {
+          const hasPending = await engines[next].recoverPendingQueue!(chatKey);
+          if (hasPending) return "queued";
+        } catch (error) {
+          clearPendingFallbackResume(fallbackChain, chatKey);
+          throw error;
+        }
         clearPendingFallbackResume(fallbackChain, chatKey);
       }
-      return dispatchInteractiveTurnWithFallback(turn, deps, tried, claimedMessage);
+      return dispatchInteractiveExecutionWithFallback(execution, deps, tried);
     }
     await notify("All CLIs are currently unavailable. Please try again later.");
-    return claimedMessage ? "committed" : "failed";
+    return execution.exhaustedOutcome;
   }
+
   if (tried.size > 1) setUserCliPreference(db, chatKey, activeCli);
   return outcome;
+}
+
+function dispatchClaimedInteractiveExecution(
+  message: PendingMessage,
+  chatKey: string,
+  deps: InteractiveDispatchDeps,
+  tried: Set<string>,
+): Promise<ExecutionOutcome> {
+  return dispatchInteractiveExecutionWithFallback({
+    chatKey,
+    recoverPendingQueue: false,
+    exhaustedOutcome: "committed",
+    execute: (engine) => engine.executeClaimedMessage(message),
+  }, deps, tried);
+}
+
+export function dispatchInteractiveTurnWithFallback(
+  turn: InteractiveTurnInput,
+  deps: InteractiveDispatchDeps,
+  tried = new Set<string>(),
+  claimedMessage?: PendingMessage,
+): Promise<ExecutionOutcome> {
+  if (claimedMessage) {
+    return dispatchClaimedInteractiveExecution(claimedMessage, turn.chatKey, deps, tried);
+  }
+
+  const chatKey = turn.chatKey;
+  if (isResetTurn(turn)) clearInteractiveFallbackState(deps.fallbackChain, chatKey);
+  return dispatchInteractiveExecutionWithFallback({
+    chatKey,
+    recoverPendingQueue: true,
+    exhaustedOutcome: "failed",
+    execute: async (engine) => {
+      if (deps.legacyUpdate && !engine.handleInteractiveTurn && engine.handleUpdate) {
+        await engine.handleUpdate(deps.legacyUpdate);
+      } else if (engine.handleInteractiveTurn) {
+        await engine.handleInteractiveTurn(turn);
+      } else {
+        throw new Error(`interactive engine ${deps.fallbackChain.getActiveCli(chatKey)} does not accept neutral turns`);
+      }
+      return "committed";
+    },
+  }, deps, tried);
 }
 
 /** Compatibility boundary for legacy Telegram callers. New surfaces pass a neutral turn. */
@@ -375,15 +435,5 @@ export function dispatchClaimedInteractiveWithFallback(
   deps: InteractiveDispatchDeps,
 ): Promise<ExecutionOutcome> {
   const resumedTries = consumePendingFallbackResume(deps.fallbackChain, chatKey);
-  const turn: InteractiveTurnInput = {
-    surfaceIdentity: message.laneHandle?.surface ?? "queue",
-    chatKey,
-    actorId: String(message.userId ?? "queue"),
-    messageId: `pending:${message.id}`,
-    text: message.prompt,
-    ...(message.threadId == null ? {} : { threadId: String(message.threadId) }),
-    delivery: { chatId: message.chatId, chatType: message.chatType },
-    attachments: [],
-  };
-  return dispatchInteractiveTurnWithFallback(turn, deps, resumedTries ?? new Set(), message);
+  return dispatchClaimedInteractiveExecution(message, chatKey, deps, resumedTries ?? new Set());
 }
