@@ -32,6 +32,21 @@ export function markHandoffRequired(db: HandoffDb, chatKey: string, cliKind: str
   }
 }
 
+export function getHandoffReason(db: HandoffDb, chatKey: string, cliKind: string): string | null {
+  const raw = db.getSetting(handoffRequiredSettingKey(chatKey, cliKind));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { reason?: unknown };
+    return typeof parsed.reason === "string" ? parsed.reason : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isProviderFallbackHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): boolean {
+  return /^fallback_from_(codex|claude|antigravity|grok|cursor)$/.test(getHandoffReason(db, chatKey, cliKind) ?? "");
+}
+
 export function isHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): boolean {
   return db.getSetting(handoffRequiredSettingKey(chatKey, cliKind)) != null;
 }
