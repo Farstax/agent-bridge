@@ -43,7 +43,7 @@ import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible } f
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel } from "./effort.js";
 import { getCodexUsageText } from "./codexUsage.js";
-import { clearHandoffRequired } from "./handoffState.js";
+import { clearHandoffRequired, isProviderFallbackHandoffRequired } from "./handoffState.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
@@ -53,7 +53,7 @@ import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from 
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { prependHandoffModel } from "./promptWrapping.js";
+import { prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
 import {
   executionLaneCoordinator,
@@ -1143,7 +1143,10 @@ export class BridgeEngine {
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt)
       : (this.opts.workspaceContext ? `[Managed workspace context]\n${this.opts.workspaceContext}\n\n${contextPrompt}` : contextPrompt);
-    const handoffPrompt = shouldInject ? prependHandoffModel(workspacePrompt, model) : workspacePrompt;
+    const fallbackPrompt = shouldInject && isAgentKind(this.kind) && isProviderFallbackHandoffRequired(this.db, chatKey, this.kind)
+      ? prependProviderFallbackContinuation(workspacePrompt)
+      : workspacePrompt;
+    const handoffPrompt = shouldInject ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
     const soulContext = shouldInject ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: shouldInject };
     return {
