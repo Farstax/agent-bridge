@@ -43,6 +43,16 @@ function projectRoot(env: Env): string {
   return env.BRIDGE_PROJECT_DIR?.trim() || ROOT;
 }
 
+function releaseManifestCommit(root: string): string | null {
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")) as Row;
+    const commit = text(manifest.commit, 120);
+    return commit && /^[0-9a-f]{40}$/.test(commit) ? commit : null;
+  } catch {
+    return null;
+  }
+}
+
 function dbPath(env: Env): string {
   const explicit = env.AGENT_BRIDGE_CONTEXT_DB?.trim() || env.DB_PATH?.trim();
   if (explicit) return explicit;
@@ -299,7 +309,7 @@ export function buildAgentBridgeInspection(env: Env = process.env) {
   try {
     const schema = Number(db.pragma("user_version",{simple:true}));
     const s=scope(db,env);
-    const commit=text(env.AGENT_BRIDGE_COMMIT??env.BRIDGE_COMMIT??env.BRIDGE_RELEASE_COMMIT,120);
+    const commit=releaseManifestCommit(projectRoot(env)) ?? text(env.AGENT_BRIDGE_COMMIT??env.BRIDGE_COMMIT??env.BRIDGE_RELEASE_COMMIT,120);
     const ex=execution(db,s);
     const ss=sessions(db,s);
     const rs=routines(db,s,env);
