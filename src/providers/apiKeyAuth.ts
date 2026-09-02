@@ -72,6 +72,7 @@ const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ProviderId, ReadonlySet<
   grok: new Set(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
   cursor: new Set(["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"]),
 };
+const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const PROBE_TIMEOUT_MS = 15_000;
 export const PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS = 30_000;
 const verificationCache = new Map<string, boolean>();
@@ -135,12 +136,16 @@ export function filterProviderCredentialEnv(
   bot: BotKind | undefined,
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  if (!bot) return { ...env };
+  if (!bot) {
+    const out = { ...env };
+    delete out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV];
+    return out;
+  }
   const provider: ProviderId = bot === "antigravity" ? "agy" : bot;
   const allowed = PROVIDER_ALLOWED_SECRET_ENV_KEYS[provider];
   const candidateKey = PROVIDER_API_KEY_AUTH[provider].envVar;
   const candidateVerified = isProviderApiKeyVerified(provider, env);
-  return Object.fromEntries(
+  const out = Object.fromEntries(
     Object.entries(env).filter(([key]) => {
       if (!PROVIDER_SECRET_ENV_KEY_SET.has(key)) return true;
       if (!allowed.has(key)) return false;
@@ -148,6 +153,12 @@ export function filterProviderCredentialEnv(
       return true;
     }),
   );
+
+  // Temporary upstream Claude Code mitigation tracked by #645. Headless
+  // print-mode turns cannot reliably retain ownership of background work.
+  if (provider === "claude") out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV] = "1";
+  else delete out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV];
+  return out;
 }
 
 export function redactProviderApiKeySecrets(text: string, env: Env = process.env): string {
