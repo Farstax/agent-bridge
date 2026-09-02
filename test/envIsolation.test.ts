@@ -28,4 +28,8 @@ describe("Env Isolation", () => {
     expect(path).not.toBe(join(homedir(), ".agent-bridge", "provider-qualification.json"));
     expect(path.startsWith(tmpdir())).toBe(true);
   });
+
+  it("isolates the ambient provider home used by mutable provider state", () => {
+    expect(homedir().startsWith(tmpdir())).toBe(true);
+  });
 });
