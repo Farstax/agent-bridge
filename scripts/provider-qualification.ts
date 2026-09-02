@@ -73,7 +73,7 @@ async function main(): Promise<void> {
 
   const common = {
     providerId,
-    executable: resolveProviderExecutable(providerId),
+    executable: resolveProviderExecutable(providerId, runtimeEnv),
     evidencePath: args.evidencePath ?? qualificationEvidencePath(homedir()),
     previousVersion: args.previousVersion ?? null,
     bridgeCommit: resolveBridgeCommit(args.bridgeCommit),
