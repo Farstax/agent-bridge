@@ -5,6 +5,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildCliInvocation, parseCliResult, runCli } from "../cli.js";
 import { runSupervisedProcess } from "../cliSupervisor.js";
+import { resolveExecutionMode } from "../config.js";
+import { resolveTimeoutsForKind } from "../timeouts.js";
 import type { BotKind } from "../types.js";
 import { withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
 import { withAntigravityStateLock } from "./antigravityRuntime.js";
@@ -12,7 +14,9 @@ import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
-export const PROVIDER_CONTRACT_VERSION = 4;
+export const PROVIDER_CONTRACT_VERSION = 5;
+
+type QualificationEnv = Record<string, string | undefined>;
 
 export type QualificationCheckStatus =
   | "pass"
@@ -60,6 +64,7 @@ export interface ProviderQualificationOptions {
   cwd?: string;
   homeDir?: string;
   timeoutMs?: number;
+  env?: QualificationEnv;
 }
 
 export interface QualificationHealthResult {
@@ -80,6 +85,18 @@ const REPOSITORY_GROUNDING_PROBE = "Agent Bridge repository-grounding qualificat
 
 function providerBotKind(providerId: ProviderId): BotKind {
   return providerId === "agy" ? "antigravity" : providerId;
+}
+
+export function resolveQualificationRuntimePolicy(
+  providerId: ProviderId,
+  env: QualificationEnv = process.env,
+  timeoutMs?: number,
+): { executionMode: "safe" | "trusted"; timeoutMs: number } {
+  const bot = providerBotKind(providerId);
+  return {
+    executionMode: resolveExecutionMode(bot, env),
+    timeoutMs: timeoutMs ?? resolveTimeoutsForKind(bot, env).cliTimeoutMs,
+  };
 }
 
 export function normalizeProviderVersion(raw: string): string {
@@ -332,6 +349,7 @@ async function executeNativeQualificationCheck({
   cwd,
   homeDir,
   timeoutMs,
+  executionMode,
   sessionId,
 }: {
   providerId: ProviderId;
@@ -339,6 +357,7 @@ async function executeNativeQualificationCheck({
   cwd: string;
   homeDir: string;
   timeoutMs: number;
+  executionMode: "safe" | "trusted";
   sessionId: string | null;
 }): Promise<{ sessionId: string | null }> {
   const bot = providerBotKind(providerId);
@@ -349,7 +368,7 @@ async function executeNativeQualificationCheck({
     sessionId,
     command: executable,
     model: null,
-    executionMode: "safe",
+    executionMode,
     outputFormat: providerId === "agy" ? "stream-json" : "json",
     soulContext: null,
     includeResponseContract: false,
@@ -409,7 +428,6 @@ async function executeNativeQualificationCheck({
   return { sessionId: parsed.sessionId };
 }
 
-
 function createRepositoryGroundingFixture(providerId: ProviderId): {
   cwd: string;
   sourceFact: string;
@@ -464,11 +482,13 @@ async function executeRepositoryGroundingCheck({
   executable,
   homeDir,
   timeoutMs,
+  executionMode,
 }: {
   providerId: ProviderId;
   executable: string;
   homeDir: string;
   timeoutMs: number;
+  executionMode: "safe" | "trusted";
 }): Promise<void> {
   const bot = providerBotKind(providerId);
   const fixture = createRepositoryGroundingFixture(providerId);
@@ -479,7 +499,7 @@ async function executeRepositoryGroundingCheck({
       sessionId: null,
       command: executable,
       model: null,
-      executionMode: "safe",
+      executionMode,
       outputFormat: providerId === "agy" ? "stream-json" : "json",
       soulContext: null,
       includeResponseContract: false,
@@ -520,7 +540,9 @@ async function executeRepositoryGroundingCheck({
 export async function qualifyProvider(options: ProviderQualificationOptions): Promise<ProviderQualificationRecord> {
   const adapter = getProviderAdapter(options.providerId);
   const executable = options.executable ?? adapter.executable;
-  const timeoutMs = options.timeoutMs ?? 90_000;
+  const runtimeEnv = options.env ?? process.env;
+  const runtimePolicy = resolveQualificationRuntimePolicy(options.providerId, runtimeEnv, options.timeoutMs);
+  const { executionMode, timeoutMs } = runtimePolicy;
   const homeDir = options.homeDir ?? homedir();
   const ownsWorkspace = !options.cwd;
   const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), `agent-bridge-qualify-${options.providerId}-`));
@@ -536,7 +558,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
-        timeout: Math.min(timeoutMs, 10_000),
+        timeout: timeoutMs === 0 ? 10_000 : Math.min(timeoutMs, 10_000),
       }).trim();
       providerVersion = normalizeProviderVersion(versionOutput);
       if (options.expectedVersion && providerVersion !== normalizeProviderVersion(options.expectedVersion)) {
@@ -556,7 +578,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         bridgeCommit: options.bridgeCommit ?? resolveBridgeCommit(cwd),
         contractVersion: PROVIDER_CONTRACT_VERSION,
         qualifiedAt,
-        environment: options.environment ?? process.env.AGENT_BRIDGE_ENVIRONMENT_CLASS ?? "managed-appliance",
+        environment: options.environment ?? runtimeEnv.AGENT_BRIDGE_ENVIRONMENT_CLASS ?? "managed-appliance",
         overall,
         checks,
       };
@@ -572,6 +594,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         cwd,
         homeDir,
         timeoutMs,
+        executionMode,
         sessionId: null,
       });
       freshSessionId = fresh.sessionId;
@@ -594,6 +617,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
             cwd,
             homeDir,
             timeoutMs,
+            executionMode,
             sessionId: freshSessionId,
           });
           checks.push({ name: "session_resume", status: "pass" });
@@ -607,22 +631,24 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         checks.push({ name: "session_resume", status: "not_applicable" });
       }
     }
-  if (checks.some((check) => check.name === "fresh_prompt" && check.status === "pass")) {
-    try {
-      await executeRepositoryGroundingCheck({
-        providerId: options.providerId,
-        executable,
-        homeDir,
-        timeoutMs,
-      });
-      checks.push({ name: "repository_grounding", status: "pass" });
-    } catch (caught) {
-      const error = caught instanceof Error ? caught : new Error(String(caught));
-      const failure = checkForError(options.providerId, error, "repository_grounding");
-      checks.push(failure.check);
-      overall = failure.overall;
+
+    if (checks.some((check) => check.name === "fresh_prompt" && check.status === "pass")) {
+      try {
+        await executeRepositoryGroundingCheck({
+          providerId: options.providerId,
+          executable,
+          homeDir,
+          timeoutMs,
+          executionMode,
+        });
+        checks.push({ name: "repository_grounding", status: "pass" });
+      } catch (caught) {
+        const error = caught instanceof Error ? caught : new Error(String(caught));
+        const failure = checkForError(options.providerId, error, "repository_grounding");
+        checks.push(failure.check);
+        overall = failure.overall;
+      }
     }
-  }
 
     const record: ProviderQualificationRecord = {
       provider: options.providerId,
@@ -631,7 +657,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
       bridgeCommit: options.bridgeCommit ?? resolveBridgeCommit(cwd),
       contractVersion: PROVIDER_CONTRACT_VERSION,
       qualifiedAt,
-      environment: options.environment ?? process.env.AGENT_BRIDGE_ENVIRONMENT_CLASS ?? "managed-appliance",
+      environment: options.environment ?? runtimeEnv.AGENT_BRIDGE_ENVIRONMENT_CLASS ?? "managed-appliance",
       overall,
       checks,
     };
