@@ -1,6 +1,6 @@
 # Antigravity / Agy repository notes
 
-`AGENTS.md` is authoritative for repository architecture, TDD, review, verification, release, restart, and effort policy. Read it before making changes; do not duplicate those rules here.
+`AGENTS.md` is authoritative for repository architecture, TDD, review, verification, release, restart, effort policy, and repository-grounded implementation explanations. Read it before making changes or answering implementation-specific questions; do not duplicate those rules here.
 
 ## Agy-specific boundary
 
