@@ -124,6 +124,21 @@ describe("provider API-key authentication", () => {
     expect(after.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
+  it("forces the temporary background-task mitigation only into Claude runtime children", () => {
+    const env = {
+      PATH: "/usr/bin",
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0",
+    };
+
+    const claude = filterProviderCredentialEnv("claude", env);
+    expect(claude.PATH).toBe("/usr/bin");
+    expect(claude.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe("1");
+
+    expect(filterProviderCredentialEnv("codex", env).CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBeUndefined();
+    expect(filterProviderCredentialEnv("antigravity", env).CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBeUndefined();
+    expect(filterProviderCredentialEnv(undefined, env).CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBeUndefined();
+  });
+
   it("verifies configured providers in parallel without blocking on one probe", async () => {
     const env = { CODEX_API_KEY: "codex-key", ANTHROPIC_API_KEY: "claude-key" };
     const started: string[] = [];
