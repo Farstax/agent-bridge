@@ -5,6 +5,8 @@ interface PerKindDefaults {
   cliIdleTimeoutMs: number;
 }
 
+type Env = Record<string, string | undefined>;
+
 // Per-CLI built-in defaults.
 // Canonical default (Issue #177): both hard and idle timeouts are disabled
 // (0) unless explicitly configured. 0 means "no timeout" throughout this
@@ -19,16 +21,16 @@ const DEFAULTS: Record<BotKind, PerKindDefaults> = {
 
 const DEFAULT_FETCH_TIMEOUT_MS = 45_000;
 
-function envNum(name: string): number | null {
-  const v = process.env[name];
+function envNum(name: string, env: Env): number | null {
+  const v = env[name];
   if (!v) return null;
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /** Like envNum(), but an explicit "0" resolves to 0 (disabled) instead of falling through. */
-function envTimeoutMs(name: string): number | null {
-  const v = process.env[name];
+function envTimeoutMs(name: string, env: Env): number | null {
+  const v = env[name];
   if (!v) return null;
   const n = Number(v);
   return Number.isFinite(n) && n >= 0 ? n : null;
@@ -51,21 +53,21 @@ export interface ResolvedTimeouts {
  * Fetch timeout (Telegram HTTP only, never kills CLI subprocess):
  *   TELEGRAM_FETCH_TIMEOUT_MS → FETCH_TIMEOUT_MS → 45 000 ms
  */
-export function resolveTimeoutsForKind(kind: BotKind): ResolvedTimeouts {
+export function resolveTimeoutsForKind(kind: BotKind, env: Env = process.env): ResolvedTimeouts {
   const prefix = kind.toUpperCase();
   const defaults = DEFAULTS[kind];
   return {
     cliTimeoutMs:
-      envTimeoutMs(`${prefix}_CLI_TIMEOUT_MS`) ??
-      envTimeoutMs("CLI_TIMEOUT_MS") ??
+      envTimeoutMs(`${prefix}_CLI_TIMEOUT_MS`, env) ??
+      envTimeoutMs("CLI_TIMEOUT_MS", env) ??
       defaults.cliTimeoutMs,
     cliIdleTimeoutMs:
-      envTimeoutMs(`${prefix}_CLI_IDLE_TIMEOUT_MS`) ??
-      envTimeoutMs("CLI_IDLE_TIMEOUT_MS") ??
+      envTimeoutMs(`${prefix}_CLI_IDLE_TIMEOUT_MS`, env) ??
+      envTimeoutMs("CLI_IDLE_TIMEOUT_MS", env) ??
       defaults.cliIdleTimeoutMs,
     fetchTimeoutMs:
-      envNum("TELEGRAM_FETCH_TIMEOUT_MS") ??
-      envNum("FETCH_TIMEOUT_MS") ??
+      envNum("TELEGRAM_FETCH_TIMEOUT_MS", env) ??
+      envNum("FETCH_TIMEOUT_MS", env) ??
       DEFAULT_FETCH_TIMEOUT_MS,
   };
 }
