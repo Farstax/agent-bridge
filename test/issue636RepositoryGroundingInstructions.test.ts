@@ -38,6 +38,8 @@ describe("Issue #636 native repository grounding", () => {
     ["codex" as const, "CODEX_PROJECT_DIR", "/tmp/issue636-codex"],
     ["claude" as const, "CLAUDE_PROJECT_DIR", "/tmp/issue636-claude"],
     ["antigravity" as const, "ANTIGRAVITY_PROJECT_DIR", "/tmp/issue636-agy"],
+    ["grok" as const, "GROK_PROJECT_DIR", "/tmp/issue636-grok"],
+    ["cursor" as const, "CURSOR_PROJECT_DIR", "/tmp/issue636-cursor"],
   ])("keeps %s native CLI execution rooted in its configured repository working directory", (kind, envName, expected) => {
     vi.stubEnv(envName, expected);
 

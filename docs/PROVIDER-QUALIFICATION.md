@@ -2,30 +2,31 @@
 
 Agent Bridge treats Codex, Claude, Agy, Grok Build, and Cursor as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
 
-## Contract v1
+## Contract v4
 
-`agent_bridge_provider_contract: 1`
+`agent_bridge_provider_contract: 4`
 
 The initial live contract is deliberately small and incident-driven:
 
 1. `version` — the installed executable starts and reports the expected version.
 2. `fresh_prompt` — a bounded non-interactive prompt crosses the real Agent Bridge invocation/supervisor/parser boundary and returns the qualification marker.
 3. `session_resume` — when the fresh result exposes an invocation-attributable session ID, a second bounded prompt resumes that session and returns the resume marker. Providers that do not expose such an ID report `not_applicable`.
+4. `repository_grounding` — one fresh native-tool-enabled invocation runs in a disposable Git repository. A runtime-generated source fact lives only in implementation source and a separate runtime-generated marker lives only in repository instructions; neither is included in the prompt. The check passes only when the native provider returns both exact values.
 
 Agy qualification uses the same native `stream-json` output contract as managed runtime execution. Fresh and resumed checks require a valid terminal result and invocation-attributable conversation ID. Contradictory or malformed terminal results fail qualification; in particular, an Agy `ERROR` result carrying a non-empty `response` is a contract failure.
 
-Check states are `pass`, `fail`, `not_applicable`, `unsupported`, and `not_authenticated`. A qualification record has `overall: pass|degraded|fail`. Authentication, capacity/model availability and transient upstream prerequisites are distinguished from deterministic contract failure rather than being collapsed into a boolean.
+Check states are `pass`, `fail`, `not_applicable`, `unsupported`, `not_authenticated`, `capacity_exhausted`, `model_unavailable`, and `transient`. A qualification record has `overall: pass|degraded|fail`. Authentication, capacity/model availability and transient upstream prerequisites are distinguished from deterministic contract failure rather than being collapsed into a boolean.
 
 ## When live qualification runs
 
-Deterministic provider-boundary fixtures remain part of the ordinary test suite. Live qualification is not run on every service startup or every PR.
+Deterministic provider-boundary fixtures remain part of the ordinary test suite. Live qualification is not run on every service startup or every PR. The repository-grounding check is a capability/contract probe, not a subjective answer-quality benchmark: it uses exact runtime-generated facts and local comparison, so it adds no model-as-judge call.
 
 The managed production trigger is a CLI install/upgrade or a subsequently observed out-of-band version change:
 
 - `scripts/upgrade.sh --clis-only` verifies the installed Claude/Codex versions and invokes the qualifier with `--if-needed`.
 - Qualification evidence is cached by provider version and Agent Bridge provider-contract version, so an already-qualified tuple is not re-run.
 - The health service checks established evidence for out-of-band/self-updated provider versions. When `installed_version != last_qualified_version`, it qualifies that provider once and persists the new result.
-- Only the changed provider is qualified.
+- Only the changed provider is qualified. A contract-version change invalidates prior tuples once, so contract v4 adds one repository-grounding fresh invocation to the next required qualification for each affected provider and then reuses the cached evidence.
 
 Grok and Cursor are not part of the managed automatic upgrade set. Their qualifiers can be run explicitly after installation, an upgrade, or when troubleshooting:
 

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,17 +12,20 @@ import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
-export const PROVIDER_CONTRACT_VERSION = 3;
+export const PROVIDER_CONTRACT_VERSION = 4;
 
 export type QualificationCheckStatus =
   | "pass"
   | "fail"
   | "not_applicable"
   | "unsupported"
-  | "not_authenticated";
+  | "not_authenticated"
+  | "capacity_exhausted"
+  | "model_unavailable"
+  | "transient";
 
 export interface ProviderQualificationCheck {
-  name: "version" | "fresh_prompt" | "session_resume";
+  name: "version" | "fresh_prompt" | "session_resume" | "repository_grounding";
   status: QualificationCheckStatus;
   diagnostic?: string;
 }
@@ -72,6 +76,7 @@ function qualificationOutputFormat(args: string[]): "streaming-json" | "stream-j
 
 const FRESH_PROBE = "Agent Bridge provider qualification probe.";
 const RESUME_PROBE = "Agent Bridge provider qualification resume probe.";
+const REPOSITORY_GROUNDING_PROBE = "Agent Bridge repository-grounding qualification. Inspect this repository implementation and report the exact string value assigned to `repositoryGroundingQualificationFact`. Follow the repository native instructions. Reply concisely.";
 
 function providerBotKind(providerId: ProviderId): BotKind {
   return providerId === "agy" ? "antigravity" : providerId;
@@ -220,23 +225,32 @@ export function qualificationHealthCheck(
   };
 }
 
-function checkForError(providerId: ProviderId, error: Error): {
+function checkForError(
+  providerId: ProviderId,
+  error: Error,
+  name: ProviderQualificationCheck["name"],
+): {
   check: ProviderQualificationCheck;
   overall: "degraded" | "fail";
 } {
   const classification = classifyProviderError(providerId, error);
   if (classification.kind === "auth_required") {
     return {
-      check: { name: "fresh_prompt", status: "not_authenticated", diagnostic: error.message.slice(0, 500) },
+      check: { name, status: "not_authenticated", diagnostic: error.message.slice(0, 500) },
       overall: "degraded",
     };
   }
-  const externalConstraint = classification.kind === "capacity_exhausted"
+  if (classification.kind === "capacity_exhausted"
     || classification.kind === "model_unavailable"
-    || classification.kind === "transient";
+    || classification.kind === "transient") {
+    return {
+      check: { name, status: classification.kind, diagnostic: error.message.slice(0, 500) },
+      overall: "degraded",
+    };
+  }
   return {
-    check: { name: "fresh_prompt", status: "fail", diagnostic: error.message.slice(0, 500) },
-    overall: externalConstraint ? "degraded" : "fail",
+    check: { name, status: "fail", diagnostic: error.message.slice(0, 500) },
+    overall: "fail",
   };
 }
 
@@ -391,6 +405,114 @@ async function executeNativeQualificationCheck({
   return { sessionId: parsed.sessionId };
 }
 
+
+function createRepositoryGroundingFixture(providerId: ProviderId): {
+  cwd: string;
+  sourceFact: string;
+  instructionMarker: string;
+} {
+  const cwd = mkdtempSync(join(tmpdir(), `agent-bridge-grounding-${providerId}-`));
+  const nonce = randomUUID().replace(/-/g, "");
+  const sourceFact = `AGENT_BRIDGE_GROUNDING_FACT_${nonce}`;
+  const instructionMarker = `AGENT_BRIDGE_GROUNDING_INSTRUCTION_${nonce}`;
+  try {
+    mkdirSync(join(cwd, "src"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(cwd, "src", "repositoryGroundingFixture.ts"),
+      `export const repositoryGroundingQualificationFact = "${sourceFact}";\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    writeFileSync(
+      join(cwd, "AGENTS.md"),
+      [
+        "# Agent Bridge provider qualification",
+        "",
+        "For implementation-specific questions in this repository, inspect relevant implementation source before answering.",
+        `When answering the repository-grounding qualification question, include this exact marker: ${instructionMarker}`,
+        "",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    writeFileSync(
+      join(cwd, "CLAUDE.md"),
+      "`AGENTS.md` is authoritative for repository instructions. Read it before answering implementation-specific questions.\n",
+      { encoding: "utf8", mode: 0o600 },
+    );
+    writeFileSync(
+      join(cwd, "ANTIGRAVITY.md"),
+      "`AGENTS.md` is authoritative for repository instructions. Read it before answering implementation-specific questions.\n",
+      { encoding: "utf8", mode: 0o600 },
+    );
+    execFileSync("git", ["init", "--quiet"], {
+      cwd,
+      stdio: ["ignore", "ignore", "pipe"],
+      timeout: 5_000,
+    });
+    return { cwd, sourceFact, instructionMarker };
+  } catch (error) {
+    rmSync(cwd, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function executeRepositoryGroundingCheck({
+  providerId,
+  executable,
+  homeDir,
+  timeoutMs,
+}: {
+  providerId: ProviderId;
+  executable: string;
+  homeDir: string;
+  timeoutMs: number;
+}): Promise<void> {
+  const bot = providerBotKind(providerId);
+  const fixture = createRepositoryGroundingFixture(providerId);
+  try {
+    const invocation = buildCliInvocation({
+      bot,
+      prompt: REPOSITORY_GROUNDING_PROBE,
+      sessionId: null,
+      command: executable,
+      model: null,
+      executionMode: "safe",
+      outputFormat: providerId === "agy" ? "stream-json" : "json",
+      soulContext: null,
+      includeResponseContract: false,
+      attachments: [],
+      outputDir: null,
+      effort: null,
+      homeDir,
+      toolMode: "default",
+      nativeCompletion: true,
+    });
+    if (invocation.nativeSessionMode !== "fresh") {
+      throw new Error("repository grounding qualification failed: invocation did not enter native fresh mode");
+    }
+    const stdout = await runQualificationInvocation({
+      providerId,
+      command: invocation.command,
+      args: invocation.args,
+      cwd: fixture.cwd,
+      homeDir,
+      timeoutMs,
+    });
+    const parsed = parseCliResult({
+      bot,
+      stdout,
+      outputFormat: qualificationOutputFormat(invocation.args),
+    });
+    const missing: string[] = [];
+    if (!parsed.text.includes(fixture.sourceFact)) missing.push("source fact");
+    if (!parsed.text.includes(fixture.instructionMarker)) missing.push("repository instruction marker");
+    if (missing.length > 0) {
+      throw new Error(`repository grounding qualification failed: response omitted ${missing.join(" and ")}`);
+    }
+  } finally {
+    rmSync(fixture.cwd, { recursive: true, force: true });
+  }
+}
+
 export async function qualifyProvider(options: ProviderQualificationOptions): Promise<ProviderQualificationRecord> {
   const adapter = getProviderAdapter(options.providerId);
   const executable = options.executable ?? adapter.executable;
@@ -421,6 +543,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
       checks.push({ name: "version", status: "fail", diagnostic: (error as Error).message.slice(0, 500) });
       checks.push({ name: "fresh_prompt", status: "not_applicable" });
       checks.push({ name: "session_resume", status: "not_applicable" });
+      checks.push({ name: "repository_grounding", status: "not_applicable" });
       overall = "fail";
       const record: ProviderQualificationRecord = {
         provider: options.providerId,
@@ -451,9 +574,10 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
       checks.push({ name: "fresh_prompt", status: "pass" });
     } catch (caught) {
       const error = caught instanceof Error ? caught : new Error(String(caught));
-      const failure = checkForError(options.providerId, error);
+      const failure = checkForError(options.providerId, error, "fresh_prompt");
       checks.push(failure.check);
       checks.push({ name: "session_resume", status: "not_applicable" });
+      checks.push({ name: "repository_grounding", status: "not_applicable" });
       overall = failure.overall;
     }
 
@@ -469,21 +593,30 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         });
         checks.push({ name: "session_resume", status: "pass" });
       } catch (caught) {
-        const error = caught instanceof Error ? caught : new Error(String(caught));
-        const classification = classifyProviderError(options.providerId, error);
-        if (classification.kind === "auth_required") {
-          checks.push({ name: "session_resume", status: "not_authenticated", diagnostic: error.message.slice(0, 500) });
-          overall = "degraded";
-        } else {
-          checks.push({ name: "session_resume", status: "fail", diagnostic: error.message.slice(0, 500) });
-          overall = classification.kind === "capacity_exhausted"
-            || classification.kind === "model_unavailable"
-            || classification.kind === "transient"
-            ? "degraded"
-            : "fail";
-        }
-      }
+      const error = caught instanceof Error ? caught : new Error(String(caught));
+      const failure = checkForError(options.providerId, error, "session_resume");
+      checks.push(failure.check);
+      checks.push({ name: "repository_grounding", status: "not_applicable" });
+      overall = failure.overall;
     }
+  }
+
+  if (checks.some((check) => check.name === "session_resume" && check.status === "pass")) {
+    try {
+      await executeRepositoryGroundingCheck({
+        providerId: options.providerId,
+        executable,
+        homeDir,
+        timeoutMs,
+      });
+      checks.push({ name: "repository_grounding", status: "pass" });
+    } catch (caught) {
+      const error = caught instanceof Error ? caught : new Error(String(caught));
+      const failure = checkForError(options.providerId, error, "repository_grounding");
+      checks.push(failure.check);
+      overall = failure.overall;
+    }
+  }
 
     const record: ProviderQualificationRecord = {
       provider: options.providerId,
