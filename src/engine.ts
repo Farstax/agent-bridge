@@ -1640,7 +1640,10 @@ export class BridgeEngine {
   private _handleCircuitBreaker(error: Error, chatKey: string, laneHandle: ExecutionLaneHandle): void {
     if (!isAgentKind(this.kind)) return;
     const msg = error.message ?? "";
-    if (/timeout|killed by signal/i.test(msg)) {
+    const silentResumedClaudeExit = this.kind === "claude"
+      && this.db.getSession(chatKey, "claude") !== null
+      && /^CLI exited with code 1: \(no diagnostic output\)$/.test(msg);
+    if (/timeout|killed by signal/i.test(msg) || silentResumedClaudeExit) {
       this._runWithFence(laneHandle, () => {
         const failures = this.db.incrementFailures(chatKey, this.kind as BotKind);
         if (failures >= 2) {

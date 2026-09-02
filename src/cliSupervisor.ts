@@ -481,23 +481,37 @@ export async function runSupervisedProcess(
 
       const safeStdout = redact(stdout);
       const safeStderr = redact(stderr);
+      const rawOutputBytes = Buffer.byteLength(stdout) + Buffer.byteLength(stderr);
+      const safeOutputBytes = Buffer.byteLength(safeStdout) + Buffer.byteLength(safeStderr);
+      const redactionApplied = stdout !== safeStdout || stderr !== safeStderr;
+      const attachExitDiagnostics = (err: Error) => {
+        (err as any).stdout = safeStdout;
+        (err as any).stderr = safeStderr;
+        (err as any).exitCode = code;
+        (err as any).signal = signal;
+        (err as any).rawOutputBytes = rawOutputBytes;
+        (err as any).safeOutputBytes = safeOutputBytes;
+        (err as any).redactionApplied = redactionApplied;
+        return err;
+      };
+      if (signal || (code !== 0 && code !== null)) {
+        console.warn(`[cli-exit] bot=${options.bot ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "none"} rawBytes=${rawOutputBytes} safeBytes=${safeOutputBytes} redacted=${redactionApplied}`);
+      }
       if (signal && abortedChildren.has(child)) {
         if (evtCtx) emit(evtType.runCancelled({ ...evtCtx, reason: "user" }));
         doResolve({ stdout: safeStdout });
       } else if (signal) {
-        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI killed by signal ${signal}`, category: "cli" }));
         const combined = [safeStderr.trim(), safeStdout.slice(-2000).trim()].filter(Boolean).join("\n");
-        const err = new Error(`CLI killed by signal ${signal}: ${combined}`);
-        (err as any).stdout = safeStdout;
-        (err as any).stderr = safeStderr;
-        doReject(err);
+        const diagnostic = combined || "(no diagnostic output)";
+        const message = `CLI killed by signal ${signal}: ${diagnostic}`;
+        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: combined ? `CLI killed by signal ${signal}` : message, category: "cli" }));
+        doReject(attachExitDiagnostics(new Error(message)));
       } else if (code !== 0 && code !== null) {
-        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: `CLI exited with code ${code}`, category: "cli" }));
         const combined = [safeStderr.trim(), safeStdout.slice(-2000).trim()].filter(Boolean).join("\n");
-        const err = new Error(`CLI exited with code ${code}: ${combined}`);
-        (err as any).stdout = safeStdout;
-        (err as any).stderr = safeStderr;
-        doReject(err);
+        const diagnostic = combined || "(no diagnostic output)";
+        const message = `CLI exited with code ${code}: ${diagnostic}`;
+        if (evtCtx) emit(evtType.runFailed({ ...evtCtx, error: combined ? `CLI exited with code ${code}` : message, category: "cli" }));
+        doReject(attachExitDiagnostics(new Error(message)));
       } else {
         const validationError = validateSuccessfulCliExit(options.bot, { stdout, stderr });
         if (validationError) {
