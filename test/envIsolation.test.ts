@@ -1,5 +1,8 @@
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import dotenv from "dotenv";
+import { qualificationEvidencePath } from "../src/providers/qualification.js";
 
 describe("Env Isolation", () => {
   it("loads from specific file path", async () => {
@@ -17,5 +20,12 @@ describe("Env Isolation", () => {
 
     expect(calls).toEqual([{ path: "/tmp/service.env", override: false }]);
     configSpy.mockRestore();
+  });
+
+  it("keeps ambient provider qualification evidence out of the operator home", () => {
+    const path = qualificationEvidencePath();
+
+    expect(path).not.toBe(join(homedir(), ".agent-bridge", "provider-qualification.json"));
+    expect(path.startsWith(tmpdir())).toBe(true);
   });
 });
