@@ -24,6 +24,12 @@ if [[ " $* " != *" --output-format stream-json "* ]]; then
   echo "expected stream-json qualification mode" >&2
   exit 2
 fi
+if [[ " $* " == *"Agent Bridge repository-grounding qualification."* ]]; then
+  fact="$(grep -o 'AGENT_BRIDGE_GROUNDING_FACT_[A-Za-z0-9]*' src/repositoryGroundingFixture.ts | head -n1)"
+  marker="$(grep -o 'AGENT_BRIDGE_GROUNDING_INSTRUCTION_[A-Za-z0-9]*' AGENTS.md | head -n1)"
+  printf '%s\\n' '{"event":"result","result":{"conversation_id":"${conversationId}","status":"SUCCESS","response":"'"$fact $marker"'"}}'
+  exit 0
+fi
 marker="AGENT_BRIDGE_QUALIFICATION_OK"
 if [[ " $* " == *" --conversation ${conversationId} "* ]]; then
   marker="AGENT_BRIDGE_QUALIFICATION_RESUME_OK"
@@ -48,6 +54,7 @@ printf '%s\\n' '{"event":"result","result":{"conversation_id":"${conversationId}
       ["version", "pass"],
       ["fresh_prompt", "pass"],
       ["session_resume", "pass"],
+      ["repository_grounding", "pass"],
     ]);
   });
 });

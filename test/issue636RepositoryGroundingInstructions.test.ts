@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getCliWorkingDir } from "../src/bridge.js";
+import { isCursorRouteable } from "../src/providers/cursorAvailability.js";
+import { isGrokRouteable } from "../src/providers/grokAvailability.js";
 
 const root = process.cwd();
 
@@ -42,7 +44,8 @@ describe("Issue #636 native repository grounding", () => {
     ["cursor" as const, "CURSOR_PROJECT_DIR", "/tmp/issue636-cursor"],
   ])("keeps %s native CLI execution rooted in its configured repository working directory", (kind, envName, expected) => {
     vi.stubEnv(envName, expected);
-
+    if (kind === "grok" && !isGrokRouteable()) return;
+    if (kind === "cursor" && !isCursorRouteable()) return;
     expect(getCliWorkingDir(kind)).toBe(expected);
   });
 });

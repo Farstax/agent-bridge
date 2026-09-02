@@ -12,12 +12,12 @@ import {
   type ProviderQualificationRecord,
 } from "../src/providers/qualification.js";
 
-type GroundingMode = "pass" | "omit_instruction" | "capacity";
+type GroundingMode = "pass" | "omit_instruction" | "omit_source" | "capacity";
 
 function executable(path: string, body: string, groundingMode: GroundingMode = "pass"): string {
   const groundingAction = groundingMode === "capacity"
     ? 'echo "usage limit reached" >&2\nexit 1'
-    : `response="${groundingMode === "omit_instruction" ? "$fact" : "$fact $marker"}"
+    : `response="${groundingMode === "omit_instruction" ? "$fact" : groundingMode === "omit_source" ? "$marker" : "$fact $marker"}"
 provider="$(basename "$0")"
 case "$provider" in
   codex)
@@ -436,6 +436,12 @@ fi
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-missing-session-"));
     const fake = executable(join(root, "claude"), `
 if [[ "\${1:-}" == "--version" ]]; then echo "Claude Code 2.3.4"; exit 0; fi
+if [[ " $* " == *"Agent Bridge repository-grounding qualification."* ]]; then
+  fact="$(grep -o 'AGENT_BRIDGE_GROUNDING_FACT_[A-Za-z0-9]*' src/repositoryGroundingFixture.ts | head -n1)"
+  marker="$(grep -o 'AGENT_BRIDGE_GROUNDING_INSTRUCTION_[A-Za-z0-9]*' AGENTS.md | head -n1)"
+  printf '%s\\n' '{"result":"'"$fact $marker"'"}'
+  exit 0
+fi
 printf '%s\\n' '{"result":"native protocol response"}'
 `);
 
@@ -449,12 +455,12 @@ printf '%s\\n' '{"result":"native protocol response"}'
       timeoutMs: 5_000,
     });
 
-    expect(result.overall).toBe("fail");
+    expect(result.overall).toBe("pass");
     expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
-      status: "fail",
-      diagnostic: expect.stringMatching(/session identity/i),
+      status: "pass",
     });
     expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
+    expect(result.checks.find((check) => check.name === "repository_grounding")?.status).toBe("pass");
   });
 
   it("fails closed on malformed provider-native envelopes", async () => {
@@ -520,6 +526,25 @@ printf '%s\\n' '{not-json'
     expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
       status: "fail",
       diagnostic: expect.stringMatching(/repository instruction marker/i),
+    });
+  });
+
+  it("fails repository grounding when the native answer returns the wrong source fact", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-grounding-wrong-source-"));
+    const fake = executable(join(root, "codex"), passingProviderBody("codex"), "omit_source");
+    const result = await qualifyProvider({
+      providerId: "codex",
+      executable: fake,
+      evidencePath: join(root, "qualification.json"),
+      bridgeCommit: "9".repeat(40),
+      cwd: root,
+      homeDir: root,
+      timeoutMs: 5_000,
+    });
+    expect(result.overall).toBe("fail");
+    expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
+      status: "fail",
+      diagnostic: expect.stringMatching(/source fact/i),
     });
   });
 

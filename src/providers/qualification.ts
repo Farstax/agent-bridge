@@ -340,7 +340,7 @@ async function executeNativeQualificationCheck({
   homeDir: string;
   timeoutMs: number;
   sessionId: string | null;
-}): Promise<{ sessionId: string }> {
+}): Promise<{ sessionId: string | null }> {
   const bot = providerBotKind(providerId);
   const adapter = getProviderAdapter(providerId);
   const invocation = buildCliInvocation({
@@ -395,8 +395,12 @@ async function executeNativeQualificationCheck({
   if (!parsed.text.trim()) {
     throw new Error("provider native result parsing failed: native result did not contain a non-empty response");
   }
+  // Some providers complete a fresh native turn without exposing a
+  // resumable session. Resume is then not applicable, while the independent
+  // repository-grounding check must still run.
   if (!parsed.sessionId?.trim()) {
-    throw new Error("provider session identity missing from native result");
+    if (sessionId) throw new Error("provider session identity missing from native result");
+    return { sessionId: null };
   }
   if (sessionId && parsed.sessionId !== sessionId) {
     throw new Error(`provider resume compatibility failed: native session identity expected ${sessionId}, observed ${parsed.sessionId}`);
@@ -582,26 +586,28 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
     }
 
     if (checks.some((check) => check.name === "fresh_prompt" && check.status === "pass")) {
-      try {
-        await executeNativeQualificationCheck({
-          providerId: options.providerId,
-          executable,
-          cwd,
-          homeDir,
-          timeoutMs,
-          sessionId: freshSessionId,
-        });
-        checks.push({ name: "session_resume", status: "pass" });
-      } catch (caught) {
-      const error = caught instanceof Error ? caught : new Error(String(caught));
-      const failure = checkForError(options.providerId, error, "session_resume");
-      checks.push(failure.check);
-      checks.push({ name: "repository_grounding", status: "not_applicable" });
-      overall = failure.overall;
+      if (freshSessionId) {
+        try {
+          await executeNativeQualificationCheck({
+            providerId: options.providerId,
+            executable,
+            cwd,
+            homeDir,
+            timeoutMs,
+            sessionId: freshSessionId,
+          });
+          checks.push({ name: "session_resume", status: "pass" });
+        } catch (caught) {
+          const error = caught instanceof Error ? caught : new Error(String(caught));
+          const failure = checkForError(options.providerId, error, "session_resume");
+          checks.push(failure.check);
+          overall = failure.overall;
+        }
+      } else {
+        checks.push({ name: "session_resume", status: "not_applicable" });
+      }
     }
-  }
-
-  if (checks.some((check) => check.name === "session_resume" && check.status === "pass")) {
+  if (checks.some((check) => check.name === "fresh_prompt" && check.status === "pass")) {
     try {
       await executeRepositoryGroundingCheck({
         providerId: options.providerId,
