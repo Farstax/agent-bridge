@@ -6,6 +6,7 @@ import {
   qualifyProviderIfNeeded,
   qualificationEvidencePath,
 } from "../src/providers/qualification.js";
+import { resolveQualificationEntrypointEnvironment } from "../src/providers/qualificationEntrypoint.js";
 import { assertProviderId, resolveProviderExecutable } from "../src/providers/registry.js";
 
 interface Args {
@@ -14,6 +15,7 @@ interface Args {
   previousVersion?: string;
   evidencePath?: string;
   bridgeCommit?: string;
+  runtimeEnvDir?: string;
   ifNeeded: boolean;
 }
 
@@ -23,6 +25,7 @@ function parseArgs(argv: string[]): Args {
   let previousVersion: string | undefined;
   let evidencePath: string | undefined;
   let bridgeCommit: string | undefined;
+  let runtimeEnvDir: string | undefined;
   let ifNeeded = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -31,11 +34,12 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--previous-version") previousVersion = argv[++index];
     else if (arg === "--evidence") evidencePath = argv[++index];
     else if (arg === "--bridge-commit") bridgeCommit = argv[++index];
+    else if (arg === "--runtime-env-dir") runtimeEnvDir = argv[++index];
     else if (arg === "--if-needed") ifNeeded = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!provider) throw new Error("--provider is required");
-  return { provider, expectedVersion, previousVersion, evidencePath, bridgeCommit, ifNeeded };
+  return { provider, expectedVersion, previousVersion, evidencePath, bridgeCommit, runtimeEnvDir, ifNeeded };
 }
 
 function resolveBridgeCommit(explicit?: string): string {
@@ -59,12 +63,21 @@ function resolveBridgeCommit(explicit?: string): string {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const providerId = assertProviderId(args.provider);
+  const runtimeEnv = resolveQualificationEntrypointEnvironment(providerId, {
+    directory: args.runtimeEnvDir,
+  });
+  // Provider children spawned by qualification inherit process.env. Overlay the
+  // authoritative service values as well as passing the same object explicitly
+  // to qualification policy/auth resolution.
+  Object.assign(process.env, runtimeEnv);
+
   const common = {
     providerId,
     executable: resolveProviderExecutable(providerId),
     evidencePath: args.evidencePath ?? qualificationEvidencePath(homedir()),
     previousVersion: args.previousVersion ?? null,
     bridgeCommit: resolveBridgeCommit(args.bridgeCommit),
+    env: runtimeEnv,
   };
 
   const result = args.ifNeeded && args.expectedVersion
