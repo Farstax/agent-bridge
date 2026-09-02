@@ -7,7 +7,10 @@ import {
   buildQualificationSupervisorOptions,
   resolveQualificationRuntimePolicy,
 } from "../src/providers/qualification.js";
-import { resolveQualificationEntrypointEnvironment } from "../src/providers/qualificationEntrypoint.js";
+import {
+  applyQualificationEntrypointEnvironment,
+  resolveQualificationEntrypointEnvironment,
+} from "../src/providers/qualificationEntrypoint.js";
 import { resolveProviderExecutable } from "../src/providers/registry.js";
 import {
   loadProviderRuntimeEnvironment,
@@ -45,6 +48,7 @@ describe("issue #654 qualification runtime parity", () => {
         ANTIGRAVITY_CLI_TIMEOUT_MS: "7",
         ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS: "9",
         ANTIGRAVITY_COMMAND: "/caller/agy",
+        GEMINI_API_KEY: "caller-only-key",
       },
     });
 
@@ -55,6 +59,13 @@ describe("issue #654 qualification runtime parity", () => {
     });
     expect(resolveProviderExecutable("agy", env)).toBe("/service/agy");
     expect(env.HOME).toBe("/tmp/home");
+    expect(env.GEMINI_API_KEY).toBeUndefined();
+
+    const target = { ...({ CALLER_ONLY: "remove", GEMINI_API_KEY: "caller-only-key" } as NodeJS.ProcessEnv) };
+    applyQualificationEntrypointEnvironment(env, target);
+    expect(target.CALLER_ONLY).toBeUndefined();
+    expect(target.GEMINI_API_KEY).toBeUndefined();
+    expect(target.ANTIGRAVITY_EXECUTION_MODE).toBe("trusted");
   });
 
   it("uses the same ordered environment files as the deployed provider services", () => {
@@ -77,6 +88,7 @@ describe("issue #654 qualification runtime parity", () => {
     expect(upgrade).toContain("qualify_provider_if_needed codex");
     expect(upgrade).toContain("qualify_provider_if_needed agy");
     expect(entrypoint).toContain("resolveQualificationEntrypointEnvironment");
+    expect(entrypoint).toContain("applyQualificationEntrypointEnvironment(runtimeEnv)");
     expect(entrypoint).toContain("resolveProviderExecutable(providerId, runtimeEnv)");
     expect(entrypoint).toContain("env: runtimeEnv");
   });
