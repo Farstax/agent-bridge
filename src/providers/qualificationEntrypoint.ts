@@ -16,6 +16,7 @@ const OPERATIONAL_ENV_KEYS = [
   "LANG",
   "LC_ALL",
   "AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH",
+  "BRIDGE_PROJECT_DIR",
 ] as const;
 
 export interface QualificationEntrypointEnvironmentOptions {
@@ -48,4 +49,18 @@ export function resolveQualificationEntrypointEnvironment(
     directory: options.directory,
     baseEnv: operationalBase,
   });
+}
+
+/** Replace a qualifier process environment with the resolved service environment. */
+export function applyQualificationEntrypointEnvironment(
+  env: ProviderRuntimeEnv,
+  target: NodeJS.ProcessEnv = process.env,
+): void {
+  for (const key of Object.keys(target)) {
+    if (!Object.prototype.hasOwnProperty.call(env, key)) delete target[key];
+  }
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete target[key];
+    else target[key] = value;
+  }
 }
