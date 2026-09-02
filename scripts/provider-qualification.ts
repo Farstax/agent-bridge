@@ -6,7 +6,10 @@ import {
   qualifyProviderIfNeeded,
   qualificationEvidencePath,
 } from "../src/providers/qualification.js";
-import { resolveQualificationEntrypointEnvironment } from "../src/providers/qualificationEntrypoint.js";
+import {
+  applyQualificationEntrypointEnvironment,
+  resolveQualificationEntrypointEnvironment,
+} from "../src/providers/qualificationEntrypoint.js";
 import { assertProviderId, resolveProviderExecutable } from "../src/providers/registry.js";
 
 interface Args {
@@ -66,10 +69,7 @@ async function main(): Promise<void> {
   const runtimeEnv = resolveQualificationEntrypointEnvironment(providerId, {
     directory: args.runtimeEnvDir,
   });
-  // Provider children spawned by qualification inherit process.env. Overlay the
-  // authoritative service values as well as passing the same object explicitly
-  // to qualification policy/auth resolution.
-  Object.assign(process.env, runtimeEnv);
+  applyQualificationEntrypointEnvironment(runtimeEnv);
 
   const common = {
     providerId,
