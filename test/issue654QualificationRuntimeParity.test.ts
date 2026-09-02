@@ -8,6 +8,7 @@ import {
   resolveQualificationRuntimePolicy,
 } from "../src/providers/qualification.js";
 import { resolveQualificationEntrypointEnvironment } from "../src/providers/qualificationEntrypoint.js";
+import { resolveProviderExecutable } from "../src/providers/registry.js";
 import {
   loadProviderRuntimeEnvironment,
   providerRuntimeEnvironmentFiles,
@@ -32,7 +33,7 @@ describe("issue #654 qualification runtime parity", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-entrypoint-env-"));
     writeFileSync(join(root, "agent-bridge-shared"), "BRIDGE_EXECUTION_MODE=safe\nCLI_TIMEOUT_MS=1000\nCLI_IDLE_TIMEOUT_MS=2000\n");
     writeFileSync(join(root, "agent-bridge-release"), "BRIDGE_EXECUTION_MODE=safe\nCLI_TIMEOUT_MS=3000\nCLI_IDLE_TIMEOUT_MS=3500\n");
-    writeFileSync(join(root, "agent-bridge-antigravity"), "ANTIGRAVITY_EXECUTION_MODE=trusted\nANTIGRAVITY_CLI_TIMEOUT_MS=3600000\nANTIGRAVITY_CLI_IDLE_TIMEOUT_MS=180000\n");
+    writeFileSync(join(root, "agent-bridge-antigravity"), "ANTIGRAVITY_EXECUTION_MODE=trusted\nANTIGRAVITY_CLI_TIMEOUT_MS=3600000\nANTIGRAVITY_CLI_IDLE_TIMEOUT_MS=180000\nANTIGRAVITY_COMMAND=/service/agy\n");
 
     const env = resolveQualificationEntrypointEnvironment("agy", {
       directory: root,
@@ -43,6 +44,7 @@ describe("issue #654 qualification runtime parity", () => {
         ANTIGRAVITY_EXECUTION_MODE: "safe",
         ANTIGRAVITY_CLI_TIMEOUT_MS: "7",
         ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS: "9",
+        ANTIGRAVITY_COMMAND: "/caller/agy",
       },
     });
 
@@ -51,6 +53,7 @@ describe("issue #654 qualification runtime parity", () => {
       timeoutMs: 3_600_000,
       idleTimeoutMs: 180_000,
     });
+    expect(resolveProviderExecutable("agy", env)).toBe("/service/agy");
     expect(env.HOME).toBe("/tmp/home");
   });
 
@@ -74,6 +77,7 @@ describe("issue #654 qualification runtime parity", () => {
     expect(upgrade).toContain("qualify_provider_if_needed codex");
     expect(upgrade).toContain("qualify_provider_if_needed agy");
     expect(entrypoint).toContain("resolveQualificationEntrypointEnvironment");
+    expect(entrypoint).toContain("resolveProviderExecutable(providerId, runtimeEnv)");
     expect(entrypoint).toContain("env: runtimeEnv");
   });
 
