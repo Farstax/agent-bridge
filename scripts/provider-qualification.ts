@@ -20,6 +20,7 @@ interface Args {
   bridgeCommit?: string;
   runtimeEnvDir?: string;
   ifNeeded: boolean;
+  printEnv: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -30,6 +31,7 @@ function parseArgs(argv: string[]): Args {
   let bridgeCommit: string | undefined;
   let runtimeEnvDir: string | undefined;
   let ifNeeded = false;
+  let printEnv = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--provider") provider = argv[++index] ?? "";
@@ -39,10 +41,11 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--bridge-commit") bridgeCommit = argv[++index];
     else if (arg === "--runtime-env-dir") runtimeEnvDir = argv[++index];
     else if (arg === "--if-needed") ifNeeded = true;
+    else if (arg === "--print-env") printEnv = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!provider) throw new Error("--provider is required");
-  return { provider, expectedVersion, previousVersion, evidencePath, bridgeCommit, runtimeEnvDir, ifNeeded };
+  return { provider, expectedVersion, previousVersion, evidencePath, bridgeCommit, runtimeEnvDir, ifNeeded, printEnv };
 }
 
 function resolveBridgeCommit(explicit?: string): string {
@@ -69,6 +72,22 @@ async function main(): Promise<void> {
   const runtimeEnv = resolveQualificationEntrypointEnvironment(providerId, {
     directory: args.runtimeEnvDir,
   });
+
+  // A privileged caller (upgrade.sh running as root) can read the root-owned
+  // service files this process cannot read once it drops to the unprivileged
+  // target user for provider auth. --print-env lets that privileged caller
+  // resolve the effective policy once and forward it explicitly, rather than
+  // relying on this process re-deriving it from files it may not be able to
+  // read (see resolveQualificationEntrypointEnvironment's EACCES fallback).
+  if (args.printEnv) {
+    for (const [key, value] of Object.entries(runtimeEnv)) {
+      if (value === undefined) continue;
+      if (value.includes("\n")) throw new Error(`refusing to print multi-line env value for ${key}`);
+      process.stdout.write(`${key}=${value}\n`);
+    }
+    return;
+  }
+
   applyQualificationEntrypointEnvironment(runtimeEnv);
 
   const common = {

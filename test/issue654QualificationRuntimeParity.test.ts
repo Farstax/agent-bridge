@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -66,6 +66,28 @@ describe("issue #654 qualification runtime parity", () => {
     expect(target.CALLER_ONLY).toBeUndefined();
     expect(target.GEMINI_API_KEY).toBeUndefined();
     expect(target.ANTIGRAVITY_EXECUTION_MODE).toBe("trusted");
+  });
+
+  it("falls back to ambient env when a required service file exists but cannot be read (issue #660)", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-entrypoint-unreadable-"));
+    writeFileSync(join(root, "agent-bridge-release"), "BRIDGE_EXECUTION_MODE=safe\n");
+    writeFileSync(join(root, "agent-bridge-codex"), "CODEX_EXECUTION_MODE=trusted\n");
+    chmodSync(join(root, "agent-bridge-codex"), 0o000);
+
+    try {
+      const env = resolveQualificationEntrypointEnvironment("codex", {
+        directory: root,
+        ambientEnv: {
+          HOME: "/tmp/home",
+          PATH: "/usr/bin",
+          BRIDGE_EXECUTION_MODE: "trusted",
+        },
+      });
+
+      expect(resolveQualificationRuntimePolicy("codex", env).executionMode).toBe("trusted");
+    } finally {
+      chmodSync(join(root, "agent-bridge-codex"), 0o600);
+    }
   });
 
   it("uses the same ordered environment files as the deployed provider services", () => {
