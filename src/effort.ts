@@ -98,10 +98,10 @@ export function normalizeAgyModelFamily(model: string): string {
  * are explicitly qualified here.
  */
 export function resolveAgyModelForEffort(
-  model: string | null,
+  model: string | null | undefined,
   effort: EffortLevel | null | undefined,
 ): string | null {
-  if (model === null) return null;
+  if (model == null) return null;
   const trimmed = model.trim();
   const family = normalizeAgyModelFamily(trimmed);
   const variants = AGY_GEMINI_EFFORT_VARIANTS[family.toLowerCase()];
