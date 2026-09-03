@@ -6,16 +6,28 @@ export interface InteractiveAttachment {
   mimeType?: string;
   fileSize?: number;
 }
+
+export interface InteractiveSurroundingContextMessage {
+  actorId: string;
+  actorLabel: string;
+  messageId: string;
+  text: string;
+}
+
 export interface InteractiveTurnInput {
   surfaceIdentity: string;
   chatKey: string;
   actorId: string;
   messageId: string;
   text: string;
+  /** Optional parent scope such as a Discord guild; never used as authority. */
+  conversationScopeId?: string;
   threadId?: string;
   delivery: { chatId: number | string; chatType: string };
   attachments: InteractiveAttachment[];
   mediaGroupId?: string;
+  /** Passive, read-only evidence from the same immediate surface conversation. */
+  surroundingContext?: InteractiveSurroundingContextMessage[];
   /** Internal authoritative correlation for a previously claimed scheduled occurrence. */
   scheduledOccurrenceKey?: string;
 }
@@ -58,7 +70,16 @@ export function adaptDiscordMessage(data: any, surfaceIdentity = "discord:intera
   const messageId = String(data?.id ?? "");
   const text = String(data?.content ?? "").trim();
   if (!chatKey || !actorId || !messageId || !text) return null;
-  return { surfaceIdentity, chatKey, actorId, messageId, text, delivery: { chatId: chatKey, chatType: data?.guild_id ? "supergroup" : "private" }, attachments: [] };
+  return {
+    surfaceIdentity,
+    chatKey,
+    actorId,
+    messageId,
+    text,
+    ...(data?.guild_id == null ? {} : { conversationScopeId: String(data.guild_id) }),
+    delivery: { chatId: chatKey, chatType: data?.guild_id ? "supergroup" : "private" },
+    attachments: [],
+  };
 }
 
 type FlushFn = (groupId: string | null, turns: InteractiveTurnInput[]) => void | Promise<void>;

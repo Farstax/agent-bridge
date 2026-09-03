@@ -39,6 +39,7 @@ function makeMockClient() {
       polling: true,
       remoteFileDownload: true,
       richMessages: true,
+      passiveSurroundingContext: false,
       formatting: "telegram-html",
     },
     getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),

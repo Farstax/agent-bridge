@@ -14,6 +14,7 @@ export interface SurfaceCapabilities {
   polling: boolean;
   remoteFileDownload: boolean;
   richMessages: boolean;
+  passiveSurroundingContext: boolean;
   formatting: SurfaceFormattingDialect;
 }
 
@@ -28,6 +29,7 @@ export const SAFE_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze({
   polling: false,
   remoteFileDownload: false,
   richMessages: false,
+  passiveSurroundingContext: false,
   formatting: "plain",
 });
 
@@ -42,6 +44,7 @@ export const TELEGRAM_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze(
   polling: true,
   remoteFileDownload: true,
   richMessages: true,
+  passiveSurroundingContext: false,
   formatting: "telegram-html",
 });
 
@@ -56,6 +59,7 @@ export const DISCORD_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze({
   polling: false,
   remoteFileDownload: false,
   richMessages: false,
+  passiveSurroundingContext: true,
   formatting: "discord-markdown",
 });
 
@@ -103,7 +107,7 @@ export function surfaceCapabilities(platform: MessagingPlatform): SurfaceCapabil
   if (!candidate || typeof candidate !== "object") return SAFE_SURFACE_CAPABILITIES;
   const booleanKeys: Array<keyof SurfaceCapabilities> = [
     "editMessages", "deleteMessages", "previewStreaming", "threads", "attachments",
-    "typing", "polling", "remoteFileDownload", "richMessages",
+    "typing", "polling", "remoteFileDownload", "richMessages", "passiveSurroundingContext",
   ];
   if (!Number.isSafeInteger(candidate.maxMessageLength) || candidate.maxMessageLength <= 0) return SAFE_SURFACE_CAPABILITIES;
   if (booleanKeys.some((key) => typeof candidate[key] !== "boolean")) return SAFE_SURFACE_CAPABILITIES;
