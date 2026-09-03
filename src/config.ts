@@ -7,6 +7,7 @@
  * NEIGHBORS: src/index-interactive.ts, src/index-discord-interactive.ts, src/types.ts
  */
 
+import { normalizeAgyModelFamily } from "./effort.js";
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -27,8 +28,8 @@ export function parseModelPreference(raw: string | undefined): string[] {
 
 /**
  * Agy exposes Gemini effort as low/medium/high suffixes on concrete model IDs.
- * Keep bridge model preference at the family level and collapse legacy triads
- * so one family is attempted once at the selected effort.
+ * Keep bridge model preference at the family level and collapse qualified
+ * legacy triads so one family is attempted once at the selected effort.
  */
 export function parseAntigravityModelPreference(raw: string | undefined): string[] {
   const configured = parseModelPreference(raw);
@@ -36,9 +37,7 @@ export function parseAntigravityModelPreference(raw: string | undefined): string
   const seen = new Set<string>();
   const normalized: string[] = [];
   for (const model of source) {
-    const family = /^gemini-/i.test(model)
-      ? model.replace(/-(?:low|medium|high)$/i, "")
-      : model;
+    const family = normalizeAgyModelFamily(model);
     if (seen.has(family)) continue;
     seen.add(family);
     normalized.push(family);
