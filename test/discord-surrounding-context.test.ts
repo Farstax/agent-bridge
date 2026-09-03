@@ -146,7 +146,10 @@ describe("Discord passive surrounding context", () => {
     }, database, client, {
       runCliAsync: vi.fn(async (_command, args) => {
         providerArgs.push([...args]);
-        return { text: "done", sessionId: "session-before" };
+        return {
+          text: `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } })}\n`,
+          sessionId: "session-before",
+        };
       }) as any,
     });
     database.setSession("channel-1", "codex", "session-before");
