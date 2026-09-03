@@ -447,6 +447,26 @@ export function dispatchInteractiveTurnWithFallback(
   }, deps, tried);
 }
 
+export interface UnifiedTelegramUpdateEngine {
+  handleUpdate(update: TelegramUpdate, chatKey?: string): Promise<void>;
+}
+
+/** Keep Telegram controls on the engine callback path, outside conversational turns. */
+export async function dispatchUnifiedTelegramUpdate(
+  update: TelegramUpdate,
+  chatKey: string,
+  surfaceIdentity: string,
+  engine: UnifiedTelegramUpdateEngine,
+  dispatchMessage: (turn: InteractiveTurnInput) => Promise<void>,
+): Promise<void> {
+  if (update.callback_query) {
+    await engine.handleUpdate(update, chatKey);
+    return;
+  }
+  const turn = adaptTelegramUpdate(update, surfaceIdentity, chatKey);
+  if (turn) await dispatchMessage(turn);
+}
+
 /** Compatibility boundary for legacy Telegram callers. New surfaces pass a neutral turn. */
 export function dispatchInteractiveWithFallback(
   update: TelegramUpdate,
