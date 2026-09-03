@@ -29,21 +29,21 @@ fi
 session="11111111-2222-3333-4444-555555555555"
 case "$(basename "$0")" in
   codex)
-    printf '%s\\n' "{\"type\":\"thread.started\",\"thread_id\":\"$session\"}"
-    printf '%s\\n' "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"$response\"}}"
+    printf '%s\\n' "{\\"type\\":\\"thread.started\\",\\"thread_id\\":\\"$session\\"}"
+    printf '%s\\n' "{\\"type\\":\\"item.completed\\",\\"item\\":{\\"type\\":\\"agent_message\\",\\"text\\":\\"$response\\"}}"
     ;;
   claude)
-    printf '%s\\n' "{\"result\":\"$response\",\"session_id\":\"$session\"}"
+    printf '%s\\n' "{\\"result\\":\\"$response\\",\\"session_id\\":\\"$session\\"}"
     ;;
   agy)
-    printf '%s\\n' "{\"event\":\"result\",\"result\":{\"conversation_id\":\"$session\",\"status\":\"SUCCESS\",\"response\":\"$response\"}}"
+    printf '%s\\n' "{\\"event\\":\\"result\\",\\"result\\":{\\"conversation_id\\":\\"$session\\",\\"status\\":\\"SUCCESS\\",\\"response\\":\\"$response\\"}}"
     ;;
   grok)
-    printf '%s\\n' "{\"type\":\"text\",\"data\":\"$response\"}"
-    printf '%s\\n' "{\"type\":\"end\",\"sessionId\":\"$session\",\"stopReason\":\"end_turn\"}"
+    printf '%s\\n' "{\\"type\\":\\"text\\",\\"data\\":\\"$response\\"}"
+    printf '%s\\n' "{\\"type\\":\\"end\\",\\"sessionId\\":\\"$session\\",\\"stopReason\\":\\"end_turn\\"}"
     ;;
   cursor-agent|cursor)
-    printf '%s\\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$response\",\"session_id\":\"$session\"}"
+    printf '%s\\n' "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"$response\\",\\"session_id\\":\\"$session\\"}"
     ;;
   *)
     echo "unsupported fake provider" >&2
