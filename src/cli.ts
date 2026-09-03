@@ -41,7 +41,7 @@ export {
   readLatestAntigravityConversationFromLogs,
   resolveAntigravityConversationId,
 };
-import { appendEffortArgs, type EffortLevel } from "./effort.js";
+import { appendEffortArgs, resolveAgyModelForEffort, type EffortLevel } from "./effort.js";
 import { isProviderFallbackEligibleError } from "./providers/fallbackEligibility.js";
 import { getProcessWatchForCommand, supportsToolFreeMode } from "./providers/registry.js";
 import {
@@ -197,12 +197,13 @@ export function buildCliInvocation({
     });
   }
   if (bot === "antigravity") {
+    const resolvedModel = resolveAgyModelForEffort(model, effort);
     const invocation = antigravityRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion, logFile, homeDir,
+      prompt: providerPrompt, sessionId, command, model: resolvedModel, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion, logFile, homeDir,
     });
     antigravityInvocationMetadata.set(invocation.args, {
       homeDir,
-      model: model ?? null,
+      model: resolvedModel,
       applyModel: true,
     });
     return invocation;

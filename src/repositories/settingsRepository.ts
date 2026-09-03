@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { normalizeAgyModelFamily } from "../effort.js";
 
 type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
@@ -11,7 +12,11 @@ export class SettingsRepository {
     const row = this.db
       .prepare(`SELECT value FROM settings WHERE key = ?`)
       .get(key) as { value: string | null } | undefined;
-    return row?.value ?? null;
+    const value = row?.value ?? null;
+    // Compatibility seam for model overrides saved before Antigravity model
+    // family and effort were separated. Keep the stored row non-destructive,
+    // but expose the family-level value to every runtime/UI/fallback caller.
+    return key === "antigravity" && value !== null ? normalizeAgyModelFamily(value) : value;
   }
 
   setSetting(key: string, value: string | null): void {

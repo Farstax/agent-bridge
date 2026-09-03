@@ -10,6 +10,7 @@ import type { BotKind } from "./types.js";
 
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = typeof EFFORT_LEVELS[number];
+type AgyEffortVariant = "low" | "medium" | "high";
 
 export const DEFAULT_EFFORT_LEVEL: EffortLevel = "medium";
 
@@ -19,6 +20,14 @@ const ENV_KEYS: Record<BotKind, string> = {
   antigravity: "ANTIGRAVITY_EFFORT",
   grok: "GROK_EFFORT",
   cursor: "CURSOR_EFFORT",
+};
+
+const AGY_GEMINI_EFFORT_VARIANTS: Readonly<Record<string, readonly AgyEffortVariant[]>> = {
+  "gemini-3.8-flash": ["low", "medium", "high"],
+  "gemini-3.7-flash": ["low", "medium", "high"],
+  "gemini-3.6-flash": ["low", "medium", "high"],
+  "gemini-3.5-flash": ["low", "medium", "high"],
+  "gemini-3.1-pro": ["low", "high"],
 };
 
 export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
@@ -60,13 +69,56 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): stri
     kind === "claude" ? "Claude maps effort to --effort." :
     kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
     kind === "cursor" ? "Cursor effort is unsupported by the qualified headless contract; this setting is recorded for parity only." :
-    "Agy effort is unsupported by the CLI; this setting is recorded for parity only. Use Agy model labels for low/high variants.";
+    "A separate Agy effort CLI flag is unsupported; Agent Bridge maps effort to the selected Gemini model variant. Low/medium/high map directly; xhigh/max use high.";
 
   return [
     `Effort for ${kind}: ${currentEffort}`,
     `Default: ${DEFAULT_EFFORT_LEVEL}`,
     support,
   ].join("\n");
+}
+
+/** Collapse a known concrete Agy Gemini effort variant to its model family. */
+export function normalizeAgyModelFamily(model: string): string {
+  const trimmed = model.trim();
+  const normalized = trimmed.toLowerCase();
+  for (const [family, variants] of Object.entries(AGY_GEMINI_EFFORT_VARIANTS)) {
+    if (normalized === family || variants.some((variant) => normalized === `${family}-${variant}`)) {
+      return family;
+    }
+  }
+  return trimmed;
+}
+
+/**
+ * Resolve Agent Bridge's provider-neutral effort setting to the concrete Agy
+ * Gemini model slug. Model preference stays at the family level; Agy's
+ * low/medium/high suffix is an execution setting, not a fallback model.
+ * Unknown Gemini families are preserved unchanged until their effort variants
+ * are explicitly qualified here.
+ */
+export function resolveAgyModelForEffort(
+  model: string | null | undefined,
+  effort: EffortLevel | null | undefined,
+): string | null {
+  if (model == null) return null;
+  const trimmed = model.trim();
+  const family = normalizeAgyModelFamily(trimmed);
+  const variants = AGY_GEMINI_EFFORT_VARIANTS[family.toLowerCase()];
+  if (!variants) return trimmed;
+
+  const explicitVariant = variants.find((variant) => trimmed.toLowerCase() === `${family}-${variant}`);
+  if (effort == null && explicitVariant) return `${family}-${explicitVariant}`;
+
+  let desired: AgyEffortVariant =
+    effort === "low" ? "low" :
+    effort === "high" || effort === "xhigh" || effort === "max" ? "high" :
+    "medium";
+
+  if (!variants.includes(desired)) {
+    desired = variants.includes("high") ? "high" : variants[0];
+  }
+  return `${family}-${desired}`;
 }
 
 export function appendEffortArgs(command: string, args: string[], effort: EffortLevel | null | undefined): string[] {
@@ -77,6 +129,8 @@ export function appendEffortArgs(command: string, args: string[], effort: Effort
   const isClaude = cmdName.includes("claude");
   const isAgy = cmdName.includes("agy") || cmdName.includes("antigravity");
 
+  // Agy has no separate effort flag. The Antigravity invocation builder resolves
+  // model family + effort before execution and keeps the CLI args native.
   if (isAgy) return args;
   if (isClaude) {
     if (args.includes("--effort")) return args;
