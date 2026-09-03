@@ -21,8 +21,6 @@ const ENV_KEYS: Record<BotKind, string> = {
   cursor: "CURSOR_EFFORT",
 };
 
-const agyEffortByArgs = new WeakMap<string[], EffortLevel>();
-
 export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
   return !!value && (EFFORT_LEVELS as readonly string[]).includes(value);
 }
@@ -62,7 +60,7 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): stri
     kind === "claude" ? "Claude maps effort to --effort." :
     kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
     kind === "cursor" ? "Cursor effort is unsupported by the qualified headless contract; this setting is recorded for parity only." :
-    "Agy maps effort to the selected Gemini model variant. Low/medium/high map directly; xhigh/max use high.";
+    "A separate Agy effort CLI flag is unsupported; Agent Bridge maps effort to the selected Gemini model variant. Low/medium/high map directly; xhigh/max use high.";
 
   return [
     `Effort for ${kind}: ${currentEffort}`,
@@ -101,11 +99,6 @@ export function resolveAgyModelForEffort(
   return `${base}-${variant}`;
 }
 
-/** Effort metadata follows the exact Agy args array into the serialized runner. */
-export function getAgyEffortForArgs(args: string[]): EffortLevel | null {
-  return agyEffortByArgs.get(args) ?? null;
-}
-
 export function appendEffortArgs(command: string, args: string[], effort: EffortLevel | null | undefined): string[] {
   if (!effort) return args;
 
@@ -114,13 +107,9 @@ export function appendEffortArgs(command: string, args: string[], effort: Effort
   const isClaude = cmdName.includes("claude");
   const isAgy = cmdName.includes("agy") || cmdName.includes("antigravity");
 
-  if (isAgy) {
-    // Agy has no separate effort flag. Carry the setting out-of-band so the
-    // serialized runner can apply it to the selected model while holding the
-    // provider-state lock, without leaking a synthetic CLI argument.
-    agyEffortByArgs.set(args, effort);
-    return args;
-  }
+  // Agy has no separate effort flag. The Antigravity invocation builder resolves
+  // model family + effort before execution and keeps the CLI args native.
+  if (isAgy) return args;
   if (isClaude) {
     if (args.includes("--effort")) return args;
     return ["--effort", effort, ...args];
