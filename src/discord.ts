@@ -16,11 +16,16 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { DISCORD_SURFACE_CAPABILITIES, type MessagingPlatform } from "./platform.js";
+import type { InteractiveSurroundingContextMessage } from "./interactiveIngress.js";
 import { DiscordGateway, type GatewayPayload } from "./discord-gateway.js";
 import { discordMarkdownIrEnabled, parseMarkdownToIR, renderMarkerString, DISCORD_MARKERS } from "./markdownIR.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 export const MAX_DISCORD_MESSAGE_LENGTH = 1990;
+export const MAX_DISCORD_SURROUNDING_MESSAGES = 6;
+export const MAX_DISCORD_SURROUNDING_CHARS = 3_000;
+const MAX_DISCORD_SURROUNDING_MESSAGE_CHARS = 800;
+const MAX_DISCORD_ACTOR_LABEL_CHARS = 80;
 
 export interface DiscordUpdate {
   type: "MESSAGE_CREATE" | "INTERACTION_CREATE" | string;
@@ -37,6 +42,45 @@ export interface DiscordClientOptions {
   onUpdate: DiscordUpdateHandler;
   onReady?: () => void;
   onError?: (err: Error) => void;
+}
+
+export interface DiscordSurroundingContextRequest {
+  channelId: string;
+  beforeMessageId: string;
+  guildId?: string;
+}
+
+export function boundDiscordSurroundingContext(
+  messages: readonly any[],
+  request: DiscordSurroundingContextRequest,
+): InteractiveSurroundingContextMessage[] {
+  const bounded: InteractiveSurroundingContextMessage[] = [];
+  let remainingChars = MAX_DISCORD_SURROUNDING_CHARS;
+
+  // Discord returns channel history newest-first. Keep the newest eligible slice,
+  // then reverse it so the provider receives the evidence chronologically.
+  for (const message of messages) {
+    if (bounded.length >= MAX_DISCORD_SURROUNDING_MESSAGES || remainingChars <= 0) break;
+    const messageId = String(message?.id ?? "");
+    const channelId = String(message?.channel_id ?? request.channelId);
+    const guildId = message?.guild_id == null ? undefined : String(message.guild_id);
+    if (!messageId || messageId === request.beforeMessageId) continue;
+    if (channelId !== request.channelId) continue;
+    if (request.guildId && guildId && guildId !== request.guildId) continue;
+
+    const actorId = String(message?.author?.id ?? "");
+    if (!actorId) continue;
+    const rawText = String(message?.content ?? "").trim();
+    if (!rawText) continue;
+    const text = rawText.slice(0, Math.min(MAX_DISCORD_SURROUNDING_MESSAGE_CHARS, remainingChars)).trim();
+    if (!text) continue;
+    const rawLabel = String(message?.author?.global_name ?? message?.author?.username ?? actorId);
+    const actorLabel = rawLabel.replace(/\s+/g, " ").trim().slice(0, MAX_DISCORD_ACTOR_LABEL_CHARS) || actorId;
+    bounded.push({ actorId, actorLabel, messageId, text });
+    remainingChars -= text.length;
+  }
+
+  return bounded.reverse();
 }
 
 export class DiscordClient implements MessagingPlatform {
@@ -114,6 +158,15 @@ export class DiscordClient implements MessagingPlatform {
     return this._restPost(`/channels/${channelId}/typing`, {});
   }
 
+  /** Fetch a bounded, text-only slice before the authoritative triggering message. */
+  async getSurroundingContext(request: DiscordSurroundingContextRequest): Promise<InteractiveSurroundingContextMessage[]> {
+    const channelId = encodeURIComponent(request.channelId);
+    const beforeMessageId = encodeURIComponent(request.beforeMessageId);
+    const messages = await this._restGet(`/channels/${channelId}/messages?before=${beforeMessageId}&limit=${MAX_DISCORD_SURROUNDING_MESSAGES}`);
+    if (!Array.isArray(messages)) throw new Error("Discord surrounding context response was not an array");
+    return boundDiscordSurroundingContext(messages, request);
+  }
+
   /**
    * Answers a Discord interaction (slash command or button).
    * For deferred interactions, use the PATCH /webhooks path instead.
@@ -169,6 +222,15 @@ export class DiscordClient implements MessagingPlatform {
   }
 
   // ── Private REST helpers ─────────────────────────────────────────────────
+
+  private async _restGet(path: string): Promise<any> {
+    const res = await this.fetchFn(`${DISCORD_API}${path}`, {
+      method: "GET",
+      headers: { Authorization: `Bot ${this.opts.token}` },
+    });
+    if (!res.ok) throw new Error(`Discord GET ${path} HTTP ${res.status}`);
+    return res.json();
+  }
 
   private async _restPost(path: string, body: object): Promise<any> {
     const res = await this.fetchFn(`${DISCORD_API}${path}`, {
