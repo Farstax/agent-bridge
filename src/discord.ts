@@ -62,11 +62,11 @@ export function boundDiscordSurroundingContext(
   for (const message of messages) {
     if (bounded.length >= MAX_DISCORD_SURROUNDING_MESSAGES || remainingChars <= 0) break;
     const messageId = String(message?.id ?? "");
-    const channelId = String(message?.channel_id ?? request.channelId);
+    const channelId = message?.channel_id == null ? "" : String(message.channel_id);
     const guildId = message?.guild_id == null ? undefined : String(message.guild_id);
     if (!messageId || messageId === request.beforeMessageId) continue;
     if (channelId !== request.channelId) continue;
-    if (request.guildId && guildId && guildId !== request.guildId) continue;
+    if ((guildId ?? null) !== (request.guildId ?? null)) continue;
 
     const actorId = String(message?.author?.id ?? "");
     if (!actorId) continue;
