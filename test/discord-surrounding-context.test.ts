@@ -72,7 +72,6 @@ describe("Discord passive surrounding context", () => {
     const messages = [
       { id: "current", channel_id: "channel-1", guild_id: "guild-1", author: { id: "owner", username: "Owner" }, content: "current request" },
       { id: "missing-channel", guild_id: "guild-1", author: { id: "u9" }, content: "must fail closed" },
-      { id: "missing-guild", channel_id: "channel-1", author: { id: "u8" }, content: "must fail closed" },
       { id: "7", channel_id: "other-channel", guild_id: "guild-1", author: { id: "u7" }, content: "wrong channel" },
       { id: "6", channel_id: "channel-1", guild_id: "other-guild", author: { id: "u6" }, content: "wrong guild" },
       { id: "5", channel_id: "channel-1", guild_id: "guild-1", author: { id: "u5", username: "Five" }, content: "five" },
@@ -108,11 +107,11 @@ describe("Discord passive surrounding context", () => {
     expect(result[0]).toMatchObject({ actorId: "dm-user", actorLabel: "DM User", text: "dm evidence" });
   });
 
-  it("uses Discord's before cursor and fails on a non-successful fetch", async () => {
+  it("uses Discord's before cursor, accepts REST guild messages without guild_id, and fails on a non-successful fetch", async () => {
     const fetchOk = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => [{ id: "previous", channel_id: "chan", guild_id: "guild", author: { id: "u", username: "User" }, content: "earlier" }],
+      json: async () => [{ id: "previous", channel_id: "chan", author: { id: "u", username: "User" }, content: "earlier" }],
     });
     const client = new DiscordClient({ token: "token", applicationId: "app", onUpdate: vi.fn() }, fetchOk);
     await expect(client.getSurroundingContext({ channelId: "chan", guildId: "guild", beforeMessageId: "current" }))
