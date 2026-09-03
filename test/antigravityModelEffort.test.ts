@@ -20,24 +20,26 @@ describe("Antigravity model families and effort", () => {
     expect(DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE[0]).toBe("gemini-3.8-flash");
   });
 
-  it("normalizes legacy effort-suffixed fallback triads without duplicate family retries", () => {
+  it("normalizes qualified legacy effort triads without rewriting unknown model ids", () => {
     const bots = loadBotsConfig({
       ANTIGRAVITY_MODEL_PREFERENCE: [
         "gemini-3.8-flash-high",
         "gemini-3.8-flash-medium",
         "gemini-3.8-flash-low",
         "gemini-3.7-flash-high",
+        "gemini-future-preview-high",
         "claude-sonnet-4-6",
       ].join(","),
     });
     expect(bots.antigravity.modelPreference).toEqual([
       "gemini-3.8-flash",
       "gemini-3.7-flash",
+      "gemini-future-preview-high",
       "claude-sonnet-4-6",
     ]);
   });
 
-  it("maps bridge effort to concrete Gemini Agy variants", () => {
+  it("maps bridge effort to concrete qualified Gemini Agy variants", () => {
     expect(resolveAgyModelForEffort("gemini-3.8-flash", "low")).toBe("gemini-3.8-flash-low");
     expect(resolveAgyModelForEffort("gemini-3.8-flash", "medium")).toBe("gemini-3.8-flash-medium");
     expect(resolveAgyModelForEffort("gemini-3.8-flash", "high")).toBe("gemini-3.8-flash-high");
@@ -47,8 +49,10 @@ describe("Antigravity model families and effort", () => {
     expect(resolveAgyModelForEffort("gemini-3.8-flash-high", null)).toBe("gemini-3.8-flash-high");
   });
 
-  it("keeps non-Gemini Agy fallbacks unchanged and preserves the 3.1 Pro compatibility mapping", () => {
+  it("preserves unqualified Agy models and maps the qualified 3.1 Pro capability", () => {
     expect(resolveAgyModelForEffort("claude-sonnet-4-6", "high")).toBe("claude-sonnet-4-6");
+    expect(resolveAgyModelForEffort("gemini-future-preview", "high")).toBe("gemini-future-preview");
+    expect(resolveAgyModelForEffort("gemini-future-preview-high", "low")).toBe("gemini-future-preview-high");
     expect(resolveAgyModelForEffort("gemini-3.1-pro", "low")).toBe("gemini-3.1-pro-low");
     expect(resolveAgyModelForEffort("gemini-3.1-pro", "medium")).toBe("gemini-3.1-pro-high");
   });
