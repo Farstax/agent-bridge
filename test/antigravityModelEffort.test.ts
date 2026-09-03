@@ -10,7 +10,8 @@ import {
   DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE,
   loadBotsConfig,
 } from "../src/config.js";
-import { buildCliInvocation, runCli } from "../src/cli.js";
+import { buildCliInvocation, getNextFallbackModel, runCli } from "../src/cli.js";
+import { openDb } from "../src/db.js";
 
 describe("Antigravity model families and effort", () => {
   it("keeps the durable default at model-family level", () => {
@@ -37,6 +38,21 @@ describe("Antigravity model families and effort", () => {
       "gemini-future-preview-high",
       "claude-sonnet-4-6",
     ]);
+  });
+
+  it("normalizes legacy persisted model overrides so family fallback still advances", () => {
+    const db = openDb(":memory:");
+    try {
+      db.setSetting("antigravity", "gemini-3.8-flash-high");
+      const current = db.getSetting("antigravity");
+      expect(current).toBe("gemini-3.8-flash");
+      expect(getNextFallbackModel(current, [...DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE])).toBe("gemini-3.7-flash");
+
+      db.setSetting("antigravity", "gemini-future-preview-high");
+      expect(db.getSetting("antigravity")).toBe("gemini-future-preview-high");
+    } finally {
+      db.close();
+    }
   });
 
   it("maps bridge effort to concrete qualified Gemini Agy variants", () => {
