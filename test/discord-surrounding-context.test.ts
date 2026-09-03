@@ -71,6 +71,8 @@ describe("Discord passive surrounding context", () => {
     const request = { channelId: "channel-1", guildId: "guild-1", beforeMessageId: "current" };
     const messages = [
       { id: "current", channel_id: "channel-1", guild_id: "guild-1", author: { id: "owner", username: "Owner" }, content: "current request" },
+      { id: "missing-channel", guild_id: "guild-1", author: { id: "u9" }, content: "must fail closed" },
+      { id: "missing-guild", channel_id: "channel-1", author: { id: "u8" }, content: "must fail closed" },
       { id: "7", channel_id: "other-channel", guild_id: "guild-1", author: { id: "u7" }, content: "wrong channel" },
       { id: "6", channel_id: "channel-1", guild_id: "other-guild", author: { id: "u6" }, content: "wrong guild" },
       { id: "5", channel_id: "channel-1", guild_id: "guild-1", author: { id: "u5", username: "Five" }, content: "five" },
@@ -87,8 +89,23 @@ describe("Discord passive surrounding context", () => {
     expect(result.map((message) => message.messageId)).toEqual(["0", "1", "2", "3", "4", "5"]);
     expect(result.some((message) => message.messageId === "current")).toBe(false);
     expect(result.some((message) => message.text.includes("wrong"))).toBe(false);
+    expect(result.some((message) => message.text.includes("fail closed"))).toBe(false);
     expect(result.reduce((sum, message) => sum + message.text.length, 0)).toBeLessThanOrEqual(MAX_DISCORD_SURROUNDING_CHARS);
     expect(result.find((message) => message.messageId === "4")?.text.length).toBeLessThanOrEqual(800);
+  });
+
+  it("keeps DM evidence isolated from guild messages and malformed scope metadata", () => {
+    const result = boundDiscordSurroundingContext([
+      { id: "guild", channel_id: "dm-channel", guild_id: "guild-1", author: { id: "guild-user" }, content: "guild evidence" },
+      { id: "missing-channel", author: { id: "unknown-user" }, content: "unknown scope" },
+      { id: "dm", channel_id: "dm-channel", author: { id: "dm-user", username: "DM User" }, content: "dm evidence" },
+    ], {
+      channelId: "dm-channel",
+      beforeMessageId: "current",
+    });
+
+    expect(result.map((message) => message.messageId)).toEqual(["dm"]);
+    expect(result[0]).toMatchObject({ actorId: "dm-user", actorLabel: "DM User", text: "dm evidence" });
   });
 
   it("uses Discord's before cursor and fails on a non-successful fetch", async () => {
