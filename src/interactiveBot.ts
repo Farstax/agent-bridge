@@ -10,7 +10,9 @@ import { buildTelegramCommands } from "./commands.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { markHandoffRequired } from "./handoffState.js";
 import type { ExecutionOutcome, PendingMessage } from "./engine.js";
-import { adaptTelegramUpdate, type InteractiveTurnInput } from "./interactiveIngress.js";
+import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
+import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
+import { withPassiveSurroundingContext } from "./workspaceContext.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
 export type InteractiveCommandRegistration = {
@@ -242,7 +244,12 @@ function describeMessageContentDetail(message: TelegramUpdate["message"]): strin
   return subtypeKeys.find((key) => record[key] != null) ?? "unknown_non_text";
 }
 
+type PassiveContextClient = MessagingPlatform & {
+  getSurroundingContext?: (request: { channelId: string; beforeMessageId: string; guildId?: string }) => Promise<InteractiveSurroundingContextMessage[]>;
+};
+
 export interface InteractiveDispatchEngine {
+  client?: PassiveContextClient;
   handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<void>;
   handleUpdate?: (update: TelegramUpdate) => Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
@@ -382,6 +389,30 @@ function dispatchClaimedInteractiveExecution(
   }, deps, tried);
 }
 
+function shouldLoadPassiveContext(turn: InteractiveTurnInput): boolean {
+  return turn.surfaceIdentity.startsWith("discord:")
+    && !turn.scheduledOccurrenceKey
+    && !turn.text.trim().startsWith("/")
+    && turn.surroundingContext === undefined;
+}
+
+async function loadPassiveContext(turn: InteractiveTurnInput, engine: InteractiveDispatchEngine): Promise<InteractiveTurnInput> {
+  if (!shouldLoadPassiveContext(turn)) return turn;
+  const client = engine.client;
+  if (!client || !surfaceCapabilities(client).passiveSurroundingContext || typeof client.getSurroundingContext !== "function") return turn;
+  try {
+    const surroundingContext = await client.getSurroundingContext({
+      channelId: String(turn.delivery.chatId),
+      beforeMessageId: turn.messageId,
+      ...(turn.conversationScopeId ? { guildId: turn.conversationScopeId } : {}),
+    });
+    return surroundingContext.length > 0 ? { ...turn, surroundingContext } : turn;
+  } catch (error) {
+    console.warn("[interactive] passive Discord surrounding context unavailable; continuing without it", error);
+    return turn;
+  }
+}
+
 export function dispatchInteractiveTurnWithFallback(
   turn: InteractiveTurnInput,
   deps: InteractiveDispatchDeps,
@@ -394,18 +425,23 @@ export function dispatchInteractiveTurnWithFallback(
 
   const chatKey = turn.chatKey;
   if (isResetTurn(turn)) clearInteractiveFallbackState(deps.fallbackChain, chatKey);
+  let contextualTurnPromise: Promise<InteractiveTurnInput> | null = null;
   return dispatchInteractiveExecutionWithFallback({
     chatKey,
     recoverPendingQueue: true,
     exhaustedOutcome: "failed",
     execute: async (engine) => {
-      if (deps.legacyUpdate && !engine.handleInteractiveTurn && engine.handleUpdate) {
-        await engine.handleUpdate(deps.legacyUpdate);
-      } else if (engine.handleInteractiveTurn) {
-        await engine.handleInteractiveTurn(turn);
-      } else {
-        throw new Error(`interactive engine ${deps.fallbackChain.getActiveCli(chatKey)} does not accept neutral turns`);
-      }
+      const contextualTurn = await (contextualTurnPromise ??= loadPassiveContext(turn, engine));
+      const context = contextualTurn.surroundingContext ?? [];
+      await withPassiveSurroundingContext(context, async () => {
+        if (deps.legacyUpdate && !engine.handleInteractiveTurn && engine.handleUpdate) {
+          await engine.handleUpdate(deps.legacyUpdate);
+        } else if (engine.handleInteractiveTurn) {
+          await engine.handleInteractiveTurn(contextualTurn);
+        } else {
+          throw new Error(`interactive engine ${deps.fallbackChain.getActiveCli(chatKey)} does not accept neutral turns`);
+        }
+      });
       return "committed";
     },
   }, deps, tried);
