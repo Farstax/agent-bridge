@@ -66,7 +66,14 @@ export function boundDiscordSurroundingContext(
     const guildId = message?.guild_id == null ? undefined : String(message.guild_id);
     if (!messageId || messageId === request.beforeMessageId) continue;
     if (channelId !== request.channelId) continue;
-    if ((guildId ?? null) !== (request.guildId ?? null)) continue;
+    // GET /channels/{id}/messages returns the base Message object, whose REST
+    // schema does not include top-level guild_id. The channel ID is therefore
+    // the hard native scope boundary; guild_id is an additional check when present.
+    if (request.guildId) {
+      if (guildId && guildId !== request.guildId) continue;
+    } else if (guildId) {
+      continue;
+    }
 
     const actorId = String(message?.author?.id ?? "");
     if (!actorId) continue;
