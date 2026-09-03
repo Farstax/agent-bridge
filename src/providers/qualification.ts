@@ -7,7 +7,7 @@ import { buildCliInvocation, parseCliResult, runCli } from "../cli.js";
 import { runSupervisedProcess } from "../cliSupervisor.js";
 import { resolveExecutionMode } from "../config.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
-import type { BotKind } from "../types.js";
+import type { BotKind, CliOptions } from "../types.js";
 import { withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
 import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
@@ -63,7 +63,10 @@ export interface ProviderQualificationOptions {
   environment?: string;
   cwd?: string;
   homeDir?: string;
+  /** Explicit hard-timeout override. Runtime hard timeout is used when omitted. */
   timeoutMs?: number;
+  /** Explicit idle-timeout override. Runtime idle timeout is used when omitted. */
+  idleTimeoutMs?: number;
   env?: QualificationEnv;
 }
 
@@ -87,15 +90,73 @@ function providerBotKind(providerId: ProviderId): BotKind {
   return providerId === "agy" ? "antigravity" : providerId;
 }
 
+/**
+ * Resolve qualification policy from the same execution-mode and timeout
+ * resolvers as ordinary runtime. Explicit qualification overrides win only
+ * for their corresponding hard/idle timeout dimension.
+ */
 export function resolveQualificationRuntimePolicy(
   providerId: ProviderId,
   env: QualificationEnv = process.env,
   timeoutMs?: number,
-): { executionMode: "safe" | "trusted"; timeoutMs: number } {
+  idleTimeoutMs?: number,
+): { executionMode: "safe" | "trusted"; timeoutMs: number; idleTimeoutMs: number } {
   const bot = providerBotKind(providerId);
+  const timeouts = resolveTimeoutsForKind(bot, env);
   return {
     executionMode: resolveExecutionMode(bot, env),
-    timeoutMs: timeoutMs ?? resolveTimeoutsForKind(bot, env).cliTimeoutMs,
+    timeoutMs: timeoutMs ?? timeouts.cliTimeoutMs,
+    idleTimeoutMs: idleTimeoutMs ?? timeouts.cliIdleTimeoutMs,
+  };
+}
+
+export function buildQualificationInvocation({
+  providerId,
+  executable,
+  prompt,
+  sessionId,
+  executionMode,
+  homeDir,
+  toolMode = "default",
+}: {
+  providerId: ProviderId;
+  executable: string;
+  prompt: string;
+  sessionId: string | null;
+  executionMode: "safe" | "trusted";
+  homeDir: string;
+  toolMode?: "default" | "none";
+}) {
+  const bot = providerBotKind(providerId);
+  return buildCliInvocation({
+    bot,
+    prompt,
+    sessionId,
+    command: executable,
+    model: null,
+    executionMode,
+    outputFormat: providerId === "agy" ? "stream-json" : "json",
+    soulContext: null,
+    includeResponseContract: false,
+    attachments: [],
+    outputDir: null,
+    effort: null,
+    homeDir,
+    toolMode,
+    nativeCompletion: true,
+  });
+}
+
+export function buildQualificationSupervisorOptions(
+  providerId: ProviderId,
+  timeoutMs: number,
+  idleTimeoutMs: number,
+): CliOptions {
+  return {
+    bot: providerBotKind(providerId),
+    timeoutMs,
+    idleTimeoutMs,
+    killGraceMs: 1_000,
   };
 }
 
@@ -295,6 +356,8 @@ async function runQualificationInvocation({
   cwd,
   homeDir,
   timeoutMs,
+  idleTimeoutMs,
+  runtimeEnv,
 }: {
   providerId: ProviderId;
   command: string;
@@ -302,28 +365,22 @@ async function runQualificationInvocation({
   cwd: string;
   homeDir: string;
   timeoutMs: number;
+  idleTimeoutMs: number;
+  runtimeEnv: QualificationEnv;
 }): Promise<string> {
-  const bot = providerBotKind(providerId);
+  const supervisorOptions = buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs);
   if (providerId !== "agy") {
-    return runCli(command, args, cwd, {
-      bot,
-      timeoutMs,
-      idleTimeoutMs: timeoutMs,
-      killGraceMs: 1_000,
-    });
+    return runCli(command, args, cwd, supervisorOptions);
   }
 
   // Qualification bypasses runtime recovery so contradictory terminal results
   // remain visible as provider-contract drift. It keeps the same invocation,
   // supervisor, process watch, state lock and strict stream-json result parser.
   return withAntigravityStateLock(homeDir, async () =>
-    withAntigravityApiKeyProvider(homeDir, process.env, async () => {
+    withAntigravityApiKeyProvider(homeDir, runtimeEnv, async () => {
       try {
         const result = await runSupervisedProcess(command, args, cwd, {
-          bot,
-          timeoutMs,
-          idleTimeoutMs: timeoutMs,
-          killGraceMs: 1_000,
+          ...supervisorOptions,
           processWatch: getProcessWatchForCommand(command),
         });
         return result.stdout;
@@ -332,7 +389,7 @@ async function runQualificationInvocation({
         const stdout = (error as Error & { stdout?: string }).stdout ?? "";
         if (stdout.trim()) {
           parseCliResult({
-            bot,
+            bot: providerBotKind(providerId),
             stdout,
             outputFormat: qualificationOutputFormat(args),
           });
@@ -349,7 +406,9 @@ async function executeNativeQualificationCheck({
   cwd,
   homeDir,
   timeoutMs,
+  idleTimeoutMs,
   executionMode,
+  runtimeEnv,
   sessionId,
 }: {
   providerId: ProviderId;
@@ -357,30 +416,21 @@ async function executeNativeQualificationCheck({
   cwd: string;
   homeDir: string;
   timeoutMs: number;
+  idleTimeoutMs: number;
   executionMode: "safe" | "trusted";
+  runtimeEnv: QualificationEnv;
   sessionId: string | null;
 }): Promise<{ sessionId: string | null }> {
   const bot = providerBotKind(providerId);
   const adapter = getProviderAdapter(providerId);
-  const invocation = buildCliInvocation({
-    bot,
+  const invocation = buildQualificationInvocation({
+    providerId,
+    executable,
     prompt: sessionId ? RESUME_PROBE : FRESH_PROBE,
     sessionId,
-    command: executable,
-    model: null,
     executionMode,
-    outputFormat: providerId === "agy" ? "stream-json" : "json",
-    soulContext: null,
-    includeResponseContract: false,
-    attachments: [],
-    outputDir: null,
-    effort: null,
     homeDir,
     toolMode: adapter.capabilities.toolFree ? "none" : "default",
-    // Qualification must exercise the same provider-native terminal-completion
-    // invocation shape used by ordinary Runs. Codex deliberately ignores this
-    // flag; Claude and Agy must accept their native lifecycle boundary.
-    nativeCompletion: true,
   });
 
   if (sessionId && invocation.nativeSessionMode !== "resume") {
@@ -397,6 +447,8 @@ async function executeNativeQualificationCheck({
     cwd,
     homeDir,
     timeoutMs,
+    idleTimeoutMs,
+    runtimeEnv,
   });
 
   let parsed;
@@ -482,33 +534,29 @@ async function executeRepositoryGroundingCheck({
   executable,
   homeDir,
   timeoutMs,
+  idleTimeoutMs,
   executionMode,
+  runtimeEnv,
 }: {
   providerId: ProviderId;
   executable: string;
   homeDir: string;
   timeoutMs: number;
+  idleTimeoutMs: number;
   executionMode: "safe" | "trusted";
+  runtimeEnv: QualificationEnv;
 }): Promise<void> {
   const bot = providerBotKind(providerId);
   const fixture = createRepositoryGroundingFixture(providerId);
   try {
-    const invocation = buildCliInvocation({
-      bot,
+    const invocation = buildQualificationInvocation({
+      providerId,
+      executable,
       prompt: REPOSITORY_GROUNDING_PROBE,
       sessionId: null,
-      command: executable,
-      model: null,
       executionMode,
-      outputFormat: providerId === "agy" ? "stream-json" : "json",
-      soulContext: null,
-      includeResponseContract: false,
-      attachments: [],
-      outputDir: null,
-      effort: null,
       homeDir,
       toolMode: "default",
-      nativeCompletion: true,
     });
     if (invocation.nativeSessionMode !== "fresh") {
       throw new Error("repository grounding qualification failed: invocation did not enter native fresh mode");
@@ -520,6 +568,8 @@ async function executeRepositoryGroundingCheck({
       cwd: fixture.cwd,
       homeDir,
       timeoutMs,
+      idleTimeoutMs,
+      runtimeEnv,
     });
     const parsed = parseCliResult({
       bot,
@@ -541,8 +591,13 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const adapter = getProviderAdapter(options.providerId);
   const executable = options.executable ?? adapter.executable;
   const runtimeEnv = options.env ?? process.env;
-  const runtimePolicy = resolveQualificationRuntimePolicy(options.providerId, runtimeEnv, options.timeoutMs);
-  const { executionMode, timeoutMs } = runtimePolicy;
+  const runtimePolicy = resolveQualificationRuntimePolicy(
+    options.providerId,
+    runtimeEnv,
+    options.timeoutMs,
+    options.idleTimeoutMs,
+  );
+  const { executionMode, timeoutMs, idleTimeoutMs } = runtimePolicy;
   const homeDir = options.homeDir ?? homedir();
   const ownsWorkspace = !options.cwd;
   const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), `agent-bridge-qualify-${options.providerId}-`));
@@ -594,7 +649,9 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         cwd,
         homeDir,
         timeoutMs,
+        idleTimeoutMs,
         executionMode,
+        runtimeEnv,
         sessionId: null,
       });
       freshSessionId = fresh.sessionId;
@@ -617,7 +674,9 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
             cwd,
             homeDir,
             timeoutMs,
+            idleTimeoutMs,
             executionMode,
+            runtimeEnv,
             sessionId: freshSessionId,
           });
           checks.push({ name: "session_resume", status: "pass" });
@@ -639,7 +698,9 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
           executable,
           homeDir,
           timeoutMs,
+          idleTimeoutMs,
           executionMode,
+          runtimeEnv,
         });
         checks.push({ name: "repository_grounding", status: "pass" });
       } catch (caught) {

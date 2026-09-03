@@ -14,6 +14,7 @@ describe("issue #644 qualification runtime policy", () => {
     })).toEqual({
       executionMode: "trusted",
       timeoutMs: 240_000,
+      idleTimeoutMs: 0,
     });
   });
 
@@ -25,6 +26,7 @@ describe("issue #644 qualification runtime policy", () => {
     })).toEqual({
       executionMode: "trusted",
       timeoutMs: 3_600_000,
+      idleTimeoutMs: 0,
     });
   });
 
@@ -32,16 +34,19 @@ describe("issue #644 qualification runtime policy", () => {
     expect(resolveQualificationRuntimePolicy("codex", {})).toEqual({
       executionMode: "safe",
       timeoutMs: 0,
+      idleTimeoutMs: 0,
     });
   });
 
-  it("lets an explicit qualification timeout override runtime timeout configuration", () => {
+  it("lets an explicit qualification hard timeout override only the runtime hard timeout", () => {
     expect(resolveQualificationRuntimePolicy("agy", {
       BRIDGE_EXECUTION_MODE: "trusted",
       ANTIGRAVITY_CLI_TIMEOUT_MS: "3600000",
+      ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS: "180000",
     }, 5_000)).toEqual({
       executionMode: "trusted",
       timeoutMs: 5_000,
+      idleTimeoutMs: 180_000,
     });
   });
 
