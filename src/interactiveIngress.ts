@@ -20,6 +20,8 @@ export interface InteractiveTurnInput {
   actorId: string;
   messageId: string;
   text: string;
+  /** Optional parent scope such as a Discord guild; never used as authority. */
+  conversationScopeId?: string;
   threadId?: string;
   delivery: { chatId: number | string; chatType: string };
   attachments: InteractiveAttachment[];
@@ -68,7 +70,16 @@ export function adaptDiscordMessage(data: any, surfaceIdentity = "discord:intera
   const messageId = String(data?.id ?? "");
   const text = String(data?.content ?? "").trim();
   if (!chatKey || !actorId || !messageId || !text) return null;
-  return { surfaceIdentity, chatKey, actorId, messageId, text, delivery: { chatId: chatKey, chatType: data?.guild_id ? "supergroup" : "private" }, attachments: [] };
+  return {
+    surfaceIdentity,
+    chatKey,
+    actorId,
+    messageId,
+    text,
+    ...(data?.guild_id == null ? {} : { conversationScopeId: String(data.guild_id) }),
+    delivery: { chatId: chatKey, chatType: data?.guild_id ? "supergroup" : "private" },
+    attachments: [],
+  };
 }
 
 type FlushFn = (groupId: string | null, turns: InteractiveTurnInput[]) => void | Promise<void>;
