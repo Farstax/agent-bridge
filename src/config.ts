@@ -11,8 +11,39 @@ import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 type Env = Record<string, string | undefined>;
 
+export const DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.1-pro",
+  "claude-sonnet-4-6",
+  "claude-opus-4-6-thinking",
+] as const;
+
 export function parseModelPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+}
+
+/**
+ * Agy exposes Gemini effort as low/medium/high suffixes on concrete model IDs.
+ * Keep bridge model preference at the family level and collapse legacy triads
+ * so one family is attempted once at the selected effort.
+ */
+export function parseAntigravityModelPreference(raw: string | undefined): string[] {
+  const configured = parseModelPreference(raw);
+  const source = configured.length > 0 ? configured : [...DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const model of source) {
+    const family = /^gemini-/i.test(model)
+      ? model.replace(/-(?:low|medium|high)$/i, "")
+      : model;
+    if (seen.has(family)) continue;
+    seen.add(family);
+    normalized.push(family);
+  }
+  return normalized;
 }
 
 /**
@@ -31,7 +62,7 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     antigravity: {
       token: token(env.TELEGRAM_BOT_TOKEN_ANTIGRAVITY || env.TELEGRAM_BOT_TOKEN_GEMINI),
       command: env.ANTIGRAVITY_COMMAND || env.GEMINI_COMMAND || "agy",
-      modelPreference: parseModelPreference(env.ANTIGRAVITY_MODEL_PREFERENCE || env.GEMINI_MODEL_PREFERENCE),
+      modelPreference: parseAntigravityModelPreference(env.ANTIGRAVITY_MODEL_PREFERENCE || env.GEMINI_MODEL_PREFERENCE),
     },
     claude: {
       token: token(env.TELEGRAM_BOT_TOKEN_CLAUDE),

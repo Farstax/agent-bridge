@@ -12,6 +12,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CliOptions } from "../types.js";
+import { getAgyEffortForArgs, resolveAgyModelForEffort } from "../effort.js";
 import { isAbortRequested, runSupervisedProcess } from "../cliSupervisor.js";
 import { type as evtType, type BridgeEvent } from "../events/types.js";
 import { withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
@@ -79,8 +80,11 @@ export async function runAntigravitySerialized(
     model: null,
     applyModel: false,
   };
+  const effectiveModel = executionContext.applyModel
+    ? resolveAgyModelForEffort(executionContext.model, getAgyEffortForArgs(args))
+    : null;
   const { eventContext, onEvent } = options;
-  const eventModel = executionContext.applyModel ? executionContext.model : null;
+  const eventModel = executionContext.applyModel ? effectiveModel : null;
   if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: eventModel }));
 
   let cancelled = false;
@@ -89,7 +93,7 @@ export async function runAntigravitySerialized(
     return await withAntigravityStateLock(executionContext.homeDir, async () =>
       withAntigravityApiKeyProvider(executionContext.homeDir, process.env, async () => {
         if (executionContext.applyModel) {
-          writeModelSettings(executionContext.model, executionContext.homeDir);
+          writeModelSettings(effectiveModel, executionContext.homeDir);
         }
 
         for (let attempt = 1; attempt <= 3; attempt += 1) {

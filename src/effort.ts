@@ -21,6 +21,8 @@ const ENV_KEYS: Record<BotKind, string> = {
   cursor: "CURSOR_EFFORT",
 };
 
+const agyEffortByArgs = new WeakMap<string[], EffortLevel>();
+
 export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
   return !!value && (EFFORT_LEVELS as readonly string[]).includes(value);
 }
@@ -60,13 +62,45 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): stri
     kind === "claude" ? "Claude maps effort to --effort." :
     kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
     kind === "cursor" ? "Cursor effort is unsupported by the qualified headless contract; this setting is recorded for parity only." :
-    "Agy effort is unsupported by the CLI; this setting is recorded for parity only. Use Agy model labels for low/high variants.";
+    "Agy maps effort to the selected Gemini model variant. Low/medium/high map directly; xhigh/max use high.";
 
   return [
     `Effort for ${kind}: ${currentEffort}`,
     `Default: ${DEFAULT_EFFORT_LEVEL}`,
     support,
   ].join("\n");
+}
+
+/**
+ * Resolve Agent Bridge's provider-neutral effort setting to the concrete Agy
+ * Gemini model slug. Model preference stays at the family level; Agy's
+ * low/medium/high suffix is an execution setting, not a fallback model.
+ */
+export function resolveAgyModelForEffort(
+  model: string | null,
+  effort: EffortLevel | null | undefined,
+): string | null {
+  if (model === null) return null;
+  const trimmed = model.trim();
+  if (!/^gemini-/i.test(trimmed)) return trimmed;
+
+  const base = trimmed.replace(/-(?:low|medium|high)$/i, "");
+  let variant: "low" | "medium" | "high" =
+    effort === "low" ? "low" :
+    effort === "high" || effort === "xhigh" || effort === "max" ? "high" :
+    "medium";
+
+  // The retained Gemini 3.1 Pro fallback exposes low/high but no medium.
+  // Preserve the old fallback priority by using high for medium effort.
+  if (base.toLowerCase() === "gemini-3.1-pro" && variant === "medium") {
+    variant = "high";
+  }
+  return `${base}-${variant}`;
+}
+
+/** Effort metadata follows the exact Agy args array into the serialized runner. */
+export function getAgyEffortForArgs(args: string[]): EffortLevel | null {
+  return agyEffortByArgs.get(args) ?? null;
 }
 
 export function appendEffortArgs(command: string, args: string[], effort: EffortLevel | null | undefined): string[] {
@@ -77,7 +111,13 @@ export function appendEffortArgs(command: string, args: string[], effort: Effort
   const isClaude = cmdName.includes("claude");
   const isAgy = cmdName.includes("agy") || cmdName.includes("antigravity");
 
-  if (isAgy) return args;
+  if (isAgy) {
+    // Agy has no separate effort flag. Carry the setting out-of-band so the
+    // serialized runner can apply it to the selected model while holding the
+    // provider-state lock, without leaking a synthetic CLI argument.
+    agyEffortByArgs.set(args, effort);
+    return args;
+  }
   if (isClaude) {
     if (args.includes("--effort")) return args;
     return ["--effort", effort, ...args];
