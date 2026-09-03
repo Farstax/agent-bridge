@@ -78,5 +78,6 @@ export function prependWorkspaceContext(prompt: string, env: NodeJS.ProcessEnv =
     managed ? `[Managed workspace context]\n${managed}` : "",
     inspector,
   ].filter(Boolean).join("\n\n");
-  return context ? `${context}\n\n${prompt}` : prompt;
+  const authoritativePrompt = passive ? `[Current authenticated request]\n${prompt}` : prompt;
+  return context ? `${context}\n\n${authoritativePrompt}` : authoritativePrompt;
 }
