@@ -32,6 +32,7 @@ import {
   describeInteractiveUpdateForLog,
   isGroupInteractiveUpdate,
   dispatchInteractiveTurnWithFallback,
+  dispatchUnifiedTelegramUpdate,
   dispatchClaimedInteractiveWithFallback,
   resolveAvailableCliPreference,
   applyManualCliSwitchHandoff,
@@ -42,7 +43,6 @@ import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
-import { adaptTelegramUpdate } from "./interactiveIngress.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { parseHealthBotMode } from "./health/config.js";
 import { createHealthRuntime } from "./health/runtime.js";
@@ -624,23 +624,24 @@ for (;;) {
           }
 
           if (chatId != null) {
-            const turn = adaptTelegramUpdate(typedUpdate, runtimePolicy.surfaceIdentity, chatKey);
-            if (!turn) continue;
-            dispatchInteractiveTurnWithFallback(turn, {
-              engines,
-              fallbackChain,
-              exhaustedChats,
-              db,
-              notify: async (msg) => {
-                await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: msg, message_thread_id: threadId } });
-              },
-              onCliSwitched: async (newCli) => {
-                await registerGlobalCommands(newCli, " during fallback");
-                if (isGroupInteractiveUpdate(typedUpdate)) {
-                  await registerGroupChatCommands(newCli, chatId);
-                }
-              },
+            dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, runtimePolicy.surfaceIdentity, engines[pref], async (turn) => {
+              await dispatchInteractiveTurnWithFallback(turn, {
+                engines,
+                fallbackChain,
+                exhaustedChats,
+                db,
+                notify: async (msg) => {
+                  await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: msg, message_thread_id: threadId } });
+                },
+                onCliSwitched: async (newCli) => {
+                  await registerGlobalCommands(newCli, " during fallback");
+                  if (isGroupInteractiveUpdate(typedUpdate)) {
+                    await registerGroupChatCommands(newCli, chatId);
+                  }
+                },
+              });
             }).catch((err: unknown) => console.error("[interactive] dispatch error", err));
+            continue;
           } else {
             engines[pref].handleUpdate(typedUpdate)
               .catch((err: unknown) => console.error("[interactive] handleUpdate error", err));
