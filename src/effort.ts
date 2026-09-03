@@ -84,6 +84,9 @@ export function resolveAgyModelForEffort(
   const trimmed = model.trim();
   if (!/^gemini-/i.test(trimmed)) return trimmed;
 
+  const explicitVariant = trimmed.match(/-(?:low|medium|high)$/i);
+  if (effort == null && explicitVariant) return trimmed;
+
   const base = trimmed.replace(/-(?:low|medium|high)$/i, "");
   let variant: "low" | "medium" | "high" =
     effort === "low" ? "low" :

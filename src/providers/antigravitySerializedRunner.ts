@@ -83,6 +83,12 @@ export async function runAntigravitySerialized(
   const effectiveModel = executionContext.applyModel
     ? resolveAgyModelForEffort(executionContext.model, getAgyEffortForArgs(args))
     : null;
+  if (executionContext.applyModel) {
+    // Recovery rebuilds an invocation from this same metadata object. Persist
+    // the concrete variant so a recovery turn keeps the original effort even
+    // though Agy has no visible --effort argument for cli.ts to recover.
+    executionContext.model = effectiveModel;
+  }
   const { eventContext, onEvent } = options;
   const eventModel = executionContext.applyModel ? effectiveModel : null;
   if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: eventModel }));

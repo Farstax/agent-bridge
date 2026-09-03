@@ -45,6 +45,7 @@ describe("Antigravity model families and effort", () => {
     expect(resolveAgyModelForEffort("gemini-3.8-flash-medium", "high")).toBe("gemini-3.8-flash-high");
     expect(resolveAgyModelForEffort("gemini-3.8-flash", "xhigh")).toBe("gemini-3.8-flash-high");
     expect(resolveAgyModelForEffort("gemini-3.8-flash", "max")).toBe("gemini-3.8-flash-high");
+    expect(resolveAgyModelForEffort("gemini-3.8-flash-high", null)).toBe("gemini-3.8-flash-high");
   });
 
   it("keeps non-Gemini Agy fallbacks unchanged and preserves the 3.1 Pro compatibility mapping", () => {
@@ -66,9 +67,10 @@ describe("Antigravity model families and effort", () => {
     const stream = [
       JSON.stringify({ event: "init", conversation_id: sessionId }),
       JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "ok" } }),
-    ].join("\\n");
+    ].join("\n");
     const args = ["-e", `process.stdout.write(${JSON.stringify(stream)})`];
     appendEffortArgs("agy", args, "high");
+    const metadata = { homeDir, model: "gemini-3.8-flash", applyModel: true };
 
     try {
       await runAntigravitySerialized(
@@ -76,12 +78,13 @@ describe("Antigravity model families and effort", () => {
         args,
         homeDir,
         { bot: "antigravity", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
-        { homeDir, model: "gemini-3.8-flash", applyModel: true },
+        metadata,
       );
       const settings = JSON.parse(
         readFileSync(join(homeDir, ".gemini", "antigravity-cli", "settings.json"), "utf8"),
       ) as { model?: string };
       expect(settings.model).toBe("Gemini 3.8 Flash (High)");
+      expect(metadata.model).toBe("gemini-3.8-flash-high");
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }
