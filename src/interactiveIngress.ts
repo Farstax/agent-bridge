@@ -6,6 +6,14 @@ export interface InteractiveAttachment {
   mimeType?: string;
   fileSize?: number;
 }
+
+export interface InteractiveSurroundingContextMessage {
+  actorId: string;
+  actorLabel: string;
+  messageId: string;
+  text: string;
+}
+
 export interface InteractiveTurnInput {
   surfaceIdentity: string;
   chatKey: string;
@@ -16,6 +24,8 @@ export interface InteractiveTurnInput {
   delivery: { chatId: number | string; chatType: string };
   attachments: InteractiveAttachment[];
   mediaGroupId?: string;
+  /** Passive, read-only evidence from the same immediate surface conversation. */
+  surroundingContext?: InteractiveSurroundingContextMessage[];
   /** Internal authoritative correlation for a previously claimed scheduled occurrence. */
   scheduledOccurrenceKey?: string;
 }
