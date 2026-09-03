@@ -45,10 +45,21 @@ export function resolveQualificationEntrypointEnvironment(
   for (const key of OPERATIONAL_ENV_KEYS) {
     if (ambientEnv[key] !== undefined) operationalBase[key] = ambientEnv[key];
   }
-  return loadProviderRuntimeEnvironment(providerId, {
-    directory: options.directory,
-    baseEnv: operationalBase,
-  });
+  try {
+    return loadProviderRuntimeEnvironment(providerId, {
+      directory: options.directory,
+      baseEnv: operationalBase,
+    });
+  } catch (error) {
+    // A required file can exist but be unreadable by this process — e.g. the
+    // real upgrade.sh flow deliberately runs the qualifier as the
+    // unprivileged target user (for provider auth) while the root-owned
+    // service files stay 600. That process can no more independently
+    // re-derive the service policy from disk than one facing an absent
+    // file, so it falls back the same way: trust ambient env.
+    if ((error as NodeJS.ErrnoException).code === "EACCES") return { ...ambientEnv };
+    throw error;
+  }
 }
 
 /** Replace a qualifier process environment with the resolved service environment. */

@@ -45,6 +45,32 @@ run_as_target_user() {
   fi
 }
 
+# The qualifier needs the same effective provider service policy the real
+# systemd service gets (execution mode, timeouts), but it must run as the
+# unprivileged target user for provider auth (~/.codex, ~/.gemini, ...).
+# Root-owned service EnvironmentFiles stay unreadable to that user by design,
+# so resolve the policy once here (while still privileged) and forward it
+# explicitly instead of letting the unprivileged qualifier try to re-read
+# files it cannot access.
+run_qualifier_as_target_user() {
+  local provider="$1"
+  shift
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    "$@"
+    return
+  fi
+  local -a env_pairs=()
+  local resolved
+  if resolved="$("${NODE_BIN}" "${REPO_DIR}/node_modules/tsx/dist/cli.mjs" "${REPO_DIR}/scripts/provider-qualification.ts" --provider "${provider}" --print-env 2>/dev/null)"; then
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && env_pairs+=("${line}")
+    done <<< "${resolved}"
+  fi
+  # HOME/PATH last so the target user's own identity always wins over
+  # whatever the resolved policy's operational-key allowlist captured.
+  sudo -u "${TARGET_USER}" env "${env_pairs[@]}" HOME="${TARGET_HOME}" PATH="${PATH}" "$@"
+}
+
 npm_pkg_version() {
   local listing
   listing="$(npm list -g "${1}" --depth=0 2>/dev/null || true)"
@@ -129,7 +155,7 @@ qualify_provider_if_needed() {
 
   echo "[qualification] ${provider} ${after}"
   local output status
-  if output="$(run_as_target_user "${args[@]}")"; then
+  if output="$(run_qualifier_as_target_user "${provider}" "${args[@]}")"; then
     status=0
   else
     status=$?
