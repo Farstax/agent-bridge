@@ -90,4 +90,10 @@ describe("Antigravity timeout contract", () => {
 
     expect(() => finalPrintTimeoutArg()).toThrow(/ANTIGRAVITY_DISABLED_PRINT_TIMEOUT_MS must be a positive number/);
   });
+
+  it("leaves non-print Agy commands unchanged", () => {
+    const args = ["models", "--json"];
+
+    expect(applyAntigravityPrintTimeoutPolicy(args, 0, {})).toBe(args);
+  });
 });
