@@ -40,29 +40,35 @@ function resolveDisabledPrintTimeout(env: NodeJS.ProcessEnv): string {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error("ANTIGRAVITY_DISABLED_PRINT_TIMEOUT_MS must be a positive number of milliseconds");
   }
-  return `${Math.max(1, Math.floor(timeoutMs / 1000))}s`;
+  return `${Math.max(1, Math.ceil(timeoutMs / 1000))}s`;
 }
 
 /**
  * Agy headless mode has its own five-minute print deadline and no documented
  * disabled value. Bridge's 0 = disabled contract therefore needs an explicit
  * provider-side compatibility ceiling immediately before a print-mode spawn.
- * Positive Bridge/provider timeouts already present in the invocation are preserved.
+ * Positive Bridge timeouts are normalized here so Agy never expires before
+ * the Bridge supervisor because of whole-second rounding.
  */
 export function applyAntigravityPrintTimeoutPolicy(
   args: string[],
   bridgeTimeoutMs: number,
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  if (args.includes("--print-timeout")) return args;
-
   const printIndex = args.findIndex((arg) => arg === "--print" || arg === "--prompt" || arg === "-p");
   if (printIndex === -1) return args;
 
+  const timeoutIndex = args.indexOf("--print-timeout");
+  if (bridgeTimeoutMs <= 0 && timeoutIndex !== -1) return args;
+
   const providerTimeout = bridgeTimeoutMs > 0
-    ? `${Math.max(1, Math.floor(bridgeTimeoutMs / 1000))}s`
+    ? `${Math.max(1, Math.ceil(bridgeTimeoutMs / 1000))}s`
     : resolveDisabledPrintTimeout(env);
   const executionArgs = [...args];
+  if (timeoutIndex !== -1) {
+    executionArgs.splice(timeoutIndex, 2, "--print-timeout", providerTimeout);
+    return executionArgs;
+  }
   executionArgs.splice(printIndex, 0, "--print-timeout", providerTimeout);
   return executionArgs;
 }
