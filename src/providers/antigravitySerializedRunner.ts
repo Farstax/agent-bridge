@@ -119,10 +119,11 @@ export async function runAntigravitySerialized(
   const eventModel = executionContext.applyModel ? executionContext.model : null;
   if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: eventModel }));
 
-  const executionArgs = applyAntigravityPrintTimeoutPolicy(args, options.timeoutMs ?? 0);
+  let executionArgs = args;
   let cancelled = false;
   let lastError: Error | null = null;
   try {
+    executionArgs = applyAntigravityPrintTimeoutPolicy(args, options.timeoutMs ?? 0);
     return await withAntigravityStateLock(executionContext.homeDir, async () =>
       withAntigravityApiKeyProvider(executionContext.homeDir, process.env, async () => {
         if (executionContext.applyModel) {
