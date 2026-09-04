@@ -62,13 +62,16 @@ export function applyAntigravityPrintTimeoutPolicy(
   const providerTimeout = bridgeTimeoutMs > 0
     ? `${Math.max(1, Math.ceil(bridgeTimeoutMs / 1000))}s`
     : resolveDisabledPrintTimeout(env);
-  const timeoutIndex = args.indexOf("--print-timeout");
-  const executionArgs = [...args];
-  if (timeoutIndex !== -1) {
-    executionArgs.splice(timeoutIndex, 2, "--print-timeout", providerTimeout);
-    return executionArgs;
+  const executionArgs: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--print-timeout") {
+      index += 1;
+      continue;
+    }
+    executionArgs.push(args[index]);
   }
-  executionArgs.splice(printIndex, 0, "--print-timeout", providerTimeout);
+  const normalizedPrintIndex = executionArgs.findIndex((arg) => arg === "--print" || arg === "--prompt" || arg === "-p");
+  executionArgs.splice(normalizedPrintIndex, 0, "--print-timeout", providerTimeout);
   return executionArgs;
 }
 

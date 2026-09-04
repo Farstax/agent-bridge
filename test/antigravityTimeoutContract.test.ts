@@ -30,10 +30,13 @@ function buildFinalAgyArgs(): string[] {
   return applyAntigravityPrintTimeoutPolicy(invocation.args, executionOptions.timeoutMs ?? 0);
 }
 
-function finalPrintTimeoutArg(): string | null {
-  const args = buildFinalAgyArgs();
+function printTimeoutArg(args: string[]): string | null {
   const index = args.indexOf("--print-timeout");
   return index === -1 ? null : args[index + 1] ?? null;
+}
+
+function finalPrintTimeoutArg(): string | null {
+  return printTimeoutArg(buildFinalAgyArgs());
 }
 
 function parseDurationMs(value: string): number {
@@ -46,10 +49,10 @@ function parseDurationMs(value: string): number {
 
 /** Deterministic fake of Agy's documented first-response print deadline. */
 function fakeAgyHeadlessOutcome(args: string[], firstResponseAfterMs: number): "completed" | "timed_out" {
-  const index = args.indexOf("--print-timeout");
-  const timeoutMs = index === -1
+  const providerTimeout = printTimeoutArg(args);
+  const timeoutMs = providerTimeout === null
     ? AGY_NATIVE_PRINT_TIMEOUT_MS
-    : parseDurationMs(args[index + 1] ?? "");
+    : parseDurationMs(providerTimeout);
   return firstResponseAfterMs <= timeoutMs ? "completed" : "timed_out";
 }
 
@@ -74,19 +77,35 @@ describe("Antigravity timeout contract", () => {
     expect(buildExecutionOptions("antigravity").timeoutMs).toBe(0);
   });
 
-  it("allows a headless response after five minutes when Bridge hard timeout is disabled", () => {
+  it("allows a headless response after Agy's native five-minute default when Bridge hard timeout is disabled", () => {
     saveAndSetTimeouts({});
     const firstResponseAfterMs = 6 * 60 * 1000;
     const rawInvocation = buildCliInvocation({
       bot: "antigravity",
       command: "agy",
-      prompt: "complete after the old provider deadline",
+      prompt: "complete after the native provider deadline",
       sessionId: null,
     });
 
     expect(fakeAgyHeadlessOutcome(rawInvocation.args, firstResponseAfterMs)).toBe("timed_out");
     expect(buildExecutionOptions("antigravity").timeoutMs).toBe(0);
     expect(fakeAgyHeadlessOutcome(buildFinalAgyArgs(), firstResponseAfterMs)).toBe("completed");
+  });
+
+  it("replaces a pre-existing provider deadline when Bridge hard timeout is disabled", () => {
+    const args = ["--print-timeout", "5m", "--output-format", "stream-json", "--print", "hi"];
+    const finalArgs = applyAntigravityPrintTimeoutPolicy(args, 0, {});
+
+    expect(printTimeoutArg(finalArgs)).toBe("876000h");
+    expect(fakeAgyHeadlessOutcome(finalArgs, 6 * 60 * 1000)).toBe("completed");
+  });
+
+  it("removes duplicate pre-existing provider deadlines before applying Bridge policy", () => {
+    const args = ["--print-timeout", "5m", "--print-timeout", "1s", "--print", "hi"];
+    const finalArgs = applyAntigravityPrintTimeoutPolicy(args, 0, {});
+
+    expect(finalArgs.filter((arg) => arg === "--print-timeout")).toHaveLength(1);
+    expect(printTimeoutArg(finalArgs)).toBe("876000h");
   });
 
   it("treats an explicit per-provider zero as disabled even when the global timeout is positive", () => {
@@ -109,13 +128,22 @@ describe("Antigravity timeout contract", () => {
     expect(buildExecutionOptions("antigravity").timeoutMs).toBe(600000);
   });
 
+  it("never rounds a positive Bridge timeout below its configured deadline", () => {
+    saveAndSetTimeouts({
+      ANTIGRAVITY_CLI_TIMEOUT_MS: "1500",
+    });
+
+    expect(finalPrintTimeoutArg()).toBe("2s");
+    expect(buildExecutionOptions("antigravity").timeoutMs).toBe(1500);
+  });
+
   it("allows the provider compatibility ceiling to be configured without enabling the Bridge hard timeout", () => {
     saveAndSetTimeouts({
       ANTIGRAVITY_CLI_TIMEOUT_MS: "0",
-      ANTIGRAVITY_DISABLED_PRINT_TIMEOUT_MS: "900000",
+      ANTIGRAVITY_DISABLED_PRINT_TIMEOUT_MS: "1500",
     });
 
-    expect(finalPrintTimeoutArg()).toBe("900s");
+    expect(finalPrintTimeoutArg()).toBe("2s");
     expect(buildExecutionOptions("antigravity").timeoutMs).toBe(0);
   });
 
