@@ -23,11 +23,56 @@ import {
   withAntigravityStateLock,
 } from "./antigravityRuntime.js";
 
+const DEFAULT_ANTIGRAVITY_DISABLED_PRINT_TIMEOUT = "876000h";
+
 export interface AntigravityExecutionContext {
   homeDir: string;
   model: string | null;
   /** False for direct/untracked calls, which must preserve existing provider settings. */
   applyModel: boolean;
+}
+
+function resolveDisabledPrintTimeout(env: NodeJS.ProcessEnv): string {
+  const raw = env.ANTIGRAVITY_DISABLED_PRINT_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_ANTIGRAVITY_DISABLED_PRINT_TIMEOUT;
+
+  const timeoutMs = Number(raw);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("ANTIGRAVITY_DISABLED_PRINT_TIMEOUT_MS must be a positive number of milliseconds");
+  }
+  return `${Math.max(1, Math.ceil(timeoutMs / 1000))}s`;
+}
+
+/**
+ * Agy headless mode has its own five-minute print deadline and no documented
+ * disabled value. Bridge's 0 = disabled contract therefore needs an explicit
+ * provider-side compatibility ceiling immediately before a print-mode spawn.
+ * The final spawn boundary is authoritative: any earlier provider deadline is
+ * replaced from Bridge policy, and positive values round up so Agy cannot
+ * expire before the Bridge supervisor because of whole-second conversion.
+ */
+export function applyAntigravityPrintTimeoutPolicy(
+  args: string[],
+  bridgeTimeoutMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const printIndex = args.findIndex((arg) => arg === "--print" || arg === "--prompt" || arg === "-p");
+  if (printIndex === -1) return args;
+
+  const providerTimeout = bridgeTimeoutMs > 0
+    ? `${Math.max(1, Math.ceil(bridgeTimeoutMs / 1000))}s`
+    : resolveDisabledPrintTimeout(env);
+  const executionArgs: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--print-timeout") {
+      index += 1;
+      continue;
+    }
+    executionArgs.push(args[index]);
+  }
+  const normalizedPrintIndex = executionArgs.findIndex((arg) => arg === "--print" || arg === "--prompt" || arg === "-p");
+  executionArgs.splice(normalizedPrintIndex, 0, "--print-timeout", providerTimeout);
+  return executionArgs;
 }
 
 function writeModelSettings(model: string | null, homeDir: string): void {
@@ -83,9 +128,11 @@ export async function runAntigravitySerialized(
   const eventModel = executionContext.applyModel ? executionContext.model : null;
   if (eventContext) emitSafe(onEvent, evtType.runStarted({ ...eventContext, command, cwd, model: eventModel }));
 
+  let executionArgs = args;
   let cancelled = false;
   let lastError: Error | null = null;
   try {
+    executionArgs = applyAntigravityPrintTimeoutPolicy(args, options.timeoutMs ?? 0);
     return await withAntigravityStateLock(executionContext.homeDir, async () =>
       withAntigravityApiKeyProvider(executionContext.homeDir, process.env, async () => {
         if (executionContext.applyModel) {
@@ -99,7 +146,7 @@ export async function runAntigravitySerialized(
               throw new Error("CLI execution aborted by user");
             }
 
-            const result = await runSupervisedProcess(command, args, cwd, {
+            const result = await runSupervisedProcess(command, executionArgs, cwd, {
               ...options,
               onEvent: (event) => {
                 if (["run.started", "run.completed", "run.failed", "run.cancelled"].includes(event.type)) return;
@@ -133,7 +180,7 @@ export async function runAntigravitySerialized(
               lastError = streamError;
               throw lastError;
             }
-            if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, args, stdout, stderr) || attempt === 3) {
+            if (!isPreExecutionDnsFailure(options.bot ?? eventContext?.bot, executionArgs, stdout, stderr) || attempt === 3) {
               throw lastError;
             }
 
