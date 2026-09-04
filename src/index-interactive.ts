@@ -610,7 +610,7 @@ for (;;) {
         if (chatKey) {
           const chatId = typedUpdate.message?.chat?.id ?? typedUpdate.callback_query?.message?.chat?.id;
           const threadId = resolveMessageThreadId(typedUpdate);
-          const { pref } = resolveCredentialCheckedPreference(chatKey);
+          const { pref, available } = resolveCredentialCheckedPreference(chatKey);
           if (!pref) {
             if (chatId != null) {
               await sendTelegramMessage({
@@ -624,6 +624,9 @@ for (;;) {
           }
 
           if (chatId != null) {
+            const availableEngines = Object.fromEntries(
+              Object.entries(engines).filter(([kind]) => available.has(kind as CliKind)),
+            ) as Partial<Record<CliKind, BridgeEngine>>;
             dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, runtimePolicy.surfaceIdentity, engines[pref], async (turn) => {
               await dispatchInteractiveTurnWithFallback(turn, {
                 engines,
@@ -640,7 +643,7 @@ for (;;) {
                   }
                 },
               });
-            }).catch((err: unknown) => console.error("[interactive] dispatch error", err));
+            }, availableEngines).catch((err: unknown) => console.error("[interactive] dispatch error", err));
             continue;
           } else {
             engines[pref].handleUpdate(typedUpdate)

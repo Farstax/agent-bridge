@@ -448,7 +448,20 @@ export function dispatchInteractiveTurnWithFallback(
 }
 
 export interface UnifiedTelegramUpdateEngine {
+  readonly kind?: string;
   handleUpdate(update: TelegramUpdate, chatKey?: string): Promise<void>;
+}
+
+export function resolveTelegramControlTargetKind(data: string | undefined | null): CliKind | null {
+  if (!data) return null;
+  const [action, targetKind] = data.split(":");
+  if ((action === "model" || action === "effort") && targetKind) {
+    const trimmed = targetKind.trim() as CliKind;
+    if (VALID_CLI_KINDS.includes(trimmed)) {
+      return trimmed;
+    }
+  }
+  return null;
 }
 
 /** Keep Telegram controls on the engine callback path, outside conversational turns. */
@@ -458,9 +471,12 @@ export async function dispatchUnifiedTelegramUpdate(
   surfaceIdentity: string,
   engine: UnifiedTelegramUpdateEngine,
   dispatchMessage: (turn: InteractiveTurnInput) => Promise<void>,
+  availableEngines?: Partial<Record<CliKind, UnifiedTelegramUpdateEngine>>,
 ): Promise<void> {
   if (update.callback_query) {
-    await engine.handleUpdate(update, chatKey);
+    const targetKind = resolveTelegramControlTargetKind(update.callback_query.data);
+    const targetEngine = (targetKind && availableEngines?.[targetKind]) ?? engine;
+    await targetEngine.handleUpdate(update, chatKey);
     return;
   }
   const turn = adaptTelegramUpdate(update, surfaceIdentity, chatKey);

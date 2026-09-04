@@ -1686,7 +1686,14 @@ export class BridgeEngine {
       await this.sendText(chatId, { text: `✓ Busy-message mode set to ${effective}`, message_thread_id: threadId });
       return;
     }
-    if (!["model", "effort"].includes(action) || targetKind !== this.kind) return;
+    if (!["model", "effort"].includes(action)) return;
+    if (targetKind !== this.kind) {
+      await this.client.answerCallbackQuery({
+        callback_query_id: callbackQuery.id,
+        text: `Control is stale: active provider is ${this.kind}.`,
+      });
+      return;
+    }
 
     const value = rest.join(":").trim();
     const messageId = callbackQuery.message?.message_id;
