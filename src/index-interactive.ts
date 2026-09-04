@@ -33,6 +33,7 @@ import {
   isGroupInteractiveUpdate,
   dispatchInteractiveTurnWithFallback,
   dispatchUnifiedTelegramUpdate,
+  handleUnavailableCliUpdate,
   dispatchClaimedInteractiveWithFallback,
   resolveAvailableCliPreference,
   applyManualCliSwitchHandoff,
@@ -612,14 +613,14 @@ for (;;) {
           const threadId = resolveMessageThreadId(typedUpdate);
           const { pref } = resolveCredentialCheckedPreference(chatKey);
           if (!pref) {
-            if (chatId != null) {
+            await handleUnavailableCliUpdate(typedUpdate, client, async (unavailableChatId, unavailableThreadId) => {
               await sendTelegramMessage({
                 client,
                 kind: "interactive",
-                chatId,
-                body: { text: "No CLI is currently available on this box. Authenticate or install a CLI, then run /cli again.", message_thread_id: threadId },
+                chatId: unavailableChatId,
+                body: { text: "No CLI is currently available on this box. Authenticate or install a CLI, then run /cli again.", message_thread_id: unavailableThreadId },
               });
-            }
+            });
             continue;
           }
 
@@ -652,6 +653,8 @@ for (;;) {
             : resolveAvailableCliPreference("codex", getAvailableCliKinds());
           if (pref) {
             await engines[pref].handleUpdate(typedUpdate);
+          } else {
+            await handleUnavailableCliUpdate(typedUpdate, client, async () => {});
           }
         }
       } catch (err) {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
-import { dispatchUnifiedTelegramUpdate, isAuthorizedInteractiveUpdate } from "../src/interactiveBot.js";
+import { dispatchUnifiedTelegramUpdate, handleUnavailableCliUpdate, isAuthorizedInteractiveUpdate } from "../src/interactiveBot.js";
 import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
 
 function client() {
@@ -133,6 +133,34 @@ describe("unified Telegram callback ingress", () => {
     expect(messageDispatch).not.toHaveBeenCalled();
     expect(runCli).not.toHaveBeenCalled();
     db.close();
+  });
+
+  it("completes callback and ordinary-message handling when no CLI is available", async () => {
+    const telegram = client();
+    const sendUnavailableMessage = vi.fn().mockResolvedValue(undefined);
+
+    expect(await handleUnavailableCliUpdate(callback("model:antigravity:gemini-3.8-flash"), telegram, sendUnavailableMessage)).toBe(true);
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith({
+      callback_query_id: "cb-model:antigravity:gemini-3.8-flash",
+      text: "No CLI is currently available. Authenticate or install a CLI, then run /cli again.",
+    });
+    expect(sendUnavailableMessage).not.toHaveBeenCalled();
+
+    const noChatCallback = callback("effort:antigravity:high");
+    delete noChatCallback.callback_query.message;
+    expect(await handleUnavailableCliUpdate(noChatCallback, telegram, sendUnavailableMessage)).toBe(true);
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith({
+      callback_query_id: "cb-effort:antigravity:high",
+      text: "No CLI is currently available. Authenticate or install a CLI, then run /cli again.",
+    });
+
+    const ordinaryUpdate = {
+      update_id: 3,
+      message: { message_id: 14, chat: { id: 100, type: "private" }, from: { id: 42 }, text: "hello" },
+    } as any;
+    expect(await handleUnavailableCliUpdate(ordinaryUpdate, telegram, sendUnavailableMessage)).toBe(true);
+    expect(sendUnavailableMessage).toHaveBeenCalledWith(100, undefined);
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledTimes(2);
   });
 
   it("keeps ordinary messages on the neutral-turn dispatch path", async () => {
