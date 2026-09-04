@@ -453,6 +453,25 @@ export interface UnifiedTelegramUpdateEngine {
   handleUpdate(update: TelegramUpdate, chatKey?: string): Promise<void>;
 }
 
+export async function handleUnavailableCliUpdate(
+  update: TelegramUpdate,
+  client: Pick<MessagingPlatform, "answerCallbackQuery">,
+  sendUnavailableMessage: (chatId: number | string, threadId?: number | string) => Promise<void>,
+): Promise<boolean> {
+  const callbackQueryId = update.callback_query?.id;
+  if (callbackQueryId) {
+    await client.answerCallbackQuery({
+      callback_query_id: callbackQueryId,
+      text: "No CLI is currently available. Authenticate or install a CLI, then run /cli again.",
+    });
+    return true;
+  }
+  const message = update.message;
+  if (!message) return false;
+  await sendUnavailableMessage(message.chat.id, message.message_thread_id);
+  return true;
+}
+
 function providerControlTarget(update: TelegramUpdate): { action: "model" | "effort"; targetKind: CliKind } | null {
   const data = String(update.callback_query?.data ?? "");
   const [action, targetKind] = data.split(":");
