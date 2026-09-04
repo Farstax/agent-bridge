@@ -448,7 +448,16 @@ export function dispatchInteractiveTurnWithFallback(
 }
 
 export interface UnifiedTelegramUpdateEngine {
+  readonly kind: string;
+  readonly client: Pick<MessagingPlatform, "answerCallbackQuery">;
   handleUpdate(update: TelegramUpdate, chatKey?: string): Promise<void>;
+}
+
+function providerControlTarget(update: TelegramUpdate): { action: "model" | "effort"; targetKind: CliKind } | null {
+  const data = String(update.callback_query?.data ?? "");
+  const [action, targetKind] = data.split(":");
+  if ((action !== "model" && action !== "effort") || !isValidCliKind(targetKind)) return null;
+  return { action, targetKind };
 }
 
 /** Keep Telegram controls on the engine callback path, outside conversational turns. */
@@ -460,6 +469,14 @@ export async function dispatchUnifiedTelegramUpdate(
   dispatchMessage: (turn: InteractiveTurnInput) => Promise<void>,
 ): Promise<void> {
   if (update.callback_query) {
+    const control = providerControlTarget(update);
+    if (control && control.targetKind !== engine.kind) {
+      await engine.client.answerCallbackQuery({
+        callback_query_id: update.callback_query.id,
+        text: `Stale ${control.action} menu: active provider is ${engine.kind}. Reopen /${control.action === "model" ? "models" : "effort"}.`,
+      });
+      return;
+    }
     await engine.handleUpdate(update, chatKey);
     return;
   }
