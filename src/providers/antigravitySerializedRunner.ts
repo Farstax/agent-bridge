@@ -46,8 +46,8 @@ function resolveDisabledPrintTimeout(env: NodeJS.ProcessEnv): string {
 /**
  * Agy headless mode has its own five-minute print deadline and no documented
  * disabled value. Bridge's 0 = disabled contract therefore needs an explicit
- * provider-side compatibility ceiling immediately before spawn. Positive
- * Bridge/provider timeouts already present in the invocation are preserved.
+ * provider-side compatibility ceiling immediately before a print-mode spawn.
+ * Positive Bridge/provider timeouts already present in the invocation are preserved.
  */
 export function applyAntigravityPrintTimeoutPolicy(
   args: string[],
@@ -56,13 +56,14 @@ export function applyAntigravityPrintTimeoutPolicy(
 ): string[] {
   if (args.includes("--print-timeout")) return args;
 
+  const printIndex = args.findIndex((arg) => arg === "--print" || arg === "--prompt" || arg === "-p");
+  if (printIndex === -1) return args;
+
   const providerTimeout = bridgeTimeoutMs > 0
     ? `${Math.max(1, Math.floor(bridgeTimeoutMs / 1000))}s`
     : resolveDisabledPrintTimeout(env);
   const executionArgs = [...args];
-  const printIndex = executionArgs.findIndex((arg) => arg === "--print" || arg === "--prompt" || arg === "-p");
-  const insertAt = printIndex === -1 ? executionArgs.length : printIndex;
-  executionArgs.splice(insertAt, 0, "--print-timeout", providerTimeout);
+  executionArgs.splice(printIndex, 0, "--print-timeout", providerTimeout);
   return executionArgs;
 }
 
