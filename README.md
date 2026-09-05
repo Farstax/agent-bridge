@@ -3,8 +3,9 @@
 **Your coding agents should not stop being useful when you leave your desk.**
 
 Agent Bridge is the open-source, self-hosted runtime for the coding-agent CLIs
-you already use. Run Codex, Claude Code, Antigravity/Agy, or Grok Build on an
-always-on machine and keep the workstream available from Telegram or Discord.
+you already use. Run Codex, Claude Code, Antigravity/Agy, Grok Build, or Cursor
+on an always-on machine and keep the workstream available from Telegram or
+Discord.
 
 Keep work running when you close the laptop. Continue from your phone. Switch
 providers without throwing away the conversation. Restart the host without
@@ -61,8 +62,9 @@ then enters the same ordinary Run and provider-agent path.
 ## Core capabilities
 
 - **Durable workstreams** — restart-safe conversation turns and retained history.
-- **Native provider sessions** — Codex, Claude Code, Antigravity/Agy, and Grok
-  keep their own session identity rather than being flattened into a new harness.
+- **Native provider sessions** — Codex, Claude Code, Antigravity/Agy, Grok Build,
+  and Cursor keep their own session identity rather than being flattened into a
+  new harness.
 - **Telegram and Discord** — use the coding agents from the messaging surfaces
   you already carry, including Telegram forum-topic routing.
 - **Provider switching and fallback** — choose a provider per workstream and use
@@ -111,20 +113,23 @@ npm start
 ```
 
 Provider-specific examples are also included for Codex, Claude,
-Antigravity/Agy, Grok, and Discord.
+Antigravity/Agy, Grok, Cursor, and Discord.
 
 The default interactive fallback order is:
 
 ```text
-codex,claude,grok,antigravity
+codex,claude,grok,antigravity,cursor
 ```
 
-Override it with `INTERACTIVE_CLI_CHAIN`. A deployment can also lock a service
-to one provider with:
+Override it with `INTERACTIVE_CLI_CHAIN`. Dedicated provider-locked Telegram
+services currently support:
 
 ```text
 BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok
 ```
+
+Cursor participates through the switchable interactive provider chain rather
+than the dedicated provider-lock path.
 
 ## Production installation
 
@@ -148,7 +153,7 @@ initial installer.
 
 The switchable interactive runtime uses the configured provider chain and keeps
 provider-native sessions underneath the durable conversation identity. Dedicated
-provider-locked deployments are also supported.
+provider-locked deployments are also supported for the provider set above.
 
 Grok participates when authenticated through the runtime user's native Grok
 credentials or `XAI_API_KEY`. Provider qualification remains available for
