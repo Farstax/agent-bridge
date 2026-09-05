@@ -11,7 +11,7 @@ describe("Telegram polling lifecycle", () => {
       ok: false,
       status: 401,
       json: async () => ({ ok: false, description: "Unauthorized" }),
-    })) as typeof fetch;
+    })) as any;
     const client = new TelegramClient("bad-token", fakeFetch);
 
     let caught: unknown;
@@ -28,7 +28,7 @@ describe("Telegram polling lifecycle", () => {
       ok: false,
       status: 401,
       json: async () => ({ ok: false, description: "Unauthorized" }),
-    })) as typeof fetch;
+    })) as any;
     const client = new TelegramClient("bad-token", fakeFetch);
     const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`process.exit:${code}`);
@@ -49,7 +49,7 @@ describe("Telegram polling lifecycle", () => {
         if (signal.aborted) rejectAborted();
         else signal.addEventListener("abort", rejectAborted, { once: true });
       });
-    }) as typeof fetch;
+    }) as any;
     const client = new TelegramClient("token", fakeFetch);
     const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`process.exit:${code}`);
@@ -57,7 +57,7 @@ describe("Telegram polling lifecycle", () => {
 
     const polling = client.getUpdates({ timeout: 30 });
     await vi.waitFor(() => expect(fetchStarted).toBe(true));
-    (process as NodeJS.EventEmitter).emit("SIGINT");
+    (process as any).emit("SIGINT");
 
     await expect(polling).rejects.toThrow("process.exit:0");
     expect(exit).toHaveBeenCalledTimes(1);
