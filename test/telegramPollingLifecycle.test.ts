@@ -1,11 +1,22 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { TelegramClient, isTelegramUnauthorizedError } from "../src/telegram.js";
+import { EventEmitter } from "node:events";
+import { describe, expect, it, vi } from "vitest";
+import {
+  TelegramClient,
+  isTelegramUnauthorizedError,
+  type TelegramPollingSignalSource,
+} from "../src/telegram.js";
+
+function testLifecycle() {
+  const signals = new EventEmitter() as TelegramPollingSignalSource & EventEmitter;
+  const exits: number[] = [];
+  const exit = (code: number): never => {
+    exits.push(code);
+    throw new Error(`process.exit:${code}`);
+  };
+  return { signals, exits, exit };
+}
 
 describe("Telegram polling lifecycle", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("classifies HTTP 401 as a permanent Telegram authentication failure", async () => {
     const fakeFetch = (async () => ({
       ok: false,
@@ -30,13 +41,13 @@ describe("Telegram polling lifecycle", () => {
       json: async () => ({ ok: false, description: "Unauthorized" }),
     })) as any;
     const client = new TelegramClient("bad-token", fakeFetch);
-    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new Error(`process.exit:${code}`);
-    }) as never);
+    const lifecycle = testLifecycle();
 
-    await expect(client.getUpdates({ timeout: 30 })).rejects.toThrow("process.exit:1");
-    expect(exit).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(1);
+    await expect(client.getUpdates({ timeout: 30 }, {
+      signalSource: lifecycle.signals,
+      exit: lifecycle.exit,
+    })).rejects.toThrow("process.exit:1");
+    expect(lifecycle.exits).toEqual([1]);
   });
 
   it("cancels an in-flight long poll and exits promptly on SIGINT", async () => {
@@ -51,16 +62,16 @@ describe("Telegram polling lifecycle", () => {
       });
     }) as any;
     const client = new TelegramClient("token", fakeFetch);
-    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      throw new Error(`process.exit:${code}`);
-    }) as never);
+    const lifecycle = testLifecycle();
 
-    const polling = client.getUpdates({ timeout: 30 });
+    const polling = client.getUpdates({ timeout: 30 }, {
+      signalSource: lifecycle.signals,
+      exit: lifecycle.exit,
+    });
     await vi.waitFor(() => expect(fetchStarted).toBe(true));
-    (process as any).emit("SIGINT");
+    lifecycle.signals.emit("SIGINT");
 
     await expect(polling).rejects.toThrow("process.exit:0");
-    expect(exit).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(lifecycle.exits).toEqual([0]);
   });
 });
