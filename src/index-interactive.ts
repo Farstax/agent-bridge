@@ -5,11 +5,10 @@
  * NEIGHBORS: src/providerLock.ts, src/interactiveBot.ts, src/engine.ts, src/db.ts
  */
 
-import dotenv from "dotenv";
 import { join } from "node:path";
 import { getBridgeProjectDir } from "./bridge.js";
 import { openProductionDb } from "./db.js";
-import { TelegramClient } from "./telegram.js";
+import { TelegramClient, isTelegramPermanentAuthError } from "./telegram.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { sendTelegramMessage } from "./messageDelivery.js";
@@ -41,7 +40,7 @@ import {
 } from "./interactiveBot.js";
 import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { runCli } from "./cli.js";
-import { getExecutionProcessState } from "./cliSupervisor.js";
+import { getExecutionProcessState, shutdownCliProcessesAndWait } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
@@ -55,16 +54,15 @@ import { loadWorkspaceContext } from "./workspaceContext.js";
 import { AutonomyController, isFirstClassAutonomyBot } from "./autonomyController.js";
 import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } from "./autonomyTelegram.js";
 import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
+import { loadInteractiveEnv } from "./interactiveEnv.js";
+import { waitForAbortableDelay } from "./interactiveShutdown.js";
 import {
   ScheduledRoutineRunner,
   buildScheduledInteractiveTurn,
   scheduledTelegramDestination,
 } from "./scheduledRoutines.js";
 
-dotenv.config({
-  path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
-  override: false,
-});
+loadInteractiveEnv(process.env);
 
 const supportedCliKinds = interactiveChainKinds();
 const configuredCliChain = parseCliChain(
@@ -116,6 +114,16 @@ const soulContext = loadSoulContext({
 });
 if (soulContext) console.log(`[interactive] loaded SOUL.md context (${soulContext.length} chars)`);
 
+const shutdownController = new AbortController();
+let shutdownRequested = false;
+const requestShutdown = () => {
+  if (shutdownRequested) return;
+  shutdownRequested = true;
+  shutdownController.abort();
+};
+process.once("SIGINT", requestShutdown);
+process.once("SIGTERM", requestShutdown);
+
 const db = openProductionDb(dbPath, {
   serviceId: runtimePolicy.databaseServiceId,
   installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
@@ -127,6 +135,7 @@ const client = new TelegramClient(
   token,
   fetch,
   resolveTimeoutsForKind(providerLock ?? "codex").fetchTimeoutMs,
+  shutdownController.signal,
 );
 const autonomyDb = autonomyDbPath ? openProductionDb(autonomyDbPath, {
   serviceId: "telegram:interactive-autonomy",
@@ -155,14 +164,6 @@ const ownerNotificationIngress = ownerNotificationSocketPath
   : null;
 if (ownerNotificationIngress) {
   console.log(`[interactive] owner notification ingress listening on ${ownerNotificationSocketPath}`);
-  let stopping = false;
-  const stopOwnerNotificationIngress = () => {
-    if (stopping) return;
-    stopping = true;
-    void ownerNotificationIngress.stop().finally(() => process.exit(0));
-  };
-  process.once("SIGINT", stopOwnerNotificationIngress);
-  process.once("SIGTERM", stopOwnerNotificationIngress);
 }
 const healthDbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 const healthDb = integratedHealth ? openProductionDb(healthDbPath, {
@@ -211,7 +212,12 @@ if (!botUsername) {
     const me = await client.call<{ username?: string }>("getMe");
     botUsername = me.result.username ?? null;
   } catch (err) {
-    console.warn("[interactive] getMe failed; group-suffixed /cli commands disabled", err);
+    if (isTelegramPermanentAuthError(err)) {
+      throw new Error(`Telegram bot credentials were rejected (HTTP ${err.status}). Check TELEGRAM_BOT_TOKEN_INTERACTIVE.`);
+    }
+    if (!shutdownController.signal.aborted) {
+      console.warn("[interactive] getMe failed; group-suffixed /cli commands disabled", err);
+    }
   }
 }
 
@@ -427,7 +433,7 @@ console.log(`[interactive] starting polling${providerLock ? ` locked to ${provid
 let offset = db.getLastUpdateId(runtimePolicy.pollKind);
 const POLL_KIND = runtimePolicy.pollKind;
 
-for (;;) {
+while (!shutdownController.signal.aborted) {
   try {
     const updates = await client.getUpdates({ offset: offset + 1, timeout: 30, allowed_updates: ["message", "callback_query"] });
 
@@ -662,7 +668,24 @@ for (;;) {
       }
     }
   } catch (err) {
+    if (shutdownController.signal.aborted) break;
+    if (isTelegramPermanentAuthError(err)) {
+      throw new Error(`Telegram bot credentials were rejected (HTTP ${err.status}). Check TELEGRAM_BOT_TOKEN_INTERACTIVE.`);
+    }
     console.error("[interactive] poll error", err);
-    await new Promise(r => setTimeout(r, 5000));
+    await waitForAbortableDelay(5000, shutdownController.signal);
   }
 }
+
+scheduledRoutineRunner?.stop();
+await shutdownCliProcessesAndWait().catch((error) => {
+  console.error("[interactive] failed to stop provider processes during shutdown", error);
+});
+if (ownerNotificationIngress) {
+  await ownerNotificationIngress.stop().catch((error) => {
+    console.error("[interactive] failed to stop owner notification ingress", error);
+  });
+}
+process.removeListener("SIGINT", requestShutdown);
+process.removeListener("SIGTERM", requestShutdown);
+if (shutdownRequested) process.exit(0);
