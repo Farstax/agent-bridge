@@ -346,6 +346,7 @@ function writeAntigravityModelSettings(model: string | null, homeDir: string): v
   } else {
     settings["model"] = toAntigravityModelLabel(model);
   }
+  settings["verbosity"] = "compact";
   mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
 }

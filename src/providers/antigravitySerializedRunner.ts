@@ -87,6 +87,12 @@ function writeModelSettings(model: string | null, homeDir: string): void {
   }
   if (model === null) delete settings.model;
   else settings.model = toAntigravityModelLabel(model);
+  // Agy 1.1.27's "verbosity: high" default can surface tool narration and
+  // internal thoughts in headless print-mode responses (issue #678). This
+  // is the code path that actually runs before every real Agy execution —
+  // antigravityRuntime.ts's writeAntigravityModelSettings() is a separate,
+  // parallel implementation used by explicit /model switches.
+  settings.verbosity = "compact";
 
   const settingsDir = dirname(settingsPath);
   mkdirSync(settingsDir, { recursive: true, mode: 0o700 });

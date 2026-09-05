@@ -269,7 +269,7 @@ describe("provider result parsing fixtures — antigravity", () => {
     expect(() => parseCliResult({ bot: "antigravity", stdout })).toThrow(/timed out/i);
   });
 
-  it("settings-file preservation: setAntigravityModel only touches the 'model' key, leaving unrelated settings intact", () => {
+  it("settings-file preservation: setAntigravityModel only touches the managed 'model' and 'verbosity' keys, leaving unrelated settings intact", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "agy-settings-preserve-"));
     try {
       const settingsDir = join(tempDir, ".gemini", "antigravity-cli");
@@ -279,11 +279,11 @@ describe("provider result parsing fixtures — antigravity", () => {
 
       setAntigravityModel("gemini-3.5-flash-high", tempDir);
       let data = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(data).toEqual({ theme: "dark", telemetry: false, model: "Gemini 3.5 Flash (High)" });
+      expect(data).toEqual({ theme: "dark", telemetry: false, model: "Gemini 3.5 Flash (High)", verbosity: "compact" });
 
       setAntigravityModel(null, tempDir);
       data = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(data).toEqual({ theme: "dark", telemetry: false });
+      expect(data).toEqual({ theme: "dark", telemetry: false, verbosity: "compact" });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
