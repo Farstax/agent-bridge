@@ -63,8 +63,9 @@ async function main(): Promise<void> {
       || await askRequired(rl, "Telegram bot token: ");
     const telegramAllowedUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS?.trim()
       || await askRequired(rl, "Allowed Telegram user IDs (comma-separated): ", normalizeTelegramAllowedUserIds);
-    const projectDir = process.env.BRIDGE_PROJECT_DIR?.trim()
-      ? validateProjectDirectory(process.env.BRIDGE_PROJECT_DIR)
+    const configuredProjectDir = process.env.BRIDGE_PROJECT_DIR?.trim();
+    const projectDir = configuredProjectDir
+      ? validateProjectDirectory(configuredProjectDir)
       : await askRequired(rl, "Project/repository directory: ", validateProjectDirectory);
 
     const content = renderInteractiveSetupEnv({
