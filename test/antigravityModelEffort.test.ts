@@ -79,7 +79,7 @@ describe("Antigravity model families and effort", () => {
     expect(args).toEqual(["--output-format", "stream-json", "--print", "hi"]);
   });
 
-  it("resolves model family plus effort before serialized Agy execution", async () => {
+  it("resolves model family plus effort and pins compact verbosity before serialized Agy execution", async () => {
     const homeDir = mkdtempSync(join(tmpdir(), "agent-bridge-agy-effort-"));
     const sessionId = "c107dfbd-181e-4cf0-a840-894662adee43";
     const stream = [
@@ -104,16 +104,41 @@ describe("Antigravity model families and effort", () => {
         effort: "high",
         homeDir,
       });
+      const settingsPath = join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+
       await runCli(
         invocation.command,
         invocation.args,
         homeDir,
         { bot: "antigravity", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
       );
-      const settings = JSON.parse(
-        readFileSync(join(homeDir, ".gemini", "antigravity-cli", "settings.json"), "utf8"),
-      ) as { model?: string };
+      let settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+        model?: string;
+        verbosity?: string;
+        theme?: string;
+      };
       expect(settings.model).toBe("Gemini 3.8 Flash (High)");
+      expect(settings.verbosity).toBe("compact");
+
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ verbosity: "high", theme: "dark" }, null, 2) + "\n",
+        "utf8",
+      );
+      await runCli(
+        invocation.command,
+        invocation.args,
+        homeDir,
+        { bot: "antigravity", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
+      );
+      settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+        model?: string;
+        verbosity?: string;
+        theme?: string;
+      };
+      expect(settings.model).toBe("Gemini 3.8 Flash (High)");
+      expect(settings.verbosity).toBe("compact");
+      expect(settings.theme).toBe("dark");
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }
