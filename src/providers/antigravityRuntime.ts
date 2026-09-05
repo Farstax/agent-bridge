@@ -346,6 +346,7 @@ function writeAntigravityModelSettings(model: string | null, homeDir: string): v
   } else {
     settings["model"] = toAntigravityModelLabel(model);
   }
+  settings["verbosity"] = "compact";
   mkdirSync(dirname(settingsPath), { recursive: true, mode: 0o700 });
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
 }
@@ -537,62 +538,4 @@ export function parseAntigravityStreamJsonResult(stdout: string): CliResult {
     throw new Error("Agy stream JSON parse failed: status must be SUCCESS or ERROR");
   }
   return assertSuccessfulResult(result);
-}
-
-export function extractAntigravityStreamJsonError(stdout: string): Error | null {
-  let result: AntigravityStreamJsonResult;
-  try {
-    result = parseAntigravityStreamJsonTerminal(stdout);
-    assertStreamJsonStatusFields(result);
-  } catch {
-    return null;
-  }
-  return result.status === "ERROR" ? streamJsonProviderError(result) : null;
-}
-
-export function parseResult(
-  stdout: string,
-  logContent?: string | null,
-  outputFormat?: "text" | "json" | "stream-json" | null,
-): CliResult {
-  void logContent;
-  void outputFormat;
-  return parseAntigravityStreamJsonResult(stdout);
-}
-
-export function isPreExecutionDnsFailure(
-  bot: string | undefined,
-  args: string[],
-  stdout: string,
-  stderr: string
-): boolean {
-  if (bot !== "antigravity") return false;
-
-  // 0. Proactively reject if there is any stdout at all (which implies output was produced)
-  if (stdout.trim() !== "") return false;
-
-  // 1. Match exact Agy eligibility/loadCodeAssist failure class
-  const hasEligibilityFailure =
-    stderr.includes("Error: Eligibility check failed") &&
-    stderr.includes("daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") &&
-    (stderr.includes("i/o timeout") || stderr.includes("temporary failure") || stderr.includes("lookup"));
-
-  if (!hasEligibilityFailure) return false;
-
-  // 2. Reject retry after any execution/cascade markers (proven pre-execution only)
-  const hasExecutionMarkers =
-    stdout.includes("🧠 Memory Loaded:") ||
-    stdout.includes("Print mode: conversation=") ||
-    stdout.includes("Created conversation") ||
-    stderr.includes("🧠 Memory Loaded:") ||
-    stderr.includes("Print mode: conversation=") ||
-    stderr.includes("Created conversation");
-
-  if (hasExecutionMarkers) return false;
-
-  // 3. Limit retry to tool-free/read-only (sandboxed) runs
-  const isSandboxed = args.includes("--sandbox");
-  if (!isSandboxed) return false;
-
-  return true;
 }
