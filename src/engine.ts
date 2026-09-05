@@ -229,7 +229,7 @@ export class BridgeEngine {
     const capabilities = surfaceCapabilities(this.client);
     const getUpdates = this.client.getUpdates;
     if (!capabilities.polling || typeof getUpdates !== "function") {
-      throw new Error(`[${this.kind}] polling is not supported by this.messaging surface`);
+      throw new Error(`[${this.kind}] polling is not supported by this messaging surface`);
     }
     if (isAgentKind(this.kind)) {
       await this.client.setMyCommands({
