@@ -103,13 +103,18 @@ export class EventStore {
     this.db.raw.transaction(() => {
       if (needsRunInsert) this.db.insertRun(e.runId, e.chatKey, e.bot);
       this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
+      let transitioned: boolean;
       if (e.type === "run.completed") {
-        this.db.updateRunCompleted(e.runId, e.text, e.sessionId);
+        transitioned = this.db.updateRunCompleted(e.runId, e.text, e.sessionId);
       } else if (e.type === "run.failed") {
-        this.db.updateRunFailed(e.runId, e.error);
+        transitioned = this.db.updateRunFailed(e.runId, e.error);
       } else {
-        this.db.updateRunCancelled(e.runId, e.reason);
+        transitioned = this.db.updateRunCancelled(e.runId, e.reason);
       }
+      // Terminal updates are compare-and-swapped on status='running'. A false
+      // result means another terminal transition already won. Do not commit a
+      // contradictory bridge_events row for a transition that did not apply.
+      if (!transitioned) throw new Error("terminal run transition rejected");
     })();
     this.seq = seq;
     if (needsRunInsert) this.runInserted = true;
