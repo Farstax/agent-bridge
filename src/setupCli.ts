@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import dotenv from "dotenv";
 import { formatDoctorReport, runDoctor } from "./providers/doctor.js";
+import { TelegramClient, isTelegramPermanentAuthError } from "./telegram.js";
 import {
   bootstrapSourceInteractiveDb,
   detectInteractiveProviders,
@@ -53,6 +54,19 @@ TELEGRAM_ALLOWED_USER_IDS, and BRIDGE_PROJECT_DIR in the environment.
 At least one supported provider CLI must be installed and authenticated on PATH.`);
 }
 
+async function verifyTelegramToken(token: string): Promise<void> {
+  const client = new TelegramClient(token, fetch, 10_000);
+  try {
+    const me = await client.call<{ username?: string }>("getMe");
+    console.log(`Telegram bot verified${me.result.username ? `: @${me.result.username}` : "."}`);
+  } catch (error) {
+    if (isTelegramPermanentAuthError(error)) {
+      throw new Error(`Telegram bot credentials were rejected (HTTP ${error.status}). Check the bot token and retry setup.`);
+    }
+    console.warn("Could not verify the Telegram bot right now; continuing because the failure may be transient.", error);
+  }
+}
+
 async function main(): Promise<void> {
   if (help) {
     printHelp();
@@ -90,6 +104,8 @@ async function main(): Promise<void> {
       ? validateProjectDirectory(configuredProjectDir)
       : await askRequired(rl, "Project/repository directory: ", validateProjectDirectory);
     const dbPath = resolve(process.env.DB_PATH?.trim() || resolve(process.cwd(), ".data", "bridge.sqlite"));
+
+    await verifyTelegramToken(telegramBotToken);
 
     const content = renderInteractiveSetupEnv({
       telegramBotToken,
