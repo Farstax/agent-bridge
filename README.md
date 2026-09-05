@@ -1,10 +1,65 @@
 # Agent Bridge
 
-Agent Bridge is an open-source runtime for the coding-agent CLIs you already
-use. It provides durable Telegram and Discord access to Codex, Claude Code,
-Antigravity/Agy, and Grok Build through provider-native sessions and ordinary Runs.
+**Keep your coding agents working when you leave your desk.**
 
-## Architecture
+Agent Bridge is the open-source, self-hosted runtime for the coding-agent CLIs
+you already use. Run Codex, Claude Code, Antigravity/Agy, Grok Build, or Cursor
+on an always-on machine and keep the workstream available from Telegram or
+Discord.
+
+Built for developers who already use these coding agents and want the same
+agents, repositories, tools, and workstreams available away from the laptop.
+
+Keep work running when you close the laptop. Continue from your phone. Switch
+providers without throwing away the conversation. Restart the host without
+losing the workstream.
+
+Agent Bridge does not replace your coding agents with another agent framework.
+It keeps their native CLI and session model, then adds the durable runtime around
+them: conversation history, messaging, provider switching and fallback,
+cancellation, scheduled work, autonomous continuation, and guarded operations.
+
+## What it feels like to use
+
+1. Give a coding agent a real repository and its normal tools on an always-on host.
+2. Work with it through a durable Telegram or Discord conversation.
+3. Leave the desk while the same workstream remains available.
+4. Check progress, answer questions, stop work, or continue from your phone.
+5. Switch provider when useful without creating a new workstream.
+6. Let scheduled or autonomous work enter the same ordinary Run path rather than
+   a separate workflow engine.
+
+For example:
+
+```text
+Telegram topic: Platform
+        ↓
+Claude Code works in the repository
+        ↓
+leave the desk
+        ↓
+reply from your phone
+        ↓
+switch to Codex when useful
+        ↓
+same workstream, same repository
+```
+
+A Telegram forum topic or Discord conversation can act as a durable workstream:
+conversation state belongs to the workstream, while each provider keeps its own
+native session underneath it.
+
+## Your agents, not another agent
+
+Agent Bridge is deliberately a runtime around provider-native coding agents.
+It does not implement a separate engineering Worker, job dispatcher, role chain,
+or Bridge-owned workflow engine.
+
+Say `ship it` in a normal conversation. The selected provider agent follows the
+repository's own instructions, `AGENTS.md`, installed Skills, and its native
+tools or subagents.
+
+That keeps the execution model simple:
 
 ```text
 conversation / workstream
@@ -21,102 +76,108 @@ result / external artifacts
 ```
 
 Unattended work uses an authenticated durable event receipt or autonomous wake,
-then the same ordinary Run and provider-agent path.
+then enters the same ordinary Run and provider-agent path.
 
-Agent Bridge does not run a separate engineering Worker, job dispatcher, role
-chain, or Bridge-owned workflow engine. Say `ship it` in a normal provider
-conversation. The provider agent follows repository-local instructions and
-the installed Skills.
+## Core capabilities
 
-## What it provides
+- **Durable workstreams** — restart-safe conversation turns and retained history.
+- **Native provider sessions** — Codex, Claude Code, Antigravity/Agy, Grok Build,
+  and Cursor keep their own session identity rather than being flattened into a
+  new harness.
+- **Telegram and Discord** — use the coding agents from the messaging surfaces
+  you already carry, including Telegram forum-topic routing.
+- **Provider switching and fallback** — choose a provider per workstream and use
+  configured fallback without replacing the conversation itself.
+- **Cancellation and fencing** — `/stop` prevents superseded work from continuing
+  to deliver as if it were current.
+- **Conversation controls** — `/reset`, `/cli`, `/btw`, queueing, continuation,
+  and restart recovery use the ordinary interactive runtime.
+- **Scheduled and autonomous work** — routines and authenticated wakes feed the
+  same Run path as interactive work.
+- **Structured results and file delivery** — provider results and artifacts can
+  be delivered back through the active surface.
+- **Skills and repository-local instructions** — keep behaviour close to the
+  repository and provider instead of centralising it in Bridge workflows.
+- **Guarded operations** — health, qualification, schema, install, and release
+  helpers support long-running deployments.
 
-- native provider sessions with restart-safe conversation turns;
-- ordinary Run ownership, continuation, cancellation, fencing, and fallback;
-- Telegram and Discord delivery with `/stop`, `/reset`, `/cli`, and `/btw`;
-- provider-native structured output and final-result delivery;
-- health and autonomous event receipts that feed ordinary Runs;
-- bounded advisor evidence and shared Skills installation;
-- guarded schema and release rollout helpers.
+## Quick start from source
 
-## Services
+Requirements:
 
-All Telegram conversation services use the same production runtime. The three
-established dedicated provider units set `BRIDGE_PROVIDER_LOCK` and keep their
-existing provider-specific tokens and persistent databases. The interactive
-unit leaves the lock unset so `/cli` switching and configured provider fallback
-remain available. Managed Grok uses that interactive unit rather than widening
-the guarded systemd unit inventory.
+- Node.js 24+
+- npm
+- at least one authenticated provider CLI
+- a Telegram or Discord bot token for the surface you want to use
 
-| Service | Entry point | Surface |
-|---|---|---|
-| `agent-bridge-codex.service` | `src/index-interactive.ts` | Telegram, locked to Codex |
-| `agent-bridge-antigravity.service` | `src/index-interactive.ts` | Telegram, locked to Antigravity |
-| `agent-bridge-claude.service` | `src/index-interactive.ts` | Telegram, locked to Claude |
-| `agent-bridge-interactive.service` | `src/index-interactive.ts` | Telegram, switchable, including Grok |
-| `agent-bridge-health.service` | `src/index-health.ts` | Telegram |
-| `agent-bridge-discord-interactive.service` | `src/index-discord-interactive.ts` | Discord |
-
-## Setup
-
-Requirements are Node 24+, npm, authenticated provider CLIs, and the tokens
-for the surfaces you enable. Install dependencies with:
+Clone the repository and install dependencies:
 
 ```bash
+git clone https://github.com/Farstax/agent-bridge.git
+cd agent-bridge
 npm install
 ```
 
-Copy the relevant `.env.*.example` file, set the provider command and token,
-then run the matching service or `npm start`. The systemd installer and guarded
-rollout helpers are documented in [docs/INITIAL-INSTALL.md](docs/INITIAL-INSTALL.md)
-and [docs/GUARDED-ROLLOUT.md](docs/GUARDED-ROLLOUT.md).
-
-The interactive fallback order is configured with `INTERACTIVE_CLI_CHAIN`.
-When unset, the default is `codex,claude,grok,antigravity`. The runtime also
-accepts `BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok` for fixed-provider
-custom or dedicated deployments. The shipped managed dedicated units remain
-Codex, Claude, and Antigravity; managed Grok uses
-`agent-bridge-interactive.service`. Explicit `AGENT_BRIDGE_SKILLS` overrides
-keep their existing behaviour.
-
-Grok participates when it is authenticated, using the runtime user's native
-Grok credentials or `XAI_API_KEY`. Qualification remains available for upgrade,
-health, doctor, and diagnostics. Missing, stale, or degraded qualification
-evidence does not block routing; a current deterministic `overall: fail` record
-for the installed Grok version does. For a managed host, use `GROK_COMMAND` to
-pin the executable path; the installer propagates `GROK_COMMAND`,
-`GROK_MODEL_PREFERENCE`, `GROK_EFFORT`, and `GROK_PROJECT_DIR`.
-
-Run an explicit diagnostic qualification when needed with:
+For a switchable Telegram setup, start from the interactive environment example:
 
 ```bash
-npm run qualify:provider -- --provider grok
+cp .env.interactive.example .env.interactive
 ```
 
-## Data compatibility
+Set the Telegram token, allowed user IDs, project directory, and command paths
+for the provider CLIs you have installed. Then start the interactive runtime:
 
-Schema version 9 removes the obsolete Engineering Worker tables, including
-`work_items`, `work_jobs`, approvals, GitHub links, feature plans, and
-role-assignment rows. The migration accepts populated legacy tables because
-their data is obsolete by design. Active runtime state remains intact.
+```bash
+npm start
+```
 
-Schema version 10 adds Grok Build session identity columns.
+Provider-specific examples are also included for Codex, Claude,
+Antigravity/Agy, Grok, Cursor, and Discord.
 
-Provider-lock convergence does not move or change existing dedicated provider
-databases. Locked units keep the `shared` database role; the switchable
-interactive unit keeps the `interactive` role.
+The switchable interactive runtime defaults to
+`codex,claude,grok,antigravity,cursor`; override that order with
+`INTERACTIVE_CLI_CHAIN`. Provider-locked and production deployment details live
+in the operator documentation below.
 
-## Open-source licence and commercial boundary
+## Production installation
+
+The source quick start is for development and source-oriented hosts. Production
+installation uses an exact qualified release archive, a non-root runtime user,
+managed systemd units, persistent databases outside the release tree, and the
+guarded deploy path.
+
+See:
+
+- [Initial production installation](docs/INITIAL-INSTALL.md)
+- [Guarded rollout](docs/GUARDED-ROLLOUT.md)
+- [Architecture overview](docs/architecture/overview.md)
+- [Documentation map](docs/README.md)
+
+The production installer establishes the baseline once. Existing installations
+move between exact releases with `agent-bridge-deploy` rather than rerunning the
+initial installer.
+
+## Runtime and Platform boundary
+
+Agent Bridge is the open-source runtime. It assumes you provide the machine,
+provider credentials, messaging surface, repository, and operating environment.
+
+[Farstax](https://farstax.com/) is the separate hosted/control-plane product that
+provides managed always-on workspaces and operations around Agent Bridge. The
+runtime/platform responsibility boundary is documented in
+[docs/architecture/platform-boundary.md](docs/architecture/platform-boundary.md).
+
+## Open-source licence
 
 Agent Bridge material in this repository is licensed under the
 [Apache License 2.0](LICENSE), except for third-party material that carries its
 own licence. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled
 third-party attribution.
 
-This licence applies to the public `agent-bridge` repository only. It does not
+The licence applies to this public `agent-bridge` repository only. It does not
 license `agent-bridge-platform`, the Farstax hosted control plane, managed
 hosting or provisioning services, commercial operations, or other proprietary
-Platform assets. The runtime/platform responsibility boundary is documented in
-[docs/architecture/platform-boundary.md](docs/architecture/platform-boundary.md).
+Platform assets.
 
 The licence decision and rationale are recorded in
 [ADR-004](docs/adr/ADR-004-oss-license.md).
@@ -129,7 +190,6 @@ npm run typecheck
 npm run cleanup:check
 ```
 
-See [docs/architecture/overview.md](docs/architecture/overview.md) and
-[docs/README.md](docs/README.md) for the current documentation map. Research
-and archive documents are historical context and do not define runtime
-behaviour.
+Research and archive documents provide historical context; the current runtime
+behaviour is defined by the code, tests, active architecture docs, and release
+qualification paths.
