@@ -229,7 +229,7 @@ export class BridgeEngine {
     const capabilities = surfaceCapabilities(this.client);
     const getUpdates = this.client.getUpdates;
     if (!capabilities.polling || typeof getUpdates !== "function") {
-      throw new Error(`[${this.kind}] polling is not supported by this messaging surface`);
+      throw new Error(`[${this.kind}] polling is not supported by this.messaging surface`);
     }
     if (isAgentKind(this.kind)) {
       await this.client.setMyCommands({
@@ -1079,8 +1079,14 @@ export class BridgeEngine {
     const ownerKey = this._conversationOwnerKey();
     const provenance = { surfaceIdentity: this.surfaceIdentity, ...(ownerKey ? { ownerKey } : {}) };
     try {
-      this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind, provenance);
-      this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind, provenance);
+      // This method already runs inside the lock-fenced result transaction.
+      // Use a nested transaction/savepoint for the turn pair so its local
+      // warning can suppress the post-delivery error without committing only
+      // the user half when the assistant insert fails.
+      this.db.runInTransaction(() => {
+        this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind, provenance);
+        this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind, provenance);
+      });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       console.warn(`[${this.kind}] dropped a conversation-turn write chatKey=${chatKey}: ${reason}`);
