@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "tsx src/index-interactive.ts",
+    "setup": "tsx src/setupCli.ts",
     "build": "tsc",
     "test": "vitest run",
     "test:resources": "vitest run --detect-async-leaks",
