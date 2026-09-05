@@ -1,11 +1,14 @@
 # Agent Bridge
 
-**Your coding agents should not stop being useful when you leave your desk.**
+**Keep your coding agents working when you leave your desk.**
 
 Agent Bridge is the open-source, self-hosted runtime for the coding-agent CLIs
 you already use. Run Codex, Claude Code, Antigravity/Agy, Grok Build, or Cursor
 on an always-on machine and keep the workstream available from Telegram or
 Discord.
+
+Built for developers who already use these coding agents and want the same
+agents, repositories, tools, and workstreams available away from the laptop.
 
 Keep work running when you close the laptop. Continue from your phone. Switch
 providers without throwing away the conversation. Restart the host without
@@ -25,6 +28,22 @@ cancellation, scheduled work, autonomous continuation, and guarded operations.
 5. Switch provider when useful without creating a new workstream.
 6. Let scheduled or autonomous work enter the same ordinary Run path rather than
    a separate workflow engine.
+
+For example:
+
+```text
+Telegram topic: Platform
+        ↓
+Claude Code works in the repository
+        ↓
+leave the desk
+        ↓
+reply from your phone
+        ↓
+switch to Codex when useful
+        ↓
+same workstream, same repository
+```
 
 A Telegram forum topic or Discord conversation can act as a durable workstream:
 conversation state belongs to the workstream, while each provider keeps its own
@@ -115,21 +134,10 @@ npm start
 Provider-specific examples are also included for Codex, Claude,
 Antigravity/Agy, Grok, Cursor, and Discord.
 
-The default interactive fallback order is:
-
-```text
-codex,claude,grok,antigravity,cursor
-```
-
-Override it with `INTERACTIVE_CLI_CHAIN`. Dedicated provider-locked Telegram
-services currently support:
-
-```text
-BRIDGE_PROVIDER_LOCK=codex|claude|antigravity|grok
-```
-
-Cursor participates through the switchable interactive provider chain rather
-than the dedicated provider-lock path.
+The switchable interactive runtime defaults to
+`codex,claude,grok,antigravity,cursor`; override that order with
+`INTERACTIVE_CLI_CHAIN`. Provider-locked and production deployment details live
+in the operator documentation below.
 
 ## Production installation
 
@@ -148,23 +156,6 @@ See:
 The production installer establishes the baseline once. Existing installations
 move between exact releases with `agent-bridge-deploy` rather than rerunning the
 initial installer.
-
-## Provider model
-
-The switchable interactive runtime uses the configured provider chain and keeps
-provider-native sessions underneath the durable conversation identity. Dedicated
-provider-locked deployments are also supported for the provider set above.
-
-Grok participates when authenticated through the runtime user's native Grok
-credentials or `XAI_API_KEY`. Provider qualification remains available for
-upgrade, health, doctor, and diagnostics:
-
-```bash
-npm run qualify:provider -- --provider grok
-```
-
-Qualification can inform routing and operations without turning Agent Bridge
-into a provider-specific orchestration layer.
 
 ## Runtime and Platform boundary
 
