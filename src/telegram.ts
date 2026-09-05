@@ -33,18 +33,66 @@ export interface TelegramResponse<T> {
   retry_after?: number;
 }
 
+export class TelegramHttpError extends Error {
+  readonly status: number;
+  readonly data: any;
+  readonly retryAfter: number | null;
+
+  constructor(status: number, data: any) {
+    const detail = data?.description ? `: ${data.description}` : "";
+    super(`Telegram HTTP ${status}${detail}`);
+    this.name = "TelegramHttpError";
+    this.status = status;
+    this.data = data;
+    this.retryAfter = data?.parameters?.retry_after ?? data?.retry_after ?? null;
+  }
+}
+
+export function isTelegramPermanentAuthError(error: unknown): error is TelegramHttpError {
+  return error instanceof TelegramHttpError && (error.status === 401 || error.status === 403);
+}
+
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error("Telegram request aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+async function waitForRetryDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    return;
+  }
+  if (signal.aborted) throw abortError(signal);
+
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class TelegramClient implements MessagingPlatform {
   readonly capabilities = TELEGRAM_SURFACE_CAPABILITIES;
   private readonly token: string;
   fetch: typeof fetch;
   baseUrl: string;
   private readonly fetchTimeoutMs: number;
+  private readonly shutdownSignal?: AbortSignal;
 
-  constructor(token: string, fetchImpl = fetch, fetchTimeoutMs = 45_000) {
+  constructor(token: string, fetchImpl = fetch, fetchTimeoutMs = 45_000, shutdownSignal?: AbortSignal) {
     this.token = token;
     this.fetch = fetchImpl;
     this.baseUrl = `https://api.telegram.org/bot${token}`;
     this.fetchTimeoutMs = fetchTimeoutMs;
+    this.shutdownSignal = shutdownSignal;
   }
 
   async call<T>(
@@ -52,6 +100,7 @@ export class TelegramClient implements MessagingPlatform {
     body: any = {},
     retryCount = 0,
     requestTimeoutMs = this.fetchTimeoutMs,
+    signal = this.shutdownSignal,
   ): Promise<TelegramResponse<T>> {
     const payload = { ...body };
     if (payload.reply_markup && typeof payload.reply_markup === "object") {
@@ -59,6 +108,9 @@ export class TelegramClient implements MessagingPlatform {
     }
 
     const ac = new AbortController();
+    const onShutdownAbort = () => ac.abort(signal?.reason);
+    if (signal?.aborted) ac.abort(signal.reason);
+    else signal?.addEventListener("abort", onShutdownAbort, { once: true });
     const fetchTimer = setTimeout(() => ac.abort(), requestTimeoutMs);
     let response: Response;
     let data: any = null;
@@ -78,19 +130,16 @@ export class TelegramClient implements MessagingPlatform {
       }
     } finally {
       clearTimeout(fetchTimer);
+      signal?.removeEventListener("abort", onShutdownAbort);
     }
 
     if (!response.ok) {
-      const detail = data?.description ? `: ${data.description}` : "";
-      const error = new Error(`Telegram HTTP ${response.status}${detail}`) as any;
-      error.status = response.status;
-      error.data = data;
-      error.retryAfter = data?.parameters?.retry_after ?? data?.retry_after ?? null;
+      const error = new TelegramHttpError(response.status, data);
 
       if (error.status === 429 && error.retryAfter && retryCount < 2) {
         console.warn(`[telegram] rate limited, retrying after ${error.retryAfter}s (attempt ${retryCount + 1})`);
-        await new Promise((resolve) => setTimeout(resolve, error.retryAfter * 1000));
-        return this.call<T>(method, body, retryCount + 1, requestTimeoutMs);
+        await waitForRetryDelay(error.retryAfter * 1000, signal);
+        return this.call<T>(method, body, retryCount + 1, requestTimeoutMs, signal);
       }
 
       throw error;
