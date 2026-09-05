@@ -283,7 +283,7 @@ describe("EventStore", () => {
       vi.restoreAllMocks();
     });
 
-    it("rolls back the terminal bridge_events insert when the bridge_runs status update fails", async () => {
+    it("rolls back the terminal bridge_events insert when the bridge_runs status update throws", async () => {
       const { EventStore } = await import("../src/events/store.js");
       const { type } = await import("../src/events/types.js");
       const store = new EventStore(db);
@@ -314,12 +314,46 @@ describe("EventStore", () => {
       }));
       store.finalize();
 
-      // The run.completed bridge_events row must not exist without the
-      // matching status transition — otherwise the event log claims the
-      // run finished while bridge_runs still shows 'running' forever.
       expect(db.getEventsForRun("r-atomic-terminal")).toHaveLength(1);
       expect(db.getRun("r-atomic-terminal")).toMatchObject({ status: "running" });
       expect(warn).toHaveBeenCalledTimes(1);
+
+      updateSpy.mockRestore();
+      warn.mockRestore();
+    });
+
+    it("rolls back the terminal bridge_events insert when the compare-and-swap transition returns false", async () => {
+      const { EventStore } = await import("../src/events/store.js");
+      const { type } = await import("../src/events/types.js");
+      const store = new EventStore(db);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      store.collect(type.runStarted({
+        runId: "r-terminal-cas-lost",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        command: "agy",
+        cwd: "/",
+        model: null,
+      }));
+      expect(db.getEventsForRun("r-terminal-cas-lost")).toHaveLength(1);
+
+      const updateSpy = vi.spyOn(db, "updateRunCompleted").mockReturnValueOnce(false);
+      store.queueCompleted(type.runCompleted({
+        runId: "r-terminal-cas-lost",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        text: "answer that must not get a terminal event",
+        sessionId: null,
+      }));
+      store.finalize();
+
+      expect(db.getEventsForRun("r-terminal-cas-lost")).toHaveLength(1);
+      expect(db.getRun("r-terminal-cas-lost")).toMatchObject({ status: "running" });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("terminal run transition rejected");
 
       updateSpy.mockRestore();
       warn.mockRestore();
