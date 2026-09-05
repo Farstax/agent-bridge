@@ -3,6 +3,17 @@ import { finalizeRunTelemetry } from "../runTelemetry.js";
 import type { BridgeEvent } from "./types.js";
 
 /**
+ * A dropped bridge_runs/bridge_events write leaves a run permanently
+ * unauditable, with no trace it ever happened. Warn with only run/chat
+ * identifiers — several event payloads carry prompt or response text, which
+ * must never reach logs.
+ */
+function warnPersistenceFailure(phase: "collect" | "finalize", runId: string, chatKey: string, error: unknown): void {
+  const reason = error instanceof Error ? error.message : String(error);
+  console.warn(`[EventStore.${phase}] dropped a persistence write runId=${runId} chatKey=${chatKey}: ${reason}`);
+}
+
+/**
  * Persists BridgeEvents to the database.
  * Extracted from BridgeEngine._createEventContext() so the persistence logic
  * is independently testable and not coupled to the engine's private state.
@@ -33,8 +44,10 @@ export class EventStore {
         this._persistTerminal(event);
       }
       // run.completed is deferred — call queueCompleted() then finalize()
-    } catch {
-      /* persistence errors must never propagate into the execution path */
+    } catch (error) {
+      // Persistence errors must never propagate into the execution path —
+      // the CLI already ran and the user already got their answer.
+      warnPersistenceFailure("collect", event.runId, event.chatKey, error);
     }
   }
 
@@ -46,6 +59,7 @@ export class EventStore {
   /** Persist the queued run.completed event. No-op if none was queued. */
   finalize(): void {
     if (!this.pendingCompleted) return;
+    const { runId, chatKey } = this.pendingCompleted;
     try {
       const telemetry = finalizeRunTelemetry(
         this.pendingCompleted.runId,
@@ -53,16 +67,30 @@ export class EventStore {
         this.pendingCompleted.telemetry,
       );
       this._persistTerminal({ ...this.pendingCompleted, telemetry });
-    } catch {
-      /* swallow — same policy as collect */
+    } catch (error) {
+      // Same content-free observability policy as collect() above.
+      warnPersistenceFailure("finalize", runId, chatKey, error);
     }
     this.pendingCompleted = null;
   }
 
+  // better-sqlite3 is synchronous, so a plain sequence of two .run() calls is
+  // never actually atomic: a throw between insertRun() and its bridge_events
+  // insert leaves a durable 'running' row with zero events, while
+  // `runInserted` stays false in memory (the throw is caught before that
+  // assignment) — the next attempt then re-runs insertRun(), hits the
+  // run_id PRIMARY KEY, and throws again, permanently. Wrapping each pair in
+  // db.raw.transaction() makes the constituent writes succeed or roll back
+  // together, and in-memory flags are only ever set after the transaction
+  // itself has committed, so they can never drift from durable state.
   private _persistRunStart(e: Extract<BridgeEvent, { type: "run.started" }>): void {
     if (this.runInserted) return;
-    this.db.insertRun(e.runId, e.chatKey, e.bot);
-    this.db.insertEvent(e.runId, ++this.seq, e.type, e.timestamp, e);
+    const seq = this.seq + 1;
+    this.db.raw.transaction(() => {
+      this.db.insertRun(e.runId, e.chatKey, e.bot);
+      this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
+    })();
+    this.seq = seq;
     this.runInserted = true;
   }
 
@@ -70,18 +98,26 @@ export class EventStore {
     e: Extract<BridgeEvent, { type: "run.completed" | "run.failed" | "run.cancelled" }>
   ): void {
     if (this.terminalPersisted) return;
-    if (!this.runInserted) {
-      this.db.insertRun(e.runId, e.chatKey, e.bot);
-      this.runInserted = true;
-    }
-    this.db.insertEvent(e.runId, ++this.seq, e.type, e.timestamp, e);
-    if (e.type === "run.completed") {
-      this.db.updateRunCompleted(e.runId, e.text, e.sessionId);
-    } else if (e.type === "run.failed") {
-      this.db.updateRunFailed(e.runId, e.error);
-    } else {
-      this.db.updateRunCancelled(e.runId, e.reason);
-    }
+    const needsRunInsert = !this.runInserted;
+    const seq = this.seq + 1;
+    this.db.raw.transaction(() => {
+      if (needsRunInsert) this.db.insertRun(e.runId, e.chatKey, e.bot);
+      this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
+      let transitioned: boolean;
+      if (e.type === "run.completed") {
+        transitioned = this.db.updateRunCompleted(e.runId, e.text, e.sessionId);
+      } else if (e.type === "run.failed") {
+        transitioned = this.db.updateRunFailed(e.runId, e.error);
+      } else {
+        transitioned = this.db.updateRunCancelled(e.runId, e.reason);
+      }
+      // Terminal updates are compare-and-swapped on status='running'. A false
+      // result means another terminal transition already won. Do not commit a
+      // contradictory bridge_events row for a transition that did not apply.
+      if (!transitioned) throw new Error("terminal run transition rejected");
+    })();
+    this.seq = seq;
+    if (needsRunInsert) this.runInserted = true;
     this.terminalPersisted = true;
   }
 }

@@ -3,7 +3,7 @@
  * Tests written before implementation (red state).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
@@ -151,5 +151,212 @@ describe("EventStore", () => {
 
     // Reopen to allow cleanup
     db = openDb(dbPath);
+  });
+
+  it("collect() warns with the run/chat identifiers (not content) instead of silently dropping the write", async () => {
+    const { EventStore } = await import("../src/events/store.js");
+    const { type } = await import("../src/events/types.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    db.close();
+    const store = new EventStore(db);
+    const e = type.runStarted({
+      runId: "r-topic-swallow",
+      bot: "antigravity",
+      chatId: "-1004366290625",
+      chatKey: "-1004366290625:1458",
+      command: "agy",
+      cwd: "/",
+      model: null,
+    });
+
+    store.collect(e);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0];
+    expect(message).toContain("r-topic-swallow");
+    expect(message).toContain("-1004366290625:1458");
+
+    warn.mockRestore();
+    db = openDb(dbPath);
+  });
+
+  it("finalize() warns with the run/chat identifiers (not the response text) instead of silently dropping the write", async () => {
+    const { EventStore } = await import("../src/events/store.js");
+    const { type } = await import("../src/events/types.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const store = new EventStore(db);
+    store.collect(type.runStarted({
+      runId: "r-topic-swallow-finalize",
+      bot: "antigravity",
+      chatId: "-1004366290625",
+      chatKey: "-1004366290625:1458",
+      command: "agy",
+      cwd: "/",
+      model: null,
+    }));
+
+    db.close();
+    store.queueCompleted(type.runCompleted({
+      runId: "r-topic-swallow-finalize",
+      bot: "antigravity",
+      chatId: "-1004366290625",
+      chatKey: "-1004366290625:1458",
+      text: "a secret answer that must never reach logs",
+      sessionId: null,
+    }));
+    store.finalize();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0];
+    expect(message).toContain("r-topic-swallow-finalize");
+    expect(message).toContain("-1004366290625:1458");
+    expect(message).not.toContain("secret answer");
+
+    warn.mockRestore();
+    db = openDb(dbPath);
+  });
+
+  describe("atomicity: run.started and terminal writes cannot land partially", () => {
+    it("rolls back insertRun when its paired bridge_events insert fails, instead of leaving an eventless 'running' row", async () => {
+      const { EventStore } = await import("../src/events/store.js");
+      const { type } = await import("../src/events/types.js");
+      const store = new EventStore(db);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const insertEventSpy = vi.spyOn(db, "insertEvent").mockImplementationOnce(() => {
+        throw new Error("simulated write failure between insertRun and insertEvent");
+      });
+
+      store.collect(type.runStarted({
+        runId: "r-atomic-start",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        command: "agy",
+        cwd: "/",
+        model: null,
+      }));
+
+      // Pre-fix behaviour: insertRun() already committed on its own before
+      // insertEvent() threw, leaving a durable 'running' row with no events.
+      expect(db.getRun("r-atomic-start")).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      insertEventSpy.mockRestore();
+      warn.mockRestore();
+    });
+
+    it("recovers cleanly on retry after a rolled-back run.started — no leftover row blocks re-insertion", async () => {
+      const { EventStore } = await import("../src/events/store.js");
+      const { type } = await import("../src/events/types.js");
+      const store = new EventStore(db);
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const insertEventSpy = vi.spyOn(db, "insertEvent").mockImplementationOnce(() => {
+        throw new Error("simulated write failure");
+      });
+      const startedEvt = type.runStarted({
+        runId: "r-atomic-retry",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        command: "agy",
+        cwd: "/",
+        model: null,
+      });
+      store.collect(startedEvt);
+      expect(db.getRun("r-atomic-retry")).toBeUndefined();
+
+      insertEventSpy.mockRestore();
+      // A fresh EventStore for the retry, exactly as the engine constructs
+      // one per execution attempt — this must not hit a PRIMARY KEY
+      // conflict from a half-written row the first attempt left behind.
+      const retryStore = new EventStore(db);
+      retryStore.collect(startedEvt);
+
+      const run = db.getRun("r-atomic-retry");
+      expect(run).toMatchObject({ run_id: "r-atomic-retry", status: "running" });
+      expect(db.getEventsForRun("r-atomic-retry")).toHaveLength(1);
+
+      vi.restoreAllMocks();
+    });
+
+    it("rolls back the terminal bridge_events insert when the bridge_runs status update throws", async () => {
+      const { EventStore } = await import("../src/events/store.js");
+      const { type } = await import("../src/events/types.js");
+      const store = new EventStore(db);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      store.collect(type.runStarted({
+        runId: "r-atomic-terminal",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        command: "agy",
+        cwd: "/",
+        model: null,
+      }));
+      expect(db.getEventsForRun("r-atomic-terminal")).toHaveLength(1);
+
+      const updateSpy = vi.spyOn(db, "updateRunCompleted").mockImplementationOnce(() => {
+        throw new Error("simulated status-update failure after the event insert");
+      });
+
+      store.queueCompleted(type.runCompleted({
+        runId: "r-atomic-terminal",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        text: "answer",
+        sessionId: null,
+      }));
+      store.finalize();
+
+      expect(db.getEventsForRun("r-atomic-terminal")).toHaveLength(1);
+      expect(db.getRun("r-atomic-terminal")).toMatchObject({ status: "running" });
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      updateSpy.mockRestore();
+      warn.mockRestore();
+    });
+
+    it("rolls back the terminal bridge_events insert when the compare-and-swap transition returns false", async () => {
+      const { EventStore } = await import("../src/events/store.js");
+      const { type } = await import("../src/events/types.js");
+      const store = new EventStore(db);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      store.collect(type.runStarted({
+        runId: "r-terminal-cas-lost",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        command: "agy",
+        cwd: "/",
+        model: null,
+      }));
+      expect(db.getEventsForRun("r-terminal-cas-lost")).toHaveLength(1);
+
+      const updateSpy = vi.spyOn(db, "updateRunCompleted").mockReturnValueOnce(false);
+      store.queueCompleted(type.runCompleted({
+        runId: "r-terminal-cas-lost",
+        bot: "antigravity",
+        chatId: "-1004366290625",
+        chatKey: "-1004366290625:1458",
+        text: "answer that must not get a terminal event",
+        sessionId: null,
+      }));
+      store.finalize();
+
+      expect(db.getEventsForRun("r-terminal-cas-lost")).toHaveLength(1);
+      expect(db.getRun("r-terminal-cas-lost")).toMatchObject({ status: "running" });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("terminal run transition rejected");
+
+      updateSpy.mockRestore();
+      warn.mockRestore();
+    });
   });
 });
