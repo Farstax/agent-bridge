@@ -16,6 +16,7 @@ src/*.js.map
 dist/
 
 .env.antigravity
+.env.interactive
 .data-antigravity/
 .data-interactive/
 .data-worker/
