@@ -1,6 +1,7 @@
 import { accessSync, chmodSync, constants, existsSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { openDb } from "./db.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./providers/registry.js";
 import type { ChainCliKind, ProviderId } from "./providers/types.js";
 
@@ -102,11 +103,13 @@ export function renderInteractiveSetupEnv(input: {
   telegramAllowedUserIds: string;
   projectDir: string;
   providers: readonly DetectedInteractiveProvider[];
+  dbPath?: string;
 }): string {
   const token = input.telegramBotToken.trim();
   if (!token) throw new Error("Telegram bot token is required.");
   const allowedUserIds = normalizeTelegramAllowedUserIds(input.telegramAllowedUserIds);
   const projectDir = resolve(input.projectDir);
+  const dbPath = resolve(input.dbPath ?? join(process.cwd(), ".data", "bridge.sqlite"));
   if (input.providers.length === 0) throw new Error("At least one provider CLI is required.");
 
   const commandLines = input.providers.map((provider) =>
@@ -120,6 +123,7 @@ export function renderInteractiveSetupEnv(input: {
     `TELEGRAM_BOT_TOKEN_INTERACTIVE=${envValue(token)}`,
     `TELEGRAM_ALLOWED_USER_IDS=${envValue(allowedUserIds)}`,
     `BRIDGE_PROJECT_DIR=${envValue(projectDir)}`,
+    `DB_PATH=${envValue(dbPath)}`,
     "",
     ...commandLines,
     "",
@@ -137,6 +141,31 @@ export function validateProjectDirectory(rawPath: string): string {
     throw new Error(`Project directory does not exist: ${projectDir}`);
   }
   return projectDir;
+}
+
+export function resolveSourceInteractiveDbPath(
+  env: Record<string, string | undefined>,
+  cwd = process.cwd(),
+): string {
+  const configured = env.DB_PATH?.trim();
+  if (configured) return resolve(cwd, configured);
+  const projectDir = env.BRIDGE_PROJECT_DIR?.trim();
+  return resolve(projectDir || cwd, ".data", "bridge.sqlite");
+}
+
+export function bootstrapSourceInteractiveDb(
+  env: Record<string, string | undefined>,
+  cwd = process.cwd(),
+): { dbPath: string; created: boolean } {
+  const dbPath = resolveSourceInteractiveDbPath(env, cwd);
+  if (existsSync(dbPath)) return { dbPath, created: false };
+
+  const db = openDb(dbPath, {
+    serviceId: "telegram:interactive-source-setup",
+    databaseRole: "interactive",
+  });
+  db.raw.close();
+  return { dbPath, created: true };
 }
 
 export function writeInteractiveSetupConfig(
