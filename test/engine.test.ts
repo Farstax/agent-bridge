@@ -2051,4 +2051,134 @@ describe("BridgeEngine", () => {
       expect(capturedPrompt).toContain("hello after reset");
     });
   });
+
+  describe("group/topic chat run persistence", () => {
+    function makeSupergroupTopicMessage(text: string, chatId: number, threadId: number, userId = 42): TelegramMessage {
+      return {
+        message_id: Math.floor(Math.random() * 10000),
+        chat: { id: chatId, type: "supergroup" },
+        from: { id: userId, first_name: "Test" },
+        text,
+        message_thread_id: threadId,
+      };
+    }
+
+    it("persists bridge_runs, bridge_events, and conversation_turns for a supergroup forum-topic run", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const chatId = -1004366290625;
+      const threadId = 1458;
+      const chatKey = `${chatId}:${threadId}`;
+      // Faithfully mirror cliSupervisor.runSupervisedProcess(), which emits
+      // run.started via options.onEvent before the process resolves.
+      const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+        if (options?.eventContext) {
+          options.onEvent?.(eventType.runStarted({ ...options.eventContext, command: "claude", cwd: "/", model: null }));
+        }
+        return "topic answer";
+      });
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "claude",
+          botConfig: { command: "claude", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+        },
+        db,
+        client,
+        { runCli },
+      );
+
+      await engine.handleMessages([makeSupergroupTopicMessage("hello from the topic", chatId, threadId)]);
+
+      const runs = db.raw.prepare("SELECT run_id, chat_id, bot, status, final_text_preview FROM bridge_runs WHERE chat_id = ?").all(chatKey) as Array<{ run_id: string; chat_id: string; bot: string; status: string; final_text_preview: string }>;
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("done");
+      expect(runs[0].final_text_preview).toBe("topic answer");
+
+      const events = db.raw.prepare("SELECT type FROM bridge_events WHERE run_id = ? ORDER BY seq ASC").all(runs[0].run_id) as Array<{ type: string }>;
+      expect(events.map((e) => e.type)).toEqual(["run.started", "run.completed"]);
+
+      const turns = db.raw.prepare("SELECT role, text FROM conversation_turns WHERE chat_key = ? ORDER BY id ASC").all(chatKey) as Array<{ role: string; text: string }>;
+      expect(turns).toHaveLength(2);
+      expect(turns[0]).toMatchObject({ role: "user", text: "hello from the topic" });
+      expect(turns[1]).toMatchObject({ role: "assistant", text: "topic answer" });
+
+      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("topic answer");
+    });
+
+    it("does not regress private DM persistence alongside a topic run", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const runCli = vi.fn().mockResolvedValue("dm answer");
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "claude",
+          botConfig: { command: "claude", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+        },
+        db,
+        client,
+        { runCli },
+      );
+
+      await engine.handleMessages([makeMessage("hello from DM")]);
+
+      const runs = db.raw.prepare("SELECT run_id, status, final_text_preview FROM bridge_runs WHERE chat_id = ?").all("100") as Array<{ run_id: string; status: string; final_text_preview: string }>;
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("done");
+      expect(runs[0].final_text_preview).toBe("dm answer");
+
+      const turns = db.raw.prepare("SELECT role, text FROM conversation_turns WHERE chat_key = ? ORDER BY id ASC").all("100") as Array<{ role: string; text: string }>;
+      expect(turns).toHaveLength(2);
+    });
+  });
+
+  describe("conversation-turn write failure handling", () => {
+    it("does not deliver a second error message when persisting the turn fails after the real answer was already sent", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const runCli = vi.fn().mockResolvedValue("the real answer");
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "claude",
+          botConfig: { command: "claude", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+        },
+        db,
+        client,
+        { runCli },
+      );
+
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const addConvTurnSpy = vi.spyOn(db, "addConvTurn").mockImplementationOnce(() => {
+        throw new Error("simulated conversation_turns write failure");
+      });
+
+      await engine.handleMessages([makeMessage("hello")]);
+
+      // Exactly one delivery: the real answer. No follow-up "❌ ..." message
+      // caused by the turn-write failure leaking out as an execution error.
+      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+      expect(client.sendMessage.mock.calls[0][0].text).toBe("the real answer");
+
+      const turnFailureWarnings = warn.mock.calls.filter(([msg]) => String(msg).includes("conversation-turn write"));
+      expect(turnFailureWarnings).toHaveLength(1);
+      const [message] = turnFailureWarnings[0];
+      expect(message).toContain("100");
+      expect(message).not.toContain("hello");
+      expect(message).not.toContain("the real answer");
+
+      addConvTurnSpy.mockRestore();
+      warn.mockRestore();
+    });
+  });
 });

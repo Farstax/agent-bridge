@@ -1068,11 +1068,23 @@ export class BridgeEngine {
     return deriveConversationOwnerKey(this.surfaceIdentity, this.opts.allowedUserIds);
   }
 
+  // Runs after the CLI already executed and the answer was already delivered
+  // to the user. A dropped write here must not surface as an "execution
+  // error": _commitResultState() runs inside afterFinalDelivery(), and
+  // messageDelivery.ts's outer catch would otherwise treat an uncaught
+  // throw here as a failed turn and send a second, confusing "❌ ..."
+  // message right after the real answer. Warn with only the chat key —
+  // never the prompt or response text this method receives.
   private _rememberTurn(chatKey: string, userPrompt: string, assistantText: string): void {
     const ownerKey = this._conversationOwnerKey();
     const provenance = { surfaceIdentity: this.surfaceIdentity, ...(ownerKey ? { ownerKey } : {}) };
-    this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind, provenance);
-    this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind, provenance);
+    try {
+      this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind, provenance);
+      this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind, provenance);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(`[${this.kind}] dropped a conversation-turn write chatKey=${chatKey}: ${reason}`);
+    }
   }
 
   private _shouldInjectContext(chatKey: string, nativeSessionMode: "fresh" | "resume"): boolean {
