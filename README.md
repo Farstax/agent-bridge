@@ -103,18 +103,21 @@ then enters the same ordinary Run and provider-agent path.
 
 ## Quick start from source
 
+### First 10 minutes
+
 Requirements:
 
-- Node.js 24+
+- Node.js **24 or newer** (`node --version` should report `v24...` or later)
 - npm
-- at least one authenticated provider CLI
-- a Telegram or Discord bot token for the surface you want to use
+- at least one supported provider CLI installed **and already authenticated**
+- for the setup wizard, a Telegram bot token and your Telegram numeric user ID
 
 Clone the repository and install dependencies:
 
 ```bash
 git clone https://github.com/Farstax/agent-bridge.git
 cd agent-bridge
+node --version
 npm install
 ```
 
@@ -126,9 +129,10 @@ npm run setup
 
 It detects supported provider CLIs, asks for the Telegram bot token, allowed user
 IDs, and repository/project directory, writes `.env.interactive` with mode
-`0600`, and runs the existing Doctor checks. The generated secret file is ignored
-by Git and the wizard refuses to replace it unless you deliberately pass
-`--force`.
+`0600`, creates the source runtime database under this Agent Bridge checkout,
+and runs Doctor. The generated secret file and `.data/` state are ignored by Git.
+The wizard refuses to replace `.env.interactive` unless you deliberately pass
+`--force`; it never replaces an existing runtime database.
 
 Then start the interactive runtime:
 
@@ -136,9 +140,34 @@ Then start the interactive runtime:
 npm start
 ```
 
-For manual configuration, copy [`.env.interactive.example`](.env.interactive.example).
-The switchable interactive runtime uses `INTERACTIVE_CLI_CHAIN` for provider
-fallback. Provider-locked and production deployment details live in the operator
+Send the bot a Telegram message. A bad Telegram credential now fails closed with
+an explicit error instead of leaving the runtime in a permanent 401/403 retry
+loop.
+
+Run the same readiness checks again at any time with:
+
+```bash
+npm run doctor
+```
+
+Doctor loads `.env.interactive` by default, or the file named by
+`BRIDGE_ENV_FILE`, using the same non-overriding environment semantics as the
+interactive runtime.
+
+For non-interactive setup, provide the three wizard inputs in the environment;
+provider CLIs still need to be installed and authenticated on `PATH`:
+
+```bash
+TELEGRAM_BOT_TOKEN_INTERACTIVE=... \
+TELEGRAM_ALLOWED_USER_IDS=... \
+BRIDGE_PROJECT_DIR=/absolute/path/to/your/repository \
+npm run setup
+```
+
+Use `npm run setup -- --help` for setup options. For manual configuration, copy
+[`.env.interactive.example`](.env.interactive.example). The switchable
+interactive runtime uses `INTERACTIVE_CLI_CHAIN` for provider fallback.
+Provider-locked and production deployment details live in the operator
 documentation below.
 
 See [source/self-hosting examples](docs/examples/README.md) for multi-provider
