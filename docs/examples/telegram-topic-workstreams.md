@@ -16,7 +16,7 @@ Telegram delivery using chat ID + message_thread_id
 
 A topic is a workstream, not a provider binding. You can switch from Codex to Claude Code, Antigravity/Agy, Grok Build, or Cursor while keeping the same workstream.
 
-> Known limitation: [#679](https://github.com/Farstax/agent-bridge/issues/679) tracks a current defect where group/topic Runs can execute without being written to `bridge_runs` / `conversation_turns`. Topic identity and delivery routing are still distinct, but do not rely on those audit tables for group/topic history until that issue is fixed.
+Run, event, and retained-conversation persistence use the topic's canonical workstream identity as well, so forum topics remain isolated in durable state rather than sharing the group root conversation.
 
 ## 1. Configure the interactive bot
 
