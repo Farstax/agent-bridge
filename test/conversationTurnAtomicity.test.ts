@@ -78,7 +78,8 @@ describe("conversation-turn post-delivery atomicity", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const realAddConvTurn = db.addConvTurn.bind(db);
     vi.spyOn(db, "addConvTurn")
-      .mockImplementationOnce((...args) => realAddConvTurn(...args))
+      .mockImplementationOnce((chatKey, role, text, cli, provenance) =>
+        realAddConvTurn(chatKey, role, text, cli, provenance))
       .mockImplementationOnce(() => {
         throw new Error("simulated assistant conversation_turns write failure");
       });
