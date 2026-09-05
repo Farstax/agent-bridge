@@ -118,26 +118,32 @@ cd agent-bridge
 npm install
 ```
 
-For a switchable Telegram setup, start from the interactive environment example:
+For a switchable Telegram setup, run the source setup wizard:
 
 ```bash
-cp .env.interactive.example .env.interactive
+npm run setup
 ```
 
-Set the Telegram token, allowed user IDs, project directory, and command paths
-for the provider CLIs you have installed. Then start the interactive runtime:
+It detects supported provider CLIs, asks for the Telegram bot token, allowed user
+IDs, and repository/project directory, writes `.env.interactive` with mode
+`0600`, and runs the existing Doctor checks. The generated secret file is ignored
+by Git and the wizard refuses to replace it unless you deliberately pass
+`--force`.
+
+Then start the interactive runtime:
 
 ```bash
 npm start
 ```
 
-Provider-specific examples are also included for Codex, Claude,
-Antigravity/Agy, Grok, Cursor, and Discord.
+For manual configuration, copy [`.env.interactive.example`](.env.interactive.example).
+The switchable interactive runtime uses `INTERACTIVE_CLI_CHAIN` for provider
+fallback. Provider-locked and production deployment details live in the operator
+documentation below.
 
-The switchable interactive runtime defaults to
-`codex,claude,grok,antigravity,cursor`; override that order with
-`INTERACTIVE_CLI_CHAIN`. Provider-locked and production deployment details live
-in the operator documentation below.
+See [source/self-hosting examples](docs/examples/README.md) for multi-provider
+Telegram, Telegram topic workstreams, Discord interactive, and scheduled
+routines.
 
 ## Production installation
 
