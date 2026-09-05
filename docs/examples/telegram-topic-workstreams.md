@@ -9,12 +9,14 @@ Telegram supergroup + forum topic
         ↓
 canonical workstream key
         ↓
-history, Runs, queue, provider preference, sessions
+routing, queue, provider preference, provider sessions
         ↓
 Telegram delivery using chat ID + message_thread_id
 ```
 
 A topic is a workstream, not a provider binding. You can switch from Codex to Claude Code, Antigravity/Agy, Grok Build, or Cursor while keeping the same workstream.
+
+> Known limitation: [#679](https://github.com/Farstax/agent-bridge/issues/679) tracks a current defect where group/topic Runs can execute without being written to `bridge_runs` / `conversation_turns`. Topic identity and delivery routing are still distinct, but do not rely on those audit tables for group/topic history until that issue is fixed.
 
 ## 1. Configure the interactive bot
 
@@ -41,6 +43,6 @@ The group root conversation remains distinct from both topic workstreams.
 
 ## 3. Use controls inside the topic
 
-Run `/cli`, `/stop`, or `/reset` from the topic where you want the action to apply. Provider selection, retained conversation state, queue/cancellation scope, and provider-native sessions remain attached to that topic's canonical workstream rather than being shared merely because two topics live in the same Telegram group.
+Run `/cli`, `/stop`, or `/reset` from the topic where you want the action to apply. Provider selection, queue/cancellation scope, and provider-native sessions are keyed by the topic's canonical workstream rather than being shared merely because two topics live in the same Telegram group.
 
 Replies and progress delivery preserve the original `message_thread_id`, so the result returns to the same topic.
