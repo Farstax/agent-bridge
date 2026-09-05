@@ -1,12 +1,15 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import dotenv from "dotenv";
 import { describe, expect, it } from "vitest";
+import { openProductionDb } from "../src/db.js";
 import {
+  bootstrapSourceInteractiveDb,
   detectInteractiveProviders,
   normalizeTelegramAllowedUserIds,
   renderInteractiveSetupEnv,
+  resolveSourceInteractiveDbPath,
   validateProjectDirectory,
   writeInteractiveSetupConfig,
 } from "../src/setup.js";
@@ -52,6 +55,7 @@ describe("source setup", () => {
       telegramBotToken: "123456:secret-token",
       telegramAllowedUserIds: "123, 456,123",
       projectDir: "/srv/example-app",
+      dbPath: "/srv/agent-bridge/.data/bridge.sqlite",
       providers,
     });
     const parsed = dotenv.parse(content);
@@ -59,6 +63,7 @@ describe("source setup", () => {
     expect(parsed.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBe("123456:secret-token");
     expect(parsed.TELEGRAM_ALLOWED_USER_IDS).toBe("123,456");
     expect(parsed.BRIDGE_PROJECT_DIR).toBe("/srv/example-app");
+    expect(parsed.DB_PATH).toBe("/srv/agent-bridge/.data/bridge.sqlite");
     expect(parsed.CODEX_COMMAND).toBe("/opt/bin/codex");
     expect(parsed.CLAUDE_COMMAND).toBe("/opt/bin/claude");
     expect(parsed.INTERACTIVE_DEFAULT_CLI).toBe("codex");
@@ -97,6 +102,38 @@ describe("source setup", () => {
       writeInteractiveSetupConfig(configPath, "second\n", { force: true });
       expect(readFileSync(configPath, "utf8")).toBe("second\n");
       expect(statSync(configPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bootstraps a missing source DB that the strict runtime opener accepts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-bridge-setup-db-"));
+    const dbPath = join(dir, ".data", "bridge.sqlite");
+    try {
+      expect(resolveSourceInteractiveDbPath({ DB_PATH: dbPath }, dir)).toBe(dbPath);
+      const result = bootstrapSourceInteractiveDb({ DB_PATH: dbPath }, dir);
+      expect(result).toEqual({ dbPath, created: true });
+      expect(existsSync(dbPath)).toBe(true);
+
+      const strict = openProductionDb(dbPath, {
+        serviceId: "telegram:interactive",
+        databaseRole: "interactive",
+      });
+      strict.raw.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never replaces an existing source DB during setup", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-bridge-setup-existing-db-"));
+    const dbPath = join(dir, "bridge.sqlite");
+    try {
+      writeFileSync(dbPath, "existing-state", "utf8");
+      const result = bootstrapSourceInteractiveDb({ DB_PATH: dbPath }, dir);
+      expect(result).toEqual({ dbPath, created: false });
+      expect(readFileSync(dbPath, "utf8")).toBe("existing-state");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
