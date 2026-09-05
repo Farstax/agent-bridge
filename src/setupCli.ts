@@ -5,6 +5,7 @@ import { createInterface } from "node:readline/promises";
 import dotenv from "dotenv";
 import { formatDoctorReport, runDoctor } from "./providers/doctor.js";
 import {
+  bootstrapSourceInteractiveDb,
   detectInteractiveProviders,
   normalizeTelegramAllowedUserIds,
   renderInteractiveSetupEnv,
@@ -14,7 +15,8 @@ import {
 
 const args = new Set(process.argv.slice(2));
 const force = args.has("--force");
-const unknownArgs = [...args].filter((arg) => arg !== "--force");
+const help = args.has("--help") || args.has("-h");
+const unknownArgs = [...args].filter((arg) => arg !== "--force" && arg !== "--help" && arg !== "-h");
 
 async function askRequired(
   rl: ReturnType<typeof createInterface>,
@@ -35,7 +37,27 @@ async function askRequired(
   }
 }
 
+function printHelp(): void {
+  console.log(`Agent Bridge source setup
+
+Usage:
+  npm run setup
+  npm run setup -- --force
+
+Options:
+  --force   replace an existing .env.interactive
+  -h, --help  show this help
+
+For non-interactive setup, provide TELEGRAM_BOT_TOKEN_INTERACTIVE,
+TELEGRAM_ALLOWED_USER_IDS, and BRIDGE_PROJECT_DIR in the environment.
+At least one supported provider CLI must be installed and authenticated on PATH.`);
+}
+
 async function main(): Promise<void> {
+  if (help) {
+    printHelp();
+    return;
+  }
   if (unknownArgs.length > 0) {
     throw new Error(`Unknown setup option(s): ${unknownArgs.join(", ")}`);
   }
@@ -67,17 +89,26 @@ async function main(): Promise<void> {
     const projectDir = configuredProjectDir
       ? validateProjectDirectory(configuredProjectDir)
       : await askRequired(rl, "Project/repository directory: ", validateProjectDirectory);
+    const dbPath = resolve(process.env.DB_PATH?.trim() || resolve(process.cwd(), ".data", "bridge.sqlite"));
 
     const content = renderInteractiveSetupEnv({
       telegramBotToken,
       telegramAllowedUserIds,
       projectDir,
       providers,
+      dbPath,
     });
     writeInteractiveSetupConfig(configPath, content, { force });
     console.log(`\nWrote ${configPath} with mode 0600.`);
 
     const generatedEnv = dotenv.parse(content);
+    const bootstrap = bootstrapSourceInteractiveDb(generatedEnv);
+    if (bootstrap.created) {
+      console.log(`Created source runtime database: ${bootstrap.dbPath}`);
+    } else {
+      console.log(`Using existing source runtime database: ${bootstrap.dbPath}`);
+    }
+
     const report = runDoctor({
       env: generatedEnv,
       requiredEnv: ["TELEGRAM_BOT_TOKEN_INTERACTIVE", "TELEGRAM_ALLOWED_USER_IDS", "BRIDGE_PROJECT_DIR"],
