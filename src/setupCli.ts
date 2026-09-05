@@ -107,9 +107,6 @@ async function main(): Promise<void> {
       projectDir,
       providers,
     });
-    writeInteractiveSetupConfig(configPath, content, { force });
-    console.log(`\nWrote ${configPath} with mode 0600.`);
-
     const generatedEnv = dotenv.parse(content);
     const report = runDoctor({
       env: generatedEnv,
@@ -117,7 +114,7 @@ async function main(): Promise<void> {
     });
     console.log("\n" + formatDoctorReport(report));
     if (!report.ok) {
-      throw new Error("Setup wrote the configuration, but Doctor found a problem. Fix the reported item before starting Agent Bridge.");
+      throw new Error("Doctor found a problem. Fix the reported item before starting Agent Bridge.");
     }
 
     const dbPath = generatedEnv.DB_PATH;
@@ -125,6 +122,8 @@ async function main(): Promise<void> {
     bootstrapSourceInteractiveDb(dbPath);
     console.log(`Initialized source interactive database: ${dbPath}`);
 
+    writeInteractiveSetupConfig(configPath, content, { force });
+    console.log(`Wrote ${configPath} with mode 0600.`);
     console.log("\nSetup complete. Start Agent Bridge with: npm start");
   } finally {
     rl.close();
