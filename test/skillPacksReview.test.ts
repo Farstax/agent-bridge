@@ -45,7 +45,7 @@ function skill(id: string, repo: string, path: string, description = `Curated ${
       sha256: hashSkillPackDirectorySha256(join(repo, path)),
     },
     provenance: {
-      origin: "farstax-authored",
+      origin: "author-created",
       modifiedFromUpstream: false,
       lastReviewed: "2026-09-06",
     },
