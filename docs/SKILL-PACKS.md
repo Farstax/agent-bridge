@@ -80,6 +80,8 @@ Inspect installed packs and individually installed pack Skills:
 npm run skills -- packs status
 ```
 
+`packs status` preserves the full installed pack manifest plus each installed Skill's description, provenance, supported hosts, dependencies, capabilities and test/eval references. External services, hosted MCPs, authorization requirements, secret names and effect classes therefore remain inspectable after installation as well as before it.
+
 Agent Bridge stores pack reference/provenance/dependency state at:
 
 ```text
@@ -101,9 +103,9 @@ npm run skills -- packs update marketing
 npm run skills -- packs update marketing --version 1.3.0
 ```
 
-A shared Skill may be referenced by several packs. A pack cannot change a shared Skill to different content while another pack or an explicit single-Skill install still references the installed content. That conflict fails closed instead of silently choosing a winner.
+A shared Skill may be referenced by several packs. All references must agree on the complete shared Skill contract: content, description, provenance, supported hosts, dependencies, capabilities and test/eval references. A pack or explicit single-Skill install cannot change that contract while another reference remains. Conflicts fail closed instead of silently choosing a winner or replacing metadata.
 
-Pack convergence is restartable. Desired pack ownership/metadata is persisted before the ordinary Skill mutation, so retry can complete an interrupted install/update if the shared Skill is missing or still has the previous content. Existing native projections are checked before any force replacement; unmanaged provider content is never overwritten. A published pack version is immutable locally: if the same installed version reappears with a different manifest digest, update fails and requires a new pack version.
+Pack convergence is restartable. Desired pack ownership/metadata is persisted before the ordinary Skill mutation, so retry can complete an interrupted install/update if the shared Skill is missing or still has the previous content. Existing native projections are checked before any force replacement or removal; unmanaged provider content is never overwritten or deleted. A published pack version is immutable locally: if the same installed version reappears with a different manifest digest, update fails and requires a new pack version.
 
 Remove a pack:
 
