@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, stat, statfs
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { InteractiveAttachment, InteractiveTurnInput } from "./interactiveIngress.js";
+import { resolveWorkspaceLock } from "./workspaceLock.js";
 
 export const DEFAULT_VOICE_TEMP_ROOT = join(tmpdir(), "agent-bridge-voice");
 export const DEFAULT_MAX_AUDIO_BYTES = 10 * 1024 * 1024;
@@ -29,15 +30,8 @@ const DEFAULT_MANIFEST_PATH = join(DEFAULT_COMPONENT_ROOT, "manifest.json");
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const PROCESS_OUTPUT_LIMIT = 1024 * 1024;
-
-type VoiceScopeState = "preparing" | "aborted" | "handed-off";
-interface VoiceIngressScope {
-  lane: string;
-  controller: AbortController;
-  state: VoiceScopeState;
-}
-
-const voiceScopes = new Map<string, VoiceIngressScope>();
+const FLOCK_CANDIDATES = ["/usr/bin/flock", "/bin/flock"];
+const TRANSCRIPTION_LOCK_NAME = "agent-bridge-transcription.lock";
 
 export interface VoiceTranscriber {
   readonly name: string;
@@ -45,9 +39,11 @@ export interface VoiceTranscriber {
   transcribe(input: {
     filePath: string;
     operationDir: string;
+    workspaceDir: string;
     mimeType?: string;
     signal: AbortSignal;
     maxDurationSeconds: number;
+    maxTempBytes: number;
   }): Promise<{ text: string }>;
 }
 
@@ -58,6 +54,7 @@ export interface VoiceAudioStager {
     surfaceIdentity: string;
     signal: AbortSignal;
     maxAudioBytes: number;
+    downloadTimeoutMs: number;
   }): Promise<string>;
 }
 
@@ -68,24 +65,24 @@ export type VoicePreparationResult =
   | { kind: "failed"; error: Error };
 
 export type VoiceBatchPreparation =
-  | {
-      kind: "ready";
-      turns: InteractiveTurnInput[];
-      handoff: (operation: () => void | Promise<void>) => Promise<void>;
-    }
+  | { kind: "ready"; turns: InteractiveTurnInput[] }
   | { kind: "drop" };
 
 export interface PrepareVoiceTurnOptions {
   transcriber: VoiceTranscriber;
   stager: VoiceAudioStager;
   signal: AbortSignal;
+  workspaceDir?: string;
   tempRoot?: string;
   maxAudioBytes?: number;
   maxDurationSeconds?: number;
   maxTempBytes?: number;
+  downloadTimeoutMs?: number;
 }
 
 export interface PrepareVoiceBatchOptions {
+  signal: AbortSignal;
+  workspaceDir: string;
   transcriber?: VoiceTranscriber;
   stager?: VoiceAudioStager;
   notify?: (turn: InteractiveTurnInput, message: string) => Promise<void>;
@@ -93,6 +90,12 @@ export interface PrepareVoiceBatchOptions {
   maxAudioBytes?: number;
   maxDurationSeconds?: number;
   maxTempBytes?: number;
+  downloadTimeoutMs?: number;
+}
+
+export interface WorkspaceTranscriptionLease {
+  readonly lockFile: string;
+  release(): Promise<void>;
 }
 
 export const unavailableVoiceTranscriber: VoiceTranscriber = Object.freeze({
@@ -109,32 +112,6 @@ export function isAudioAttachment(attachment: InteractiveAttachment): boolean {
 
 export function hasAudioAttachment(turn: InteractiveTurnInput): boolean {
   return turn.attachments.some(isAudioAttachment);
-}
-
-export function executionLaneKey(surfaceIdentity: string, chatKey: string): string {
-  return JSON.stringify([surfaceIdentity, chatKey]);
-}
-
-export function abortVoiceIngressLane(lane: string): boolean {
-  const scope = voiceScopes.get(lane);
-  if (!scope || scope.state !== "preparing") return false;
-  scope.state = "aborted";
-  scope.controller.abort();
-  voiceScopes.delete(lane);
-  return true;
-}
-
-function beginVoiceIngressScope(turn: InteractiveTurnInput): VoiceIngressScope | null {
-  const lane = executionLaneKey(turn.surfaceIdentity, turn.chatKey);
-  const existing = voiceScopes.get(lane);
-  if (existing?.state === "preparing") return null;
-  const scope: VoiceIngressScope = { lane, controller: new AbortController(), state: "preparing" };
-  voiceScopes.set(lane, scope);
-  return scope;
-}
-
-function clearScope(scope: VoiceIngressScope): void {
-  if (voiceScopes.get(scope.lane) === scope) voiceScopes.delete(scope.lane);
 }
 
 function asError(error: unknown): Error {
@@ -157,7 +134,9 @@ async function createVoiceOperationDir(root: string, maxTempBytes: number): Prom
   await chmod(root, PRIVATE_DIR_MODE);
   const fs = await statfs(root);
   const available = Number(fs.bavail) * Number(fs.bsize);
-  if (!Number.isFinite(available) || available < maxTempBytes) throw new Error("Voice transcription is unavailable: insufficient temporary disk space.");
+  if (!Number.isFinite(available) || available < maxTempBytes) {
+    throw new Error("Voice transcription is unavailable: insufficient temporary disk space.");
+  }
   const operationDir = await mkdtemp(join(root, "voice-"));
   await chmod(operationDir, PRIVATE_DIR_MODE);
   return operationDir;
@@ -177,6 +156,18 @@ async function sha256File(path: string): Promise<string> {
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("end", () => resolveHash(hash.digest("hex")));
   });
+}
+
+async function operationDirBytes(root: string): Promise<number> {
+  let total = 0;
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const candidate = join(root, entry.name);
+    if (entry.isSymbolicLink()) throw new Error("Voice helper produced an unexpected symbolic link.");
+    if (entry.isDirectory()) total += await operationDirBytes(candidate);
+    else if (entry.isFile()) total += (await lstat(candidate)).size;
+  }
+  return total;
 }
 
 async function terminateProcessGroup(child: ChildProcess, graceMs = 500): Promise<void> {
@@ -256,12 +247,128 @@ async function runBoundedProcess(
       const finish = async () => {
         if (termination) await termination;
         if (pendingError) throw pendingError;
-        if (signal || code !== 0) throw new Error(`Voice helper failed (${signal ?? `exit ${code}`}): ${stderr.trim().slice(-1000) || "no diagnostic output"}`);
+        if (signal || code !== 0) {
+          throw new Error(`Voice helper failed (${signal ?? `exit ${code}`}): ${stderr.trim().slice(-1000) || "no diagnostic output"}`);
+        }
         return { stdout, stderr };
       };
       finish().then(resolveProcess, rejectProcess);
     });
   });
+}
+
+async function withVoiceDeadline<T>(
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  label: string,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (parentSignal.aborted) throw abortError();
+  const controller = new AbortController();
+  let timedOut = false;
+  const onParentAbort = () => controller.abort();
+  parentSignal.addEventListener("abort", onParentAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  timer.unref();
+  try {
+    return await operation(controller.signal);
+  } catch (error) {
+    if (parentSignal.aborted) throw abortError();
+    if (timedOut) throw new Error(`${label} timed out after ${timeoutMs}ms.`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    parentSignal.removeEventListener("abort", onParentAbort);
+  }
+}
+
+async function resolveFlockPath(): Promise<string> {
+  for (const candidate of FLOCK_CANDIDATES) {
+    const info = await stat(candidate).catch(() => null);
+    if (info?.isFile()) return candidate;
+  }
+  throw new Error("Voice transcription requires util-linux flock at /usr/bin/flock or /bin/flock.");
+}
+
+export function workspaceTranscriptionLockFile(workspaceDir: string): string {
+  const workspaceLock = resolveWorkspaceLock(workspaceDir);
+  if (workspaceLock) return join(dirname(workspaceLock.lockFile), TRANSCRIPTION_LOCK_NAME);
+  const key = createHash("sha256").update(resolve(workspaceDir)).digest("hex");
+  return join(DEFAULT_VOICE_TEMP_ROOT, "locks", `${key}.lock`);
+}
+
+export async function acquireWorkspaceTranscriptionLease(
+  workspaceDir: string,
+  signal: AbortSignal,
+): Promise<WorkspaceTranscriptionLease> {
+  if (signal.aborted) throw abortError();
+  const flockPath = await resolveFlockPath();
+  const lockFile = workspaceTranscriptionLockFile(workspaceDir);
+  await mkdir(dirname(lockFile), { recursive: true, mode: PRIVATE_DIR_MODE });
+  const guardCode = 'process.stdout.write("READY\\n"); process.stdin.resume(); process.stdin.on("end", () => process.exit(0));';
+  const child = spawn(flockPath, ["--exclusive", "--nonblock", lockFile, process.execPath, "-e", guardCode], {
+    detached: true,
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: process.env,
+  });
+  let stderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString()}`.slice(-1000); });
+
+  await new Promise<void>((resolveReady, rejectReady) => {
+    let ready = false;
+    let stdout = "";
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const fail = (error: Error) => {
+      if (ready) return;
+      cleanup();
+      void terminateProcessGroup(child).finally(() => rejectReady(error));
+    };
+    const onAbort = () => fail(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => fail(new Error("Voice transcription lease acquisition timed out.")), 5_000);
+    timer.unref();
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (ready) return;
+      stdout += chunk.toString();
+      if (!stdout.includes("READY\n")) return;
+      ready = true;
+      cleanup();
+      resolveReady();
+    });
+    child.once("error", (error) => fail(error));
+    child.once("close", (code) => {
+      if (ready) return;
+      cleanup();
+      rejectReady(new Error(code === 1
+        ? "Voice transcription is already running for this workspace."
+        : `Voice transcription lease failed (exit ${code}): ${stderr || "no diagnostic output"}`));
+    });
+  });
+
+  let released = false;
+  return {
+    lockFile,
+    async release(): Promise<void> {
+      if (released) return;
+      released = true;
+      const closed = new Promise<void>((resolveClosed) => {
+        if (child.exitCode !== null || child.signalCode !== null) { resolveClosed(); return; }
+        child.once("close", () => resolveClosed());
+      });
+      try { child.stdin?.end(); } catch {}
+      const fallback = setTimeout(() => { void terminateProcessGroup(child); }, 1000);
+      fallback.unref();
+      await closed;
+      clearTimeout(fallback);
+    },
+  };
 }
 
 interface VoiceRuntimeManifest {
@@ -321,7 +428,9 @@ async function preflightWhisperRuntime(overrides: WhisperCppPaths = {}) {
     for (const candidate of [whisperPath, paths.modelPath, paths.ffmpegPath, paths.ffprobePath, paths.nicePath]) {
       const info = await stat(candidate).catch(() => null);
       if (!info?.isFile()) throw new Error(`Voice transcription runtime asset is missing: ${candidate}`);
-      if ((candidate === whisperPath || candidate === paths.modelPath) && (info.mode & 0o022) !== 0) throw new Error(`Voice transcription runtime asset is writable by group/world: ${candidate}`);
+      if ((candidate === whisperPath || candidate === paths.modelPath) && (info.mode & 0o022) !== 0) {
+        throw new Error(`Voice transcription runtime asset is writable by group/world: ${candidate}`);
+      }
     }
     const [executableHash, modelHash] = await Promise.all([sha256File(whisperPath), sha256File(paths.modelPath)]);
     if (executableHash !== manifest.whisperExecutableSha256) throw new Error("Voice transcription executable checksum mismatch.");
@@ -339,47 +448,56 @@ export function createWhisperCppTranscriber(paths: WhisperCppPaths = {}): VoiceT
     available: process.env.AGENT_BRIDGE_VOICE_TRANSCRIPTION !== "disabled",
     async transcribe(input) {
       if (input.signal.aborted) throw abortError();
-      const runtime = await preflightWhisperRuntime(paths);
-      const probe = await runBoundedProcess(runtime.nicePath, ["-n", "19", runtime.ffprobePath, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", input.filePath], {
-        cwd: input.operationDir,
-        signal: input.signal,
-        timeoutMs: DEFAULT_VOICE_CONVERSION_TIMEOUT_MS,
-      });
-      const duration = Number.parseFloat(probe.stdout.trim());
-      if (!Number.isFinite(duration)) throw new Error("Could not determine voice-note duration.");
-      if (duration > input.maxDurationSeconds) throw new Error(`Audio exceeds the ${input.maxDurationSeconds}-second processing limit.`);
+      const lease = await acquireWorkspaceTranscriptionLease(input.workspaceDir, input.signal);
+      try {
+        const runtime = await preflightWhisperRuntime(paths);
+        const probe = await runBoundedProcess(runtime.nicePath, ["-n", "19", runtime.ffprobePath, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", input.filePath], {
+          cwd: input.operationDir,
+          signal: input.signal,
+          timeoutMs: DEFAULT_VOICE_CONVERSION_TIMEOUT_MS,
+        });
+        const duration = Number.parseFloat(probe.stdout.trim());
+        if (!Number.isFinite(duration)) throw new Error("Could not determine voice-note duration.");
+        if (duration > input.maxDurationSeconds) throw new Error(`Audio exceeds the ${input.maxDurationSeconds}-second processing limit.`);
 
-      const wavPath = join(input.operationDir, "normalized.wav");
-      await runBoundedProcess(runtime.nicePath, ["-n", "19", runtime.ffmpegPath, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", input.filePath, "-ac", "1", "-ar", "16000", "-f", "wav", wavPath], {
-        cwd: input.operationDir,
-        signal: input.signal,
-        timeoutMs: DEFAULT_VOICE_CONVERSION_TIMEOUT_MS,
-      });
-      const wavInfo = await stat(wavPath);
-      if (wavInfo.size > DEFAULT_VOICE_TEMP_BYTES) throw new Error("Normalized audio exceeds the voice temporary-storage limit.");
+        const wavPath = join(input.operationDir, "normalized.wav");
+        await runBoundedProcess(runtime.nicePath, ["-n", "19", runtime.ffmpegPath, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", input.filePath, "-ac", "1", "-ar", "16000", "-f", "wav", wavPath], {
+          cwd: input.operationDir,
+          signal: input.signal,
+          timeoutMs: DEFAULT_VOICE_CONVERSION_TIMEOUT_MS,
+        });
+        if (await operationDirBytes(input.operationDir) > input.maxTempBytes) {
+          throw new Error("Voice transcription exceeded the temporary-storage limit.");
+        }
 
-      const outputPrefix = join(input.operationDir, `transcript-${randomUUID()}`);
-      await runBoundedProcess(runtime.nicePath, [
-        "-n", "19", runtime.whisperPath,
-        "-m", runtime.modelPath,
-        "-f", wavPath,
-        "-t", "1",
-        "-p", "1",
-        "-bs", "1",
-        "-bo", "1",
-        "-l", "en",
-        "-np",
-        "-otxt",
-        "-of", outputPrefix,
-      ], {
-        cwd: input.operationDir,
-        signal: input.signal,
-        timeoutMs: DEFAULT_VOICE_TRANSCRIPTION_TIMEOUT_MS,
-      });
-      if (input.signal.aborted) throw abortError();
-      const text = (await readFile(`${outputPrefix}.txt`, "utf8")).trim();
-      if (!text) throw new Error("Voice transcription returned no text.");
-      return { text };
+        const outputPrefix = join(input.operationDir, `transcript-${randomUUID()}`);
+        await runBoundedProcess(runtime.nicePath, [
+          "-n", "19", runtime.whisperPath,
+          "-m", runtime.modelPath,
+          "-f", wavPath,
+          "-t", "1",
+          "-p", "1",
+          "-bs", "1",
+          "-bo", "1",
+          "-l", "en",
+          "-np",
+          "-otxt",
+          "-of", outputPrefix,
+        ], {
+          cwd: input.operationDir,
+          signal: input.signal,
+          timeoutMs: DEFAULT_VOICE_TRANSCRIPTION_TIMEOUT_MS,
+        });
+        if (input.signal.aborted) throw abortError();
+        if (await operationDirBytes(input.operationDir) > input.maxTempBytes) {
+          throw new Error("Voice transcription exceeded the temporary-storage limit.");
+        }
+        const text = (await readFile(`${outputPrefix}.txt`, "utf8")).trim();
+        if (!text) throw new Error("Voice transcription returned no text.");
+        return { text };
+      } finally {
+        await lease.release();
+      }
     },
   };
 }
@@ -390,36 +508,31 @@ function telegramTokenForSurface(surfaceIdentity: string): string | null {
   return process.env[`TELEGRAM_BOT_TOKEN_${suffix}`]?.trim() || null;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, parentSignal: AbortSignal, timeoutMs: number): Promise<Response> {
-  if (parentSignal.aborted) throw abortError();
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  parentSignal.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  timer.unref();
-  try { return await fetch(url, { ...init, signal: controller.signal }); }
-  catch (error) { if (parentSignal.aborted) throw abortError(); throw error; }
-  finally { clearTimeout(timer); parentSignal.removeEventListener("abort", abort); }
-}
-
 async function writeResponseBounded(response: Response, path: string, maxBytes: number, signal: AbortSignal): Promise<void> {
   if (!response.ok) throw new Error(`Voice attachment download failed with HTTP ${response.status}.`);
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`Audio exceeds the ${maxBytes}-byte processing limit.`);
   const handle = await open(path, "wx", PRIVATE_FILE_MODE);
   let total = 0;
+  const reader = response.body?.getReader();
+  if (!reader) { await handle.close(); throw new Error("Voice attachment response had no body."); }
+  const onAbort = () => { void reader.cancel().catch(() => {}); };
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("Voice attachment response had no body.");
     for (;;) {
       if (signal.aborted) throw abortError();
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maxBytes) { await reader.cancel(); throw new Error(`Audio exceeds the ${maxBytes}-byte processing limit.`); }
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`Audio exceeds the ${maxBytes}-byte processing limit.`);
+      }
       await handle.write(value);
     }
+    if (signal.aborted) throw abortError();
   } finally {
+    signal.removeEventListener("abort", onAbort);
     await handle.close();
   }
 }
@@ -427,15 +540,17 @@ async function writeResponseBounded(response: Response, path: string, maxBytes: 
 async function stageTelegramAudio(input: Parameters<VoiceAudioStager["stage"]>[0]): Promise<string> {
   const token = telegramTokenForSurface(input.surfaceIdentity);
   if (!token) throw new Error("Voice transcription cannot resolve the Telegram surface credential.");
-  const fileInfo = await fetchWithTimeout(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(input.attachment.fileId)}`, {}, input.signal, DEFAULT_VOICE_DOWNLOAD_TIMEOUT_MS);
-  if (!fileInfo.ok) throw new Error(`Telegram getFile failed with HTTP ${fileInfo.status}.`);
-  const payload = await fileInfo.json() as any;
-  const remotePath = String(payload?.result?.file_path ?? "");
-  if (!remotePath) throw new Error("Telegram did not return a voice attachment path.");
-  const destination = join(input.operationDir, "source-audio");
-  const response = await fetchWithTimeout(`https://api.telegram.org/file/bot${token}/${remotePath}`, {}, input.signal, DEFAULT_VOICE_DOWNLOAD_TIMEOUT_MS);
-  await writeResponseBounded(response, destination, input.maxAudioBytes, input.signal);
-  return destination;
+  return withVoiceDeadline(input.signal, input.downloadTimeoutMs, "Voice attachment download", async (deadlineSignal) => {
+    const fileInfo = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(input.attachment.fileId)}`, { signal: deadlineSignal });
+    if (!fileInfo.ok) throw new Error(`Telegram getFile failed with HTTP ${fileInfo.status}.`);
+    const payload = await fileInfo.json() as any;
+    const remotePath = String(payload?.result?.file_path ?? "");
+    if (!remotePath) throw new Error("Telegram did not return a voice attachment path.");
+    const destination = join(input.operationDir, "source-audio");
+    const response = await fetch(`https://api.telegram.org/file/bot${token}/${remotePath}`, { signal: deadlineSignal });
+    await writeResponseBounded(response, destination, input.maxAudioBytes, deadlineSignal);
+    return destination;
+  });
 }
 
 function trustedDiscordAttachmentUrl(value: string): URL {
@@ -450,10 +565,12 @@ function trustedDiscordAttachmentUrl(value: string): URL {
 async function stageDiscordAudio(input: Parameters<VoiceAudioStager["stage"]>[0]): Promise<string> {
   if (!input.attachment.remoteUrl) throw new Error("Discord voice attachment is missing its download URL.");
   const url = trustedDiscordAttachmentUrl(input.attachment.remoteUrl);
-  const response = await fetchWithTimeout(url.toString(), {}, input.signal, DEFAULT_VOICE_DOWNLOAD_TIMEOUT_MS);
-  const destination = join(input.operationDir, "source-audio");
-  await writeResponseBounded(response, destination, input.maxAudioBytes, input.signal);
-  return destination;
+  return withVoiceDeadline(input.signal, input.downloadTimeoutMs, "Voice attachment download", async (deadlineSignal) => {
+    const response = await fetch(url.toString(), { signal: deadlineSignal });
+    const destination = join(input.operationDir, "source-audio");
+    await writeResponseBounded(response, destination, input.maxAudioBytes, deadlineSignal);
+    return destination;
+  });
 }
 
 export const surfaceVoiceAudioStager: VoiceAudioStager = {
@@ -504,6 +621,7 @@ export async function prepareVoiceTurn(turn: InteractiveTurnInput, options: Prep
   const maxAudioBytes = options.maxAudioBytes ?? DEFAULT_MAX_AUDIO_BYTES;
   const maxDurationSeconds = options.maxDurationSeconds ?? DEFAULT_MAX_AUDIO_DURATION_SECONDS;
   const maxTempBytes = options.maxTempBytes ?? DEFAULT_VOICE_TEMP_BYTES;
+  const downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_VOICE_DOWNLOAD_TIMEOUT_MS;
   if (attachment.fileSize !== undefined && (!Number.isFinite(attachment.fileSize) || attachment.fileSize < 0 || attachment.fileSize > maxAudioBytes)) {
     return { kind: "failed", error: new Error(`Audio exceeds the ${maxAudioBytes}-byte processing limit.`) };
   }
@@ -515,19 +633,29 @@ export async function prepareVoiceTurn(turn: InteractiveTurnInput, options: Prep
   try {
     operationDir = await createVoiceOperationDir(options.tempRoot ?? DEFAULT_VOICE_TEMP_ROOT, maxTempBytes);
     if (options.signal.aborted) return { kind: "cancelled" };
-    const filePath = await options.stager.stage({ attachment, operationDir, surfaceIdentity: turn.surfaceIdentity, signal: options.signal, maxAudioBytes });
+    const filePath = await options.stager.stage({
+      attachment,
+      operationDir,
+      surfaceIdentity: turn.surfaceIdentity,
+      signal: options.signal,
+      maxAudioBytes,
+      downloadTimeoutMs,
+    });
     if (options.signal.aborted) return { kind: "cancelled" };
     if (!isPathInside(operationDir, filePath)) throw new Error("Voice media stager returned a path outside its operation directory.");
     const staged = await lstat(filePath);
     if (staged.isSymbolicLink() || !staged.isFile()) throw new Error("Staged voice media is not a regular file.");
     if (staged.size > maxAudioBytes) throw new Error(`Audio exceeds the ${maxAudioBytes}-byte processing limit.`);
+    if (await operationDirBytes(operationDir) > maxTempBytes) throw new Error("Voice transcription exceeded the temporary-storage limit.");
 
     const result = await options.transcriber.transcribe({
       filePath,
       operationDir,
+      workspaceDir: options.workspaceDir ?? process.cwd(),
       ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
       signal: options.signal,
       maxDurationSeconds,
+      maxTempBytes,
     });
     if (options.signal.aborted) return { kind: "cancelled" };
     const transcript = result.text.trim();
@@ -541,7 +669,9 @@ export async function prepareVoiceTurn(turn: InteractiveTurnInput, options: Prep
       },
     };
   } catch (error) {
-    if (options.signal.aborted || (error instanceof Error && error.name === "AbortError")) return { kind: "cancelled" };
+    // Only the authoritative lane signal is cancellation. Helper deadlines and
+    // transport AbortErrors remain user-visible failures.
+    if (options.signal.aborted) return { kind: "cancelled" };
     return { kind: "failed", error: asError(error) };
   } finally {
     if (operationDir) await rm(operationDir, { recursive: true, force: true });
@@ -550,55 +680,46 @@ export async function prepareVoiceTurn(turn: InteractiveTurnInput, options: Prep
 
 const productionTranscriber = createWhisperCppTranscriber();
 
-export async function prepareVoiceBatchForDispatch(turns: InteractiveTurnInput[], options: PrepareVoiceBatchOptions = {}): Promise<VoiceBatchPreparation> {
+export async function prepareVoiceBatchForDispatch(
+  turns: InteractiveTurnInput[],
+  options: PrepareVoiceBatchOptions,
+): Promise<VoiceBatchPreparation> {
   const audioTurns = turns.filter(hasAudioAttachment);
-  if (audioTurns.length === 0) return { kind: "ready", turns, handoff: async (operation) => { await operation(); } };
+  if (audioTurns.length === 0) return { kind: "ready", turns };
   const primary = audioTurns[0];
   const notify = options.notify ?? notifyVoiceFailure;
   if (audioTurns.length !== 1 || primary.attachments.filter(isAudioAttachment).length !== 1) {
     await notify(primary, "Could not transcribe this message: send one voice/audio attachment at a time.");
     return { kind: "drop" };
   }
-  const scope = beginVoiceIngressScope(primary);
-  if (!scope) {
-    await notify(primary, "A voice transcription is already running in this conversation. Use /stop or wait for it to finish.");
-    return { kind: "drop" };
-  }
   const result = await prepareVoiceTurn(primary, {
     transcriber: options.transcriber ?? productionTranscriber,
     stager: options.stager ?? surfaceVoiceAudioStager,
-    signal: scope.controller.signal,
+    signal: options.signal,
+    workspaceDir: options.workspaceDir,
     ...(options.tempRoot ? { tempRoot: options.tempRoot } : {}),
     ...(options.maxAudioBytes === undefined ? {} : { maxAudioBytes: options.maxAudioBytes }),
     ...(options.maxDurationSeconds === undefined ? {} : { maxDurationSeconds: options.maxDurationSeconds }),
     ...(options.maxTempBytes === undefined ? {} : { maxTempBytes: options.maxTempBytes }),
+    ...(options.downloadTimeoutMs === undefined ? {} : { downloadTimeoutMs: options.downloadTimeoutMs }),
   });
-  if (result.kind === "cancelled" || scope.state === "aborted") { clearScope(scope); return { kind: "drop" }; }
+  if (result.kind === "cancelled") return { kind: "drop" };
   if (result.kind === "unavailable") {
-    clearScope(scope);
     await notify(primary, `Could not transcribe this voice note: ${result.reason}`);
     return { kind: "drop" };
   }
   if (result.kind === "failed") {
-    clearScope(scope);
     await notify(primary, `Could not transcribe this voice note: ${result.error.message}`);
     return { kind: "drop" };
   }
-  const preparedTurns = turns.map((turn) => turn === primary ? result.turn : turn);
-  return {
-    kind: "ready",
-    turns: preparedTurns,
-    handoff: async (operation) => {
-      if (scope.state !== "preparing" || scope.controller.signal.aborted) { clearScope(scope); return; }
-      scope.state = "handed-off";
-      clearScope(scope);
-      await operation();
-    },
-  };
+  return { kind: "ready", turns: turns.map((turn) => turn === primary ? result.turn : turn) };
 }
 
 /** Remove only stale, direct, managed `voice-*` directories. Symlinks are never followed. */
-export async function reapStaleVoiceTempDirs(root: string = DEFAULT_VOICE_TEMP_ROOT, options: { nowMs?: number; staleAfterMs?: number } = {}): Promise<number> {
+export async function reapStaleVoiceTempDirs(
+  root: string = DEFAULT_VOICE_TEMP_ROOT,
+  options: { nowMs?: number; staleAfterMs?: number } = {},
+): Promise<number> {
   await mkdir(root, { recursive: true, mode: PRIVATE_DIR_MODE });
   const nowMs = options.nowMs ?? Date.now();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_VOICE_STALE_AFTER_MS;
