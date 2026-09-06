@@ -1,6 +1,6 @@
 ---
 name: manage-skills
-description: Use when the user asks to create, save, update, verify, repair, or remove a user-authored Skill without changing Agent Bridge's bundled Skills.
+description: Use when the user asks to create, import, save, update, verify, repair, or remove a user-managed Skill without changing Agent Bridge's bundled Skills.
 ---
 
 # Manage User Skills
@@ -10,13 +10,13 @@ Use Agent Bridge's existing shared-skill projection. Do not create another skill
 ## Ownership
 
 - Bundled Agent Bridge Skills live in the active release's `skills/` directory and are managed by the release.
-- User-authored Skills live canonically at `~/.agents/skills/<skill-name>/SKILL.md` (`SHARED_MEMORY_HOME` takes precedence over `HOME` when configured).
+- User-managed Skills live canonically at `~/.agents/skills/<skill-name>/SKILL.md` (`SHARED_MEMORY_HOME` takes precedence over `HOME` when configured). They may be authored by the user or explicitly imported from a trusted external source.
 - User Skills project as symlinks into native provider directories so the canonical Skill remains authoritative:
   - Codex: `~/.codex/skills/<skill-name>`
   - Claude: `~/.claude/skills/<skill-name>`
   - Antigravity/Agy: `~/.gemini/antigravity-cli/skills/<skill-name>`
 - Cursor is excluded from that universal projection. The canonical Cursor-native path is `~/.cursor/skills/<skill-name>/SKILL.md` and is created only when explicitly requested.
-- Do not edit a bundled Skill when the user intends to create their own Skill.
+- Do not edit a bundled Skill when the user intends to create or import their own managed Skill.
 
 ## Create or save
 
@@ -55,24 +55,45 @@ Do not create duplicate Claude/Codex/Cursor projections unless the operator acce
 npm run skills -- verify <name>
 ```
 
+## Import a trusted external Skill
+
+Use the manager instead of copying an external Skill directly into canonical storage:
+
+```bash
+npm run skills -- import-user /path/to/<skill-name>
+npm run skills -- verify <skill-name>
+```
+
+`import-user` validates the external Skill through the normal installer, copies the complete folder into `~/.agents/skills/<skill-name>`, records it as user-managed, and creates the normal Codex/Claude/Agy projections. It fails closed on bundled-name collisions, an existing canonical Skill, corrupt lock state, or unrelated native provider content. Its temporary staging directory is removed on success or failure. The supplied source directory remains caller-owned and is not removed.
+
+Only import a Skill from a source the operator trusts. Importing a Skill does not install or qualify tools, MCP servers, credentials, binaries, network access, or other runtime dependencies that its instructions expect.
+
+For the official OpenAI Docs Skill, the current upstream folder and Skill name are `skills/.curated/openai-docs` / `openai-docs` rather than `docs`. After importing it, the Skill itself requires the OpenAI developer-docs MCP server for its primary non-Codex docs path. Qualify that dependency separately:
+
+```bash
+codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp
+```
+
+Then start a fresh Codex session and confirm the OpenAI developer-docs MCP tools are available before treating the Skill's MCP-backed workflow as qualified. `npm run skills -- verify openai-docs` proves managed Skill storage/projection integrity; it does not prove the MCP server is callable.
+
 ## Update or repair
 
 Edit only the canonical `~/.agents/skills/<name>` content, then run `project-user` again so the lock hash and native symlinks are refreshed. Finish with `verify`.
 
 If a managed native projection is missing, rerunning `project-user` repairs it. If a native path exists but is no longer the expected symlink to the canonical Skill, `project-user` fails closed instead of overwriting it; inspect that collision before changing or deleting anything.
 
-Do not use `verify --fix` for user-authored Skills: the generic bundled-skill repair path can replace a conflicting native entry. `project-user` is the fail-closed repair path for user Skills.
+Do not use `verify --fix` for user-managed Skills: the generic bundled-skill repair path can replace a conflicting native entry. `project-user` is the fail-closed repair path for user Skills.
 
 ## Remove
 
-Only when the user explicitly wants the user Skill removed:
+Only when the user explicitly wants the user-managed Skill removed:
 
 ```bash
 npm run skills -- uninstall-user <name>
 ```
 
-This removes the canonical shared Skill, its expected native symlink projections, and its lockfile record. It fails closed if a native path has been replaced with unrelated content. Never use the generic bundled `uninstall` command for a user-authored Skill.
+This removes the canonical shared Skill, its expected native symlink projections, and its lockfile record. It fails closed if a native path has been replaced with unrelated content. Never use the generic bundled `uninstall` command for a user-managed Skill.
 
 ## Completion evidence
 
-Report the canonical path and whether `npm run skills -- verify <name>` passed. Do not dump the full Skill body unless the user asks for it.
+Report the canonical path and whether `npm run skills -- verify <name>` passed. For an imported Skill, separately report whether any external runtime dependencies it requires were actually qualified. Do not dump the full Skill body unless the user asks for it.
