@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farstax.com/schemas/agent-bridge-skill-pack-v1.json",
+  "title": "Agent Bridge curated Skill Pack catalogue",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "catalogueId", "catalogueVersion", "packs"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "catalogueId": { "$ref": "#/$defs/nonEmpty" },
+    "catalogueVersion": { "$ref": "#/$defs/semver" },
+    "packs": { "type": "array", "items": { "$ref": "#/$defs/pack" } }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 64 },
+    "semver": { "type": "string", "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$", "maxLength": 64 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "namedRequirement": {
+      "type": "object", "additionalProperties": false, "required": ["name", "purpose"],
+      "properties": { "name": { "$ref": "#/$defs/nonEmpty" }, "purpose": { "$ref": "#/$defs/nonEmpty" } }
+    },
+    "secretRequirement": {
+      "type": "object", "additionalProperties": false, "required": ["name", "purpose"],
+      "properties": { "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }, "purpose": { "$ref": "#/$defs/nonEmpty" } }
+    },
+    "serviceRequirement": {
+      "type": "object", "additionalProperties": false, "required": ["name", "purpose"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmpty" }, "purpose": { "$ref": "#/$defs/nonEmpty" },
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" }, "authorization": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "dependencies": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "requiredLocal": { "type": "array", "items": { "$ref": "#/$defs/namedRequirement" } },
+        "optionalLocal": { "type": "array", "items": { "$ref": "#/$defs/namedRequirement" } },
+        "externalServices": { "type": "array", "items": { "$ref": "#/$defs/serviceRequirement" } },
+        "hostedMcps": { "type": "array", "items": { "$ref": "#/$defs/serviceRequirement" } },
+        "requiredSecrets": { "type": "array", "items": { "$ref": "#/$defs/secretRequirement" } }
+      }
+    },
+    "capabilities": {
+      "type": "object", "additionalProperties": false, "required": ["effects", "approval"],
+      "properties": {
+        "effects": { "type": "array", "items": { "enum": ["local-read", "external-read", "draft-write", "external-write", "spend-mutation"] } },
+        "approval": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "content": {
+      "type": "object", "additionalProperties": false, "required": ["repository", "revision", "path", "sha256"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/nonEmpty" }, "revision": { "$ref": "#/$defs/nonEmpty" },
+        "path": { "$ref": "#/$defs/nonEmpty" }, "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["origin", "modifiedFromUpstream", "lastReviewed"],
+      "properties": {
+        "origin": { "enum": ["farstax-authored", "adapted-upstream", "vendored-upstream"] },
+        "upstreamRepository": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "upstreamRevision": { "$ref": "#/$defs/nonEmpty" }, "upstreamLicense": { "$ref": "#/$defs/nonEmpty" },
+        "noticePath": { "$ref": "#/$defs/nonEmpty" }, "noticeSha256": { "$ref": "#/$defs/sha256" },
+        "modifiedFromUpstream": { "type": "boolean" }, "lastReviewed": { "type": "string", "format": "date" }
+      }
+    },
+    "skill": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "description", "content", "provenance", "supportedHosts", "dependencies", "capabilities", "tests"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" }, "description": { "$ref": "#/$defs/nonEmpty" },
+        "content": { "$ref": "#/$defs/content" }, "provenance": { "$ref": "#/$defs/provenance" },
+        "supportedHosts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmpty" } },
+        "dependencies": { "$ref": "#/$defs/dependencies" }, "capabilities": { "$ref": "#/$defs/capabilities" },
+        "tests": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } }
+      }
+    },
+    "compatibility": {
+      "type": "object", "additionalProperties": false, "required": ["apiVersion", "supportedHosts"],
+      "properties": {
+        "apiVersion": { "const": 1 }, "minAgentBridgeVersion": { "$ref": "#/$defs/semver" },
+        "maxAgentBridgeVersion": { "$ref": "#/$defs/semver" },
+        "supportedHosts": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } }
+      }
+    },
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "displayName", "description", "version", "maintainer", "license", "categories", "capabilityTags", "attribution", "compatibility", "dependencies", "capabilities", "tests", "skills"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" }, "displayName": { "$ref": "#/$defs/nonEmpty" }, "description": { "$ref": "#/$defs/nonEmpty" },
+        "version": { "$ref": "#/$defs/semver" }, "maintainer": { "$ref": "#/$defs/nonEmpty" }, "license": { "$ref": "#/$defs/nonEmpty" },
+        "categories": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } },
+        "capabilityTags": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } },
+        "attribution": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } },
+        "compatibility": { "$ref": "#/$defs/compatibility" }, "dependencies": { "$ref": "#/$defs/dependencies" },
+        "capabilities": { "$ref": "#/$defs/capabilities" }, "tests": { "type": "array", "items": { "$ref": "#/$defs/nonEmpty" } },
+        "skills": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/skill" } }
+      }
+    }
+  }
+}

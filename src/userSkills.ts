@@ -3,7 +3,7 @@
  * INPUTS: A validated user skill name, shared home directory, and bundled-skill catalog root.
  * OUTPUTS: Existing shared skill registration plus native CLI symlink projections managed by the shared skill manager.
  * NEIGHBORS: src/skills.ts, scripts/skill-manager.ts, skills/manage-skills/SKILL.md
- * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, or unmanaged native paths, then reuse the shared skill manager with explicit user ownership.
+ * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, pack-managed ownership, or unmanaged native paths, then reuse the shared skill manager with explicit user ownership.
  */
 
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
@@ -45,6 +45,7 @@ export function uninstallUserSkillGlobal(skillName: string, options: ProjectUser
 function preflightUserSkill(skillName: string, options: ProjectUserSkillOptions): ReturnType<typeof resolveSkillPaths> {
   validateUserSkillName(skillName);
   const paths = resolveSkillPaths(options.homeDir);
+  assertNotPackManaged(skillName, paths.homeDir);
   const sharedDir = join(paths.agentsSkillsDir, skillName);
 
   if (!existsSync(sharedDir)) throw new Error(`User skill is missing from canonical shared storage: ${sharedDir}`);
@@ -58,6 +59,27 @@ function preflightUserSkill(skillName: string, options: ProjectUserSkillOptions)
   }
 
   return paths;
+}
+
+function assertNotPackManaged(skillName: string, homeDir: string): void {
+  const packLockPath = join(homeDir, ".agents", ".skill-pack-lock.json");
+  if (!existsSync(packLockPath)) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(packLockPath, "utf8")) as unknown;
+  } catch {
+    throw new Error(`Unable to parse Skill Pack lockfile: ${packLockPath}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Invalid Skill Pack lockfile: ${packLockPath}`);
+  }
+  const skills = (parsed as { skills?: unknown }).skills;
+  if (!skills || typeof skills !== "object" || Array.isArray(skills)) {
+    throw new Error(`Invalid Skill Pack lockfile: ${packLockPath}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(skills, skillName)) {
+    throw new Error(`Refusing user-skill operation for pack-managed Skill: ${skillName}; use the Skill Pack manager`);
+  }
 }
 
 function validateUserSkillName(skillName: string): void {
