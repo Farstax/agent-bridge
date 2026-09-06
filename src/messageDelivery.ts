@@ -14,6 +14,7 @@ import { parseMarkdownToIR, renderMarkerString, TELEGRAM_HTML_MARKERS, markdownT
 
 const MAX_TELEGRAM_TEXT = 4096;
 const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
+const ANSWER_PREVIEW_ABORT_POLL_MS = 50;
 
 export class PreviewCleanupError extends Error {
   readonly cause: unknown;
@@ -354,7 +355,16 @@ export async function sendMessageWithProgress({
         return;
       }
       if (!answerPreviewPending && answerPreviewDirty) queueAnswerPreview(true);
-      await Promise.allSettled([...answerPreviewUpdates]);
+      let fenceTimer: NodeJS.Timeout | null = null;
+      const fencePoll = new Promise<void>((resolve) => {
+        fenceTimer = setTimeout(resolve, ANSWER_PREVIEW_ABORT_POLL_MS);
+        fenceTimer.unref();
+      });
+      await Promise.race([
+        Promise.allSettled([...answerPreviewUpdates]),
+        fencePoll,
+      ]);
+      if (fenceTimer) clearTimeout(fenceTimer);
     }
   };
 
