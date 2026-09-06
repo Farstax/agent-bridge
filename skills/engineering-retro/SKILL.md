@@ -52,6 +52,8 @@ Return at most three improvements, ranked by expected reduction in future owner 
 
 Do not mutate repository instructions, Skills, code, CI, issues, releases, or deployment state unless the owner explicitly authorizes that follow-up work in the same request or later.
 
+An approved follow-up change remains separate from delivery. This Skill must not initiate ship, PR merge, release, deployment, or another delivery workflow.
+
 ## Output
 
 Keep the retro compact:
