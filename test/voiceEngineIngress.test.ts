@@ -193,4 +193,20 @@ describe("voice ingress -> ordinary Run admission fence", () => {
     expect(countAtAdmission).toBe(0);
     expect(coordinator.preProviderIngressCount()).toBe(0);
   });
+
+  it("forwards the original attachment through the ordinary attachment path on a real transcription failure", async () => {
+    const turn = audioTurn("retain-voice");
+    prepareVoice.mockImplementationOnce(async (turns: InteractiveTurnInput[], options: { retainAttachment?: (turn: InteractiveTurnInput, filePath: string, attachment: unknown) => Promise<void> }) => {
+      await options.retainAttachment?.(turns[0], "/tmp/fake-retained-audio.ogg", turns[0].attachments[0]);
+      return { kind: "drop" as const };
+    });
+    const { engine, runCli, client } = makeEngine();
+    const admit = vi.spyOn(db, "admitMessage");
+
+    await engine.handleInteractiveTurn(turn);
+
+    expect(admit).not.toHaveBeenCalled();
+    expect(runCli).not.toHaveBeenCalled();
+    expect(client.sendDocument).toHaveBeenCalledWith(100, "/tmp/fake-retained-audio.ogg", undefined, undefined);
+  });
 });

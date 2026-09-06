@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, stat, statfs } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { InteractiveAttachment, InteractiveTurnInput } from "./interactiveIngress.js";
 import { resolveWorkspaceLock } from "./workspaceLock.js";
 
@@ -62,7 +62,10 @@ export type VoicePreparationResult =
   | { kind: "ready"; turn: InteractiveTurnInput }
   | { kind: "unavailable"; reason: string }
   | { kind: "cancelled" }
-  | { kind: "failed"; error: Error };
+  // retainedAttachmentPath is present only when the original audio was
+  // already staged locally before failure struck, so the caller can forward
+  // it back through the ordinary attachment path before it is cleaned up.
+  | { kind: "failed"; error: Error; retainedAttachmentPath?: string };
 
 export type VoiceBatchPreparation =
   | { kind: "ready"; turns: InteractiveTurnInput[] }
@@ -86,6 +89,11 @@ export interface PrepareVoiceBatchOptions {
   transcriber?: VoiceTranscriber;
   stager?: VoiceAudioStager;
   notify?: (turn: InteractiveTurnInput, message: string) => Promise<void>;
+  // Called after a genuine transcription failure (not /stop cancellation)
+  // when the original audio was already staged locally, so the caller can
+  // forward it back through whichever attachment-delivery mechanism it
+  // already uses for ordinary (non-voice) attachments.
+  retainAttachment?: (turn: InteractiveTurnInput, filePath: string, attachment: InteractiveAttachment) => Promise<void>;
   tempRoot?: string;
   maxAudioBytes?: number;
   maxDurationSeconds?: number;
@@ -146,6 +154,21 @@ function combineCaptionAndTranscript(caption: string, transcript: string): strin
   const cleanCaption = caption.trim();
   const cleanTranscript = transcript.trim();
   return cleanCaption ? `${cleanCaption}\n\n[Voice note transcript]\n${cleanTranscript}` : cleanTranscript;
+}
+
+/**
+ * Copy the already-staged source audio out of the (about-to-be-deleted)
+ * operation directory so a genuine transcription failure can still forward
+ * the original attachment back to the user before the retained copy itself
+ * is cleaned up by the caller.
+ */
+async function preserveStagedAttachment(filePath: string, root: string, attachment: InteractiveAttachment): Promise<string> {
+  const holdingDir = await mkdtemp(join(root, "voice-retained-"));
+  await chmod(holdingDir, PRIVATE_DIR_MODE);
+  const destination = join(holdingDir, attachment.fileName || basename(filePath));
+  await copyFile(filePath, destination);
+  await chmod(destination, PRIVATE_FILE_MODE);
+  return destination;
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -631,6 +654,7 @@ export async function prepareVoiceTurn(turn: InteractiveTurnInput, options: Prep
   }
 
   let operationDir: string | null = null;
+  let stagedFilePath: string | null = null;
   try {
     operationDir = await createVoiceOperationDir(options.tempRoot ?? DEFAULT_VOICE_TEMP_ROOT, maxTempBytes);
     if (options.signal.aborted) return { kind: "cancelled" };
@@ -642,6 +666,7 @@ export async function prepareVoiceTurn(turn: InteractiveTurnInput, options: Prep
       maxAudioBytes,
       downloadTimeoutMs,
     });
+    stagedFilePath = filePath;
     if (options.signal.aborted) return { kind: "cancelled" };
     if (!isPathInside(operationDir, filePath)) throw new Error("Voice media stager returned a path outside its operation directory.");
     const staged = await lstat(filePath);
@@ -673,7 +698,15 @@ export async function prepareVoiceTurn(turn: InteractiveTurnInput, options: Prep
     // Only the authoritative lane signal is cancellation. Helper deadlines and
     // transport AbortErrors remain user-visible failures.
     if (options.signal.aborted) return { kind: "cancelled" };
-    return { kind: "failed", error: asError(error) };
+    const failure: { kind: "failed"; error: Error; retainedAttachmentPath?: string } = { kind: "failed", error: asError(error) };
+    if (stagedFilePath) {
+      try {
+        failure.retainedAttachmentPath = await preserveStagedAttachment(stagedFilePath, options.tempRoot ?? DEFAULT_VOICE_TEMP_ROOT, attachment);
+      } catch (preserveError) {
+        console.error("[voice-ingress] failed to retain original attachment after transcription failure", preserveError);
+      }
+    }
+    return failure;
   } finally {
     if (operationDir) await rm(operationDir, { recursive: true, force: true });
   }
@@ -711,6 +744,19 @@ export async function prepareVoiceBatchForDispatch(
   }
   if (result.kind === "failed") {
     await notify(primary, `Could not transcribe this voice note: ${result.error.message}`);
+    if (result.retainedAttachmentPath) {
+      const retainedPath = result.retainedAttachmentPath;
+      try {
+        if (options.retainAttachment) {
+          const attachment = primary.attachments.find(isAudioAttachment);
+          if (attachment) await options.retainAttachment(primary, retainedPath, attachment);
+        }
+      } catch (error) {
+        console.error("[voice-ingress] failed to forward retained attachment", error);
+      } finally {
+        await rm(dirname(retainedPath), { recursive: true, force: true });
+      }
+    }
     return { kind: "drop" };
   }
   return { kind: "ready", turns: turns.map((turn) => turn === primary ? result.turn : turn) };

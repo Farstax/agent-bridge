@@ -530,6 +530,93 @@ describe("voice ingress", () => {
     });
   });
 
+  it("retains and forwards the original attachment through the caller's attachment path after a genuine transcription failure", async () => {
+    await withTempRoot(async (root) => {
+      const notify = vi.fn(async () => undefined);
+      const retainAttachment = vi.fn(async (_turn: InteractiveTurnInput, filePath: string) => {
+        // The callback must be able to read the retained file before it is cleaned up.
+        expect(await pathExists(filePath)).toBe(true);
+        expect((await readFile(filePath, "utf8"))).toBe("audio");
+      });
+      const transcriber: VoiceTranscriber = {
+        name: "broken",
+        available: true,
+        async transcribe() { throw new Error("decoder failed"); },
+      };
+      const turn = audioTurn();
+      const prepared = await prepareVoiceBatchForDispatch([turn], {
+        signal: new AbortController().signal,
+        workspaceDir: root,
+        stager: writingStager(),
+        transcriber,
+        tempRoot: root,
+        maxTempBytes: 1024,
+        notify,
+        retainAttachment,
+      });
+
+      expect(prepared).toEqual({ kind: "drop" });
+      expect(notify).toHaveBeenCalledWith(expect.anything(), expect.stringContaining("decoder failed"));
+      expect(retainAttachment).toHaveBeenCalledTimes(1);
+      const [forwardedTurn, forwardedPath, forwardedAttachment] = retainAttachment.mock.calls[0];
+      expect(forwardedTurn).toBe(turn);
+      expect(forwardedAttachment).toMatchObject({ fileId: "voice-file", kind: "audio" });
+      // Retained scratch must not leak once the callback has run.
+      expect(await pathExists(forwardedPath)).toBe(false);
+    });
+  });
+
+  it("does not attempt attachment retention when nothing was ever staged (unavailable backend)", async () => {
+    const retainAttachment = vi.fn(async () => undefined);
+    const notify = vi.fn(async () => undefined);
+    const stager = { stage: vi.fn() } as unknown as VoiceAudioStager;
+    const prepared = await prepareVoiceBatchForDispatch([audioTurn()], {
+      signal: new AbortController().signal,
+      workspaceDir: process.cwd(),
+      stager,
+      transcriber: unavailableVoiceTranscriber,
+      notify,
+      retainAttachment,
+    });
+
+    expect(prepared).toEqual({ kind: "drop" });
+    expect(retainAttachment).not.toHaveBeenCalled();
+  });
+
+  it("does not attempt attachment retention when /stop cancels the work", async () => {
+    await withTempRoot(async (root) => {
+      const transcriptionStarted = deferred();
+      const releaseTranscription = deferred();
+      const retainAttachment = vi.fn(async () => undefined);
+      const transcriber: VoiceTranscriber = {
+        name: "gated",
+        available: true,
+        async transcribe() {
+          transcriptionStarted.resolve();
+          await releaseTranscription.promise;
+          throw new Error("decoder failed after cancel");
+        },
+      };
+      const controller = new AbortController();
+      const pending = prepareVoiceBatchForDispatch([audioTurn()], {
+        signal: controller.signal,
+        workspaceDir: root,
+        stager: writingStager(),
+        transcriber,
+        tempRoot: root,
+        maxTempBytes: 1024,
+        notify: vi.fn(),
+        retainAttachment,
+      });
+      await transcriptionStarted.promise;
+      controller.abort();
+      releaseTranscription.resolve();
+
+      expect(await pending).toEqual({ kind: "drop" });
+      expect(retainAttachment).not.toHaveBeenCalled();
+    });
+  });
+
   it("reaps only stale managed voice directories and never follows symlinks", async () => {
     await withTempRoot(async (root) => {
       const stale = join(root, "voice-stale");

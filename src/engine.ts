@@ -420,6 +420,15 @@ export class BridgeEngine {
           notify: async (turn, message) => {
             await this.sendText(turn.delivery.chatId, { text: message, message_thread_id: turn.threadId });
           },
+          // On a genuine transcription failure (not /stop), forward the
+          // original audio back to the user through the same attachment
+          // delivery path already used for ordinary non-voice attachments
+          // (see fileOutput.ts) rather than losing it.
+          retainAttachment: async (turn, filePath) => {
+            const capabilities = surfaceCapabilities(this.client);
+            if (!capabilities.attachments || typeof this.client.sendDocument !== "function") return;
+            await this.client.sendDocument(turn.delivery.chatId, filePath, undefined, turn.threadId ? { message_thread_id: turn.threadId } : undefined);
+          },
         });
         if (prepared.kind !== "ready") return;
         messages = prepared.turns;
