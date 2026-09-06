@@ -5,11 +5,13 @@ import type { CliResult } from "../src/types.js";
 
 for (const kind of ["claude", "antigravity"] as const) {
   describe(`${kind} pending answer preview cancellation`, () => {
-    it("returns after fencing without waiting for the pending preview request and deletes a late preview", async () => {
+    it("wakes a final-delivery wait after fencing and deletes the late preview", async () => {
       let releasePreview!: (value: any) => void;
       let previewStarted!: () => void;
+      let executionReturned!: () => void;
       let previewDeleted!: () => void;
       const previewStartedPromise = new Promise<void>((resolve) => { previewStarted = resolve; });
+      const executionReturnedPromise = new Promise<void>((resolve) => { executionReturned = resolve; });
       const previewDeletedPromise = new Promise<void>((resolve) => { previewDeleted = resolve; });
       const previewResponse = new Promise<any>((resolve) => { releasePreview = resolve; });
       const sendMessage = vi.fn(async () => {
@@ -37,10 +39,16 @@ for (const kind of ["claude", "antigravity"] as const) {
         execution: async (_onProgress, onAnswerDelta) => {
           onAnswerDelta("preview in flight");
           await previewStartedPromise;
-          aborted = true;
+          executionReturned();
           return { text: "must not be delivered", sessionId: "s1" } as CliResult;
         },
       });
+
+      await executionReturnedPromise;
+      // Let the resolved provider result enter deliverFinal() and block on the
+      // still-pending preview request before the stop fence becomes visible.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      aborted = true;
 
       const settledBeforePreview = await Promise.race([
         run.then((result) => ({ settled: true as const, result })),
