@@ -18,6 +18,7 @@ export interface OutputDeliveryResult {
 
 type RetentionMarkerState =
   | { state: "missing" }
+  | { state: "unavailable" }
   | { state: "invalid" }
   | { state: "valid"; expiresAt: string; expiresAtMs: number };
 
@@ -27,7 +28,10 @@ async function readRetentionMarker(outDir: string): Promise<RetentionMarkerState
     raw = await readFile(join(outDir, RETENTION_MARKER), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { state: "missing" };
-    return { state: "invalid" };
+    // BRIDGE_OUT_BASE can be shared by multiple service accounts. A marker
+    // that this process cannot read is not evidence that it owns the sibling
+    // directory or that the marker is malformed.
+    return { state: "unavailable" };
   }
   try {
     const marker = JSON.parse(raw) as { expiresAt?: unknown };
@@ -60,6 +64,18 @@ function scheduleRetainedOutputCleanup(outDir: string, expiresAtMs: number): voi
   retentionTimers.set(outDir, timer);
 }
 
+async function sweepRemoveRetainedDir(dir: string): Promise<void> {
+  clearRetentionTimer(dir);
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== "EACCES" && code !== "EPERM") {
+      console.error(`[fileOutput] failed to sweep retained output ${basename(dir)}:`, error);
+    }
+  }
+}
+
 export async function cleanupExpiredRetainedOutputDirs(nowMs = Date.now()): Promise<void> {
   let entries;
   try {
@@ -71,10 +87,9 @@ export async function cleanupExpiredRetainedOutputDirs(nowMs = Date.now()): Prom
     if (!entry.isDirectory()) continue;
     const dir = join(BRIDGE_OUT_BASE, entry.name);
     const marker = await readRetentionMarker(dir);
-    if (marker.state === "missing") continue;
+    if (marker.state === "missing" || marker.state === "unavailable") continue;
     if (marker.state === "invalid" || marker.expiresAtMs <= nowMs) {
-      clearRetentionTimer(dir);
-      await rm(dir, { recursive: true, force: true });
+      await sweepRemoveRetainedDir(dir);
       continue;
     }
     scheduleRetainedOutputCleanup(dir, marker.expiresAtMs);
@@ -205,7 +220,7 @@ export async function uploadOutputFiles(
   }
   if (failedPaths.length > 0) {
     const failedFiles = failedPaths.map((filePath) => basename(filePath));
-    if (existingRetention.state === "invalid") {
+    if (existingRetention.state === "invalid" || existingRetention.state === "unavailable") {
       await cleanOutputDir(outDir);
       await notifyPartialDelivery(client, chatId, failedPaths.length, null, options);
       return { status: "partial", uploadedFiles, failedFiles, retainedUntil: null };
