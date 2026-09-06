@@ -8,6 +8,17 @@ import {
   verifySkillGlobal,
   type SkillLinkMode,
 } from "../src/skills.js";
+import {
+  getAvailableSkillPack,
+  getSkillPackStatus,
+  installSkillFromPack,
+  installSkillPack,
+  listAvailableSkillPacks,
+  removeExplicitSkillPackSkill,
+  removeSkillPack,
+  updateSkillPack,
+  type SkillPackManagerOptions,
+} from "../src/skillPacks.js";
 import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 function usage(): never {
@@ -20,6 +31,14 @@ function usage(): never {
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
     "  npx tsx scripts/skill-manager.ts uninstall-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
+    "  npx tsx scripts/skill-manager.ts packs list [--catalogue <source>]",
+    "  npx tsx scripts/skill-manager.ts packs show <pack-id> [--version <x.y.z>] [--catalogue <source>]",
+    "  npx tsx scripts/skill-manager.ts packs status",
+    "  npx tsx scripts/skill-manager.ts packs install <pack-id> [--version <x.y.z>] [--catalogue <source>] [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts packs install-skill <pack-id> <skill-id> [--version <x.y.z>] [--catalogue <source>] [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts packs update <pack-id> [--version <x.y.z>] [--catalogue <source>] [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts packs remove <pack-id>",
+    "  npx tsx scripts/skill-manager.ts packs remove-skill <skill-id>",
   ].join("\n"));
   process.exit(1);
 }
@@ -40,37 +59,88 @@ function parseLinkMode(value: string | null): SkillLinkMode {
   throw new Error(`Invalid --link-mode value: ${value}`);
 }
 
-async function main(): Promise<void> {
-  const [command, maybeSkillName, ...rest] = process.argv.slice(2);
+function packOptions(args: string[], includeLinkMode = false): SkillPackManagerOptions {
+  return {
+    catalogueSource: optionValue(args, "--catalogue") ?? undefined,
+    requestedPackVersion: optionValue(args, "--version") ?? undefined,
+    linkMode: includeLinkMode ? parseLinkMode(optionValue(args, "--link-mode")) : undefined,
+  };
+}
 
-  if (command === "list") {
-    for (const entry of listLocalCatalog()) {
-      console.log(`${entry.name}\t${entry.version}\t${entry.description}`);
+async function runPackCommand(subcommand: string | undefined, args: string[]): Promise<void> {
+  if (subcommand === "list") {
+    for (const pack of await listAvailableSkillPacks(packOptions(args))) {
+      console.log(`${pack.id}\t${pack.version}\t${pack.displayName}\t${pack.description}`);
     }
     return;
   }
+  if (subcommand === "show") {
+    const [packId, ...rest] = args;
+    if (!packId) usage();
+    console.log(JSON.stringify(await getAvailableSkillPack(packId, packOptions(rest)), null, 2));
+    return;
+  }
+  if (subcommand === "status") {
+    console.log(JSON.stringify(getSkillPackStatus(), null, 2));
+    return;
+  }
+  if (subcommand === "install") {
+    const [packId, ...rest] = args;
+    if (!packId) usage();
+    console.log(JSON.stringify(await installSkillPack(packId, packOptions(rest, true)), null, 2));
+    return;
+  }
+  if (subcommand === "install-skill") {
+    const [packId, skillId, ...rest] = args;
+    if (!packId || !skillId) usage();
+    console.log(JSON.stringify(await installSkillFromPack(packId, skillId, packOptions(rest, true)), null, 2));
+    return;
+  }
+  if (subcommand === "update") {
+    const [packId, ...rest] = args;
+    if (!packId) usage();
+    console.log(JSON.stringify(await updateSkillPack(packId, packOptions(rest, true)), null, 2));
+    return;
+  }
+  if (subcommand === "remove") {
+    const [packId] = args;
+    if (!packId) usage();
+    console.log(JSON.stringify(removeSkillPack(packId), null, 2));
+    return;
+  }
+  if (subcommand === "remove-skill") {
+    const [skillId] = args;
+    if (!skillId) usage();
+    console.log(JSON.stringify(removeExplicitSkillPackSkill(skillId), null, 2));
+    return;
+  }
+  usage();
+}
 
+async function main(): Promise<void> {
+  const [command, maybeSkillName, ...rest] = process.argv.slice(2);
+
+  if (command === "packs") {
+    await runPackCommand(maybeSkillName, rest);
+    return;
+  }
+  if (command === "list") {
+    for (const entry of listLocalCatalog()) console.log(`${entry.name}\t${entry.version}\t${entry.description}`);
+    return;
+  }
   if (command === "install") {
     if (!maybeSkillName) usage();
     const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
-    installSkillGlobal(maybeSkillName, {
-      force: hasFlag(rest, "--force"),
-      linkMode,
-      projectCursor: hasFlag(rest, "--project-cursor"),
-    });
+    installSkillGlobal(maybeSkillName, { force: hasFlag(rest, "--force"), linkMode, projectCursor: hasFlag(rest, "--project-cursor") });
     console.log(`Installed ${maybeSkillName} (${linkMode}${hasFlag(rest, "--project-cursor") ? ", cursor" : ""})`);
     return;
   }
-
   if (command === "project-user") {
     if (!maybeSkillName) usage();
-    projectUserSkillGlobal(maybeSkillName, {
-      projectCursor: hasFlag(rest, "--project-cursor"),
-    });
+    projectUserSkillGlobal(maybeSkillName, { projectCursor: hasFlag(rest, "--project-cursor") });
     console.log(`Projected user skill ${maybeSkillName} (symlink${hasFlag(rest, "--project-cursor") ? ", cursor" : ""})`);
     return;
   }
-
   if (command === "project-cursor") {
     if (!maybeSkillName) usage();
     const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
@@ -78,7 +148,6 @@ async function main(): Promise<void> {
     console.log(`Projected Cursor skill ${maybeSkillName} (${linkMode})`);
     return;
   }
-
   if (command === "verify") {
     const skillName = maybeSkillName?.startsWith("--") ? undefined : maybeSkillName;
     const args = skillName ? rest : [maybeSkillName, ...rest].filter((arg): arg is string => Boolean(arg));
@@ -91,21 +160,18 @@ async function main(): Promise<void> {
     console.log("Skill verification passed");
     return;
   }
-
   if (command === "uninstall-user") {
     if (!maybeSkillName) usage();
     uninstallUserSkillGlobal(maybeSkillName);
     console.log(`Uninstalled user skill ${maybeSkillName}`);
     return;
   }
-
   if (command === "uninstall") {
     if (!maybeSkillName) usage();
     uninstallSkillGlobal(maybeSkillName);
     console.log(`Uninstalled ${maybeSkillName}`);
     return;
   }
-
   usage();
 }
 
