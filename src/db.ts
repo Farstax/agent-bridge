@@ -9,7 +9,7 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { LockRepository, type ExecutionLaneHandle, type ExecutionLockRecord } from "./repositories/lockRepository.js";
 export type { ExecutionLaneHandle } from "./repositories/lockRepository.js";
 import { RunRepository, type RunningRun } from "./repositories/runRepository.js";
@@ -181,6 +181,22 @@ export function openDb(dbPath: string, options: OpenDbOptions = {}): BridgeDb {
     throw new UnsupportedSchemaVersionError(schemaVersion);
   }
   return finishOpen(raw, options);
+}
+
+/**
+ * Explicit source-onboarding bootstrap (issue #696): creates or migrates the
+ * source interactive database at `dbPath` so a subsequent openProductionDb()
+ * call finds a current-schema database in place. Confined to db.ts because
+ * openDb() is a migration-owning primitive (Phase 4C.2, issue #135) that
+ * ordinary startup code must not call directly; source setup goes through
+ * this dedicated bootstrap entrypoint instead.
+ */
+export function bootstrapSourceInteractiveDb(dbPath: string): void {
+  const db = openDb(resolve(dbPath), {
+    serviceId: "telegram:interactive-source-setup",
+    databaseRole: "interactive",
+  });
+  db.raw.close();
 }
 
 /**

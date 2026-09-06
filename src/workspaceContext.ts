@@ -69,9 +69,13 @@ export function loadWorkspaceContext(env: NodeJS.ProcessEnv = process.env): stri
   }
 }
 
-export function prependWorkspaceContext(prompt: string, env: NodeJS.ProcessEnv = process.env): string {
+export function prependWorkspaceContext(
+  prompt: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: { includeManagedContext?: boolean } = {},
+): string {
   const passive = passiveContextBlock();
-  const managed = loadWorkspaceContext(env);
+  const managed = options.includeManagedContext === false ? "" : loadWorkspaceContext(env);
   const inspector = runtimeInspectorContext(env);
   const context = [
     passive,

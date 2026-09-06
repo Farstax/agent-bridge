@@ -5,9 +5,9 @@
  * NEIGHBORS: src/providerLock.ts, src/interactiveBot.ts, src/engine.ts, src/db.ts
  */
 
-import dotenv from "dotenv";
 import { join } from "node:path";
 import { getBridgeProjectDir } from "./bridge.js";
+import { loadInteractiveEnvFile } from "./interactiveEnv.js";
 import { openProductionDb } from "./db.js";
 import { TelegramClient } from "./telegram.js";
 import { BridgeEngine } from "./engine.js";
@@ -61,10 +61,7 @@ import {
   scheduledTelegramDestination,
 } from "./scheduledRoutines.js";
 
-dotenv.config({
-  path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
-  override: false,
-});
+loadInteractiveEnvFile();
 
 const supportedCliKinds = interactiveChainKinds();
 const configuredCliChain = parseCliChain(
