@@ -1,8 +1,10 @@
 import { accessSync, chmodSync, constants, existsSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+export { bootstrapSourceInteractiveDb } from "./db.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./providers/registry.js";
 import type { ChainCliKind, ProviderId } from "./providers/types.js";
+import { TelegramClient } from "./telegram.js";
 
 const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
   codex: "codex",
@@ -36,7 +38,20 @@ export interface DetectedInteractiveProvider {
   commandPath: string;
 }
 
+export interface TelegramBotIdentity {
+  id?: number;
+  username?: string;
+  firstName?: string;
+}
+
 export type CommandPathResolver = (command: string) => string | null;
+
+export function assertSupportedNodeVersion(version = process.versions.node): void {
+  const major = Number(version.split(".")[0]);
+  if (!Number.isInteger(major) || major < 24) {
+    throw new Error(`Agent Bridge source setup requires Node.js 24+ (current: ${version}).`);
+  }
+}
 
 export function resolveCommandPath(command: string): string | null {
   if (command.includes("/")) {
@@ -97,6 +112,10 @@ function envValue(value: string): string {
   return JSON.stringify(value);
 }
 
+export function resolveSourceInteractiveDbPath(projectDir: string): string {
+  return join(resolve(projectDir), ".data", "bridge.sqlite");
+}
+
 export function renderInteractiveSetupEnv(input: {
   telegramBotToken: string;
   telegramAllowedUserIds: string;
@@ -107,6 +126,7 @@ export function renderInteractiveSetupEnv(input: {
   if (!token) throw new Error("Telegram bot token is required.");
   const allowedUserIds = normalizeTelegramAllowedUserIds(input.telegramAllowedUserIds);
   const projectDir = resolve(input.projectDir);
+  const dbPath = resolveSourceInteractiveDbPath(projectDir);
   if (input.providers.length === 0) throw new Error("At least one provider CLI is required.");
 
   const commandLines = input.providers.map((provider) =>
@@ -120,6 +140,7 @@ export function renderInteractiveSetupEnv(input: {
     `TELEGRAM_BOT_TOKEN_INTERACTIVE=${envValue(token)}`,
     `TELEGRAM_ALLOWED_USER_IDS=${envValue(allowedUserIds)}`,
     `BRIDGE_PROJECT_DIR=${envValue(projectDir)}`,
+    `DB_PATH=${envValue(dbPath)}`,
     "",
     ...commandLines,
     "",
@@ -137,6 +158,19 @@ export function validateProjectDirectory(rawPath: string): string {
     throw new Error(`Project directory does not exist: ${projectDir}`);
   }
   return projectDir;
+}
+
+export async function validateTelegramBotToken(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<TelegramBotIdentity> {
+  const client = new TelegramClient(token.trim(), fetchImpl, 10_000);
+  const response = await client.call<{ id?: number; username?: string; first_name?: string }>("getMe");
+  return {
+    id: response.result?.id,
+    username: response.result?.username,
+    firstName: response.result?.first_name,
+  };
 }
 
 export function writeInteractiveSetupConfig(

@@ -33,6 +33,41 @@ export interface TelegramResponse<T> {
   retry_after?: number;
 }
 
+export interface TelegramPollingSignalSource {
+  once(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+}
+
+export interface TelegramPollingLifecycleOptions {
+  signalSource?: TelegramPollingSignalSource;
+  exit?: (code: number) => never;
+}
+
+export function isTelegramUnauthorizedError(error: unknown): boolean {
+  return Boolean(
+    error
+      && typeof error === "object"
+      && "status" in error
+      && (error as { status?: unknown }).status === 401,
+  );
+}
+
+function waitWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class TelegramClient implements MessagingPlatform {
   readonly capabilities = TELEGRAM_SURFACE_CAPABILITIES;
   private readonly token: string;
@@ -52,6 +87,7 @@ export class TelegramClient implements MessagingPlatform {
     body: any = {},
     retryCount = 0,
     requestTimeoutMs = this.fetchTimeoutMs,
+    externalSignal?: AbortSignal,
   ): Promise<TelegramResponse<T>> {
     const payload = { ...body };
     if (payload.reply_markup && typeof payload.reply_markup === "object") {
@@ -59,6 +95,9 @@ export class TelegramClient implements MessagingPlatform {
     }
 
     const ac = new AbortController();
+    const abortFromExternal = () => ac.abort(externalSignal?.reason);
+    if (externalSignal?.aborted) abortFromExternal();
+    else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
     const fetchTimer = setTimeout(() => ac.abort(), requestTimeoutMs);
     let response: Response;
     let data: any = null;
@@ -78,6 +117,7 @@ export class TelegramClient implements MessagingPlatform {
       }
     } finally {
       clearTimeout(fetchTimer);
+      externalSignal?.removeEventListener("abort", abortFromExternal);
     }
 
     if (!response.ok) {
@@ -89,8 +129,8 @@ export class TelegramClient implements MessagingPlatform {
 
       if (error.status === 429 && error.retryAfter && retryCount < 2) {
         console.warn(`[telegram] rate limited, retrying after ${error.retryAfter}s (attempt ${retryCount + 1})`);
-        await new Promise((resolve) => setTimeout(resolve, error.retryAfter * 1000));
-        return this.call<T>(method, body, retryCount + 1, requestTimeoutMs);
+        await waitWithAbort(error.retryAfter * 1000, externalSignal);
+        return this.call<T>(method, body, retryCount + 1, requestTimeoutMs, externalSignal);
       }
 
       throw error;
@@ -102,7 +142,12 @@ export class TelegramClient implements MessagingPlatform {
     return data;
   }
 
-  async getUpdates(options: any): Promise<TelegramResponse<any[]>> {
+  async getUpdates(
+    options: any,
+    lifecycle: TelegramPollingLifecycleOptions = {},
+  ): Promise<TelegramResponse<any[]>> {
+    const signalSource = lifecycle.signalSource ?? process;
+    const exit = lifecycle.exit ?? ((code: number): never => process.exit(code));
     const longPollTimeoutMs =
       typeof options?.timeout === "number" && Number.isFinite(options.timeout) && options.timeout > 0
         ? options.timeout * 1000 + TELEGRAM_LONG_POLL_HEADROOM_MS
@@ -111,18 +156,40 @@ export class TelegramClient implements MessagingPlatform {
     const watchdogMs = requestTimeoutMs + TELEGRAM_POLL_WATCHDOG_GRACE_MS;
     const watchdog = setTimeout(() => {
       console.error(`[telegram] getUpdates exceeded ${watchdogMs}ms liveness deadline; exiting for supervised restart`);
-      process.exit(1);
+      exit(1);
     }, watchdogMs);
+    const shutdown = new AbortController();
+    let shutdownRequested = false;
+    const requestShutdown = () => {
+      shutdownRequested = true;
+      shutdown.abort(new DOMException("Telegram polling shutdown", "AbortError"));
+    };
+    signalSource.once("SIGINT", requestShutdown);
+    signalSource.once("SIGTERM", requestShutdown);
 
     try {
-      return await this.call(
-        "getUpdates",
-        options,
-        0,
-        requestTimeoutMs,
-      );
+      try {
+        return await this.call(
+          "getUpdates",
+          options,
+          0,
+          requestTimeoutMs,
+          shutdown.signal,
+        );
+      } catch (error) {
+        if (shutdownRequested) {
+          exit(0);
+        }
+        if (isTelegramUnauthorizedError(error)) {
+          console.error("[telegram] getUpdates rejected bot credentials with HTTP 401; exiting instead of retrying");
+          exit(1);
+        }
+        throw error;
+      }
     } finally {
       clearTimeout(watchdog);
+      signalSource.removeListener("SIGINT", requestShutdown);
+      signalSource.removeListener("SIGTERM", requestShutdown);
     }
   }
 

@@ -108,7 +108,7 @@ Requirements:
 - Node.js 24+
 - npm
 - at least one authenticated provider CLI
-- a Telegram or Discord bot token for the surface you want to use
+- a Telegram bot token and your Telegram user ID for the Telegram quick start
 
 Clone the repository and install dependencies:
 
@@ -125,10 +125,15 @@ npm run setup
 ```
 
 It detects supported provider CLIs, asks for the Telegram bot token, allowed user
-IDs, and repository/project directory, writes `.env.interactive` with mode
-`0600`, and runs the existing Doctor checks. The generated secret file is ignored
-by Git and the wizard refuses to replace it unless you deliberately pass
-`--force`.
+IDs, and repository/project directory, validates the bot token with Telegram,
+writes `.env.interactive` with mode `0600`, runs Doctor against that generated
+configuration, and initializes the source interactive SQLite database that
+`npm start` will open strictly. The generated secret file is ignored by Git and
+the wizard refuses to replace it unless you deliberately pass `--force`.
+
+For non-interactive setup, provide `TELEGRAM_BOT_TOKEN_INTERACTIVE`,
+`TELEGRAM_ALLOWED_USER_IDS`, and `BRIDGE_PROJECT_DIR`. Run
+`npm run setup -- --help` for the compact input contract.
 
 Then start the interactive runtime:
 
@@ -138,8 +143,9 @@ npm start
 
 For manual configuration, copy [`.env.interactive.example`](.env.interactive.example).
 The switchable interactive runtime uses `INTERACTIVE_CLI_CHAIN` for provider
-fallback. Provider-locked and production deployment details live in the operator
-documentation below.
+fallback. `npm run doctor` reads `.env.interactive` by default; set
+`BRIDGE_ENV_FILE` to diagnose another runtime env file. Provider-locked and
+production deployment details live in the operator documentation below.
 
 See [source/self-hosting examples](docs/examples/README.md) for multi-provider
 Telegram, Telegram topic workstreams, Discord interactive, and scheduled
