@@ -639,22 +639,27 @@ export class BridgeEngine {
     lockHeartbeat?.unref();
 
     const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
+    let outcome: ExecutionOutcome | null = null;
     try {
       const result = await this._executeAndDeliverTurn({
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
       if (!result) {
+        if (!this.laneCoordinator.hasCancellation(executionLane)) finalize();
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+        outcome = "fenced";
         return "fenced";
       }
       finalize();
       this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
       activeTaskCommitted = true;
+      outcome = "committed";
       return "committed";
     } catch (error) {
       if (error instanceof LostExecutionLeaseError) {
         console.warn(`[${this.kind}] discarded fenced result surface=${this.surfaceIdentity} chatKey=${chatKey}`);
+        outcome = "fenced";
         return "fenced";
       }
       console.error(`[${this.kind}] prompt execution failed`, error);
@@ -665,9 +670,11 @@ export class BridgeEngine {
           const claimedRetired = this.db.completePendingMsgs(laneHandle, terminalPendingIds);
           if (!claimedRetired && !this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds)) {
             console.error(`[${this.kind}] abandoned preview cleanup could not retire owned pending rows`);
+            outcome = "fenced";
             return "fenced";
           }
         }
+        outcome = "committed";
         return "committed";
       }
       if (error instanceof CliTimeoutError) {
@@ -678,6 +685,7 @@ export class BridgeEngine {
         }
       }
       try {
+        finalize();
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       } catch (linkError) {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
@@ -695,8 +703,16 @@ export class BridgeEngine {
           body: { text: `Error: ${userText}`, message_thread_id: threadId },
         });
       }
+      outcome = "failed";
       return "failed";
     } finally {
+      const cancelled = this.laneCoordinator.hasCancellation(executionLane);
+      if (!cancelled) finalize();
+      const run = this.db.getRun(runId);
+      if (run?.status === "running") {
+        if (cancelled || outcome === "fenced") this.db.updateRunCancelled(runId, cancelled ? "user" : "fenced");
+        else if (outcome === "failed") this.db.updateRunFailed(runId, "prompt execution failed");
+      }
       if (lockHeartbeat) clearInterval(lockHeartbeat);
       if (!activeTaskCommitted) {
         for (const id of activePendingIds) this.db.releasePendingClaim(laneHandle, id);
