@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import dotenv from "dotenv";
 import type { CliKind } from "./interactiveBot.js";
+import { loadInteractiveEnvFile } from "./interactiveEnv.js";
 import {
   isProviderApiKeyConfigured,
   isProviderApiKeyVerified,
@@ -38,6 +38,12 @@ export interface AvailableCliOptions {
   verifyApiKey?: (provider: ProviderId) => boolean;
 }
 
+export interface InteractiveCliAuthStartupOptions {
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  execFile?: ProviderApiKeyProbeExecutor;
+}
+
 /**
  * Establish bounded native API-key evidence before the interactive runtime
  * makes its first synchronous routing decision. Tests may inject the probe
@@ -50,15 +56,21 @@ export async function prepareInteractiveCliAuth(
   await verifyConfiguredProviderApiKeys({ env, ...(execFile ? { execFile } : {}) });
 }
 
-// index-interactive imports this module before its own body executes. Load the
-// same env file here and complete configured-key verification during module
-// initialization so the first availability snapshot cannot race the probe.
+/**
+ * Load the canonical interactive env file before preparing provider auth.
+ * This must run during module initialization because index-interactive imports
+ * this module before its own body executes and then snapshots availability.
+ */
+export async function prepareInteractiveCliAuthStartup(
+  options: InteractiveCliAuthStartupOptions = {},
+): Promise<void> {
+  const env = options.env ?? process.env;
+  loadInteractiveEnvFile({ env, processEnv: env, ...(options.cwd ? { cwd: options.cwd } : {}) });
+  await prepareInteractiveCliAuth(env, options.execFile);
+}
+
 if (process.env.NODE_ENV !== "test") {
-  dotenv.config({
-    path: process.env.BRIDGE_ENV_FILE || ".env.interactive",
-    override: false,
-  });
-  await prepareInteractiveCliAuth(process.env);
+  await prepareInteractiveCliAuthStartup();
 }
 
 export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
