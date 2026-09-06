@@ -140,9 +140,10 @@ async function notifyPartialDelivery(
   chatId: number | string,
   failedCount: number,
   retainedUntil: string | null,
-  options?: FileSendOptions,
+  options: FileSendOptions | undefined,
+  canPublish: () => boolean,
 ): Promise<void> {
-  if (typeof client.sendMessage !== "function") return;
+  if (typeof client.sendMessage !== "function" || !canPublish()) return;
   const noun = failedCount === 1 ? "file" : "files";
   const pronoun = failedCount === 1 ? "It" : "They";
   const retention = retainedUntil
@@ -168,6 +169,7 @@ export async function uploadOutputFiles(
 ): Promise<OutputDeliveryResult> {
   const files = await collectOutputFiles(outDir);
   const existingRetention = await readRetentionMarker(outDir);
+  if (existingRetention.state === "valid") clearRetentionTimer(outDir);
   const capabilities = surfaceCapabilities(client as MessagingPlatform);
   if (!capabilities.attachments || typeof client.sendPhoto !== "function" || typeof client.sendDocument !== "function") {
     await cleanOutputDir(outDir);
@@ -222,7 +224,7 @@ export async function uploadOutputFiles(
     const failedFiles = failedPaths.map((filePath) => basename(filePath));
     if (existingRetention.state === "invalid" || existingRetention.state === "unavailable") {
       await cleanOutputDir(outDir);
-      await notifyPartialDelivery(client, chatId, failedPaths.length, null, options);
+      await notifyPartialDelivery(client, chatId, failedPaths.length, null, options, canPublish);
       return { status: "partial", uploadedFiles, failedFiles, retainedUntil: null };
     }
 
@@ -231,7 +233,7 @@ export async function uploadOutputFiles(
     if (existingRetention.state === "valid") {
       if (existingRetention.expiresAtMs <= Date.now()) {
         await cleanOutputDir(outDir);
-        await notifyPartialDelivery(client, chatId, failedPaths.length, null, options);
+        await notifyPartialDelivery(client, chatId, failedPaths.length, null, options, canPublish);
         return { status: "partial", uploadedFiles, failedFiles, retainedUntil: null };
       }
       retainedUntil = existingRetention.expiresAt;
@@ -244,12 +246,16 @@ export async function uploadOutputFiles(
       } catch (error) {
         console.error("[fileOutput] failed to persist bounded output retention:", error);
         await cleanOutputDir(outDir);
-        await notifyPartialDelivery(client, chatId, failedPaths.length, null, options);
+        await notifyPartialDelivery(client, chatId, failedPaths.length, null, options, canPublish);
         return { status: "partial", uploadedFiles, failedFiles, retainedUntil: null };
       }
     }
+    if (!canPublish()) {
+      await cleanOutputDir(outDir);
+      return { status: "cancelled", uploadedFiles, failedFiles: [], retainedUntil: null };
+    }
     scheduleRetainedOutputCleanup(outDir, retainedUntilMs);
-    await notifyPartialDelivery(client, chatId, failedPaths.length, retainedUntil, options);
+    await notifyPartialDelivery(client, chatId, failedPaths.length, retainedUntil, options, canPublish);
     return {
       status: "partial",
       uploadedFiles,
