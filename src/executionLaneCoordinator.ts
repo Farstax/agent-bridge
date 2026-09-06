@@ -1,16 +1,20 @@
 /**
  * PURPOSE: Own transient execution-lane coordination shared across provider engines.
  * INPUTS: BridgeDb identity, stable surface identity, and lane-scoped state transitions.
- * OUTPUTS: Shared in-process coordination for cancellation, drainers, delivery, augment, and fences.
+ * OUTPUTS: Shared in-process coordination for pre-provider ingress, cancellation, drainers, delivery, augment, and fences.
  * NEIGHBORS: src/engine.ts, src/db.ts
  */
 
 import type { BridgeDb } from "./db.js";
-import { abortVoiceIngressLane } from "./voiceIngress.js";
 
 export interface LaneCancellation {
   mode: "augment" | "interrupt" | "stop";
   promise: Promise<void>;
+}
+
+export interface PreProviderIngressScope {
+  readonly controller: AbortController;
+  state: "preparing" | "aborted" | "claimed";
 }
 
 export interface AugmentedTask {
@@ -29,6 +33,7 @@ export interface FinalDeliveryPhase {
 
 export class ExecutionLaneCoordinator {
   private readonly cancellationOperations = new Map<string, LaneCancellation>();
+  private readonly preProviderIngressScopes = new Map<string, Set<PreProviderIngressScope>>();
   private readonly laneDrainers = new Map<string, LaneDrainer>();
   private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
   private readonly activeAugmentedTasks = new Map<string, AugmentedTask>();
@@ -43,6 +48,53 @@ export class ExecutionLaneCoordinator {
     if (!expected || this.cancellationOperations.get(lane) === expected) this.cancellationOperations.delete(lane);
   }
   cancellationCount(): number { return this.cancellationOperations.size; }
+
+  beginPreProviderIngress(lane: string): PreProviderIngressScope {
+    const scope: PreProviderIngressScope = { controller: new AbortController(), state: "preparing" };
+    let scopes = this.preProviderIngressScopes.get(lane);
+    if (!scopes) {
+      scopes = new Set<PreProviderIngressScope>();
+      this.preProviderIngressScopes.set(lane, scopes);
+    }
+    scopes.add(scope);
+    return scope;
+  }
+
+  abortPreProviderIngress(lane: string): number {
+    const scopes = this.preProviderIngressScopes.get(lane);
+    if (!scopes) return 0;
+    let aborted = 0;
+    for (const scope of scopes) {
+      if (scope.state !== "preparing") continue;
+      scope.state = "aborted";
+      scope.controller.abort();
+      aborted += 1;
+    }
+    return aborted;
+  }
+
+  claimPreProviderIngress(lane: string, scope: PreProviderIngressScope): boolean {
+    const scopes = this.preProviderIngressScopes.get(lane);
+    if (!scopes?.has(scope) || scope.state !== "preparing" || scope.controller.signal.aborted) return false;
+    scope.state = "claimed";
+    scopes.delete(scope);
+    if (scopes.size === 0) this.preProviderIngressScopes.delete(lane);
+    return true;
+  }
+
+  clearPreProviderIngress(lane: string, scope: PreProviderIngressScope): void {
+    const scopes = this.preProviderIngressScopes.get(lane);
+    if (!scopes) return;
+    scopes.delete(scope);
+    if (scopes.size === 0) this.preProviderIngressScopes.delete(lane);
+  }
+
+  preProviderIngressCount(lane?: string): number {
+    if (lane) return this.preProviderIngressScopes.get(lane)?.size ?? 0;
+    let count = 0;
+    for (const scopes of this.preProviderIngressScopes.values()) count += scopes.size;
+    return count;
+  }
 
   getDrainer(lane: string): LaneDrainer | undefined { return this.laneDrainers.get(lane); }
   setDrainer(lane: string, drainer: LaneDrainer): void { this.laneDrainers.set(lane, drainer); }
@@ -67,12 +119,8 @@ export class ExecutionLaneCoordinator {
   clearAugmentTransferred(lane: string): void { this.transferredAugmentedLanes.delete(lane); }
 
   markAborted(lane: string): void {
+    this.abortPreProviderIngress(lane);
     this.abortedChats.add(lane);
-    // The same stop/interrupt fence must cover work before the provider
-    // lifecycle exists. Voice ingress registers its bounded download/STT scope
-    // under the canonical execution-lane key, so cancellation remains generic
-    // and provider execution continues to use cliSupervisor after handoff.
-    abortVoiceIngressLane(lane);
   }
   clearAborted(lane: string): void { this.abortedChats.delete(lane); }
   isAborted(lane: string): boolean { return this.abortedChats.has(lane); }
