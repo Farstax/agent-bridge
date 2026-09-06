@@ -268,16 +268,37 @@ describe("curated Skill Packs", () => {
     await expect(installSkillPack("marketing", { homeDir: makeTempDir("checksum-home"), catalogueSource: catalogue, agentBridgeVersion: "0.1.0" })).rejects.toThrow(/checksum mismatch/i);
 
     const unpinned = structuredClone(valid);
-    unpinned.skills[0].content.repository = "https://github.com/Farstax/agent-bridge-skills";
+    unpinned.skills[0].content.repository = "https://github.com/example-org/example-skills";
     unpinned.skills[0].content.revision = "main";
     catalogue = writeCatalogue(root, [unpinned]);
     await expect(installSkillPack("marketing", { homeDir: makeTempDir("revision-home"), catalogueSource: catalogue, agentBridgeVersion: "0.1.0", fetchImpl: async () => new Response("{}") })).rejects.toThrow(/exact 40-character commit SHA/i);
   });
 
-  it("restricts remote catalogue discovery to the curated Farstax upstream", async () => {
-    await expect(listAvailableSkillPacks({
-      catalogueSource: "https://example.com/catalogue.json",
-      fetchImpl: async () => new Response("{}"),
-    })).rejects.toThrow(/restricted to the curated Farstax\/agent-bridge-skills repository/i);
+  it("rejects a remote catalogue when no allowlisted repository is configured", async () => {
+    const original = process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO;
+    delete process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO;
+    try {
+      await expect(listAvailableSkillPacks({
+        catalogueSource: "https://example.com/catalogue.json",
+        fetchImpl: async () => new Response("{}"),
+      })).rejects.toThrow(/AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO/i);
+    } finally {
+      if (original === undefined) delete process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO;
+      else process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO = original;
+    }
+  });
+
+  it("restricts remote catalogue discovery to the configured allowlisted repository", async () => {
+    const original = process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO;
+    process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO = "example-org/example-skills";
+    try {
+      await expect(listAvailableSkillPacks({
+        catalogueSource: "https://raw.githubusercontent.com/other-org/other-skills/main/catalogue.json",
+        fetchImpl: async () => new Response("{}"),
+      })).rejects.toThrow(/restricted to the configured example-org\/example-skills repository/i);
+    } finally {
+      if (original === undefined) delete process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO;
+      else process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO = original;
+    }
   });
 });

@@ -15,7 +15,6 @@ import { getSharedSkillsHomeDir, hashDirectory, installSkillGlobal, listLocalCat
 
 export const SKILL_PACK_SCHEMA_VERSION = 1;
 export const SKILL_PACK_API_VERSION = 1;
-export const DEFAULT_SKILL_PACK_CATALOGUE = "https://raw.githubusercontent.com/Farstax/agent-bridge-skills/main/catalogue.json";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = join(moduleDir, "..");
@@ -25,7 +24,7 @@ const maxTreeBytes = 8 * 1024 * 1024;
 const maxSkillBytes = 12 * 1024 * 1024;
 const maxSkillFiles = 256;
 
-type Origin = "farstax-authored" | "adapted-upstream" | "vendored-upstream";
+type Origin = "author-created" | "adapted-upstream" | "vendored-upstream";
 export type SkillPackEffect = "local-read" | "external-read" | "draft-write" | "external-write" | "spend-mutation";
 
 export interface NamedRequirement { name: string; purpose: string }
@@ -136,7 +135,8 @@ export function hashSkillPackDirectorySha256(dir: string): string {
 }
 
 export async function loadSkillPackCatalogue(options: SkillPackManagerOptions = {}): Promise<SkillPackCatalogue> {
-  const source = options.catalogueSource ?? process.env.AGENT_BRIDGE_SKILL_PACK_CATALOGUE ?? DEFAULT_SKILL_PACK_CATALOGUE;
+  const source = options.catalogueSource ?? process.env.AGENT_BRIDGE_SKILL_PACK_CATALOGUE;
+  if (!source) throw new Error("No Skill Pack catalogue source configured; set AGENT_BRIDGE_SKILL_PACK_CATALOGUE or pass catalogueSource explicitly.");
   const text = await readSource(source, options.fetchImpl ?? fetch, maxCatalogueBytes);
   let parsed: unknown;
   try { parsed = JSON.parse(text) as unknown; } catch { throw new Error(`Invalid Skill Pack catalogue JSON: ${source}`); }
@@ -204,7 +204,8 @@ export function removeExplicitSkillPackSkill(skillId: string, options: Pick<Skil
 }
 
 async function context(packId: string, options: SkillPackManagerOptions) {
-  id(packId, "pack id"); const source = options.catalogueSource ?? process.env.AGENT_BRIDGE_SKILL_PACK_CATALOGUE ?? DEFAULT_SKILL_PACK_CATALOGUE;
+  id(packId, "pack id"); const source = options.catalogueSource ?? process.env.AGENT_BRIDGE_SKILL_PACK_CATALOGUE;
+  if (!source) throw new Error("No Skill Pack catalogue source configured; set AGENT_BRIDGE_SKILL_PACK_CATALOGUE or pass catalogueSource explicitly.");
   const catalogue = await loadSkillPackCatalogue({ ...options, catalogueSource: source }); const pack = selectPack(catalogue, packId, options.requestedPackVersion);
   compatible(pack, bridgeVersion(options)); const paths = packPaths(options.homeDir); return { catalogue, source, pack, paths, state: readState(paths.lockfile), options };
 }
@@ -325,8 +326,8 @@ function validateSkill(raw: unknown, label: string): SkillPackSkill {
 
 function content(raw: unknown, label: string): SkillContentRef { record(raw, label); only(raw, ["repository","revision","path","sha256"], label); return { repository: text(raw.repository, `${label}.repository`, 2048), revision: text(raw.revision, `${label}.revision`, 160), path: relPath(text(raw.path, `${label}.path`, 1024), `${label}.path`), sha256: sha(raw.sha256, `${label}.sha256`) }; }
 function provenance(raw: unknown, label: string): SkillProvenance {
-  record(raw, label); only(raw, ["origin","upstreamRepository","upstreamRevision","upstreamLicense","noticePath","noticeSha256","modifiedFromUpstream","lastReviewed"], label); const origin = raw.origin; if (origin !== "farstax-authored" && origin !== "adapted-upstream" && origin !== "vendored-upstream") throw new Error(`${label}.origin is invalid`); if (typeof raw.modifiedFromUpstream !== "boolean") throw new Error(`${label}.modifiedFromUpstream must be boolean`); const base: SkillProvenance = { origin, modifiedFromUpstream: raw.modifiedFromUpstream, lastReviewed: isoDate(raw.lastReviewed, `${label}.lastReviewed`) };
-  if (origin === "farstax-authored") { if (raw.modifiedFromUpstream || [raw.upstreamRepository,raw.upstreamRevision,raw.upstreamLicense,raw.noticePath,raw.noticeSha256].some((value) => value !== undefined)) throw new Error(`${label} has invalid upstream provenance for farstax-authored content`); return base; }
+  record(raw, label); only(raw, ["origin","upstreamRepository","upstreamRevision","upstreamLicense","noticePath","noticeSha256","modifiedFromUpstream","lastReviewed"], label); const origin = raw.origin; if (origin !== "author-created" && origin !== "adapted-upstream" && origin !== "vendored-upstream") throw new Error(`${label}.origin is invalid`); if (typeof raw.modifiedFromUpstream !== "boolean") throw new Error(`${label}.modifiedFromUpstream must be boolean`); const base: SkillProvenance = { origin, modifiedFromUpstream: raw.modifiedFromUpstream, lastReviewed: isoDate(raw.lastReviewed, `${label}.lastReviewed`) };
+  if (origin === "author-created") { if (raw.modifiedFromUpstream || [raw.upstreamRepository,raw.upstreamRevision,raw.upstreamLicense,raw.noticePath,raw.noticeSha256].some((value) => value !== undefined)) throw new Error(`${label} has invalid upstream provenance for author-created content`); return base; }
   const upstreamRepository = https(raw.upstreamRepository, `${label}.upstreamRepository`), upstreamRevision = text(raw.upstreamRevision, `${label}.upstreamRevision`, 160); if (/^https:\/\/github\.com\//i.test(upstreamRepository) && !/^[0-9a-f]{40}$/i.test(upstreamRevision)) throw new Error(`${label}.upstreamRevision must be an exact 40-character commit SHA for GitHub upstreams`);
   return { ...base, upstreamRepository, upstreamRevision, upstreamLicense: spdx(raw.upstreamLicense, `${label}.upstreamLicense`), noticePath: relPath(text(raw.noticePath, `${label}.noticePath`, 1024), `${label}.noticePath`), noticeSha256: sha(raw.noticeSha256, `${label}.noticeSha256`) };
 }
@@ -348,7 +349,16 @@ function writeState(path: string, state: PackState): void { state.version = 1; a
 function atomicJson(path: string, value: unknown): void { mkdirSync(dirname(path), { recursive: true }); const temp = `${path}.tmp.${process.pid}`; writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`); renameSync(temp, path); }
 function removeNotice(relativePath: string | undefined, homeDir: string): void { if (!relativePath) return; const path = safeJoin(homeDir, relativePath, "installed notice path"); rmSync(path, { force: true }); try { if (!readdirSync(dirname(path)).length) rmSync(dirname(path), { recursive: true, force: true }); } catch {} }
 
-async function readSource(source: string, fetchImpl: typeof fetch, max: number): Promise<string> { const local = localPath(source); if (local) { const bytes = readFileSync(local); if (bytes.length > max) throw new Error(`Skill Pack catalogue exceeds ${max} bytes`); return bytes.toString("utf8"); } if (!source.startsWith("https://")) throw new Error(`Skill Pack catalogue source must be a local path, file:// URL, or HTTPS URL: ${source}`); const url = new URL(source); if (url.hostname !== "raw.githubusercontent.com" || !url.pathname.startsWith("/Farstax/agent-bridge-skills/")) throw new Error(`Remote Skill Pack catalogues are restricted to the curated Farstax/agent-bridge-skills repository: ${source}`); return fetchText(source, fetchImpl, max); }
+async function readSource(source: string, fetchImpl: typeof fetch, max: number): Promise<string> {
+  const local = localPath(source);
+  if (local) { const bytes = readFileSync(local); if (bytes.length > max) throw new Error(`Skill Pack catalogue exceeds ${max} bytes`); return bytes.toString("utf8"); }
+  if (!source.startsWith("https://")) throw new Error(`Skill Pack catalogue source must be a local path, file:// URL, or HTTPS URL: ${source}`);
+  const allowedRepo = process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO?.trim();
+  if (!allowedRepo) throw new Error(`Remote Skill Pack catalogues require AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO to be configured with an "owner/repo" allowlist: ${source}`);
+  const url = new URL(source);
+  if (url.hostname !== "raw.githubusercontent.com" || !url.pathname.startsWith(`/${allowedRepo}/`)) throw new Error(`Remote Skill Pack catalogues are restricted to the configured ${allowedRepo} repository: ${source}`);
+  return fetchText(source, fetchImpl, max);
+}
 async function fetchText(url: string, fetchImpl: typeof fetch, max: number): Promise<string> { return (await fetchBytes(url, fetchImpl, max)).toString("utf8"); }
 async function fetchBytes(url: string, fetchImpl: typeof fetch, max: number): Promise<Buffer> { const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), fetchTimeoutMs); try { const response = await fetchImpl(url, { signal: controller.signal, headers: { "user-agent": "agent-bridge-skill-pack-manager" } }); if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length > max) throw new Error(`Response exceeds ${max} bytes: ${url}`); return bytes; } finally { clearTimeout(timeout); } }
 function contentRepository(repository: string, catalogueSource: string): string {
