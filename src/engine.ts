@@ -645,10 +645,12 @@ export class BridgeEngine {
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
       if (!result) {
+        if (!this.laneCoordinator.hasCancellation(executionLane)) finalize();
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
         outcome = "fenced";
         return "fenced";
       }
+      finalize();
       this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
       activeTaskCommitted = true;
@@ -683,6 +685,7 @@ export class BridgeEngine {
         }
       }
       try {
+        finalize();
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       } catch (linkError) {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
