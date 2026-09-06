@@ -231,7 +231,7 @@ function buildDiscordInteractiveCommands() {
       options: [{
         name: "to",
         description: "CLI to switch to",
-        type: 3, // STRING
+        type: 3,
         required: false,
         choices: [
           { name: "codex", value: "codex" },
@@ -257,11 +257,11 @@ function buildDiscordInteractiveCommands() {
 
 function buildCliComponents(activeCli: CliKind) {
   return [{
-    type: 1, // ACTION_ROW
+    type: 1,
     components: CLI_KINDS.map((cli) => ({
-      type: 2, // BUTTON
+      type: 2,
       label: cli === activeCli ? `✓ ${cli}` : cli,
-      style: cli === activeCli ? 1 : 2, // 1=PRIMARY (blue), 2=SECONDARY (grey)
+      style: cli === activeCli ? 1 : 2,
       custom_id: `cli:${cli}`,
       disabled: cli === activeCli,
     })),
@@ -308,6 +308,7 @@ function describeDiscordMessageForLog(d: any, reason?: string) {
     authorBot: Boolean(d.author?.bot),
     content: content ? "text" : "empty",
     contentLength: content.length,
+    attachmentCount: Array.isArray(d.attachments) ? d.attachments.length : 0,
     reason,
   };
 }
@@ -324,14 +325,15 @@ async function handleMessage(d: any): Promise<void> {
   }
 
   const content = String(d.content ?? "").trim();
-  if (!content) {
+  const hasAttachments = Array.isArray(d.attachments) && d.attachments.length > 0;
+  if (!content && !hasAttachments) {
     console.log("[discord-interactive] update.ignored", JSON.stringify(describeDiscordMessageForLog(d, "empty_content")));
     return;
   }
   console.log("[discord-interactive] update.received", JSON.stringify(describeDiscordMessageForLog(d)));
 
   const channelId = String(d.channel_id ?? "");
-  const chatKey = channelId; // Discord: channel IS the conversation unit
+  const chatKey = channelId;
 
   const turn = adaptDiscordMessage(d, "discord:interactive");
   if (!turn) return;
@@ -353,9 +355,8 @@ async function handleMessage(d: any): Promise<void> {
 // ── Interaction handler ───────────────────────────────────────────────────────
 
 async function handleInteraction(d: any): Promise<void> {
-  const interactionType = d.type as number; // 2=APPLICATION_COMMAND, 3=MESSAGE_COMPONENT
+  const interactionType = d.type as number;
 
-  // ── Button click (CLI switch) ─────────────────────────────────────────────
   if (interactionType === 3) {
     const customId = String(d.data?.custom_id ?? "");
     const userId = String(d.member?.user?.id ?? d.user?.id ?? "");
@@ -376,7 +377,6 @@ async function handleInteraction(d: any): Promise<void> {
     applyManualCliSwitchHandoff(db, channelId, newCli);
     fallbackChain.setActiveCli(channelId, newCli);
 
-    // UPDATE_MESSAGE (type 7) — edit the /cli message in-place
     await client.answerCallbackQuery({
       interaction_id: d.id,
       interaction_token: d.token,
@@ -389,7 +389,6 @@ async function handleInteraction(d: any): Promise<void> {
     return;
   }
 
-  // ── Slash command ─────────────────────────────────────────────────────────
   if (interactionType === 2) {
     const commandName = String(d.data?.name ?? "");
     const userId = String(d.member?.user?.id ?? d.user?.id ?? "");
@@ -414,7 +413,6 @@ async function handleInteraction(d: any): Promise<void> {
         }
       }
       const pref = getUserCliPreference(db, channelId);
-      // CHANNEL_MESSAGE_WITH_SOURCE (type 4)
       await client.answerCallbackQuery({
         interaction_id: d.id,
         interaction_token: d.token,
@@ -453,12 +451,10 @@ async function handleInteraction(d: any): Promise<void> {
       return;
     }
 
-    // Other commands → forward to the active CLI engine as a neutral turn
-    // ACK immediately with deferred response (3-second window)
     await client.answerCallbackQuery({
       interaction_id: d.id,
       interaction_token: d.token,
-      type: 5, // DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+      type: 5,
     }).catch((err) => console.warn("[discord-interactive] slash ACK failed", err));
 
     const promptText = d.data?.options?.[0]?.value as string | undefined ?? commandName;
@@ -496,6 +492,6 @@ process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
 console.log("[discord-interactive] connecting gateway...");
 client.connect();
 
-await new Promise(() => {}); // keep process alive — gateway drives everything
+await new Promise(() => {});
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
