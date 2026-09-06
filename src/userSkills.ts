@@ -1,13 +1,23 @@
 /**
- * PURPOSE: Project and remove user-authored skills through the canonical shared skill store without overwriting unrelated native provider content.
- * INPUTS: A validated user skill name, shared home directory, and bundled-skill catalog root.
- * OUTPUTS: Existing shared skill registration plus native CLI symlink projections managed by the shared skill manager.
+ * PURPOSE: Import, project, and remove user-managed skills through the canonical shared skill store without overwriting unrelated native provider content.
+ * INPUTS: A validated user skill name or trusted external skill directory, shared home directory, and bundled-skill catalog root.
+ * OUTPUTS: Canonical shared skill registration plus native CLI symlink projections managed by the shared skill manager.
  * NEIGHBORS: src/skills.ts, scripts/skill-manager.ts, skills/manage-skills/SKILL.md
  * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, or unmanaged native paths, then reuse the shared skill manager with explicit user ownership.
  */
 
-import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { installSkillGlobal, listLocalCatalog, resolveSkillPaths, uninstallSkillGlobal } from "./skills.js";
 
 export interface ProjectUserSkillOptions {
@@ -16,6 +26,52 @@ export interface ProjectUserSkillOptions {
   now?: Date;
   /** Explicit opt-in Cursor-native projection; never part of universal auto-projection. */
   projectCursor?: boolean;
+}
+
+export type ImportUserSkillOptions = Omit<ProjectUserSkillOptions, "projectCursor">;
+
+export function importUserSkillGlobal(sourceDir: string, options: ImportUserSkillOptions = {}): string {
+  const resolvedSource = resolve(sourceDir);
+  let sourceStat;
+  try {
+    sourceStat = lstatSync(resolvedSource);
+  } catch {
+    throw new Error(`External skill directory does not exist: ${resolvedSource}`);
+  }
+  if (!sourceStat.isDirectory()) throw new Error(`External skill source is not a directory: ${resolvedSource}`);
+
+  const skillName = basename(resolvedSource);
+  validateUserSkillName(skillName);
+  const paths = resolveSkillPaths(options.homeDir);
+  const sharedDir = join(paths.agentsSkillsDir, skillName);
+
+  assertLockfileReadable(paths.lockfilePath);
+  if (listLocalCatalog(options.repoRoot).some((entry) => entry.name === skillName)) {
+    throw new Error(`Refusing external skill import with bundled skill name: ${skillName}`);
+  }
+  if (existsSync(sharedDir)) {
+    throw new Error(`Canonical user skill already exists: ${sharedDir}`);
+  }
+  for (const nativeDir of [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir, paths.cursorSkillsDir]) {
+    assertNativeProjectionCompatible(join(nativeDir, skillName), sharedDir);
+  }
+
+  const stagingRoot = mkdtempSync(join(tmpdir(), "agent-bridge-skill-import-"));
+  const stagedSkill = join(stagingRoot, "skills", skillName);
+  try {
+    mkdirSync(dirname(stagedSkill), { recursive: true });
+    cpSync(resolvedSource, stagedSkill, { recursive: true });
+    installSkillGlobal(skillName, {
+      repoRoot: stagingRoot,
+      homeDir: paths.homeDir,
+      linkMode: "symlink",
+      ownership: "user",
+      now: options.now,
+    });
+    return skillName;
+  } finally {
+    rmSync(stagingRoot, { recursive: true, force: true });
+  }
 }
 
 export function projectUserSkillGlobal(skillName: string, options: ProjectUserSkillOptions = {}): void {
