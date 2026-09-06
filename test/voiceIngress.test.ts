@@ -1,7 +1,9 @@
-import { access, mkdir, mkdtemp, symlink, utimes, writeFile, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, symlink, utimes, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adaptDiscordMessage,
   adaptTelegramUpdate,
@@ -11,12 +13,13 @@ import { ExecutionLaneCoordinator } from "../src/executionLaneCoordinator.js";
 import {
   DEFAULT_MAX_AUDIO_BYTES,
   DEFAULT_MAX_AUDIO_DURATION_SECONDS,
-  abortVoiceIngressLane,
-  executionLaneKey,
+  acquireWorkspaceTranscriptionLease,
   prepareVoiceBatchForDispatch,
   prepareVoiceTurn,
   reapStaleVoiceTempDirs,
+  surfaceVoiceAudioStager,
   unavailableVoiceTranscriber,
+  workspaceTranscriptionLockFile,
   type VoiceAudioStager,
   type VoiceTranscriber,
 } from "../src/voiceIngress.js";
@@ -85,6 +88,14 @@ function successfulTranscriber(text = "Review issue 684."): VoiceTranscriber {
   };
 }
 
+function executionLane(turn: InteractiveTurnInput): string {
+  return JSON.stringify([turn.surfaceIdentity, turn.chatKey]);
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("voice ingress", () => {
   it("adapts Telegram voice metadata, caption and topic onto the ordinary turn shape", () => {
     const update = {
@@ -144,6 +155,18 @@ describe("voice ingress", () => {
     });
   });
 
+  it("leaves ordinary non-voice ingress unchanged", async () => {
+    const turn = audioTurn({ text: "ordinary", attachments: [] });
+    const controller = new AbortController();
+    const result = await prepareVoiceBatchForDispatch([turn], {
+      signal: controller.signal,
+      workspaceDir: process.cwd(),
+      notify: vi.fn(),
+    });
+    expect(result).toEqual({ kind: "ready", turns: [turn] });
+    expect(result.kind === "ready" ? result.turns[0] : null).toBe(turn);
+  });
+
   it("fails before download when the STT backend is unavailable", async () => {
     const stager = { stage: vi.fn() } as unknown as VoiceAudioStager;
     const result = await prepareVoiceTurn(audioTurn(), {
@@ -179,8 +202,9 @@ describe("voice ingress", () => {
         transcriber: successfulTranscriber(),
         stager: writingStager((dir) => { operationDir = dir; }),
         signal: new AbortController().signal,
+        workspaceDir: root,
         tempRoot: root,
-        maxTempBytes: 1,
+        maxTempBytes: 1024,
       });
 
       expect(result).toMatchObject({
@@ -203,15 +227,16 @@ describe("voice ingress", () => {
         transcriber: successfulTranscriber("spoken context"),
         stager: writingStager(),
         signal: new AbortController().signal,
+        workspaceDir: root,
         tempRoot: root,
-        maxTempBytes: 1,
+        maxTempBytes: 1024,
       });
       expect(result.kind).toBe("ready");
       expect(result.kind === "ready" ? result.turn.attachments : []).toEqual([document]);
     });
   });
 
-  it("/stop at the download gate aborts ingress and guarantees zero transcription or handoff", async () => {
+  it("/stop while download is held aborts staging before transcription", async () => {
     await withTempRoot(async (root) => {
       const stageStarted = deferred();
       const releaseStage = deferred();
@@ -227,26 +252,30 @@ describe("voice ingress", () => {
         },
       };
       const turn = audioTurn();
+      const coordinator = new ExecutionLaneCoordinator();
+      const lane = executionLane(turn);
+      const scope = coordinator.beginPreProviderIngress(lane);
       const pending = prepareVoiceBatchForDispatch([turn], {
+        signal: scope.controller.signal,
+        workspaceDir: root,
         stager,
         transcriber,
         tempRoot: root,
-        maxTempBytes: 1,
+        maxTempBytes: 1024,
         notify: vi.fn(),
       });
       await stageStarted.promise;
 
-      const coordinator = new ExecutionLaneCoordinator();
-      coordinator.markAborted(executionLaneKey(turn.surfaceIdentity, turn.chatKey));
+      coordinator.markAborted(lane);
       releaseStage.resolve();
-      const prepared = await pending;
-
-      expect(prepared).toEqual({ kind: "drop" });
+      expect(await pending).toEqual({ kind: "drop" });
       expect(transcribeSpy).not.toHaveBeenCalled();
+      expect(coordinator.claimPreProviderIngress(lane, scope)).toBe(false);
+      coordinator.clearPreProviderIngress(lane, scope);
     });
   });
 
-  it("/stop at the transcription gate cleans scratch and guarantees zero ordinary Run handoff", async () => {
+  it("/stop while transcription is held cleans scratch and fences admission", async () => {
     await withTempRoot(async (root) => {
       const transcriptionStarted = deferred();
       const releaseTranscription = deferred();
@@ -261,71 +290,182 @@ describe("voice ingress", () => {
         },
       };
       const turn = audioTurn();
+      const coordinator = new ExecutionLaneCoordinator();
+      const lane = executionLane(turn);
+      const scope = coordinator.beginPreProviderIngress(lane);
       const pending = prepareVoiceBatchForDispatch([turn], {
+        signal: scope.controller.signal,
+        workspaceDir: root,
         stager: writingStager((dir) => { operationDir = dir; }),
         transcriber,
         tempRoot: root,
-        maxTempBytes: 1,
+        maxTempBytes: 1024,
         notify: vi.fn(),
       });
       await transcriptionStarted.promise;
 
-      const coordinator = new ExecutionLaneCoordinator();
-      coordinator.markAborted(executionLaneKey(turn.surfaceIdentity, turn.chatKey));
+      coordinator.markAborted(lane);
       releaseTranscription.resolve();
-      const prepared = await pending;
-
-      expect(prepared).toEqual({ kind: "drop" });
+      expect(await pending).toEqual({ kind: "drop" });
+      expect(coordinator.claimPreProviderIngress(lane, scope)).toBe(false);
       expect(operationDir).not.toBe("");
+      expect(await pathExists(operationDir)).toBe(false);
+      coordinator.clearPreProviderIngress(lane, scope);
+    });
+  });
+
+  it("/stop accepted at the STT-to-Run boundary makes the synchronous claim fail", async () => {
+    await withTempRoot(async (root) => {
+      const turn = audioTurn();
+      const coordinator = new ExecutionLaneCoordinator();
+      const lane = executionLane(turn);
+      const scope = coordinator.beginPreProviderIngress(lane);
+      const prepared = await prepareVoiceBatchForDispatch([turn], {
+        signal: scope.controller.signal,
+        workspaceDir: root,
+        stager: writingStager(),
+        transcriber: successfulTranscriber(),
+        tempRoot: root,
+        maxTempBytes: 1024,
+        notify: vi.fn(),
+      });
+      expect(prepared.kind).toBe("ready");
+
+      coordinator.markAborted(lane);
+      expect(coordinator.claimPreProviderIngress(lane, scope)).toBe(false);
+      coordinator.clearPreProviderIngress(lane, scope);
+    });
+  });
+
+  it("a successful handoff claim leaves cancellation to the durable execution lifecycle", () => {
+    const turn = audioTurn();
+    const coordinator = new ExecutionLaneCoordinator();
+    const lane = executionLane(turn);
+    const scope = coordinator.beginPreProviderIngress(lane);
+
+    expect(coordinator.claimPreProviderIngress(lane, scope)).toBe(true);
+    expect(coordinator.preProviderIngressCount(lane)).toBe(0);
+    coordinator.markAborted(lane);
+    expect(scope.state).toBe("claimed");
+    expect(scope.controller.signal.aborted).toBe(false);
+  });
+
+  it("classifies a full-body download deadline as user-visible failure, not lane cancellation", async () => {
+    await withTempRoot(async (root) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); },
+      });
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, { status: 200 })));
+      const notify = vi.fn(async () => undefined);
+      const controller = new AbortController();
+      const turn = audioTurn({
+        surfaceIdentity: "discord:interactive",
+        chatKey: "channel-1",
+        delivery: { chatId: "channel-1", chatType: "private" },
+        attachments: [{
+          kind: "audio",
+          fileId: "audio-1",
+          fileName: "note.ogg",
+          mimeType: "audio/ogg",
+          fileSize: 3,
+          durationSeconds: 1,
+          remoteUrl: "https://cdn.discordapp.com/attachments/1/2/note.ogg",
+        }],
+      });
+
+      expect(await prepareVoiceBatchForDispatch([turn], {
+        signal: controller.signal,
+        workspaceDir: root,
+        stager: surfaceVoiceAudioStager,
+        transcriber: successfulTranscriber(),
+        tempRoot: root,
+        maxTempBytes: 1024,
+        downloadTimeoutMs: 20,
+        notify,
+      })).toEqual({ kind: "drop" });
+      expect(controller.signal.aborted).toBe(false);
+      expect(notify).toHaveBeenCalledWith(turn, expect.stringContaining("timed out"));
+    });
+  });
+
+  it("cleans temporary media when transcription reports a timeout", async () => {
+    await withTempRoot(async (root) => {
+      let operationDir = "";
+      const transcriber: VoiceTranscriber = {
+        name: "timeout",
+        available: true,
+        async transcribe({ operationDir: dir }) {
+          await mkdir(join(dir, "descendant-artifacts"));
+          await writeFile(join(dir, "descendant-artifacts", "partial.txt"), "partial");
+          throw new Error("Voice helper timed out after 10ms.");
+        },
+      };
+      const result = await prepareVoiceTurn(audioTurn(), {
+        transcriber,
+        stager: writingStager((dir) => { operationDir = dir; }),
+        signal: new AbortController().signal,
+        workspaceDir: root,
+        tempRoot: root,
+        maxTempBytes: 1024,
+      });
+      expect(result.kind).toBe("failed");
+      expect(result.kind === "failed" ? result.error.message : "").toContain("timed out");
       expect(await pathExists(operationDir)).toBe(false);
     });
   });
 
-  it("/stop accepted at the STT-to-Run handoff boundary guarantees zero provider admission", async () => {
+  it("uses detached process groups so helper timeout/cancellation can terminate descendants", async () => {
+    const source = await readFile(new URL("../src/voiceIngress.ts", import.meta.url), "utf8");
+    expect(source).toContain("detached: true");
+    expect(source).toContain("process.kill(-pid, value)");
+    expect(source).toContain('signal("SIGKILL")');
+  });
+
+  it("permits only one active transcription lease per workspace across processes", async () => {
+    if (process.platform !== "linux") return;
     await withTempRoot(async (root) => {
-      const turn = audioTurn();
-      const prepared = await prepareVoiceBatchForDispatch([turn], {
-        stager: writingStager(),
-        transcriber: successfulTranscriber(),
-        tempRoot: root,
-        maxTempBytes: 1,
-        notify: vi.fn(),
-      });
-      expect(prepared.kind).toBe("ready");
-      if (prepared.kind !== "ready") throw new Error("expected prepared voice turn");
-
-      const coordinator = new ExecutionLaneCoordinator();
-      coordinator.markAborted(executionLaneKey(turn.surfaceIdentity, turn.chatKey));
-      const providerAdmissions = vi.fn();
-      await prepared.handoff(providerAdmissions);
-
-      expect(providerAdmissions).not.toHaveBeenCalled();
+      const first = await acquireWorkspaceTranscriptionLease(root, new AbortController().signal);
+      await expect(acquireWorkspaceTranscriptionLease(root, new AbortController().signal))
+        .rejects.toThrow("already running for this workspace");
+      await first.release();
+      const second = await acquireWorkspaceTranscriptionLease(root, new AbortController().signal);
+      await second.release();
     });
   });
 
-  it("hands prepared speech to the ordinary path exactly once after atomically claiming the boundary", async () => {
+  it("recovers the workspace lease after a holder process is killed and leaves only a stale lock file", async () => {
+    if (process.platform !== "linux") return;
+    const flock = existsSync("/usr/bin/flock") ? "/usr/bin/flock" : existsSync("/bin/flock") ? "/bin/flock" : null;
+    if (!flock) return;
     await withTempRoot(async (root) => {
-      const turn = audioTurn();
-      const prepared = await prepareVoiceBatchForDispatch([turn], {
-        stager: writingStager(),
-        transcriber: successfulTranscriber("ordinary text"),
-        tempRoot: root,
-        maxTempBytes: 1,
-        notify: vi.fn(),
+      const lockFile = workspaceTranscriptionLockFile(root);
+      await mkdir(dirname(lockFile), { recursive: true });
+      const holder = spawn(flock, ["--exclusive", lockFile, process.execPath, "-e", 'process.stdout.write("READY\\n"); setInterval(() => {}, 1000);'], {
+        detached: true,
+        stdio: ["ignore", "pipe", "ignore"],
       });
-      expect(prepared.kind).toBe("ready");
-      if (prepared.kind !== "ready") throw new Error("expected prepared voice turn");
+      await new Promise<void>((resolveReady, rejectReady) => {
+        let stdout = "";
+        holder.stdout?.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString();
+          if (stdout.includes("READY\n")) resolveReady();
+        });
+        holder.once("error", rejectReady);
+        holder.once("close", (code) => { if (!stdout.includes("READY\n")) rejectReady(new Error(`holder exited ${code}`)); });
+      });
 
-      const providerAdmissions = vi.fn(async () => undefined);
-      await prepared.handoff(providerAdmissions);
+      await expect(acquireWorkspaceTranscriptionLease(root, new AbortController().signal))
+        .rejects.toThrow("already running for this workspace");
+      if (holder.pid) process.kill(-holder.pid, "SIGKILL");
+      await new Promise<void>((resolveClosed) => holder.once("close", () => resolveClosed()));
 
-      expect(providerAdmissions).toHaveBeenCalledTimes(1);
-      expect(abortVoiceIngressLane(executionLaneKey(turn.surfaceIdentity, turn.chatKey))).toBe(false);
-      expect(prepared.turns[0].text).toContain("ordinary text");
+      expect(await pathExists(lockFile)).toBe(true);
+      const recovered = await acquireWorkspaceTranscriptionLease(root, new AbortController().signal);
+      await recovered.release();
     });
   });
 
-  it("surfaces transcription failure, cleans scratch and never exposes a handoff", async () => {
+  it("surfaces transcription failure and cleans scratch", async () => {
     await withTempRoot(async (root) => {
       let operationDir = "";
       const notify = vi.fn(async () => undefined);
@@ -334,11 +474,14 @@ describe("voice ingress", () => {
         available: true,
         async transcribe() { throw new Error("decoder failed"); },
       };
+      const controller = new AbortController();
       const prepared = await prepareVoiceBatchForDispatch([audioTurn()], {
+        signal: controller.signal,
+        workspaceDir: root,
         stager: writingStager((dir) => { operationDir = dir; }),
         transcriber,
         tempRoot: root,
-        maxTempBytes: 1,
+        maxTempBytes: 1024,
         notify,
       });
 
