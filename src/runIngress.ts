@@ -242,13 +242,34 @@ export class RunIngressServer {
     if (this.server) return;
     this.server = createServer({ allowHalfOpen: true }, (socket) => {
       let raw = "";
+      let receivedBytes = 0;
+      let settled = false;
       socket.setEncoding("utf8");
+      socket.on("error", () => {
+        settled = true;
+        raw = "";
+      });
       socket.on("data", (chunk) => {
+        if (settled) return;
+        receivedBytes += Buffer.byteLength(chunk, "utf8");
+        if (receivedBytes > MAX_REQUEST_BYTES) {
+          settled = true;
+          raw = "";
+          socket.destroy();
+          return;
+        }
         raw += chunk;
-        if (Buffer.byteLength(raw, "utf8") > MAX_REQUEST_BYTES) socket.destroy(new Error("request too large"));
       });
       socket.on("end", () => {
-        void this.handle(raw).then((response) => socket.end(`${JSON.stringify(response)}\n`));
+        if (settled || socket.destroyed) return;
+        settled = true;
+        void this.handle(raw)
+          .then((response) => {
+            if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
+          })
+          .catch(() => {
+            if (!socket.destroyed) socket.destroy();
+          });
       });
     });
     await new Promise<void>((resolve, reject) => {
