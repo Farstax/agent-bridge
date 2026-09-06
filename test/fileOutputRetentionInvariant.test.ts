@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { access, writeFile } from "node:fs/promises";
+import { access, chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   cleanOutputDir,
@@ -16,7 +16,10 @@ async function dirExists(path: string): Promise<boolean> {
 }
 
 afterEach(async () => {
-  await Promise.all(dirs.splice(0).map((dir) => cleanOutputDir(dir).catch(() => {})));
+  await Promise.all(dirs.splice(0).map(async (dir) => {
+    await chmod(dir, 0o700).catch(() => {});
+    await cleanOutputDir(dir).catch(() => {});
+  }));
   vi.restoreAllMocks();
 });
 
@@ -51,5 +54,16 @@ describe("bounded failed artifact retention", () => {
     await cleanupExpiredRetainedOutputDirs(Date.now());
 
     expect(await dirExists(dir)).toBe(false);
+  });
+
+  it("does not let an inaccessible sibling directory break shared-parent cleanup", async () => {
+    const dir = await prepareOutputDir(93939, "claude", `other-service-${Date.now()}-${Math.random()}`);
+    dirs.push(dir);
+    await chmod(dir, 0o000);
+
+    await expect(cleanupExpiredRetainedOutputDirs(Date.now())).resolves.toBeUndefined();
+
+    await chmod(dir, 0o700);
+    expect(await dirExists(dir)).toBe(true);
   });
 });
