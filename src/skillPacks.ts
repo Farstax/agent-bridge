@@ -351,7 +351,17 @@ function removeNotice(relativePath: string | undefined, homeDir: string): void {
 async function readSource(source: string, fetchImpl: typeof fetch, max: number): Promise<string> { const local = localPath(source); if (local) { const bytes = readFileSync(local); if (bytes.length > max) throw new Error(`Skill Pack catalogue exceeds ${max} bytes`); return bytes.toString("utf8"); } if (!source.startsWith("https://")) throw new Error(`Skill Pack catalogue source must be a local path, file:// URL, or HTTPS URL: ${source}`); const url = new URL(source); if (url.hostname !== "raw.githubusercontent.com" || !url.pathname.startsWith("/Farstax/agent-bridge-skills/")) throw new Error(`Remote Skill Pack catalogues are restricted to the curated Farstax/agent-bridge-skills repository: ${source}`); return fetchText(source, fetchImpl, max); }
 async function fetchText(url: string, fetchImpl: typeof fetch, max: number): Promise<string> { return (await fetchBytes(url, fetchImpl, max)).toString("utf8"); }
 async function fetchBytes(url: string, fetchImpl: typeof fetch, max: number): Promise<Buffer> { const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), fetchTimeoutMs); try { const response = await fetchImpl(url, { signal: controller.signal, headers: { "user-agent": "agent-bridge-skill-pack-manager" } }); if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length > max) throw new Error(`Response exceeds ${max} bytes: ${url}`); return bytes; } finally { clearTimeout(timeout); } }
-function contentRepository(repository: string, catalogueSource: string): string { if (githubRepo(repository)) return repository.replace(/\.git$/, ""); if (repository.startsWith("file://") || isAbsolute(repository)) return repository; if (/^[a-z][a-z0-9+.-]*:/i.test(repository)) throw new Error(`Unsupported Skill content repository: ${repository}`); const catalogue = localPath(catalogueSource); if (!catalogue) throw new Error(`Relative Skill content repository requires a local catalogue: ${repository}`); return resolve(dirname(catalogue), repository); }
+function contentRepository(repository: string, catalogueSource: string): string {
+  if (githubRepo(repository)) return repository.replace(/\.git$/, "");
+  const catalogue = localPath(catalogueSource);
+  if (repository.startsWith("file://") || isAbsolute(repository)) {
+    if (!catalogue) throw new Error(`Local Skill content repository requires a local catalogue: ${repository}`);
+    return repository;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(repository)) throw new Error(`Unsupported Skill content repository: ${repository}`);
+  if (!catalogue) throw new Error(`Relative Skill content repository requires a local catalogue: ${repository}`);
+  return resolve(dirname(catalogue), repository);
+}
 function localPath(source: string): string | null { if (source.startsWith("file://")) return fileURLToPath(source); if (isAbsolute(source) || !/^[a-z][a-z0-9+.-]*:/i.test(source)) return resolve(source); return null; }
 function localRepo(repository: string): string { if (repository.startsWith("file://")) return fileURLToPath(repository); if (isAbsolute(repository)) return repository; throw new Error(`Skill content repository is not local: ${repository}`); }
 function githubRepo(repository: string): boolean { return /^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?$/i.test(repository); }
