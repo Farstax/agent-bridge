@@ -2,7 +2,7 @@
 
 Agent Bridge keeps its core Skills small. Optional domain capability sets live outside this repository and are installed as **Skill Packs**. A pack is only a versioned manifest over ordinary Skills; it does not add a plugin runtime, daemon, scheduler, agent hierarchy, or per-run network fetch.
 
-The curated upstream is `Farstax/agent-bridge-skills`. Remote catalogue discovery is restricted to that repository. Local catalogue paths are supported for development, qualification, and mirrors under direct operator control.
+Agent Bridge OSS ships with no default curated catalogue. An operator/deployment opts in by setting `AGENT_BRIDGE_SKILL_PACK_CATALOGUE` (the catalogue URL or local path) and, for a remote `https://raw.githubusercontent.com/...` source, `AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO` (an `owner/repo` allowlist). Remote catalogue discovery is restricted to that configured repository; without it, remote sources are rejected. Local catalogue paths are supported for development, qualification, and mirrors under direct operator control.
 
 ## Metadata contract
 
@@ -17,16 +17,17 @@ The curated upstream is `Farstax/agent-bridge-skills`. Remote catalogue discover
 - approval guidance, attribution references and test/eval entry points;
 - included Skills and their exact content source.
 
-Each Skill records a repository, exact revision, path and SHA-256 directory digest plus provenance. GitHub content and GitHub upstream provenance use exact 40-character commit SHAs. Adapted/vendored upstream Skills must name the upstream repository, revision, SPDX licence, required notice path and notice SHA-256, whether Farstax modified the content, and the last upstream review date.
+Each Skill records a repository, exact revision, path and SHA-256 directory digest plus provenance. GitHub content and GitHub upstream provenance use exact 40-character commit SHAs. Adapted/vendored upstream Skills must name the upstream repository, revision, SPDX licence, required notice path and notice SHA-256, whether the content was modified from upstream, and the last upstream review date.
 
 Unknown metadata fields fail closed. Secret objects accept only `name` and `purpose`; secret values cannot be placed in a pack manifest.
 
 ## Discovery and inspection
 
-The default catalogue is:
+Configure the catalogue for your deployment, for example:
 
-```text
-https://raw.githubusercontent.com/Farstax/agent-bridge-skills/main/catalogue.json
+```bash
+export AGENT_BRIDGE_SKILL_PACK_CATALOGUE=https://raw.githubusercontent.com/<owner>/<repo>/main/catalogue.json
+export AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO=<owner>/<repo>
 ```
 
 List available pack versions:
