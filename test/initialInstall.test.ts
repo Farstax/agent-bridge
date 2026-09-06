@@ -217,6 +217,7 @@ print(json.dumps({"calls": calls}))
       "autonomous-work",
       "health-troubleshooting",
       "advisor",
+      "engineering-retro",
     ];
     expect(result.calls).toHaveLength(defaults.length * 2);
     for (const [index, skill] of defaults.entries()) {

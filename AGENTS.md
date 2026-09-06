@@ -40,6 +40,7 @@ Use repository instructions for durable architecture/safety and Skills for repea
 - `skills/delivery-directives/SKILL.md` — owner commands `ship it`, `review it`, `release it`, `deploy it`, `hotfix`.
 - `skills/systematic-debugging/SKILL.md` — diagnosis when the cause is not established.
 - `skills/git-sandbox/SKILL.md` — substantial isolated worktrees when useful.
+- `skills/engineering-retro/SKILL.md` — explicit retros across recent work or releases to identify repeated avoidable owner intervention and only evidence-backed reusable improvements.
 
 Do not duplicate these procedures here.
 
