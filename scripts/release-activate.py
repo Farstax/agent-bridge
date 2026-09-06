@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """Atomically activate one previously staged immutable release.
 
-This helper only publishes the ``current`` symlink. It does not stop or start
-services, modify databases, or perform migrations. The caller owns the guarded
-service/database state machine and must hold its rollout lock.
+This helper publishes the ``current`` symlink after validating the release and
+converging release-owned host components. It does not stop or start services or
+modify databases. The caller owns the guarded service/database state machine
+and must hold its rollout lock.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
-import hashlib
 from pathlib import Path
 
 
@@ -129,6 +131,27 @@ def validate_release(release: Path, expected_commit: str, strict: bool = False) 
         fail("target release directory is writable")
 
 
+def converge_release_host_components(release: Path) -> None:
+    """Converge optional components owned by this release before pointer switch.
+
+    Older releases intentionally lack the voice component installer; skipping it
+    keeps rollback to those releases possible. A release that ships the helper
+    owns the complete pinned STT contract and activation fails closed if that
+    convergence or its smoke test fails.
+    """
+    if not production_mode():
+        return
+    voice_installer = release / "scripts" / "install-voice-stt.sh"
+    if not voice_installer.exists():
+        return
+    if not _regular(voice_installer):
+        fail("voice STT installer must be a regular release file")
+    try:
+        subprocess.run(["/bin/bash", str(voice_installer)], check=True)
+    except subprocess.CalledProcessError as error:
+        fail(f"voice STT convergence failed with exit {error.returncode}")
+
+
 def current_target(current: Path, release_root: Path) -> str | None:
     if not current.exists() and not current.is_symlink():
         return None
@@ -148,10 +171,16 @@ def activate(release_root: Path, current: Path, expected_commit: str) -> str:
     release_root = validate_release_root(release_root)
     if current.parent != release_root or current.name != "current":
         fail("current pointer must be release-root/current")
-    validate_release(release_root / expected_commit, expected_commit)
+    release = release_root / expected_commit
+    validate_release(release, expected_commit)
     previous = current_target(current, release_root)
     if previous == expected_commit:
         fail("same target pointer is a no-op activation; refusing POINTER_SWITCHED")
+
+    # Host convergence belongs before the immutable release becomes active.
+    # This makes first install and later upgrades share the same fail-closed
+    # component contract while retaining the old release/component for rollback.
+    converge_release_host_components(release)
 
     descriptor, temporary_name = tempfile.mkstemp(prefix=".current-", dir=release_root)
     os.close(descriptor)
