@@ -214,7 +214,7 @@ function health(main: Database.Database, mainPath: string, env: Env) {
   const healthPath = explicitHealthPath ?? (existsSync(DEFAULT_HEALTH_DB_PATH) ? DEFAULT_HEALTH_DB_PATH : mainPath);
   return withOptionalDb(healthPath, mainPath, main, { enabled: true, status: null, reasonCode: "health_db_unavailable", freshnessSeconds, nonGreen: [] as Row[], stalePluginNames: [] as string[], missingPluginNames: [] as string[] }, (db) => {
     if (!hasTable(db, "health_plugin_reports")) return { enabled: true, status: null, reasonCode: "health_store_unavailable", freshnessSeconds, nonGreen: [] as Row[], stalePluginNames: [] as string[], missingPluginNames: [] as string[] };
-    const names = ["self", ...(env.HEALTH_SERVER_MONITOR_ENABLED === "0" ? [] : ["server"]), ...(env.HEALTH_CONTENT_CRAWLER_ENABLED === "1" ? ["content-crawler"] : [])];
+    const names = ["agent-bridge", ...(env.HEALTH_SERVER_MONITOR_ENABLED === "0" ? [] : ["server"]), ...(env.HEALTH_CONTENT_CRAWLER_ENABLED === "1" ? ["content-crawler"] : [])];
     const rows = db.prepare(`SELECT plugin_name,report_json,saved_at FROM health_plugin_reports WHERE plugin_name IN (${names.map(()=>"?").join(",")})`).all(...names) as Row[];
     const byName = new Map(rows.map((row) => [String(row.plugin_name), row]));
     const stale: string[] = [];

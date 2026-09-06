@@ -59,7 +59,7 @@ describe("runtime inspector", () => {
         maxCycles: 4,
       });
       new HealthReportStore(healthDb).saveReport({
-        pluginName: "self",
+        pluginName: "agent-bridge",
         status: "amber",
         checks: [{ name: "runtime", status: "amber", message: "private health detail ghp_supersecret" }],
         summary: "private health summary ghp_supersecret",
@@ -107,6 +107,8 @@ describe("runtime inspector", () => {
         expect.objectContaining({ goalId: "goal-1", provider: "codex", status: "active", maxCycles: 4 }),
       ]));
       expect(view.health.status).toBe("amber");
+      expect(view.health.missingPluginNames).not.toContain("agent-bridge");
+      expect(view.health.missingPluginNames).not.toContain("self");
       expect(view.capabilities).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "scheduled-routines", status: "ready" }),
         expect.objectContaining({ id: "autonomous-work", status: "ready" }),
@@ -115,6 +117,36 @@ describe("runtime inspector", () => {
       for (const secret of ["ghp_supersecret", "secret-session-id", "private routine instruction", "private objective", "private health detail"]) {
         expect(text).not.toContain(secret);
       }
+    } finally {
+      db.close();
+      healthDb.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("recognises a fresh persisted agent-bridge self-health report", () => {
+    const { dir, path, healthPath, db, healthDb } = fixture();
+    try {
+      new HealthReportStore(healthDb).saveReport({
+        pluginName: "agent-bridge",
+        status: "green",
+        checks: [{ name: "db-file", status: "green", message: "ok" }],
+        summary: "Healthy",
+        timestamp: new Date().toISOString(),
+      });
+
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        HEALTH_MONITOR_ENABLED: "true",
+        HEALTH_SERVER_MONITOR_ENABLED: "0",
+        HEALTH_DB_PATH: healthPath,
+        HOME: dir,
+      }));
+
+      expect(view.health.status).toBe("green");
+      expect(view.health.missingPluginNames).toEqual([]);
+      expect(view.health.stalePluginNames).toEqual([]);
+      expect(view.health.reasonCode).toBeNull();
     } finally {
       db.close();
       healthDb.close();
@@ -164,13 +196,13 @@ describe("runtime inspector", () => {
     const { dir, path, healthPath, db, healthDb } = fixture();
     try {
       new HealthReportStore(healthDb).saveReport({
-        pluginName: "self",
+        pluginName: "agent-bridge",
         status: "green",
         checks: [],
         summary: "old",
         timestamp: new Date(0).toISOString(),
       });
-      healthDb.prepare("UPDATE health_plugin_reports SET saved_at = 1 WHERE plugin_name = 'self'").run();
+      healthDb.prepare("UPDATE health_plugin_reports SET saved_at = 1 WHERE plugin_name = 'agent-bridge'").run();
       db.close();
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
@@ -184,7 +216,7 @@ describe("runtime inspector", () => {
       expect(view.providers.every((provider: { availability: string }) => provider.availability === "unknown")).toBe(true);
       expect(view.sessions.status).toBe("unknown");
       expect(view.health.status).toBeNull();
-      expect(view.health.stalePluginNames).toContain("self");
+      expect(view.health.stalePluginNames).toContain("agent-bridge");
       expect(view.capabilities).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "retained-context", status: "unavailable", reasonCode: "conversation_scope_unavailable" }),
       ]));
