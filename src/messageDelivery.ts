@@ -288,7 +288,11 @@ export async function sendMessageWithProgress({
   };
 
   const publishAnswerPreview = async (): Promise<void> => {
-    if (!answerPreviewEnabled || !answerPreviewDirty || !answerPreviewText.trim() || isAborted?.()) return;
+    if (isAborted?.()) {
+      answerPreviewDirty = false;
+      return;
+    }
+    if (!answerPreviewEnabled || !answerPreviewDirty || !answerPreviewText.trim()) return;
     answerPreviewDirty = false;
     const previewBody = { chat_id: chatId, ...body, ...renderAnswerPreview(answerPreviewText) };
     try {
@@ -315,7 +319,11 @@ export async function sendMessageWithProgress({
   };
 
   const queueAnswerPreview = (immediate = false): void => {
-    if (!answerPreviewEnabled || !answerPreviewText.trim() || isAborted?.()) return;
+    if (isAborted?.()) {
+      answerPreviewDirty = false;
+      return;
+    }
+    if (!answerPreviewEnabled || !answerPreviewText.trim()) return;
     answerPreviewDirty = true;
     const elapsed = Date.now() - lastAnswerPreviewEditMs;
     if (!immediate && answerPreviewMessageId != null && elapsed < ANSWER_PREVIEW_EDIT_INTERVAL_MS) {
@@ -340,9 +348,27 @@ export async function sendMessageWithProgress({
 
   const waitForAnswerPreview = async (): Promise<void> => {
     while (answerPreviewEnabled && (answerPreviewPending || answerPreviewDirty)) {
+      if (isAborted?.()) {
+        answerPreviewDirty = false;
+        answerPreviewEnabled = false;
+        return;
+      }
       if (!answerPreviewPending && answerPreviewDirty) queueAnswerPreview(true);
       await Promise.allSettled([...answerPreviewUpdates]);
     }
+  };
+
+  const deleteAnswerPreview = async (strict: boolean): Promise<void> => {
+    if (answerPreviewMessageId == null || typeof client.deleteMessage !== "function") return;
+    const messageId = answerPreviewMessageId;
+    try {
+      await client.deleteMessage({ chat_id: chatId, message_id: messageId });
+    } catch (error) {
+      if (strict) throw new PreviewCleanupError(error);
+      console.warn(`[${kind}] failed to remove a late abandoned answer preview`, error);
+      return;
+    }
+    if (answerPreviewMessageId === messageId) answerPreviewMessageId = null;
   };
 
   const discardAnswerPreview = async (): Promise<void> => {
@@ -350,14 +376,18 @@ export async function sendMessageWithProgress({
       clearTimeout(answerPreviewTimer);
       answerPreviewTimer = null;
     }
-    await Promise.allSettled(answerPreviewUpdates);
-    if (answerPreviewMessageId == null || typeof client.deleteMessage !== "function") return;
-    try {
-      await client.deleteMessage({ chat_id: chatId, message_id: answerPreviewMessageId });
-    } catch (error) {
-      throw new PreviewCleanupError(error);
+    answerPreviewDirty = false;
+    const aborted = isAborted?.() === true;
+    if (aborted) answerPreviewEnabled = false;
+    const pendingUpdates = [...answerPreviewUpdates];
+    if (aborted) {
+      void Promise.allSettled(pendingUpdates)
+        .then(() => deleteAnswerPreview(false))
+        .catch(() => {});
+      return;
     }
-    answerPreviewMessageId = null;
+    await Promise.allSettled(pendingUpdates);
+    await deleteAnswerPreview(true);
   };
 
   const onAnswerDelta = (delta: string): void => {
@@ -419,6 +449,7 @@ export async function sendMessageWithProgress({
       queueAnswerPreview(true);
     }
     await waitForAnswerPreview();
+    if (isAborted?.()) throw new Error("answer delivery aborted");
     if (answerPreviewEnabled && answerPreviewMessageId != null
       && capabilities.editMessages
       && text.length <= capabilities.maxMessageLength
@@ -472,6 +503,7 @@ export async function sendMessageWithProgress({
 
     if (isAborted?.()) {
       clearInterval(typingInterval);
+      await discardAnswerPreview();
       return null;
     }
 
