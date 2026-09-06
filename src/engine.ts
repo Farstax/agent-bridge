@@ -31,7 +31,7 @@ import { resolveAntigravityConversationId, setAntigravityModel } from "./provide
 import { supportsToolFreeMode } from "./providers/registry.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
-import { prepareVoiceBatchForDispatch } from "./voiceIngress.js";
+import { hasAudioAttachment, prepareVoiceBatchForDispatch } from "./voiceIngress.js";
 import { downloadSurfaceAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
@@ -409,17 +409,23 @@ export class BridgeEngine {
 
     const preProviderScope = this.laneCoordinator.beginPreProviderIngress(executionLane);
     try {
-      const prepared = await prepareVoiceBatchForDispatch(messages, {
-        signal: preProviderScope.controller.signal,
-        workspaceDir: this._workingDir(),
-        notify: async (turn, message) => {
-          await this.sendText(turn.delivery.chatId, { text: message, message_thread_id: turn.threadId });
-        },
-      });
-      if (prepared.kind !== "ready") return;
-      messages = prepared.turns;
-      primaryMessage = messages.find((message) => message.text) ?? messages[0];
-      if (!primaryMessage) return;
+      // Ordinary (non-voice) ingress must stay exactly as synchronous as
+      // before this scope existed: only messages carrying an audio
+      // attachment pay for the extra pre-provider await, so unrelated
+      // concurrent-arrival ordering (e.g. augment coalescing) is unaffected.
+      if (messages.some(hasAudioAttachment)) {
+        const prepared = await prepareVoiceBatchForDispatch(messages, {
+          signal: preProviderScope.controller.signal,
+          workspaceDir: this._workingDir(),
+          notify: async (turn, message) => {
+            await this.sendText(turn.delivery.chatId, { text: message, message_thread_id: turn.threadId });
+          },
+        });
+        if (prepared.kind !== "ready") return;
+        messages = prepared.turns;
+        primaryMessage = messages.find((message) => message.text) ?? messages[0];
+        if (!primaryMessage) return;
+      }
 
       const threadId = primaryMessage.threadId;
       const rawText = primaryMessage.text.trim();
@@ -871,6 +877,10 @@ export class BridgeEngine {
   private _installStopFence(chatKey: string, executionLane: string): void {
     this.laneCoordinator.markResetting(executionLane);
     this.laneCoordinator.markAborted(executionLane);
+    // A genuine /stop is the only signal that must synchronously abort every
+    // open pre-provider ingress scope (voice download/transcription, etc.)
+    // on this lane. Non-stop busy-mode fencing (augment/interrupt) must not.
+    this.laneCoordinator.abortPreProviderIngress(executionLane);
     this._discardPendingMessages(chatKey);
   }
 

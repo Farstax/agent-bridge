@@ -17,6 +17,7 @@ import {
   prepareVoiceBatchForDispatch,
   prepareVoiceTurn,
   reapStaleVoiceTempDirs,
+  runBoundedProcess,
   surfaceVoiceAudioStager,
   unavailableVoiceTranscriber,
   workspaceTranscriptionLockFile,
@@ -90,6 +91,18 @@ function successfulTranscriber(text = "Review issue 684."): VoiceTranscriber {
 
 function executionLane(turn: InteractiveTurnInput): string {
   return JSON.stringify([turn.surfaceIdentity, turn.chatKey]);
+}
+
+/**
+ * Mirrors BridgeEngine._installStopFence: a real /stop marks the lane aborted
+ * AND explicitly aborts every open pre-provider ingress scope. Non-stop
+ * busy-mode fencing (augment/interrupt) intentionally does not call
+ * abortPreProviderIngress, so tests simulating /stop must invoke both, not
+ * markAborted alone.
+ */
+function simulateStop(coordinator: ExecutionLaneCoordinator, lane: string): void {
+  coordinator.markAborted(lane);
+  coordinator.abortPreProviderIngress(lane);
 }
 
 afterEach(() => {
@@ -266,7 +279,7 @@ describe("voice ingress", () => {
       });
       await stageStarted.promise;
 
-      coordinator.markAborted(lane);
+      simulateStop(coordinator, lane);
       releaseStage.resolve();
       expect(await pending).toEqual({ kind: "drop" });
       expect(transcribeSpy).not.toHaveBeenCalled();
@@ -304,7 +317,7 @@ describe("voice ingress", () => {
       });
       await transcriptionStarted.promise;
 
-      coordinator.markAborted(lane);
+      simulateStop(coordinator, lane);
       releaseTranscription.resolve();
       expect(await pending).toEqual({ kind: "drop" });
       expect(coordinator.claimPreProviderIngress(lane, scope)).toBe(false);
@@ -331,7 +344,7 @@ describe("voice ingress", () => {
       });
       expect(prepared.kind).toBe("ready");
 
-      coordinator.markAborted(lane);
+      simulateStop(coordinator, lane);
       expect(coordinator.claimPreProviderIngress(lane, scope)).toBe(false);
       coordinator.clearPreProviderIngress(lane, scope);
     });
@@ -414,11 +427,37 @@ describe("voice ingress", () => {
     });
   });
 
-  it("uses detached process groups so helper timeout/cancellation can terminate descendants", async () => {
-    const source = await readFile(new URL("../src/voiceIngress.ts", import.meta.url), "utf8");
-    expect(source).toContain("detached: true");
-    expect(source).toContain("process.kill(-pid, value)");
-    expect(source).toContain('signal("SIGKILL")');
+  it("kills the helper's real descendant process on timeout, not just the helper itself", async () => {
+    if (process.platform !== "linux") return;
+    await withTempRoot(async (root) => {
+      const pidFile = join(root, "descendant.pid");
+      const controller = new AbortController();
+      const script = 'sleep 60 & echo $! > "$1"; wait';
+      const outcome = runBoundedProcess("bash", ["-c", script, "bash", pidFile], {
+        cwd: root,
+        signal: controller.signal,
+        timeoutMs: 150,
+      });
+      await expect(outcome).rejects.toThrow(/timed out/);
+
+      for (let i = 0; i < 40 && !(await pathExists(pidFile)); i += 1) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+      }
+      const descendantPid = Number((await readFile(pidFile, "utf8")).trim());
+      expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
+
+      let descendantAlive = true;
+      for (let i = 0; i < 40; i += 1) {
+        try {
+          process.kill(descendantPid, 0);
+        } catch {
+          descendantAlive = false;
+          break;
+        }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+      }
+      expect(descendantAlive).toBe(false);
+    });
   });
 
   it("permits only one active transcription lease per workspace across processes", async () => {

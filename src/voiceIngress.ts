@@ -197,7 +197,8 @@ async function terminateProcessGroup(child: ChildProcess, graceMs = 500): Promis
   });
 }
 
-async function runBoundedProcess(
+/** Exported for direct process-group termination tests; not part of the public voice-ingress API. */
+export async function runBoundedProcess(
   command: string,
   args: string[],
   options: { cwd: string; signal: AbortSignal; timeoutMs: number },

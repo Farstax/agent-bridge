@@ -50,15 +50,19 @@ export class ExecutionLaneCoordinator {
   cancellationCount(): number { return this.cancellationOperations.size; }
 
   beginPreProviderIngress(lane: string): PreProviderIngressScope {
-    const fenced = this.abortedChats.has(lane) || this.resettingChats.has(lane) || this.cancellationOperations.has(lane);
-    const scope: PreProviderIngressScope = { controller: new AbortController(), state: fenced ? "aborted" : "preparing" };
+    // A scope always starts open. It is only aborted by an explicit stop/reset
+    // (markAborted -> abortPreProviderIngress) that lands while the scope is
+    // still tracked here. A lingering stop/reset flag from a *prior* fence
+    // must not retroactively block a *new* message's ingress: ordinary
+    // durable admission (db.admitMessage) already owns queuing/coalescing
+    // once the pre-provider claim succeeds.
+    const scope: PreProviderIngressScope = { controller: new AbortController(), state: "preparing" };
     let scopes = this.preProviderIngressScopes.get(lane);
     if (!scopes) {
       scopes = new Set<PreProviderIngressScope>();
       this.preProviderIngressScopes.set(lane, scopes);
     }
     scopes.add(scope);
-    if (fenced) scope.controller.abort();
     return scope;
   }
 
@@ -120,8 +124,13 @@ export class ExecutionLaneCoordinator {
   isAugmentTransferred(lane: string): boolean { return this.transferredAugmentedLanes.has(lane); }
   clearAugmentTransferred(lane: string): void { this.transferredAugmentedLanes.delete(lane); }
 
+  // markAborted is also used by the non-stop "augment"/"interrupt" busy-mode
+  // coalescing paths (see BridgeEngine._cancelLane), where it must NOT tear
+  // down other in-flight pre-provider ingress scopes (e.g. a concurrently
+  // arriving message's voice transcription) that are legitimately queuing
+  // for the same lane. Only a real /stop fences pre-provider ingress; callers
+  // that mean an actual stop call abortPreProviderIngress explicitly.
   markAborted(lane: string): void {
-    this.abortPreProviderIngress(lane);
     this.abortedChats.add(lane);
   }
   clearAborted(lane: string): void { this.abortedChats.delete(lane); }
