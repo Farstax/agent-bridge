@@ -166,6 +166,7 @@ sweep_by_age "${TMP_ROOT}/bridge-out"
 sweep_by_age "${TMP_ROOT}" "bridge-uploads-*"
 sweep_by_age "${TMP_ROOT}" "antigravity-*.log"
 sweep_by_age "${TMP_ROOT}" "agent-bridge-advisor-*.sock"
+sweep_by_age "${TMP_ROOT}/agent-bridge-voice" "voice-*"
 sweep_agent_bridge_scratch "${TMP_ROOT}"
 
 IFS=',' read -r -a REPOS <<< "${REAP_WORKTREE_REPOS:-${HOME:-}/agent-bridge}"
