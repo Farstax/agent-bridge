@@ -6,6 +6,7 @@ import {
   prepareOutputDir,
   collectOutputFiles,
   cleanOutputDir,
+  cleanupExpiredRetainedOutputDirs,
   uploadOutputFiles,
 } from "../src/fileOutput.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
@@ -52,13 +53,12 @@ describe("prepareOutputDir", () => {
   });
 
   it("wipes existing contents on second call (clean-on-prepare)", async () => {
-    const { writeFile } = await import("node:fs/promises");
     const dir = await prepareOutputDir(88888, "antigravity");
     await writeFile(join(dir, "stale.jpg"), "x");
     const dir2 = await prepareOutputDir(88888, "antigravity");
     expect(dir2).toBe(dir);
     const remaining = await readdir(dir);
-    expect(remaining).toHaveLength(0); // stale file was wiped
+    expect(remaining).toHaveLength(0);
     await cleanOutputDir(dir);
   });
 });
@@ -105,15 +105,13 @@ describe("uploadOutputFiles", () => {
     const sendDocument = vi.fn().mockResolvedValue(undefined);
     const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument } as any;
 
-    await uploadOutputFiles(dir, 42, client);
+    const result = await uploadOutputFiles(dir, 42, client);
 
+    expect(result.status).toBe("complete");
     expect(sendPhoto).toHaveBeenCalledTimes(2);
     expect(sendDocument).toHaveBeenCalledTimes(1);
-
-    // Files are deleted after upload
     const remaining = await readdir(dir).catch(() => []);
     expect(remaining.filter((f) => !f.startsWith("."))).toHaveLength(0);
-    // Dir also cleaned
     expect(await dirExists(dir)).toBe(false);
   });
 
@@ -134,25 +132,79 @@ describe("uploadOutputFiles", () => {
     expect(sendDocument).toHaveBeenCalledWith(42, pdf, undefined, { message_thread_id: 99 });
   });
 
-  it("continues uploading remaining files if one upload throws", async () => {
+  it("retains only failed files, continues mixed delivery, and surfaces partial delivery", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bridge-upload-err-"));
-    await writeFile(join(dir, "a.png"), "x");
-    await writeFile(join(dir, "b.png"), "y");
+    const failedPath = join(dir, "a.png");
+    const deliveredPath = join(dir, "b.png");
+    await writeFile(failedPath, "x");
+    await writeFile(deliveredPath, "y");
 
-    let callCount = 0;
-    const sendPhoto = vi.fn().mockImplementation(async () => {
-      callCount++;
-      if (callCount === 1) throw new Error("upload failed");
+    const sendPhoto = vi.fn().mockImplementation(async (_chatId, filePath: string) => {
+      if (filePath === failedPath) throw new Error("upload failed");
     });
-    const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument: vi.fn() } as any;
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
+      sendPhoto,
+      sendDocument: vi.fn(),
+      sendMessage,
+    } as any;
 
-    await uploadOutputFiles(dir, 1, client);
+    const result = await uploadOutputFiles(dir, 1, client);
+
     expect(sendPhoto).toHaveBeenCalledTimes(2);
-    // cleanOutputDir still called
+    expect(result).toMatchObject({ status: "partial", failedFiles: ["a.png"], uploadedFiles: ["b.png"] });
+    expect(result.retainedUntil).toBeTruthy();
+    expect((await readdir(dir)).sort()).toEqual([".delivery-retained.json", "a.png"]);
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 1,
+      text: expect.stringContaining("1 generated file could not be delivered"),
+    }));
+  });
+
+  it("retries only retained failures and removes the directory after retry success", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bridge-upload-retry-"));
+    const filePath = join(dir, "retry.png");
+    await writeFile(filePath, "x");
+    const sendPhoto = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce(undefined);
+    const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
+      sendPhoto,
+      sendDocument: vi.fn(),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const first = await uploadOutputFiles(dir, 1, client);
+    expect(first.status).toBe("partial");
+    expect(await dirExists(dir)).toBe(true);
+
+    const second = await uploadOutputFiles(dir, 1, client);
+    expect(second).toMatchObject({ status: "complete", uploadedFiles: ["retry.png"], failedFiles: [] });
+    expect(sendPhoto).toHaveBeenCalledTimes(2);
     expect(await dirExists(dir)).toBe(false);
   });
 
-  it("does not start another upload once publication is fenced", async () => {
+  it("expires retained failures using the durable marker without sweeping unrelated directories", async () => {
+    const dir = await prepareOutputDir(90909, "claude", `expiry-${Date.now()}`);
+    await writeFile(join(dir, "retained.pdf"), "x");
+    const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
+      sendPhoto: vi.fn(),
+      sendDocument: vi.fn().mockRejectedValue(new Error("temporary failure")),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    const result = await uploadOutputFiles(dir, 90909, client);
+    expect(result.status).toBe("partial");
+    expect(await dirExists(dir)).toBe(true);
+
+    await cleanupExpiredRetainedOutputDirs(Date.parse(result.retainedUntil!) + 1);
+    expect(await dirExists(dir)).toBe(false);
+  });
+
+  it("does not start another upload once publication is fenced and removes stale files", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bridge-upload-fenced-"));
     await writeFile(join(dir, "a.png"), "x");
     await writeFile(join(dir, "b.png"), "y");
@@ -160,16 +212,26 @@ describe("uploadOutputFiles", () => {
     const sendPhoto = vi.fn().mockImplementation(async () => { canPublish = false; });
     const client = { capabilities: TELEGRAM_SURFACE_CAPABILITIES, sendPhoto, sendDocument: vi.fn() } as any;
 
-    await uploadOutputFiles(dir, 1, client, undefined, () => canPublish);
+    const result = await uploadOutputFiles(dir, 1, client, undefined, () => canPublish);
 
+    expect(result.status).toBe("cancelled");
     expect(sendPhoto).toHaveBeenCalledOnce();
     expect(await dirExists(dir)).toBe(false);
   });
 
-  it("calls cleanOutputDir after all uploads even on empty dir", async () => {
+  it("cleans generated files when the surface cannot publish attachments", async () => {
     const dir = await prepareOutputDir(77777, "claude");
+    await writeFile(join(dir, "unsupported.txt"), "x");
     const client = { sendPhoto: vi.fn(), sendDocument: vi.fn() } as any;
-    await uploadOutputFiles(dir, 77777, client);
+    const result = await uploadOutputFiles(dir, 77777, client);
+    expect(result).toMatchObject({ status: "unsupported", failedFiles: ["unsupported.txt"] });
+    expect(await dirExists(dir)).toBe(false);
+  });
+
+  it("calls cleanOutputDir after all uploads even on empty dir", async () => {
+    const dir = await prepareOutputDir(77778, "claude");
+    const client = { sendPhoto: vi.fn(), sendDocument: vi.fn() } as any;
+    await uploadOutputFiles(dir, 77778, client);
     expect(await dirExists(dir)).toBe(false);
   });
 });
