@@ -43,6 +43,7 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "autonomous-work",
     "health-troubleshooting",
     "advisor",
+    "engineering-retro",
 )
 
 # unit, defaults file, enabling token(s), persistent database directory
