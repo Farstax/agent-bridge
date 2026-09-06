@@ -1,7 +1,7 @@
 import { accessSync, chmodSync, constants, existsSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { openDb } from "./db.js";
+export { bootstrapSourceInteractiveDb } from "./db.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./providers/registry.js";
 import type { ChainCliKind, ProviderId } from "./providers/types.js";
 import { TelegramClient } from "./telegram.js";
@@ -171,14 +171,6 @@ export async function validateTelegramBotToken(
     username: response.result?.username,
     firstName: response.result?.first_name,
   };
-}
-
-export function bootstrapSourceInteractiveDb(dbPath: string): void {
-  const db = openDb(resolve(dbPath), {
-    serviceId: "telegram:interactive-source-setup",
-    databaseRole: "interactive",
-  });
-  db.raw.close();
 }
 
 export function writeInteractiveSetupConfig(
