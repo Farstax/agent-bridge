@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://farstax.com/schemas/agent-bridge-skill-pack-v1.json",
+  "$id": "https://agent-bridge.dev/schemas/agent-bridge-skill-pack-v1.json",
   "title": "Agent Bridge curated Skill Pack catalogue",
   "type": "object",
   "additionalProperties": false,
@@ -59,7 +59,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["origin", "modifiedFromUpstream", "lastReviewed"],
       "properties": {
-        "origin": { "enum": ["farstax-authored", "adapted-upstream", "vendored-upstream"] },
+        "origin": { "enum": ["author-created", "adapted-upstream", "vendored-upstream"] },
         "upstreamRepository": { "type": "string", "format": "uri", "pattern": "^https://" },
         "upstreamRevision": { "$ref": "#/$defs/nonEmpty" }, "upstreamLicense": { "$ref": "#/$defs/nonEmpty" },
         "noticePath": { "$ref": "#/$defs/nonEmpty" }, "noticeSha256": { "$ref": "#/$defs/sha256" },
