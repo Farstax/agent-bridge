@@ -91,6 +91,7 @@ export interface SkillPackInstallResult { packId: string; version: string; insta
 type InstalledSkill = {
   explicit: boolean;
   packRefs: string[];
+  description: string;
   content: SkillContentRef;
   provenance: SkillProvenance;
   supportedHosts: string[];
@@ -101,13 +102,25 @@ type InstalledSkill = {
   updatedAt: string;
   noticeLocalPath?: string;
 };
+type InstalledPack = {
+  version: string;
+  manifestSha256: string;
+  catalogueId: string;
+  catalogueVersion: string;
+  catalogueSource: string;
+  skills: string[];
+  manifest: SkillPackManifest;
+  installedAt: string;
+  updatedAt: string;
+};
 type PackState = {
   version: number;
-  packs: Record<string, { version: string; manifestSha256: string; catalogueId: string; catalogueVersion: string; catalogueSource: string; skills: string[]; installedAt: string; updatedAt: string }>;
+  packs: Record<string, InstalledPack>;
   skills: Record<string, InstalledSkill>;
 };
 type Prepared = { skill: SkillPackSkill; repository: string; notice?: string };
 type Paths = { homeDir: string; lockfile: string; manifests: string; notices: string };
+type CoreRegistration = { ownership: "bundled" | "user"; linkMode: SkillLinkMode; cursorProjected: boolean; skillFolderHash?: string };
 
 function packPaths(homeDir = getSharedSkillsHomeDir()): Paths {
   const root = join(homeDir, ".agents", "skill-packs");
@@ -171,6 +184,7 @@ export function removeSkillPack(packId: string, options: Pick<SkillPackManagerOp
   if (!pack) throw new Error(`Skill Pack is not installed: ${packId}`);
   const retained: string[] = []; const removed: string[] = []; const now = (options.now ?? new Date()).toISOString();
   for (const skillId of pack.skills) {
+    id(skillId, `installed Skill id in pack ${packId}`);
     const entry = state.skills[skillId]; if (!entry) throw new Error(`Skill Pack state is inconsistent: missing skill ${skillId}`);
     entry.packRefs = entry.packRefs.filter((ref) => ref !== packId); entry.updatedAt = now;
     if (entry.explicit || entry.packRefs.length) { retained.push(skillId); continue; }
@@ -216,10 +230,10 @@ async function converge(ctx: Awaited<ReturnType<typeof context>>, selected: Skil
       // process is interrupted after the core install starts, the next explicit
       // pack operation can identify and converge the orphan instead of treating it
       // as unrelated user-owned content.
-      state.skills[item.skill.id] = { explicit, packRefs: [...refs].sort(), content: { ...item.skill.content, repository: item.repository }, provenance: item.skill.provenance, supportedHosts: item.skill.supportedHosts, dependencies: item.skill.dependencies, capabilities: item.skill.capabilities, tests: item.skill.tests, installedAt: previous?.installedAt ?? now, updatedAt: now, noticeLocalPath: item.notice ? relative(paths.homeDir, join(paths.notices, item.skill.id, basename(item.notice))).split("\\").join("/") : previous?.noticeLocalPath };
+      state.skills[item.skill.id] = { explicit, packRefs: [...refs].sort(), description: item.skill.description, content: { ...item.skill.content, repository: item.repository }, provenance: item.skill.provenance, supportedHosts: item.skill.supportedHosts, dependencies: item.skill.dependencies, capabilities: item.skill.capabilities, tests: item.skill.tests, installedAt: previous?.installedAt ?? now, updatedAt: now, noticeLocalPath: item.notice ? relative(paths.homeDir, join(paths.notices, item.skill.id, basename(item.notice))).split("\\").join("/") : previous?.noticeLocalPath };
       writeState(paths.lockfile, state);
       const canonical = join(resolveSkillPaths(paths.homeDir).agentsSkillsDir, item.skill.id);
-      const unchanged = Boolean(registration) && previous && sameContent(previous.content, item.skill.content, item.repository, source)
+      const unchanged = Boolean(registration) && previous && sameSkillContract(previous, item.skill, item.repository, source)
         && existsSync(canonical) && hashSkillPackDirectorySha256(canonical) === item.skill.content.sha256
         && verifySkillGlobal(item.skill.id, { homeDir: paths.homeDir }).ok;
       if (registration && unchanged) retained.push(item.skill.id);
@@ -230,12 +244,13 @@ async function converge(ctx: Awaited<ReturnType<typeof context>>, selected: Skil
     }
     const removed: string[] = [];
     if (mode === "update" && previousPack) for (const skillId of previousPack.skills) if (!selected.some((skill) => skill.id === skillId)) {
+      id(skillId, `installed Skill id in pack ${pack.id}`);
       const record = state.skills[skillId]; if (!record) throw new Error(`Skill Pack state is inconsistent: missing skill ${skillId}`);
       record.packRefs = record.packRefs.filter((ref) => ref !== pack.id); record.updatedAt = now;
       if (!record.explicit && !record.packRefs.length) { uninstallPackSkill(skillId, paths.homeDir); removeNotice(record.noticeLocalPath, paths.homeDir); delete state.skills[skillId]; removed.push(skillId); }
     }
     if (mode !== "explicit") {
-      state.packs[pack.id] = { version: pack.version, manifestSha256, catalogueId: catalogue.catalogueId, catalogueVersion: catalogue.catalogueVersion, catalogueSource: source, skills: pack.skills.map((skill) => skill.id).sort(), installedAt: previousPack?.installedAt ?? now, updatedAt: now };
+      state.packs[pack.id] = { version: pack.version, manifestSha256, catalogueId: catalogue.catalogueId, catalogueVersion: catalogue.catalogueVersion, catalogueSource: source, skills: pack.skills.map((skill) => skill.id).sort(), manifest: pack, installedAt: previousPack?.installedAt ?? now, updatedAt: now };
       mkdirSync(paths.manifests, { recursive: true }); atomicJson(join(paths.manifests, `${pack.id}.json`), { schemaVersion: catalogue.schemaVersion, catalogueId: catalogue.catalogueId, catalogueVersion: catalogue.catalogueVersion, pack });
     }
     writeState(paths.lockfile, state); return { packId: pack.id, version: pack.version, installed, retained, removed };
@@ -245,16 +260,21 @@ async function converge(ctx: Awaited<ReturnType<typeof context>>, selected: Skil
 function preflight(selected: SkillPackSkill[], packId: string, state: PackState, homeDir: string, source: string, mode: "install" | "update" | "explicit"): void {
   const paths = resolveSkillPaths(homeDir);
   for (const skill of selected) {
-    const prior = state.skills[skill.id]; const registration = coreRegistration(skill.id, homeDir); const canonical = join(paths.agentsSkillsDir, skill.id);
+    const prior = state.skills[skill.id]; const registration = coreRegistration(skill.id, homeDir); const canonical = join(paths.agentsSkillsDir, skill.id); const repository = contentRepository(skill.content.repository, source);
     if (!registration && existsSync(canonical)) throw new Error(`Refusing pack install over unregistered shared Skill: ${skill.id}`);
     if (registration?.ownership === "bundled") throw new Error(`Refusing pack install over bundled-owned Skill: ${skill.id}`);
     if (registration?.ownership === "user" && !prior) throw new Error(`Refusing pack install over user-owned Skill: ${skill.id}`);
     if (registration && prior) assertManagedProjectionSafe(skill.id, paths, registration);
-    if (!registration && prior && !sameContent(prior.content, skill.content, contentRepository(skill.content.repository, source), source)) throw new Error(`Skill Pack state is inconsistent for missing pack-managed Skill: ${skill.id}`);
+    if (!registration && prior && !sameSkillContract(prior, skill, repository, source)) throw new Error(`Skill Pack state is inconsistent for missing pack-managed Skill: ${skill.id}`);
     if (!registration) for (const dir of [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir]) if (pathExists(join(dir, skill.id))) throw new Error(`Refusing pack install over unmanaged native Skill path: ${join(dir, skill.id)}`);
-    if (!prior || sameContent(prior.content, skill.content, contentRepository(skill.content.repository, source), source)) continue;
+    if (!prior || sameSkillContract(prior, skill, repository, source)) continue;
+    if (mode === "install") throw new Error(`Skill Pack state is inconsistent for interrupted install of ${skill.id}`);
+    if (mode === "explicit") {
+      if (prior.packRefs.length) throw new Error(`Cannot change Skill ${skill.id} through an explicit install while referenced by installed packs: ${prior.packRefs.join(", ")}`);
+      continue;
+    }
     const others = prior.packRefs.filter((ref) => ref !== packId); if (others.length) throw new Error(`Cannot change shared Skill ${skill.id}; still referenced by packs: ${others.join(", ")}`);
-    if (prior.explicit && mode !== "explicit") throw new Error(`Cannot change explicitly installed Skill ${skill.id} during pack convergence`);
+    if (prior.explicit) throw new Error(`Cannot change explicitly installed Skill ${skill.id} during pack convergence`);
   }
 }
 
@@ -320,9 +340,9 @@ function selectPack(catalogue: SkillPackCatalogue, packId: string, requested?: s
 function compatible(pack: SkillPackManifest, current: string): void { if (pack.compatibility.minAgentBridgeVersion && compareVersion(current, pack.compatibility.minAgentBridgeVersion) < 0) throw new Error(`Skill Pack ${pack.id} requires Agent Bridge >= ${pack.compatibility.minAgentBridgeVersion}; current ${current}`); if (pack.compatibility.maxAgentBridgeVersion && compareVersion(current, pack.compatibility.maxAgentBridgeVersion) > 0) throw new Error(`Skill Pack ${pack.id} requires Agent Bridge <= ${pack.compatibility.maxAgentBridgeVersion}; current ${current}`); }
 function bridgeVersion(options: SkillPackManagerOptions): string { if (options.agentBridgeVersion) return options.agentBridgeVersion; if (process.env.AGENT_BRIDGE_VERSION) return process.env.AGENT_BRIDGE_VERSION; try { const value = JSON.parse(readFileSync(join(options.repoRoot ?? defaultRepoRoot, "package.json"), "utf8")) as { version?: unknown }; if (typeof value.version === "string") return value.version; } catch {} throw new Error("Unable to determine current Agent Bridge version for Skill Pack compatibility"); }
 
-function coreRegistration(skillId: string, homeDir: string): { ownership: "bundled" | "user"; linkMode: SkillLinkMode; cursorProjected: boolean } | undefined { const path = resolveSkillPaths(homeDir).lockfilePath; if (!existsSync(path)) return undefined; let raw: unknown; try { raw = JSON.parse(readFileSync(path, "utf8")) as unknown; } catch { throw new Error(`Unable to parse skill lockfile: ${path}`); } if (!isRecord(raw) || !isRecord(raw.skills)) throw new Error(`Unable to parse skill lockfile: ${path}`); const value = raw.skills[skillId]; if (value === undefined) return undefined; if (!isRecord(value) || (value.ownership !== "bundled" && value.ownership !== "user")) throw new Error(`Invalid skill registration for ${skillId}`); if (value.linkMode !== undefined && value.linkMode !== "symlink" && value.linkMode !== "copy") throw new Error(`Invalid skill registration link mode for ${skillId}`); return { ownership: value.ownership, linkMode: value.linkMode === "copy" ? "copy" : "symlink", cursorProjected: value.cursorProjected === true }; }
-function assertManagedProjectionSafe(skillId: string, paths: ReturnType<typeof resolveSkillPaths>, registration: { linkMode: SkillLinkMode; cursorProjected: boolean }): void { const shared = join(paths.agentsSkillsDir, skillId); if (!existsSync(shared)) return; const dirs = [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir, ...(registration.cursorProjected ? [paths.cursorSkillsDir] : [])]; for (const dir of dirs) { const native = join(dir, skillId); if (!pathExists(native)) continue; let expected = false; try { const stat = lstatSync(native); expected = registration.linkMode === "symlink" ? stat.isSymbolicLink() && resolve(dirname(native), readlinkSync(native)) === resolve(shared) : stat.isDirectory() && hashDirectory(native) === hashDirectory(shared); } catch {} if (!expected) throw new Error(`Refusing pack convergence over unmanaged native Skill path: ${native}`); } }
-function uninstallPackSkill(skillId: string, homeDir: string): void { const registration = coreRegistration(skillId, homeDir); if (!registration) return; if (registration.ownership !== "user") throw new Error(`Refusing to remove non-pack Skill ${skillId}`); uninstallSkillGlobal(skillId, { homeDir, expectedOwnership: "user" }); }
+function coreRegistration(skillId: string, homeDir: string): CoreRegistration | undefined { const path = resolveSkillPaths(homeDir).lockfilePath; if (!existsSync(path)) return undefined; let raw: unknown; try { raw = JSON.parse(readFileSync(path, "utf8")) as unknown; } catch { throw new Error(`Unable to parse skill lockfile: ${path}`); } if (!isRecord(raw) || !isRecord(raw.skills)) throw new Error(`Unable to parse skill lockfile: ${path}`); const value = raw.skills[skillId]; if (value === undefined) return undefined; if (!isRecord(value) || (value.ownership !== "bundled" && value.ownership !== "user")) throw new Error(`Invalid skill registration for ${skillId}`); if (value.linkMode !== undefined && value.linkMode !== "symlink" && value.linkMode !== "copy") throw new Error(`Invalid skill registration link mode for ${skillId}`); if (value.skillFolderHash !== undefined && (typeof value.skillFolderHash !== "string" || !/^[0-9a-f]{40}$/i.test(value.skillFolderHash))) throw new Error(`Invalid skill registration hash for ${skillId}`); return { ownership: value.ownership, linkMode: value.linkMode === "copy" ? "copy" : "symlink", cursorProjected: value.cursorProjected === true, skillFolderHash: typeof value.skillFolderHash === "string" ? value.skillFolderHash : undefined }; }
+function assertManagedProjectionSafe(skillId: string, paths: ReturnType<typeof resolveSkillPaths>, registration: CoreRegistration): void { const shared = join(paths.agentsSkillsDir, skillId); const dirs = [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir, ...(registration.cursorProjected ? [paths.cursorSkillsDir] : [])]; for (const dir of dirs) { const native = join(dir, skillId); if (!pathExists(native)) continue; let expected = false; try { const stat = lstatSync(native); expected = registration.linkMode === "symlink" ? stat.isSymbolicLink() && resolve(dirname(native), readlinkSync(native)) === resolve(shared) : Boolean(registration.skillFolderHash) && stat.isDirectory() && hashDirectory(native) === registration.skillFolderHash; } catch {} if (!expected) throw new Error(`Refusing pack convergence over unmanaged native Skill path: ${native}`); } }
+function uninstallPackSkill(skillId: string, homeDir: string): void { id(skillId, "pack-managed Skill id"); const registration = coreRegistration(skillId, homeDir); if (!registration) return; if (registration.ownership !== "user") throw new Error(`Refusing to remove non-pack Skill ${skillId}`); assertManagedProjectionSafe(skillId, resolveSkillPaths(homeDir), registration); uninstallSkillGlobal(skillId, { homeDir, expectedOwnership: "user" }); }
 function readState(path: string): PackState { if (!existsSync(path)) return { version: 1, packs: {}, skills: {} }; let raw: unknown; try { raw = JSON.parse(readFileSync(path, "utf8")) as unknown; } catch { throw new Error(`Unable to parse Skill Pack lockfile: ${path}`); } if (!isRecord(raw) || raw.version !== 1 || !isRecord(raw.packs) || !isRecord(raw.skills)) throw new Error(`Invalid Skill Pack lockfile: ${path}`); return raw as PackState; }
 function writeState(path: string, state: PackState): void { state.version = 1; atomicJson(path, state); }
 function atomicJson(path: string, value: unknown): void { mkdirSync(dirname(path), { recursive: true }); const temp = `${path}.tmp.${process.pid}`; writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`); renameSync(temp, path); }
@@ -337,6 +357,7 @@ function localRepo(repository: string): string { if (repository.startsWith("file
 function githubRepo(repository: string): boolean { return /^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?$/i.test(repository); }
 function githubParts(repository: string): { owner: string; repo: string } { const match = repository.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i); if (!match) throw new Error(`Unsupported GitHub repository URL: ${repository}`); return { owner: match[1], repo: match[2] }; }
 function sameContent(installed: SkillContentRef, candidate: SkillContentRef, resolvedRepository: string, catalogueSource: string): boolean { return contentRepository(installed.repository, catalogueSource) === resolvedRepository && installed.revision === candidate.revision && installed.path === candidate.path && installed.sha256 === candidate.sha256; }
+function sameSkillContract(installed: InstalledSkill, candidate: SkillPackSkill, resolvedRepository: string, catalogueSource: string): boolean { if (!sameContent(installed.content, candidate.content, resolvedRepository, catalogueSource) || installed.description !== candidate.description) return false; return JSON.stringify(stable({ provenance: installed.provenance, supportedHosts: installed.supportedHosts, dependencies: installed.dependencies, capabilities: installed.capabilities, tests: installed.tests })) === JSON.stringify(stable({ provenance: candidate.provenance, supportedHosts: candidate.supportedHosts, dependencies: candidate.dependencies, capabilities: candidate.capabilities, tests: candidate.tests })); }
 
 function files(dir: string): string[] { const result: string[] = []; for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) { const full = join(dir, entry.name); if (entry.isDirectory()) result.push(...files(full)); else if (entry.isFile()) result.push(full); else throw new Error(`Unsupported Skill Pack filesystem entry: ${full}`); } return result; }
 function fileSha256(path: string): string { return createHash("sha256").update(readFileSync(path)).digest("hex"); }
