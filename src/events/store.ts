@@ -24,6 +24,8 @@ export class EventStore {
   private runInserted = false;
   private terminalPersisted = false;
   private pendingCompleted: Extract<BridgeEvent, { type: "run.completed" }> | null = null;
+  private lastFailed: Extract<BridgeEvent, { type: "run.failed" }> | null = null;
+  private attemptFailurePersisted = false;
 
   constructor(db: BridgeDb, existingRunId?: string) {
     this.db = db;
@@ -40,8 +42,10 @@ export class EventStore {
     try {
       if (event.type === "run.started") {
         this._persistRunStart(event);
-      } else if (event.type === "run.failed" || event.type === "run.cancelled") {
+      } else if (event.type === "run.cancelled") {
         this._persistTerminal(event);
+      } else if (event.type === "run.failed") {
+        this._persistAttemptFailure(event);
       }
       // run.completed is deferred — call queueCompleted() then finalize()
     } catch (error) {
@@ -56,22 +60,57 @@ export class EventStore {
     this.pendingCompleted = event;
   }
 
-  /** Persist the queued run.completed event. No-op if none was queued. */
+  /** Persist the queued run.completed event, or settle a recorded attempt failure. */
   finalize(): void {
-    if (!this.pendingCompleted) return;
-    const { runId, chatKey } = this.pendingCompleted;
+    if (this.pendingCompleted) {
+      const { runId, chatKey } = this.pendingCompleted;
+      try {
+        const telemetry = finalizeRunTelemetry(
+          this.pendingCompleted.runId,
+          this.pendingCompleted.bot,
+          this.pendingCompleted.telemetry,
+        );
+        this._persistTerminal({ ...this.pendingCompleted, telemetry });
+      } catch (error) {
+        warnPersistenceFailure("finalize", runId, chatKey, error);
+      }
+      this.pendingCompleted = null;
+      this.lastFailed = null;
+      return;
+    }
+    if (!this.lastFailed || this.terminalPersisted) return;
+    const { runId, chatKey } = this.lastFailed;
     try {
-      const telemetry = finalizeRunTelemetry(
-        this.pendingCompleted.runId,
-        this.pendingCompleted.bot,
-        this.pendingCompleted.telemetry,
-      );
-      this._persistTerminal({ ...this.pendingCompleted, telemetry });
+      this._persistFailedTerminal(this.lastFailed);
     } catch (error) {
-      // Same content-free observability policy as collect() above.
       warnPersistenceFailure("finalize", runId, chatKey, error);
     }
-    this.pendingCompleted = null;
+    this.lastFailed = null;
+  }
+
+  private _persistAttemptFailure(e: Extract<BridgeEvent, { type: "run.failed" }>): void {
+    this.lastFailed = e;
+    if (this.terminalPersisted) return;
+    const needsRunInsert = !this.runInserted;
+    const seq = this.seq + 1;
+    this.db.raw.transaction(() => {
+      if (needsRunInsert) this.db.insertRun(e.runId, e.chatKey, e.bot);
+      this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
+    })();
+    this.seq = seq;
+    if (needsRunInsert) this.runInserted = true;
+    this.attemptFailurePersisted = true;
+  }
+
+  private _persistFailedTerminal(e: Extract<BridgeEvent, { type: "run.failed" }>): void {
+    if (this.terminalPersisted) return;
+    if (this.attemptFailurePersisted) {
+      const transitioned = this.db.updateRunFailed(e.runId, e.error);
+      if (!transitioned) throw new Error("terminal run transition rejected");
+      this.terminalPersisted = true;
+      return;
+    }
+    this._persistTerminal(e);
   }
 
   // better-sqlite3 is synchronous, so a plain sequence of two .run() calls is

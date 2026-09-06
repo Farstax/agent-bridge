@@ -19,6 +19,11 @@ import type { BridgeEvent } from "./events/types.js";
 export const RUN_INGRESS_SOURCE = "autonomous" as const;
 export const RUN_INGRESS_EVENT_KIND = "ordinary_run" as const;
 export const RUN_INGRESS_SURFACE = "run-ingress" as const;
+const RUN_INGRESS_STARTED_SETTING_PREFIX = "run-ingress:execution-started:";
+
+export function runIngressExecutionStartedKey(runId: string): string {
+  return `${RUN_INGRESS_STARTED_SETTING_PREFIX}${runId}`;
+}
 const MAX_REQUEST_BYTES = 16_384;
 const MAX_PROMPT_CHARS = 12_000;
 const MAX_RESULT_CHARS = 8_000;
@@ -148,6 +153,9 @@ export async function executeRunIngressRequest(
   const runId = receipt.run_id;
   const existing = terminalResponse(db, runId);
   if (existing) return existing;
+  if (db.getSetting(runIngressExecutionStartedKey(runId)) !== null) {
+    return { runId, status: "failed", errorClass: "ambiguous" };
+  }
   let payload: { scopeKey: string; prompt: string };
   try {
     const parsed = JSON.parse(receipt.payload_json) as Partial<typeof payload>;
@@ -166,6 +174,13 @@ export async function executeRunIngressRequest(
   try {
     const current = terminalResponse(db, runId);
     if (current) return current;
+    try {
+      db.setSetting(runIngressExecutionStartedKey(runId), JSON.stringify({ runId }));
+    } catch {
+      db.updateRunFailed(runId, "run ingress admission failed");
+      db.recordEventReceiptResult(receiptId, { status: "failed", result_reference: runId, error_class: "ambiguous" });
+      return { runId, status: "failed", errorClass: "ambiguous" };
+    }
     const eventContext: NonNullable<SurfaceNeutralTurnInput["eventContext"]> = {
       runId,
       bot: options.bot ?? "claude",
@@ -175,7 +190,7 @@ export async function executeRunIngressRequest(
       serviceId: lane.serviceId,
       acquisitionId: lane.acquisitionId,
     };
-    const result = await engine.executeSurfaceNeutralTurn({
+    await engine.executeSurfaceNeutralTurn({
       prompt: payload.prompt,
       sessionId: null,
       chatId: 0,
@@ -187,13 +202,25 @@ export async function executeRunIngressRequest(
       onProviderExecutionStarted: () => undefined,
     });
     eventStore.finalize();
-    db.recordEventReceiptResult(receiptId, { status: "completed", result_reference: runId, error_class: null });
-    return terminalResponse(db, runId) ?? { runId, status: "done", result: bounded(result.text, MAX_RESULT_CHARS) };
+    const terminal = terminalResponse(db, runId);
+    if (!terminal) {
+      db.recordEventReceiptResult(receiptId, { status: "failed", result_reference: runId, error_class: "ambiguous" });
+      return { runId, status: "failed", errorClass: "ambiguous" };
+    }
+    db.recordEventReceiptResult(receiptId, {
+      status: terminal.status === "done" ? "completed" : "failed",
+      result_reference: runId,
+      error_class: terminal.status === "done" ? null : (terminal.errorClass ?? "execution"),
+    });
+    return terminal;
   } catch (error) {
     eventStore.finalize();
-    db.updateRunFailed(runId, "run ingress execution failed");
-    db.recordEventReceiptResult(receiptId, { status: "failed", result_reference: runId, error_class: "execution" });
-    return { runId, status: "failed", errorClass: "execution" };
+    if (db.getRun(runId)?.status === "running") {
+      db.updateRunFailed(runId, "run ingress execution failed");
+    }
+    const terminal = terminalResponse(db, runId);
+    db.recordEventReceiptResult(receiptId, { status: "failed", result_reference: runId, error_class: terminal?.errorClass === "ambiguous" ? "ambiguous" : "execution" });
+    return terminal ?? { runId, status: "failed", errorClass: "execution" };
   } finally {
     db.unlock(lane);
   }

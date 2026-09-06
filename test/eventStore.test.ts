@@ -89,8 +89,10 @@ describe("EventStore", () => {
     store.collect(failEvt);
 
     const run = db.getRun("r-2");
-    expect(run.status).toBe("failed");
-    expect(run.error).toBe("timeout");
+    expect(run.status).toBe("running");
+    expect(db.getEventsForRun("r-2").some((event) => event.type === "run.failed")).toBe(true);
+    store.finalize();
+    expect(db.getRun("r-2")).toMatchObject({ status: "failed", error: "timeout" });
   });
 
   it("collect(run.cancelled) updates status to cancelled", async () => {
