@@ -6,6 +6,7 @@
  */
 
 import type { BridgeDb } from "./db.js";
+import { abortVoiceIngressLane } from "./voiceIngress.js";
 
 export interface LaneCancellation {
   mode: "augment" | "interrupt" | "stop";
@@ -65,7 +66,14 @@ export class ExecutionLaneCoordinator {
   isAugmentTransferred(lane: string): boolean { return this.transferredAugmentedLanes.has(lane); }
   clearAugmentTransferred(lane: string): void { this.transferredAugmentedLanes.delete(lane); }
 
-  markAborted(lane: string): void { this.abortedChats.add(lane); }
+  markAborted(lane: string): void {
+    this.abortedChats.add(lane);
+    // The same stop/interrupt fence must cover work before the provider
+    // lifecycle exists. Voice ingress registers its bounded download/STT scope
+    // under the canonical execution-lane key, so cancellation remains generic
+    // and provider execution continues to use cliSupervisor after handoff.
+    abortVoiceIngressLane(lane);
+  }
   clearAborted(lane: string): void { this.abortedChats.delete(lane); }
   isAborted(lane: string): boolean { return this.abortedChats.has(lane); }
 
