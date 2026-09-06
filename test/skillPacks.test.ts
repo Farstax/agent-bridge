@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveSkillPaths, verifySkillGlobal } from "../src/skills.js";
+import { resolveSkillPaths, uninstallSkillGlobal, verifySkillGlobal } from "../src/skills.js";
 import {
   getSkillPackStatus,
   hashSkillPackDirectorySha256,
@@ -136,7 +136,7 @@ describe("curated Skill Packs", () => {
     expect(status.skills.research.dependencies.hostedMcps[0].authorization).toBe("OAuth");
   });
 
-  it("reference-counts overlapping Skills and removes only the final reference", async () => {
+  it("reference-counts overlapping pack Skills and removes them only after the last reference", async () => {
     const home = makeTempDir("overlap-home");
     const root = makeTempDir("overlap");
     const repo = join(root, "content");
@@ -147,13 +147,14 @@ describe("curated Skill Packs", () => {
     await installSkillPack("marketing", { homeDir: home, catalogueSource: catalogue, agentBridgeVersion: "0.1.0" });
     await installSkillPack("sales", { homeDir: home, catalogueSource: catalogue, agentBridgeVersion: "0.1.0" });
     expect(getSkillPackStatus({ homeDir: home }).skills.shared.packRefs).toEqual(["marketing", "sales"]);
+
     expect(removeSkillPack("marketing", { homeDir: home }).retained).toEqual(["shared"]);
     expect(existsSync(join(resolveSkillPaths(home).agentsSkillsDir, "shared"))).toBe(true);
     expect(removeSkillPack("sales", { homeDir: home }).removed).toEqual(["shared"]);
     expect(existsSync(join(resolveSkillPaths(home).agentsSkillsDir, "shared"))).toBe(false);
   });
 
-  it("keeps an explicitly installed pack Skill when its pack is removed", async () => {
+  it("keeps an explicitly installed pack Skill when its pack is later removed", async () => {
     const home = makeTempDir("explicit-home");
     const root = makeTempDir("explicit");
     const repo = join(root, "content");
@@ -169,25 +170,83 @@ describe("curated Skill Packs", () => {
     expect(removeExplicitSkillPackSkill("shared", { homeDir: home }).removed).toEqual(["shared"]);
   });
 
-  it("supports exact pack versions and deterministic updates", async () => {
+  it("fails closed instead of overwriting a replaced native projection", async () => {
+    const home = makeTempDir("collision-home");
+    const root = makeTempDir("collision");
+    const repo = join(root, "content");
+    writeSkill(repo, "skills/shared", "shared", "Shared capability.");
+    const catalogue = writeCatalogue(root, [pack("marketing", "1.0.0", [skillManifest("shared", repo, "skills/shared")])]);
+    const options = { homeDir: home, catalogueSource: catalogue, agentBridgeVersion: "0.1.0" };
+
+    await installSkillPack("marketing", options);
+    const native = join(resolveSkillPaths(home).claudeSkillsDir, "shared");
+    rmSync(native, { recursive: true, force: true });
+    mkdirSync(native, { recursive: true });
+    writeFileSync(join(native, "SKILL.md"), "unmanaged replacement\n");
+
+    await expect(updateSkillPack("marketing", options)).rejects.toThrow(/unmanaged native Skill path/i);
+    expect(readFileSync(join(native, "SKILL.md"), "utf8")).toBe("unmanaged replacement\n");
+  });
+
+  it("reconciles pack state when an interrupted operation leaves the core Skill missing", async () => {
+    const home = makeTempDir("retry-home");
+    const root = makeTempDir("retry");
+    const repo = join(root, "content");
+    writeSkill(repo, "skills/shared", "shared", "Shared capability.");
+    const catalogue = writeCatalogue(root, [pack("marketing", "1.0.0", [skillManifest("shared", repo, "skills/shared")])]);
+    const options = { homeDir: home, catalogueSource: catalogue, agentBridgeVersion: "0.1.0" };
+
+    await installSkillPack("marketing", options);
+    uninstallSkillGlobal("shared", { homeDir: home, expectedOwnership: "user" });
+    expect(verifySkillGlobal("shared", { homeDir: home }).ok).toBe(false);
+
+    await updateSkillPack("marketing", options);
+    expect(verifySkillGlobal("shared", { homeDir: home }).ok).toBe(true);
+    expect(getSkillPackStatus({ homeDir: home }).skills.shared.packRefs).toEqual(["marketing"]);
+  });
+
+  it("supports exact pack versions and deterministic update to another catalogue version", async () => {
     const home = makeTempDir("update-home");
     const root = makeTempDir("update");
     const repo = join(root, "content");
     writeSkill(repo, "v1/shared", "shared", "Version one.");
     writeSkill(repo, "v2/shared", "shared", "Version two.");
-    const catalogue = writeCatalogue(root, [
-      pack("marketing", "1.0.0", [skillManifest("shared", repo, "v1/shared")]),
-      pack("marketing", "2.0.0", [skillManifest("shared", repo, "v2/shared")]),
-    ], "2.0.0");
+    const v1 = skillManifest("shared", repo, "v1/shared");
+    const v2 = skillManifest("shared", repo, "v2/shared");
+    const catalogue = writeCatalogue(root, [pack("marketing", "1.0.0", [v1]), pack("marketing", "2.0.0", [v2])], "2.0.0");
 
     await installSkillPack("marketing", { homeDir: home, catalogueSource: catalogue, agentBridgeVersion: "0.1.0", requestedPackVersion: "1.0.0" });
     expect(readFileSync(join(resolveSkillPaths(home).agentsSkillsDir, "shared", "SKILL.md"), "utf8")).toContain("Version one.");
+
+    // Simulate an interruption after the desired v2 pack state was persisted but
+    // before the ordinary shared Skill content was replaced. Retry must compare
+    // the canonical content hash, not only the pack lock metadata.
+    const packLock = join(home, ".agents", ".skill-pack-lock.json");
+    const interrupted = JSON.parse(readFileSync(packLock, "utf8"));
+    interrupted.skills.shared.content = v2.content;
+    writeFileSync(packLock, `${JSON.stringify(interrupted, null, 2)}\n`);
+
     await updateSkillPack("marketing", { homeDir: home, catalogueSource: catalogue, agentBridgeVersion: "0.1.0", requestedPackVersion: "2.0.0" });
     expect(readFileSync(join(resolveSkillPaths(home).agentsSkillsDir, "shared", "SKILL.md"), "utf8")).toContain("Version two.");
     expect(getSkillPackStatus({ homeDir: home }).packs.marketing.version).toBe("2.0.0");
   });
 
-  it("fails closed on compatibility, secret values, checksum failures and unpinned GitHub content", async () => {
+  it("rejects changed manifest content under an already-installed pack version", async () => {
+    const home = makeTempDir("immutable-home");
+    const root = makeTempDir("immutable");
+    const repo = join(root, "content");
+    writeSkill(repo, "v1/shared", "shared", "Version one.");
+    let catalogue = writeCatalogue(root, [pack("marketing", "1.0.0", [skillManifest("shared", repo, "v1/shared")])]);
+    const base = { homeDir: home, catalogueSource: catalogue, agentBridgeVersion: "0.1.0", requestedPackVersion: "1.0.0" };
+    await installSkillPack("marketing", base);
+
+    writeSkill(repo, "v1-rewritten/shared", "shared", "Rewritten without a version bump.");
+    catalogue = writeCatalogue(root, [pack("marketing", "1.0.0", [skillManifest("shared", repo, "v1-rewritten/shared")])], "1.0.1");
+    await expect(updateSkillPack("marketing", { ...base, catalogueSource: catalogue })).rejects.toThrow(/changed manifest content/i);
+    expect(readFileSync(join(resolveSkillPaths(home).agentsSkillsDir, "shared", "SKILL.md"), "utf8")).toContain("Version one.");
+  });
+
+  it("fails closed on incompatible, malformed, secret-bearing, unpinned or checksum-invalid metadata", async () => {
     const root = makeTempDir("invalid");
     const repo = join(root, "content");
     writeSkill(repo, "skills/shared", "shared", "Shared capability.");
@@ -215,8 +274,10 @@ describe("curated Skill Packs", () => {
     await expect(installSkillPack("marketing", { homeDir: makeTempDir("revision-home"), catalogueSource: catalogue, agentBridgeVersion: "0.1.0", fetchImpl: async () => new Response("{}") })).rejects.toThrow(/exact 40-character commit SHA/i);
   });
 
-  it("restricts remote discovery to the curated Farstax upstream", async () => {
-    await expect(listAvailableSkillPacks({ catalogueSource: "https://example.com/catalogue.json", fetchImpl: async () => new Response("{}") }))
-      .rejects.toThrow(/restricted to the curated Farstax\/agent-bridge-skills repository/i);
+  it("restricts remote catalogue discovery to the curated Farstax upstream", async () => {
+    await expect(listAvailableSkillPacks({
+      catalogueSource: "https://example.com/catalogue.json",
+      fetchImpl: async () => new Response("{}"),
+    })).rejects.toThrow(/restricted to the curated Farstax\/agent-bridge-skills repository/i);
   });
 });
