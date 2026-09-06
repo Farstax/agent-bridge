@@ -1,5 +1,4 @@
 import type { TelegramMessage, TelegramUpdate } from "./types.js";
-import { prepareVoiceBatchForDispatch, type VoiceBatchPreparation } from "./voiceIngress.js";
 
 export interface InteractiveAttachment {
   fileId: string;
@@ -136,7 +135,6 @@ export function adaptDiscordMessage(data: any, surfaceIdentity = "discord:intera
 }
 
 type FlushFn = (groupId: string | null, turns: InteractiveTurnInput[]) => void | Promise<void>;
-type PrepareTurnsFn = (turns: InteractiveTurnInput[]) => Promise<VoiceBatchPreparation>;
 interface BufferEntry { timer?: NodeJS.Timeout; turns: InteractiveTurnInput[]; flushing: boolean; resolves: Array<() => void>; }
 
 export class InteractiveTurnBuffer {
@@ -144,13 +142,10 @@ export class InteractiveTurnBuffer {
   constructor(
     private readonly onFlush: FlushFn,
     private readonly timeoutMs = 1500,
-    private readonly prepareTurns: PrepareTurnsFn = prepareVoiceBatchForDispatch,
   ) {}
 
   private async flush(groupId: string | null, turns: InteractiveTurnInput[]): Promise<void> {
-    const prepared = await this.prepareTurns(turns);
-    if (prepared.kind !== "ready") return;
-    await prepared.handoff(() => this.onFlush(groupId, prepared.turns));
+    await this.onFlush(groupId, turns);
   }
 
   push(turn: InteractiveTurnInput): Promise<void> {
