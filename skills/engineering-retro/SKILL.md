@@ -50,7 +50,7 @@ Return at most three improvements, ranked by expected reduction in future owner 
 
 `No change warranted` is a successful retro result.
 
-Do not mutate repository instructions, Skills, code, CI, issues, releases, or deployment state unless the owner separately authorizes that follow-up work.
+Do not mutate repository instructions, Skills, code, CI, issues, releases, or deployment state unless the owner explicitly authorizes that follow-up work in the same request or later.
 
 ## Output
 
