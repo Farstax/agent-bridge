@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installSkillGlobal, resolveSkillPaths, verifySkillGlobal } from "../src/skills.js";
-import { importUserSkillGlobal, projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
+import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 const tempDirs: string[] = [];
 
@@ -47,35 +47,6 @@ describe("user skill management", () => {
     expect(verifySkillGlobal("my-review", { homeDir: home }).ok).toBe(true);
     const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as { skills: Record<string, { ownership?: string }> };
     expect(lockfile.skills["my-review"]?.ownership).toBe("user");
-  });
-
-  it("imports a trusted external skill into canonical storage and native discovery", () => {
-    const home = makeTempDir("external-skill-home");
-    const repoRoot = makeTempDir("external-skill-repo");
-    const sourceRoot = makeTempDir("external-skill-source");
-    const paths = resolveSkillPaths(home);
-    const sourceDir = join(sourceRoot, "openai-docs");
-    mkdirSync(join(sourceDir, "scripts"), { recursive: true });
-    writeFileSync(
-      join(sourceDir, "SKILL.md"),
-      '---\nname: "openai-docs"\ndescription: "Use current official OpenAI documentation through the configured docs tools."\n---\n\n# OpenAI Docs\n',
-    );
-    writeFileSync(join(sourceDir, "scripts", "fetch-docs.mjs"), "export {};\n");
-
-    expect(importUserSkillGlobal(sourceDir, {
-      homeDir: home,
-      repoRoot,
-      now: new Date("2026-09-06T16:30:00.000Z"),
-    })).toBe("openai-docs");
-
-    expect(readFileSync(join(paths.agentsSkillsDir, "openai-docs", "scripts", "fetch-docs.mjs"), "utf8"))
-      .toBe("export {};\n");
-    expect(readlinkSync(join(paths.codexSkillsDir, "openai-docs"))).toBe("../../.agents/skills/openai-docs");
-    expect(readlinkSync(join(paths.geminiSkillsDir, "openai-docs"))).toBe("../../../.agents/skills/openai-docs");
-    expect(readlinkSync(join(paths.claudeSkillsDir, "openai-docs"))).toBe("../../.agents/skills/openai-docs");
-    expect(verifySkillGlobal("openai-docs", { homeDir: home }).ok).toBe(true);
-    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as { skills: Record<string, { ownership?: string }> };
-    expect(lockfile.skills["openai-docs"]?.ownership).toBe("user");
   });
 
   it("repairs a missing managed projection by rerunning project-user", () => {

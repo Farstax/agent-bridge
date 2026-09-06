@@ -8,18 +8,13 @@ import {
   verifySkillGlobal,
   type SkillLinkMode,
 } from "../src/skills.js";
-import {
-  importUserSkillGlobal,
-  projectUserSkillGlobal,
-  uninstallUserSkillGlobal,
-} from "../src/userSkills.js";
+import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 function usage(): never {
   console.error([
     "Usage:",
     "  npx tsx scripts/skill-manager.ts list",
     "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy] [--project-cursor]",
-    "  npx tsx scripts/skill-manager.ts import-user <skill-directory>",
     "  npx tsx scripts/skill-manager.ts project-user <skill-name> [--project-cursor]",
     "  npx tsx scripts/skill-manager.ts project-cursor <skill-name> [--link-mode symlink|copy]",
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
@@ -64,13 +59,6 @@ async function main(): Promise<void> {
       projectCursor: hasFlag(rest, "--project-cursor"),
     });
     console.log(`Installed ${maybeSkillName} (${linkMode}${hasFlag(rest, "--project-cursor") ? ", cursor" : ""})`);
-    return;
-  }
-
-  if (command === "import-user") {
-    if (!maybeSkillName) usage();
-    const skillName = importUserSkillGlobal(maybeSkillName);
-    console.log(`Imported user-managed skill ${skillName} (symlink)`);
     return;
   }
 
