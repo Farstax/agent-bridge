@@ -31,6 +31,7 @@ import { resolveAntigravityConversationId, setAntigravityModel } from "./provide
 import { supportsToolFreeMode } from "./providers/registry.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
+import { prepareVoiceBatchForDispatch } from "./voiceIngress.js";
 import { downloadSurfaceAttachment } from "./fileDownload.js";
 import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
@@ -59,6 +60,7 @@ import {
   executionLaneCoordinator,
   type ExecutionLaneCoordinator,
   type LaneCancellation,
+  type PreProviderIngressScope,
   type AugmentedTask,
   type LaneDrainer,
   type FinalDeliveryPhase,
@@ -347,34 +349,28 @@ export class BridgeEngine {
   }
 
   async handleInteractiveMessages(messages: InteractiveTurnInput[]): Promise<void> {
-    const primaryMessage = messages.find((message) => message.text) ?? messages[0];
+    let primaryMessage = messages.find((message) => message.text) ?? messages[0];
     if (!primaryMessage || !this.opts.allowedUserIds.has(primaryMessage.actorId)) return;
     if (messages.some((message) => message.surfaceIdentity !== this.surfaceIdentity || message.chatKey !== primaryMessage.chatKey)) {
       throw new Error("interactive media group crossed surface or conversation boundary");
     }
-    const threadId = primaryMessage.threadId;
-    const rawText = primaryMessage.text.trim();
-    const isSlashCmd = rawText.startsWith("/");
-    const commandText = isSlashCmd ? rawText : null;
-    const attachmentInputs = messages.flatMap((message) => message.attachments);
-    const hasAttachment = attachmentInputs.length > 0;
-    const prompt = commandText ? null : (rawText || (hasAttachment ? "Describe the attached file." : null));
-    if (!commandText && !prompt) return;
 
-    const chatId = primaryMessage.delivery.chatId;
-    const userId = primaryMessage.actorId;
+    const initialThreadId = primaryMessage.threadId;
+    const initialRawText = primaryMessage.text.trim();
+    const isSlashCmd = initialRawText.startsWith("/");
+    const commandText = isSlashCmd ? initialRawText : null;
+    const initialChatId = primaryMessage.delivery.chatId;
+    const initialUserId = primaryMessage.actorId;
     const chatKey = primaryMessage.chatKey;
-    const scheduledOccurrenceKeys = [...new Set(messages.map((message) => message.scheduledOccurrenceKey).filter((key): key is string => Boolean(key)))];
-    if (scheduledOccurrenceKeys.length > 1) throw new Error("interactive group crossed scheduled occurrence boundary");
     const executionLane = this._executionLane(chatKey);
     if (!this.laneCoordinator.isResetting(executionLane) && !this.laneCoordinator.hasCancellation(executionLane)) this.laneCoordinator.clearAborted(executionLane);
-    const hookCtx: HookContext = { chatId, chatKey, threadId, userId };
+    const initialHookCtx: HookContext = { chatId: initialChatId, chatKey, threadId: initialThreadId, userId: initialUserId };
 
     if (commandText) {
       if (this.hooks.onCommand) {
-        const hookResult = await this.hooks.onCommand(commandText, hookCtx);
+        const hookResult = await this.hooks.onCommand(commandText, initialHookCtx);
         if (hookResult !== null) {
-          if (hookResult.text) await this.sendText(chatId, { text: hookResult.text, reply_markup: hookResult.reply_markup, message_thread_id: threadId });
+          if (hookResult.text) await this.sendText(initialChatId, { text: hookResult.text, reply_markup: hookResult.reply_markup, message_thread_id: initialThreadId });
           return;
         }
       }
@@ -392,58 +388,97 @@ export class BridgeEngine {
         if (commandResponse) {
           if (commandResponse.kind === "message") {
             if (commandText === "/reset") {
-              try { await this.sendText(chatId, { text: commandResponse.text, message_thread_id: threadId }); }
+              try { await this.sendText(initialChatId, { text: commandResponse.text, message_thread_id: initialThreadId }); }
               finally { this.laneCoordinator.clearResetting(executionLane); if (resetHandle) this.db.unlock(resetHandle); }
-            } else await this.sendText(chatId, { text: commandResponse.text, message_thread_id: threadId });
+            } else await this.sendText(initialChatId, { text: commandResponse.text, message_thread_id: initialThreadId });
             return;
           }
-          if (commandResponse.kind === "keyboard_message") { await this.sendText(chatId, { text: commandResponse.text, reply_markup: commandResponse.reply_markup, message_thread_id: threadId }); return; }
+          if (commandResponse.kind === "keyboard_message") { await this.sendText(initialChatId, { text: commandResponse.text, reply_markup: commandResponse.reply_markup, message_thread_id: initialThreadId }); return; }
           if (commandResponse.kind === "codex_usage") {
-            try { await this.sendText(chatId, { text: await getCodexUsageText(), message_thread_id: threadId }); }
-            catch (error) { await this.sendText(chatId, { text: `Error: ${toUserMessage(error instanceof Error ? error : new Error(String(error)))}`, message_thread_id: threadId }); }
+            try { await this.sendText(initialChatId, { text: await getCodexUsageText(), message_thread_id: initialThreadId }); }
+            catch (error) { await this.sendText(initialChatId, { text: `Error: ${toUserMessage(error instanceof Error ? error : new Error(String(error)))}`, message_thread_id: initialThreadId }); }
             return;
           }
-          if (commandResponse.kind === "execute") { await this._executeAndSend(commandResponse.prompt, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx, []); return; }
-          if (commandResponse.kind === "btw") { await this._executeBtw(commandResponse.prompt, chatId, chatKey, threadId); return; }
+          if (commandResponse.kind === "execute") { await this._executeAndSend(commandResponse.prompt, initialChatId, chatKey, primaryMessage.delivery.chatType, initialThreadId, initialUserId, initialHookCtx, []); return; }
+          if (commandResponse.kind === "btw") { await this._executeBtw(commandResponse.prompt, initialChatId, chatKey, initialThreadId); return; }
         }
         return;
       }
       return;
     }
 
-    const inputRunId = randomUUID();
-    const uploadDir = join(tmpdir(), `bridge-uploads-${this.kind}-${chatKey}-${inputRunId}`);
-    const attachments: string[] = [];
-    let attachmentDownloadFailed = false;
-    if (hasAttachment) {
-      try {
-        for (let index = 0; index < attachmentInputs.length; index += 1) {
-          const prefix = attachmentInputs.length > 1 ? `attachment-${index + 1}-` : "";
-          const info = await downloadSurfaceAttachment(this.client, attachmentInputs[index], uploadDir, prefix);
-          if (!info) { attachmentDownloadFailed = true; break; }
-          attachments.push(info.localPath);
-        }
-      } catch (error) { attachmentDownloadFailed = true; console.error(`[${this.kind}] attachment download failed`, error); }
-    }
-    if (attachmentDownloadFailed) {
-      try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
-      await this.sendText(chatId, { text: "Could not download all attachments. Please upload the album again.", message_thread_id: threadId });
-      return;
-    }
-    const attachmentLocalPath = attachments[0] ?? null;
-    let executionOutcome: ExecutionOutcome = "failed";
-    const finalDeliveryActive = this.laneCoordinator.hasFinalDelivery(executionLane);
-    const augmentMode = (this.opts.busyMessageMode ?? "augment") === "augment";
-    const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.laneCoordinator.hasAugmentedTask(executionLane);
-    if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt: prompt!, attachments: [...attachments] });
+    const preProviderScope = this.laneCoordinator.beginPreProviderIngress(executionLane);
     try {
-      executionOutcome = await this._executeAndSend(prompt!, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx, attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive, ownsAugmentedTask, true, [], scheduledOccurrenceKeys);
+      const prepared = await prepareVoiceBatchForDispatch(messages, {
+        signal: preProviderScope.controller.signal,
+        workspaceDir: this._workingDir(),
+        notify: async (turn, message) => {
+          await this.sendText(turn.delivery.chatId, { text: message, message_thread_id: turn.threadId });
+        },
+      });
+      if (prepared.kind !== "ready") return;
+      messages = prepared.turns;
+      primaryMessage = messages.find((message) => message.text) ?? messages[0];
+      if (!primaryMessage) return;
+
+      const threadId = primaryMessage.threadId;
+      const rawText = primaryMessage.text.trim();
+      const attachmentInputs = messages.flatMap((message) => message.attachments);
+      const hasAttachment = attachmentInputs.length > 0;
+      const prompt = rawText || (hasAttachment ? "Describe the attached file." : null);
+      if (!prompt) return;
+
+      const chatId = primaryMessage.delivery.chatId;
+      const userId = primaryMessage.actorId;
+      const scheduledOccurrenceKeys = [...new Set(messages.map((message) => message.scheduledOccurrenceKey).filter((key): key is string => Boolean(key)))];
+      if (scheduledOccurrenceKeys.length > 1) throw new Error("interactive group crossed scheduled occurrence boundary");
+      const hookCtx: HookContext = { chatId, chatKey, threadId, userId };
+
+      const inputRunId = randomUUID();
+      const uploadDir = join(tmpdir(), `bridge-uploads-${this.kind}-${chatKey}-${inputRunId}`);
+      const attachments: string[] = [];
+      let attachmentDownloadFailed = false;
+      if (hasAttachment) {
+        try {
+          for (let index = 0; index < attachmentInputs.length; index += 1) {
+            if (preProviderScope.controller.signal.aborted) return;
+            const prefix = attachmentInputs.length > 1 ? `attachment-${index + 1}-` : "";
+            const info = await downloadSurfaceAttachment(this.client, attachmentInputs[index], uploadDir, prefix);
+            if (!info) { attachmentDownloadFailed = true; break; }
+            attachments.push(info.localPath);
+          }
+        } catch (error) { attachmentDownloadFailed = true; console.error(`[${this.kind}] attachment download failed`, error); }
+      }
+      if (preProviderScope.controller.signal.aborted) {
+        try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
+        return;
+      }
+      if (attachmentDownloadFailed) {
+        try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
+        await this.sendText(chatId, { text: "Could not download all attachments. Please upload the album again.", message_thread_id: threadId });
+        return;
+      }
+      const attachmentLocalPath = attachments[0] ?? null;
+      let executionOutcome: ExecutionOutcome = "failed";
+      const finalDeliveryActive = this.laneCoordinator.hasFinalDelivery(executionLane);
+      const augmentMode = (this.opts.busyMessageMode ?? "augment") === "augment";
+      const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.laneCoordinator.hasAugmentedTask(executionLane);
+      if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt, attachments: [...attachments] });
+      try {
+        executionOutcome = await this._executeAndSend(
+          prompt, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx,
+          attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive, ownsAugmentedTask, true,
+          [], scheduledOccurrenceKeys, preProviderScope,
+        );
+      } finally {
+        const transferred = this.laneCoordinator.isAugmentTransferred(executionLane);
+        const retainedByCancellation = this.laneCoordinator.hasCancellation(executionLane);
+        if (executionOutcome !== "queued" && !transferred && !retainedByCancellation) { try { rmSync(uploadDir, { recursive: true, force: true }); } catch {} }
+        if (transferred) this.laneCoordinator.clearAugmentTransferred(executionLane);
+        if (ownsAugmentedTask && !retainedByCancellation && !transferred) this.laneCoordinator.clearAugmentedTask(executionLane);
+      }
     } finally {
-      const transferred = this.laneCoordinator.isAugmentTransferred(executionLane);
-      const retainedByCancellation = this.laneCoordinator.hasCancellation(executionLane);
-      if (executionOutcome !== "queued" && !transferred && !retainedByCancellation) { try { rmSync(uploadDir, { recursive: true, force: true }); } catch {} }
-      if (transferred) this.laneCoordinator.clearAugmentTransferred(executionLane);
-      if (ownsAugmentedTask && !retainedByCancellation && !transferred) this.laneCoordinator.clearAugmentedTask(executionLane);
+      this.laneCoordinator.clearPreProviderIngress(executionLane, preProviderScope);
     }
   }
 
@@ -523,6 +558,7 @@ export class BridgeEngine {
     notifyCapacityFailure = true,
     claimedPendingIds: number[] = [],
     scheduledOccurrenceKeys: string[] = [],
+    preProviderScope: PreProviderIngressScope | null = null,
   ): Promise<ExecutionOutcome> {
     void attachmentLocalPath;
     let prompt = rawPrompt;
@@ -533,6 +569,10 @@ export class BridgeEngine {
     let activeTaskCommitted = false;
 
     if (!laneHandle) {
+      // No await is permitted between this synchronous claim and durable
+      // admission. A stop accepted before the claim aborts the scope and makes
+      // the claim fail; after the claim, the ordinary durable lane owns stop.
+      if (preProviderScope && !this.laneCoordinator.claimPreProviderIngress(this._executionLane(chatKey), preProviderScope)) return "fenced";
       const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
         prompt, chatId, threadId, chatType, userId, attachments,
         scheduledOccurrenceKey: scheduledOccurrenceKeys[0],
@@ -589,8 +629,6 @@ export class BridgeEngine {
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
       });
       if (!result) {
-        // Non-capacity provider failures are swallowed as null after a durable
-        // run.failed row may already exist. Link that Run when present.
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
         return "fenced";
       }
@@ -722,8 +760,6 @@ export class BridgeEngine {
 
   private _linkScheduledOccurrences(scheduledOccurrenceKeys: string[], runId: string): void {
     if (scheduledOccurrenceKeys.length === 0) return;
-    // Only bind when a durable Run row exists. Fence/pre-start failures leave
-    // run_not_created instead of inventing an unreachable Run ID.
     if (!this.db.getRun(runId)) return;
     for (const occurrenceKey of scheduledOccurrenceKeys) {
       if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {
@@ -1068,21 +1104,10 @@ export class BridgeEngine {
     return deriveConversationOwnerKey(this.surfaceIdentity, this.opts.allowedUserIds);
   }
 
-  // Runs after the CLI already executed and the answer was already delivered
-  // to the user. A dropped write here must not surface as an "execution
-  // error": _commitResultState() runs inside afterFinalDelivery(), and
-  // messageDelivery.ts's outer catch would otherwise treat an uncaught
-  // throw here as a failed turn and send a second, confusing "❌ ..."
-  // message right after the real answer. Warn with only the chat key —
-  // never the prompt or response text this method receives.
   private _rememberTurn(chatKey: string, userPrompt: string, assistantText: string): void {
     const ownerKey = this._conversationOwnerKey();
     const provenance = { surfaceIdentity: this.surfaceIdentity, ...(ownerKey ? { ownerKey } : {}) };
     try {
-      // This method already runs inside the lock-fenced result transaction.
-      // Use a nested transaction/savepoint for the turn pair so its local
-      // warning can suppress the post-delivery error without committing only
-      // the user half when the assistant insert fails.
       this.db.runInTransaction(() => {
         this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind, provenance);
         this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind, provenance);
