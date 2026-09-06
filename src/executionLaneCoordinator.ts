@@ -50,13 +50,15 @@ export class ExecutionLaneCoordinator {
   cancellationCount(): number { return this.cancellationOperations.size; }
 
   beginPreProviderIngress(lane: string): PreProviderIngressScope {
-    const scope: PreProviderIngressScope = { controller: new AbortController(), state: "preparing" };
+    const fenced = this.abortedChats.has(lane) || this.resettingChats.has(lane) || this.cancellationOperations.has(lane);
+    const scope: PreProviderIngressScope = { controller: new AbortController(), state: fenced ? "aborted" : "preparing" };
     let scopes = this.preProviderIngressScopes.get(lane);
     if (!scopes) {
       scopes = new Set<PreProviderIngressScope>();
       this.preProviderIngressScopes.set(lane, scopes);
     }
     scopes.add(scope);
+    if (fenced) scope.controller.abort();
     return scope;
   }
 
