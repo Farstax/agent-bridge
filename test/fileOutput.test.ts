@@ -187,21 +187,32 @@ describe("uploadOutputFiles", () => {
   });
 
   it("expires retained failures using the durable marker without sweeping unrelated directories", async () => {
-    const dir = await prepareOutputDir(90909, "claude", `expiry-${Date.now()}`);
-    await writeFile(join(dir, "retained.pdf"), "x");
-    const client = {
+    const failingClient = {
       capabilities: TELEGRAM_SURFACE_CAPABILITIES,
       sendPhoto: vi.fn(),
       sendDocument: vi.fn().mockRejectedValue(new Error("temporary failure")),
       sendMessage: vi.fn().mockResolvedValue(undefined),
     } as any;
+    const dir = await prepareOutputDir(90909, "claude", `expiry-${Date.now()}-${Math.random()}`);
+    await writeFile(join(dir, "retained.pdf"), "x");
+    const sibling = await prepareOutputDir(90910, "claude", `keep-${Date.now()}-${Math.random()}`);
+    await writeFile(join(sibling, "keep.pdf"), "y");
 
-    const result = await uploadOutputFiles(dir, 90909, client);
-    expect(result.status).toBe("partial");
-    expect(await dirExists(dir)).toBe(true);
+    const expired = await uploadOutputFiles(dir, 90909, failingClient);
+    const kept = await uploadOutputFiles(sibling, 90910, failingClient);
+    expect(expired.status).toBe("partial");
+    expect(kept.status).toBe("partial");
+    expect(kept.retainedUntil).toBeTruthy();
 
-    await cleanupExpiredRetainedOutputDirs(Date.parse(result.retainedUntil!) + 1);
+    await writeFile(
+      join(dir, ".delivery-retained.json"),
+      `${JSON.stringify({ expiresAt: new Date(Date.now() - 1_000).toISOString() })}\n`,
+      { mode: 0o600 },
+    );
+    await cleanupExpiredRetainedOutputDirs();
     expect(await dirExists(dir)).toBe(false);
+    expect(await dirExists(sibling)).toBe(true);
+    await cleanOutputDir(sibling);
   });
 
   it("does not start another upload once publication is fenced and removes stale files", async () => {
