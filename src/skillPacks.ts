@@ -7,11 +7,11 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getSharedSkillsHomeDir, installSkillGlobal, listLocalCatalog, resolveSkillPaths, uninstallSkillGlobal, verifySkillGlobal, type SkillLinkMode } from "./skills.js";
+import { getSharedSkillsHomeDir, hashDirectory, installSkillGlobal, listLocalCatalog, resolveSkillPaths, uninstallSkillGlobal, verifySkillGlobal, type SkillLinkMode } from "./skills.js";
 
 export const SKILL_PACK_SCHEMA_VERSION = 1;
 export const SKILL_PACK_API_VERSION = 1;
@@ -103,7 +103,7 @@ type InstalledSkill = {
 };
 type PackState = {
   version: number;
-  packs: Record<string, { version: string; catalogueId: string; catalogueVersion: string; catalogueSource: string; skills: string[]; installedAt: string; updatedAt: string }>;
+  packs: Record<string, { version: string; manifestSha256: string; catalogueId: string; catalogueVersion: string; catalogueSource: string; skills: string[]; installedAt: string; updatedAt: string }>;
   skills: Record<string, InstalledSkill>;
 };
 type Prepared = { skill: SkillPackSkill; repository: string; notice?: string };
@@ -198,29 +198,44 @@ async function context(packId: string, options: SkillPackManagerOptions) {
 async function converge(ctx: Awaited<ReturnType<typeof context>>, selected: SkillPackSkill[], mode: "install" | "update" | "explicit"): Promise<SkillPackInstallResult> {
   const { catalogue, source, pack, paths, state, options } = ctx; const linkMode = options.linkMode ?? "symlink";
   if (linkMode !== "symlink" && linkMode !== "copy") throw new Error(`Invalid link mode: ${linkMode}`);
+  const previousPack = state.packs[pack.id]; const manifestSha256 = manifestDigest(pack);
+  if (mode === "update" && previousPack?.version === pack.version && previousPack.manifestSha256 !== manifestSha256) {
+    throw new Error(`Skill Pack ${pack.id} version ${pack.version} changed manifest content; publish a new pack version`);
+  }
   preflight(selected, pack.id, state, paths.homeDir, source, mode);
   const staging = mkdtempSync(join(tmpdir(), "agent-bridge-skill-pack-")); const repoRoot = join(staging, "repo"); const prepared: Prepared[] = [];
   try {
     for (const skill of selected) prepared.push(await prepare(skill, source, repoRoot, options.fetchImpl ?? fetch));
     const staged = new Set(listLocalCatalog(repoRoot).map((entry) => entry.name)); for (const skill of selected) if (!staged.has(skill.id)) throw new Error(`Prepared Skill is invalid: ${skill.id}`);
-    const now = (options.now ?? new Date()).toISOString(); const installed: string[] = []; const retained: string[] = []; const previousPack = state.packs[pack.id];
+    const now = (options.now ?? new Date()).toISOString(); const installed: string[] = []; const retained: string[] = [];
     for (const item of prepared) {
       const previous = state.skills[item.skill.id]; const registration = coreRegistration(item.skill.id, paths.homeDir);
-      const unchanged = previous && sameContent(previous.content, item.skill.content, item.repository, source) && verifySkillGlobal(item.skill.id, { homeDir: paths.homeDir }).ok;
-      if (registration && unchanged) retained.push(item.skill.id);
-      else { installSkillGlobal(item.skill.id, { repoRoot, homeDir: paths.homeDir, force: Boolean(registration), linkMode, ownership: "user", now: options.now }); installed.push(item.skill.id); }
       const refs = new Set(previous?.packRefs ?? []); if (mode !== "explicit") refs.add(pack.id); const explicit = mode === "explicit" || Boolean(previous?.explicit);
       commitNotice(item, paths);
+      // Persist the desired pack-owned state before mutating the core Skill. If the
+      // process is interrupted after the core install starts, the next explicit
+      // pack operation can identify and converge the orphan instead of treating it
+      // as unrelated user-owned content.
       state.skills[item.skill.id] = { explicit, packRefs: [...refs].sort(), content: { ...item.skill.content, repository: item.repository }, provenance: item.skill.provenance, supportedHosts: item.skill.supportedHosts, dependencies: item.skill.dependencies, capabilities: item.skill.capabilities, tests: item.skill.tests, installedAt: previous?.installedAt ?? now, updatedAt: now, noticeLocalPath: item.notice ? relative(paths.homeDir, join(paths.notices, item.skill.id, basename(item.notice))).split("\\").join("/") : previous?.noticeLocalPath };
+      writeState(paths.lockfile, state);
+      const canonical = join(resolveSkillPaths(paths.homeDir).agentsSkillsDir, item.skill.id);
+      const unchanged = Boolean(registration) && previous && sameContent(previous.content, item.skill.content, item.repository, source)
+        && existsSync(canonical) && hashSkillPackDirectorySha256(canonical) === item.skill.content.sha256
+        && verifySkillGlobal(item.skill.id, { homeDir: paths.homeDir }).ok;
+      if (registration && unchanged) retained.push(item.skill.id);
+      else {
+        installSkillGlobal(item.skill.id, { repoRoot, homeDir: paths.homeDir, force: Boolean(registration), linkMode, ownership: "user", now: options.now, projectCursor: Boolean(registration?.cursorProjected) });
+        installed.push(item.skill.id);
+      }
     }
     const removed: string[] = [];
     if (mode === "update" && previousPack) for (const skillId of previousPack.skills) if (!selected.some((skill) => skill.id === skillId)) {
-      const entry = state.skills[skillId]; if (!entry) throw new Error(`Skill Pack state is inconsistent: missing skill ${skillId}`);
-      entry.packRefs = entry.packRefs.filter((ref) => ref !== pack.id); entry.updatedAt = now;
-      if (!entry.explicit && !entry.packRefs.length) { uninstallPackSkill(skillId, paths.homeDir); removeNotice(entry.noticeLocalPath, paths.homeDir); delete state.skills[skillId]; removed.push(skillId); }
+      const record = state.skills[skillId]; if (!record) throw new Error(`Skill Pack state is inconsistent: missing skill ${skillId}`);
+      record.packRefs = record.packRefs.filter((ref) => ref !== pack.id); record.updatedAt = now;
+      if (!record.explicit && !record.packRefs.length) { uninstallPackSkill(skillId, paths.homeDir); removeNotice(record.noticeLocalPath, paths.homeDir); delete state.skills[skillId]; removed.push(skillId); }
     }
     if (mode !== "explicit") {
-      state.packs[pack.id] = { version: pack.version, catalogueId: catalogue.catalogueId, catalogueVersion: catalogue.catalogueVersion, catalogueSource: source, skills: pack.skills.map((skill) => skill.id).sort(), installedAt: previousPack?.installedAt ?? now, updatedAt: now };
+      state.packs[pack.id] = { version: pack.version, manifestSha256, catalogueId: catalogue.catalogueId, catalogueVersion: catalogue.catalogueVersion, catalogueSource: source, skills: pack.skills.map((skill) => skill.id).sort(), installedAt: previousPack?.installedAt ?? now, updatedAt: now };
       mkdirSync(paths.manifests, { recursive: true }); atomicJson(join(paths.manifests, `${pack.id}.json`), { schemaVersion: catalogue.schemaVersion, catalogueId: catalogue.catalogueId, catalogueVersion: catalogue.catalogueVersion, pack });
     }
     writeState(paths.lockfile, state); return { packId: pack.id, version: pack.version, installed, retained, removed };
@@ -234,7 +249,8 @@ function preflight(selected: SkillPackSkill[], packId: string, state: PackState,
     if (!registration && existsSync(canonical)) throw new Error(`Refusing pack install over unregistered shared Skill: ${skill.id}`);
     if (registration?.ownership === "bundled") throw new Error(`Refusing pack install over bundled-owned Skill: ${skill.id}`);
     if (registration?.ownership === "user" && !prior) throw new Error(`Refusing pack install over user-owned Skill: ${skill.id}`);
-    if (!registration && prior) throw new Error(`Skill Pack state is inconsistent for missing pack-managed Skill: ${skill.id}`);
+    if (registration && prior) assertManagedProjectionSafe(skill.id, paths, registration);
+    if (!registration && prior && !sameContent(prior.content, skill.content, contentRepository(skill.content.repository, source), source)) throw new Error(`Skill Pack state is inconsistent for missing pack-managed Skill: ${skill.id}`);
     if (!registration) for (const dir of [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir]) if (pathExists(join(dir, skill.id))) throw new Error(`Refusing pack install over unmanaged native Skill path: ${join(dir, skill.id)}`);
     if (!prior || sameContent(prior.content, skill.content, contentRepository(skill.content.repository, source), source)) continue;
     const others = prior.packRefs.filter((ref) => ref !== packId); if (others.length) throw new Error(`Cannot change shared Skill ${skill.id}; still referenced by packs: ${others.join(", ")}`);
@@ -304,7 +320,8 @@ function selectPack(catalogue: SkillPackCatalogue, packId: string, requested?: s
 function compatible(pack: SkillPackManifest, current: string): void { if (pack.compatibility.minAgentBridgeVersion && compareVersion(current, pack.compatibility.minAgentBridgeVersion) < 0) throw new Error(`Skill Pack ${pack.id} requires Agent Bridge >= ${pack.compatibility.minAgentBridgeVersion}; current ${current}`); if (pack.compatibility.maxAgentBridgeVersion && compareVersion(current, pack.compatibility.maxAgentBridgeVersion) > 0) throw new Error(`Skill Pack ${pack.id} requires Agent Bridge <= ${pack.compatibility.maxAgentBridgeVersion}; current ${current}`); }
 function bridgeVersion(options: SkillPackManagerOptions): string { if (options.agentBridgeVersion) return options.agentBridgeVersion; if (process.env.AGENT_BRIDGE_VERSION) return process.env.AGENT_BRIDGE_VERSION; try { const value = JSON.parse(readFileSync(join(options.repoRoot ?? defaultRepoRoot, "package.json"), "utf8")) as { version?: unknown }; if (typeof value.version === "string") return value.version; } catch {} throw new Error("Unable to determine current Agent Bridge version for Skill Pack compatibility"); }
 
-function coreRegistration(skillId: string, homeDir: string): { ownership: "bundled" | "user" } | undefined { const path = resolveSkillPaths(homeDir).lockfilePath; if (!existsSync(path)) return undefined; let raw: unknown; try { raw = JSON.parse(readFileSync(path, "utf8")) as unknown; } catch { throw new Error(`Unable to parse skill lockfile: ${path}`); } if (!isRecord(raw) || !isRecord(raw.skills)) throw new Error(`Unable to parse skill lockfile: ${path}`); const value = raw.skills[skillId]; if (value === undefined) return undefined; if (!isRecord(value) || (value.ownership !== "bundled" && value.ownership !== "user")) throw new Error(`Invalid skill registration for ${skillId}`); return { ownership: value.ownership }; }
+function coreRegistration(skillId: string, homeDir: string): { ownership: "bundled" | "user"; linkMode: SkillLinkMode; cursorProjected: boolean } | undefined { const path = resolveSkillPaths(homeDir).lockfilePath; if (!existsSync(path)) return undefined; let raw: unknown; try { raw = JSON.parse(readFileSync(path, "utf8")) as unknown; } catch { throw new Error(`Unable to parse skill lockfile: ${path}`); } if (!isRecord(raw) || !isRecord(raw.skills)) throw new Error(`Unable to parse skill lockfile: ${path}`); const value = raw.skills[skillId]; if (value === undefined) return undefined; if (!isRecord(value) || (value.ownership !== "bundled" && value.ownership !== "user")) throw new Error(`Invalid skill registration for ${skillId}`); if (value.linkMode !== undefined && value.linkMode !== "symlink" && value.linkMode !== "copy") throw new Error(`Invalid skill registration link mode for ${skillId}`); return { ownership: value.ownership, linkMode: value.linkMode === "copy" ? "copy" : "symlink", cursorProjected: value.cursorProjected === true }; }
+function assertManagedProjectionSafe(skillId: string, paths: ReturnType<typeof resolveSkillPaths>, registration: { linkMode: SkillLinkMode; cursorProjected: boolean }): void { const shared = join(paths.agentsSkillsDir, skillId); if (!existsSync(shared)) return; const dirs = [paths.codexSkillsDir, paths.geminiSkillsDir, paths.claudeSkillsDir, ...(registration.cursorProjected ? [paths.cursorSkillsDir] : [])]; for (const dir of dirs) { const native = join(dir, skillId); if (!pathExists(native)) continue; let expected = false; try { const stat = lstatSync(native); expected = registration.linkMode === "symlink" ? stat.isSymbolicLink() && resolve(dirname(native), readlinkSync(native)) === resolve(shared) : stat.isDirectory() && hashDirectory(native) === hashDirectory(shared); } catch {} if (!expected) throw new Error(`Refusing pack convergence over unmanaged native Skill path: ${native}`); } }
 function uninstallPackSkill(skillId: string, homeDir: string): void { const registration = coreRegistration(skillId, homeDir); if (!registration) return; if (registration.ownership !== "user") throw new Error(`Refusing to remove non-pack Skill ${skillId}`); uninstallSkillGlobal(skillId, { homeDir, expectedOwnership: "user" }); }
 function readState(path: string): PackState { if (!existsSync(path)) return { version: 1, packs: {}, skills: {} }; let raw: unknown; try { raw = JSON.parse(readFileSync(path, "utf8")) as unknown; } catch { throw new Error(`Unable to parse Skill Pack lockfile: ${path}`); } if (!isRecord(raw) || raw.version !== 1 || !isRecord(raw.packs) || !isRecord(raw.skills)) throw new Error(`Invalid Skill Pack lockfile: ${path}`); return raw as PackState; }
 function writeState(path: string, state: PackState): void { state.version = 1; atomicJson(path, state); }
@@ -329,7 +346,9 @@ function text(value: unknown, label: string, max: number): string { if (typeof v
 function strings(value: unknown, label: string, maxItems: number, maxLength: number): string[] { if (value === undefined) return []; if (!Array.isArray(value) || value.length > maxItems) throw new Error(`${label} must be an array with <= ${maxItems} items`); return value.map((item,index) => text(item, `${label}[${index}]`, maxLength)); }
 function id(value: unknown, label: string): string { const result = text(value, label, 64); if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(result)) throw new Error(`${label} must be lowercase kebab-case`); return result; }
 function semver(value: unknown, label: string): string { const result = text(value, label, 64); if (!/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(result)) throw new Error(`${label} must be semantic version x.y.z`); return result; }
-function compareVersion(a: string, b: string): number { const parts = (value: string) => value.replace(/^v/, "").split(/[.-]/).slice(0,3).map(Number); const av = parts(a), bv = parts(b); for (let i=0;i<3;i+=1) if (av[i] !== bv[i]) return av[i] < bv[i] ? -1 : 1; return 0; }
+function compareVersion(a: string, b: string): number { const parse = (value: string) => { const match = value.match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/); if (!match) throw new Error(`Invalid semantic version: ${value}`); return { core: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4]?.split(".") ?? [] }; }; const av = parse(a), bv = parse(b); for (let i=0;i<3;i+=1) if (av.core[i] !== bv.core[i]) return av.core[i] < bv.core[i] ? -1 : 1; if (!av.pre.length || !bv.pre.length) return av.pre.length === bv.pre.length ? 0 : av.pre.length ? -1 : 1; for (let i=0;i<Math.max(av.pre.length,bv.pre.length);i+=1) { if (av.pre[i] === undefined) return -1; if (bv.pre[i] === undefined) return 1; if (av.pre[i] === bv.pre[i]) continue; const an = /^\d+$/.test(av.pre[i]), bn = /^\d+$/.test(bv.pre[i]); if (an && bn) return Number(av.pre[i]) < Number(bv.pre[i]) ? -1 : 1; if (an !== bn) return an ? -1 : 1; return av.pre[i] < bv.pre[i] ? -1 : 1; } return 0; }
+function manifestDigest(pack: SkillPackManifest): string { return createHash("sha256").update(JSON.stringify(stable(pack))).digest("hex"); }
+function stable(value: unknown): unknown { if (Array.isArray(value)) return value.map(stable); if (!isRecord(value)) return value; return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])])); }
 function sha(value: unknown, label: string): string { const result = text(value, label, 64); if (!/^[0-9a-f]{64}$/i.test(result)) throw new Error(`${label} must be a 64-character SHA-256`); return result.toLowerCase(); }
 function spdx(value: unknown, label: string): string { const result = text(value, label, 128); if (!/^[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(result)) throw new Error(`${label} must be an SPDX-style licence id`); return result; }
 function https(value: unknown, label: string): string { const result = text(value, label, 2048); let url: URL; try { url = new URL(result); } catch { throw new Error(`${label} must be a valid HTTPS URL`); } if (url.protocol !== "https:") throw new Error(`${label} must be a valid HTTPS URL`); return result; }
