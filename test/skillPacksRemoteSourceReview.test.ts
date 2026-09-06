@@ -55,7 +55,7 @@ it("does not let a remote curated catalogue select local filesystem Skill conten
           path: "skills/shared",
           sha256: hashSkillPackDirectorySha256(skillDir),
         },
-        provenance: { origin: "farstax-authored", modifiedFromUpstream: false, lastReviewed: "2026-09-06" },
+        provenance: { origin: "author-created", modifiedFromUpstream: false, lastReviewed: "2026-09-06" },
         supportedHosts: ["codex"],
         dependencies: { requiredLocal: [], optionalLocal: [], externalServices: [], hostedMcps: [], requiredSecrets: [] },
         capabilities: { effects: ["local-read"], approval: "Local read only." },
@@ -64,10 +64,17 @@ it("does not let a remote curated catalogue select local filesystem Skill conten
     }],
   };
 
-  await expect(installSkillPack("marketing", {
-    homeDir: home,
-    catalogueSource: "https://raw.githubusercontent.com/Farstax/agent-bridge-skills/main/catalogue.json",
-    agentBridgeVersion: "0.1.0",
-    fetchImpl: async () => new Response(JSON.stringify(catalogue), { status: 200 }),
-  })).rejects.toThrow(/local Skill content repository requires a local catalogue/i);
+  const originalAllowedRepo = process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO;
+  process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO = "example-org/example-skills";
+  try {
+    await expect(installSkillPack("marketing", {
+      homeDir: home,
+      catalogueSource: "https://raw.githubusercontent.com/example-org/example-skills/main/catalogue.json",
+      agentBridgeVersion: "0.1.0",
+      fetchImpl: async () => new Response(JSON.stringify(catalogue), { status: 200 }),
+    })).rejects.toThrow(/local Skill content repository requires a local catalogue/i);
+  } finally {
+    if (originalAllowedRepo === undefined) delete process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO;
+    else process.env.AGENT_BRIDGE_SKILL_PACK_ALLOWED_REPO = originalAllowedRepo;
+  }
 });
