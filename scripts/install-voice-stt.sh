@@ -29,7 +29,7 @@ case "$(uname -m)" in
   *) fail "standard voice transcription component requires x86_64" ;;
 esac
 
-for command in curl tar sha256sum python3 apt-get dpkg-query find readlink timeout; do
+for command in curl tar sha256sum python3 apt-get dpkg-query find readlink timeout flock nice; do
   command -v "${command}" >/dev/null 2>&1 || fail "required command is missing: ${command}"
 done
 
