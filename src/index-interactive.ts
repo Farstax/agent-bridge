@@ -32,13 +32,13 @@ import {
   describeInteractiveUpdateForLog,
   isGroupInteractiveUpdate,
   dispatchInteractiveTurnWithFallback,
-  dispatchUnifiedTelegramUpdate,
   handleUnavailableCliUpdate,
   dispatchClaimedInteractiveWithFallback,
   resolveAvailableCliPreference,
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
+import { dispatchTargetedTelegramUpdate } from "./telegramCommandTarget.js";
 import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
@@ -386,7 +386,8 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       }
       const started = await autonomyController.start({
         bot: pref,
-        policyInstruction: `[Scheduled routine: ${routine.name}]\n${routine.instruction}`,
+        policyInstruction: `[Scheduled routine: ${routine.name}]\
+${routine.instruction}`,
         supervisorRoute: {
           surface: "telegram",
           address: String(destination.chatId),
@@ -622,7 +623,7 @@ for (;;) {
           }
 
           if (chatId != null) {
-            dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, runtimePolicy.surfaceIdentity, engines[pref], async (turn) => {
+            dispatchTargetedTelegramUpdate(typedUpdate, chatKey, runtimePolicy.surfaceIdentity, engines[pref], async (turn) => {
               await dispatchInteractiveTurnWithFallback(turn, {
                 engines,
                 fallbackChain,
@@ -638,7 +639,7 @@ for (;;) {
                   }
                 },
               });
-            }).catch((err: unknown) => console.error("[interactive] dispatch error", err));
+            }, botUsername).catch((err: unknown) => console.error("[interactive] dispatch error", err));
             continue;
           } else {
             engines[pref].handleUpdate(typedUpdate)
