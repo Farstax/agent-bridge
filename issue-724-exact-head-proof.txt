@@ -1,2 +1,2 @@
 Temporary unmerged fixture for issue #724 exact-head enforcement.
-head=one
+head=two
