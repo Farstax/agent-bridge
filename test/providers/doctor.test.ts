@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../../src/providers/doctor.js";
 
 const allFound = () => true;
@@ -130,6 +130,22 @@ describe("doctor diagnostics", () => {
       env: { INTERACTIVE_CLI_CHAIN: "codex,claude" },
       commandExists: allFound,
     });
+    expect(report.ok).toBe(true);
+  });
+
+  it("projects voice STT readiness through the same effective runtime environment", () => {
+    const inspectVoiceRuntime = vi.fn(() => ({
+      status: "ready" as const,
+      reasonCode: null,
+    }));
+    const env = {
+      INTERACTIVE_CLI_CHAIN: "codex",
+      AGENT_BRIDGE_STT_ROOT: "/opt/agent-bridge/host-components/voice-stt",
+    };
+    const report = runDoctor({ env, commandExists: allFound, inspectVoiceRuntime });
+
+    expect(inspectVoiceRuntime).toHaveBeenCalledWith(env);
+    expect(report.voiceTranscription).toEqual({ status: "ready", reasonCode: null });
     expect(report.ok).toBe(true);
   });
 });
