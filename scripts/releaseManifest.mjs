@@ -130,9 +130,13 @@ export function buildReleaseManifest({
     manifest.database_schema_version = databaseSchemaVersion;
   }
   if (releaseTag !== undefined) {
+    const compatibilityVersion = releaseCompatibilityVersion(releaseTag);
+    if (packageJson.version !== compatibilityVersion) {
+      throw new Error(`release artifact package version ${String(packageJson.version)} does not match compatibility version ${compatibilityVersion}`);
+    }
     manifest.release = {
       tag: releaseTag,
-      compatibility_version: releaseCompatibilityVersion(releaseTag),
+      compatibility_version: compatibilityVersion,
     };
   }
   return manifest;
