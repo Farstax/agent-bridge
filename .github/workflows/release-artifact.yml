@@ -70,12 +70,13 @@ jobs:
           cp -a dist src package.json package-lock.json node_modules "$root/"
           mkdir -p "$root/scripts" "$root/bin" "$root/skills"
           cp -a scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/upgrade.sh scripts/provider-qualification.ts scripts/agent-bridge-context.ts scripts/agent-bridge-advisor.ts scripts/agent-bridge-routines.ts scripts/agent-bridge-inspect.ts scripts/skill-manager.ts scripts/autonomous-goal-operator.ts scripts/release-stage.py scripts/rollout-restore.py "$root/scripts/"
-          cp -a scripts/agent-bridge-install.py scripts/agent-bridge-deploy.py scripts/configure-health-mode.py scripts/rollout-agent-bridge.sh scripts/release-activate.py scripts/rollout-authorization.py scripts/rollout-acceptance.py "$root/scripts/"
+          cp -a scripts/agent-bridge-install.py scripts/agent-bridge-deploy.py scripts/configure-health-mode.py scripts/rollout-agent-bridge.sh scripts/release-activate.py scripts/rollout-authorization.py scripts/rollout-acceptance.py scripts/install-voice-stt.sh "$root/scripts/"
           cp -a scripts/reap-tmp-artifacts.sh "$root/scripts/"
           test -f "$root/scripts/autonomous-goal-operator.ts"
           test -f "$root/scripts/agent-bridge-routines.ts"
           test -f "$root/scripts/agent-bridge-inspect.ts"
           test -f "$root/scripts/configure-health-mode.py"
+          test -f "$root/scripts/install-voice-stt.sh"
           mkdir -p "$root/systemd"
           cp -a systemd/agent-bridge-antigravity.service systemd/agent-bridge-claude.service systemd/agent-bridge-codex.service systemd/agent-bridge-discord-interactive.service systemd/agent-bridge-health.service systemd/agent-bridge-interactive.service "$root/systemd/"
           cp -a systemd/agent-bridge-tmp-cleanup.service systemd/agent-bridge-tmp-cleanup.timer "$root/systemd/"
@@ -113,8 +114,36 @@ jobs:
             --builder-workflow-head "$builder_head" \
             --database-schema-version "$database_schema_version" \
             "${release_args[@]}"
+          node --input-type=module - "$root/manifest.json" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFileSync } from "node:fs";
+          const manifestPath = process.argv[2];
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+          const component = manifest.host_components?.find((entry) => entry.id === "voice-stt");
+          if (component?.installer !== "scripts/install-voice-stt.sh") throw new Error("voice-stt declaration missing from manifest");
+          const file = manifest.files.find((entry) => entry.path === component.installer);
+          if (!file || file.type === "symlink") throw new Error("voice-stt installer is not manifest-bound as a regular file");
+          const digest = createHash("sha256").update(readFileSync(`${process.env.RUNNER_TEMP}/agent-bridge-release/${component.installer}`)).digest("hex");
+          if (file.sha256 !== digest) throw new Error("voice-stt installer manifest hash mismatch");
+          NODE
           tar --create --gzip --file "$archive" \
             --directory "$root" --sort=name --owner=0 --group=0 --numeric-owner .
+          verify_root="$RUNNER_TEMP/agent-bridge-release-verify"
+          mkdir -p "$verify_root"
+          tar -xzf "$archive" -C "$verify_root"
+          test -f "$verify_root/scripts/install-voice-stt.sh"
+          node --input-type=module - "$verify_root/manifest.json" <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFileSync } from "node:fs";
+          const manifestPath = process.argv[2];
+          const root = manifestPath.slice(0, -"manifest.json".length);
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+          const component = manifest.host_components?.find((entry) => entry.id === "voice-stt");
+          const file = component && manifest.files.find((entry) => entry.path === component.installer);
+          if (!component || !file || file.type === "symlink") throw new Error("archived voice-stt contract is missing");
+          const digest = createHash("sha256").update(readFileSync(`${root}${component.installer}`)).digest("hex");
+          if (file.sha256 !== digest) throw new Error("archived voice-stt installer is not hash-bound");
+          NODE
           ( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" ) | tee "$archive.sha256"
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
 
