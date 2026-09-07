@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { dispatchUnifiedTelegramUpdate, handleUnavailableCliUpdate, isAuthorizedInteractiveUpdate } from "../src/interactiveBot.js";
+import { dispatchTargetedTelegramUpdate } from "../src/telegramCommandTarget.js";
 import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
@@ -204,7 +205,7 @@ describe("unified Telegram callback ingress", () => {
       const runCli = vi.fn();
       const engine = codexEngine(db, telegram, runCli);
 
-      await dispatchUnifiedTelegramUpdate(
+      await dispatchTargetedTelegramUpdate(
         message(text, updateId),
         "100:7",
         "telegram:interactive",
@@ -234,7 +235,7 @@ describe("unified Telegram callback ingress", () => {
       const engine = codexEngine(db, telegram, runCli);
       const messageDispatch = vi.fn(async (turn: any) => engine.handleInteractiveTurn(turn));
 
-      await dispatchUnifiedTelegramUpdate(
+      await dispatchTargetedTelegramUpdate(
         message(text, updateId),
         "100:7",
         "telegram:interactive",
