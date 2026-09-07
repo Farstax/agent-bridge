@@ -15,6 +15,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const cleanup: string[] = [];
 const verifier = fileURLToPath(new URL("../scripts/verify-release-promotion.sh", import.meta.url));
+const releaseTag = "release-2026.09.07-1";
+const compatibilityVersion = "2026.9.7-1";
 
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -24,7 +26,13 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function buildArtifact(options: { manifestWorkflowRun?: string; corruptChecksum?: boolean } = {}) {
+function buildArtifact(options: {
+  manifestWorkflowRun?: string;
+  corruptChecksum?: boolean;
+  manifestReleaseTag?: string;
+  manifestCompatibilityVersion?: string;
+  packageVersion?: string;
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-release-promotion-"));
   cleanup.push(root);
   const payload = join(root, "payload");
@@ -38,8 +46,8 @@ function buildArtifact(options: { manifestWorkflowRun?: string; corruptChecksum?
   const manifestWorkflowRun = options.manifestWorkflowRun ?? workflowRun;
 
   writeFileSync(join(payload, "dist", "index.js"), "export const ready = true;\n");
-  writeFileSync(join(payload, "package.json"), '{"name":"release-promotion-fixture","type":"module"}\n');
-  writeFileSync(join(payload, "package-lock.json"), '{"name":"release-promotion-fixture","lockfileVersion":3}\n');
+  writeFileSync(join(payload, "package.json"), `${JSON.stringify({ name: "release-promotion-fixture", type: "module", version: options.packageVersion ?? compatibilityVersion })}\n`);
+  writeFileSync(join(payload, "package-lock.json"), `${JSON.stringify({ name: "release-promotion-fixture", version: options.packageVersion ?? compatibilityVersion, lockfileVersion: 3 })}\n`);
   writeJson(join(payload, "qualification-evidence.json"), {
     commit,
     tree,
@@ -69,6 +77,10 @@ function buildArtifact(options: { manifestWorkflowRun?: string; corruptChecksum?
     files,
     builder: { commit, workflow_run: manifestWorkflowRun, workflow_head: commit },
     database_schema_version: 4,
+    release: {
+      tag: options.manifestReleaseTag ?? releaseTag,
+      compatibility_version: options.manifestCompatibilityVersion ?? compatibilityVersion,
+    },
   });
 
   const archive = join(artifactDir, `agent-bridge-${commit}.tar.gz`);
@@ -79,10 +91,16 @@ function buildArtifact(options: { manifestWorkflowRun?: string; corruptChecksum?
   return { artifactDir, commit, workflowRun };
 }
 
-function runVerifier(artifactDir: string, commit: string, workflowRun: string) {
+function runVerifier(artifactDir: string, commit: string, workflowRun: string, requestedReleaseTag = releaseTag) {
   return spawnSync(
     "bash",
-    [verifier, "--artifact-dir", artifactDir, "--commit", commit, "--workflow-run", workflowRun],
+    [
+      verifier,
+      "--artifact-dir", artifactDir,
+      "--commit", commit,
+      "--workflow-run", workflowRun,
+      "--release-tag", requestedReleaseTag,
+    ],
     { encoding: "utf8" },
   );
 }
@@ -102,12 +120,26 @@ describe("GitHub release promotion", () => {
     expect(workflow).toContain("workflow_run_id:");
     expect(workflow).toContain("commit_sha:");
     expect(workflow).toContain("release_tag:");
+    expect(workflow).toContain('--release-tag "$RELEASE_TAG"');
+    expect(workflow).toContain('run.event !== "workflow_dispatch"');
     expect(workflow).toMatch(/actions:\s*read/);
     expect(workflow).toMatch(/contents:\s*write/);
     expect(workflow).toContain("actions/download-artifact@v4");
     expect(workflow).toContain("scripts/verify-release-promotion.sh");
     expect(workflow).not.toMatch(/\bnpm\s+(?:ci|test)\b/);
     expect(workflow).not.toMatch(/\bnpm\s+run\s+build\b/);
+  });
+
+  it("requires release qualification to stamp an explicit release tag", () => {
+    const workflow = readFileSync(
+      fileURLToPath(new URL("../.github/workflows/release-artifact.yml", import.meta.url)),
+      "utf8",
+    );
+
+    expect(workflow).toContain("release_tag:");
+    expect(workflow).toContain("required: true");
+    expect(workflow).toContain("scripts/stampReleaseVersion.mjs");
+    expect(workflow).toContain('--release-tag "$RELEASE_TAG"');
   });
 
   it("generates release notes with a changelog via the release notes script", () => {
@@ -121,7 +153,7 @@ describe("GitHub release promotion", () => {
     expect(workflow).toMatch(/fetch-depth:\s*0/);
   });
 
-  it("accepts an exact qualified archive and reports its identity", () => {
+  it("accepts an exact qualified archive and reports its release identity", () => {
     const fixture = buildArtifact();
     const result = runVerifier(fixture.artifactDir, fixture.commit, fixture.workflowRun);
 
@@ -130,7 +162,25 @@ describe("GitHub release promotion", () => {
       commit: fixture.commit,
       workflow_run: fixture.workflowRun,
       archive: `agent-bridge-${fixture.commit}.tar.gz`,
+      release_tag: releaseTag,
+      compatibility_version: compatibilityVersion,
     });
+  });
+
+  it("rejects a requested tag that differs from the artifact release identity", () => {
+    const fixture = buildArtifact();
+    const result = runVerifier(fixture.artifactDir, fixture.commit, fixture.workflowRun, "release-2026.09.07-2");
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("manifest release tag does not match requested release");
+  });
+
+  it("rejects a package version that differs from the embedded compatibility version", () => {
+    const fixture = buildArtifact({ packageVersion: "0.1.0" });
+    const result = runVerifier(fixture.artifactDir, fixture.commit, fixture.workflowRun);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("artifact package version does not match release compatibility version");
   });
 
   it("rejects builder provenance from another workflow run", () => {
