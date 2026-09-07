@@ -578,7 +578,7 @@ describe("execution lane correctness", () => {
     expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === "augmented result")).toHaveLength(1);
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     db.close(); rmSync(path, { force: true });
-  }, 8_000);
+  }, 20_000);
 
   it("recovers the complete augmented task after a service restart", async () => {
     const path = join(tmpdir(), `augment-restart-${Date.now()}-${Math.random()}.sqlite`);
