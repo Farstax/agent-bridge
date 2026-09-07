@@ -7,6 +7,14 @@
   "engines": {
     "node": ">=24"
   },
+  "agentBridge": {
+    "hostComponents": [
+      {
+        "id": "voice-stt",
+        "installer": "scripts/install-voice-stt.sh"
+      }
+    ]
+  },
   "scripts": {
     "start": "tsx src/index-interactive.ts",
     "setup": "tsx src/setupCli.ts",

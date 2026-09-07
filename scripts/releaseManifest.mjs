@@ -5,6 +5,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { releaseCompatibilityVersion } from "./releaseVersion.mjs";
 
 const SHA256 = /^[0-9a-f]{40}$/;
+const HOST_COMPONENT_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -86,6 +87,33 @@ function validateBuildStrategy(strategy, files, packageJson) {
   }
 }
 
+function declaredHostComponents(packageJson, files) {
+  const declaration = packageJson.agentBridge?.hostComponents;
+  if (declaration === undefined) return undefined;
+  if (!Array.isArray(declaration)) throw new Error("agentBridge.hostComponents must be an array");
+  const seen = new Set();
+  return declaration.map((component) => {
+    if (!component || typeof component !== "object" || !HOST_COMPONENT_ID.test(component.id ?? "")) {
+      throw new Error("host component declaration contains an invalid id");
+    }
+    if (seen.has(component.id)) throw new Error(`duplicate host component declaration: ${component.id}`);
+    seen.add(component.id);
+    if (typeof component.installer !== "string" || component.installer.length === 0) {
+      throw new Error(`host component ${component.id} is missing installer`);
+    }
+    const installer = component.installer.split("\\").join("/");
+    const resolved = resolve("/release", installer);
+    if (installer.startsWith("/") || resolved === "/release" || !resolved.startsWith("/release/")) {
+      throw new Error(`host component ${component.id} has unsafe installer path`);
+    }
+    const packaged = files.find((file) => file.path === installer);
+    if (!packaged || packaged.type === "symlink") {
+      throw new Error(`host component ${component.id} installer is missing or not a regular packaged file: ${installer}`);
+    }
+    return { id: component.id, installer };
+  });
+}
+
 export function buildReleaseManifest({
   root, commit, tree, nodeVersion, platform, arch,
   builderCommit, builderWorkflowRun, builderWorkflowHead, databaseSchemaVersion, releaseTag,
@@ -103,6 +131,7 @@ export function buildReleaseManifest({
   const packageJson = JSON.parse(readFileSync(join(artifactRoot, "package.json"), "utf8"));
   const buildStrategy = deriveBuildStrategy(packageJson);
   validateBuildStrategy(buildStrategy, files, packageJson);
+  const hostComponents = declaredHostComponents(packageJson, files);
 
   const manifest = {
     schema_version: 1,
@@ -113,6 +142,7 @@ export function buildReleaseManifest({
     runtime: { node: nodeVersion, platform, arch },
     files,
   };
+  if (hostComponents !== undefined) manifest.host_components = hostComponents;
   if (builderCommit !== undefined || builderWorkflowRun !== undefined || builderWorkflowHead !== undefined) {
     if (!SHA256.test(builderCommit ?? "") || !SHA256.test(builderWorkflowHead ?? "") || !String(builderWorkflowRun ?? "").trim()) {
       throw new Error("builder provenance requires commit, workflow run and workflow head");

@@ -498,6 +498,9 @@ if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-discord-interactive"
 fi
 
+echo "Converging release-owned voice transcription component..."
+sudo /bin/bash "${REPO_DIR}/scripts/install-voice-stt.sh"
+
 sudo systemctl daemon-reload
 # Enable only. Pointer activation is a separate guarded operation and service
 # startup must not happen until the canonical pointer and its manifest have

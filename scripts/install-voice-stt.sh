@@ -16,6 +16,7 @@ MODEL_SHA256="4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_NAME}"
 FFMPEG_PACKAGE_VERSION="7:6.1.1-3ubuntu5"
 COMPONENT_DIR="${COMPONENTS_DIR}/${WHISPER_RELEASE}"
+CHANGED=0
 
 fail() {
   echo "install-voice-stt: $*" >&2
@@ -42,6 +43,7 @@ if [[ "${installed_ffmpeg}" != "${FFMPEG_PACKAGE_VERSION}" ]]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y --no-install-recommends "ffmpeg=${FFMPEG_PACKAGE_VERSION}"
+  CHANGED=1
 fi
 [[ -x /usr/bin/ffmpeg && -x /usr/bin/ffprobe ]] || fail "pinned ffmpeg installation did not provide ffmpeg and ffprobe"
 [[ "$(dpkg-query -W -f='${Version}' ffmpeg 2>/dev/null || true)" == "${FFMPEG_PACKAGE_VERSION}" ]] \
@@ -66,12 +68,13 @@ ensure_model() {
   chown root:root "${candidate}"
   chmod 0444 "${candidate}"
   mv -f "${candidate}" "${model_path}"
+  CHANGED=1
 }
 
 valid_component() {
   [[ -d "${COMPONENT_DIR}" && ! -L "${COMPONENT_DIR}" && -f "${COMPONENT_DIR}/manifest.json" ]] || return 1
   python3 - "${COMPONENT_DIR}" "${MODELS_DIR}/${MODEL_NAME}" <<'PY'
-import hashlib, json, os, pathlib, sys
+import hashlib, json, pathlib, sys
 component = pathlib.Path(sys.argv[1])
 model = pathlib.Path(sys.argv[2])
 try:
@@ -160,6 +163,7 @@ PY
   mv "${staging}" "${COMPONENT_DIR}.new"
   rm -rf -- "${COMPONENT_DIR}"
   mv "${COMPONENT_DIR}.new" "${COMPONENT_DIR}"
+  CHANGED=1
 }
 
 ensure_model
@@ -193,9 +197,15 @@ if [[ -n "${old_target}" && "${old_target}" != "${new_target}" ]]; then
   ln -sfn "${old_target}" "${PREVIOUS_LINK}.new"
   mv -Tf "${PREVIOUS_LINK}.new" "${PREVIOUS_LINK}"
 fi
-ln -sfn "${new_target}" "${CURRENT_LINK}.new"
-mv -Tf "${CURRENT_LINK}.new" "${CURRENT_LINK}"
+if [[ "${old_target}" != "${new_target}" ]]; then
+  ln -sfn "${new_target}" "${CURRENT_LINK}.new"
+  mv -Tf "${CURRENT_LINK}.new" "${CURRENT_LINK}"
+  CHANGED=1
+fi
 chown -h root:root "${CURRENT_LINK}" 2>/dev/null || true
 [[ ! -L "${PREVIOUS_LINK}" ]] || chown -h root:root "${PREVIOUS_LINK}" 2>/dev/null || true
 
+status="no_op"
+[[ "${CHANGED}" == "0" ]] || status="converged"
 echo "voice STT ready: whisper.cpp ${WHISPER_RELEASE}, ${MODEL_NAME}, ffmpeg ${FFMPEG_PACKAGE_VERSION}"
+echo "host_component_status=${status}"

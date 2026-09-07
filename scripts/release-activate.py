@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Atomically activate one previously staged immutable release.
-
-This helper publishes the ``current`` symlink after validating the release and
-converging release-owned host components. It does not stop or start services or
-modify databases. The caller owns the guarded service/database state machine
-and must hold its rollout lock.
-"""
+"""Validate, converge and atomically activate immutable Agent Bridge releases."""
 
 from __future__ import annotations
 
@@ -20,6 +14,7 @@ from pathlib import Path
 
 
 SHA = 40
+HOST_COMPONENT_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 
 
 def fail(message: str) -> None:
@@ -48,7 +43,20 @@ def _regular(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
-def _manifest_files(release: Path, manifest: dict) -> None:
+def _load_manifest(release: Path) -> dict:
+    manifest_path = release / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        fail("target release is missing a regular manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"invalid target release manifest: {error}")
+    if not isinstance(manifest, dict):
+        fail("target release manifest must be an object")
+    return manifest
+
+
+def _manifest_files(release: Path, manifest: dict) -> dict[str, dict]:
     entries = manifest.get("files")
     if not isinstance(entries, list):
         fail("strict release manifest must contain files")
@@ -58,7 +66,7 @@ def _manifest_files(release: Path, manifest: dict) -> None:
             fail("release manifest contains an invalid file entry")
         relative = entry["path"]
         candidate = (release / relative).resolve()
-        if Path(relative).is_absolute() or candidate != release and release not in candidate.parents:
+        if Path(relative).is_absolute() or (candidate != release and release not in candidate.parents):
             fail(f"release manifest contains an unsafe path: {relative}")
         if relative in expected:
             fail(f"release manifest contains a duplicate path: {relative}")
@@ -91,22 +99,57 @@ def _manifest_files(release: Path, manifest: dict) -> None:
                 fail(f"release manifest size mismatch: {relative}")
         if kind == "symlink" and entry.get("target") != os.readlink(path):
             fail(f"release manifest symlink mismatch: {relative}")
+    return expected
+
+
+def _host_components(release: Path, manifest: dict, manifest_files: dict[str, dict] | None = None) -> list[dict[str, str]]:
+    value = manifest.get("host_components")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        fail("release manifest host_components must be an array")
+    seen: set[str] = set()
+    components: list[dict[str, str]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            fail("release manifest contains an invalid host component")
+        component_id = entry.get("id")
+        installer = entry.get("installer")
+        if (
+            not isinstance(component_id, str)
+            or not component_id
+            or component_id[0] == "-"
+            or any(char not in HOST_COMPONENT_ID_CHARS for char in component_id)
+        ):
+            fail("release manifest contains an invalid host component id")
+        if component_id in seen:
+            fail(f"release manifest contains duplicate host component: {component_id}")
+        seen.add(component_id)
+        if not isinstance(installer, str) or not installer:
+            fail(f"host component {component_id} is missing installer")
+        installer_path = Path(installer)
+        candidate = (release / installer_path).resolve()
+        if installer_path.is_absolute() or candidate == release or release not in candidate.parents:
+            fail(f"host component {component_id} has unsafe installer path")
+        if not _regular(release / installer_path):
+            fail(f"host component {component_id} installer is missing or not regular: {installer}")
+        if manifest_files is not None:
+            file_entry = manifest_files.get(installer)
+            if not file_entry or file_entry.get("type", "file") != "file":
+                fail(f"host component {component_id} installer is not manifest-bound: {installer}")
+        components.append({"id": component_id, "installer": installer})
+    return components
 
 
 def validate_release(release: Path, expected_commit: str, strict: bool = False) -> None:
     if release.is_symlink() or not release.is_dir():
         fail("target release must be an immutable regular directory")
-    manifest_path = release / "manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        fail("target release is missing a regular manifest.json")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        fail(f"invalid target release manifest: {error}")
+    manifest = _load_manifest(release)
     if manifest.get("schema_version") != 1 or manifest.get("commit") != expected_commit:
         fail("target release manifest identity does not match expected commit")
+    manifest_files = _manifest_files(release, manifest) if strict else None
+    _host_components(release, manifest, manifest_files)
     if strict:
-        _manifest_files(release, manifest)
         required = ("scripts/rollout-db.ts", "scripts/rollout-db-impl.ts")
         if any(not _regular(release / path) for path in required):
             fail("release runtime contract is missing a required regular helper")
@@ -121,35 +164,51 @@ def validate_release(release: Path, expected_commit: str, strict: bool = False) 
             path = Path(current) / name
             if path.is_symlink():
                 target = os.readlink(path)
-                if os.path.isabs(target) or (path.parent / target).resolve() != release and release not in (path.parent / target).resolve().parents:
+                resolved = (path.parent / target).resolve()
+                if os.path.isabs(target) or (resolved != release and release not in resolved.parents):
                     fail(f"target release contains an escaping symlink: {path}")
                 continue
-            mode = path.stat().st_mode
-            if mode & 0o222:
+            if path.stat().st_mode & 0o222:
                 fail(f"target release is writable: {path}")
     if release.stat().st_mode & 0o222:
         fail("target release directory is writable")
 
 
-def converge_release_host_components(release: Path) -> None:
-    """Converge optional components owned by this release before pointer switch.
+def _parse_component_status(stdout: str, component_id: str) -> str:
+    marker = "host_component_status="
+    statuses = [line.strip()[len(marker):] for line in stdout.splitlines() if line.strip().startswith(marker)]
+    if len(statuses) != 1 or statuses[0] not in {"no_op", "converged"}:
+        fail(f"host component {component_id} installer returned invalid convergence status")
+    return statuses[0]
 
-    Older releases intentionally lack the voice component installer; skipping it
-    keeps rollback to those releases possible. A release that ships the helper
-    owns the complete pinned STT contract and activation fails closed if that
-    convergence or its smoke test fails.
-    """
+
+def converge_release_host_components(release: Path) -> dict:
+    """Converge the components explicitly declared by one immutable release."""
+    manifest = _load_manifest(release)
+    components = _host_components(release, manifest)
+    results: list[dict[str, str]] = []
     if not production_mode():
-        return
-    voice_installer = release / "scripts" / "install-voice-stt.sh"
-    if not voice_installer.exists():
-        return
-    if not _regular(voice_installer):
-        fail("voice STT installer must be a regular release file")
-    try:
-        subprocess.run(["/bin/bash", str(voice_installer)], check=True)
-    except subprocess.CalledProcessError as error:
-        fail(f"voice STT convergence failed with exit {error.returncode}")
+        return {"status": "no_op", "components": [{"id": entry["id"], "status": "no_op"} for entry in components]}
+    for component in components:
+        installer = release / component["installer"]
+        try:
+            completed = subprocess.run(
+                ["/bin/bash", str(installer)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+        except subprocess.TimeoutExpired as error:
+            fail(f"host component {component['id']} convergence timed out after {error.timeout}s")
+        except subprocess.CalledProcessError as error:
+            stderr = (error.stderr or "").strip()
+            detail = f": {stderr}" if stderr else ""
+            fail(f"host component {component['id']} convergence failed with exit {error.returncode}{detail}")
+        status = _parse_component_status(completed.stdout, component["id"])
+        results.append({"id": component["id"], "status": status})
+    aggregate = "converged" if any(entry["status"] == "converged" for entry in results) else "no_op"
+    return {"status": aggregate, "components": results}
 
 
 def current_target(current: Path, release_root: Path) -> str | None:
@@ -166,20 +225,30 @@ def current_target(current: Path, release_root: Path) -> str | None:
     return target
 
 
+def converge_active_release_host_components(release_root: Path, current: Path) -> dict:
+    release_root = validate_release_root(release_root)
+    if current.parent != release_root or current.name != "current":
+        fail("current pointer must be release-root/current")
+    target = current_target(current, release_root)
+    if target is None:
+        fail("current release pointer is absent")
+    validate_commit(target)
+    release = release_root / target
+    validate_release(release, target, strict=True)
+    result = converge_release_host_components(release)
+    return {"schema_version": 1, "release": target, **result}
+
+
 def activate(release_root: Path, current: Path, expected_commit: str) -> str:
     validate_commit(expected_commit)
     release_root = validate_release_root(release_root)
     if current.parent != release_root or current.name != "current":
         fail("current pointer must be release-root/current")
     release = release_root / expected_commit
-    validate_release(release, expected_commit)
+    validate_release(release, expected_commit, strict=production_mode())
     previous = current_target(current, release_root)
     if previous == expected_commit:
         fail("same target pointer is a no-op activation; refusing POINTER_SWITCHED")
-
-    # Host convergence belongs before the immutable release becomes active.
-    # This makes first install and later upgrades share the same fail-closed
-    # component contract while retaining the old release/component for rollback.
     converge_release_host_components(release)
 
     descriptor, temporary_name = tempfile.mkstemp(prefix=".current-", dir=release_root)
@@ -201,11 +270,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--release-root", type=Path, required=True)
     parser.add_argument("--current", type=Path, required=True)
-    parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--expected-commit")
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--converge-active-host-components", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0 and production_mode():
         fail("release activation must run as root")
+    if args.converge_active_host_components:
+        if args.expected_commit or args.validate_only:
+            fail("active host-component convergence does not accept activation arguments")
+        print(json.dumps(converge_active_release_host_components(args.release_root, args.current), sort_keys=True))
+        return 0
+    if not args.expected_commit:
+        fail("--expected-commit is required for validation or activation")
     validate_release_root(args.release_root)
     validate_release(args.release_root / args.expected_commit, args.expected_commit, strict=args.validate_only or production_mode())
     if args.validate_only:
