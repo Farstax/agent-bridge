@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to bind into a publishable artifact, for example release-2026.09.07-1
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +55,8 @@ jobs:
       - name: Assemble and hash release artifact
         id: artifact
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -Eeuo pipefail
           commit="$(git rev-parse HEAD)"
@@ -88,6 +95,11 @@ jobs:
             "checks": ${checks_json}
           }
           EOF
+          release_args=()
+          if [[ -n "$RELEASE_TAG" ]]; then
+            node scripts/stampReleaseVersion.mjs --root "$root" --release-tag "$RELEASE_TAG"
+            release_args=(--release-tag "$RELEASE_TAG")
+          fi
           node scripts/releaseManifest.mjs \
             --root "$root" \
             --output "$root/manifest.json" \
@@ -99,7 +111,8 @@ jobs:
             --builder-commit "$commit" \
             --builder-workflow-run "$GITHUB_RUN_ID" \
             --builder-workflow-head "$builder_head" \
-            --database-schema-version "$database_schema_version"
+            --database-schema-version "$database_schema_version" \
+            "${release_args[@]}"
           tar --create --gzip --file "$archive" \
             --directory "$root" --sort=name --owner=0 --group=0 --numeric-owner .
           ( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" ) | tee "$archive.sha256"
