@@ -15,6 +15,7 @@ from pathlib import Path
 
 SHA = 40
 HOST_COMPONENT_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
+DEFAULT_STT_ROOT = "/opt/agent-bridge/host-components/voice-stt"
 
 
 def fail(message: str) -> None:
@@ -189,6 +190,8 @@ def converge_release_host_components(release: Path) -> dict:
     results: list[dict[str, str]] = []
     if not production_mode():
         return {"status": "no_op", "components": [{"id": entry["id"], "status": "no_op"} for entry in components]}
+    component_environment = os.environ.copy()
+    component_environment.setdefault("AGENT_BRIDGE_STT_ROOT", DEFAULT_STT_ROOT)
     for component in components:
         installer = release / component["installer"]
         try:
@@ -198,6 +201,7 @@ def converge_release_host_components(release: Path) -> dict:
                 capture_output=True,
                 text=True,
                 timeout=900,
+                env=component_environment,
             )
         except subprocess.TimeoutExpired as error:
             fail(f"host component {component['id']} convergence timed out after {error.timeout}s")
