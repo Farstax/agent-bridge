@@ -191,7 +191,7 @@ def converge_release_host_components(release: Path) -> dict:
     if not production_mode():
         return {"status": "no_op", "components": [{"id": entry["id"], "status": "no_op"} for entry in components]}
     component_environment = os.environ.copy()
-    component_environment.setdefault("AGENT_BRIDGE_STT_ROOT", DEFAULT_STT_ROOT)
+    component_environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
     for component in components:
         installer = release / component["installer"]
         try:
