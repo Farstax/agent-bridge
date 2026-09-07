@@ -41,9 +41,10 @@ describe("release compatibility ordering", () => {
       "utf8",
     );
     expect(workflow).toMatch(/concurrency:\s*\n\s*group:\s*publish-release\s*\n\s*cancel-in-progress:\s*false/);
-    expect(workflow).toContain("gh api --paginate --slurp");
-    expect(workflow).toContain('import { maxReleaseTag } from "./scripts/releaseVersion.mjs";');
-    expect(workflow).toContain('node scripts/releaseVersion.mjs --assert-after "$previous_tag" "$RELEASE_TAG"');
+    expect(workflow).toContain("github.rest.repos.listReleases");
+    expect(workflow).toContain("const { assertReleaseTagAfter, maxReleaseTag } = await import(moduleUrl);");
+    expect(workflow).toContain("const previousTag = maxReleaseTag(publishedTags);");
+    expect(workflow).toContain("assertReleaseTagAfter(previousTag, process.env.RELEASE_TAG);");
     expect(workflow).toContain('PREVIOUS_TAG: ${{ steps.release_order.outputs.previous_tag }}');
   });
 });
