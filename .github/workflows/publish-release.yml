@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       release_tag:
-        description: New release tag, for example release-2026.09.07-1
+        description: New release tag, for example release-2026.09.07-2
         required: true
         type: string
 
@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-release-${{ inputs.release_tag }}
+  group: publish-release
   cancel-in-progress: false
 
 jobs:
@@ -65,6 +65,21 @@ jobs:
       - name: Verify checkout identity
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Require monotonically newer release identity
+        id: release_order
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          previous_tag="$(gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 100 \
+            --json tagName,isDraft,publishedAt \
+            --jq '[.[] | select(.isDraft == false and .publishedAt != null)][0].tagName // ""')"
+          if [[ -n "$previous_tag" ]]; then
+            node scripts/releaseVersion.mjs --assert-after "$previous_tag" "$RELEASE_TAG"
+          fi
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
 
       - name: Verify source workflow run and artifact
         id: source
@@ -165,19 +180,19 @@ jobs:
 
       - name: Publish unchanged release assets
         shell: bash
+        env:
+          PREVIOUS_TAG: ${{ steps.release_order.outputs.previous_tag }}
         run: |
           set -Eeuo pipefail
           archive="$RUNNER_TEMP/release-artifact/agent-bridge-${COMMIT_SHA}.tar.gz"
           checksum="${archive}.sha256"
           notes="$RUNNER_TEMP/release-notes.md"
 
-          previous_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' || true)"
-
           bash scripts/generate-release-notes.sh \
             --commit "$COMMIT_SHA" \
             --workflow-run "$WORKFLOW_RUN_ID" \
             --checksum "$(cut -d' ' -f1 "$checksum")" \
-            ${previous_tag:+--previous-tag "$previous_tag"} \
+            ${PREVIOUS_TAG:+--previous-tag "$PREVIOUS_TAG"} \
             > "$notes"
 
           created=0
