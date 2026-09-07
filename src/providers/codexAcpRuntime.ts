@@ -10,6 +10,7 @@ import type { AcpTurnResult } from "../acp/client.js";
 import { runSupervisedStdioSession } from "../cliSupervisor.js";
 import type { CliOptions, CliResult, RunTelemetry } from "../types.js";
 import { isAbortRequested } from "../cliSupervisor.js";
+import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexRuntimeSelection.js";
 
@@ -44,7 +45,11 @@ export function codexAcpConfig(request: Pick<ProviderInvocationRequest, "model" 
 }
 
 function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {
-  const blocks: ContentBlock[] = [{ type: "text", text: request.prompt }];
+  const wrapped = appendOutputDirInstruction(
+    wrapPromptContext(request.prompt, request.soulContext, request.includeResponseContract),
+    request.outputDir,
+  );
+  const blocks: ContentBlock[] = [{ type: "text", text: wrapped }];
   for (const path of request.attachments) {
     const mimeType = IMAGE_MIME[extname(path).toLowerCase()] ?? "application/octet-stream";
     const data = readFileSync(path).toString("base64");

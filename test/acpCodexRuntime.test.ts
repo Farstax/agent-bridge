@@ -113,7 +113,7 @@ describe("Codex ACP supervised stdio turn", () => {
       chatId: `acp-test-${Date.now()}`,
     }, { conversationId: "conv-bridge-1", runId: "run-1" });
 
-    expect(first.text).toBe("live:first");
+    expect(first.text).toContain("User request:\nfirst");
     expect(first.sessionId).toMatch(/^acp-/);
     expect(first.sessionId).not.toBe("conv-bridge-1");
     expect(first.telemetry?.outputTokens).toBe(8);
@@ -136,8 +136,8 @@ describe("Codex ACP supervised stdio turn", () => {
       chatId: `acp-test-${Date.now()}-2`,
     }, { conversationId: "conv-bridge-1", runId: "run-2" });
 
-    expect(second.text).toBe("live:second");
-    expect(second.text).not.toContain("first");
+    expect(second.text).toContain("User request:\nsecond");
+    expect(second.text).not.toMatch(/User request:\nfirst/);
     expect(liveDeliveryText([])).toBe("");
     } finally {
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
@@ -185,6 +185,41 @@ describe("Codex ACP supervised stdio turn", () => {
     }
   }, 15_000);
 
+  it("wraps soul and output-dir instructions into the ACP prompt", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    try {
+      const result = await runTurn({
+        prompt: "hello-soul",
+        sessionId: null,
+        command: "codex-acp",
+        model: null,
+        executionMode: "trusted",
+        outputFormat: "json",
+        soulContext: "SOUL_MARKER_FOR_ACP",
+        includeResponseContract: true,
+        attachments: [],
+        outputDir: "/tmp/bridge-acp-out",
+        effort: null,
+        toolMode: "default",
+      }, process.cwd(), {
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        chatId: `acp-soul-${Date.now()}`,
+      }, { conversationId: "conv-soul", runId: "run-soul" });
+      expect(result.text).toContain("SOUL_MARKER_FOR_ACP");
+      expect(result.text).toContain("/tmp/bridge-acp-out");
+      expect(result.text).toContain("hello-soul");
+    } finally {
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
+    }
+  }, 15_000);
+
   it("runs ACP transport through runProviderInvocation instead of oneshot parse", async () => {
     const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
     const previousCommand = process.env.CODEX_ACP_COMMAND;
@@ -218,7 +253,7 @@ describe("Codex ACP supervised stdio turn", () => {
         effort: null,
         toolMode: "none",
       });
-      expect(result.text).toBe("live:qualify");
+      expect(result.text).toContain("User request:\nqualify");
       expect(result.sessionId).toMatch(/^acp-/);
     } finally {
       if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;

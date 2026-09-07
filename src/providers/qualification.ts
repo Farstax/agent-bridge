@@ -584,21 +584,42 @@ async function executeRepositoryGroundingCheck({
     if (invocation.nativeSessionMode !== "fresh") {
       throw new Error("repository grounding qualification failed: invocation did not enter native fresh mode");
     }
-    const stdout = await runQualificationInvocation({
-      providerId,
-      command: invocation.command,
-      args: invocation.args,
-      cwd: fixture.cwd,
-      homeDir,
-      timeoutMs,
-      idleTimeoutMs,
-      runtimeEnv,
-    });
-    const parsed = parseCliResult({
-      bot,
-      stdout,
-      outputFormat: qualificationOutputFormat(invocation.args),
-    });
+    const supervisorOptions = buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs);
+    const parsed = invocation.transport === "acp-stdio"
+      ? await runProviderInvocation(
+          bot,
+          invocation,
+          fixture.cwd,
+          { ...supervisorOptions, bot },
+          {
+            prompt: REPOSITORY_GROUNDING_PROBE,
+            sessionId: null,
+            command: invocation.command,
+            model: null,
+            executionMode,
+            outputFormat: "json",
+            soulContext: null,
+            attachments: [],
+            outputDir: null,
+            effort: null,
+            toolMode: "default",
+          },
+          { conversationId: `qualify:${providerId}:grounding`, runId: randomUUID() },
+        )
+      : parseCliResult({
+          bot,
+          stdout: await runQualificationInvocation({
+            providerId,
+            command: invocation.command,
+            args: invocation.args,
+            cwd: fixture.cwd,
+            homeDir,
+            timeoutMs,
+            idleTimeoutMs,
+            runtimeEnv,
+          }),
+          outputFormat: qualificationOutputFormat(invocation.args),
+        });
     const missing: string[] = [];
     if (!parsed.text.includes(fixture.sourceFact)) missing.push("source fact");
     if (!parsed.text.includes(fixture.instructionMarker)) missing.push("repository instruction marker");
