@@ -1,12 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../../src/providers/doctor.js";
 
 const allFound = () => true;
 const noneFound = () => false;
+const voiceReady = () => ({ status: "ready" as const, reasonCode: null });
 
 describe("doctor diagnostics", () => {
   it("reports provider commands as available when the executable resolves", () => {
-    const report = runDoctor({ env: {}, commandExists: allFound });
+    const report = runDoctor({ env: {}, commandExists: allFound, inspectVoiceRuntime: voiceReady });
     for (const p of report.providers) {
       expect(p.status).toBe("available");
     }
@@ -20,6 +21,7 @@ describe("doctor diagnostics", () => {
         ANTIGRAVITY_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable === configuredAgy,
+      inspectVoiceRuntime: voiceReady,
     });
 
     expect(report.providers.find((p) => p.id === "agy")).toEqual({
@@ -34,6 +36,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity,unsupported" },
       commandExists: noneFound,
+      inspectVoiceRuntime: voiceReady,
     });
     expect(report.providers.length).toBeGreaterThan(0);
     for (const p of report.providers) {
@@ -43,7 +46,7 @@ describe("doctor diagnostics", () => {
   });
 
   it("fails when providers referenced by unset runtime defaults are missing", () => {
-    const report = runDoctor({ env: {}, commandExists: noneFound });
+    const report = runDoctor({ env: {}, commandExists: noneFound, inspectVoiceRuntime: voiceReady });
 
     expect(report.chains.find((chain) => chain.name === "INTERACTIVE_CLI_CHAIN")?.entries)
       .toEqual(["codex", "claude", "antigravity"]);
@@ -58,6 +61,7 @@ describe("doctor diagnostics", () => {
         ANTIGRAVITY_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable === "codex",
+      inspectVoiceRuntime: voiceReady,
     });
 
     expect(report.providers.find((p) => p.id === "agy")).toEqual({
@@ -76,6 +80,7 @@ describe("doctor diagnostics", () => {
         ANTIGRAVITY_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable !== configuredAgy,
+      inspectVoiceRuntime: voiceReady,
     });
 
     expect(report.providers.find((p) => p.id === "agy")).toEqual({
@@ -90,6 +95,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity" },
       commandExists: allFound,
+      inspectVoiceRuntime: voiceReady,
     });
     const chain = report.chains.find((c) => c.name === "INTERACTIVE_CLI_CHAIN");
     expect(chain?.ok).toBe(true);
@@ -100,6 +106,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,not-a-cli" },
       commandExists: allFound,
+      inspectVoiceRuntime: voiceReady,
     });
     const chain = report.chains.find((c) => c.name === "INTERACTIVE_CLI_CHAIN");
     expect(chain?.ok).toBe(false);
@@ -108,7 +115,7 @@ describe("doctor diagnostics", () => {
   });
 
   it("skips unset chains without failing", () => {
-    const report = runDoctor({ env: {}, commandExists: allFound });
+    const report = runDoctor({ env: {}, commandExists: allFound, inspectVoiceRuntime: voiceReady });
     for (const chain of report.chains) {
       expect(chain.ok).toBe(true);
     }
@@ -119,6 +126,7 @@ describe("doctor diagnostics", () => {
       env: { TELEGRAM_BOT_TOKEN: "x" },
       requiredEnv: ["TELEGRAM_BOT_TOKEN", "MISSING_VAR"],
       commandExists: allFound,
+      inspectVoiceRuntime: voiceReady,
     });
     expect(report.env.find((e) => e.name === "TELEGRAM_BOT_TOKEN")?.present).toBe(true);
     expect(report.env.find((e) => e.name === "MISSING_VAR")?.present).toBe(false);
@@ -129,6 +137,42 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,claude" },
       commandExists: allFound,
+      inspectVoiceRuntime: voiceReady,
+    });
+    expect(report.ok).toBe(true);
+  });
+
+  it("projects voice STT readiness through the same effective runtime environment", () => {
+    const inspectVoiceRuntime = vi.fn(() => ({
+      status: "ready" as const,
+      reasonCode: null,
+    }));
+    const env = {
+      INTERACTIVE_CLI_CHAIN: "codex",
+      AGENT_BRIDGE_STT_ROOT: "/opt/agent-bridge/host-components/voice-stt",
+    };
+    const report = runDoctor({ env, commandExists: allFound, inspectVoiceRuntime });
+
+    expect(inspectVoiceRuntime).toHaveBeenCalledWith(env);
+    expect(report.voiceTranscription).toEqual({ status: "ready", reasonCode: null });
+    expect(report.ok).toBe(true);
+  });
+
+  it("fails Doctor when voice STT is enabled but runtime readiness fails", () => {
+    const report = runDoctor({
+      env: { INTERACTIVE_CLI_CHAIN: "codex" },
+      commandExists: allFound,
+      inspectVoiceRuntime: () => ({ status: "unavailable", reasonCode: "voice_runtime_preflight_failed" }),
+    });
+    expect(report.voiceTranscription.reasonCode).toBe("voice_runtime_preflight_failed");
+    expect(report.ok).toBe(false);
+  });
+
+  it("does not fail Doctor when voice transcription is explicitly disabled", () => {
+    const report = runDoctor({
+      env: { INTERACTIVE_CLI_CHAIN: "codex", AGENT_BRIDGE_VOICE_TRANSCRIPTION: "disabled" },
+      commandExists: allFound,
+      inspectVoiceRuntime: () => ({ status: "unavailable", reasonCode: "voice_transcription_disabled" }),
     });
     expect(report.ok).toBe(true);
   });

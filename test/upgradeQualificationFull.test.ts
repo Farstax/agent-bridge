@@ -123,6 +123,21 @@ exit 0
 printf '%s\\n' '#!/usr/bin/env bash' 'touch "${agyState}"'
 `);
       script(join(root, "systemctl"), "exit 1\n");
+      const sttLog = join(root, "stt-convergence.log");
+      script(join(root, "sudo"), `
+printf '%s\\n' "$*" >> "${sttLog}"
+case "$*" in
+  *install-voice-stt.sh*)
+    [[ "$*" == *AGENT_BRIDGE_STT_ROOT=/opt/agent-bridge/host-components/voice-stt* ]] || {
+      echo "canonical STT root was not forced" >&2
+      exit 98
+    }
+    exit 0
+    ;;
+esac
+echo "unexpected sudo invocation: $*" >&2
+exit 97
+`);
 
       const result = spawnSync("bash", ["scripts/upgrade.sh", "--update"], {
         encoding: "utf8",
@@ -146,6 +161,8 @@ printf '%s\\n' '#!/usr/bin/env bash' 'touch "${agyState}"'
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
       expect(readFileSync(hostInvocationLog, "utf8")).toBe(hostLogSentinel);
       expect(existsSync(qualificationEvidence)).toBe(true);
+      expect(readFileSync(sttLog, "utf8")).toContain("AGENT_BRIDGE_STT_ROOT=/opt/agent-bridge/host-components/voice-stt");
+      expect(readFileSync(sttLog, "utf8")).toContain("install-voice-stt.sh");
 
       const invocations = readFileSync(qualificationLog, "utf8");
       expect(invocations).toContain(claude);

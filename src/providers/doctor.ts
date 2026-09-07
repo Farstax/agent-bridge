@@ -1,11 +1,12 @@
 /**
  * PURPOSE: Runtime readiness diagnostics (Epic 11, issue #53).
- * Checks provider executables, fallback-chain parseability, and required env
+ * Checks provider executables, fallback-chain parseability, required env
  * entries, and lets the provider registry report available/missing status.
  * NEIGHBORS: src/providers/registry.ts, scripts in package.json ("doctor").
  */
 
 import { execFileSync } from "node:child_process";
+import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
@@ -49,6 +50,7 @@ export interface DoctorReport {
   providers: ProviderCheck[];
   chains: ChainCheck[];
   env: EnvCheck[];
+  voiceTranscription: VoiceRuntimeReadiness;
 }
 
 export function defaultCommandExists(executable: string): boolean {
@@ -64,10 +66,12 @@ export function runDoctor({
   env = process.env,
   requiredEnv = [],
   commandExists = defaultCommandExists,
+  inspectVoiceRuntime = inspectVoiceRuntimeReadiness,
 }: {
   env?: Record<string, string | undefined>;
   requiredEnv?: string[];
   commandExists?: (executable: string) => boolean;
+  inspectVoiceRuntime?: (env: Record<string, string | undefined>) => VoiceRuntimeReadiness;
 } = {}): DoctorReport {
   const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => {
     const executable = resolveProviderExecutable(adapter.id, env);
@@ -106,12 +110,16 @@ export function runDoctor({
     present: Boolean(env[name] && env[name] !== ""),
   }));
 
+  const voiceTranscription = inspectVoiceRuntime(env);
+  const voiceOk = voiceTranscription.status === "ready"
+    || voiceTranscription.reasonCode === "voice_transcription_disabled";
   const ok =
     providers.every((p) => p.status === "available" || !configuredProviderIds.has(p.id)) &&
     chains.every((c) => c.ok) &&
-    envChecks.every((e) => e.present);
+    envChecks.every((e) => e.present) &&
+    voiceOk;
 
-  return { ok, providers, chains, env: envChecks };
+  return { ok, providers, chains, env: envChecks, voiceTranscription };
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
@@ -131,6 +139,7 @@ export function formatDoctorReport(report: DoctorReport): string {
   for (const e of report.env) {
     lines.push(`env ${e.name}: ${e.present ? "present" : "MISSING"}`);
   }
+  lines.push(`voice transcription: ${report.voiceTranscription.status}${report.voiceTranscription.reasonCode ? ` (${report.voiceTranscription.reasonCode})` : ""}`);
   lines.push(report.ok ? "doctor: ok" : "doctor: problems found");
   return lines.join("\n");
 }

@@ -194,6 +194,12 @@ install_timer() {
   sudo chmod 0644 "${SYSTEMD_DIR}/${name}.timer"
 }
 
+converge_voice_stt() {
+  echo "[update] Converging release-owned voice transcription component..."
+  sudo /usr/bin/env AGENT_BRIDGE_STT_ROOT="/opt/agent-bridge/host-components/voice-stt" \
+    /bin/bash "${REPO_DIR}/scripts/install-voice-stt.sh"
+}
+
 install_shared_skills() {
   local skills_csv="${AGENT_BRIDGE_SKILLS:-${DEFAULT_AGENT_BRIDGE_SKILLS}}"
   local link_mode="${AGENT_BRIDGE_SKILL_LINK_MODE:-symlink}"
@@ -287,6 +293,8 @@ if [[ "${1:-}" == "--update" ]]; then
     echo "[update] Tests FAILED — aborting service restarts" >&2
     exit 1
   fi
+
+  converge_voice_stt
 
   echo "[update] Restarting active services..."
   UPDATE_SERVICES=(
@@ -437,6 +445,8 @@ if [[ -f "${DISCORD_INT_DEFAULTS}" ]]; then
   ensure_node_default "${DISCORD_INT_DEFAULTS}"
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-discord-interactive"
 fi
+
+converge_voice_stt
 
 sudo systemctl daemon-reload
 # shellcheck disable=SC2086

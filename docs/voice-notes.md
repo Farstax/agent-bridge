@@ -29,7 +29,11 @@ The pinned production contract is:
 - temporary-storage budget: 32 MiB per job;
 - at most one active transcription per workspace across Agent Bridge processes.
 
-The release-owned component lives under `/var/lib/agent-bridge/stt`. Release activation validates and converges the pinned component before switching the Agent Bridge release pointer. Older Agent Bridge releases that predate the component hook remain valid rollback targets.
+The release-owned component lives under `/opt/agent-bridge/host-components/voice-stt`. Its ancestors are root-owned and traversable by the runtime service account, while the executable, model, manifest, and pointers remain root-owned and non-writable by that account. `/var/lib/agent-bridge` stays protected and is not opened to make STT work.
+
+Release activation validates and converges the pinned component before switching the Agent Bridge release pointer. After verified convergence, the installer publishes `AGENT_BRIDGE_STT_ROOT=/opt/agent-bridge/host-components/voice-stt` through the shared service environment. That compatibility contract lets supported immutable rollback releases that still contain the old STT default continue to use the verified isolated component. The legacy `/var/lib/agent-bridge/stt` tree is not deleted by this migration.
+
+`agent-bridge-inspect --json` and `npm run doctor` read the same effective STT root contract. Runtime preflight fails closed on missing, writable, incorrectly owned, symlinked, or checksum-invalid managed STT assets before an ordinary Run starts.
 
 ## Cancellation and failures
 
