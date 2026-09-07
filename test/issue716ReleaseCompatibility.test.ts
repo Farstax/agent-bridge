@@ -90,11 +90,11 @@ afterEach(() => {
 describe("issue #716 release compatibility identity", () => {
   it("stamps the published artifact identity that bridgeVersion reads by default", async () => {
     const root = runtimeRoot("runtime");
-    expect(stampReleaseCompatibilityVersion(root, "release-2026.09.06-2")).toBe("2026.9.6-2");
-    expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version).toBe("2026.9.6-2");
-    expect(JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")).packages[""].version).toBe("2026.9.6-2");
+    expect(stampReleaseCompatibilityVersion(root, "release-2026.09.07-2")).toBe("2026.9.7-2");
+    expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version).toBe("2026.9.7-2");
+    expect(JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")).packages[""].version).toBe("2026.9.7-2");
 
-    await expectCompatible(root, "2026.9.6-2");
+    await expectCompatible(root, "2026.9.7-2");
   });
 
   it("orders supported release tags monotonically and does not collapse releases", () => {
@@ -103,37 +103,36 @@ describe("issue #716 release compatibility identity", () => {
     expect(releaseCompatibilityVersion("release-2026.09.07-1")).toBe("2026.9.7-1");
   });
 
-  it("rejects pre-feature and malformed runtime versions, while exact and newer releases pass", async () => {
-    const oldRoot = runtimeRoot("old");
-    stampReleaseCompatibilityVersion(oldRoot, "release-2026.09.06-1");
+  it("rejects legacy unstamped and malformed runtime versions, while exact and newer stamped releases pass", async () => {
+    const legacyRoot = runtimeRoot("legacy", "0.1.0");
     await expect(getAvailableSkillPack("marketing", {
-      catalogueSource: writeCatalogue(oldRoot, "2026.9.6-2"),
-      repoRoot: oldRoot,
-    })).rejects.toThrow(/requires Agent Bridge >= 2026\.9\.6-2; current 2026\.9\.6-1/);
+      catalogueSource: writeCatalogue(legacyRoot, "2026.9.7-2"),
+      repoRoot: legacyRoot,
+    })).rejects.toThrow(/requires Agent Bridge >= 2026\.9\.7-2; current 0\.1\.0/);
 
     const exactRoot = runtimeRoot("exact");
-    stampReleaseCompatibilityVersion(exactRoot, "release-2026.09.06-2");
-    await expectCompatible(exactRoot, "2026.9.6-2");
+    stampReleaseCompatibilityVersion(exactRoot, "release-2026.09.07-2");
+    await expectCompatible(exactRoot, "2026.9.7-2");
 
     const newerRoot = runtimeRoot("newer");
-    stampReleaseCompatibilityVersion(newerRoot, "release-2026.09.07-1");
-    await expectCompatible(newerRoot, "2026.9.6-2");
+    stampReleaseCompatibilityVersion(newerRoot, "release-2026.09.08-1");
+    await expectCompatible(newerRoot, "2026.9.7-2");
 
-    const malformedRoot = runtimeRoot("malformed", "release-2026.09.06-2");
+    const malformedRoot = runtimeRoot("malformed", "release-2026.09.07-2");
     await expect(getAvailableSkillPack("marketing", {
-      catalogueSource: writeCatalogue(malformedRoot, "2026.9.6-2"),
+      catalogueSource: writeCatalogue(malformedRoot, "2026.9.7-2"),
       repoRoot: malformedRoot,
     })).rejects.toThrow(/Invalid semantic version/);
   });
 
   it("keeps explicit version injection as an override for tests and development", async () => {
     const root = runtimeRoot("override", "0.1.0");
-    await expectCompatible(root, "2026.9.6-2", { agentBridgeVersion: "2026.9.6-2" });
+    await expectCompatible(root, "2026.9.7-2", { agentBridgeVersion: "2026.9.7-2" });
   });
 
   it("embeds the same stamped identity into the release manifest", () => {
     const root = compiledArtifactRoot();
-    const releaseTag = "release-2026.09.06-2";
+    const releaseTag = "release-2026.09.07-2";
     stampReleaseCompatibilityVersion(root, releaseTag);
     const manifest = buildReleaseManifest({
       root,
@@ -145,7 +144,7 @@ describe("issue #716 release compatibility identity", () => {
       releaseTag,
     });
 
-    expect(manifest.release).toEqual({ tag: releaseTag, compatibility_version: "2026.9.6-2" });
+    expect(manifest.release).toEqual({ tag: releaseTag, compatibility_version: "2026.9.7-2" });
   });
 
   it("fails closed on malformed release tags and unstamped artifact metadata", () => {
@@ -160,7 +159,7 @@ describe("issue #716 release compatibility identity", () => {
       nodeVersion: "v24.15.0",
       platform: "linux",
       arch: "x64",
-      releaseTag: "release-2026.09.06-2",
-    })).toThrow(/package version 0\.1\.0 does not match compatibility version 2026\.9\.6-2/);
+      releaseTag: "release-2026.09.07-2",
+    })).toThrow(/package version 0\.1\.0 does not match compatibility version 2026\.9\.7-2/);
   });
 });

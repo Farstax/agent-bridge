@@ -15,8 +15,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const cleanup: string[] = [];
 const verifier = fileURLToPath(new URL("../scripts/verify-release-promotion.sh", import.meta.url));
-const releaseTag = "release-2026.09.07-1";
-const compatibilityVersion = "2026.9.7-1";
+const releaseTag = "release-2026.09.07-2";
+const compatibilityVersion = "2026.9.7-2";
 
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -169,7 +169,7 @@ describe("GitHub release promotion", () => {
 
   it("rejects a requested tag that differs from the artifact release identity", () => {
     const fixture = buildArtifact();
-    const result = runVerifier(fixture.artifactDir, fixture.commit, fixture.workflowRun, "release-2026.09.07-2");
+    const result = runVerifier(fixture.artifactDir, fixture.commit, fixture.workflowRun, "release-2026.09.07-3");
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("manifest release tag does not match requested release");

@@ -7,12 +7,14 @@ Agent Bridge GitHub Releases are published only through an explicit promotion of
 Published release tags remain date based: `release-YYYY.MM.DD-N`. A publishable artifact derives one canonical semver-compatible runtime identity from that tag:
 
 ```text
-release-2026.09.06-2 -> 2026.9.6-2
+release-2026.09.07-2 -> 2026.9.7-2
 ```
 
 The year, month and day become the semantic-version core without zero padding, and the positive release sequence becomes the numeric prerelease component. This keeps supported release tags in release order: later sequences on the same date compare higher, and later dates compare higher than earlier dates.
 
 Release qualification stamps that compatibility version into the artifact's `package.json` and root `package-lock.json`, then records the same tag/version pair in `manifest.json`. Runtime code therefore reads the actual installed artifact identity through the normal package metadata path; operators do not need to set `AGENT_BRIDGE_VERSION`. Explicit version injection and `AGENT_BRIDGE_VERSION` remain override paths for tests/development.
+
+Compatibility identity is not retroactive. `release-2026.09.06-2` and `release-2026.09.07-1` were published before tag-bound stamping existed and retain the old `0.1.0` package identity. Skill Pack minimum-version metadata must anchor to the first artifact actually qualified with a stamped identity, not merely the first release whose code contains the Skill Pack mechanism.
 
 ## Publish a release
 
@@ -22,9 +24,9 @@ After that run succeeds, run the `Publish GitHub Release` workflow from the repo
 
 - `workflow_run_id`: the successful manual `Release Artifact` run for `main`;
 - `commit_sha`: the exact lowercase 40-character commit qualified by that run;
-- `release_tag`: the same new tag used for release qualification, such as `release-2026.09.07-1`.
+- `release_tag`: the same new tag used for release qualification, such as `release-2026.09.07-2`.
 
-The workflow requires the source run to be a successful `workflow_dispatch` qualification on `main`. It downloads the exact artifact named `agent-bridge-release-<commit-sha>`, without rebuilding it, and verifies:
+The workflow requires the source run to be a successful `workflow_dispatch` qualification on `main`. It serializes all release publication, requires the requested release tag to be strictly newer than the latest published canonical release tag, downloads the exact artifact named `agent-bridge-release-<commit-sha>` without rebuilding it, and verifies:
 
 - the source repository, workflow, branch, result and commit;
 - the exact archive and checksum filenames;
