@@ -46,7 +46,7 @@ jobs:
               ('    stampReleaseCompatibilityVersion(oldRoot, "release-2026.09.06-1");\n', ''),
               ('catalogueSource: writeCatalogue(oldRoot, "2026.9.6-2"),', 'catalogueSource: writeCatalogue(legacyRoot, "2026.9.7-2"),'),
               ('repoRoot: oldRoot,', 'repoRoot: legacyRoot,'),
-              ('])).rejects.toThrow(/requires Agent Bridge >= 2026\\.9\\.6-2; current 2026\\.9\\.6-1/);', '])).rejects.toThrow(/requires Agent Bridge >= 2026\\.9\\.7-2; current 0\\.1\\.0/);'),
+              ('requires Agent Bridge >= 2026\\.9\\.6-2; current 2026\\.9\\.6-1', 'requires Agent Bridge >= 2026\\.9\\.7-2; current 0\\.1\\.0'),
               ('stampReleaseCompatibilityVersion(exactRoot, "release-2026.09.06-2");', 'stampReleaseCompatibilityVersion(exactRoot, "release-2026.09.07-2");'),
               ('await expectCompatible(exactRoot, "2026.9.6-2");', 'await expectCompatible(exactRoot, "2026.9.7-2");'),
               ('stampReleaseCompatibilityVersion(newerRoot, "release-2026.09.07-1");', 'stampReleaseCompatibilityVersion(newerRoot, "release-2026.09.08-1");'),
@@ -57,7 +57,7 @@ jobs:
               ('const releaseTag = "release-2026.09.06-2";', 'const releaseTag = "release-2026.09.07-2";'),
               ('expect(manifest.release).toEqual({ tag: releaseTag, compatibility_version: "2026.9.6-2" });', 'expect(manifest.release).toEqual({ tag: releaseTag, compatibility_version: "2026.9.7-2" });'),
               ('releaseTag: "release-2026.09.06-2",', 'releaseTag: "release-2026.09.07-2",'),
-              ('])).toThrow(/package version 0\\.1\\.0 does not match compatibility version 2026\\.9\\.6-2/);', '])).toThrow(/package version 0\\.1\\.0 does not match compatibility version 2026\\.9\\.7-2/);'),
+              ('package version 0\\.1\\.0 does not match compatibility version 2026\\.9\\.6-2', 'package version 0\\.1\\.0 does not match compatibility version 2026\\.9\\.7-2'),
           ])
           replace_exact('test/releasePromotion.test.ts', [
               ('const releaseTag = "release-2026.09.07-1";', 'const releaseTag = "release-2026.09.07-2";'),
