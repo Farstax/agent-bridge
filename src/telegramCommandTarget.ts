@@ -4,14 +4,13 @@
  * NEIGHBORS: src/index-interactive.ts, src/interactiveBot.ts
  */
 
-import type { InteractiveTurnInput } from "./interactiveIngress.js";
-import {
-  dispatchUnifiedTelegramUpdate,
-  type UnifiedTelegramUpdateEngine,
-} from "./interactiveBot.js";
 import type { TelegramUpdate } from "./types.js";
 
-function targetQualifiedAbortUpdate(
+/**
+ * Bot-qualified abort controls fail closed: only the current bot's command is
+ * canonicalized; a command for another or unknown bot is swallowed.
+ */
+export function targetTelegramAbortUpdate(
   update: TelegramUpdate,
   botUsername?: string | null,
 ): TelegramUpdate | null {
@@ -32,21 +31,4 @@ function targetQualifiedAbortUpdate(
       text: `/${match[1].toLowerCase()}`,
     },
   };
-}
-
-/**
- * Bot-qualified abort controls fail closed: only the current bot's command is
- * canonicalized; a command for another or unknown bot is swallowed.
- */
-export async function dispatchTargetedTelegramUpdate(
-  update: TelegramUpdate,
-  chatKey: string,
-  surfaceIdentity: string,
-  engine: UnifiedTelegramUpdateEngine,
-  dispatchMessage: (turn: InteractiveTurnInput) => Promise<void>,
-  botUsername?: string | null,
-): Promise<void> {
-  const targetedUpdate = targetQualifiedAbortUpdate(update, botUsername);
-  if (!targetedUpdate) return;
-  await dispatchUnifiedTelegramUpdate(targetedUpdate, chatKey, surfaceIdentity, engine, dispatchMessage);
 }
