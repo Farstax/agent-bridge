@@ -136,10 +136,16 @@ try:
     }
     if any(manifest.get(k) != v for k, v in expected.items()):
         raise ValueError("manifest identity mismatch")
-    executable = (component / manifest["whisperExecutable"]).resolve()
-    if component.resolve() not in executable.parents or not executable.is_file():
+    executable = component / manifest["whisperExecutable"]
+    if component.resolve() not in executable.absolute().parents:
         raise ValueError("unsafe executable path")
     safe_owned(executable, kind="whisper executable", executable=True)
+    parent = executable.parent
+    while parent != component:
+        safe_owned(parent, kind="directory")
+        parent = parent.parent
+    if executable.resolve() != executable.absolute():
+        raise ValueError("whisper executable path contains a symlink")
     safe_owned(model, kind="model")
     def sha(path):
         h = hashlib.sha256()

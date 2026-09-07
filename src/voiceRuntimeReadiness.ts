@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, lstatSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { accessSync, constants, lstatSync, readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   PINNED_FFMPEG_PACKAGE_VERSION,
   WHISPER_CPP_MODEL_NAME,
@@ -9,6 +9,11 @@ import {
   WHISPER_CPP_SOURCE_COMMIT,
   WHISPER_CPP_UBUNTU_X64_ARCHIVE_SHA256,
 } from "./voiceIngress.js";
+import {
+  assertRootOwnedDirectoryChain,
+  DEFAULT_VOICE_STT_ROOT,
+  inspectVoiceRuntimeLayout,
+} from "./voiceRuntimeLayout.js";
 
 type Env = Record<string, string | undefined>;
 
@@ -50,14 +55,8 @@ export function inspectVoiceRuntimeReadiness(env: Env = process.env): VoiceRunti
     return { status: "unavailable", reasonCode: "voice_transcription_disabled" };
   }
   try {
-    const root = env.AGENT_BRIDGE_STT_ROOT?.trim() || "/opt/agent-bridge/host-components/voice-stt";
-    const current = join(root, "current");
-    const currentInfo = lstatSync(current);
-    if (!currentInfo.isSymbolicLink()) throw new Error("current pointer is not a symlink");
-    const target = readlinkSync(current);
-    if (!target.startsWith("components/") || target.includes("..") || isAbsolute(target)) throw new Error("current pointer is unsafe");
-    const componentRoot = resolve(root, target);
-    if (!inside(root, componentRoot)) throw new Error("component root escaped STT root");
+    const root = env.AGENT_BRIDGE_STT_ROOT?.trim() || DEFAULT_VOICE_STT_ROOT;
+    const { componentRoot } = inspectVoiceRuntimeLayout(root);
     const manifestPath = join(componentRoot, "manifest.json");
     if (!regularSafe(manifestPath)) throw new Error("component manifest is not a safe regular file");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as VoiceRuntimeManifest;
@@ -75,6 +74,7 @@ export function inspectVoiceRuntimeReadiness(env: Env = process.env): VoiceRunti
 
     const whisper = resolve(componentRoot, manifest.whisperExecutable);
     if (!inside(componentRoot, whisper) || !regularSafe(whisper, true)) throw new Error("whisper executable is unavailable");
+    assertRootOwnedDirectoryChain(dirname(whisper), { minimumPath: componentRoot });
     const model = join(root, "models", WHISPER_CPP_MODEL_NAME);
     if (!regularSafe(model)) throw new Error("voice model is unavailable");
     for (const binary of ["/usr/bin/ffmpeg", "/usr/bin/ffprobe"]) {
