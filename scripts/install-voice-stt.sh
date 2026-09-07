@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STT_ROOT="${AGENT_BRIDGE_STT_ROOT:-/var/lib/agent-bridge/stt}"
+DEFAULT_STT_ROOT="/opt/agent-bridge/host-components/voice-stt"
+STT_ROOT="${AGENT_BRIDGE_STT_ROOT:-${DEFAULT_STT_ROOT}}"
+SHARED_ENV_FILE="${AGENT_BRIDGE_SHARED_ENV_FILE:-/etc/default/agent-bridge-shared}"
 COMPONENTS_DIR="${STT_ROOT}/components"
 MODELS_DIR="${STT_ROOT}/models"
 CURRENT_LINK="${STT_ROOT}/current"
@@ -17,6 +19,7 @@ MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_NAM
 FFMPEG_PACKAGE_VERSION="7:6.1.1-3ubuntu5"
 COMPONENT_DIR="${COMPONENTS_DIR}/${WHISPER_RELEASE}"
 CHANGED=0
+SHARED_ENV_TMP=""
 
 fail() {
   echo "install-voice-stt: $*" >&2
@@ -29,11 +32,33 @@ case "$(uname -m)" in
   x86_64|amd64) ;;
   *) fail "standard voice transcription component requires x86_64" ;;
 esac
+[[ "${STT_ROOT}" == /* && "${STT_ROOT}" != *$'\n'* && "${STT_ROOT}" != *$'\r'* ]] \
+  || fail "AGENT_BRIDGE_STT_ROOT must be a canonical absolute path"
+[[ "${SHARED_ENV_FILE}" == /* && "${SHARED_ENV_FILE}" != *$'\n'* && "${SHARED_ENV_FILE}" != *$'\r'* ]] \
+  || fail "AGENT_BRIDGE_SHARED_ENV_FILE must be an absolute path"
 
-for command in curl tar sha256sum python3 apt-get dpkg-query find readlink timeout flock nice; do
+for command in curl tar sha256sum python3 apt-get dpkg-query find readlink timeout flock nice stat awk cmp; do
   command -v "${command}" >/dev/null 2>&1 || fail "required command is missing: ${command}"
 done
 
+if [[ "${STT_ROOT}" == "${DEFAULT_STT_ROOT}" ]]; then
+  for ancestor in /opt/agent-bridge /opt/agent-bridge/host-components; do
+    [[ ! -e "${ancestor}" || ( -d "${ancestor}" && ! -L "${ancestor}" ) ]] \
+      || fail "canonical STT ancestor is not a regular directory: ${ancestor}"
+    mkdir -p "${ancestor}"
+    chown root:root "${ancestor}"
+    chmod 0755 "${ancestor}"
+  done
+  for ancestor in /opt /opt/agent-bridge /opt/agent-bridge/host-components; do
+    [[ -d "${ancestor}" && ! -L "${ancestor}" ]] || fail "canonical STT ancestor is unsafe: ${ancestor}"
+    read -r ancestor_uid ancestor_mode < <(stat -c '%u %a' "${ancestor}")
+    (( ancestor_uid == 0 )) || fail "canonical STT ancestor is not root-owned: ${ancestor}"
+    (( (8#${ancestor_mode} & 8#022) == 0 )) || fail "canonical STT ancestor is group/world writable: ${ancestor}"
+    (( (8#${ancestor_mode} & 8#001) != 0 )) || fail "canonical STT ancestor is not runtime-traversable: ${ancestor}"
+  done
+fi
+
+[[ ! -L "${STT_ROOT}" ]] || fail "STT root must not be a symlink"
 mkdir -p "${COMPONENTS_DIR}" "${MODELS_DIR}"
 chown root:root "${STT_ROOT}" "${COMPONENTS_DIR}" "${MODELS_DIR}"
 chmod 0755 "${STT_ROOT}" "${COMPONENTS_DIR}" "${MODELS_DIR}"
@@ -50,7 +75,10 @@ fi
   || fail "ffmpeg package version does not match ${FFMPEG_PACKAGE_VERSION}"
 
 work="$(mktemp -d "${STT_ROOT}/.install-${WHISPER_RELEASE}.XXXXXX")"
-cleanup() { rm -rf -- "${work}"; }
+cleanup() {
+  rm -rf -- "${work}"
+  [[ -z "${SHARED_ENV_TMP}" ]] || rm -f -- "${SHARED_ENV_TMP}"
+}
 trap cleanup EXIT
 chmod 0700 "${work}"
 
@@ -74,11 +102,29 @@ ensure_model() {
 valid_component() {
   [[ -d "${COMPONENT_DIR}" && ! -L "${COMPONENT_DIR}" && -f "${COMPONENT_DIR}/manifest.json" ]] || return 1
   python3 - "${COMPONENT_DIR}" "${MODELS_DIR}/${MODEL_NAME}" <<'PY'
-import hashlib, json, pathlib, sys
+import hashlib, json, os, pathlib, stat, sys
 component = pathlib.Path(sys.argv[1])
 model = pathlib.Path(sys.argv[2])
+
+def safe_owned(path: pathlib.Path, *, kind: str, executable: bool = False) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"{kind} is a symlink")
+    if kind == "directory":
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"{kind} is not a directory")
+    elif not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"{kind} is not a regular file")
+    if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise ValueError(f"{kind} ownership or mode is unsafe")
+    if executable and not metadata.st_mode & 0o111:
+        raise ValueError(f"{kind} is not executable")
+
 try:
-    manifest = json.loads((component / "manifest.json").read_text(encoding="utf-8"))
+    safe_owned(component, kind="directory")
+    manifest_path = component / "manifest.json"
+    safe_owned(manifest_path, kind="manifest")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     expected = {
         "schemaVersion": 1,
         "whisperRelease": "b4938",
@@ -93,6 +139,8 @@ try:
     executable = (component / manifest["whisperExecutable"]).resolve()
     if component.resolve() not in executable.parents or not executable.is_file():
         raise ValueError("unsafe executable path")
+    safe_owned(executable, kind="whisper executable", executable=True)
+    safe_owned(model, kind="model")
     def sha(path):
         h = hashlib.sha256()
         with path.open("rb") as f:
@@ -101,7 +149,7 @@ try:
         return h.hexdigest()
     if sha(executable) != manifest.get("whisperExecutableSha256"):
         raise ValueError("executable checksum mismatch")
-    if not model.is_file() or sha(model) != expected["modelSha256"]:
+    if sha(model) != expected["modelSha256"]:
         raise ValueError("model checksum mismatch")
 except Exception:
     raise SystemExit(1)
@@ -166,6 +214,28 @@ PY
   CHANGED=1
 }
 
+publish_shared_runtime_contract() {
+  [[ -f "${SHARED_ENV_FILE}" && ! -L "${SHARED_ENV_FILE}" ]] \
+    || fail "shared runtime environment is unavailable: ${SHARED_ENV_FILE}"
+  local shared_parent
+  shared_parent="$(dirname "${SHARED_ENV_FILE}")"
+  [[ -d "${shared_parent}" && ! -L "${shared_parent}" ]] \
+    || fail "shared runtime environment parent is unsafe: ${shared_parent}"
+  SHARED_ENV_TMP="$(mktemp "${SHARED_ENV_FILE}.new.XXXXXX")"
+  awk '$0 !~ /^AGENT_BRIDGE_STT_ROOT=/' "${SHARED_ENV_FILE}" > "${SHARED_ENV_TMP}"
+  printf 'AGENT_BRIDGE_STT_ROOT=%s\n' "${STT_ROOT}" >> "${SHARED_ENV_TMP}"
+  chown --reference="${SHARED_ENV_FILE}" "${SHARED_ENV_TMP}"
+  chmod --reference="${SHARED_ENV_FILE}" "${SHARED_ENV_TMP}"
+  if cmp -s "${SHARED_ENV_TMP}" "${SHARED_ENV_FILE}"; then
+    rm -f -- "${SHARED_ENV_TMP}"
+    SHARED_ENV_TMP=""
+    return
+  fi
+  mv -f "${SHARED_ENV_TMP}" "${SHARED_ENV_FILE}"
+  SHARED_ENV_TMP=""
+  CHANGED=1
+}
+
 ensure_model
 if ! valid_component; then
   install_component
@@ -204,6 +274,8 @@ if [[ "${old_target}" != "${new_target}" ]]; then
 fi
 chown -h root:root "${CURRENT_LINK}" 2>/dev/null || true
 [[ ! -L "${PREVIOUS_LINK}" ]] || chown -h root:root "${PREVIOUS_LINK}" 2>/dev/null || true
+
+publish_shared_runtime_contract
 
 status="no_op"
 [[ "${CHANGED}" == "0" ]] || status="converged"
