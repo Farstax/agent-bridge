@@ -28,9 +28,11 @@ Unknown metadata fields fail closed. Secret objects accept only `name` and `purp
 - `apiVersion` says which Skill Pack metadata/API contract the runtime understands. It does not prove that a particular Agent Bridge build contains every behavior a pack needs.
 - `minAgentBridgeVersion` and `maxAgentBridgeVersion` constrain the running Agent Bridge artifact itself. They use semantic versions.
 
-Published Agent Bridge release tags such as `release-2026.09.06-2` map deterministically to runtime compatibility versions such as `2026.9.6-2`. Publishable release artifacts carry that version in their stamped package metadata and release manifest, so ordinary installs do not need an `AGENT_BRIDGE_VERSION` environment setting. Explicit version injection and `AGENT_BRIDGE_VERSION` remain override paths for tests/development.
+Published Agent Bridge release tags qualified with compatibility stamping, such as `release-2026.09.07-2`, map deterministically to runtime compatibility versions such as `2026.9.7-2`. Publishable release artifacts carry that version in their stamped package metadata and release manifest, so ordinary installs do not need an `AGENT_BRIDGE_VERSION` environment setting. Explicit version injection and `AGENT_BRIDGE_VERSION` remain override paths for tests/development.
 
 Compatibility is checked before Skill Pack mutation. A pack whose minimum runtime version is newer than the installed artifact is rejected before any shared Skill state is changed.
+
+Minimum-version metadata must use an identity the target release artifact actually carries. Historical releases published before compatibility stamping are not retroactively assigned their tag-derived version; choose the first stamped release (or a conservative lower bound that excludes every unstamped release).
 
 ## Discovery and inspection
 
