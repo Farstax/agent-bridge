@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const COMMIT = "a".repeat(40);
 const ACTIVATE = join(process.cwd(), "scripts", "release-activate.py");
+const CANONICAL_STT_ROOT = "/opt/agent-bridge/host-components/voice-stt";
 
 function fileEntry(path: string) {
   const bytes = readFileSync(path);
@@ -16,7 +17,7 @@ function fileEntry(path: string) {
   };
 }
 
-function releaseFixture(options: { declared?: boolean; installer?: boolean } = {}) {
+function releaseFixture(options: { declared?: boolean; installer?: boolean; componentId?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-host-components-"));
   const release = join(root, COMMIT);
   const scripts = join(release, "scripts");
@@ -30,7 +31,7 @@ function releaseFixture(options: { declared?: boolean; installer?: boolean } = {
   writeFileSync(rolloutDb, "export {};\n");
   writeFileSync(rolloutImpl, "export {};\n");
   if (options.installer !== false) {
-    writeFileSync(installer, `#!/bin/sh\nset -eu\nif [ -f "$HOST_COMPONENT_STATE" ]; then\n  echo host_component_status=no_op\nelse\n  : > "$HOST_COMPONENT_STATE"\n  echo host_component_status=converged\nfi\n`);
+    writeFileSync(installer, `#!/bin/sh\nset -eu\nprintf '%s\\n' "\${AGENT_BRIDGE_STT_ROOT:-}" > "\${HOST_COMPONENT_STATE}.stt-root"\nif [ -f "$HOST_COMPONENT_STATE" ]; then\n  echo host_component_status=no_op\nelse\n  : > "$HOST_COMPONENT_STATE"\n  echo host_component_status=converged\nfi\n`);
   }
 
   const files = [
@@ -50,7 +51,7 @@ function releaseFixture(options: { declared?: boolean; installer?: boolean } = {
     files,
   };
   if (options.declared !== false) {
-    manifest.host_components = [{ id: "test-component", installer: "scripts/install-test-component.sh" }];
+    manifest.host_components = [{ id: options.componentId ?? "test-component", installer: "scripts/install-test-component.sh" }];
   }
   const manifestPath = join(release, "manifest.json");
   writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
@@ -63,7 +64,7 @@ function releaseFixture(options: { declared?: boolean; installer?: boolean } = {
   return { root, current, state };
 }
 
-function converge(root: string, current: string, state: string) {
+function converge(root: string, current: string, state: string, extraEnv: Record<string, string> = {}) {
   const program = `
 import importlib.util, json, sys
 from pathlib import Path
@@ -77,7 +78,7 @@ print(json.dumps(result, sort_keys=True))
 `;
   const output = execFileSync("python3", ["-c", program, ACTIVATE, root, current], {
     encoding: "utf8",
-    env: { ...process.env, HOST_COMPONENT_STATE: state },
+    env: { ...process.env, HOST_COMPONENT_STATE: state, ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
   return JSON.parse(output.trim()) as { status: string; release: string; components: Array<{ id: string; status: string }> };
@@ -104,6 +105,17 @@ describe("active release host-component convergence", () => {
       components: [{ id: "test-component", status: "no_op" }],
     });
     expect(readlinkSync(fixture.current)).toBe(before);
+  });
+
+  it("forces the canonical STT root when converging a voice-stt release during rollback", () => {
+    const fixture = releaseFixture({ componentId: "voice-stt" });
+    expect(converge(fixture.root, fixture.current, fixture.state, {
+      AGENT_BRIDGE_STT_ROOT: "/var/lib/agent-bridge/stt",
+    })).toMatchObject({
+      status: "converged",
+      components: [{ id: "voice-stt", status: "converged" }],
+    });
+    expect(readFileSync(`${fixture.state}.stt-root`, "utf8").trim()).toBe(CANONICAL_STT_ROOT);
   });
 
   it("fails strict active-release validation when a declared installer is missing", () => {
