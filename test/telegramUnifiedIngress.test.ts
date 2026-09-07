@@ -3,9 +3,11 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { dispatchUnifiedTelegramUpdate, handleUnavailableCliUpdate, isAuthorizedInteractiveUpdate } from "../src/interactiveBot.js";
 import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 function client() {
   return {
+    capabilities: TELEGRAM_SURFACE_CAPABILITIES,
     sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 20 } }),
     sendChatAction: vi.fn(),
     sendPhoto: vi.fn(),
@@ -14,6 +16,7 @@ function client() {
     setMyCommands: vi.fn(),
     answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
     editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+    deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
   } as any;
 }
 
@@ -25,6 +28,19 @@ function callback(data: string, fromId = 42) {
       data,
       from: { id: fromId },
       message: { message_id: 12, chat: { id: 100, type: "private" }, message_thread_id: 7 },
+    },
+  } as any;
+}
+
+function message(text: string, updateId = 2) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: 13 + updateId,
+      chat: { id: 100, type: "supergroup" },
+      from: { id: 42, first_name: "Test" },
+      message_thread_id: 7,
+      text,
     },
   } as any;
 }
@@ -178,6 +194,54 @@ describe("unified Telegram callback ingress", () => {
     expect(messageDispatch.mock.calls[0][0].text).toBe("hello");
     expect(messageDispatch.mock.calls[0][0].surfaceIdentity).toBe("telegram:antigravity");
     expect(telegram.answerCallbackQuery).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("routes bot-qualified stop and cancel for the current Telegram bot through the canonical cancellation path", async () => {
+    for (const [text, updateId] of [["/stop@CrawlerInteractiveBot", 10], ["/cancel@crawlerinteractivebot", 11]] as const) {
+      const db = openDb(":memory:");
+      const telegram = client();
+      const runCli = vi.fn();
+      const engine = codexEngine(db, telegram, runCli);
+
+      await (dispatchUnifiedTelegramUpdate as any)(
+        message(text, updateId),
+        "100:7",
+        "telegram:interactive",
+        engine,
+        async (turn: any) => engine.handleInteractiveTurn(turn),
+        "crawlerinteractivebot",
+      );
+
+      expect(telegram.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        text: expect.stringContaining("aborted"),
+        message_thread_id: "7",
+      }));
+      expect(runCli).not.toHaveBeenCalled();
+      db.close();
+    }
+  });
+
+  it("does not canonicalize a stop command addressed to another Telegram bot", async () => {
+    const db = openDb(":memory:");
+    const telegram = client();
+    const runCli = vi.fn();
+    const engine = codexEngine(db, telegram, runCli);
+    const messageDispatch = vi.fn(async (turn: any) => engine.handleInteractiveTurn(turn));
+
+    await (dispatchUnifiedTelegramUpdate as any)(
+      message("/stop@SomeOtherBot", 12),
+      "100:7",
+      "telegram:interactive",
+      engine,
+      messageDispatch,
+      "crawlerinteractivebot",
+    );
+
+    expect(messageDispatch).toHaveBeenCalledOnce();
+    expect(messageDispatch.mock.calls[0][0].text).toBe("/stop@SomeOtherBot");
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    expect(runCli).not.toHaveBeenCalled();
     db.close();
   });
 });
