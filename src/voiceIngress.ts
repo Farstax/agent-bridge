@@ -23,7 +23,7 @@ export const WHISPER_CPP_MODEL_NAME = "ggml-base.en-q5_1.bin";
 export const WHISPER_CPP_MODEL_SHA256 = "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f";
 export const PINNED_FFMPEG_PACKAGE_VERSION = "7:6.1.1-3ubuntu5";
 
-const DEFAULT_STT_ROOT = process.env.AGENT_BRIDGE_STT_ROOT || "/var/lib/agent-bridge/stt";
+const DEFAULT_STT_ROOT = process.env.AGENT_BRIDGE_STT_ROOT || "/opt/agent-bridge/host-components/voice-stt";
 const DEFAULT_COMPONENT_ROOT = join(DEFAULT_STT_ROOT, "current");
 const DEFAULT_MODEL_PATH = join(DEFAULT_STT_ROOT, "models", WHISPER_CPP_MODEL_NAME);
 const DEFAULT_MANIFEST_PATH = join(DEFAULT_COMPONENT_ROOT, "manifest.json");
@@ -432,11 +432,21 @@ const preflightCache = new Map<string, Promise<{ whisperPath: string; modelPath:
 
 async function preflightWhisperRuntime(overrides: WhisperCppPaths = {}) {
   const paths = whisperRuntimePaths(overrides);
-  const cacheKey = JSON.stringify(paths);
+  const enforceProductionOwnership = overrides.componentRoot === undefined
+    && overrides.manifestPath === undefined
+    && overrides.modelPath === undefined;
+  const cacheKey = JSON.stringify({ ...paths, enforceProductionOwnership });
   const cached = preflightCache.get(cacheKey);
   if (cached) return cached;
   const check = (async () => {
-    const raw = await readFile(paths.manifestPath, "utf8").catch(() => { throw new Error("Voice transcription runtime manifest is missing."); });
+    const manifestInfo = await lstat(paths.manifestPath).catch(() => null);
+    if (!manifestInfo?.isFile() || manifestInfo.isSymbolicLink()) {
+      throw new Error("Voice transcription runtime manifest is missing.");
+    }
+    if ((manifestInfo.mode & 0o022) !== 0 || (enforceProductionOwnership && manifestInfo.uid !== 0)) {
+      throw new Error("Voice transcription runtime manifest ownership or mode is unsafe.");
+    }
+    const raw = await readFile(paths.manifestPath, "utf8");
     const manifest = JSON.parse(raw) as VoiceRuntimeManifest;
     if (
       manifest.schemaVersion !== 1
@@ -449,11 +459,12 @@ async function preflightWhisperRuntime(overrides: WhisperCppPaths = {}) {
     ) throw new Error("Voice transcription runtime manifest does not match the pinned component contract.");
     const whisperPath = resolve(paths.componentRoot, manifest.whisperExecutable);
     if (!isPathInside(paths.componentRoot, whisperPath)) throw new Error("Voice transcription runtime manifest contains an unsafe executable path.");
+    const managedAssets = new Set([whisperPath, paths.modelPath]);
     for (const candidate of [whisperPath, paths.modelPath, paths.ffmpegPath, paths.ffprobePath, paths.nicePath]) {
-      const info = await stat(candidate).catch(() => null);
-      if (!info?.isFile()) throw new Error(`Voice transcription runtime asset is missing: ${candidate}`);
-      if ((candidate === whisperPath || candidate === paths.modelPath) && (info.mode & 0o022) !== 0) {
-        throw new Error(`Voice transcription runtime asset is writable by group/world: ${candidate}`);
+      const info = await lstat(candidate).catch(() => null);
+      if (!info?.isFile() || info.isSymbolicLink()) throw new Error(`Voice transcription runtime asset is missing: ${candidate}`);
+      if (managedAssets.has(candidate) && ((info.mode & 0o022) !== 0 || (enforceProductionOwnership && info.uid !== 0))) {
+        throw new Error(`Voice transcription runtime asset ownership or mode is unsafe: ${candidate}`);
       }
     }
     const [executableHash, modelHash] = await Promise.all([sha256File(whisperPath), sha256File(paths.modelPath)]);
