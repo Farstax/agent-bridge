@@ -111,10 +111,13 @@ export function runDoctor({
   }));
 
   const voiceTranscription = inspectVoiceRuntime(env);
+  const voiceOk = voiceTranscription.status === "ready"
+    || voiceTranscription.reasonCode === "voice_transcription_disabled";
   const ok =
     providers.every((p) => p.status === "available" || !configuredProviderIds.has(p.id)) &&
     chains.every((c) => c.ok) &&
-    envChecks.every((e) => e.present);
+    envChecks.every((e) => e.present) &&
+    voiceOk;
 
   return { ok, providers, chains, env: envChecks, voiceTranscription };
 }
