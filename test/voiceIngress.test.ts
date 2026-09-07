@@ -13,7 +13,14 @@ import { ExecutionLaneCoordinator } from "../src/executionLaneCoordinator.js";
 import {
   DEFAULT_MAX_AUDIO_BYTES,
   DEFAULT_MAX_AUDIO_DURATION_SECONDS,
+  PINNED_FFMPEG_PACKAGE_VERSION,
+  WHISPER_CPP_MODEL_NAME,
+  WHISPER_CPP_MODEL_SHA256,
+  WHISPER_CPP_RELEASE,
+  WHISPER_CPP_SOURCE_COMMIT,
+  WHISPER_CPP_UBUNTU_X64_ARCHIVE_SHA256,
   acquireWorkspaceTranscriptionLease,
+  createWhisperCppTranscriber,
   prepareVoiceBatchForDispatch,
   prepareVoiceTurn,
   reapStaleVoiceTempDirs,
@@ -190,6 +197,46 @@ describe("voice ingress", () => {
 
     expect(result).toEqual({ kind: "unavailable", reason: "Voice-note transcription is unavailable on this runtime." });
     expect(stager.stage).not.toHaveBeenCalled();
+  });
+
+  it("follows host ffmpeg, ffprobe and nice symlinks while still rejecting managed STT symlinks", async () => {
+    await withTempRoot(async (root) => {
+      const component = join(root, "component");
+      const bin = join(root, "bin");
+      await mkdir(component);
+      await mkdir(bin);
+      await writeFile(join(component, "whisper-cli"), "whisper");
+      await writeFile(join(root, "model.bin"), "model");
+      await writeFile(join(component, "manifest.json"), `${JSON.stringify({
+        schemaVersion: 1,
+        whisperRelease: WHISPER_CPP_RELEASE,
+        whisperSourceCommit: WHISPER_CPP_SOURCE_COMMIT,
+        whisperArchiveSha256: WHISPER_CPP_UBUNTU_X64_ARCHIVE_SHA256,
+        whisperExecutable: "whisper-cli",
+        whisperExecutableSha256: "00",
+        model: WHISPER_CPP_MODEL_NAME,
+        modelSha256: WHISPER_CPP_MODEL_SHA256,
+        ffmpegPackageVersion: PINNED_FFMPEG_PACKAGE_VERSION,
+      })}\n`);
+      const ffmpeg = join(bin, "ffmpeg");
+      await symlink("/usr/bin/ffmpeg", ffmpeg);
+      const transcriber = createWhisperCppTranscriber({
+        componentRoot: component,
+        manifestPath: join(component, "manifest.json"),
+        modelPath: join(root, "model.bin"),
+        ffmpegPath: ffmpeg,
+        ffprobePath: "/usr/bin/ffprobe",
+        nicePath: "/usr/bin/nice",
+      });
+      await expect(transcriber.transcribe({
+        filePath: join(root, "note.ogg"),
+        operationDir: root,
+        workspaceDir: root,
+        signal: new AbortController().signal,
+        maxDurationSeconds: 30,
+        maxTempBytes: 1024,
+      })).rejects.toThrow(/checksum mismatch/);
+    });
   });
 
   it("enforces metadata size and duration bounds before staging", async () => {

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,5 +60,26 @@ describe("voice runtime managed layout", () => {
       expectedUid: process.getuid?.() ?? 0,
       minimumPath: component,
     })).toThrow(/must not be a symlink/);
+  });
+
+  it("lets the runtime identity traverse isolated STT ancestors while a protected sibling stays closed", () => {
+    const parent = mkdtempSync(join(tmpdir(), "agent-bridge-voice-boundary-"));
+    roots.push(parent);
+    const protectedRoot = join(parent, "var-lib-agent-bridge");
+    const isolatedRoot = join(parent, "voice-stt");
+    mkdirSync(join(protectedRoot, "stt", "components", "b4938"), { recursive: true, mode: 0o755 });
+    mkdirSync(join(isolatedRoot, "components", "b4938", "bin"), { recursive: true, mode: 0o755 });
+    mkdirSync(join(isolatedRoot, "models"), { mode: 0o755 });
+    symlinkSync("components/b4938", join(isolatedRoot, "current"));
+    chmodSync(protectedRoot, 0o000);
+
+    expect(() => accessSync(protectedRoot, constants.R_OK | constants.X_OK)).toThrow();
+    expect(() => accessSync(join(protectedRoot, "stt"), constants.X_OK)).toThrow();
+    expect(inspectVoiceRuntimeLayout(isolatedRoot, {
+      expectedUid: process.getuid?.() ?? 0,
+      minimumPath: isolatedRoot,
+    }).componentRoot).toBe(join(isolatedRoot, "components", "b4938"));
+
+    chmodSync(protectedRoot, 0o700);
   });
 });

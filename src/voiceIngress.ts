@@ -479,8 +479,11 @@ async function preflightWhisperRuntime(overrides: WhisperCppPaths = {}) {
     }
     const managedAssets = new Set([whisperPath, paths.modelPath]);
     for (const candidate of [whisperPath, paths.modelPath, paths.ffmpegPath, paths.ffprobePath, paths.nicePath]) {
-      const info = await lstat(candidate).catch(() => null);
-      if (!info?.isFile() || info.isSymbolicLink()) throw new Error(`Voice transcription runtime asset is missing: ${candidate}`);
+      const inspect = managedAssets.has(candidate) ? lstat : stat;
+      const info = await inspect(candidate).catch(() => null);
+      if (!info?.isFile() || (managedAssets.has(candidate) && info.isSymbolicLink())) {
+        throw new Error(`Voice transcription runtime asset is missing: ${candidate}`);
+      }
       if (managedAssets.has(candidate) && ((info.mode & 0o022) !== 0 || (enforceProductionOwnership && info.uid !== 0))) {
         throw new Error(`Voice transcription runtime asset ownership or mode is unsafe: ${candidate}`);
       }

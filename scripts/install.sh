@@ -499,7 +499,8 @@ if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
 fi
 
 echo "Converging release-owned voice transcription component..."
-sudo /bin/bash "${REPO_DIR}/scripts/install-voice-stt.sh"
+sudo /usr/bin/env AGENT_BRIDGE_STT_ROOT="/opt/agent-bridge/host-components/voice-stt" \
+  /bin/bash "${REPO_DIR}/scripts/install-voice-stt.sh"
 
 sudo systemctl daemon-reload
 # Enable only. Pointer activation is a separate guarded operation and service
