@@ -132,6 +132,7 @@ describe("cursor doctor and session expiry", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "cursor" },
       commandExists: () => true,
+      inspectVoiceRuntime: () => ({ status: "ready", reasonCode: null }),
     });
     const chain = report.chains.find((entry) => entry.name === "INTERACTIVE_CLI_CHAIN");
     expect(chain?.ok).toBe(true);

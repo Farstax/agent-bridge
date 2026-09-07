@@ -218,15 +218,19 @@ describe("voice ingress", () => {
         modelSha256: WHISPER_CPP_MODEL_SHA256,
         ffmpegPackageVersion: PINNED_FFMPEG_PACKAGE_VERSION,
       })}\n`);
+      const ffmpegReal = join(bin, "ffmpeg-real");
       const ffmpeg = join(bin, "ffmpeg");
-      await symlink("/usr/bin/ffmpeg", ffmpeg);
+      await writeFile(ffmpegReal, "ffmpeg");
+      await writeFile(join(bin, "ffprobe"), "ffprobe");
+      await writeFile(join(bin, "nice"), "nice");
+      await symlink(ffmpegReal, ffmpeg);
       const transcriber = createWhisperCppTranscriber({
         componentRoot: component,
         manifestPath: join(component, "manifest.json"),
         modelPath: join(root, "model.bin"),
         ffmpegPath: ffmpeg,
-        ffprobePath: "/usr/bin/ffprobe",
-        nicePath: "/usr/bin/nice",
+        ffprobePath: join(bin, "ffprobe"),
+        nicePath: join(bin, "nice"),
       });
       await expect(transcriber.transcribe({
         filePath: join(root, "note.ogg"),
