@@ -39,6 +39,7 @@ import {
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
+import { targetTelegramAbortUpdate } from "./telegramCommandTarget.js";
 import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
@@ -434,7 +435,7 @@ for (;;) {
       db.setLastUpdateId(POLL_KIND, updateId);
 
       try {
-        const typedUpdate = update as TelegramUpdate;
+        let typedUpdate = update as TelegramUpdate;
         const isGroupUpdate = isGroupInteractiveUpdate(typedUpdate);
         if (isGroupUpdate) {
           console.log("[interactive] update.received", JSON.stringify(describeInteractiveUpdateForLog(typedUpdate)));
@@ -458,6 +459,10 @@ for (;;) {
           }
           continue;
         }
+
+        const targetedUpdate = targetTelegramAbortUpdate(typedUpdate, botUsername);
+        if (!targetedUpdate) continue;
+        typedUpdate = targetedUpdate;
 
         const message = typedUpdate.message;
         if (message) {
