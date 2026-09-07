@@ -204,7 +204,7 @@ describe("unified Telegram callback ingress", () => {
       const runCli = vi.fn();
       const engine = codexEngine(db, telegram, runCli);
 
-      await (dispatchUnifiedTelegramUpdate as any)(
+      await dispatchUnifiedTelegramUpdate(
         message(text, updateId),
         "100:7",
         "telegram:interactive",
@@ -222,26 +222,31 @@ describe("unified Telegram callback ingress", () => {
     }
   });
 
-  it("does not canonicalize a stop command addressed to another Telegram bot", async () => {
-    const db = openDb(":memory:");
-    const telegram = client();
-    const runCli = vi.fn();
-    const engine = codexEngine(db, telegram, runCli);
-    const messageDispatch = vi.fn(async (turn: any) => engine.handleInteractiveTurn(turn));
+  it("ignores qualified stop and cancel commands not proven to target this Telegram bot", async () => {
+    for (const [text, botUsername, updateId] of [
+      ["/stop@SomeOtherBot", "crawlerinteractivebot", 12],
+      ["/cancel@SomeOtherBot", "crawlerinteractivebot", 13],
+      ["/stop@CrawlerInteractiveBot", undefined, 14],
+    ] as const) {
+      const db = openDb(":memory:");
+      const telegram = client();
+      const runCli = vi.fn();
+      const engine = codexEngine(db, telegram, runCli);
+      const messageDispatch = vi.fn(async (turn: any) => engine.handleInteractiveTurn(turn));
 
-    await (dispatchUnifiedTelegramUpdate as any)(
-      message("/stop@SomeOtherBot", 12),
-      "100:7",
-      "telegram:interactive",
-      engine,
-      messageDispatch,
-      "crawlerinteractivebot",
-    );
+      await dispatchUnifiedTelegramUpdate(
+        message(text, updateId),
+        "100:7",
+        "telegram:interactive",
+        engine,
+        messageDispatch,
+        botUsername,
+      );
 
-    expect(messageDispatch).toHaveBeenCalledOnce();
-    expect(messageDispatch.mock.calls[0][0].text).toBe("/stop@SomeOtherBot");
-    expect(telegram.sendMessage).not.toHaveBeenCalled();
-    expect(runCli).not.toHaveBeenCalled();
-    db.close();
+      expect(messageDispatch).not.toHaveBeenCalled();
+      expect(telegram.sendMessage).not.toHaveBeenCalled();
+      expect(runCli).not.toHaveBeenCalled();
+      db.close();
+    }
   });
 });
