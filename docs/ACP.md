@@ -1,0 +1,71 @@
+# ACP provider-runtime boundary
+
+Agent Bridge uses Agent Client Protocol (ACP) v1 as the future
+provider-runtime contract. This is not a second agent runtime and not a
+proprietary wrapper around ACP.
+
+Pinned SDK: `@agentclientprotocol/sdk@1.4.0` (stable ACP v1 entry point).
+Codex ACP adapter: `@agentclientprotocol/codex-acp` (current maintained
+implementation; default command `codex-acp`).
+
+## Ownership
+
+1. **Agent Bridge owns** durable Run/conversation identity, routing and
+   fallback, queues and interrupt admission, `/stop`, cancellation and
+   fencing, workspace locking, authority/policy, routines, context/soul
+   policy, Telegram/Discord delivery, health, and Bridge-level telemetry.
+2. **ACP owns** agent communication: initialize, session lifecycle, prompt,
+   `session/update`, cancel, stop reason, usage, and permission requests.
+3. **The provider agent owns** reasoning, tools, and native provider session
+   state.
+
+Do not use a provider ACP session ID as Agent Bridge's durable identity.
+The mapping is:
+
+`Bridge conversation/run identity -> provider ACP session ID`
+
+It is persisted in `acp_session_bindings` (schema 16) so fresh sessions,
+resumed sessions, Bridge restart, and later provider handoff keep the
+outward conversation identity stable.
+
+## Codex selection
+
+The existing `codex exec --json` runtime remains the default.
+
+```bash
+AGENT_BRIDGE_CODEX_RUNTIME=legacy   # default
+AGENT_BRIDGE_CODEX_RUNTIME=acp      # parallel ACP-backed Codex path
+CODEX_ACP_COMMAND=codex-acp
+```
+
+Selection is explicit. There is no silent fallback between the two Codex
+implementations inside one attempt.
+
+## Process lifecycle
+
+ACP stdio children use `cliSupervisor.runSupervisedStdioSession()`. That
+reuses child ownership, workspace locking, timeouts, idle timeout, `/stop`,
+hard cancellation, fencing, env scrubbing, redaction, and shutdown cleanup.
+Stdout on this path is ACP JSON-RPC, not user-visible text.
+
+## Replay and delivery
+
+`session/load` may replay historical `session/update` events. Replay is
+marked internally and is not live Telegram/Discord output. Chat surfaces
+continue to receive only the current turn's live agent text. Rich ACP tool,
+plan, permission, and usage events are retained internally.
+
+## Client capabilities
+
+Initialize advertises only the client capabilities Agent Bridge actually
+needs. Filesystem and terminal client methods are not advertised; the
+provider agent keeps those tools. Permission requests are mapped onto
+Bridge `safe` / `trusted` execution authority.
+
+## Non-goals
+
+- Remote HTTP/WebSocket ACP transport
+- Farstax outward ACP exposure
+- Migrating Claude, Agy, Cursor, or Grok in this phase
+- Removing the legacy Codex runtime
+- Changing Telegram/Discord presentation to show tool calls or plans

@@ -6,6 +6,7 @@ Use current product and operating contracts first. Historical implementation wor
 - [Architecture index](architecture/README.md)
 - [Examples](examples/README.md)
 - [Adding a CLI provider](ADDING-A-PROVIDER.md)
+- [ACP provider-runtime boundary](ACP.md)
 - [Initial installation](INITIAL-INSTALL.md)
 - [Provider qualification](PROVIDER-QUALIFICATION.md)
 - [Guarded rollout](GUARDED-ROLLOUT.md)

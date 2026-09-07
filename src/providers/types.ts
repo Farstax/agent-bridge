@@ -59,6 +59,8 @@ export interface ProviderInvocation {
   stdin?: string;
   /** Whether this invocation continues or establishes native provider state. */
   nativeSessionMode: "fresh" | "resume";
+  /** Process transport. One-shot stdout collection is the default CLI path. */
+  transport?: "oneshot" | "acp-stdio";
 }
 
 // Issue #135 Phase 3C — Antigravity is the only provider using logFile/

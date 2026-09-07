@@ -39,6 +39,7 @@ interface ActiveExecution {
   lifecycleHandle: ExecutionLaneHandle | null;
   lifecycleDone: Promise<void> | null;
   finishLifecycle: (() => void) | null;
+  stdioAbort: AbortController | null;
 }
 
 const activeExecutions = new Map<number | string, ActiveExecution>();
@@ -151,7 +152,7 @@ function deregisterProcess(chatId: number | string, child: ChildProcess): void {
 function registerProcess(chatId: number | string, child: ChildProcess): void {
   const active = activeExecutions.get(chatId);
   if (active) active.child = child;
-  else activeExecutions.set(chatId, { child, abortRequested: false, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null });
+  else activeExecutions.set(chatId, { child, abortRequested: false, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null, stdioAbort: null });
 }
 
 export function beginExecutionLifecycle(chatId: number | string, handle: ExecutionLaneHandle): string {
@@ -166,6 +167,7 @@ export function beginExecutionLifecycle(chatId: number | string, handle: Executi
     lifecycleHandle: handle,
     lifecycleDone,
     finishLifecycle,
+    stdioAbort: active?.stdioAbort ?? null,
   });
   return token;
 }
@@ -205,6 +207,7 @@ export function abortCliProcess(chatId: number | string): boolean {
   const active = activeExecutions.get(chatId);
   if (!active) return false;
   active.abortRequested = true;
+  active.stdioAbort?.abort();
   let abortedSomething = true;
   if (active?.child) {
     killChild(active.child);
@@ -217,6 +220,7 @@ export async function abortCliProcessAndWait(chatId: number | string): Promise<b
   const active = activeExecutions.get(chatId);
   if (!active) return false;
   active.abortRequested = true;
+  active.stdioAbort?.abort();
   let abortedSomething = true;
   const closedPromises: Promise<void>[] = [];
 
@@ -537,4 +541,120 @@ export async function runSupervisedProcess(
       doReject(error);
     });
   });
+}
+
+export interface SupervisedStdio {
+  readonly stdin: NodeJS.WritableStream;
+  readonly stdout: NodeJS.ReadableStream;
+  readonly stderr: NodeJS.ReadableStream;
+  readonly signal: AbortSignal;
+}
+
+/**
+ * Spawn a long-lived stdio child under the same ownership, timeout, abort,
+ * workspace-lock, env-scrubbing, and redaction guarantees as one-shot CLI
+ * runs. Stdout is protocol traffic, not user-visible text.
+ */
+export async function runSupervisedStdioSession<T>(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: CliOptions,
+  session: (io: SupervisedStdio) => Promise<T>,
+): Promise<T> {
+  const { timeoutMs, idleTimeoutMs } = resolveSupervisorTimeouts(options);
+  const killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
+  const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
+  const providerId: ProviderId | null = options.bot
+    ? options.bot === "antigravity" ? "agy" : options.bot
+    : null;
+  if (
+    providerId
+    && isProviderApiKeyConfigured(providerId, redactionEnv)
+    && !isProviderApiKeyVerified(providerId, redactionEnv)
+  ) {
+    await verifyProviderApiKey(providerId, { env: redactionEnv });
+  }
+  const redact = (text: string): string => redactProviderApiKeySecrets(text, redactionEnv);
+  const stderrRedactor = createStreamingSecretRedactor(getProviderApiKeySecretValues(redactionEnv));
+  const stdioAbort = new AbortController();
+  const normalizedArgs = normalizeCliArgs(command, args);
+  const spawnInvocation = buildWorkspaceLockedInvocation(command, normalizedArgs, cwd, {
+    bypassWorkspaceLock: options.bypassWorkspaceLock,
+  });
+  console.log(formatSpawnLog(command, normalizedArgs, cwd, options.chatId, undefined, redactionEnv));
+  const childEnv = filterProviderCredentialEnv(options.bot, redactionEnv);
+  if (options.eventContext?.runId) childEnv[RUN_MARKER_ENV] = options.eventContext.runId;
+  if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;
+  if (options.eventContext?.acquisitionId) childEnv[ACQUISITION_MARKER_ENV] = options.eventContext.acquisitionId;
+  const child = spawn(spawnInvocation.command, spawnInvocation.args, { cwd, shell: false, detached: true, env: childEnv });
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    child.kill();
+    throw new Error("ACP child is missing stdio pipes");
+  }
+  if (options.chatId != null) {
+    registerProcess(options.chatId, child);
+    const active = activeExecutions.get(options.chatId);
+    if (active) active.stdioAbort = stdioAbort;
+  }
+
+  let settled = false;
+  let pendingError: Error | null = null;
+  const timer: NodeJS.Timeout | null = timeoutMs === 0 ? null : setTimeout(() => {
+    if (settled) return;
+    pendingError = new CliTimeoutError(`CLI hard timeout after ${timeoutMs}ms`, "hard");
+    stdioAbort.abort(pendingError);
+    void killChild(child, killGraceMs);
+  }, timeoutMs);
+
+  let idleTimer: NodeJS.Timeout | null = null;
+  const resetIdleTimer = () => {
+    if (idleTimeoutMs === null || idleTimeoutMs === 0) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (settled) return;
+      pendingError = new CliTimeoutError(`CLI idle timeout after ${idleTimeoutMs}ms`, "idle");
+      stdioAbort.abort(pendingError);
+      void killChild(child, killGraceMs);
+    }, idleTimeoutMs);
+  };
+  resetIdleTimer();
+
+  child.stdout.on("data", () => { resetIdleTimer(); });
+  child.stderr.on("data", (data) => {
+    const safeChunk = stderrRedactor.push(data.toString());
+    if (safeChunk) {
+      console.error(`[stderr]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${child.pid ?? "?"} ${redact(safeChunk).trimEnd()}`);
+    }
+    resetIdleTimer();
+  });
+
+  const closed = new Promise<void>((resolve, reject) => {
+    child.once("error", (error) => {
+      error.message = redact(error.message);
+      reject(error);
+    });
+    child.once("close", () => resolve());
+  });
+
+  try {
+    const result = await session({
+      stdin: child.stdin,
+      stdout: child.stdout,
+      stderr: child.stderr,
+      signal: stdioAbort.signal,
+    });
+    return result;
+  } catch (error) {
+    if (pendingError) throw pendingError;
+    throw error;
+  } finally {
+    settled = true;
+    if (timer) clearTimeout(timer);
+    if (idleTimer) clearTimeout(idleTimer);
+    try { child.stdin.end(); } catch { /* already closed */ }
+    await killChild(child, killGraceMs).catch(() => undefined);
+    await closed.catch(() => undefined);
+    if (options.chatId != null) deregisterProcess(options.chatId, child);
+  }
 }
