@@ -1,0 +1,1 @@
+Temporary verification fixture for issue #724. This branch will not be merged.
