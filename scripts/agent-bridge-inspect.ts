@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { renderAgentBridgeInspection } from "../src/runtimeInspector.js";
+import { MAX_INSPECTION_OUTPUT_CHARS, renderAgentBridgeInspection } from "../src/runtimeInspector.js";
 import { inspectVoiceRuntimeReadiness } from "../src/voiceRuntimeReadiness.js";
 
 try {
@@ -22,7 +22,11 @@ try {
   } else {
     rendered.voiceTranscription = voice;
   }
-  process.stdout.write(JSON.stringify(rendered) + "\n");
+  const output = JSON.stringify(rendered);
+  if (output.length > MAX_INSPECTION_OUTPUT_CHARS) {
+    throw new Error(`runtime inspector output exceeded ${MAX_INSPECTION_OUTPUT_CHARS} characters`);
+  }
+  process.stdout.write(output + "\n");
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   process.stderr.write(`agent-bridge-inspect: ${message}\n`);
