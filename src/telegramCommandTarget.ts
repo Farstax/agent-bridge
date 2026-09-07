@@ -4,11 +4,6 @@
  * NEIGHBORS: src/index-interactive.ts, src/interactiveBot.ts
  */
 
-import type { InteractiveTurnInput } from "./interactiveIngress.js";
-import {
-  dispatchUnifiedTelegramUpdate,
-  type UnifiedTelegramUpdateEngine,
-} from "./interactiveBot.js";
 import type { TelegramUpdate } from "./types.js";
 
 /**
@@ -36,17 +31,4 @@ export function targetTelegramAbortUpdate(
       text: `/${match[1].toLowerCase()}`,
     },
   };
-}
-
-export async function dispatchTargetedTelegramUpdate(
-  update: TelegramUpdate,
-  chatKey: string,
-  surfaceIdentity: string,
-  engine: UnifiedTelegramUpdateEngine,
-  dispatchMessage: (turn: InteractiveTurnInput) => Promise<void>,
-  botUsername?: string | null,
-): Promise<void> {
-  const targetedUpdate = targetTelegramAbortUpdate(update, botUsername);
-  if (!targetedUpdate) return;
-  await dispatchUnifiedTelegramUpdate(targetedUpdate, chatKey, surfaceIdentity, engine, dispatchMessage);
 }
