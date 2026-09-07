@@ -71,11 +71,17 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          previous_tag="$(gh release list \
-            --repo "$GITHUB_REPOSITORY" \
-            --limit 100 \
-            --json tagName,isDraft,publishedAt \
-            --jq '[.[] | select(.isDraft == false and .publishedAt != null)][0].tagName // ""')"
+          previous_tag="$(
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '[.[][] | select(.draft == false and .published_at != null) | .tag_name]' \
+            | node --input-type=module -e '
+                import { readFileSync } from "node:fs";
+                import { maxReleaseTag } from "./scripts/releaseVersion.mjs";
+                const tags = JSON.parse(readFileSync(0, "utf8"));
+                process.stdout.write(maxReleaseTag(tags) ?? "");
+              '
+          )"
           if [[ -n "$previous_tag" ]]; then
             node scripts/releaseVersion.mjs --assert-after "$previous_tag" "$RELEASE_TAG"
           fi
