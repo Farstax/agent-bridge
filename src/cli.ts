@@ -9,6 +9,7 @@
 import { homedir } from "node:os";
 import type { CliOptions, CliResult, BotKind } from "./types.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./providers/types.js";
+import { randomUUID } from "node:crypto";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
@@ -221,6 +222,34 @@ export function buildCliInvocation({
 export { validateBridgeConfig } from "./config.js";
 export { runTurn as runCodexAcpTurn } from "./providers/codexAcpRuntime.js";
 export { isCodexAcpRuntime, resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
+
+/** Run a built invocation on the matching transport. ACP stdio is never oneshot-parsed. */
+export async function runProviderInvocation(
+  bot: string,
+  invocation: ProviderInvocation,
+  cwd: string,
+  options: CliOptions,
+  request: ProviderInvocationRequest,
+  identities: { conversationId: string; runId: string } = {
+    conversationId: String(options.chatId ?? "bridge"),
+    runId: options.eventContext?.runId ?? randomUUID(),
+  },
+): Promise<CliResult> {
+  if (invocation.transport === "acp-stdio") {
+    return codexAcpRuntime.runTurn(request, cwd, { ...options, bot: (options.bot ?? bot) as BotKind }, identities);
+  }
+  const { stdout } = await runConfiguredCli(invocation.command, invocation.args, cwd, {
+    ...options,
+    stdin: invocation.stdin ?? options.stdin,
+  });
+  return parseCliResult({
+    bot,
+    stdout,
+    outputFormat: request.outputFormat === "stream-json" || request.outputFormat === "streaming-json" || request.outputFormat === "json"
+      ? request.outputFormat
+      : undefined,
+  });
+}
 
 /** Resolve CLI execution options for a specific bot kind. */
 export function buildExecutionOptions(kind: BotKind): CliOptions {

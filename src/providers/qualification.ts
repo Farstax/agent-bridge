@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { buildCliInvocation, parseCliResult, runCli } from "../cli.js";
+import { buildCliInvocation, parseCliResult, runCli, runProviderInvocation } from "../cli.js";
 import { runSupervisedProcess } from "../cliSupervisor.js";
 import { resolveExecutionMode } from "../config.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
@@ -440,24 +440,47 @@ async function executeNativeQualificationCheck({
     throw new Error("provider invocation compatibility failed: fresh qualification did not enter native fresh mode");
   }
 
-  const stdout = await runQualificationInvocation({
-    providerId,
-    command: invocation.command,
-    args: invocation.args,
-    cwd,
-    homeDir,
-    timeoutMs,
-    idleTimeoutMs,
-    runtimeEnv,
-  });
-
+  const supervisorOptions = buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs);
   let parsed;
   try {
-    parsed = parseCliResult({
-      bot,
-      stdout,
-      outputFormat: qualificationOutputFormat(invocation.args),
-    });
+    if (invocation.transport === "acp-stdio") {
+      parsed = await runProviderInvocation(
+        bot,
+        invocation,
+        cwd,
+        { ...supervisorOptions, bot },
+        {
+          prompt: sessionId ? RESUME_PROBE : FRESH_PROBE,
+          sessionId,
+          command: invocation.command,
+          model: null,
+          executionMode,
+          outputFormat: "json",
+          soulContext: null,
+          attachments: [],
+          outputDir: null,
+          effort: null,
+          toolMode: adapter.capabilities.toolFree ? "none" : "default",
+        },
+        { conversationId: `qualify:${providerId}`, runId: randomUUID() },
+      );
+    } else {
+      const stdout = await runQualificationInvocation({
+        providerId,
+        command: invocation.command,
+        args: invocation.args,
+        cwd,
+        homeDir,
+        timeoutMs,
+        idleTimeoutMs,
+        runtimeEnv,
+      });
+      parsed = parseCliResult({
+        bot,
+        stdout,
+        outputFormat: qualificationOutputFormat(invocation.args),
+      });
+    }
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error(String(caught));
     throw new Error(`provider native result parsing failed: ${error.message}`);

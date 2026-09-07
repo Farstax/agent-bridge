@@ -597,12 +597,18 @@ export async function runSupervisedStdioSession<T>(
     const active = activeExecutions.get(options.chatId);
     if (active) active.stdioAbort = stdioAbort;
   }
+  const evtCtx = options.eventContext;
+  const onEvent = options.onEvent;
+  if (evtCtx) {
+    onEvent?.(evtType.runStarted({ ...evtCtx, command, cwd, model: null }));
+  }
 
   let settled = false;
   let pendingError: Error | null = null;
   const timer: NodeJS.Timeout | null = timeoutMs === 0 ? null : setTimeout(() => {
     if (settled) return;
     pendingError = new CliTimeoutError(`CLI hard timeout after ${timeoutMs}ms`, "hard");
+    if (evtCtx) onEvent?.(evtType.runFailed({ ...evtCtx, error: pendingError.message, category: "timeout" }));
     stdioAbort.abort(pendingError);
     void killChild(child, killGraceMs);
   }, timeoutMs);
@@ -614,6 +620,7 @@ export async function runSupervisedStdioSession<T>(
     idleTimer = setTimeout(() => {
       if (settled) return;
       pendingError = new CliTimeoutError(`CLI idle timeout after ${idleTimeoutMs}ms`, "idle");
+      if (evtCtx) onEvent?.(evtType.runFailed({ ...evtCtx, error: pendingError.message, category: "timeout" }));
       stdioAbort.abort(pendingError);
       void killChild(child, killGraceMs);
     }, idleTimeoutMs);

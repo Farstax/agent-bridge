@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
-import { buildCliInvocation } from "../src/cli.js";
+import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
 import { runTurn } from "../src/providers/codexAcpRuntime.js";
 import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexRuntimeSelection.js";
+import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
 
 const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
@@ -145,6 +146,87 @@ describe("Codex ACP supervised stdio turn", () => {
       else process.env.CODEX_ACP_ARGS = previousArgs;
       delete process.env.FAKE_ACP_STORE;
       rmSync(storeDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("aborts a supervised ACP child through abortCliProcess", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    const chatId = `acp-stop-${Date.now()}`;
+    try {
+      const hung = runTurn({
+        prompt: "HANG",
+        sessionId: null,
+        command: "codex-acp",
+        model: null,
+        executionMode: "trusted",
+        outputFormat: "json",
+        soulContext: null,
+        attachments: [],
+        outputDir: null,
+        effort: null,
+        toolMode: "default",
+      }, process.cwd(), {
+        timeoutMs: 8_000,
+        idleTimeoutMs: 8_000,
+        chatId,
+      }, { conversationId: "conv-stop", runId: "run-stop" });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(abortCliProcess(chatId)).toBe(true);
+      await hung.catch(() => undefined);
+      expect(isChildRunning(chatId)).toBe(false);
+    } finally {
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
+    }
+  }, 15_000);
+
+  it("runs ACP transport through runProviderInvocation instead of oneshot parse", async () => {
+    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    try {
+      const invocation = buildCliInvocation({
+        bot: "codex",
+        prompt: "qualify",
+        sessionId: null,
+        command: "codex",
+      });
+      expect(invocation.transport).toBe("acp-stdio");
+      const result = await runProviderInvocation("codex", invocation, process.cwd(), {
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        bot: "codex",
+        chatId: `acp-qualify-${Date.now()}`,
+      }, {
+        prompt: "qualify",
+        sessionId: null,
+        command: invocation.command,
+        model: null,
+        executionMode: "safe",
+        outputFormat: "json",
+        soulContext: null,
+        attachments: [],
+        outputDir: null,
+        effort: null,
+        toolMode: "none",
+      });
+      expect(result.text).toBe("live:qualify");
+      expect(result.sessionId).toMatch(/^acp-/);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 });

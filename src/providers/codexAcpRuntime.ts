@@ -5,7 +5,8 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
-import { nodeStdioStream, runAcpTurn, type AcpTurnResult } from "../acp/index.js";
+import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
+import type { AcpTurnResult } from "../acp/client.js";
 import { runSupervisedStdioSession } from "../cliSupervisor.js";
 import type { CliOptions, CliResult, RunTelemetry } from "../types.js";
 import { isAbortRequested } from "../cliSupervisor.js";
