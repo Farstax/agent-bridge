@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { dispatchUnifiedTelegramUpdate, handleUnavailableCliUpdate, isAuthorizedInteractiveUpdate } from "../src/interactiveBot.js";
-import { dispatchTargetedTelegramUpdate } from "../src/telegramCommandTarget.js";
+import { targetTelegramAbortUpdate } from "../src/telegramCommandTarget.js";
 import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
@@ -199,19 +199,23 @@ describe("unified Telegram callback ingress", () => {
   });
 
   it("routes bot-qualified stop and cancel for the current Telegram bot through the canonical cancellation path", async () => {
-    for (const [text, updateId] of [["/stop@CrawlerInteractiveBot", 10], ["/cancel@crawlerinteractivebot", 11]] as const) {
+    for (const [text, expected, updateId] of [
+      ["/stop@CrawlerInteractiveBot", "/stop", 10],
+      ["/cancel@crawlerinteractivebot", "/cancel", 11],
+    ] as const) {
       const db = openDb(":memory:");
       const telegram = client();
       const runCli = vi.fn();
       const engine = codexEngine(db, telegram, runCli);
+      const targetedUpdate = targetTelegramAbortUpdate(message(text, updateId), "crawlerinteractivebot");
 
-      await dispatchTargetedTelegramUpdate(
-        message(text, updateId),
+      expect(targetedUpdate?.message?.text).toBe(expected);
+      await dispatchUnifiedTelegramUpdate(
+        targetedUpdate!,
         "100:7",
         "telegram:interactive",
         engine,
         async (turn: any) => engine.handleInteractiveTurn(turn),
-        "crawlerinteractivebot",
       );
 
       expect(telegram.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -223,31 +227,13 @@ describe("unified Telegram callback ingress", () => {
     }
   });
 
-  it("ignores qualified stop and cancel commands not proven to target this Telegram bot", async () => {
+  it("ignores qualified stop and cancel commands not proven to target this Telegram bot", () => {
     for (const [text, botUsername, updateId] of [
       ["/stop@SomeOtherBot", "crawlerinteractivebot", 12],
       ["/cancel@SomeOtherBot", "crawlerinteractivebot", 13],
       ["/stop@CrawlerInteractiveBot", undefined, 14],
     ] as const) {
-      const db = openDb(":memory:");
-      const telegram = client();
-      const runCli = vi.fn();
-      const engine = codexEngine(db, telegram, runCli);
-      const messageDispatch = vi.fn(async (turn: any) => engine.handleInteractiveTurn(turn));
-
-      await dispatchTargetedTelegramUpdate(
-        message(text, updateId),
-        "100:7",
-        "telegram:interactive",
-        engine,
-        messageDispatch,
-        botUsername,
-      );
-
-      expect(messageDispatch).not.toHaveBeenCalled();
-      expect(telegram.sendMessage).not.toHaveBeenCalled();
-      expect(runCli).not.toHaveBeenCalled();
-      db.close();
+      expect(targetTelegramAbortUpdate(message(text, updateId), botUsername)).toBeNull();
     }
   });
 });
