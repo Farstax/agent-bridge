@@ -8,7 +8,6 @@ NODE_MIN_MAJOR=24
 TARGET_USER="${SUDO_USER:-${USER}}"
 TARGET_HOME="$(getent passwd "${TARGET_USER}" | cut -d: -f6)"
 
-# Resolve node: explicit env var → PATH → nvm directory under the target user's home
 if [[ -z "${NODE_BIN:-}" ]]; then
   if command -v node >/dev/null 2>&1; then
     NODE_BIN="$(command -v node)"
@@ -18,7 +17,6 @@ if [[ -z "${NODE_BIN:-}" ]]; then
 fi
 DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting,advisor,engineering-retro,scheduled-routines"
 
-# Parse flags
 NON_INTERACTIVE=0
 SKIP_CLI_INSTALL=0
 for _arg in "$@"; do
@@ -45,7 +43,6 @@ require_node() {
     echo "Node.js ${NODE_MIN_MAJOR}+ is required." >&2
     exit 1
   fi
-
   local version major
   version="$("${NODE_BIN}" -p 'process.versions.node')"
   major="${version%%.*}"
@@ -67,9 +64,7 @@ env_file_get() {
   [[ -f "${file}" ]] || return 0
   awk -F= -v key="${key}" '
     $0 !~ /^[[:space:]]*#/ && $1 == key {
-      sub(/^[^=]*=/, "");
-      print;
-      exit
+      sub(/^[^=]*=/, ""); print; exit
     }
   ' "${file}"
 }
@@ -112,7 +107,6 @@ seed_from_env_file() {
       export "${key}=${value}"
     fi
   done
-  # Normalise singular alias → plural
   if [[ -z "${TELEGRAM_ALLOWED_USER_IDS:-}" && -n "${TELEGRAM_ALLOWED_USER_ID:-}" ]]; then
     export TELEGRAM_ALLOWED_USER_IDS="${TELEGRAM_ALLOWED_USER_ID}"
   fi
@@ -121,10 +115,6 @@ seed_from_env_file() {
   fi
 }
 
-# write_env_file <example> <target>
-# Reads the example line-by-line. For each KEY= line, substitutes the current
-# shell value if set; otherwise keeps the example's default verbatim. Advisor
-# settings are copied only when explicitly configured, including an empty chain.
 write_env_file() {
   local example="$1"
   local target="$2"
@@ -135,9 +125,7 @@ write_env_file() {
       local key="${BASH_REMATCH[1]}"
       local envval="${!key:-}"
       if [[ "${key}" == BRIDGE_ADVISOR_* ]]; then
-        if declare -p "${key}" >/dev/null 2>&1; then
-          printf '%s=%s\n' "${key}" "${!key}"
-        fi
+        if declare -p "${key}" >/dev/null 2>&1; then printf '%s=%s\n' "${key}" "${!key}"; fi
       elif [[ -n "${envval}" ]]; then
         printf '%s=%s\n' "${key}" "${envval}"
       else
@@ -160,14 +148,8 @@ seed_from_env_file "${REPO_DIR}/.env.discord-interactive"
 prompt() {
   local var="$1" label="$2" default="${3:-}"
   local current="${!var:-}"
-  if [[ -n "${current}" ]]; then
-    return
-  fi
-  if [[ "${NON_INTERACTIVE}" == "1" ]]; then
-    # Use default silently, or leave empty (required vars will be caught by ensure_var)
-    export "${var}=${default}"
-    return
-  fi
+  if [[ -n "${current}" ]]; then return; fi
+  if [[ "${NON_INTERACTIVE}" == "1" ]]; then export "${var}=${default}"; return; fi
   if [[ -n "${default}" ]]; then
     read -r -p "${label} [${default}]: " current || true
     current="${current:-$default}"
@@ -181,9 +163,7 @@ ensure_var() {
   local var="$1" label="$2"
   if [[ -z "${!var:-}" ]]; then
     echo "Error: Missing required value for ${label}." >&2
-    if [[ "${NON_INTERACTIVE}" == "1" ]]; then
-      echo "  Set it via the environment before calling install.sh --non-interactive." >&2
-    fi
+    if [[ "${NON_INTERACTIVE}" == "1" ]]; then echo "  Set it via the environment before calling install.sh --non-interactive." >&2; fi
     exit 1
   fi
 }
@@ -218,34 +198,22 @@ prompt HEALTH_MONITOR_AUTONOMY        "Health autonomy (report|suggest|auto)"   
 prompt HEALTH_MONITOR_CHAT_ID         "Telegram chat ID for health reports (blank = skip)" ""
 prompt HEALTH_SUGGEST_BOT             "Bot to use for suggestions (claude|antigravity|codex)" "claude"
 
-ensure_var BRIDGE_ROOT_DIR           "Bridge root directory"
-ensure_var BRIDGE_PROJECT_DIR        "Bridge project directory"
+ensure_var BRIDGE_ROOT_DIR "Bridge root directory"
+ensure_var BRIDGE_PROJECT_DIR "Bridge project directory"
 ensure_var BRIDGE_CURRENT_RELEASE_DIR "Active release pointer"
 ensure_var TELEGRAM_ALLOWED_USER_IDS "Telegram allowed user IDs"
-ensure_var TELEGRAM_BOT_TOKEN_CODEX        "Codex bot token"
-ensure_var TELEGRAM_BOT_TOKEN_ANTIGRAVITY  "Antigravity bot token"
-ensure_var BRIDGE_EXECUTION_MODE     "Execution mode"
+ensure_var TELEGRAM_BOT_TOKEN_CODEX "Codex bot token"
+ensure_var TELEGRAM_BOT_TOKEN_ANTIGRAVITY "Antigravity bot token"
+ensure_var BRIDGE_EXECUTION_MODE "Execution mode"
 
 install_shared_skills() {
   local skills_csv="${AGENT_BRIDGE_SKILLS:-${DEFAULT_AGENT_BRIDGE_SKILLS}}"
   local link_mode="${AGENT_BRIDGE_SKILL_LINK_MODE:-symlink}"
-  if [[ -z "${skills_csv}" || "${skills_csv}" == "none" || "${skills_csv}" == "skip" ]]; then
-    return
-  fi
-  if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then
-    skills_csv="${skills_csv},autonomous-work"
-  fi
-  if [[ ",${skills_csv}," != *",advisor,"* ]]; then
-    skills_csv="${skills_csv},advisor"
-  fi
-  if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then
-    skills_csv="${skills_csv},scheduled-routines"
-  fi
-  if [[ "${link_mode}" != "symlink" && "${link_mode}" != "copy" ]]; then
-    echo "Invalid AGENT_BRIDGE_SKILL_LINK_MODE: ${link_mode}" >&2
-    exit 1
-  fi
-
+  if [[ -z "${skills_csv}" || "${skills_csv}" == "none" || "${skills_csv}" == "skip" ]]; then return; fi
+  if [[ ",${skills_csv}," != *",autonomous-work,"* ]]; then skills_csv="${skills_csv},autonomous-work"; fi
+  if [[ ",${skills_csv}," != *",advisor,"* ]]; then skills_csv="${skills_csv},advisor"; fi
+  if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then skills_csv="${skills_csv},scheduled-routines"; fi
+  if [[ "${link_mode}" != "symlink" && "${link_mode}" != "copy" ]]; then echo "Invalid AGENT_BRIDGE_SKILL_LINK_MODE: ${link_mode}" >&2; exit 1; fi
   IFS=',' read -r -a skills <<< "${skills_csv}"
   for skill in "${skills[@]}"; do
     skill="$(echo "${skill}" | xargs)"
@@ -264,41 +232,28 @@ mkdir -p "${DEFAULTS_DIR}"
 
 install_unit() {
   local name="$1"
-  sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
-      "${REPO_DIR}/systemd/${name}.service" \
-    | sudo tee "${SYSTEMD_DIR}/${name}.service" > /dev/null
+  sed -e "s/BRIDGE_USER/${TARGET_USER}/g" "${REPO_DIR}/systemd/${name}.service" | sudo tee "${SYSTEMD_DIR}/${name}.service" > /dev/null
   sudo chmod 0644 "${SYSTEMD_DIR}/${name}.service"
 }
 
 install_timer() {
   local name="$1"
-  sed -e "s/BRIDGE_USER/${TARGET_USER}/g" \
-      "${REPO_DIR}/systemd/${name}.timer" \
-    | sudo tee "${SYSTEMD_DIR}/${name}.timer" > /dev/null
+  sed -e "s/BRIDGE_USER/${TARGET_USER}/g" "${REPO_DIR}/systemd/${name}.timer" | sudo tee "${SYSTEMD_DIR}/${name}.timer" > /dev/null
   sudo chmod 0644 "${SYSTEMD_DIR}/${name}.timer"
 }
 
-# Returns the path to a binary from PATH only (CLIs are external global installs)
 resolve_binary() {
   local binary="$1"
-  if command -v "${binary}" >/dev/null 2>&1; then
-    command -v "${binary}"
-    return
-  fi
+  if command -v "${binary}" >/dev/null 2>&1; then command -v "${binary}"; return; fi
   echo ""
 }
 
-# Install or upgrade codex and claude via npm; exit with install hint if npm unavailable.
 install_or_upgrade_npm_clis() {
-  if ! command -v npm >/dev/null 2>&1; then
-    echo "npm not found — install Node 24+ first" >&2
-    exit 1
-  fi
+  if ! command -v npm >/dev/null 2>&1; then echo "npm not found — install Node 24+ first" >&2; exit 1; fi
   npm install -g @anthropic-ai/claude-code @openai/codex
   export PATH="${TARGET_HOME}/.local/bin:${PATH}"
 }
 
-# Install or upgrade agy via the Google Antigravity installer (idempotent).
 ensure_agy_cli() {
   echo "Installing/updating agy via Google Antigravity installer..."
   curl -fsSL https://antigravity.google/cli/install.sh | bash
@@ -320,32 +275,22 @@ elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" ]]; then
   install_shared_skills
 fi
 
-ensure_var CODEX_COMMAND       "Codex command"
+ensure_var CODEX_COMMAND "Codex command"
 ensure_var ANTIGRAVITY_COMMAND "Antigravity command"
-if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
-  ensure_var CLAUDE_COMMAND "Claude command"
-fi
+if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then ensure_var CLAUDE_COMMAND "Claude command"; fi
 
-# Write local .env.* files from examples (machine-specific values substituted in)
 echo "Writing local env files..."
-write_env_file "${REPO_DIR}/.env.shared.example"      "${REPO_DIR}/.env.shared"
-write_env_file "${REPO_DIR}/.env.codex.example"       "${REPO_DIR}/.env.codex"
+write_env_file "${REPO_DIR}/.env.shared.example" "${REPO_DIR}/.env.shared"
+write_env_file "${REPO_DIR}/.env.codex.example" "${REPO_DIR}/.env.codex"
 write_env_file "${REPO_DIR}/.env.antigravity.example" "${REPO_DIR}/.env.antigravity"
-if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
-  write_env_file "${REPO_DIR}/.env.claude.example"    "${REPO_DIR}/.env.claude"
-fi
-if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
-  write_env_file "${REPO_DIR}/.env.discord-interactive.example" "${REPO_DIR}/.env.discord-interactive"
-fi
+if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then write_env_file "${REPO_DIR}/.env.claude.example" "${REPO_DIR}/.env.claude"; fi
+if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then write_env_file "${REPO_DIR}/.env.discord-interactive.example" "${REPO_DIR}/.env.discord-interactive"; fi
 
 write_optional_env() {
   local key="$1"
-  if declare -p "${key}" >/dev/null 2>&1; then
-    printf '%s=%s\n' "${key}" "${!key}"
-  fi
+  if declare -p "${key}" >/dev/null 2>&1; then printf '%s=%s\n' "${key}" "${!key}"; fi
 }
 
-# Write shared defaults loaded by all services
 _write_shared_defaults() {
   local dest="${DEFAULTS_DIR}/agent-bridge-shared"
   {
@@ -357,13 +302,9 @@ _write_shared_defaults() {
     echo "BRIDGE_ASYNC_ENABLED=true"
     echo "POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-1000}"
     echo "FETCH_TIMEOUT_MS=${FETCH_TIMEOUT_MS:-45000}"
-    for key in BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_CHAIN \
-               BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK \
-               BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS; do
-      write_optional_env "${key}"
-    done
-    [[ -n "${AGENT_BRIDGE_SOUL_PATH:-}" ]]  && echo "AGENT_BRIDGE_SOUL_PATH=${AGENT_BRIDGE_SOUL_PATH}"
-    [[ -n "${AGENT_BRIDGE_SOUL_MODE:-}" ]]  && echo "AGENT_BRIDGE_SOUL_MODE=${AGENT_BRIDGE_SOUL_MODE}"
+    for key in BRIDGE_ADVISOR_ENABLED BRIDGE_ADVISOR_CHAIN BRIDGE_ADVISOR_MAX_CALLS_PER_TURN BRIDGE_ADVISOR_MAX_CALLS_PER_TASK BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS; do write_optional_env "${key}"; done
+    [[ -n "${AGENT_BRIDGE_SOUL_PATH:-}" ]] && echo "AGENT_BRIDGE_SOUL_PATH=${AGENT_BRIDGE_SOUL_PATH}"
+    [[ -n "${AGENT_BRIDGE_SOUL_MODE:-}" ]] && echo "AGENT_BRIDGE_SOUL_MODE=${AGENT_BRIDGE_SOUL_MODE}"
     [[ -n "${AGENT_BRIDGE_AUTONOMY_DIR:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_DIR=${AGENT_BRIDGE_AUTONOMY_DIR}"
     [[ -n "${AGENT_BRIDGE_AUTONOMY_DB_PATH:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_DB_PATH=${AGENT_BRIDGE_AUTONOMY_DB_PATH}"
     [[ -n "${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_MAX_CYCLES=${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES}"
@@ -371,24 +312,18 @@ _write_shared_defaults() {
     echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
     echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
     echo "HEALTH_MONITOR_AUTONOMY=${HEALTH_MONITOR_AUTONOMY:-report}"
-    [[ -n "${HEALTH_MONITOR_CHAT_ID:-}" ]]          && echo "HEALTH_MONITOR_CHAT_ID=${HEALTH_MONITOR_CHAT_ID}"
-    [[ -n "${HEALTH_SUGGEST_BOT:-}" ]]               && echo "HEALTH_SUGGEST_BOT=${HEALTH_SUGGEST_BOT}"
+    [[ -n "${HEALTH_MONITOR_CHAT_ID:-}" ]] && echo "HEALTH_MONITOR_CHAT_ID=${HEALTH_MONITOR_CHAT_ID}"
+    [[ -n "${HEALTH_SUGGEST_BOT:-}" ]] && echo "HEALTH_SUGGEST_BOT=${HEALTH_SUGGEST_BOT}"
     echo "HEALTH_CONTENT_CRAWLER_ENABLED=${HEALTH_CONTENT_CRAWLER_ENABLED:-0}"
-    [[ -n "${HEALTH_CONTENT_CRAWLER_SCRIPT:-}" ]]   && echo "HEALTH_CONTENT_CRAWLER_SCRIPT=${HEALTH_CONTENT_CRAWLER_SCRIPT}"
-    [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]]        && echo "TELEGRAM_BOT_TOKEN_HEALTH=${TELEGRAM_BOT_TOKEN_HEALTH}"
+    [[ -n "${HEALTH_CONTENT_CRAWLER_SCRIPT:-}" ]] && echo "HEALTH_CONTENT_CRAWLER_SCRIPT=${HEALTH_CONTENT_CRAWLER_SCRIPT}"
+    [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]] && echo "TELEGRAM_BOT_TOKEN_HEALTH=${TELEGRAM_BOT_TOKEN_HEALTH}"
     true
   } | sudo tee "${dest}" > /dev/null
   echo "  wrote ${dest}"
 }
 
-# Write bot-specific defaults (token, command, DB path — shared vars come from agent-bridge-shared)
 _write_systemd_defaults() {
-  local bot="$1"
-  local token_var="$2"
-  local cmd_var="$3"
-  local proj_var="$4"
-  local dest="${DEFAULTS_DIR}/agent-bridge-${bot}"
-
+  local bot="$1" token_var="$2" cmd_var="$3" proj_var="$4" dest="${DEFAULTS_DIR}/agent-bridge-${bot}"
   {
     echo "BRIDGE_ENV_FILE=${dest}"
     echo "${token_var}=${!token_var:-}"
@@ -401,16 +336,14 @@ _write_systemd_defaults() {
 
 _write_release_defaults() {
   local dest="${DEFAULTS_DIR}/agent-bridge-release"
-  {
-    echo "BRIDGE_CURRENT_RELEASE_DIR=${BRIDGE_CURRENT_RELEASE_DIR}"
-  } | sudo tee "${dest}" > /dev/null
+  { echo "BRIDGE_CURRENT_RELEASE_DIR=${BRIDGE_CURRENT_RELEASE_DIR}"; } | sudo tee "${dest}" > /dev/null
   sudo chmod 0644 "${dest}"
   echo "  wrote ${dest}"
 }
 
 _write_release_defaults
 _write_shared_defaults
-_write_systemd_defaults codex       TELEGRAM_BOT_TOKEN_CODEX       CODEX_COMMAND       CODEX_PROJECT_DIR
+_write_systemd_defaults codex TELEGRAM_BOT_TOKEN_CODEX CODEX_COMMAND CODEX_PROJECT_DIR
 _write_systemd_defaults antigravity TELEGRAM_BOT_TOKEN_ANTIGRAVITY ANTIGRAVITY_COMMAND ANTIGRAVITY_PROJECT_DIR
 if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
   if [[ "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
@@ -438,9 +371,7 @@ _write_interactive_defaults() {
 }
 
 _write_discord_defaults() {
-  local bot="$1"
-  local dest="${DEFAULTS_DIR}/agent-bridge-${bot}"
-
+  local bot="$1" dest="${DEFAULTS_DIR}/agent-bridge-${bot}"
   {
     echo "BRIDGE_ENV_FILE=${dest}"
     echo "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
@@ -470,38 +401,29 @@ if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
   _write_interactive_defaults
   install_unit agent-bridge-interactive
 fi
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
-  install_unit agent-bridge-health
-fi
-
-# Ops housekeeping — not gated by any bot token, always installed.
+if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then install_unit agent-bridge-health; fi
 install_unit agent-bridge-tmp-cleanup
 install_timer agent-bridge-tmp-cleanup
 
 UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cleanup.timer"
-if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
-  UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-interactive"
-fi
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
-  UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-health"
-fi
-
+if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-interactive"; fi
+if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-health"; fi
 if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
   _write_systemd_defaults claude TELEGRAM_BOT_TOKEN_CLAUDE CLAUDE_COMMAND CLAUDE_PROJECT_DIR
   install_unit agent-bridge-claude
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-claude"
 fi
-
 if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   _write_discord_defaults discord-interactive
   install_unit agent-bridge-discord-interactive
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-discord-interactive"
 fi
 
+echo "Converging release-owned voice transcription component..."
+sudo /bin/bash "${REPO_DIR}/scripts/install-voice-stt.sh"
+
 sudo systemctl daemon-reload
-# Enable only. Pointer activation is a separate guarded operation and service
-# startup must not happen until the canonical pointer and its manifest have
-# been validated by the rollout helper.
+# Enable only. Pointer activation is a separate guarded operation and service startup must not happen until the canonical pointer and its manifest have been validated by the rollout helper.
 # shellcheck disable=SC2086
 sudo systemctl enable ${UNITS_TO_ENABLE}
 
