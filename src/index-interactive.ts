@@ -32,13 +32,14 @@ import {
   describeInteractiveUpdateForLog,
   isGroupInteractiveUpdate,
   dispatchInteractiveTurnWithFallback,
+  dispatchUnifiedTelegramUpdate,
   handleUnavailableCliUpdate,
   dispatchClaimedInteractiveWithFallback,
   resolveAvailableCliPreference,
   applyManualCliSwitchHandoff,
   type CliKind,
 } from "./interactiveBot.js";
-import { dispatchTargetedTelegramUpdate } from "./telegramCommandTarget.js";
+import { targetTelegramAbortUpdate } from "./telegramCommandTarget.js";
 import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
 import { runCli } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
@@ -386,8 +387,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       }
       const started = await autonomyController.start({
         bot: pref,
-        policyInstruction: `[Scheduled routine: ${routine.name}]\
-${routine.instruction}`,
+        policyInstruction: `[Scheduled routine: ${routine.name}]\n${routine.instruction}`,
         supervisorRoute: {
           surface: "telegram",
           address: String(destination.chatId),
@@ -435,7 +435,7 @@ for (;;) {
       db.setLastUpdateId(POLL_KIND, updateId);
 
       try {
-        const typedUpdate = update as TelegramUpdate;
+        let typedUpdate = update as TelegramUpdate;
         const isGroupUpdate = isGroupInteractiveUpdate(typedUpdate);
         if (isGroupUpdate) {
           console.log("[interactive] update.received", JSON.stringify(describeInteractiveUpdateForLog(typedUpdate)));
@@ -459,6 +459,10 @@ for (;;) {
           }
           continue;
         }
+
+        const targetedUpdate = targetTelegramAbortUpdate(typedUpdate, botUsername);
+        if (!targetedUpdate) continue;
+        typedUpdate = targetedUpdate;
 
         const message = typedUpdate.message;
         if (message) {
@@ -623,7 +627,7 @@ for (;;) {
           }
 
           if (chatId != null) {
-            dispatchTargetedTelegramUpdate(typedUpdate, chatKey, runtimePolicy.surfaceIdentity, engines[pref], async (turn) => {
+            dispatchUnifiedTelegramUpdate(typedUpdate, chatKey, runtimePolicy.surfaceIdentity, engines[pref], async (turn) => {
               await dispatchInteractiveTurnWithFallback(turn, {
                 engines,
                 fallbackChain,
@@ -639,7 +643,7 @@ for (;;) {
                   }
                 },
               });
-            }, botUsername).catch((err: unknown) => console.error("[interactive] dispatch error", err));
+            }).catch((err: unknown) => console.error("[interactive] dispatch error", err));
             continue;
           } else {
             engines[pref].handleUpdate(typedUpdate)
