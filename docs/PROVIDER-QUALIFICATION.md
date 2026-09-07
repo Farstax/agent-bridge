@@ -15,7 +15,9 @@ The initial live contract is deliberately small and incident-driven:
 
 When `AGENT_BRIDGE_CODEX_RUNTIME=acp`, Codex qualification uses the ACP-backed
 path (`codex-acp` over stdio) rather than `codex exec --json`. The two
-implementations are not interchangeable inside one attempt.
+implementations are not interchangeable inside one attempt. Cached evidence is
+current only for the same Codex runtime (`legacy` vs `acp`) as well as provider
+version and contract version.
 
 Agy qualification uses the same native `stream-json` output contract as managed runtime execution. Fresh checks require a valid terminal result; a provider that exposes an invocation-attributable conversation ID is also tested for resume, while a provider that exposes no resumable ID records `session_resume` as `not_applicable`. Resume checks require the matching conversation ID. Contradictory or malformed terminal results fail qualification; in particular, an Agy `ERROR` result carrying a non-empty `response` is a contract failure.
 

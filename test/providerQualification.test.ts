@@ -240,6 +240,16 @@ printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
   it("only considers evidence current for the same provider version and contract version", () => {
     const current = passingRecord();
     expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(true);
+    expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "9.9.9")).toBe(true);
+    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    try {
+      expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(false);
+      expect(isQualificationCurrent({ ...current, executionRuntime: "acp" }, "codex", "9.9.9")).toBe(true);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
+    }
     expect(isQualificationCurrent(current, "codex", "9.9.10")).toBe(false);
     expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "9.9.9")).toBe(false);
     expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "9.9.9")).toBe(false);

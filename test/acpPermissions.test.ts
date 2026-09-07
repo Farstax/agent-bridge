@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RequestPermissionRequest } from "@agentclientprotocol/sdk";
 import { mapAcpPermissionRequest } from "../src/acp/permissions.js";
 
-function request(kind: "read" | "edit" | "execute" = "edit"): RequestPermissionRequest {
+function request(kind: RequestPermissionRequest["toolCall"]["kind"] = "edit"): RequestPermissionRequest {
   return {
     sessionId: "acp-sess-1",
     toolCall: {
@@ -50,5 +50,18 @@ describe("ACP permission mapping", () => {
       abortRequested: false,
     });
     expect(response.outcome).toEqual({ outcome: "selected", optionId: "allow" });
+  });
+
+  it("rejects move and unspecified tool kinds in safe mode", () => {
+    expect(mapAcpPermissionRequest(request("move"), {
+      executionMode: "safe",
+      abortRequested: false,
+    }).outcome).toEqual({ outcome: "selected", optionId: "reject" });
+    const unspecified = request("edit");
+    delete (unspecified.toolCall as { kind?: string }).kind;
+    expect(mapAcpPermissionRequest(unspecified, {
+      executionMode: "safe",
+      abortRequested: false,
+    }).outcome).toEqual({ outcome: "selected", optionId: "reject" });
   });
 });

@@ -13,6 +13,7 @@ import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
+import { resolveCodexRuntime } from "./codexRuntimeSelection.js";
 
 export const PROVIDER_CONTRACT_VERSION = 5;
 
@@ -44,6 +45,8 @@ export interface ProviderQualificationRecord {
   environment: string;
   overall: "pass" | "degraded" | "fail";
   checks: ProviderQualificationCheck[];
+  /** Codex ACP vs legacy. Omitted on pre-ACP records (treated as legacy). */
+  executionRuntime?: string;
 }
 
 export interface ProviderQualificationEvidence {
@@ -255,15 +258,25 @@ export function writeQualificationRecord(
   renameSync(temporary, path);
 }
 
+export function currentQualificationRuntime(
+  providerId: ProviderId,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return providerId === "codex" ? resolveCodexRuntime(env) : "native";
+}
+
 export function isQualificationCurrent(
   record: ProviderQualificationRecord | null | undefined,
   providerId: ProviderId,
   installedVersion: string,
 ): boolean {
+  const recordedRuntime = record?.executionRuntime
+    ?? (providerId === "codex" ? "legacy" : "native");
   return Boolean(record
     && record.provider === providerId
     && record.providerVersion === normalizeProviderVersion(installedVersion)
-    && record.contractVersion === PROVIDER_CONTRACT_VERSION);
+    && record.contractVersion === PROVIDER_CONTRACT_VERSION
+    && recordedRuntime === currentQualificationRuntime(providerId));
 }
 
 function failedCheckNames(record: ProviderQualificationRecord): string[] {
@@ -680,6 +693,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         environment: options.environment ?? runtimeEnv.AGENT_BRIDGE_ENVIRONMENT_CLASS ?? "managed-appliance",
         overall,
         checks,
+        executionRuntime: currentQualificationRuntime(options.providerId, runtimeEnv),
       };
       writeQualificationRecord(record, evidencePath);
       return record;
@@ -765,6 +779,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
       environment: options.environment ?? runtimeEnv.AGENT_BRIDGE_ENVIRONMENT_CLASS ?? "managed-appliance",
       overall,
       checks,
+      executionRuntime: currentQualificationRuntime(options.providerId, runtimeEnv),
     };
     writeQualificationRecord(record, evidencePath);
     return record;

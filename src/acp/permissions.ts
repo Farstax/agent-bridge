@@ -36,9 +36,9 @@ export function mapAcpPermissionRequest(
   const reject = rejectOnce ?? rejectAlways;
   const allow = allowOnce ?? allowAlways;
   const toolKind = request.toolCall.kind ?? "other";
-  const writeLike = toolKind === "edit" || toolKind === "execute" || toolKind === "delete";
+  const safeAllow = toolKind === "read" || toolKind === "search" || toolKind === "think" || toolKind === "fetch";
 
-  if (context.executionMode === "safe" && writeLike) {
+  if (context.executionMode === "safe" && !safeAllow) {
     if (reject) return selected(reject.optionId);
     return { outcome: { outcome: "cancelled" } };
   }
