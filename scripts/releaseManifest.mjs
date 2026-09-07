@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, relative, resolve, sep } from "node:path";
+import { releaseCompatibilityVersion } from "./releaseVersion.mjs";
 
 const SHA256 = /^[0-9a-f]{40}$/;
 
@@ -87,7 +88,7 @@ function validateBuildStrategy(strategy, files, packageJson) {
 
 export function buildReleaseManifest({
   root, commit, tree, nodeVersion, platform, arch,
-  builderCommit, builderWorkflowRun, builderWorkflowHead, databaseSchemaVersion,
+  builderCommit, builderWorkflowRun, builderWorkflowHead, databaseSchemaVersion, releaseTag,
 }) {
   const artifactRoot = resolve(root);
   if (!SHA256.test(commit) || !SHA256.test(tree)) {
@@ -128,6 +129,16 @@ export function buildReleaseManifest({
     }
     manifest.database_schema_version = databaseSchemaVersion;
   }
+  if (releaseTag !== undefined) {
+    const compatibilityVersion = releaseCompatibilityVersion(releaseTag);
+    if (packageJson.version !== compatibilityVersion) {
+      throw new Error(`release artifact package version ${String(packageJson.version)} does not match compatibility version ${compatibilityVersion}`);
+    }
+    manifest.release = {
+      tag: releaseTag,
+      compatibility_version: compatibilityVersion,
+    };
+  }
   return manifest;
 }
 
@@ -152,6 +163,7 @@ if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
     builderWorkflowHead: argument("--builder-workflow-head"),
     databaseSchemaVersion: argument("--database-schema-version") === undefined
       ? undefined : Number(argument("--database-schema-version")),
+    releaseTag: argument("--release-tag"),
   });
   writeFileSync(output, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o640 });
 }

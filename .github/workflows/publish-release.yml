@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       release_tag:
-        description: New release tag, for example release-2026.07.30-1
+        description: New release tag, for example release-2026.09.07-1
         required: true
         type: string
 
@@ -51,8 +51,8 @@ jobs:
             echo "workflow_run_id must be a positive numeric ID" >&2
             exit 1
           }
-          [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || {
-            echo "release_tag must use 1-128 letters, digits, dots, underscores or hyphens" >&2
+          [[ "$RELEASE_TAG" =~ ^release-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$ ]] || {
+            echo "release_tag must match release-YYYY.MM.DD-N with a positive sequence" >&2
             exit 1
           }
 
@@ -90,8 +90,8 @@ jobs:
             if (run.name !== "Release Artifact" || run.path !== ".github/workflows/release-artifact.yml") {
               failures.push("workflow identity mismatch");
             }
-            if (!["push", "workflow_dispatch"].includes(run.event)) {
-              failures.push("source run was not a main push or manual qualification");
+            if (run.event !== "workflow_dispatch") {
+              failures.push("source run was not a release-tag-bound manual qualification");
             }
             if (run.head_branch !== "main") failures.push("source run was not on main");
             if (run.head_sha !== process.env.COMMIT_SHA) failures.push("source commit mismatch");
@@ -129,6 +129,7 @@ jobs:
             --artifact-dir "$RUNNER_TEMP/release-artifact" \
             --commit "$COMMIT_SHA" \
             --workflow-run "$WORKFLOW_RUN_ID" \
+            --release-tag "$RELEASE_TAG" \
             | tee "$RUNNER_TEMP/release-promotion-verification.json"
 
       - name: Require a new tag and release

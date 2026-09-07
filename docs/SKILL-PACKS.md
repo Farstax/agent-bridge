@@ -21,6 +21,17 @@ Each Skill records a repository, exact revision, path and SHA-256 directory dige
 
 Unknown metadata fields fail closed. Secret objects accept only `name` and `purpose`; secret values cannot be placed in a pack manifest.
 
+### API version versus runtime compatibility
+
+`compatibility.apiVersion` and Agent Bridge runtime compatibility are separate checks.
+
+- `apiVersion` says which Skill Pack metadata/API contract the runtime understands. It does not prove that a particular Agent Bridge build contains every behavior a pack needs.
+- `minAgentBridgeVersion` and `maxAgentBridgeVersion` constrain the running Agent Bridge artifact itself. They use semantic versions.
+
+Published Agent Bridge release tags such as `release-2026.09.06-2` map deterministically to runtime compatibility versions such as `2026.9.6-2`. Publishable release artifacts carry that version in their stamped package metadata and release manifest, so ordinary installs do not need an `AGENT_BRIDGE_VERSION` environment setting. Explicit version injection and `AGENT_BRIDGE_VERSION` remain override paths for tests/development.
+
+Compatibility is checked before Skill Pack mutation. A pack whose minimum runtime version is newer than the installed artifact is rejected before any shared Skill state is changed.
+
 ## Discovery and inspection
 
 Configure the catalogue for your deployment, for example:

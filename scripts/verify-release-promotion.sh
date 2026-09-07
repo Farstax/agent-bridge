@@ -9,11 +9,13 @@ die() {
 artifact_dir=""
 commit=""
 workflow_run=""
+release_tag=""
 while (($# > 0)); do
   case "$1" in
     --artifact-dir) artifact_dir="${2:-}"; shift 2 ;;
     --commit) commit="${2:-}"; shift 2 ;;
     --workflow-run) workflow_run="${2:-}"; shift 2 ;;
+    --release-tag) release_tag="${2:-}"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -21,6 +23,10 @@ done
 [[ -d "$artifact_dir" ]] || die "artifact directory does not exist"
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || die "commit must be a full lowercase 40-character Git SHA"
 [[ "$workflow_run" =~ ^[1-9][0-9]*$ ]] || die "workflow run must be a positive numeric ID"
+[[ -n "$release_tag" ]] || die "release tag is required"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+compatibility_version="$(node "$script_dir/releaseVersion.mjs" "$release_tag" 2>/dev/null)" \
+  || die "release tag is not a supported canonical release identity"
 
 archive_name="agent-bridge-${commit}.tar.gz"
 checksum_name="${archive_name}.sha256"
@@ -46,6 +52,7 @@ archive_sha256="${BASH_REMATCH[1]}"
 mapfile -t archive_entries < <(tar -tzf "$archive_path") || die "release archive is unreadable"
 manifest_count=0
 evidence_count=0
+package_count=0
 for raw_entry in "${archive_entries[@]}"; do
   entry="${raw_entry#./}"
   [[ -z "$entry" ]] && continue
@@ -53,13 +60,16 @@ for raw_entry in "${archive_entries[@]}"; do
     || die "archive contains an unsafe member path"
   [[ "$entry" == "manifest.json" ]] && ((manifest_count += 1))
   [[ "$entry" == "qualification-evidence.json" ]] && ((evidence_count += 1))
+  [[ "$entry" == "package.json" ]] && ((package_count += 1))
 done
 [[ "$manifest_count" == "1" ]] || die "archive must contain exactly one manifest.json"
 [[ "$evidence_count" == "1" ]] || die "archive must contain exactly one qualification-evidence.json"
+[[ "$package_count" == "1" ]] || die "archive must contain exactly one package.json"
 
 manifest="$(tar -xOzf "$archive_path" ./manifest.json)" || die "manifest.json is unreadable"
 evidence="$(tar -xOzf "$archive_path" ./qualification-evidence.json)" \
   || die "qualification-evidence.json is unreadable"
+package_json="$(tar -xOzf "$archive_path" ./package.json)" || die "package.json is unreadable"
 
 manifest_schema="$(jq -er '.schema_version' <<<"$manifest")" || die "manifest is invalid JSON"
 manifest_commit="$(jq -er '.commit' <<<"$manifest")" || die "manifest commit is missing"
@@ -70,6 +80,10 @@ builder_run="$(jq -er '.builder.workflow_run | tostring' <<<"$manifest")" \
   || die "manifest builder workflow run is missing"
 runtime_platform="$(jq -er '.runtime.platform' <<<"$manifest")" || die "manifest runtime platform is missing"
 runtime_arch="$(jq -er '.runtime.arch' <<<"$manifest")" || die "manifest runtime architecture is missing"
+manifest_release_tag="$(jq -er '.release.tag' <<<"$manifest")" || die "manifest release tag is missing"
+manifest_compatibility_version="$(jq -er '.release.compatibility_version' <<<"$manifest")" \
+  || die "manifest release compatibility version is missing"
+package_version="$(jq -er '.version' <<<"$package_json")" || die "artifact package version is missing"
 
 [[ "$manifest_schema" == "1" ]] || die "manifest schema version is unsupported"
 [[ "$manifest_commit" == "$commit" ]] || die "manifest commit does not match"
@@ -79,6 +93,11 @@ runtime_arch="$(jq -er '.runtime.arch' <<<"$manifest")" || die "manifest runtime
 [[ "$builder_run" == "$workflow_run" ]] || die "manifest builder workflow run does not match"
 [[ "$runtime_platform" == "linux" && "$runtime_arch" == "x64" ]] \
   || die "manifest runtime must be linux/x64"
+[[ "$manifest_release_tag" == "$release_tag" ]] || die "manifest release tag does not match requested release"
+[[ "$manifest_compatibility_version" == "$compatibility_version" ]] \
+  || die "manifest release compatibility version does not match canonical release identity"
+[[ "$package_version" == "$compatibility_version" ]] \
+  || die "artifact package version does not match release compatibility version"
 
 evidence_commit="$(jq -er '.commit' <<<"$evidence")" || die "qualification evidence commit is missing"
 evidence_tree="$(jq -er '.tree' <<<"$evidence")" || die "qualification evidence tree is missing"
@@ -100,4 +119,6 @@ jq -cn \
   --arg commit "$commit" \
   --arg tree "$manifest_tree" \
   --arg workflow_run "$workflow_run" \
-  '{archive:$archive,archive_sha256:$archive_sha256,commit:$commit,tree:$tree,workflow_run:$workflow_run}'
+  --arg release_tag "$release_tag" \
+  --arg compatibility_version "$compatibility_version" \
+  '{archive:$archive,archive_sha256:$archive_sha256,commit:$commit,tree:$tree,workflow_run:$workflow_run,release_tag:$release_tag,compatibility_version:$compatibility_version}'
