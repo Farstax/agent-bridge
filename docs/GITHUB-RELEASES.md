@@ -24,9 +24,9 @@ After that run succeeds, run the `Publish GitHub Release` workflow from the repo
 
 - `workflow_run_id`: the successful manual `Release Artifact` run for `main`;
 - `commit_sha`: the exact lowercase 40-character commit qualified by that run;
-- `release_tag`: the same new tag used for release qualification, such as `release-2026.09.07-1`.
+- `release_tag`: the same new tag used for release qualification, such as `release-2026.09.07-2`.
 
-The workflow requires the source run to be a successful `workflow_dispatch` qualification on `main`. It downloads the exact artifact named `agent-bridge-release-<commit-sha>`, without rebuilding it, and verifies:
+The workflow requires the source run to be a successful `workflow_dispatch` qualification on `main`. It serializes all release publication, requires the requested release tag to be strictly newer than the latest published canonical release tag, downloads the exact artifact named `agent-bridge-release-<commit-sha>` without rebuilding it, and verifies:
 
 - the source repository, workflow, branch, result and commit;
 - the exact archive and checksum filenames;
