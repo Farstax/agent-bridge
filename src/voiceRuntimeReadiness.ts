@@ -39,8 +39,8 @@ function inside(parent: string, child: string): boolean {
 }
 
 function regularSafe(path: string, executable = false): boolean {
-  const info = statSync(path);
-  if (!info.isFile() || (info.mode & 0o022) !== 0) return false;
+  const info = lstatSync(path);
+  if (!info.isFile() || info.uid !== 0 || (info.mode & 0o022) !== 0) return false;
   if (executable) accessSync(path, constants.X_OK);
   return true;
 }
@@ -50,7 +50,7 @@ export function inspectVoiceRuntimeReadiness(env: Env = process.env): VoiceRunti
     return { status: "unavailable", reasonCode: "voice_transcription_disabled" };
   }
   try {
-    const root = env.AGENT_BRIDGE_STT_ROOT?.trim() || "/var/lib/agent-bridge/stt";
+    const root = env.AGENT_BRIDGE_STT_ROOT?.trim() || "/opt/agent-bridge/host-components/voice-stt";
     const current = join(root, "current");
     const currentInfo = lstatSync(current);
     if (!currentInfo.isSymbolicLink()) throw new Error("current pointer is not a symlink");
