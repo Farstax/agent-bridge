@@ -40,6 +40,16 @@ export function compareReleaseTags(leftTag, rightTag) {
   return 0;
 }
 
+export function maxReleaseTag(tags) {
+  if (!Array.isArray(tags)) throw new Error("release tags must be an array");
+  let latest;
+  for (const tag of tags) {
+    releaseIdentity(tag);
+    if (latest === undefined || compareReleaseTags(tag, latest) > 0) latest = tag;
+  }
+  return latest;
+}
+
 export function assertReleaseTagAfter(previousTag, candidateTag) {
   if (compareReleaseTags(candidateTag, previousTag) <= 0) {
     throw new Error(`release tag ${candidateTag} must be newer than latest published release ${previousTag}`);
