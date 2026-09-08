@@ -125,7 +125,7 @@ export function getProviderApiKeySecretValues(env: Env = process.env): string[] 
 export function isProviderApiKeyVerified(provider: ProviderId, env: Env = process.env): boolean {
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
-  return verificationCache.get(cacheKey(provider, apiKey)) === true;
+  return verificationCache.get(cacheKey(provider, apiKey, env)) === true;
 }
 
 /**
@@ -203,9 +203,18 @@ function codexAcpOwnsApiKeyValidation(provider: ProviderId, env: Env): boolean {
   }
 }
 
-function cacheKey(provider: ProviderId, apiKey: string): string {
+function verificationScope(provider: ProviderId, env: Env): string {
+  if (provider !== "codex") return "native";
+  try {
+    return resolveCodexRuntime(env);
+  } catch {
+    return "invalid";
+  }
+}
+
+function cacheKey(provider: ProviderId, apiKey: string, env: Env): string {
   const fingerprint = createHash("sha256").update(apiKey).digest("hex");
-  return `${provider}:${fingerprint}`;
+  return `${provider}:${verificationScope(provider, env)}:${fingerprint}`;
 }
 
 function writeSettings(path: string, settings: Record<string, unknown>): void {
@@ -380,14 +389,15 @@ export async function verifyProviderApiKey(
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
 
-  const key = cacheKey(provider, apiKey);
+  const key = cacheKey(provider, apiKey, env);
 
   if (codexAcpOwnsApiKeyValidation(provider, env)) {
     // Do not make the selected ACP runtime depend on a successful legacy
     // `codex exec` probe. The adapter's own `authenticate({methodId:"api-key"})`
     // call is the authoritative validation boundary and fails the ACP Run if
     // the key is unusable. This cache entry means only that the credential is
-    // allowed to reach that selected runtime; it is not cross-runtime proof.
+    // allowed to reach that selected runtime; runtime-scoped cache keys prevent
+    // it from becoming legacy `codex exec` verification after a rollback.
     if (options.useCache !== false) {
       verificationCache.set(key, true);
       verificationFailures.delete(key);
