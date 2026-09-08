@@ -9,6 +9,7 @@ import {
   isProviderApiKeyVerified,
   verifyProviderApiKey,
 } from "../src/providers/apiKeyAuth.js";
+import { runCodexAcpApiKeyProbe } from "../src/providers/codexAcpAuthProbe.js";
 import { qualifyProvider } from "../src/providers/qualification.js";
 
 const savedRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
@@ -81,6 +82,19 @@ describe("Codex ACP auth boundary", () => {
     expect(legacyProbe).toHaveBeenCalledTimes(1);
     expect(isProviderApiKeyVerified("codex", legacyEnv)).toBe(true);
   });
+
+  it("runs the production ACP auth probe over stdio and rejects a bad key", async () => {
+    const fakeAgent = fileURLToPath(new URL("./support/fakeCodexAcpAuthAgent.ts", import.meta.url));
+    const baseEnv = {
+      ...process.env,
+      AGENT_BRIDGE_CODEX_RUNTIME: "acp",
+      CODEX_ACP_COMMAND: process.execPath,
+      CODEX_ACP_ARGS: `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`,
+    };
+
+    await expect(runCodexAcpApiKeyProbe({ ...baseEnv, CODEX_API_KEY: "valid-acp-key" })).resolves.toBeUndefined();
+    await expect(runCodexAcpApiKeyProbe({ ...baseEnv, CODEX_API_KEY: "bad-acp-key" })).rejects.toThrow();
+  }, 15_000);
 });
 
 describe("Codex ACP qualification boundary", () => {
