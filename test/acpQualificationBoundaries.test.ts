@@ -30,34 +30,55 @@ afterEach(() => {
 });
 
 describe("Codex ACP auth boundary", () => {
-  it("lets the selected ACP adapter validate CODEX_API_KEY without invoking legacy codex exec", async () => {
-    const probe = vi.fn(async () => undefined);
+  it("verifies CODEX_API_KEY through ACP without invoking legacy codex exec", async () => {
+    const legacyProbe = vi.fn(async () => undefined);
+    const acpProbe = vi.fn(async () => undefined);
     const env = {
       ...process.env,
       AGENT_BRIDGE_CODEX_RUNTIME: "acp",
       CODEX_API_KEY: "test-acp-key",
     };
 
-    await expect(verifyProviderApiKey("codex", { env, execFile: probe })).resolves.toBe(true);
-    expect(probe).not.toHaveBeenCalled();
+    await expect(verifyProviderApiKey("codex", {
+      env,
+      execFile: legacyProbe,
+      codexAcpProbe: acpProbe,
+    })).resolves.toBe(true);
+    expect(acpProbe).toHaveBeenCalledTimes(1);
+    expect(legacyProbe).not.toHaveBeenCalled();
     expect(isProviderApiKeyVerified("codex", env)).toBe(true);
     expect(filterProviderCredentialEnv("codex", env).CODEX_API_KEY).toBe("test-acp-key");
   });
 
-  it("does not reuse ACP credential allowance as legacy Codex verification", async () => {
-    const probe = vi.fn(async () => undefined);
+  it("keeps an invalid ACP key unverified and withheld from production children", async () => {
+    const env = {
+      ...process.env,
+      AGENT_BRIDGE_CODEX_RUNTIME: "acp",
+      CODEX_API_KEY: "bad-acp-key",
+    };
+    const acpProbe = vi.fn(async () => { throw new Error("authentication failed"); });
+
+    await expect(verifyProviderApiKey("codex", { env, codexAcpProbe: acpProbe })).resolves.toBe(false);
+    expect(isProviderApiKeyVerified("codex", env)).toBe(false);
+    expect(filterProviderCredentialEnv("codex", env).CODEX_API_KEY).toBeUndefined();
+  });
+
+  it("does not reuse ACP credential evidence as legacy Codex verification", async () => {
+    const legacyProbe = vi.fn(async () => undefined);
+    const acpProbe = vi.fn(async () => undefined);
     const acpEnv = {
       ...process.env,
       AGENT_BRIDGE_CODEX_RUNTIME: "acp",
       CODEX_API_KEY: "same-key",
     };
-    await verifyProviderApiKey("codex", { env: acpEnv, execFile: probe });
-    expect(probe).not.toHaveBeenCalled();
+    await verifyProviderApiKey("codex", { env: acpEnv, execFile: legacyProbe, codexAcpProbe: acpProbe });
+    expect(acpProbe).toHaveBeenCalledTimes(1);
+    expect(legacyProbe).not.toHaveBeenCalled();
 
     const legacyEnv = { ...acpEnv, AGENT_BRIDGE_CODEX_RUNTIME: "legacy" };
     expect(isProviderApiKeyVerified("codex", legacyEnv)).toBe(false);
-    await verifyProviderApiKey("codex", { env: legacyEnv, execFile: probe });
-    expect(probe).toHaveBeenCalledTimes(1);
+    await verifyProviderApiKey("codex", { env: legacyEnv, execFile: legacyProbe, codexAcpProbe: acpProbe });
+    expect(legacyProbe).toHaveBeenCalledTimes(1);
     expect(isProviderApiKeyVerified("codex", legacyEnv)).toBe(true);
   });
 });
