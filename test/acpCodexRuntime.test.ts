@@ -704,7 +704,13 @@ describe("Codex ACP supervised stdio turn", () => {
         timeoutMs: 8_000,
         idleTimeoutMs: 8_000,
         chatId: `acp-missing-${Date.now()}`,
-      }, { conversationId: "conv-missing", runId: "run-missing" })).rejects.toThrow(/ENOENT|spawn/);
+      }, { conversationId: "conv-missing", runId: "run-missing" }))
+        // Depending on scheduler timing, either the child "error" event
+        // (ENOENT) or the ACP SDK's own closed-stream detection observes
+        // the spawn failure first; both are legitimate fail-closed errors —
+        // what matters is that it fails at all rather than hanging or
+        // silently falling back to legacy codex exec.
+        .rejects.toThrow(/ENOENT|spawn|ACP connection closed/);
       // A missing adapter is a spawn-time failure, not a hard/idle timeout —
       // it must not silently wait out the full timeout window either.
       expect(Date.now() - startedAt).toBeLessThan(4_000);
