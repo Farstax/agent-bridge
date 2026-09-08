@@ -46,6 +46,8 @@ export class EventStore {
         this._persistTerminal(event);
       } else if (event.type === "run.failed") {
         this._persistAttemptFailure(event);
+      } else if (event.type === "acp.retained") {
+        this._persistNonTerminal(event);
       }
       // run.completed is deferred — call queueCompleted() then finalize()
     } catch (error) {
@@ -86,6 +88,19 @@ export class EventStore {
       warnPersistenceFailure("finalize", runId, chatKey, error);
     }
     this.lastFailed = null;
+  }
+
+  /** Persist a durable non-terminal event (e.g. acp.retained) without a run status transition. */
+  private _persistNonTerminal(e: Extract<BridgeEvent, { type: "acp.retained" }>): void {
+    if (this.terminalPersisted) return;
+    const needsRunInsert = !this.runInserted;
+    const seq = this.seq + 1;
+    this.db.raw.transaction(() => {
+      if (needsRunInsert) this.db.insertRun(e.runId, e.chatKey, e.bot);
+      this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
+    })();
+    this.seq = seq;
+    if (needsRunInsert) this.runInserted = true;
   }
 
   private _persistAttemptFailure(e: Extract<BridgeEvent, { type: "run.failed" }>): void {

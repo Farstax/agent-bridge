@@ -361,4 +361,44 @@ describe("EventStore", () => {
       warn.mockRestore();
     });
   });
+
+  describe("acp.retained", () => {
+    it("persists rich ACP events durably without a run status transition", async () => {
+      const { EventStore } = await import("../src/events/store.js");
+      const store = new EventStore(db);
+      const { type } = await import("../src/events/types.js");
+
+      store.collect(type.runStarted({
+        runId: "r-acp-1", bot: "codex", chatId: "1", chatKey: "1", command: "codex-acp", cwd: "/", model: null,
+      }));
+      store.collect(type.acpRetained({
+        runId: "r-acp-1",
+        bot: "codex",
+        chatId: "1",
+        chatKey: "1",
+        sessionId: "acp-sess-1",
+        sessionMode: "load",
+        events: [
+          { kind: "session_update", channel: "replay", notification: { sessionUpdate: "agent_message_chunk" } },
+          { kind: "session_update", channel: "live", notification: { sessionUpdate: "tool_call" } },
+          { kind: "permission", channel: "live", permissionRequest: { toolCall: { kind: "edit" } }, permissionResponse: { outcome: { outcome: "selected", optionId: "allow" } } },
+          { kind: "stop", channel: "live", stopReason: "end_turn" },
+        ],
+        contextUsage: { used: 12, size: 100_000 },
+      }));
+
+      expect(db.getRun("r-acp-1").status).toBe("running");
+      const events = db.getEventsForRun("r-acp-1");
+      expect(events.map((e) => e.type)).toEqual(["run.started", "acp.retained"]);
+      const retained = JSON.parse(events[1].payload_json);
+      expect(retained.sessionMode).toBe("load");
+      expect(retained.contextUsage).toEqual({ used: 12, size: 100_000 });
+      expect(retained.events).toHaveLength(4);
+      expect(retained.events.filter((e: { channel: string }) => e.channel === "replay")).toHaveLength(1);
+      expect(retained.events.filter((e: { channel: string }) => e.channel === "live")).toHaveLength(3);
+      const permission = retained.events.find((e: { kind: string }) => e.kind === "permission");
+      expect(permission.permissionRequest.toolCall.kind).toBe("edit");
+      expect(permission.permissionResponse.outcome.optionId).toBe("allow");
+    });
+  });
 });

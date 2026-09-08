@@ -83,6 +83,25 @@ describe("Codex ACP invocation", () => {
     expect(inv.args[0]).toBe("exec");
     expect(inv.args).toContain("resume");
   });
+
+  it("fails closed on toolMode \"none\" instead of weakening to ACP read-only", () => {
+    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    process.env.CODEX_ACP_COMMAND = "codex-acp";
+    try {
+      expect(() => buildCliInvocation({
+        bot: "codex",
+        prompt: "hi",
+        sessionId: null,
+        command: "codex",
+        toolMode: "none",
+      })).toThrow(/tool-free/i);
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
+      delete process.env.CODEX_ACP_COMMAND;
+    }
+  });
 });
 
 describe("ACP session persistence", () => {
@@ -250,6 +269,79 @@ describe("Codex ACP supervised stdio turn", () => {
     expect(second.text).not.toMatch(/User request:\nfirst/);
     expect(liveDeliveryText([])).toBe("");
     } finally {
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
+      delete process.env.FAKE_ACP_STORE;
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("retains rich ACP events through the real Bridge event sink, distinct from delivered text", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    const storeDir = mkdtempSync(join(tmpdir(), "fake-acp-store-"));
+    process.env.FAKE_ACP_STORE = join(storeDir, "sessions.json");
+    const { EventStore } = await import("../src/events/store.js");
+    const db = openDb(":memory:");
+    try {
+      const firstStore = new EventStore(db);
+      const first = await runTurn({
+        prompt: "first",
+        sessionId: null,
+        command: "codex-acp",
+        model: null,
+        executionMode: "trusted",
+        outputFormat: "json",
+        soulContext: null,
+        attachments: [],
+        outputDir: null,
+        effort: null,
+        toolMode: "default",
+      }, process.cwd(), {
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        chatId: "acp-events-1",
+        eventContext: { runId: "run-events-1", bot: "codex", chatId: "acp-events-1", chatKey: "acp-events-1" },
+        onEvent: (e) => firstStore.collect(e),
+      }, { conversationId: "conv-events-1", runId: "run-events-1" });
+
+      const secondStore = new EventStore(db);
+      const second = await runTurn({
+        prompt: "second",
+        sessionId: first.sessionId,
+        command: "codex-acp",
+        model: null,
+        executionMode: "trusted",
+        outputFormat: "json",
+        soulContext: null,
+        attachments: [],
+        outputDir: null,
+        effort: null,
+        toolMode: "default",
+      }, process.cwd(), {
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        chatId: "acp-events-2",
+        eventContext: { runId: "run-events-2", bot: "codex", chatId: "acp-events-2", chatKey: "acp-events-2" },
+        onEvent: (e) => secondStore.collect(e),
+      }, { conversationId: "conv-events-1", runId: "run-events-2" });
+
+      const secondEvents = db.getEventsForRun("run-events-2").filter((e) => e.type === "acp.retained");
+      expect(secondEvents).toHaveLength(1);
+      const retained = JSON.parse(secondEvents[0].payload_json);
+      expect(retained.sessionMode).toBe("load");
+      expect(retained.events.some((e: { kind: string }) => e.kind === "tool_call" || (e.kind === "session_update" && e.notification?.update?.sessionUpdate === "tool_call"))).toBe(true);
+      expect(retained.events.some((e: { channel: string; notification?: { update?: { sessionUpdate?: string } } }) =>
+        e.channel === "replay" && e.notification?.update?.sessionUpdate === "agent_message_chunk")).toBe(true);
+      // Telegram/Discord delivery only ever reads live agent_message_chunk text off `second.text`, never this event.
+      expect(second.text).toContain("User request:\nsecond");
+      expect(second.text).not.toMatch(/User request:\nfirst/);
+    } finally {
+      db.close();
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
       else process.env.CODEX_ACP_COMMAND = previousCommand;
       if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
@@ -496,7 +588,7 @@ describe("Codex ACP supervised stdio turn", () => {
         attachments: [],
         outputDir: null,
         effort: null,
-        toolMode: "none",
+        toolMode: "default",
       });
       expect(result.text).toContain("User request:\nqualify");
       expect(result.sessionId).toMatch(/^acp-/);

@@ -17,6 +17,8 @@ export interface FakeAcpAgentOptions {
   permissionOn?: string;
   onClose?: () => void;
   initializeError?: Error;
+  /** Emit only the session/update usage_update notification; omit PromptResponse.usage. */
+  usageUpdateOnly?: boolean;
 }
 
 function persistSessions(sessions: Map<string, FakeSession>): void {
@@ -153,10 +155,12 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       });
       session.history.push({ role: "agent", text: reply });
       persistSessions(sessions);
-      return {
-        stopReason: "end_turn",
-        usage: { totalTokens: 12, inputTokens: 4, outputTokens: 8, thoughtTokens: 1 },
-      };
+      return options.usageUpdateOnly
+        ? { stopReason: "end_turn" }
+        : {
+          stopReason: "end_turn",
+          usage: { totalTokens: 12, inputTokens: 4, outputTokens: 8, thoughtTokens: 1 },
+        };
     })
     .onNotification(acp.methods.agent.session.cancel, (ctx) => {
       sessions.get(ctx.params.sessionId)?.pending?.abort();

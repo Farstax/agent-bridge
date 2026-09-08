@@ -18,6 +18,7 @@ import {
   redactProviderApiKeySecrets,
 } from "./apiKeyAuth.js";
 import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
+import { type as bridgeEventType } from "../events/types.js";
 
 const IMAGE_MIME: Record<string, string> = {
   ".png": "image/png",
@@ -27,7 +28,26 @@ const IMAGE_MIME: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+/**
+ * Codex ACP's "read-only" agent mode restricts mutation/network authority but
+ * still permits read/search/think-style tools. It is not equivalent to legacy
+ * Codex's `toolMode: "none"`, which disables shell/browser/computer-use/
+ * plugins/hooks/goals/apps entirely. The pinned adapter has no config knob
+ * that guarantees genuinely tool-free execution, so fail closed rather than
+ * silently redefining Advisor's tool-free contract as read-only.
+ */
+export class CodexAcpToolFreeUnsupportedError extends Error {
+  constructor() {
+    super(
+      "Codex ACP cannot guarantee tool-free execution for toolMode \"none\": " +
+      "the pinned adapter's read-only mode still permits read/search tools. Failing closed.",
+    );
+    this.name = "CodexAcpToolFreeUnsupportedError";
+  }
+}
+
 export function buildInvocation(request: ProviderInvocationRequest): ProviderInvocation {
+  if (request.toolMode === "none") throw new CodexAcpToolFreeUnsupportedError();
   return {
     command: resolveCodexAcpCommand(),
     args: resolveCodexAcpArgs(),
@@ -37,7 +57,7 @@ export function buildInvocation(request: ProviderInvocationRequest): ProviderInv
 }
 
 export function initialAgentMode(request: Pick<ProviderInvocationRequest, "executionMode" | "toolMode">): string {
-  if (request.toolMode === "none") return "read-only";
+  if (request.toolMode === "none") throw new CodexAcpToolFreeUnsupportedError();
   if (request.executionMode === "trusted") return "agent-full-access";
   return "agent";
 }
@@ -137,6 +157,19 @@ export async function runTurn(
   );
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
+  if (options.eventContext && options.onEvent) {
+    options.onEvent(bridgeEventType.acpRetained({
+      runId: options.eventContext.runId,
+      bot: options.eventContext.bot,
+      chatId: options.eventContext.chatId,
+      chatKey: options.eventContext.chatKey,
+      threadId: options.eventContext.threadId,
+      sessionId: result.acpSessionId,
+      sessionMode: result.sessionMode,
+      events: result.events,
+      ...(result.contextUsage ? { contextUsage: result.contextUsage } : {}),
+    }));
+  }
   const parsed = toCliResult(result);
   return {
     ...parsed,

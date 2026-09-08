@@ -209,7 +209,9 @@ describe("ACP core client", () => {
       prompt: "PERM please",
       executionMode: "trusted",
     });
-    expect(trusted.events.some((event) => event.kind === "permission")).toBe(true);
+    const trustedPermission = trusted.events.find((event) => event.kind === "permission");
+    expect(trustedPermission?.permissionRequest?.toolCall.kind).toBe("edit");
+    expect(trustedPermission?.permissionResponse?.outcome.outcome).toBe("selected");
 
     const safe = await runAcpTurn({
       peer: createFakeAcpAgent({ permissionOn: "PERM" }),
@@ -220,7 +222,9 @@ describe("ACP core client", () => {
       prompt: "PERM please",
       executionMode: "safe",
     });
-    expect(safe.events.some((event) => event.kind === "permission")).toBe(true);
+    const safePermission = safe.events.find((event) => event.kind === "permission");
+    expect(safePermission?.permissionRequest?.toolCall.kind).toBe("edit");
+    expect(safePermission?.permissionResponse?.outcome).toEqual({ outcome: "selected", optionId: "reject" });
     expect(safe.stopReason).toBe("end_turn");
   });
 
@@ -239,6 +243,34 @@ describe("ACP core client", () => {
     setTimeout(() => abort.abort(), 20);
     const result = await hung;
     expect(result.stopReason).toBe("cancelled");
+  });
+
+  it("takes turn consumption from PromptResponse.usage and keeps context usage separate", async () => {
+    const result = await runAcpTurn({
+      peer: createFakeAcpAgent(),
+      cwd: process.cwd(),
+      conversationId: "conv-bridge-1",
+      runId: "run-1",
+      existingAcpSessionId: null,
+      prompt: "hello",
+      executionMode: "trusted",
+    });
+    expect(result.usage).toEqual({ totalTokens: 12, inputTokens: 4, outputTokens: 8, thoughtTokens: 1 });
+    expect(result.contextUsage).toEqual({ used: 12, size: 100_000 });
+  });
+
+  it("leaves turn consumption unknown when the agent supplies only usage_update", async () => {
+    const result = await runAcpTurn({
+      peer: createFakeAcpAgent({ usageUpdateOnly: true }),
+      cwd: process.cwd(),
+      conversationId: "conv-bridge-1",
+      runId: "run-1",
+      existingAcpSessionId: null,
+      prompt: "hello",
+      executionMode: "trusted",
+    });
+    expect(result.usage).toBeUndefined();
+    expect(result.contextUsage).toEqual({ used: 12, size: 100_000 });
   });
 });
 

@@ -46,12 +46,27 @@ export interface RunCancelledEvent extends BridgeEventBase {
   reason: "user" | "shutdown" | "timeout";
 }
 
+/**
+ * Provider-neutral sink for rich ACP session/update, tool-call, plan,
+ * permission, and usage events. Retained internally for later Bridge
+ * inspection without reparsing provider-native output; Telegram/Discord
+ * presentation stays unchanged (the reducer/adapter do not read this event).
+ */
+export interface AcpRetainedEventsRecorded extends BridgeEventBase {
+  type: "acp.retained";
+  sessionMode: "fresh" | "load" | "resume";
+  /** Structured ACP retained events, JSON-serializable as-is. */
+  events: readonly unknown[];
+  contextUsage?: { used: number; size: number };
+}
+
 export type BridgeEvent =
   | RunStartedEvent
   | TextDeltaEvent
   | RunCompletedEvent
   | RunFailedEvent
-  | RunCancelledEvent;
+  | RunCancelledEvent
+  | AcpRetainedEventsRecorded;
 
 function base(fields: { runId: string; bot: BotKind; chatId: string; chatKey: string; threadId?: string }): BridgeEventBase {
   return {
@@ -128,5 +143,25 @@ export const type = {
     threadId?: string;
   }): RunCancelledEvent {
     return { ...base(fields), type: "run.cancelled", reason: fields.reason };
+  },
+
+  acpRetained(fields: {
+    runId: string;
+    bot: BotKind;
+    chatId: string;
+    chatKey: string;
+    sessionId?: string | null;
+    sessionMode: "fresh" | "load" | "resume";
+    events: readonly unknown[];
+    contextUsage?: { used: number; size: number };
+    threadId?: string;
+  }): AcpRetainedEventsRecorded {
+    return {
+      ...base(fields),
+      type: "acp.retained",
+      sessionMode: fields.sessionMode,
+      events: fields.events,
+      ...(fields.contextUsage ? { contextUsage: fields.contextUsage } : {}),
+    };
   },
 };

@@ -6,6 +6,8 @@ import type {
   InitializeResponse,
   NewSessionResponse,
   PromptResponse,
+  RequestPermissionRequest,
+  RequestPermissionResponse,
   SessionNotification,
   StopReason,
   Stream,
@@ -23,6 +25,9 @@ export interface AcpRetainedEvent {
   readonly channel: "replay" | "live";
   readonly notification?: SessionNotification;
   readonly stopReason?: StopReason;
+  /** What the agent asked for and what Bridge decided, not merely that a permission event happened. */
+  readonly permissionRequest?: RequestPermissionRequest;
+  readonly permissionResponse?: RequestPermissionResponse;
 }
 
 export interface AcpTurnInput {
@@ -40,6 +45,12 @@ export interface AcpTurnInput {
   readonly onEvent?: (event: AcpRetainedEvent) => void;
 }
 
+/** ACP v1 context-window usage: tokens currently in context vs the window size. Not per-turn consumption. */
+export interface AcpContextUsage {
+  readonly used: number;
+  readonly size: number;
+}
+
 export interface AcpTurnResult {
   readonly conversationId: string;
   readonly runId: string;
@@ -49,7 +60,9 @@ export interface AcpTurnResult {
   readonly liveText: string;
   readonly events: readonly AcpRetainedEvent[];
   readonly updates: readonly AcpObservedUpdate[];
+  /** Actual turn/prompt token consumption, only when the agent supplies PromptResponse.usage. */
   readonly usage?: Usage;
+  readonly contextUsage?: AcpContextUsage;
   readonly initialize: InitializeResponse;
 }
 
@@ -66,16 +79,17 @@ function agentSupportsLoad(init: InitializeResponse): boolean {
   return Boolean(init.agentCapabilities?.loadSession);
 }
 
-function usageFrom(response: PromptResponse, updates: readonly AcpObservedUpdate[]): Usage | undefined {
-  if (response.usage) return response.usage;
+/** Actual turn consumption comes only from PromptResponse.usage; usage_update never fabricates it. */
+function usageFrom(response: PromptResponse): Usage | undefined {
+  return response.usage ?? undefined;
+}
+
+/** ACP v1 usage_update.used/size describe context-window occupancy, not per-turn consumption. */
+function contextUsageFrom(updates: readonly AcpObservedUpdate[]): AcpContextUsage | undefined {
   for (let i = updates.length - 1; i >= 0; i -= 1) {
     const update = updates[i].notification.update;
     if (update.sessionUpdate === "usage_update") {
-      return {
-        totalTokens: update.used,
-        inputTokens: update.used,
-        outputTokens: 0,
-      };
+      return { used: update.used, size: update.size };
     }
   }
   return undefined;
@@ -112,7 +126,12 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         executionMode: input.executionMode,
         abortRequested: Boolean(input.abortRequested?.() || input.signal?.aborted),
       });
-      remember({ kind: "permission", channel: "live" });
+      remember({
+        kind: "permission",
+        channel: "live",
+        permissionRequest: ctx.params,
+        permissionResponse: response,
+      });
       return response;
     })
     .onNotification(acp.methods.client.session.update, (ctx) => {
@@ -188,7 +207,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       liveText,
       events,
       updates,
-      usage: usageFrom(promptResponse, updates),
+      usage: usageFrom(promptResponse),
+      contextUsage: contextUsageFrom(updates),
       initialize,
     };
   };

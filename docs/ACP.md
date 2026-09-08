@@ -67,6 +67,16 @@ needs. Filesystem and terminal client methods are not advertised; the
 provider agent keeps those tools. Permission requests are mapped onto
 Bridge `safe` / `trusted` execution authority.
 
+## Tool-free execution
+
+Legacy Codex `toolMode: "none"` explicitly disables shell, browser, computer
+use, plugins, hooks, goals, and apps. Codex ACP's `read-only` agent mode is
+not equivalent: it still permits read/search/think-style tools and only
+restricts mutation/network authority. The pinned adapter has no config knob
+that guarantees genuinely tool-free execution, so `buildInvocation` fails
+closed (`CodexAcpToolFreeUnsupportedError`) for `toolMode: "none"` rather than
+silently weakening Advisor's tool-free contract to read-only.
+
 ## Non-goals
 
 - Remote HTTP/WebSocket ACP transport
