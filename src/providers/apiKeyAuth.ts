@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
+import { resolveCodexRuntime } from "./codexRuntimeSelection.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -27,7 +28,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   codex: {
     envVar: "CODEX_API_KEY",
     verification: "bounded_native_turn",
-    notes: "Codex exec reads CODEX_API_KEY directly; OPENAI_API_KEY is not the Bridge runtime contract.",
+    notes: "Legacy Codex preflights CODEX_API_KEY with codex exec; Codex ACP validates it through the adapter's ACP authenticate flow.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
@@ -129,8 +130,9 @@ export function isProviderApiKeyVerified(provider: ProviderId, env: Env = proces
 
 /**
  * Keep provider credentials out of unrelated provider children. The issue-572
- * candidate key itself is withheld until its isolated native probe has passed,
- * so a bad optional key cannot override an otherwise valid account session.
+ * candidate key itself is withheld until its provider-specific verification
+ * boundary has accepted it. For Codex ACP that boundary is the adapter's ACP
+ * authenticate flow rather than an unrelated legacy `codex exec` preflight.
  */
 export function filterProviderCredentialEnv(
   bot: BotKind | undefined,
@@ -190,6 +192,15 @@ function commandForProvider(provider: ProviderId, env: Env): string {
   const bots = loadBotsConfig(env);
   if (provider === "agy") return bots.antigravity.command;
   return bots[provider].command;
+}
+
+function codexAcpOwnsApiKeyValidation(provider: ProviderId, env: Env): boolean {
+  if (provider !== "codex") return false;
+  try {
+    return resolveCodexRuntime(env) === "acp";
+  } catch {
+    return false;
+  }
 }
 
 function cacheKey(provider: ProviderId, apiKey: string): string {
@@ -370,6 +381,20 @@ export async function verifyProviderApiKey(
   if (!apiKey) return false;
 
   const key = cacheKey(provider, apiKey);
+
+  if (codexAcpOwnsApiKeyValidation(provider, env)) {
+    // Do not make the selected ACP runtime depend on a successful legacy
+    // `codex exec` probe. The adapter's own `authenticate({methodId:"api-key"})`
+    // call is the authoritative validation boundary and fails the ACP Run if
+    // the key is unusable. This cache entry means only that the credential is
+    // allowed to reach that selected runtime; it is not cross-runtime proof.
+    if (options.useCache !== false) {
+      verificationCache.set(key, true);
+      verificationFailures.delete(key);
+    }
+    return true;
+  }
+
   if (options.useCache !== false) {
     if (verificationCache.get(key) === true) return true;
     const failedAt = verificationFailures.get(key);
