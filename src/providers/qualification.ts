@@ -36,6 +36,46 @@ function qualificationToolMode(
 
 type QualificationEnv = Record<string, string | undefined>;
 
+const CODEX_RUNTIME_ENV_KEYS = [
+  "AGENT_BRIDGE_CODEX_RUNTIME",
+  "CODEX_ACP_COMMAND",
+  "CODEX_ACP_ARGS",
+  "CODEX_API_KEY",
+  "OPENAI_API_KEY",
+  "DEFAULT_AUTH_REQUEST",
+  "NO_BROWSER",
+  "CODEX_PATH",
+  "CODEX_HOME",
+  "MODEL_PROVIDER",
+  "BRIDGE_PROJECT_DIR",
+] as const;
+
+function normalizedEnvValue(env: QualificationEnv, key: string): string {
+  return env[key]?.trim() ?? "";
+}
+
+/**
+ * The public qualification API accepts an explicit environment, but the
+ * provider invocation/runtime currently reads its effective Codex launch and
+ * auth settings from process.env. Refuse any disagreement instead of probing
+ * one executable/runtime and behaviorally qualifying another. The supported
+ * CLI entrypoint applies the resolved service environment before calling us.
+ */
+export function assertQualificationRuntimeEnvironment(
+  providerId: ProviderId,
+  env: QualificationEnv,
+  activeEnv: QualificationEnv = process.env,
+): void {
+  if (providerId !== "codex" || env === activeEnv) return;
+  const mismatched = CODEX_RUNTIME_ENV_KEYS.filter((key) =>
+    normalizedEnvValue(env, key) !== normalizedEnvValue(activeEnv, key));
+  if (mismatched.length === 0) return;
+  throw new Error(
+    `Codex qualification runtime environment mismatch for ${mismatched.join(", ")}; `
+    + "apply the resolved runtime environment before qualification",
+  );
+}
+
 export type QualificationCheckStatus =
   | "pass"
   | "fail"
@@ -301,6 +341,7 @@ export function isQualificationCurrent(
   record: ProviderQualificationRecord | null | undefined,
   providerId: ProviderId,
   installedVersion: string,
+  env: QualificationEnv = process.env,
 ): boolean {
   const recordedRuntime = record?.executionRuntime
     ?? (providerId === "codex" ? "legacy" : "native");
@@ -308,7 +349,7 @@ export function isQualificationCurrent(
     && record.provider === providerId
     && record.providerVersion === normalizeProviderVersion(installedVersion)
     && record.contractVersion === PROVIDER_CONTRACT_VERSION
-    && recordedRuntime === currentQualificationRuntime(providerId));
+    && recordedRuntime === currentQualificationRuntime(providerId, env));
 }
 
 function failedCheckNames(record: ProviderQualificationRecord): string[] {
@@ -348,6 +389,31 @@ export function qualificationHealthCheck(
   };
 }
 
+interface QualificationStructuredErrorData {
+  readonly message?: string;
+  readonly additionalDetails?: string;
+  readonly codexErrorInfo?: string | Readonly<Record<string, unknown>>;
+}
+
+function qualificationDiagnostic(error: Error): string {
+  const data = (error as Error & { data?: unknown }).data;
+  const structured = data && typeof data === "object"
+    ? data as QualificationStructuredErrorData
+    : null;
+  const info = structured?.codexErrorInfo;
+  const infoLabel = typeof info === "string"
+    ? info
+    : info && typeof info === "object"
+      ? Object.keys(info)[0]
+      : null;
+  return [
+    error.message,
+    structured?.message,
+    structured?.additionalDetails,
+    infoLabel ? `codexErrorInfo=${infoLabel}` : null,
+  ].filter((part): part is string => Boolean(part)).join(" | ").slice(0, 500);
+}
+
 function checkForError(
   providerId: ProviderId,
   error: Error,
@@ -357,9 +423,10 @@ function checkForError(
   overall: "degraded" | "fail";
 } {
   const classification = classifyProviderError(providerId, error);
+  const diagnostic = qualificationDiagnostic(error);
   if (classification.kind === "auth_required") {
     return {
-      check: { name, status: "not_authenticated", diagnostic: error.message.slice(0, 500) },
+      check: { name, status: "not_authenticated", diagnostic },
       overall: "degraded",
     };
   }
@@ -367,12 +434,12 @@ function checkForError(
     || classification.kind === "model_unavailable"
     || classification.kind === "transient") {
     return {
-      check: { name, status: classification.kind, diagnostic: error.message.slice(0, 500) },
+      check: { name, status: classification.kind, diagnostic },
       overall: "degraded",
     };
   }
   return {
-    check: { name, status: "fail", diagnostic: error.message.slice(0, 500) },
+    check: { name, status: "fail", diagnostic },
     overall: "fail",
   };
 }
@@ -527,6 +594,11 @@ async function executeNativeQualificationCheck({
       });
     }
   } catch (caught) {
+    // ACP RequestError carries provider classification in `.data`. Preserve
+    // the original error object so checkForError() can distinguish auth,
+    // capacity and transient prerequisites from protocol failure. Native
+    // one-shot parsing keeps the historical wrapper for parser diagnostics.
+    if (invocation.transport === "acp-stdio") throw caught;
     const error = caught instanceof Error ? caught : new Error(String(caught));
     throw new Error(`provider native result parsing failed: ${error.message}`);
   }
@@ -680,6 +752,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const adapter = getProviderAdapter(options.providerId);
   const executable = options.executable ?? adapter.executable;
   const runtimeEnv = options.env ?? process.env;
+  assertQualificationRuntimeEnvironment(options.providerId, runtimeEnv);
   const runtimePolicy = resolveQualificationRuntimePolicy(
     options.providerId,
     runtimeEnv,
@@ -824,11 +897,13 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
 export async function qualifyProviderIfNeeded(
   options: ProviderQualificationOptions & { installedVersion?: string },
 ): Promise<{ record: ProviderQualificationRecord; ran: boolean }> {
+  const runtimeEnv = options.env ?? process.env;
+  assertQualificationRuntimeEnvironment(options.providerId, runtimeEnv);
   const evidencePath = options.evidencePath ?? qualificationEvidencePath(options.homeDir ?? homedir());
   const executable = options.executable ?? resolveProviderExecutable(options.providerId);
   let observedVersion: string;
   try {
-    observedVersion = readProviderVersion(options.providerId, executable, options.env ?? process.env);
+    observedVersion = readProviderVersion(options.providerId, executable, runtimeEnv);
   } catch {
     const evidence = readQualificationEvidence(evidencePath);
     const current = evidence.providers[options.providerId];
@@ -844,7 +919,7 @@ export async function qualifyProviderIfNeeded(
   }
   const evidence = readQualificationEvidence(evidencePath);
   const current = evidence.providers[options.providerId];
-  if (isQualificationCurrent(current, options.providerId, observedVersion)) {
+  if (isQualificationCurrent(current, options.providerId, observedVersion, runtimeEnv)) {
     return { record: current!, ran: false };
   }
   const record = await qualifyProvider({
