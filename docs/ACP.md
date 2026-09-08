@@ -5,8 +5,8 @@ provider-runtime contract. This is not a second agent runtime and not a
 proprietary wrapper around ACP.
 
 Pinned SDK: `@agentclientprotocol/sdk@1.4.0` (stable ACP v1 entry point).
-Codex ACP adapter: `@agentclientprotocol/codex-acp` (current maintained
-implementation; default command `codex-acp`).
+Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
+(maintained implementation; default command `codex-acp`).
 
 ## Ownership
 
@@ -35,8 +35,11 @@ The existing `codex exec --json` runtime remains the default.
 ```bash
 AGENT_BRIDGE_CODEX_RUNTIME=legacy   # default
 AGENT_BRIDGE_CODEX_RUNTIME=acp      # parallel ACP-backed Codex path
-CODEX_ACP_COMMAND=codex-acp
+CODEX_ACP_COMMAND=codex-acp         # install @agentclientprotocol/codex-acp@1.10.0
 ```
+
+Install the pinned adapter onto PATH before selecting ACP. There is no
+silent fallback to `codex exec` if `codex-acp` is missing.
 
 Selection is explicit. There is no silent fallback between the two Codex
 implementations inside one attempt.
@@ -46,7 +49,9 @@ implementations inside one attempt.
 ACP stdio children use `cliSupervisor.runSupervisedStdioSession()`. That
 reuses child ownership, workspace locking, timeouts, idle timeout, `/stop`,
 hard cancellation, fencing, env scrubbing, redaction, and shutdown cleanup.
-Stdout on this path is ACP JSON-RPC, not user-visible text.
+Stdout on this path is ACP JSON-RPC, not user-visible text. Successful
+prompts do not call `session/close`; the provider ACP session id is a durable
+resume handle. Child-process teardown still kills the stdio agent.
 
 ## Replay and delivery
 
@@ -69,3 +74,7 @@ Bridge `safe` / `trusted` execution authority.
 - Migrating Claude, Agy, Cursor, or Grok in this phase
 - Removing the legacy Codex runtime
 - Changing Telegram/Discord presentation to show tool calls or plans
+- A full interactive ACP `authenticate` handshake. When `CODEX_API_KEY` is
+  present, the ACP child sets `DEFAULT_AUTH_REQUEST={"methodId":"api-key"}`
+  so the adapter uses the same workspace-local key as `codex exec`. ChatGPT
+  login already stored in `~/.codex` remains sufficient without that env.

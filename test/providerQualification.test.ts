@@ -46,7 +46,7 @@ if [[ " $* " == *"Agent Bridge repository-grounding qualification."* ]]; then
     echo "grounding markers leaked into prompt" >&2
     exit 95
   fi
-  if [[ " $* " == *" --disable shell_tool "* || " $* " == *" --tools "* || " $* " == *" --sandbox "* ]]; then
+  if [[ " $* " == *" --disable shell_tool "* || " $* " == *" --tools "* ]]; then
     echo "native repository tools disabled during grounding probe" >&2
     exit 96
   fi
@@ -253,6 +253,48 @@ printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
     expect(isQualificationCurrent(current, "codex", "9.9.10")).toBe(false);
     expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "9.9.9")).toBe(false);
     expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "9.9.9")).toBe(false);
+  });
+
+  it("versions the Codex ACP executable when ACP runtime is selected", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-acp-version-"));
+    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    const acp = executable(join(root, "codex-acp"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/codex-acp 1.10.0"; exit 0; fi
+echo "acp should not be oneshot-parsed" >&2
+exit 7
+`);
+    const legacy = executable(join(root, "codex"), passingProviderBody("codex"));
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    process.env.CODEX_ACP_COMMAND = acp;
+    delete process.env.CODEX_ACP_ARGS;
+    try {
+      const result = await qualifyProvider({
+        providerId: "codex",
+        executable: legacy,
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "a".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: {
+          ...process.env,
+          AGENT_BRIDGE_CODEX_RUNTIME: "acp",
+          CODEX_ACP_COMMAND: acp,
+        },
+      });
+      expect(result.executionRuntime).toBe("acp");
+      expect(result.providerVersion).toBe("1.10.0");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/codex-acp 1\.10\.0/);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
+    }
   });
 
   it("observes the active executable before reusing qualification evidence", async () => {

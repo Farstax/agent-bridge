@@ -13,6 +13,11 @@ import { isAbortRequested } from "../cliSupervisor.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexRuntimeSelection.js";
+import {
+  getProviderApiKeySecretValues,
+  redactProviderApiKeySecrets,
+} from "./apiKeyAuth.js";
+import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 
 const IMAGE_MIME: Record<string, string> = {
   ".png": "image/png",
@@ -42,6 +47,16 @@ export function codexAcpConfig(request: Pick<ProviderInvocationRequest, "model" 
   if (request.model) config.model = request.model;
   if (request.effort) config.model_reasoning_effort = request.effort;
   return config;
+}
+
+/** Codex ACP reads CODEX_API_KEY only during authenticate({ methodId: "api-key" }). */
+export function codexAcpChildAuthEnv(
+  env: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  if (env.CODEX_API_KEY?.trim() && !env.DEFAULT_AUTH_REQUEST?.trim()) {
+    return { DEFAULT_AUTH_REQUEST: JSON.stringify({ methodId: "api-key" }) };
+  }
+  return {};
 }
 
 function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {
@@ -90,10 +105,13 @@ export async function runTurn(
   const config = codexAcpConfig(request);
   const contextEnv = {
     ...(options.contextEnv ?? {}),
+    ...codexAcpChildAuthEnv({ ...process.env, ...(options.contextEnv ?? {}) }),
     INITIAL_AGENT_MODE: initialAgentMode(request),
     ...(Object.keys(config).length > 0 ? { CODEX_CONFIG: JSON.stringify(config) } : {}),
   };
   const chatId = options.chatId;
+  const redactionEnv = { ...process.env, ...contextEnv };
+  const liveRedactor = createStreamingSecretRedactor(getProviderApiKeySecretValues(redactionEnv));
   const result = await runSupervisedStdioSession(
     invocation.command,
     invocation.args,
@@ -109,8 +127,19 @@ export async function runTurn(
       executionMode: request.executionMode,
       abortRequested: () => chatId != null && isAbortRequested(chatId),
       signal: io.signal,
-      onLiveText: options.onProgress,
+      onLiveText: options.onProgress
+        ? (text) => {
+          const safe = liveRedactor.push(text);
+          if (safe) options.onProgress?.(safe);
+        }
+        : undefined,
     }),
   );
-  return toCliResult(result);
+  const flushed = liveRedactor.flush();
+  if (flushed) options.onProgress?.(flushed);
+  const parsed = toCliResult(result);
+  return {
+    ...parsed,
+    text: redactProviderApiKeySecrets(parsed.text, redactionEnv),
+  };
 }

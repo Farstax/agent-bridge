@@ -39,7 +39,8 @@ native provider executable
 ACP v1 is the future provider-runtime protocol. See [ACP.md](ACP.md) for the
 ownership split, session-identity mapping, and the parallel Codex ACP path.
 Do not add a proprietary protocol wrapper around ACP, and do not parse
-provider-native events inside `src/acp/`.
+provider-native events inside `src/acp/`. Future ACP-native providers should
+prefer launch metadata plus qualification over a bespoke parser/runtime.
 
 The shared provider contracts live in `src/providers/types.ts`:
 

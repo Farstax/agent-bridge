@@ -66,10 +66,6 @@ function agentSupportsLoad(init: InitializeResponse): boolean {
   return Boolean(init.agentCapabilities?.loadSession);
 }
 
-function agentSupportsClose(init: InitializeResponse): boolean {
-  return Boolean(init.agentCapabilities?.sessionCapabilities?.close);
-}
-
 function usageFrom(response: PromptResponse, updates: readonly AcpObservedUpdate[]): Usage | undefined {
   if (response.usage) return response.usage;
   for (let i = updates.length - 1; i >= 0; i -= 1) {
@@ -156,6 +152,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         ...sessionParams,
       });
       gate.endLoad();
+    } else if (acpSessionId) {
+      throw new Error("ACP agent does not support resume or load for an existing session");
     } else {
       const created = await agent.request(acp.methods.agent.session.new, sessionParams) as NewSessionResponse;
       acpSessionId = created.sessionId;
@@ -179,10 +177,6 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }, input.signal ? { cancellationSignal: input.signal } : undefined);
 
     remember({ kind: "stop", channel: "live", stopReason: promptResponse.stopReason });
-
-    if (agentSupportsClose(initialize)) {
-      await agent.request(acp.methods.agent.session.close, { sessionId: acpSessionId }).catch(() => undefined);
-    }
 
     const liveText = liveDeliveryText(updates) || liveEmitted;
     return {

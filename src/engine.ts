@@ -600,7 +600,7 @@ export class BridgeEngine {
     let prompt = rawPrompt;
     if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
 
-    const sessionId = isAgentKind(this.kind) ? db_getSession(this.db, chatKey, this.kind) : null;
+    const sessionId = isAgentKind(this.kind) ? lookupEngineProviderSession(this.db, chatKey, this.kind) : null;
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
 
@@ -801,7 +801,7 @@ export class BridgeEngine {
         },
         afterFinalDelivery: () => {
           if (!result) throw new Error("missing staged CLI result at final delivery");
-          this._commitResultState(input.laneHandle, input.prompt, result);
+          this._commitResultState(input.laneHandle, input.prompt, result, input.runId);
         },
       });
       return delivered ? result : null;
@@ -1130,11 +1130,11 @@ export class BridgeEngine {
     return { ...result };
   }
 
-  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult): void {
+  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult, runId: string | null = null): void {
     const chatKey = handle.chatKey;
     this._runWithFence(handle, () => {
       if (result.sessionId && isAgentKind(this.kind)) {
-        db_setSession(this.db, chatKey, this.kind, result.sessionId);
+        persistEngineProviderSession(this.db, chatKey, this.kind, result.sessionId, runId);
         if (result.nativeSessionMode === "fresh") clearHandoffRequired(this.db, chatKey, this.kind);
       }
       if (isAgentKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
@@ -1521,9 +1521,9 @@ export class BridgeEngine {
       if (logFile) { try { rmSync(logFile); } catch {} }
       if (error instanceof LostExecutionLeaseError) throw error;
       if (this._canPublish(laneHandle)) await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
-      if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
+      if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
-        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
@@ -1673,7 +1673,7 @@ export class BridgeEngine {
     bodyThreadId?: number | string,
     body: any = {},
   ): Promise<StagedCliResult> {
-    if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+    if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
     const model = isAgentKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
@@ -1702,7 +1702,7 @@ export class BridgeEngine {
         const err = retryError instanceof Error ? retryError : new Error(String(retryError));
         if (!(isAntigravityPrintTimeoutError(err) || isRecoverableAntigravityExecutionError(err))) throw err;
         console.warn(`[${this.kind}] fresh-session retry ${attempt}/${maxFreshAttempts} failed with recoverable Agy error`, err.message);
-        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
         if (attempt === maxFreshAttempts) {
           throw new Error("Agy failed repeatedly with an internal cascade error. The session was reset — please resend your message.");
         }
@@ -1854,13 +1854,13 @@ export class BridgeEngine {
         const failures = this.db.incrementFailures(chatKey, this.kind as BotKind);
         if (failures >= 2) {
           console.warn(`[${this.kind}] clearing session after ${failures} consecutive failures for ${chatKey}`);
-          db_setSession(this.db, chatKey, this.kind as BotKind, null);
+          persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null);
           this.db.resetFailures(chatKey, this.kind as BotKind);
         }
       });
-    } else if (/No conversation found with session ID|thread not found|session not found|conversation not found/i.test(msg)) {
+    } else if (isInvalidProviderSessionError(error)) {
       console.warn(`[${this.kind}] clearing invalid session ID for ${chatKey}`);
-      this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+      this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
       this.db.resetFailures(chatKey, this.kind);
     }
   }
@@ -1984,28 +1984,62 @@ export class BridgeEngine {
   }
 }
 
-function db_getSession(db: BridgeDb, chatKey: string, kind: BotKind): string | null {
+const INVALID_PROVIDER_SESSION_RE = /No conversation found with session ID|thread not found|session not found|conversation not found|Unknown session:|does not support resume or load for an existing session/i;
+
+function providerSessionErrorTexts(error: unknown, depth = 0, seen = new Set<unknown>()): string[] {
+  if (depth > 4 || error == null || seen.has(error)) return [];
+  if (typeof error === "string") return [error];
+  seen.add(error);
+  if (error instanceof Error) {
+    const extra = error as Error & { cause?: unknown; data?: unknown };
+    return [
+      extra.message,
+      ...providerSessionErrorTexts(extra.cause, depth + 1, seen),
+      ...providerSessionErrorTexts(extra.data, depth + 1, seen),
+    ];
+  }
+  if (typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    return [
+      ...(typeof record.details === "string" ? [record.details] : []),
+      ...(typeof record.message === "string" ? [record.message] : []),
+    ];
+  }
+  return [];
+}
+
+export function isInvalidProviderSessionError(error: unknown): boolean {
+  return providerSessionErrorTexts(error).some((text) => INVALID_PROVIDER_SESSION_RE.test(text));
+}
+
+export function lookupEngineProviderSession(db: BridgeDb, chatKey: string, kind: BotKind): string | null {
   if (kind === "codex" && resolveCodexRuntime() === "acp") {
     return db.getAcpSessionBinding(chatKey, "codex")?.acpSessionId ?? null;
   }
   return db.getSession(chatKey, kind);
 }
 
-function db_setSession(db: BridgeDb, chatKey: string, kind: BotKind, sessionId: string | null) {
-  try {
-    if (kind === "codex" && resolveCodexRuntime() === "acp") {
-      if (sessionId) {
-        db.putAcpSessionBinding({
-          conversationId: chatKey,
-          providerId: "codex",
-          acpSessionId: sessionId,
-          runId: null,
-        });
-      } else {
-        db.clearAcpSessionBinding(chatKey, "codex");
-      }
-      return;
+export function persistEngineProviderSession(
+  db: BridgeDb,
+  chatKey: string,
+  kind: BotKind,
+  sessionId: string | null,
+  runId: string | null = null,
+): void {
+  if (kind === "codex" && resolveCodexRuntime() === "acp") {
+    if (sessionId) {
+      db.putAcpSessionBinding({
+        conversationId: chatKey,
+        providerId: "codex",
+        acpSessionId: sessionId,
+        runId,
+      });
+    } else {
+      db.clearAcpSessionBinding(chatKey, "codex");
     }
+    return;
+  }
+  try {
     db.setSession(chatKey, kind, sessionId);
   } catch {
     // ignore — non-agent kinds are not tracked

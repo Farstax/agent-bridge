@@ -23,7 +23,7 @@ export class AcpReplayGate {
   }
 
   beginResume(): void {
-    this.channel = "live";
+    this.channel = "replay";
   }
 
   endResume(): void {

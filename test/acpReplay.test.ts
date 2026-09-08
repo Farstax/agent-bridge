@@ -27,9 +27,11 @@ describe("ACP session-load replay suppression", () => {
     expect(live.channel).toBe("live");
   });
 
-  it("does not treat resume-without-replay updates as historical output", () => {
+  it("marks session/resume updates as replay until resume completes", () => {
     const gate = new AcpReplayGate();
     gate.beginResume();
+    const replayed = gate.observe(notification("old resume history"));
+    expect(replayed.channel).toBe("replay");
     gate.endResume();
     const live = gate.observe(notification("only this turn"));
     expect(live.channel).toBe("live");

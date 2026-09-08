@@ -62,6 +62,11 @@ describe("ACP session identity mapping", () => {
       .not.toBe(map.lookup("conv-bridge-1", "claude")?.acpSessionId);
   });
 
+  it("refuses to bind a provider ACP session id that equals the Bridge conversation id", () => {
+    const map = new AcpSessionMap();
+    expect(() => map.bind(binding({ acpSessionId: "conv-bridge-1" }))).toThrow(/must not equal/);
+  });
+
   it("clears only the named provider binding", () => {
     const map = new AcpSessionMap();
     map.bind(binding({ providerId: "codex", acpSessionId: "acp-codex-1" }));

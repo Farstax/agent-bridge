@@ -26,6 +26,12 @@ export class AcpSessionRepository {
   }
 
   put(binding: AcpSessionBinding): void {
+    if (!binding.conversationId.trim()) throw new Error("ACP session binding requires a Bridge conversation id");
+    if (!binding.providerId.trim()) throw new Error("ACP session binding requires a provider id");
+    if (!binding.acpSessionId.trim()) throw new Error("ACP session binding requires a provider ACP session id");
+    if (binding.acpSessionId === binding.conversationId) {
+      throw new Error("ACP session id must not equal the Bridge conversation id");
+    }
     const now = new Date().toISOString();
     this.db.prepare(
       `INSERT INTO acp_session_bindings (

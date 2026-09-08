@@ -36,7 +36,7 @@ export function mapAcpPermissionRequest(
   const reject = rejectOnce ?? rejectAlways;
   const allow = allowOnce ?? allowAlways;
   const toolKind = request.toolCall.kind ?? "other";
-  const safeAllow = toolKind === "read" || toolKind === "search" || toolKind === "think" || toolKind === "fetch";
+  const safeAllow = toolKind === "read" || toolKind === "search" || toolKind === "think";
 
   if (context.executionMode === "safe" && !safeAllow) {
     if (reject) return selected(reject.optionId);

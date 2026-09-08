@@ -13,7 +13,7 @@ import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
-import { resolveCodexRuntime } from "./codexRuntimeSelection.js";
+import { resolveCodexAcpCommand, resolveCodexRuntime } from "./codexRuntimeSelection.js";
 
 export const PROVIDER_CONTRACT_VERSION = 5;
 
@@ -170,9 +170,24 @@ export function normalizeProviderVersion(raw: string): string {
 }
 
 /** Observe the version of the exact command used by the bridge runtime. */
-export function readProviderVersion(providerId: ProviderId, executable?: string): string {
+export function resolveQualificationVersionCommand(
+  providerId: ProviderId,
+  env: QualificationEnv = process.env,
+  executable?: string,
+): string {
+  if (providerId === "codex" && resolveCodexRuntime(env) === "acp") {
+    return resolveCodexAcpCommand(env);
+  }
+  return executable ?? resolveProviderExecutable(providerId);
+}
+
+export function readProviderVersion(
+  providerId: ProviderId,
+  executable?: string,
+  env: QualificationEnv = process.env,
+): string {
   const adapter = getProviderAdapter(providerId);
-  const command = executable ?? resolveProviderExecutable(providerId);
+  const command = resolveQualificationVersionCommand(providerId, env, executable);
   const raw = execFileSync(command, [...adapter.versionArgs], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -664,9 +679,10 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   let providerVersion = options.expectedVersion ? normalizeProviderVersion(options.expectedVersion) : "unknown";
   let overall: ProviderQualificationRecord["overall"] = "pass";
 
+  const versionCommand = resolveQualificationVersionCommand(options.providerId, runtimeEnv, executable);
   try {
     try {
-      const versionOutput = execFileSync(executable, [...adapter.versionArgs], {
+      const versionOutput = execFileSync(versionCommand, [...adapter.versionArgs], {
         cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -795,7 +811,7 @@ export async function qualifyProviderIfNeeded(
   const executable = options.executable ?? resolveProviderExecutable(options.providerId);
   let observedVersion: string;
   try {
-    observedVersion = readProviderVersion(options.providerId, executable);
+    observedVersion = readProviderVersion(options.providerId, executable, options.env ?? process.env);
   } catch {
     const evidence = readQualificationEvidence(evidencePath);
     const current = evidence.providers[options.providerId];

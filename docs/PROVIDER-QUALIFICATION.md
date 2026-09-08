@@ -14,10 +14,12 @@ The initial live contract is deliberately small and incident-driven:
 4. `repository_grounding` — one fresh native-tool-enabled invocation runs in a disposable Git repository. A runtime-generated source fact lives only in implementation source and a separate runtime-generated marker lives only in repository instructions; neither is included in the prompt. The check passes only when the native provider returns both exact values.
 
 When `AGENT_BRIDGE_CODEX_RUNTIME=acp`, Codex qualification uses the ACP-backed
-path (`codex-acp` over stdio) rather than `codex exec --json`. The two
-implementations are not interchangeable inside one attempt. Cached evidence is
-current only for the same Codex runtime (`legacy` vs `acp`) as well as provider
-version and contract version.
+path (`codex-acp` over stdio) rather than `codex exec --json`. The version
+probe is the invoked adapter (`CODEX_ACP_COMMAND --version`), not `codex
+--version`. The two implementations are not interchangeable inside one
+attempt. Cached evidence is current only for the same Codex runtime
+(`legacy` vs `acp`) as well as that observed executable version and contract
+version.
 
 Agy qualification uses the same native `stream-json` output contract as managed runtime execution. Fresh checks require a valid terminal result; a provider that exposes an invocation-attributable conversation ID is also tested for resume, while a provider that exposes no resumable ID records `session_resume` as `not_applicable`. Resume checks require the matching conversation ID. Contradictory or malformed terminal results fail qualification; in particular, an Agy `ERROR` result carrying a non-empty `response` is a contract failure.
 

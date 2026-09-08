@@ -13,7 +13,10 @@ export interface FakeAcpAgentOptions {
   loadSession?: boolean;
   resume?: boolean;
   close?: boolean;
+  replayOnResume?: boolean;
   permissionOn?: string;
+  onClose?: () => void;
+  initializeError?: Error;
 }
 
 function persistSessions(sessions: Map<string, FakeSession>): void {
@@ -41,16 +44,19 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
   };
 
   return acp.agent({ name: "fake-acp-agent" })
-    .onRequest(acp.methods.agent.initialize, async () => ({
-      protocolVersion: acp.PROTOCOL_VERSION,
-      agentCapabilities: {
-        loadSession: options.loadSession ?? true,
-        sessionCapabilities: {
-          ...(options.resume ? { resume: {} } : {}),
-          ...(options.close ? { close: {} } : {}),
+    .onRequest(acp.methods.agent.initialize, async () => {
+      if (options.initializeError) throw options.initializeError;
+      return {
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: {
+          loadSession: options.loadSession ?? true,
+          sessionCapabilities: {
+            ...(options.resume ? { resume: {} } : {}),
+            ...(options.close ? { close: {} } : {}),
+          },
         },
-      },
-    }))
+      };
+    })
     .onRequest(acp.methods.agent.session.new, async () => {
       const sessionId = `acp-${randomUUID()}`;
       sessions.set(sessionId, { history: [], pending: null });
@@ -71,10 +77,24 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       return {};
     })
     .onRequest(acp.methods.agent.session.resume, async (ctx) => {
-      get(ctx.params.sessionId);
+      const session = get(ctx.params.sessionId);
+      if (options.replayOnResume) {
+        for (const item of session.history) {
+          await ctx.client.notify(acp.methods.client.session.update, {
+            sessionId: ctx.params.sessionId,
+            update: {
+              sessionUpdate: item.role === "user" ? "user_message_chunk" : "agent_message_chunk",
+              content: { type: "text", text: item.text },
+            },
+          });
+        }
+      }
       return {};
     })
-    .onRequest(acp.methods.agent.session.close, async () => ({}))
+    .onRequest(acp.methods.agent.session.close, async () => {
+      options.onClose?.();
+      return {};
+    })
     .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
       const session = get(ctx.params.sessionId);
       session.pending?.abort();

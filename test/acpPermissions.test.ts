@@ -52,6 +52,31 @@ describe("ACP permission mapping", () => {
     expect(response.outcome).toEqual({ outcome: "selected", optionId: "allow" });
   });
 
+  it("rejects fetch permission requests in safe mode", () => {
+    const response = mapAcpPermissionRequest(request("fetch"), {
+      executionMode: "safe",
+      abortRequested: false,
+    });
+    expect(response.outcome).toEqual({ outcome: "selected", optionId: "reject" });
+  });
+
+  it("settles deterministically when the agent offers no selectable options", () => {
+    const response = mapAcpPermissionRequest({
+      sessionId: "acp-sess-1",
+      toolCall: {
+        toolCallId: "call-1",
+        title: "Modify file",
+        kind: "edit",
+        status: "pending",
+      },
+      options: [],
+    }, {
+      executionMode: "trusted",
+      abortRequested: false,
+    });
+    expect(response.outcome).toEqual({ outcome: "cancelled" });
+  });
+
   it("rejects move and unspecified tool kinds in safe mode", () => {
     expect(mapAcpPermissionRequest(request("move"), {
       executionMode: "safe",
