@@ -683,6 +683,37 @@ describe("Codex ACP supervised stdio turn", () => {
     }
   }, 15_000);
 
+  it("fails closed quickly when codex-acp is not installed, without falling back to legacy codex exec", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    process.env.CODEX_ACP_COMMAND = "agent-bridge-test-nonexistent-codex-acp-binary";
+    const startedAt = Date.now();
+    try {
+      await expect(runTurn({
+        prompt: "hello",
+        sessionId: null,
+        command: "codex-acp",
+        model: null,
+        executionMode: "trusted",
+        outputFormat: "json",
+        soulContext: null,
+        attachments: [],
+        outputDir: null,
+        effort: null,
+        toolMode: "default",
+      }, process.cwd(), {
+        timeoutMs: 8_000,
+        idleTimeoutMs: 8_000,
+        chatId: `acp-missing-${Date.now()}`,
+      }, { conversationId: "conv-missing", runId: "run-missing" })).rejects.toThrow(/ENOENT|spawn/);
+      // A missing adapter is a spawn-time failure, not a hard/idle timeout —
+      // it must not silently wait out the full timeout window either.
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+    } finally {
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+    }
+  }, 15_000);
+
   it("fails closed on malformed ACP stdio", async () => {
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;

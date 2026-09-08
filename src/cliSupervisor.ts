@@ -636,13 +636,23 @@ export async function runSupervisedStdioSession<T>(
     resetIdleTimer();
   });
 
+  // A spawn failure (e.g. a missing ACP adapter binary, ENOENT) surfaces
+  // here via the child "error" event. Captured separately from `closed` so
+  // the caller sees the real spawn error instead of a downstream write/EPIPE
+  // failure from the ACP protocol trying to use an unusable stdin pipe.
+  let spawnError: Error | null = null;
   const closed = new Promise<void>((resolve, reject) => {
     child.once("error", (error) => {
       error.message = redact(error.message);
+      spawnError = error;
       reject(error);
     });
     child.once("close", () => resolve());
   });
+  // Attached immediately so a same-tick spawn failure never reports as an
+  // unhandled rejection; the real error is still drained in `finally` below
+  // and, when present, preferred over whatever `session()` threw.
+  closed.catch(() => undefined);
 
   try {
     const result = await session({
@@ -654,6 +664,7 @@ export async function runSupervisedStdioSession<T>(
     return result;
   } catch (error) {
     if (pendingError) throw pendingError;
+    if (spawnError) throw spawnError;
     throw error;
   } finally {
     settled = true;
