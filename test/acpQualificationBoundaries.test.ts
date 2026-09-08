@@ -74,13 +74,14 @@ describe("Codex ACP qualification boundary", () => {
     })).rejects.toThrow(/qualification runtime environment mismatch/i);
   });
 
-  it("preserves structured ACP provider errors for qualification classification", async () => {
+  it("preserves structured ACP provider classification while redacting diagnostic secrets", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-acp-qualification-error-"));
     const failingAgent = fileURLToPath(new URL("./support/failingAcpQualificationAgent.ts", import.meta.url));
+    const secret = "qualification-secret-value";
     process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${failingAgent}`;
-    delete process.env.CODEX_API_KEY;
+    process.env.CODEX_API_KEY = secret;
 
     try {
       const result = await qualifyProvider({
@@ -94,10 +95,13 @@ describe("Codex ACP qualification boundary", () => {
       });
 
       expect(result.overall).toBe("degraded");
-      expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
+      const check = result.checks.find((candidate) => candidate.name === "fresh_prompt");
+      expect(check).toMatchObject({
         status: "capacity_exhausted",
         diagnostic: expect.stringMatching(/usage limit|usageLimitExceeded/i),
       });
+      expect(check?.diagnostic).not.toContain(secret);
+      expect(check?.diagnostic).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
