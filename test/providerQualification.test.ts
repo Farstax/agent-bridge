@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   PROVIDER_CONTRACT_VERSION,
@@ -296,6 +297,44 @@ exit 7
       else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   });
+
+  it("does not require tool-free execution for ACP Codex fresh_prompt qualification", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-acp-toolfree-"));
+    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
+    const acpArgs = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = acpArgs;
+    try {
+      const result = await qualifyProvider({
+        providerId: "codex",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "d".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: {
+          ...process.env,
+          AGENT_BRIDGE_CODEX_RUNTIME: "acp",
+          CODEX_ACP_COMMAND: process.execPath,
+          CODEX_ACP_ARGS: acpArgs,
+        },
+      });
+      const freshPrompt = result.checks.find((check) => check.name === "fresh_prompt");
+      expect(freshPrompt?.status).toBe("pass");
+      expect(freshPrompt?.diagnostic ?? "").not.toMatch(/tool-free/i);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
+    }
+  }, 15_000);
 
   it("observes the active executable before reusing qualification evidence", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-runtime-version-"));

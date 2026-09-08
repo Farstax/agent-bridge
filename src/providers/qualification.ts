@@ -13,9 +13,26 @@ import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
-import { resolveCodexAcpCommand, resolveCodexRuntime } from "./codexRuntimeSelection.js";
+import { isCodexAcpRuntime, resolveCodexAcpCommand, resolveCodexRuntime } from "./codexRuntimeSelection.js";
 
 export const PROVIDER_CONTRACT_VERSION = 5;
+
+/**
+ * Qualification prefers tool-free probes to keep fresh_prompt/session_resume
+ * side-effect-free. Codex ACP cannot guarantee genuine tool-free execution
+ * (buildInvocation fails closed for toolMode "none"), so qualification must
+ * not request it there — otherwise every ACP Codex qualification would fail
+ * on a contract the runtime was never asked to prove.
+ */
+function qualificationToolMode(
+  providerId: ProviderId,
+  adapter: { capabilities: { toolFree: boolean } },
+  env: QualificationEnv,
+): "default" | "none" {
+  if (!adapter.capabilities.toolFree) return "default";
+  if (providerId === "codex" && isCodexAcpRuntime("codex", env)) return "default";
+  return "none";
+}
 
 type QualificationEnv = Record<string, string | undefined>;
 
@@ -458,7 +475,7 @@ async function executeNativeQualificationCheck({
     sessionId,
     executionMode,
     homeDir,
-    toolMode: adapter.capabilities.toolFree ? "none" : "default",
+    toolMode: qualificationToolMode(providerId, adapter, runtimeEnv),
   });
 
   if (sessionId && invocation.nativeSessionMode !== "resume") {
@@ -488,7 +505,7 @@ async function executeNativeQualificationCheck({
           attachments: [],
           outputDir: null,
           effort: null,
-          toolMode: adapter.capabilities.toolFree ? "none" : "default",
+          toolMode: qualificationToolMode(providerId, adapter, runtimeEnv),
         },
         { conversationId: `qualify:${providerId}`, runId: randomUUID() },
       );
