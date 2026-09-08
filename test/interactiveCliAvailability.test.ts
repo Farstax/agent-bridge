@@ -33,6 +33,38 @@ describe("interactive CLI availability filtering", () => {
     expect(text).not.toContain("antigravity");
   });
 
+  it("does not treat Codex as available when ACP is selected and only the legacy executable exists", () => {
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => true,
+      commandExists: (command) => command === "codex" || command === "/opt/codex/bin/codex",
+      env: {
+        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
+        CODEX_COMMAND: "codex",
+        CODEX_ACP_COMMAND: "/missing/codex-acp",
+      },
+      failedProviders: new Set(),
+      readCursorStatus: cursorStatusUnavailable,
+    });
+    expect(available.has("codex")).toBe(false);
+  });
+
+  it("treats Codex as available when ACP is selected and the adapter exists", () => {
+    const adapter = "/opt/agent-bridge/releases/current/node_modules/.bin/codex-acp";
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      exists: () => true,
+      commandExists: (command) => command === adapter,
+      env: {
+        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
+        CODEX_ACP_COMMAND: adapter,
+      },
+      failedProviders: new Set(),
+      readCursorStatus: cursorStatusUnavailable,
+    });
+    expect(available.has("codex")).toBe(true);
+  });
+
   it("does not keep unavailable providers when no runtime check passes", () => {
     const available = getAvailableCliKinds({
       homeDir: "/tmp/no-creds",

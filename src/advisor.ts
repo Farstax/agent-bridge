@@ -43,9 +43,13 @@ function chooseTarget(config: AdvisorConfig, activeProvider: string, requestedPr
     const target = config.chain.find((candidate) => candidate.provider === requested);
     if (!target) throw new Error(`Requested provider is not an allowed advisor provider: ${requestedProvider}`);
     if (target.provider === active) throw new Error("Advisor requires an independent provider");
+    if (!supportsToolFreeMode(botKindFor(target.provider))) {
+      throw new Error(`Advisor provider does not support tool-free mode: ${target.provider}`);
+    }
     return target;
   }
-  const target = config.chain.find((candidate) => candidate.provider !== active);
+  const target = config.chain.find((candidate) =>
+    candidate.provider !== active && supportsToolFreeMode(botKindFor(candidate.provider)));
   if (!target) throw new Error("Advisor requires an independent provider");
   return target;
 }

@@ -445,6 +445,28 @@ describe("execution lane correctness", () => {
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
   }, 12_000);
 
+  it("fails closed for Codex ACP /btw instead of claiming tool-free execution", async () => {
+    const path = join(tmpdir(), `btw-acp-${Date.now()}-${Math.random()}.sqlite`);
+    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    const db = openDb(path);
+    const c = client();
+    const runCli = vi.fn().mockResolvedValue("must not run");
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "codex", botConfig: { command: "codex", modelPreference: ["gpt-5.6-luna"] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000,
+    }, db, c, { runCli });
+    try {
+      await engine.handleMessages([message("/btw inspect without changing anything", 7)]);
+      expect(runCli).not.toHaveBeenCalled();
+      expect(c.sendMessage.mock.calls.some((call: any[]) => /unavailable/i.test(call[0]?.text))).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
+      db.close(); rmSync(path, { force: true });
+    }
+  });
+
   it("fails closed for Antigravity /btw without changing provider settings", async () => {
     const path = join(tmpdir(), `btw-agy-${Date.now()}-${Math.random()}.sqlite`);
     const home = mkdtempSync(join(tmpdir(), "btw-agy-home-"));

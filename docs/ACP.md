@@ -6,7 +6,7 @@ proprietary wrapper around ACP.
 
 Pinned SDK: `@agentclientprotocol/sdk@1.4.0` (stable ACP v1 entry point).
 Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
-(maintained implementation; default command `codex-acp`).
+(maintained implementation; bundled at `$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`).
 
 ## Ownership
 
@@ -42,14 +42,25 @@ The existing `codex exec --json` runtime remains the default.
 ```bash
 AGENT_BRIDGE_CODEX_RUNTIME=legacy   # default
 AGENT_BRIDGE_CODEX_RUNTIME=acp      # parallel ACP-backed Codex path
-CODEX_ACP_COMMAND=codex-acp         # install @agentclientprotocol/codex-acp@1.10.0
+CODEX_ACP_COMMAND=...               # optional override of the bundled adapter
+CODEX_ACP_ARGS=...                  # optional extra adapter argv
 ```
 
-Install the pinned adapter onto PATH before selecting ACP. There is no
-silent fallback to `codex exec` if `codex-acp` is missing.
+The pinned adapter ships with the Agent Bridge release as
+`@agentclientprotocol/codex-acp@1.10.0`. Fresh managed installation and
+source `npm install` both obtain it. The runtime, doctor, qualification,
+and inspector resolve the same launchable artifact:
 
-Selection is explicit. There is no silent fallback between the two Codex
-implementations inside one attempt.
+`$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`
+
+Set `CODEX_ACP_COMMAND` only to override that bundled path. There is no
+silent fallback to `codex exec` if the adapter is missing.
+
+Managed install and upgrade carry `AGENT_BRIDGE_CODEX_RUNTIME`,
+`CODEX_ACP_COMMAND`, and `CODEX_ACP_ARGS` through the service environment
+when they are configured. Rollback to legacy is `AGENT_BRIDGE_CODEX_RUNTIME=legacy`
+(or unset). Selection is explicit. There is no silent fallback between the
+two Codex implementations inside one attempt.
 
 ## Process lifecycle
 

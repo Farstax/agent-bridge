@@ -79,7 +79,7 @@ export class AdvisorBroker implements AdvisorCapabilityIssuer {
 
   issue(binding: AdvisorCapabilityBinding): string {
     if (!this.deps.config.enabled || this.deps.config.chain.length === 0) throw new Error("Advisor disabled or misconfigured");
-    if (!this.deps.config.chain.every((target) => supportsToolFreeMode(target.provider))) {
+    if (!this.deps.config.chain.some((target) => supportsToolFreeMode(target.provider))) {
       throw new Error("Advisor target does not support tool-free mode");
     }
     const previous = this.activeByScope.get(binding.chatKey);
@@ -214,7 +214,7 @@ export async function startConfiguredAdvisorBroker(deps: {
 }): Promise<AdvisorBroker | null> {
   const config = parseAdvisorConfig(deps.env ?? process.env);
   if (!config.enabled || config.chain.length === 0) return null;
-  if (!config.chain.every((target) => supportsToolFreeMode(target.provider))) {
+  if (!config.chain.some((target) => supportsToolFreeMode(target.provider))) {
     console.warn("[advisor] agent-direct access disabled: configured target lacks tool-free mode");
     return null;
   }

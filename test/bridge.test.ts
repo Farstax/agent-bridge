@@ -540,6 +540,17 @@ describe("agent bridge MVP", () => {
       expect(db.getSession("123", "antigravity")).toBeNull();
     });
 
+    it("clears Codex ACP session bindings on /reset", () => {
+      db.putAcpSessionBinding({
+        conversationId: "123",
+        providerId: "codex",
+        acpSessionId: "acp-session-secret",
+        runId: "run-1",
+      });
+      handleCommand("codex", "/reset", { db, chatId: "123", config });
+      expect(db.getAcpSessionBinding("123", "codex")).toBeNull();
+    });
+
     it("only resets the session for the target chat, not others", () => {
       db.setSession("123", "antigravity", "s-123");
       db.setSession("456", "antigravity", "s-456");

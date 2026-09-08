@@ -1,3 +1,6 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 export type CodexRuntimeKind = "legacy" | "acp";
 
 /**
@@ -13,10 +16,24 @@ export function resolveCodexRuntime(
   throw new Error(`Unknown AGENT_BRIDGE_CODEX_RUNTIME: ${raw}. Use "legacy" or "acp".`);
 }
 
+export function resolveBridgeProjectDir(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const configured = env.BRIDGE_PROJECT_DIR?.trim();
+  if (configured) return configured;
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+export function bundledCodexAcpCommand(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return join(resolveBridgeProjectDir(env), "node_modules", ".bin", "codex-acp");
+}
+
 export function resolveCodexAcpCommand(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return env.CODEX_ACP_COMMAND?.trim() || "codex-acp";
+  return env.CODEX_ACP_COMMAND?.trim() || bundledCodexAcpCommand(env);
 }
 
 export function resolveCodexAcpArgs(

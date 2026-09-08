@@ -31,6 +31,7 @@ import {
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
 import { resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
+import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
@@ -1355,6 +1356,8 @@ export class BridgeEngine {
         toolMode: acpRequest.toolMode ?? "default",
         nativeCompletion: true,
       }, cwd, { ...options, bot: executionKind }, identities);
+      registerProviderOutput(identities.runId, "codex", parsed.text);
+      captureParsedProviderOutput("codex", parsed.text, parsed.telemetry);
       return { stdout: parsed.text, parsed };
     }
     const stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, options)).text;
@@ -1514,6 +1517,7 @@ export class BridgeEngine {
           threadId: eventContext.threadId,
           sessionId: stagedResult.sessionId ?? null,
           text: stagedResult.text,
+          ...(stagedResult.telemetry ? { telemetry: stagedResult.telemetry } : {}),
         });
       }
       return stagedResult;
@@ -1650,6 +1654,7 @@ export class BridgeEngine {
           threadId: eventContext.threadId,
           sessionId: stagedResult.sessionId ?? null,
           text: stagedResult.text,
+          ...(stagedResult.telemetry ? { telemetry: stagedResult.telemetry } : {}),
         });
       }
       return stagedResult;

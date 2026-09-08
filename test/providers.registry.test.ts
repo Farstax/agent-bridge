@@ -5,6 +5,7 @@ import {
   isProviderId,
   assertProviderId,
   PROVIDER_IDS,
+  supportsToolFreeMode,
 } from "../src/providers/registry.js";
 import type { ProviderId } from "../src/providers/types.js";
 
@@ -63,6 +64,13 @@ describe("provider registry", () => {
 
   it("rejects unknown provider ids when looked up directly", () => {
     expect(() => getProviderAdapter("not-a-provider" as ProviderId)).toThrow();
+  });
+
+  it("treats Codex ACP as not tool-free while legacy Codex remains tool-free", () => {
+    expect(supportsToolFreeMode("codex", {})).toBe(true);
+    expect(supportsToolFreeMode("codex", { AGENT_BRIDGE_CODEX_RUNTIME: "legacy" })).toBe(true);
+    expect(supportsToolFreeMode("codex", { AGENT_BRIDGE_CODEX_RUNTIME: "acp" })).toBe(false);
+    expect(supportsToolFreeMode("claude", { AGENT_BRIDGE_CODEX_RUNTIME: "acp" })).toBe(true);
   });
 
   it("exposes fallback metadata", () => {

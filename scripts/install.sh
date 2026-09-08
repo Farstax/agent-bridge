@@ -90,6 +90,7 @@ seed_from_env_file() {
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
                TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
               CODEX_COMMAND ANTIGRAVITY_COMMAND CLAUDE_COMMAND \
+              AGENT_BRIDGE_CODEX_RUNTIME CODEX_ACP_COMMAND CODEX_ACP_ARGS \
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
               BRIDGE_EXECUTION_MODE POLL_INTERVAL_MS FETCH_TIMEOUT_MS \
@@ -367,6 +368,9 @@ _write_shared_defaults() {
     [[ -n "${AGENT_BRIDGE_AUTONOMY_DIR:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_DIR=${AGENT_BRIDGE_AUTONOMY_DIR}"
     [[ -n "${AGENT_BRIDGE_AUTONOMY_DB_PATH:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_DB_PATH=${AGENT_BRIDGE_AUTONOMY_DB_PATH}"
     [[ -n "${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_MAX_CYCLES=${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES}"
+    [[ -n "${AGENT_BRIDGE_CODEX_RUNTIME:-}" ]] && echo "AGENT_BRIDGE_CODEX_RUNTIME=${AGENT_BRIDGE_CODEX_RUNTIME}"
+    [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
+    [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
     echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
     echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
@@ -394,6 +398,11 @@ _write_systemd_defaults() {
     echo "${token_var}=${!token_var:-}"
     echo "${cmd_var}=${!cmd_var:-}"
     [[ -n "${!proj_var:-}" ]] && echo "${proj_var}=${!proj_var}"
+    if [[ "${bot}" == "codex" ]]; then
+      [[ -n "${AGENT_BRIDGE_CODEX_RUNTIME:-}" ]] && echo "AGENT_BRIDGE_CODEX_RUNTIME=${AGENT_BRIDGE_CODEX_RUNTIME}"
+      [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
+      [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
+    fi
     true
   } | sudo tee "${dest}" > /dev/null
   echo "  wrote ${dest}"
@@ -431,6 +440,9 @@ _write_interactive_defaults() {
     echo "CODEX_COMMAND=${CODEX_COMMAND:-codex}"
     echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
     echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
+    [[ -n "${AGENT_BRIDGE_CODEX_RUNTIME:-}" ]] && echo "AGENT_BRIDGE_CODEX_RUNTIME=${AGENT_BRIDGE_CODEX_RUNTIME}"
+    [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
+    [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     echo "DB_PATH=${DB_PATH:-${BRIDGE_ROOT_DIR}/runtime/agent-bridge/interactive/bridge.sqlite}"
     true
   } | sudo tee "${dest}" > /dev/null
@@ -457,6 +469,9 @@ _write_discord_defaults() {
       echo "CODEX_COMMAND=${CODEX_COMMAND:-codex}"
       echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
       echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
+      [[ -n "${AGENT_BRIDGE_CODEX_RUNTIME:-}" ]] && echo "AGENT_BRIDGE_CODEX_RUNTIME=${AGENT_BRIDGE_CODEX_RUNTIME}"
+      [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
+      [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
       echo "BRIDGE_EXECUTION_MODE=${BRIDGE_EXECUTION_MODE:-trusted}"
     fi
     true

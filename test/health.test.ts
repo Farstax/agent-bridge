@@ -963,6 +963,48 @@ describe("SelfPlugin — extended checks", () => {
     expect(agyCheck?.message).toContain("1.0.10");
   });
 
+  it("reports the bundled Codex ACP adapter instead of the global @openai/codex package", async () => {
+    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    const previousProject = process.env.BRIDGE_PROJECT_DIR;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    process.env.BRIDGE_PROJECT_DIR = process.cwd();
+    (globalThis as any).__mockExecSync = (cmd: string) => {
+      if (cmd.includes("npm list -g --depth=0 --json")) {
+        return JSON.stringify({
+          dependencies: {
+            "@anthropic-ai/claude-code": { version: "2.1.185" },
+            "@openai/codex": { version: "0.141.0" },
+          },
+        });
+      }
+      if (cmd.includes("npm view @anthropic-ai/claude-code version") && !cmd.includes("versions")) return "2.1.185";
+      if (cmd.includes("npm view @openai/codex version") && !cmd.includes("versions")) return "0.141.0";
+      if (cmd.includes("agy --version")) return "1.0.10";
+      return undefined;
+    };
+    (globalThis as any).__mockExecFileSync = (command: string) => {
+      if (String(command).includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
+      if (command.includes("claude")) return "Claude Code 2.1.185";
+      if (command.includes("codex")) return "codex 0.141.0";
+      return "agy 1.0.10";
+    };
+    try {
+      const { SelfPlugin } = await import("../src/health/plugins/self.js");
+      const plugin = new SelfPlugin(db as any, dbPath);
+      const report = await plugin.check();
+      const codexCheck = report.checks.find(c => c.name === "cli-update-codex");
+      expect(codexCheck?.status).toBe("green");
+      expect(codexCheck?.message).toContain("bundled Codex ACP adapter 1.10.0");
+      expect(codexCheck?.message).not.toContain("@openai/codex");
+      expect(codexCheck?.message).not.toContain("0.141.0");
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
+      if (previousProject === undefined) delete process.env.BRIDGE_PROJECT_DIR;
+      else process.env.BRIDGE_PROJECT_DIR = previousProject;
+    }
+  });
+
   it("handles npm list errors gracefully without failing the entire plugin", async () => {
     (globalThis as any).__mockExecSync = (cmd: string) => {
       if (cmd.includes("npm list -g --depth=0 --json")) {

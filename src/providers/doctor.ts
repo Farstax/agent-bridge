@@ -7,6 +7,7 @@
 
 import { execFileSync } from "node:child_process";
 import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
+import { resolveCodexAcpCommand, resolveCodexRuntime } from "./codexRuntimeSelection.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
@@ -29,7 +30,10 @@ const CHAIN_ENV_VARS = [
 export interface ProviderCheck {
   id: string;
   executable: string;
-  status: "available" | "missing";
+  status: "available" | "missing" | "invalid";
+  runtime?: "legacy" | "acp";
+  version?: string | null;
+  reason?: string;
 }
 
 export interface ChainCheck {
@@ -62,18 +66,62 @@ export function defaultCommandExists(executable: string): boolean {
   }
 }
 
+export function defaultInspectVersion(executable: string): string | null {
+  try {
+    const output = execFileSync(executable, ["--version"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return output.slice(0, 120) || null;
+  } catch {
+    return null;
+  }
+}
+
+function inspectCodexProvider(
+  env: Record<string, string | undefined>,
+  commandExists: (executable: string) => boolean,
+  inspectVersion: (executable: string) => string | null,
+): ProviderCheck {
+  try {
+    const runtime = resolveCodexRuntime(env);
+    const executable = runtime === "acp"
+      ? resolveCodexAcpCommand(env)
+      : resolveProviderExecutable("codex", env);
+    const available = commandExists(executable);
+    return {
+      id: "codex",
+      executable,
+      status: available ? "available" : "missing",
+      runtime,
+      ...(runtime === "acp" && available ? { version: inspectVersion(executable) } : {}),
+    };
+  } catch (error) {
+    return {
+      id: "codex",
+      executable: env.CODEX_COMMAND?.trim() || "codex",
+      status: "invalid",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function runDoctor({
   env = process.env,
   requiredEnv = [],
   commandExists = defaultCommandExists,
+  inspectVersion = defaultInspectVersion,
   inspectVoiceRuntime = inspectVoiceRuntimeReadiness,
 }: {
   env?: Record<string, string | undefined>;
   requiredEnv?: string[];
   commandExists?: (executable: string) => boolean;
+  inspectVersion?: (executable: string) => string | null;
   inspectVoiceRuntime?: (env: Record<string, string | undefined>) => VoiceRuntimeReadiness;
 } = {}): DoctorReport {
   const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => {
+    if (adapter.id === "codex") return inspectCodexProvider(env, commandExists, inspectVersion);
     const executable = resolveProviderExecutable(adapter.id, env);
     return {
       id: adapter.id,
@@ -114,7 +162,11 @@ export function runDoctor({
   const voiceOk = voiceTranscription.status === "ready"
     || voiceTranscription.reasonCode === "voice_transcription_disabled";
   const ok =
-    providers.every((p) => p.status === "available" || !configuredProviderIds.has(p.id)) &&
+    providers.every((p) =>
+      p.status === "invalid"
+        ? false
+        : p.status === "available" || !configuredProviderIds.has(p.id),
+    ) &&
     chains.every((c) => c.ok) &&
     envChecks.every((e) => e.present) &&
     voiceOk;
@@ -125,7 +177,10 @@ export function runDoctor({
 export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [];
   for (const p of report.providers) {
-    lines.push(`provider ${p.id} (${p.executable}): ${p.status}`);
+    const runtime = p.runtime ? ` runtime=${p.runtime}` : "";
+    const version = p.version ? ` version=${p.version}` : "";
+    const reason = p.reason ? ` (${p.reason})` : "";
+    lines.push(`provider ${p.id} (${p.executable})${runtime}: ${p.status}${version}${reason}`);
   }
   for (const c of report.chains) {
     if (!c.set) {
