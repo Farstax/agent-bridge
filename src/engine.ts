@@ -2028,6 +2028,9 @@ export function persistEngineProviderSession(
 ): void {
   if (kind === "codex" && resolveCodexRuntime() === "acp") {
     if (sessionId) {
+      // A completed ACP turn makes any stored legacy Codex session stale: it
+      // predates this ACP history and must not be resumed as legacy later.
+      db.setSession(chatKey, "codex", null);
       db.putAcpSessionBinding({
         conversationId: chatKey,
         providerId: "codex",
@@ -2041,6 +2044,10 @@ export function persistEngineProviderSession(
   }
   try {
     db.setSession(chatKey, kind, sessionId);
+    // Symmetric to the ACP branch above: a completed legacy Codex turn makes
+    // any stored ACP session binding stale, so a later switch back to ACP
+    // must not resume it as though it saw this turn.
+    if (kind === "codex" && sessionId) db.clearAcpSessionBinding(chatKey, "codex");
   } catch {
     // ignore — non-agent kinds are not tracked
   }

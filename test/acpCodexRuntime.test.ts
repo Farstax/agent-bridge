@@ -135,6 +135,54 @@ describe("ACP session persistence", () => {
     }
   });
 
+  it("does not resume a pre-ACP legacy session after intervening ACP turns", () => {
+    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    const db = openDb(":memory:");
+    try {
+      // Legacy session L exists before any ACP turn.
+      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "legacy";
+      persistEngineProviderSession(db, "conv-transition-1", "codex", "legacy-session-L", "run-legacy");
+      expect(lookupEngineProviderSession(db, "conv-transition-1", "codex")).toBe("legacy-session-L");
+
+      // Switch to ACP and complete a turn.
+      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+      persistEngineProviderSession(db, "conv-transition-1", "codex", "acp-session-A", "run-acp");
+      expect(lookupEngineProviderSession(db, "conv-transition-1", "codex")).toBe("acp-session-A");
+
+      // Switch back to legacy: L predates the ACP turns and must not resume.
+      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "legacy";
+      expect(lookupEngineProviderSession(db, "conv-transition-1", "codex")).toBeNull();
+    } finally {
+      db.close();
+      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
+    }
+  });
+
+  it("does not resume a pre-legacy ACP session after intervening legacy turns", () => {
+    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    const db = openDb(":memory:");
+    try {
+      // ACP session A exists before any legacy turn.
+      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+      persistEngineProviderSession(db, "conv-transition-2", "codex", "acp-session-A2", "run-acp");
+      expect(lookupEngineProviderSession(db, "conv-transition-2", "codex")).toBe("acp-session-A2");
+
+      // Switch to legacy and complete a turn.
+      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "legacy";
+      persistEngineProviderSession(db, "conv-transition-2", "codex", "legacy-session-L2", "run-legacy");
+      expect(lookupEngineProviderSession(db, "conv-transition-2", "codex")).toBe("legacy-session-L2");
+
+      // Switch back to ACP: A predates the legacy turn and must not resume.
+      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+      expect(lookupEngineProviderSession(db, "conv-transition-2", "codex")).toBeNull();
+    } finally {
+      db.close();
+      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
+    }
+  });
+
   it("treats ACP unknown-session and unresumable-session errors as recoverable invalid ids", () => {
     expect(isInvalidProviderSessionError("Unknown session: acp-sess-1")).toBe(true);
     expect(isInvalidProviderSessionError("ACP agent does not support resume or load for an existing session")).toBe(true);
