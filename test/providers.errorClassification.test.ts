@@ -1,3 +1,4 @@
+import { RequestError } from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 import {
   classifyAnyProviderError,
@@ -5,6 +6,7 @@ import {
   isFallbackEligibleProviderError,
 } from "../src/providers/errorClassification.js";
 import { isProviderFallbackEligibleError } from "../src/providers/fallbackEligibility.js";
+import { getNextFallbackModel, isCapacityExhaustedError } from "../src/cli.js";
 
 describe("provider error classification", () => {
   it("classifies Codex capacity and model-unavailable messages", () => {
@@ -66,5 +68,74 @@ describe("provider error classification", () => {
     expect(isFallbackEligibleProviderError(classifyAnyProviderError(new Error("MODEL_CAPACITY_EXHAUSTED")))).toBe(true);
     expect(isFallbackEligibleProviderError(classifyAnyProviderError(new Error("Error: unknown model minimax-m2.5")))).toBe(true);
     expect(isProviderFallbackEligibleError(new Error("MODEL_CAPACITY_EXHAUSTED"))).toBe(true);
+  });
+
+  describe("ACP Codex structured error.data", () => {
+    it("classifies a usageLimitExceeded RequestError as capacity_exhausted", () => {
+      const error = RequestError.internalError({
+        message: "Internal error",
+        codexErrorInfo: "usageLimitExceeded",
+      });
+      expect(classifyProviderError("codex", error)).toMatchObject({ kind: "capacity_exhausted" });
+      expect(isCapacityExhaustedError(error)).toBe(true);
+    });
+
+    it("classifies a rateLimitExceeded RequestError as capacity_exhausted", () => {
+      const error = RequestError.internalError({
+        message: "Internal error",
+        codexErrorInfo: "rateLimitExceeded",
+      });
+      expect(classifyProviderError("codex", error)).toMatchObject({ kind: "capacity_exhausted" });
+    });
+
+    it("classifies a serverOverloaded RequestError as capacity_exhausted", () => {
+      const error = RequestError.internalError({
+        message: "Internal error",
+        codexErrorInfo: "serverOverloaded",
+      });
+      expect(classifyProviderError("codex", error)).toMatchObject({ kind: "capacity_exhausted" });
+    });
+
+    it("classifies a transport_lost structured codexErrorInfo object as transient", () => {
+      const error = RequestError.internalError({
+        message: "Internal error",
+        codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } },
+      });
+      expect(classifyProviderError("codex", error)).toMatchObject({ kind: "transient" });
+    });
+
+    it("classifies model-unavailable text carried only in nested error.data.message", () => {
+      const error = RequestError.internalError({
+        message: 'Error: Model "glm-5.2-fp8" not found.',
+      });
+      expect(classifyProviderError("codex", error)).toMatchObject({ kind: "model_unavailable" });
+    });
+
+    it("classifies an unauthorized RequestError as auth_required", () => {
+      const error = RequestError.authRequired({
+        message: "Authentication required",
+        codexErrorInfo: "unauthorized",
+      });
+      expect(classifyProviderError("codex", error)).toMatchObject({ kind: "auth_required" });
+    });
+
+    it("keeps unmapped/unrecognized ACP structured error categories unknown, not capacity", () => {
+      const error = RequestError.internalError({
+        message: "usage limit and quota exceeded mentioned incidentally",
+        codexErrorInfo: "sandboxError",
+      });
+      expect(classifyProviderError("codex", error)).toMatchObject({ kind: "unknown" });
+      expect(isCapacityExhaustedError(error)).toBe(false);
+    });
+
+    it("drives the actual Bridge fallback path to the next configured model", () => {
+      const error = RequestError.internalError({
+        message: "Internal error",
+        codexErrorInfo: "usageLimitExceeded",
+      });
+      expect(isCapacityExhaustedError(error)).toBe(true);
+      const prefs = ["gpt-5.1-codex", "gpt-5.1-codex-mini"];
+      expect(getNextFallbackModel("gpt-5.1-codex", prefs)).toBe("gpt-5.1-codex-mini");
+    });
   });
 });
