@@ -13,6 +13,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
+import { runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
+import { resolveCodexRuntime } from "./codexRuntimeSelection.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -27,7 +29,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   codex: {
     envVar: "CODEX_API_KEY",
     verification: "bounded_native_turn",
-    notes: "Codex exec reads CODEX_API_KEY directly; OPENAI_API_KEY is not the Bridge runtime contract.",
+    notes: "Legacy Codex verifies with codex exec; Codex ACP verifies through the selected adapter's ACP authenticate + bounded prompt path.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
@@ -93,9 +95,12 @@ export type ProviderApiKeyProbeExecutor = (
   options: ProbeExecOptions,
 ) => Promise<unknown>;
 
+export type CodexAcpApiKeyProbeExecutor = (env: NodeJS.ProcessEnv) => Promise<void>;
+
 export interface VerifyProviderApiKeyOptions {
   env?: Env;
   execFile?: ProviderApiKeyProbeExecutor;
+  codexAcpProbe?: CodexAcpApiKeyProbeExecutor;
   useCache?: boolean;
 }
 
@@ -124,13 +129,14 @@ export function getProviderApiKeySecretValues(env: Env = process.env): string[] 
 export function isProviderApiKeyVerified(provider: ProviderId, env: Env = process.env): boolean {
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
-  return verificationCache.get(cacheKey(provider, apiKey)) === true;
+  return verificationCache.get(cacheKey(provider, apiKey, env)) === true;
 }
 
 /**
  * Keep provider credentials out of unrelated provider children. The issue-572
- * candidate key itself is withheld until its isolated native probe has passed,
- * so a bad optional key cannot override an otherwise valid account session.
+ * candidate key itself is withheld until its provider-specific verification
+ * boundary has accepted it. Codex ACP verification uses the selected adapter
+ * itself, so an ACP key never depends on or cross-qualifies legacy `codex exec`.
  */
 export function filterProviderCredentialEnv(
   bot: BotKind | undefined,
@@ -192,9 +198,27 @@ function commandForProvider(provider: ProviderId, env: Env): string {
   return bots[provider].command;
 }
 
-function cacheKey(provider: ProviderId, apiKey: string): string {
+function codexAcpOwnsApiKeyValidation(provider: ProviderId, env: Env): boolean {
+  if (provider !== "codex") return false;
+  try {
+    return resolveCodexRuntime(env) === "acp";
+  } catch {
+    return false;
+  }
+}
+
+function verificationScope(provider: ProviderId, env: Env): string {
+  if (provider !== "codex") return "native";
+  try {
+    return resolveCodexRuntime(env);
+  } catch {
+    return "invalid";
+  }
+}
+
+function cacheKey(provider: ProviderId, apiKey: string, env: Env): string {
   const fingerprint = createHash("sha256").update(apiKey).digest("hex");
-  return `${provider}:${fingerprint}`;
+  return `${provider}:${verificationScope(provider, env)}:${fingerprint}`;
 }
 
 function writeSettings(path: string, settings: Record<string, unknown>): void {
@@ -369,7 +393,7 @@ export async function verifyProviderApiKey(
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
 
-  const key = cacheKey(provider, apiKey);
+  const key = cacheKey(provider, apiKey, env);
   if (options.useCache !== false) {
     if (verificationCache.get(key) === true) return true;
     const failedAt = verificationFailures.get(key);
@@ -384,7 +408,11 @@ export async function verifyProviderApiKey(
   const verification = (async () => {
     let verified = false;
     try {
-      await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
+      if (codexAcpOwnsApiKeyValidation(provider, env)) {
+        await (options.codexAcpProbe ?? runCodexAcpApiKeyProbe)(buildProbeEnv(provider, env));
+      } else {
+        await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
+      }
       verified = true;
     } catch {
       verified = false;

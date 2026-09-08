@@ -169,6 +169,25 @@ describe("RunView reducer", () => {
     ]);
     expect(new Date(v2.updatedAt) >= new Date(v1.updatedAt)).toBe(true);
   });
+
+  it("acp.event does not change delivered text/status — Telegram/Discord never redeliver it", async () => {
+    const { reduce } = await import("../src/events/reducer.js");
+    const { type } = await import("../src/events/types.js");
+    const base = { runId: "r-1", bot: "codex" as const, chatId: "100", chatKey: "100" };
+    const view = reduce([
+      type.runStarted({ ...base, command: "codex", cwd: "/", model: null }),
+      type.textDelta({ ...base, text: "live answer", source: "stdout" }),
+      type.acpEvent({
+        ...base,
+        sessionMode: "load",
+        event: { kind: "session_update", channel: "replay", notification: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed history" } } } },
+      }),
+      type.runCompleted({ ...base, text: "live answer", sessionId: "s-1" }),
+    ]);
+    expect(view.text).toBe("live answer");
+    expect(view.text).not.toContain("replayed history");
+    expect(view.status).toBe("done");
+  });
 });
 
 // ── Phase 2: Event emission from runCliAsync ──────────────────────────────────

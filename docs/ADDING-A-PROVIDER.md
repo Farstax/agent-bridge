@@ -36,6 +36,12 @@ native provider executable
 
 `src/cliSupervisor.ts` is the authoritative child-process lifecycle. New providers should normally use it unchanged. Provider command construction, result parsing, session protocol, and provider-specific completion semantics belong in the provider runtime, not the supervisor.
 
+ACP v1 is the future provider-runtime protocol. See [ACP.md](ACP.md) for the
+ownership split, session-identity mapping, and the parallel Codex ACP path.
+Do not add a proprietary protocol wrapper around ACP, and do not parse
+provider-native events inside `src/acp/`. Future ACP-native providers should
+prefer launch metadata plus qualification over a bespoke parser/runtime.
+
 The shared provider contracts live in `src/providers/types.ts`:
 
 - `PROVIDER_IDS` / `ProviderId` — canonical provider identity;

@@ -96,7 +96,7 @@ describe("authorized retained conversation scope", () => {
   });
 
   it("keeps the conversation turn migration registered before the pending identity repair", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(15);
+    expect(CURRENT_SCHEMA_VERSION).toBe(16);
     const raw = new Database(":memory:");
     raw.exec(`CREATE TABLE conversation_turns (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

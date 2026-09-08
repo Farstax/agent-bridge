@@ -32,9 +32,12 @@
     "scan-token-savings": "tsx scripts/scan-token-savings.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/codex-acp": "1.10.0",
+    "@agentclientprotocol/sdk": "1.4.0",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^17.2.3",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "zod": "4.1.12"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

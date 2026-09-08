@@ -2,6 +2,7 @@ import { accessSync, chmodSync, constants, existsSync, statSync, writeFileSync }
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 export { bootstrapSourceInteractiveDb } from "./db.js";
+import { resolveCodexAcpCommand, resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./providers/registry.js";
 import type { ChainCliKind, ProviderId } from "./providers/types.js";
 import { TelegramClient } from "./telegram.js";
@@ -80,7 +81,14 @@ export function detectInteractiveProviders(options: {
   const detected = getProviderAdapters()
     .filter((adapter) => adapter.capabilities.interactive)
     .flatMap((adapter) => {
-      const configuredCommand = resolveProviderExecutable(adapter.id, env);
+      let configuredCommand: string | null;
+      try {
+        configuredCommand = adapter.id === "codex" && resolveCodexRuntime(env) === "acp"
+          ? resolveCodexAcpCommand(env)
+          : resolveProviderExecutable(adapter.id, env);
+      } catch {
+        return [];
+      }
       const commandPath = resolvePath(configuredCommand);
       if (!commandPath) return [];
       return [{

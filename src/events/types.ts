@@ -46,12 +46,31 @@ export interface RunCancelledEvent extends BridgeEventBase {
   reason: "user" | "shutdown" | "timeout";
 }
 
+/**
+ * Provider-neutral sink for one rich ACP session/update, tool-call, plan,
+ * permission, or stop event, forwarded as it happens rather than batched at
+ * successful turn completion — events observed before a cancellation,
+ * timeout, provider error, or child death are persisted as they occurred
+ * instead of being lost when the turn never reaches a successful end. Retained
+ * internally for later Bridge inspection without reparsing provider-native
+ * output; Telegram/Discord presentation stays unchanged (the reducer/adapter
+ * do not read this event). `event` is redacted of provider credentials
+ * before this event is constructed.
+ */
+export interface AcpEventObservedEvent extends BridgeEventBase {
+  type: "acp.event";
+  sessionMode: "fresh" | "load" | "resume";
+  /** One structured, credential-redacted ACP retained event, JSON-serializable as-is. */
+  event: unknown;
+}
+
 export type BridgeEvent =
   | RunStartedEvent
   | TextDeltaEvent
   | RunCompletedEvent
   | RunFailedEvent
-  | RunCancelledEvent;
+  | RunCancelledEvent
+  | AcpEventObservedEvent;
 
 function base(fields: { runId: string; bot: BotKind; chatId: string; chatKey: string; threadId?: string }): BridgeEventBase {
   return {
@@ -128,5 +147,23 @@ export const type = {
     threadId?: string;
   }): RunCancelledEvent {
     return { ...base(fields), type: "run.cancelled", reason: fields.reason };
+  },
+
+  acpEvent(fields: {
+    runId: string;
+    bot: BotKind;
+    chatId: string;
+    chatKey: string;
+    sessionId?: string | null;
+    sessionMode: "fresh" | "load" | "resume";
+    event: unknown;
+    threadId?: string;
+  }): AcpEventObservedEvent {
+    return {
+      ...base(fields),
+      type: "acp.event",
+      sessionMode: fields.sessionMode,
+      event: fields.event,
+    };
   },
 };

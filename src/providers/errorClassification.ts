@@ -91,8 +91,80 @@ function matchReason(message: string, patterns: readonly RegExp[]): string | nul
   return patterns.find(pattern => pattern.test(message))?.source ?? null;
 }
 
+/**
+ * Codex ACP (`@agentclientprotocol/codex-acp`) reports provider failures as a
+ * generic `RequestError` (message "Internal error") whose classification
+ * lives in structured `error.data`, not the top-level message. `data.message`
+ * carries the real provider text; `data.codexErrorInfo` carries the adapter's
+ * own failure category as either a string (e.g. "usageLimitExceeded") or a
+ * single-key object (e.g. { httpConnectionFailed: {...} }).
+ */
+interface AcpStructuredErrorData {
+  readonly message?: string;
+  readonly codexErrorInfo?: string | Readonly<Record<string, unknown>>;
+  readonly additionalDetails?: string;
+}
+
+function acpErrorData(error: Error | string): AcpStructuredErrorData | null {
+  if (typeof error === "string") return null;
+  const data = (error as { data?: unknown }).data;
+  return data && typeof data === "object" ? (data as AcpStructuredErrorData) : null;
+}
+
+// Maps `@agentclientprotocol/codex-acp`'s STRING_CODEX_ERROR_CATEGORIES onto
+// Bridge's provider-neutral classification kinds. Categories absent here
+// (contextWindowExceeded, sessionBudgetExceeded, serverOverloaded's siblings,
+// cyberPolicy, misalignmentPolicyViolation, internalServerError, badRequest,
+// threadRollbackFailed, sandboxError, other) stay "unknown" deliberately.
+const ACP_CODEX_ERROR_INFO_KIND: Readonly<Record<string, ProviderErrorClassification["kind"]>> = {
+  usageLimitExceeded: "capacity_exhausted",
+  rateLimitExceeded: "capacity_exhausted",
+  serverOverloaded: "capacity_exhausted",
+  unauthorized: "auth_required",
+};
+
+// Maps the single key of a structured (object-shaped) codexErrorInfo onto a
+// classification kind. Categories absent here (activeTurnNotSteerable) stay
+// "unknown" deliberately.
+const ACP_CODEX_STRUCTURED_ERROR_INFO_KIND: Readonly<Record<string, ProviderErrorClassification["kind"]>> = {
+  httpConnectionFailed: "transient",
+  responseStreamConnectionFailed: "transient",
+  responseStreamDisconnected: "transient",
+  responseTooManyFailedAttempts: "transient",
+};
+
+function classifyAcpCodexErrorInfo(data: AcpStructuredErrorData): ProviderErrorClassification | null {
+  const info = data.codexErrorInfo;
+  if (info == null) return null;
+  if (typeof info === "string") {
+    return { kind: ACP_CODEX_ERROR_INFO_KIND[info] ?? "unknown", reason: `acp:codexErrorInfo:${info}` };
+  }
+  const key = Object.keys(info)[0];
+  if (!key) return { kind: "unknown", reason: "acp:codexErrorInfo:structured" };
+  return { kind: ACP_CODEX_STRUCTURED_ERROR_INFO_KIND[key] ?? "unknown", reason: `acp:codexErrorInfo:${key}` };
+}
+
 export function classifyProviderError(providerId: ProviderId, error: Error | string): ProviderErrorClassification {
-  const message = typeof error === "string" ? error : error.message;
+  const data = acpErrorData(error);
+
+  // Structured ACP provider categories are authoritative when present: an
+  // adapter-classified failure must not be reinterpreted by incidental text
+  // elsewhere in the message, and an adapter category Bridge does not
+  // recognize must stay "unknown" rather than accidentally matching a
+  // capacity/auth pattern later in this function.
+  if (providerId === "codex" && data) {
+    const structured = classifyAcpCodexErrorInfo(data);
+    if (structured) return structured;
+  }
+
+  // Only Codex ACP populates `error.data`; folding it into the searched text
+  // for every other provider would let incidental words in the nested Codex
+  // message accidentally match an unrelated provider's patterns.
+  const message = providerId === "codex" && data
+    ? [typeof error === "string" ? error : error.message, data.message, data.additionalDetails]
+      .filter((part): part is string => Boolean(part))
+      .join("\n")
+    : typeof error === "string" ? error : error.message;
 
   const authReason = matchReason(message, AUTH_PATTERNS);
   if (authReason) return { kind: "auth_required", reason: authReason };

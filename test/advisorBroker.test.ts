@@ -40,6 +40,24 @@ function setup(
 }
 
 describe("bounded cross-provider frontier advice", () => {
+  it("keeps Advisor available on a remaining tool-free target when Codex ACP is selected", () => {
+    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    try {
+      const { broker } = setup();
+      expect(() => broker.issue({
+        chatKey: "chat:7",
+        cliKind: "codex",
+        turnKey: "turn-acp",
+        taskKey: "task-acp",
+        repoPath: "/trusted/repo",
+      })).not.toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
+    }
+  });
+
   it("uses one allowed provider different from the active provider and records minimal audit", async () => {
     const { broker, db, runCli } = setup();
     const capability = broker.issue({

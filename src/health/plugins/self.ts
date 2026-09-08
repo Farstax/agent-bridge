@@ -1,13 +1,54 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import https from "node:https";
 import { execSync } from "node:child_process";
 import { getHeapStatistics } from "node:v8";
 import type { HealthPlugin, HealthReport, CheckResult } from "../types.js";
 import type { BridgeDb } from "../../db.js";
+import { resolveCodexRuntime } from "../../providers/codexRuntimeSelection.js";
 import { readInstalledProviderVersions } from "../../providers/qualificationStatus.js";
 
 const upgradeCommand = process.env.BRIDGE_UPGRADE_COMMAND
   ?? `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh --clis-only`;
+
+function isCodexAcpSelected(env: Record<string, string | undefined> = process.env): boolean {
+  try {
+    return resolveCodexRuntime(env) === "acp";
+  } catch {
+    return false;
+  }
+}
+
+function pinnedCodexAcpVersion(env: Record<string, string | undefined> = process.env): string | null {
+  try {
+    const root = env.BRIDGE_PROJECT_DIR?.trim() || process.cwd();
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    return pkg.dependencies?.["@agentclientprotocol/codex-acp"] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function inspectBundledCodexAcp(runtimeVersions: Partial<Record<string, string>>): CheckResult {
+  const runtime = runtimeVersions.codex;
+  const pinned = pinnedCodexAcpVersion();
+  if (!runtime) {
+    return { name: "cli-update-codex", status: "red", message: "Codex ACP adapter executable not found" };
+  }
+  if (!pinned) {
+    return { name: "cli-update-codex", status: "amber", message: `Codex ACP adapter ${runtime} (release pin unavailable)` };
+  }
+  if (runtime !== pinned) {
+    return {
+      name: "cli-update-codex",
+      status: "amber",
+      message: `bundled Codex ACP adapter runtime ${runtime} differs from pinned ${pinned}`,
+    };
+  }
+  return { name: "cli-update-codex", status: "green", message: `bundled Codex ACP adapter ${runtime}` };
+}
 
 export class SelfPlugin implements HealthPlugin {
   readonly name = "agent-bridge";
@@ -170,11 +211,18 @@ export class SelfPlugin implements HealthPlugin {
       }
     }
 
+    const acpCodex = isCodexAcpSelected();
+    let runtimeVersions: ReturnType<typeof readInstalledProviderVersions> | undefined;
+    if (acpCodex) {
+      runtimeVersions = readInstalledProviderVersions();
+      checks.push(inspectBundledCodexAcp(runtimeVersions));
+    }
+
     if (globalListSuccess) {
-      const runtimeVersions = readInstalledProviderVersions();
+      runtimeVersions ??= readInstalledProviderVersions();
       const cliSpecs = [
         { pkg: "@anthropic-ai/claude-code", provider: "claude" as const, checkName: "cli-update-claude-code" },
-        { pkg: "@openai/codex", provider: "codex" as const, checkName: "cli-update-codex" },
+        ...(!acpCodex ? [{ pkg: "@openai/codex", provider: "codex" as const, checkName: "cli-update-codex" }] : []),
       ];
       for (const { pkg, provider, checkName } of cliSpecs) {
         const installed = globalListParsed[pkg];
@@ -226,10 +274,9 @@ export class SelfPlugin implements HealthPlugin {
       // Preserve an observable health signal when npm metadata is
       // unavailable; silently omitting both checks incorrectly reports the
       // plugin as green and hides a degraded update monitor.
-      for (const [provider, checkName] of [
-        ["claude", "cli-update-claude-code"],
-        ["codex", "cli-update-codex"],
-      ] as const) {
+      const unavailable: Array<[string, string]> = [["claude", "cli-update-claude-code"]];
+      if (!acpCodex) unavailable.push(["codex", "cli-update-codex"]);
+      for (const [provider, checkName] of unavailable) {
         checks.push({
           name: checkName,
           status: "amber",

@@ -7,6 +7,7 @@ import { openDb } from "../src/db.js";
 import { EventStore } from "../src/events/store.js";
 import { type as eventType } from "../src/events/types.js";
 import {
+  captureParsedProviderOutput,
   consumePendingRunFallback,
   finalizeRunTelemetry,
   notePendingRunFallback,
@@ -156,6 +157,57 @@ describe("normalized provider run telemetry", () => {
       inputTokens: 1,
       durationMs: 100,
     });
+  });
+
+  it("persists ACP usage telemetry on the durable run.completed event", () => {
+    const dbPath = join(tmpdir(), `run-telemetry-acp-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(dbPath);
+    try {
+      const runId = "durable-acp-telemetry-run";
+      const text = "ACP live answer";
+      noteRunProviderAttempt(runId, "codex", "gpt-5.6-luna");
+      registerProviderOutput(runId, "codex", text);
+      captureParsedProviderOutput("codex", text, {
+        provider: "codex",
+        inputTokens: 9,
+        outputTokens: 4,
+        reasoningTokens: 2,
+      });
+
+      const store = new EventStore(db);
+      store.collect(eventType.runStarted({
+        runId,
+        bot: "codex",
+        chatId: "100",
+        chatKey: "100",
+        command: "codex-acp",
+        cwd: "/repo",
+        model: null,
+      }));
+      store.queueCompleted(eventType.runCompleted({
+        runId,
+        bot: "codex",
+        chatId: "100",
+        chatKey: "100",
+        text,
+        sessionId: "acp-session",
+        telemetry: { provider: "codex", inputTokens: 9, outputTokens: 4, reasoningTokens: 2 },
+      }));
+      store.finalize();
+
+      const rows = db.getEventsForRun(runId);
+      const payload = JSON.parse(rows[1].payload_json);
+      expect(payload.telemetry).toMatchObject({
+        provider: "codex",
+        model: "gpt-5.6-luna",
+        inputTokens: 9,
+        outputTokens: 4,
+        reasoningTokens: 2,
+      });
+    } finally {
+      db.close();
+      try { rmSync(dbPath); } catch {}
+    }
   });
 
   it("persists correlated parser telemetry on the durable run.completed event", () => {

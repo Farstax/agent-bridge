@@ -42,3 +42,7 @@ The provider adapter owns provider invocation and native terminal-completion pro
 `cliSupervisor.ts` remains provider-agnostic. Shared runtime code owns process
 supervision, execution locks, Run correlation, cancellation, fallback, and
 delivery safety.
+
+ACP v1 is the future provider-runtime communication contract. Agent Bridge
+still owns durable identity, routing, fencing, and delivery; ACP owns agent
+communication; the provider agent owns reasoning and tools. See [ACP.md](../ACP.md).

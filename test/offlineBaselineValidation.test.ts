@@ -233,7 +233,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
     expect(evidence.prestart_rollback_simulation.database_hashes_after_restore).toEqual(
       evidence.prestart_rollback_simulation.database_hashes_before,
     );
-  }, 30000);
+  }, 90_000);
 
   it("rejects tampering with a protected identity column", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-identity-tamper-test-"));

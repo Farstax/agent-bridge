@@ -14,7 +14,7 @@ import type { EffortLevel } from "./effort.js";
 export function normalizeCliArgs(command: string, args: string[]): string[] {
   const cmdName = basename(command).toLowerCase();
   const isAgy = cmdName.includes("agy") || cmdName.includes("antigravity");
-  const isCodex = cmdName.includes("codex");
+  const isCodex = cmdName === "codex" || cmdName === "codex.exe";
 
   if (!isAgy && !isCodex) {
     return args;

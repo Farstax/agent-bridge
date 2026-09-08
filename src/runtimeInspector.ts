@@ -14,6 +14,7 @@ import { loadBotsConfig } from "./config.js";
 import { CURRENT_SCHEMA_VERSION } from "./db/schema.js";
 import { parseCadenceSeconds } from "./health/config.js";
 import { PROVIDER_CONTRACT_VERSION, qualificationEvidencePath, readQualificationEvidence } from "./providers/qualification.js";
+import { resolveCodexAcpCommand, resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
 import { getProviderAdapters } from "./providers/registry.js";
 import { latestDueScheduledOccurrence, type ScheduledRoutine } from "./scheduledRoutines.js";
 import { parseScheduledOccurrenceEvidence, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
@@ -116,12 +117,64 @@ function execution(db: Database.Database, s: ReturnType<typeof scope>) {
   };
 }
 
-function sessions(db: Database.Database, s: ReturnType<typeof scope>) {
+function isStaleTimestamp(value: unknown): boolean {
+  const raw = text(value, 40);
+  if (!raw) return false;
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T") + "Z";
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) && Date.now() - ms > 7 * 24 * HOUR_MS;
+}
+
+function projectCodexSession(db: Database.Database, chatKey: string, row: Row | undefined, env: Env) {
+  let runtime: "legacy" | "acp";
+  try {
+    runtime = resolveCodexRuntime(env);
+  } catch {
+    return { provider: "codex" as const, exists: false, createdAt: null, reasonCode: "invalid_codex_runtime" };
+  }
+  const legacyExists = Boolean(row?.codex_session_id);
+  const legacyCreatedAt = text(row?.codex_session_created_at, 40);
+  if (runtime === "legacy") {
+    return {
+      provider: "codex" as const,
+      runtime,
+      exists: legacyExists,
+      createdAt: legacyCreatedAt,
+      source: "bridge_state",
+    };
+  }
+  let binding: Row | undefined;
+  if (hasTable(db, "acp_session_bindings")) {
+    binding = db.prepare(
+      `SELECT created_at, updated_at FROM acp_session_bindings WHERE conversation_id=? AND provider_id=?`,
+    ).get(chatKey, "codex") as Row | undefined;
+  }
+  const stale = Boolean(binding && isStaleTimestamp(binding.updated_at));
+  const active = Boolean(binding) && !stale;
+  return {
+    provider: "codex" as const,
+    runtime,
+    exists: active,
+    createdAt: active ? text(binding?.created_at, 40) : null,
+    updatedAt: active ? text(binding?.updated_at, 40) : null,
+    source: "acp_session_bindings",
+    ...(stale ? { reasonCode: "stale_binding" } : {}),
+    ...(legacyExists ? { rollback: { exists: true, createdAt: legacyCreatedAt, source: "bridge_state" } } : {}),
+  };
+}
+
+function sessions(db: Database.Database, s: ReturnType<typeof scope>, env: Env) {
   if (!s.chatKey) return { status: "unknown", reasonCode: "conversation_scope_unavailable", providers: [] };
   if (!hasTable(db, "bridge_state")) return { status: "unavailable", reasonCode: "session_store_unavailable", providers: [] };
   const row = db.prepare("SELECT * FROM bridge_state WHERE chat_id=?").get(s.chatKey) as Row | undefined;
   const fields: Array<[ProviderId,string]> = [["codex","codex"],["claude","claude"],["agy","antigravity"],["grok","grok"],["cursor","cursor"]];
-  return { status: "ready", reasonCode: null, providers: fields.map(([provider,key]) => ({ provider, exists: Boolean(row?.[`${key}_session_id`]), createdAt: text(row?.[`${key}_session_created_at`], 40) })) };
+  return {
+    status: "ready",
+    reasonCode: null,
+    providers: fields.map(([provider, key]) => provider === "codex"
+      ? projectCodexSession(db, s.chatKey!, row, env)
+      : { provider, exists: Boolean(row?.[`${key}_session_id`]), createdAt: text(row?.[`${key}_session_created_at`], 40) }),
+  };
 }
 
 function nextRoutineOccurrence(routine: Row) {
@@ -246,19 +299,37 @@ function providers(s: ReturnType<typeof scope>, env: Env, commit: string | null)
   return getProviderAdapters().map((adapter) => {
     const record = evidence?.providers[adapter.id];
     const key = (adapter.id === "agy" ? "antigravity" : adapter.id) as keyof typeof bots;
+    const selected = s.provider === adapter.id;
+    let availability: "available" | "unknown" | "unavailable" = selected ? "available" : "unknown";
+    let availabilityReasonCode: string | null = selected ? null : "not_live_probed";
+    if (adapter.id === "codex") {
+      try {
+        if (resolveCodexRuntime(env) === "acp") {
+          const adapterPath = resolveCodexAcpCommand(env);
+          if (!isExecutable(adapterPath)) {
+            availability = "unavailable";
+            availabilityReasonCode = "acp_adapter_missing";
+          }
+        }
+      } catch {
+        availability = "unavailable";
+        availabilityReasonCode = "invalid_codex_runtime";
+      }
+    }
+    const qualification = !record
+      ? { status: "unknown", reasonCode: evidenceReason ?? "no_qualification_evidence" }
+      : record.contractVersion !== PROVIDER_CONTRACT_VERSION
+        ? { status: "unqualified", reasonCode: "provider_contract_changed", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), executionRuntime: text(record.executionRuntime,20) }
+        : { status: "unknown", reasonCode: "runtime_version_unobserved", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), bridgeCommitMatches: Boolean(commit && record.bridgeCommit===commit), executionRuntime: text(record.executionRuntime,20) };
     return {
       id: adapter.id,
       displayName: adapter.displayName,
-      selected: s.provider === adapter.id,
-      availability: s.provider === adapter.id ? "available" : "unknown",
-      availabilityReasonCode: s.provider === adapter.id ? null : "not_live_probed",
+      selected,
+      availability,
+      availabilityReasonCode,
       authentication: "unknown",
       defaultModel: bots[key].modelPreference[0] ?? null,
-      qualification: !record
-        ? { status: "unknown", reasonCode: evidenceReason ?? "no_qualification_evidence" }
-        : record.contractVersion !== PROVIDER_CONTRACT_VERSION
-          ? { status: "unqualified", reasonCode: "provider_contract_changed", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60) }
-          : { status: "unknown", reasonCode: "runtime_version_unobserved", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), bridgeCommitMatches: Boolean(commit && record.bridgeCommit===commit) },
+      qualification,
     };
   });
 }
@@ -326,7 +397,7 @@ export function buildAgentBridgeInspection(env: Env = process.env) {
     const s=scope(db,env);
     const commit=releaseManifestCommit(projectRoot(env)) ?? text(env.AGENT_BRIDGE_COMMIT??env.BRIDGE_COMMIT??env.BRIDGE_RELEASE_COMMIT,120);
     const ex=execution(db,s);
-    const ss=sessions(db,s);
+    const ss=sessions(db,s,env);
     const rs=routines(db,s,env);
     const a=autonomy(db,mainPath,env);
     const h=health(db,mainPath,env);

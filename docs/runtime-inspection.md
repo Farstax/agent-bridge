@@ -24,7 +24,7 @@ Output is capped at 32,000 characters and arrays are bounded. It deliberately om
 - `runtime`: package/commit identity, service context, database schema readiness, and material degradation codes.
 - `providers`: selected provider, configured default model where present, and qualification evidence without claiming current qualification when the installed provider version was not observed.
 - `execution`: active Runs, recent failed/cancelled/reconciled Runs, and active/expired execution locks using hashed conversation references.
-- `sessions`: existence and creation time for the current conversation only; native session identifiers are never returned.
+- `sessions`: existence and creation time for the current conversation only; native session identifiers are never returned. Codex reports the selected execution runtime (`legacy` or `acp`). When ACP is selected, existence comes from `acp_session_bindings` rather than the legacy session column; a leftover legacy session may appear as rollback visibility.
 - `scheduledRoutines`: current-conversation routine metadata and recorded occurrence evidence. It does not create a second scheduler or invent Run correlation the store does not have.
 - `autonomy`: bounded Episode identity/status/cycle budget and pending wake receipt correlation without objective or constraint text.
 - `surfaces`: Telegram/Discord current-surface readiness without probing another surface.

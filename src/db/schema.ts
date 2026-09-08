@@ -14,9 +14,10 @@ import { applyConversationScopeMigration } from "./conversationScopeMigration.js
 import { applyPendingMessageIdentityMigration } from "./pendingMessageIdentityMigration.js";
 import { applyPendingMessageIdentityRepairMigration } from "./pendingMessageIdentityRepairMigration.js";
 import { applyScheduledOccurrenceCorrelationMigration } from "./scheduledOccurrenceCorrelationMigration.js";
+import { applyAcpSessionBindingsMigration } from "./acpSessionBindingsMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 15;
+export const CURRENT_SCHEMA_VERSION = 16;
 
 export interface Migration {
   version: number;
@@ -165,6 +166,7 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * JavaScript numeric round-trip for databases already upgraded to v13.
  * Version 15 persists the scheduled-occurrence identity on queued work so
  * authoritative occurrence -> Run correlation survives queueing and restart.
+ * Version 16 persists Bridge conversation identity -> provider ACP session ids.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -183,4 +185,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 13, name: "preserve-pending-message-identities", up: applyPendingMessageIdentityMigration },
   { version: 14, name: "restore-pending-message-native-types", up: applyPendingMessageIdentityRepairMigration },
   { version: 15, name: "persist-scheduled-occurrence-correlation", up: applyScheduledOccurrenceCorrelationMigration },
+  { version: 16, name: "persist-acp-session-bindings", up: applyAcpSessionBindingsMigration },
 ];

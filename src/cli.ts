@@ -9,9 +9,12 @@
 import { homedir } from "node:os";
 import type { CliOptions, CliResult, BotKind } from "./types.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./providers/types.js";
+import { randomUUID } from "node:crypto";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import * as codexRuntime from "./providers/codexRuntime.js";
+import * as codexAcpRuntime from "./providers/codexAcpRuntime.js";
+import { isCodexAcpRuntime } from "./providers/codexRuntimeSelection.js";
 import * as claudeRuntime from "./providers/claudeRuntime.js";
 import * as grokRuntime from "./providers/grokRuntime.js";
 import * as cursorRuntime from "./providers/cursorRuntime.js";
@@ -46,6 +49,7 @@ import { isProviderFallbackEligibleError } from "./providers/fallbackEligibility
 import { getProcessWatchForCommand, supportsToolFreeMode } from "./providers/registry.js";
 import {
   runSupervisedProcess,
+  runSupervisedStdioSession,
   getExecutionProcessState,
   buildSafeChildEnv,
   buildAdvisorChildEnv,
@@ -90,6 +94,7 @@ type RecoverableProvider = "codex" | "antigravity" | "grok" | "cursor";
 
 export {
   getExecutionProcessState,
+  runSupervisedStdioSession,
   buildSafeChildEnv,
   buildAdvisorChildEnv,
   beginExecutionLifecycle,
@@ -177,9 +182,12 @@ export function buildCliInvocation({
   const providerPrompt = seedFreshExecutionContract(bot, prompt, sessionId, attachments, includeResponseContract);
 
   if (bot === "codex") {
-    return codexRuntime.buildInvocation({
+    const request = {
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
-    });
+    };
+    return isCodexAcpRuntime(bot)
+      ? codexAcpRuntime.buildInvocation(request)
+      : codexRuntime.buildInvocation(request);
   }
   if (bot === "claude") {
     return claudeRuntime.buildInvocation({
@@ -212,6 +220,36 @@ export function buildCliInvocation({
 }
 
 export { validateBridgeConfig } from "./config.js";
+export { runTurn as runCodexAcpTurn } from "./providers/codexAcpRuntime.js";
+export { isCodexAcpRuntime, resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
+
+/** Run a built invocation on the matching transport. ACP stdio is never oneshot-parsed. */
+export async function runProviderInvocation(
+  bot: string,
+  invocation: ProviderInvocation,
+  cwd: string,
+  options: CliOptions,
+  request: ProviderInvocationRequest,
+  identities: { conversationId: string; runId: string } = {
+    conversationId: String(options.chatId ?? "bridge"),
+    runId: options.eventContext?.runId ?? randomUUID(),
+  },
+): Promise<CliResult> {
+  if (invocation.transport === "acp-stdio") {
+    return codexAcpRuntime.runTurn(request, cwd, { ...options, bot: (options.bot ?? bot) as BotKind }, identities);
+  }
+  const { stdout } = await runConfiguredCli(invocation.command, invocation.args, cwd, {
+    ...options,
+    stdin: invocation.stdin ?? options.stdin,
+  });
+  return parseCliResult({
+    bot,
+    stdout,
+    outputFormat: request.outputFormat === "stream-json" || request.outputFormat === "streaming-json" || request.outputFormat === "json"
+      ? request.outputFormat
+      : undefined,
+  });
+}
 
 /** Resolve CLI execution options for a specific bot kind. */
 export function buildExecutionOptions(kind: BotKind): CliOptions {

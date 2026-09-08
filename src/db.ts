@@ -14,6 +14,8 @@ import { LockRepository, type ExecutionLaneHandle, type ExecutionLockRecord } fr
 export type { ExecutionLaneHandle } from "./repositories/lockRepository.js";
 import { RunRepository, type RunningRun } from "./repositories/runRepository.js";
 import { SessionRepository } from "./repositories/sessionRepository.js";
+import { AcpSessionRepository } from "./repositories/acpSessionRepository.js";
+import type { AcpSessionBinding } from "./acp/sessionMap.js";
 import { SettingsRepository } from "./repositories/settingsRepository.js";
 import { EventReceiptRepository } from "./repositories/eventReceiptRepository.js";
 import { AdvisorRepository } from "./repositories/advisorRepository.js";
@@ -123,6 +125,14 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
          AND ${bot}_session_created_at < datetime('now', '-7 days')`
     );
   }
+  // Same 7-day staleness policy applies to ACP session bindings, keyed by
+  // last successful use (updated_at) rather than creation time — an ACP
+  // binding is a durable resume handle that stays warm across many turns.
+  // Only the stale native-resume pointer is cleared; Bridge conversation
+  // identity (acp_session_bindings.conversation_id's owning chatKey) is
+  // untouched, so the next turn starts a fresh ACP session automatically.
+  // The migration above guarantees this table exists at CURRENT_SCHEMA_VERSION.
+  raw.exec(`DELETE FROM acp_session_bindings WHERE updated_at < datetime('now', '-7 days')`);
   const leaseMs = options.lockLeaseMs ?? 90_000;
   if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error("lockLeaseMs must be greater than zero");
   return new BridgeDb(raw, {
@@ -252,6 +262,7 @@ export class BridgeDb {
   readonly raw: Database.Database;
   readonly lockHeartbeatMs: number;
   private readonly sessions: SessionRepository;
+  private readonly acpSessions: AcpSessionRepository;
   private readonly locks: LockRepository;
   private readonly settings: SettingsRepository;
   private readonly runs: RunRepository;
@@ -264,6 +275,7 @@ export class BridgeDb {
   } = { serviceId: "diagnostic", runId: randomUUID(), leaseMs: 90_000 }) {
     this.raw = raw;
     this.sessions = new SessionRepository(raw);
+    this.acpSessions = new AcpSessionRepository(raw);
     this.locks = new LockRepository(raw, lockOptions);
     this.lockHeartbeatMs = Math.max(100, Math.floor(lockOptions.leaseMs / 3));
     this.settings = new SettingsRepository(raw);
@@ -293,6 +305,19 @@ export class BridgeDb {
 
   setSession(chatId: string, bot: BotKind, sessionId: string | null): void {
     this.sessions.setSession(chatId, bot, sessionId);
+    if (sessionId === null && bot === "codex") this.acpSessions.clear(chatId, "codex");
+  }
+
+  getAcpSessionBinding(conversationId: string, providerId: string): AcpSessionBinding | null {
+    return this.acpSessions.get(conversationId, providerId);
+  }
+
+  putAcpSessionBinding(binding: AcpSessionBinding): void {
+    this.acpSessions.put(binding);
+  }
+
+  clearAcpSessionBinding(conversationId: string, providerId: string): void {
+    this.acpSessions.clear(conversationId, providerId);
   }
 
   // ── Per-chat execution lock ──────────────────────────────────────────────

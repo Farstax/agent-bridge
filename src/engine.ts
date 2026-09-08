@@ -16,6 +16,7 @@ import {
   buildExecutionOptions,
   runCli as _runCli,
   runCliAsync as _runCliAsync,
+  runCodexAcpTurn,
   parseCliResult,
   isCapacityExhaustedError,
   getNextFallbackModel,
@@ -29,6 +30,9 @@ import {
 } from "./cli.js";
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
+import { resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
+import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
+import type { ProviderInvocation } from "./providers/types.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { hasAudioAttachment, prepareVoiceBatchForDispatch } from "./voiceIngress.js";
@@ -42,7 +46,7 @@ import { sendSurfaceMessage, sendMessageWithProgress, PreviewCleanupError } from
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir } from "./bridge.js";
 import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible } from "./commands.js";
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
-import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel } from "./effort.js";
+import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel, type EffortLevel } from "./effort.js";
 import { getCodexUsageText } from "./codexUsage.js";
 import { clearHandoffRequired, isProviderFallbackHandoffRequired } from "./handoffState.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
@@ -519,16 +523,17 @@ export class BridgeEngine {
       : (this.opts.botConfig.modelPreference[0] || null);
     const cwd = this._workingDir(executionKind);
 
+    const btwPrompt = prependWorkspaceContext([
+      "This is a fresh, read-only side question.",
+      "Do not modify files, run write-capable operations, or persist session state.",
+      prompt,
+    ].join("\n\n"));
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
       model,
       effort: resolveEffort(executionKind, this.db),
-      prompt: prependWorkspaceContext([
-        "This is a fresh, read-only side question.",
-        "Do not modify files, run write-capable operations, or persist session state.",
-        prompt,
-      ].join("\n\n")),
+      prompt: btwPrompt,
       sessionId: null,
       executionMode: "safe",
       outputFormat: "json",
@@ -541,13 +546,30 @@ export class BridgeEngine {
     const sideExecutionId = `${this._executionLane(chatKey)}:btw:${randomUUID()}`;
 
     try {
-      const stdout = await this.exec.runCli(invocation.command, invocation.args, cwd, {
-        ...buildExecutionOptions(executionKind),
-        chatId: sideExecutionId,
-        stdin: invocation.stdin,
-        bypassWorkspaceLock: true,
-      });
-      const result = parseCliResult({ bot: executionKind, stdout });
+      const invoked = await this._runNativeOrAcp(
+        executionKind,
+        invocation,
+        cwd,
+        {
+          ...buildExecutionOptions(executionKind),
+          chatId: sideExecutionId,
+          stdin: invocation.stdin,
+          bypassWorkspaceLock: true,
+        },
+        {
+          prompt: btwPrompt,
+          sessionId: null,
+          model,
+          executionMode: "safe",
+          soulContext: this.opts.soulContext ?? null,
+          attachments: [],
+          outputDir: null,
+          effort: resolveEffort(executionKind, this.db),
+          toolMode: "none",
+        },
+        { conversationId: `${chatKey}:btw`, runId: sideExecutionId },
+      );
+      const result = invoked.parsed ?? parseCliResult({ bot: executionKind, stdout: invoked.stdout });
       await this.sendText(chatId, { text: result.text, message_thread_id: threadId });
     } catch (error) {
       const userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
@@ -579,7 +601,7 @@ export class BridgeEngine {
     let prompt = rawPrompt;
     if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
 
-    const sessionId = isAgentKind(this.kind) ? this.db.getSession(chatKey, this.kind) : null;
+    const sessionId = isAgentKind(this.kind) ? lookupEngineProviderSession(this.db, chatKey, this.kind) : null;
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
 
@@ -780,7 +802,7 @@ export class BridgeEngine {
         },
         afterFinalDelivery: () => {
           if (!result) throw new Error("missing staged CLI result at final delivery");
-          this._commitResultState(input.laneHandle, input.prompt, result);
+          this._commitResultState(input.laneHandle, input.prompt, result, input.runId);
         },
       });
       return delivered ? result : null;
@@ -1109,11 +1131,11 @@ export class BridgeEngine {
     return { ...result };
   }
 
-  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult): void {
+  private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult, runId: string | null = null): void {
     const chatKey = handle.chatKey;
     this._runWithFence(handle, () => {
       if (result.sessionId && isAgentKind(this.kind)) {
-        db_setSession(this.db, chatKey, this.kind, result.sessionId);
+        persistEngineProviderSession(this.db, chatKey, this.kind, result.sessionId, runId);
         if (result.nativeSessionMode === "fresh") clearHandoffRequired(this.db, chatKey, this.kind);
       }
       if (isAgentKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
@@ -1299,6 +1321,49 @@ export class BridgeEngine {
     }
   }
 
+  private async _runNativeOrAcp(
+    executionKind: BotKind,
+    invocation: ProviderInvocation,
+    cwd: string,
+    options: CliOptions,
+    acpRequest: {
+      prompt: string;
+      sessionId: string | null;
+      model: string | null;
+      executionMode: "safe" | "trusted";
+      soulContext: string | null;
+      includeResponseContract?: boolean;
+      attachments: string[];
+      outputDir: string | null;
+      effort: EffortLevel | null;
+      toolMode?: "default" | "none";
+    },
+    identities: { conversationId: string; runId: string },
+  ): Promise<{ stdout: string; parsed: CliResult | null }> {
+    if (invocation.transport === "acp-stdio") {
+      const parsed = await runCodexAcpTurn({
+        prompt: acpRequest.prompt,
+        sessionId: acpRequest.sessionId,
+        command: invocation.command,
+        model: acpRequest.model,
+        executionMode: acpRequest.executionMode,
+        outputFormat: "json",
+        soulContext: acpRequest.soulContext,
+        includeResponseContract: acpRequest.includeResponseContract,
+        attachments: acpRequest.attachments,
+        outputDir: acpRequest.outputDir,
+        effort: acpRequest.effort,
+        toolMode: acpRequest.toolMode ?? "default",
+        nativeCompletion: true,
+      }, cwd, { ...options, bot: executionKind }, identities);
+      registerProviderOutput(identities.runId, "codex", parsed.text);
+      captureParsedProviderOutput("codex", parsed.text, parsed.telemetry);
+      return { stdout: parsed.text, parsed };
+    }
+    const stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, options)).text;
+    return { stdout, parsed: null };
+  }
+
   private async _executeProviderAttempt(
     prompt: string,
     sessionId: string | null,
@@ -1369,18 +1434,38 @@ export class BridgeEngine {
       && invocation.args.includes("stream-json");
     try {
       let stdout: string;
+      let parsedAcp: CliResult | null = null;
       try {
         (body as { onProviderExecutionStarted?: () => void }).onProviderExecutionStarted?.();
-        stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, {
-          ...buildExecutionOptions(executionKind),
-          onProgress,
-          onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
-          chatId: this._executionLane(chatKey),
-          stdin: invocation.stdin,
-          contextEnv: promptForCli.contextEnv,
-          eventContext,
-          onEvent: collect ?? undefined,
-        })).text;
+        const invoked = await this._runNativeOrAcp(
+          executionKind,
+          invocation,
+          cwd,
+          {
+            ...buildExecutionOptions(executionKind),
+            onProgress,
+            onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
+            chatId: this._executionLane(chatKey),
+            stdin: invocation.stdin,
+            contextEnv: promptForCli.contextEnv,
+            eventContext,
+            onEvent: collect ?? undefined,
+          },
+          {
+            prompt: promptForCli.prompt,
+            sessionId,
+            model,
+            executionMode: this.opts.executionMode,
+            soulContext: promptForCli.soulContext,
+            includeResponseContract: promptForCli.includeResponseContract,
+            attachments,
+            outputDir: outDir,
+            effort: resolveEffort(executionKind, this.db),
+          },
+          { conversationId: chatKey, runId: runId ?? randomUUID() },
+        );
+        stdout = invoked.stdout;
+        parsedAcp = invoked.parsed;
       } finally {
         (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
       }
@@ -1393,7 +1478,9 @@ export class BridgeEngine {
       }
 
       let result: CliResult;
-      if (isClaudeStreamJson) {
+      if (parsedAcp) {
+        result = parsedAcp;
+      } else if (isClaudeStreamJson) {
         const parsed = parseClaudeStreamJsonOutput(stdout);
         result = parsed ?? { text: stdout.trim(), sessionId: null };
       } else {
@@ -1430,6 +1517,7 @@ export class BridgeEngine {
           threadId: eventContext.threadId,
           sessionId: stagedResult.sessionId ?? null,
           text: stagedResult.text,
+          ...(stagedResult.telemetry ? { telemetry: stagedResult.telemetry } : {}),
         });
       }
       return stagedResult;
@@ -1437,9 +1525,9 @@ export class BridgeEngine {
       if (logFile) { try { rmSync(logFile); } catch {} }
       if (error instanceof LostExecutionLeaseError) throw error;
       if (this._canPublish(laneHandle)) await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
-      if (sessionId && /No conversation found with session ID|thread not found|session not found|conversation not found/i.test((error as Error).message ?? "")) {
+      if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
-        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
@@ -1505,16 +1593,36 @@ export class BridgeEngine {
 
     try {
       let rawResult: string;
+      let parsedAcp: CliResult | null = null;
       try {
-        rawResult = (await this.exec.runCliAsync(retryInvocation.command, retryInvocation.args, retryCwd, {
-          ...buildExecutionOptions(executionKind),
-          onProgress,
-          onProviderOutputChunk: body.onProviderOutputChunk,
-          chatId: this._executionLane(chatKey),
-          stdin: retryInvocation.stdin,
-          eventContext,
-          onEvent: collect ?? undefined,
-        })).text;
+        const invoked = await this._runNativeOrAcp(
+          executionKind,
+          retryInvocation,
+          retryCwd,
+          {
+            ...buildExecutionOptions(executionKind),
+            onProgress,
+            onProviderOutputChunk: body.onProviderOutputChunk,
+            chatId: this._executionLane(chatKey),
+            stdin: retryInvocation.stdin,
+            eventContext,
+            onEvent: collect ?? undefined,
+          },
+          {
+            prompt,
+            sessionId: null,
+            model,
+            executionMode: this.opts.executionMode,
+            soulContext,
+            includeResponseContract,
+            attachments,
+            outputDir: outDir,
+            effort: resolveEffort(executionKind, this.db),
+          },
+          { conversationId: chatKey, runId: runId ?? randomUUID() },
+        );
+        rawResult = invoked.stdout;
+        parsedAcp = invoked.parsed;
       } finally {
         body.onProviderOutputFinished?.();
       }
@@ -1527,7 +1635,7 @@ export class BridgeEngine {
       const outputFormat = executionKind === "antigravity"
         ? (retryInvocation.args.includes("stream-json") ? "stream-json" : (retryInvocation.args.includes("json") ? "json" : "text"))
         : undefined;
-      const result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: retryLogContent, outputFormat });
+      const result = parsedAcp ?? parseCliResult({ bot: executionKind, stdout: rawResult, logContent: retryLogContent, outputFormat });
       if (!result.sessionId) {
         result.sessionId = resolveAntigravityConversationId({ cwd: retryCwd, sinceMs: retryStartedAtMs, explicitLogContent: retryLogContent });
       }
@@ -1546,6 +1654,7 @@ export class BridgeEngine {
           threadId: eventContext.threadId,
           sessionId: stagedResult.sessionId ?? null,
           text: stagedResult.text,
+          ...(stagedResult.telemetry ? { telemetry: stagedResult.telemetry } : {}),
         });
       }
       return stagedResult;
@@ -1569,7 +1678,7 @@ export class BridgeEngine {
     bodyThreadId?: number | string,
     body: any = {},
   ): Promise<StagedCliResult> {
-    if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+    if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
     const model = isAgentKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
@@ -1598,7 +1707,7 @@ export class BridgeEngine {
         const err = retryError instanceof Error ? retryError : new Error(String(retryError));
         if (!(isAntigravityPrintTimeoutError(err) || isRecoverableAntigravityExecutionError(err))) throw err;
         console.warn(`[${this.kind}] fresh-session retry ${attempt}/${maxFreshAttempts} failed with recoverable Agy error`, err.message);
-        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
         if (attempt === maxFreshAttempts) {
           throw new Error("Agy failed repeatedly with an internal cascade error. The session was reset — please resend your message.");
         }
@@ -1665,17 +1774,37 @@ export class BridgeEngine {
       const fallbackCwd = this._workingDir(executionKind);
       const fallbackStartedAtMs = Date.now();
       let rawResult: string;
+      let parsedAcp: CliResult | null = null;
       try {
-        rawResult = (await this.exec.runCliAsync(fallbackInvocation.command, fallbackInvocation.args, fallbackCwd, {
-          ...buildExecutionOptions(executionKind),
-          onProgress,
-          onProviderOutputChunk: body.onProviderOutputChunk,
-          chatId: this._executionLane(chatKey),
-          stdin: fallbackInvocation.stdin,
-          contextEnv: fallbackPromptForCli.contextEnv,
-          eventContext,
-          onEvent: collect ?? undefined,
-        })).text;
+        const invoked = await this._runNativeOrAcp(
+          executionKind,
+          fallbackInvocation,
+          fallbackCwd,
+          {
+            ...buildExecutionOptions(executionKind),
+            onProgress,
+            onProviderOutputChunk: body.onProviderOutputChunk,
+            chatId: this._executionLane(chatKey),
+            stdin: fallbackInvocation.stdin,
+            contextEnv: fallbackPromptForCli.contextEnv,
+            eventContext,
+            onEvent: collect ?? undefined,
+          },
+          {
+            prompt: fallbackPromptForCli.prompt,
+            sessionId: null,
+            model: fallbackModel,
+            executionMode: this.opts.executionMode,
+            soulContext: fallbackPromptForCli.soulContext,
+            includeResponseContract: fallbackPromptForCli.includeResponseContract,
+            attachments,
+            outputDir: outDir,
+            effort: resolveEffort(executionKind, this.db),
+          },
+          { conversationId: chatKey, runId: runId ?? randomUUID() },
+        );
+        rawResult = invoked.stdout;
+        parsedAcp = invoked.parsed;
       } finally {
         body.onProviderOutputFinished?.();
       }
@@ -1688,7 +1817,9 @@ export class BridgeEngine {
       }
 
       let result: CliResult;
-      if (isFallbackClaudeStreamJson) {
+      if (parsedAcp) {
+        result = parsedAcp;
+      } else if (isFallbackClaudeStreamJson) {
         const parsed = parseClaudeStreamJsonOutput(rawResult);
         result = parsed ?? { text: rawResult.trim(), sessionId: null };
       } else {
@@ -1728,13 +1859,13 @@ export class BridgeEngine {
         const failures = this.db.incrementFailures(chatKey, this.kind as BotKind);
         if (failures >= 2) {
           console.warn(`[${this.kind}] clearing session after ${failures} consecutive failures for ${chatKey}`);
-          db_setSession(this.db, chatKey, this.kind as BotKind, null);
+          persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null);
           this.db.resetFailures(chatKey, this.kind as BotKind);
         }
       });
-    } else if (/No conversation found with session ID|thread not found|session not found|conversation not found/i.test(msg)) {
+    } else if (isInvalidProviderSessionError(error)) {
       console.warn(`[${this.kind}] clearing invalid session ID for ${chatKey}`);
-      this._runWithFence(laneHandle, () => db_setSession(this.db, chatKey, this.kind as BotKind, null));
+      this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
       this.db.resetFailures(chatKey, this.kind);
     }
   }
@@ -1858,9 +1989,70 @@ export class BridgeEngine {
   }
 }
 
-function db_setSession(db: BridgeDb, chatKey: string, kind: BotKind, sessionId: string | null) {
+const INVALID_PROVIDER_SESSION_RE = /No conversation found with session ID|thread not found|session not found|conversation not found|Unknown session:|does not support resume or load for an existing session/i;
+
+function providerSessionErrorTexts(error: unknown, depth = 0, seen = new Set<unknown>()): string[] {
+  if (depth > 4 || error == null || seen.has(error)) return [];
+  if (typeof error === "string") return [error];
+  seen.add(error);
+  if (error instanceof Error) {
+    const extra = error as Error & { cause?: unknown; data?: unknown };
+    return [
+      extra.message,
+      ...providerSessionErrorTexts(extra.cause, depth + 1, seen),
+      ...providerSessionErrorTexts(extra.data, depth + 1, seen),
+    ];
+  }
+  if (typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    return [
+      ...(typeof record.details === "string" ? [record.details] : []),
+      ...(typeof record.message === "string" ? [record.message] : []),
+    ];
+  }
+  return [];
+}
+
+export function isInvalidProviderSessionError(error: unknown): boolean {
+  return providerSessionErrorTexts(error).some((text) => INVALID_PROVIDER_SESSION_RE.test(text));
+}
+
+export function lookupEngineProviderSession(db: BridgeDb, chatKey: string, kind: BotKind): string | null {
+  if (kind === "codex" && resolveCodexRuntime() === "acp") {
+    return db.getAcpSessionBinding(chatKey, "codex")?.acpSessionId ?? null;
+  }
+  return db.getSession(chatKey, kind);
+}
+
+export function persistEngineProviderSession(
+  db: BridgeDb,
+  chatKey: string,
+  kind: BotKind,
+  sessionId: string | null,
+  runId: string | null = null,
+): void {
+  if (kind === "codex" && resolveCodexRuntime() === "acp") {
+    if (sessionId) {
+      // A completed ACP turn makes any stored legacy Codex session stale: it
+      // predates this ACP history and must not be resumed as legacy later.
+      db.setSession(chatKey, "codex", null);
+      db.putAcpSessionBinding({
+        conversationId: chatKey,
+        providerId: "codex",
+        acpSessionId: sessionId,
+        runId,
+      });
+    } else {
+      db.clearAcpSessionBinding(chatKey, "codex");
+    }
+    return;
+  }
   try {
     db.setSession(chatKey, kind, sessionId);
+    // Symmetric to the ACP branch above: a completed legacy Codex turn makes
+    // any stored ACP session binding stale, so a later switch back to ACP
+    // must not resume it as though it saw this turn.
+    if (kind === "codex" && sessionId) db.clearAcpSessionBinding(chatKey, "codex");
   } catch {
     // ignore — non-agent kinds are not tracked
   }

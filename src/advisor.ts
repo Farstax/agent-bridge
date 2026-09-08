@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BridgeDb } from "./db.js";
 import type { BotConfig, BotKind } from "./types.js";
-import { buildCliInvocation, parseCliResult } from "./cli.js";
+import { buildCliInvocation, parseCliResult, runProviderInvocation } from "./cli.js";
 import { setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
 import type { ProviderId } from "./providers/types.js";
@@ -43,9 +43,13 @@ function chooseTarget(config: AdvisorConfig, activeProvider: string, requestedPr
     const target = config.chain.find((candidate) => candidate.provider === requested);
     if (!target) throw new Error(`Requested provider is not an allowed advisor provider: ${requestedProvider}`);
     if (target.provider === active) throw new Error("Advisor requires an independent provider");
+    if (!supportsToolFreeMode(botKindFor(target.provider))) {
+      throw new Error(`Advisor provider does not support tool-free mode: ${target.provider}`);
+    }
     return target;
   }
-  const target = config.chain.find((candidate) => candidate.provider !== active);
+  const target = config.chain.find((candidate) =>
+    candidate.provider !== active && supportsToolFreeMode(botKindFor(candidate.provider)));
   if (!target) throw new Error("Advisor requires an independent provider");
   return target;
 }
@@ -130,13 +134,35 @@ export async function executeFrontierAdvice(deps: {
       outputFormat: "json",
       toolMode: "none",
     });
-    const raw = await runCli(invocation.command, invocation.args, request.cwd, {
-      timeoutMs: config.timeoutMs,
-      advisorChild: true,
-      bot,
-      chatId: executionId,
-    });
-    const text = parseCliResult({ bot, stdout: raw }).text.trim();
+    const requestPayload = {
+      prompt,
+      sessionId: null,
+      command: invocation.command,
+      model: target.model,
+      executionMode: "safe" as const,
+      outputFormat: "json" as const,
+      soulContext: null,
+      attachments: [] as string[],
+      outputDir: null,
+      effort: null,
+      toolMode: "none" as const,
+    };
+    const text = invocation.transport === "acp-stdio"
+      ? (await runProviderInvocation(bot, invocation, request.cwd, {
+          timeoutMs: config.timeoutMs,
+          advisorChild: true,
+          bot,
+          chatId: executionId,
+        }, requestPayload, { conversationId: `advisor:${requestId}`, runId: executionId })).text.trim()
+      : parseCliResult({
+          bot,
+          stdout: await runCli(invocation.command, invocation.args, request.cwd, {
+            timeoutMs: config.timeoutMs,
+            advisorChild: true,
+            bot,
+            chatId: executionId,
+          }),
+        }).text.trim();
     if (!text) throw new Error("Advisor returned empty output");
     if (text.length > config.outputMaxChars) {
       throw new Error(`Advisor output exceeds configured bound (${config.outputMaxChars} chars)`);

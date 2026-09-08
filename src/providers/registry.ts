@@ -6,6 +6,7 @@ import {
   PROVIDER_IDS,
 } from "./types.js";
 import { createPlannerStallWatch } from "./antigravityRuntime.js";
+import { isCodexAcpRuntime } from "./codexRuntimeSelection.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
@@ -87,9 +88,18 @@ const BOT_NAME_TO_PROVIDER_ID: Record<string, ProviderId> = {
   cursor: "cursor",
 };
 
-export function supportsToolFreeMode(bot: string): boolean {
+export function supportsToolFreeMode(
+  bot: string,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
   const id = BOT_NAME_TO_PROVIDER_ID[bot];
-  return id ? ADAPTERS[id].capabilities.toolFree : false;
+  if (!id) return false;
+  try {
+    if (id === "codex" && isCodexAcpRuntime("codex", env)) return false;
+  } catch {
+    return false;
+  }
+  return ADAPTERS[id].capabilities.toolFree;
 }
 
 export function getProcessWatchForCommand(command: string): ProviderAdapter["processWatch"] {
