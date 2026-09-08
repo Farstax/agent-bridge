@@ -28,6 +28,9 @@ export interface AcpRetainedEvent {
   /** What the agent asked for and what Bridge decided, not merely that a permission event happened. */
   readonly permissionRequest?: RequestPermissionRequest;
   readonly permissionResponse?: RequestPermissionResponse;
+  /** The ACP session this event belongs to, and how that session was entered. Known by the time any event fires. */
+  readonly acpSessionId?: string;
+  readonly sessionMode?: AcpSessionMode;
 }
 
 export interface AcpTurnInput {
@@ -114,10 +117,21 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   const updates: AcpObservedUpdate[] = [];
   const events: AcpRetainedEvent[] = [];
   let liveEmitted = "";
+  // Set by execute() before any notification/permission request can arrive
+  // for the corresponding session, so remember() always tags events with the
+  // session they actually belong to — even ones observed during session/load
+  // replay, which happens before the prompt request.
+  let currentAcpSessionId: string | undefined;
+  let currentSessionMode: AcpSessionMode | undefined;
 
   const remember = (event: AcpRetainedEvent) => {
-    events.push(event);
-    input.onEvent?.(event);
+    const tagged: AcpRetainedEvent = {
+      ...event,
+      ...(currentAcpSessionId ? { acpSessionId: currentAcpSessionId } : {}),
+      ...(currentSessionMode ? { sessionMode: currentSessionMode } : {}),
+    };
+    events.push(tagged);
+    input.onEvent?.(tagged);
   };
 
   const clientApp = acp.client({ name: "agent-bridge" })
@@ -157,6 +171,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
     if (acpSessionId && agentSupportsResume(initialize)) {
       sessionMode = "resume";
+      currentAcpSessionId = acpSessionId;
+      currentSessionMode = sessionMode;
       gate.beginResume();
       await agent.request(acp.methods.agent.session.resume, {
         sessionId: acpSessionId,
@@ -165,6 +181,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       gate.endResume();
     } else if (acpSessionId && agentSupportsLoad(initialize)) {
       sessionMode = "load";
+      currentAcpSessionId = acpSessionId;
+      currentSessionMode = sessionMode;
       gate.beginLoad();
       await agent.request(acp.methods.agent.session.load, {
         sessionId: acpSessionId,
@@ -180,6 +198,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       if (acpSessionId === input.conversationId) {
         throw new Error("ACP session id must not equal the Bridge conversation id");
       }
+      currentAcpSessionId = acpSessionId;
+      currentSessionMode = sessionMode;
     }
 
     if (!acpSessionId) throw new Error("ACP session id missing after session setup");

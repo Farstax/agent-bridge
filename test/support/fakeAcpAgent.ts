@@ -139,12 +139,28 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           title: "thinking",
           kind: "think",
           status: "completed",
+          ...(process.env.FAKE_ACP_SECRET_PROBE
+            ? {
+              rawInput: { command: `curl -H "Authorization: Bearer ${process.env.FAKE_ACP_SECRET_PROBE}"` },
+              rawOutput: { body: `used key ${process.env.FAKE_ACP_SECRET_PROBE}` },
+            }
+            : {}),
         },
       });
       await ctx.client.notify(acp.methods.client.session.update, {
         sessionId: ctx.params.sessionId,
         update: { sessionUpdate: "usage_update", used: 12, size: 100_000 },
       });
+      if (text.includes("PHASED")) {
+        await ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "thinking out loud..." },
+          },
+          _meta: { codex: { phase: "commentary" } },
+        });
+      }
       const reply = `live:${text}`;
       await ctx.client.notify(acp.methods.client.session.update, {
         sessionId: ctx.params.sessionId,
@@ -152,6 +168,7 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: reply },
         },
+        ...(text.includes("PHASED") ? { _meta: { codex: { phase: "final_answer" } } } : {}),
       });
       session.history.push({ role: "agent", text: reply });
       persistSessions(sessions);

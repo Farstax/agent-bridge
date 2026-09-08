@@ -58,7 +58,22 @@ resume handle. Child-process teardown still kills the stdio agent.
 `session/load` may replay historical `session/update` events. Replay is
 marked internally and is not live Telegram/Discord output. Chat surfaces
 continue to receive only the current turn's live agent text. Rich ACP tool,
-plan, permission, and usage events are retained internally.
+plan, permission, and usage events are retained internally as durable
+`acp.event` Bridge events (`bridge_events`), one row per ACP event, forwarded
+as each event arrives rather than batched at successful turn completion — so
+events observed before a cancellation, timeout, provider error, or child
+death are still persisted. Permission events retain the actual request and
+Bridge's decision, not merely that a permission event happened. Provider
+credentials are redacted from every retained event (including tool
+`rawInput`/`rawOutput`) before it is persisted, the same contract already
+applied to delivered text.
+
+Codex ACP additionally tags `agent_message_chunk` updates with
+`_meta.codex.phase` (`"commentary"` | `"final_answer"`). That interpretation
+is Codex-specific and lives in `codexAcpRuntime.ts`, not the generic ACP
+core: commentary remains available as live intermediate progress, but the
+authoritative delivered answer excludes it. Agents that supply no phase
+metadata are unaffected — every live chunk is part of the answer, as before.
 
 ## Client capabilities
 

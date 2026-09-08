@@ -47,17 +47,21 @@ export interface RunCancelledEvent extends BridgeEventBase {
 }
 
 /**
- * Provider-neutral sink for rich ACP session/update, tool-call, plan,
- * permission, and usage events. Retained internally for later Bridge
- * inspection without reparsing provider-native output; Telegram/Discord
- * presentation stays unchanged (the reducer/adapter do not read this event).
+ * Provider-neutral sink for one rich ACP session/update, tool-call, plan,
+ * permission, or stop event, forwarded as it happens rather than batched at
+ * successful turn completion — events observed before a cancellation,
+ * timeout, provider error, or child death are persisted as they occurred
+ * instead of being lost when the turn never reaches a successful end. Retained
+ * internally for later Bridge inspection without reparsing provider-native
+ * output; Telegram/Discord presentation stays unchanged (the reducer/adapter
+ * do not read this event). `event` is redacted of provider credentials
+ * before this event is constructed.
  */
-export interface AcpRetainedEventsRecorded extends BridgeEventBase {
-  type: "acp.retained";
+export interface AcpEventObservedEvent extends BridgeEventBase {
+  type: "acp.event";
   sessionMode: "fresh" | "load" | "resume";
-  /** Structured ACP retained events, JSON-serializable as-is. */
-  events: readonly unknown[];
-  contextUsage?: { used: number; size: number };
+  /** One structured, credential-redacted ACP retained event, JSON-serializable as-is. */
+  event: unknown;
 }
 
 export type BridgeEvent =
@@ -66,7 +70,7 @@ export type BridgeEvent =
   | RunCompletedEvent
   | RunFailedEvent
   | RunCancelledEvent
-  | AcpRetainedEventsRecorded;
+  | AcpEventObservedEvent;
 
 function base(fields: { runId: string; bot: BotKind; chatId: string; chatKey: string; threadId?: string }): BridgeEventBase {
   return {
@@ -145,23 +149,21 @@ export const type = {
     return { ...base(fields), type: "run.cancelled", reason: fields.reason };
   },
 
-  acpRetained(fields: {
+  acpEvent(fields: {
     runId: string;
     bot: BotKind;
     chatId: string;
     chatKey: string;
     sessionId?: string | null;
     sessionMode: "fresh" | "load" | "resume";
-    events: readonly unknown[];
-    contextUsage?: { used: number; size: number };
+    event: unknown;
     threadId?: string;
-  }): AcpRetainedEventsRecorded {
+  }): AcpEventObservedEvent {
     return {
       ...base(fields),
-      type: "acp.retained",
+      type: "acp.event",
       sessionMode: fields.sessionMode,
-      events: fields.events,
-      ...(fields.contextUsage ? { contextUsage: fields.contextUsage } : {}),
+      event: fields.event,
     };
   },
 };

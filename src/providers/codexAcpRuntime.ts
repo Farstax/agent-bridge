@@ -6,7 +6,8 @@ import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
 import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
-import type { AcpTurnResult } from "../acp/client.js";
+import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
+import type { AcpObservedUpdate } from "../acp/replay.js";
 import { runSupervisedStdioSession } from "../cliSupervisor.js";
 import type { CliOptions, CliResult, RunTelemetry } from "../types.js";
 import { isAbortRequested } from "../cliSupervisor.js";
@@ -93,6 +94,29 @@ function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {
   return blocks;
 }
 
+/**
+ * ACP tool_call/tool_call_update events can carry `rawInput`/`rawOutput`
+ * (unknown-shaped provider tool payloads) that may embed provider
+ * credentials, e.g. a shell command line or file content containing an API
+ * key. Provider secrets must be redacted from lifecycle/event output before
+ * it leaves the process boundary, the same contract already applied to
+ * delivered text — so scrub every string leaf of the retained event, not
+ * just the fields we know about today, before it is persisted.
+ */
+function redactAcpEventCredentials(event: AcpRetainedEvent, env: NodeJS.ProcessEnv): unknown {
+  const secrets = getProviderApiKeySecretValues(env);
+  if (secrets.length === 0) return event;
+  const redacted = redactProviderApiKeySecrets(JSON.stringify(event), env);
+  try {
+    return JSON.parse(redacted);
+  } catch {
+    // A secret value containing JSON-structural characters (quotes, braces)
+    // could corrupt the redacted JSON. Fail closed to a placeholder rather
+    // than persisting a payload that might still carry the raw secret.
+    return { kind: event.kind, channel: event.channel, redacted: "unparseable after credential redaction" };
+  }
+}
+
 function telemetryFromUsage(usage: Usage | undefined): RunTelemetry | undefined {
   if (!usage) return undefined;
   return {
@@ -104,12 +128,44 @@ function telemetryFromUsage(usage: Usage | undefined): RunTelemetry | undefined 
   };
 }
 
+/**
+ * Codex ACP tags agent_message_chunk notifications with `_meta.codex.phase`
+ * ("commentary" | "final_answer"). This interpretation is Codex-specific and
+ * deliberately lives here rather than in the generic ACP core (acp/client.ts,
+ * which keeps forwarding every live chunk unchanged for progress display).
+ * Agents that supply no phase metadata are treated as before: every live
+ * chunk is part of the answer.
+ */
+function codexPhaseOf(notification: AcpObservedUpdate["notification"]): "commentary" | "final_answer" | undefined {
+  const meta = notification._meta as { codex?: { phase?: unknown } } | null | undefined;
+  const phase = meta?.codex?.phase;
+  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+}
+
+/** The authoritative final answer, excluding Codex commentary-phase chunks. Replay is always excluded. */
+function codexFinalAnswerText(updates: readonly AcpObservedUpdate[]): string {
+  let text = "";
+  for (const update of updates) {
+    if (update.channel !== "live") continue;
+    const payload = update.notification.update;
+    if (payload.sessionUpdate !== "agent_message_chunk") continue;
+    if (payload.content.type !== "text") continue;
+    if (codexPhaseOf(update.notification) === "commentary") continue;
+    text += payload.content.text;
+  }
+  return text;
+}
+
 export function toCliResult(result: AcpTurnResult): CliResult {
-  if (!result.liveText.trim() && result.stopReason !== "cancelled") {
+  // Falls back to the full live text (commentary included) if the agent
+  // never emitted a final_answer-phase chunk, so a commentary-only turn
+  // still delivers something instead of erroring out as empty.
+  const text = (codexFinalAnswerText(result.updates).trim() || result.liveText.trim());
+  if (!text && result.stopReason !== "cancelled") {
     throw new Error(`Codex ACP completed without live text (stopReason=${result.stopReason})`);
   }
   return {
-    text: result.liveText.trim(),
+    text,
     sessionId: result.acpSessionId,
     ...(telemetryFromUsage(result.usage) ? { telemetry: telemetryFromUsage(result.usage) } : {}),
   };
@@ -132,6 +188,8 @@ export async function runTurn(
   const chatId = options.chatId;
   const redactionEnv = { ...process.env, ...contextEnv };
   const liveRedactor = createStreamingSecretRedactor(getProviderApiKeySecretValues(redactionEnv));
+  const eventContext = options.eventContext;
+  const onEvent = options.onEvent;
   const result = await runSupervisedStdioSession(
     invocation.command,
     invocation.args,
@@ -153,23 +211,29 @@ export async function runTurn(
           if (safe) options.onProgress?.(safe);
         }
         : undefined,
+      // Forwarded as each ACP event arrives, not batched at turn completion,
+      // so events observed before a cancellation/timeout/crash/provider
+      // error are still persisted. Credentials are redacted per event before
+      // it crosses the process boundary into the durable event sink.
+      onEvent: eventContext && onEvent
+        ? (event) => {
+          if (!event.sessionMode) return;
+          onEvent(bridgeEventType.acpEvent({
+            runId: eventContext.runId,
+            bot: eventContext.bot,
+            chatId: eventContext.chatId,
+            chatKey: eventContext.chatKey,
+            threadId: eventContext.threadId,
+            sessionId: event.acpSessionId ?? null,
+            sessionMode: event.sessionMode,
+            event: redactAcpEventCredentials(event, redactionEnv),
+          }));
+        }
+        : undefined,
     }),
   );
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
-  if (options.eventContext && options.onEvent) {
-    options.onEvent(bridgeEventType.acpRetained({
-      runId: options.eventContext.runId,
-      bot: options.eventContext.bot,
-      chatId: options.eventContext.chatId,
-      chatKey: options.eventContext.chatKey,
-      threadId: options.eventContext.threadId,
-      sessionId: result.acpSessionId,
-      sessionMode: result.sessionMode,
-      events: result.events,
-      ...(result.contextUsage ? { contextUsage: result.contextUsage } : {}),
-    }));
-  }
   const parsed = toCliResult(result);
   return {
     ...parsed,

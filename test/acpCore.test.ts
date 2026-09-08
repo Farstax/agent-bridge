@@ -272,6 +272,46 @@ describe("ACP core client", () => {
     expect(result.usage).toBeUndefined();
     expect(result.contextUsage).toEqual({ used: 12, size: 100_000 });
   });
+
+  it("delivers retained events incrementally through onEvent, tagged with the ACP session as soon as it is known", async () => {
+    const agent = createFakeAcpAgent({ loadSession: true, resume: false, close: true });
+    const observedLive: Array<{ kind: string; acpSessionId?: string; sessionMode?: string }> = [];
+    const first = await runAcpTurn({
+      peer: agent,
+      cwd: process.cwd(),
+      conversationId: "conv-bridge-1",
+      runId: "run-1",
+      existingAcpSessionId: null,
+      prompt: "first",
+      executionMode: "trusted",
+      onEvent: (event) => observedLive.push(event),
+    });
+    // Delivered as each protocol message arrives, not batched at the end.
+    expect(observedLive.length).toBeGreaterThan(1);
+    for (const event of observedLive) {
+      expect(event.acpSessionId).toBe(first.acpSessionId);
+      expect(event.sessionMode).toBe("fresh");
+    }
+
+    const observedReplay: Array<{ channel: string; acpSessionId?: string; sessionMode?: string }> = [];
+    await runAcpTurn({
+      peer: agent,
+      cwd: process.cwd(),
+      conversationId: "conv-bridge-1",
+      runId: "run-2",
+      existingAcpSessionId: first.acpSessionId,
+      prompt: "second",
+      executionMode: "trusted",
+      onEvent: (event) => observedReplay.push(event),
+    });
+    // Session id/mode are known even for events fired during session/load replay, before the prompt call.
+    const replayed = observedReplay.filter((e) => e.channel === "replay");
+    expect(replayed.length).toBeGreaterThan(0);
+    for (const event of observedReplay) {
+      expect(event.acpSessionId).toBe(first.acpSessionId);
+      expect(event.sessionMode).toBe("load");
+    }
+  });
 });
 
 function liveTextOf(update: { notification: { update: { sessionUpdate: string; content?: { type: string; text?: string } } } }): string | undefined {

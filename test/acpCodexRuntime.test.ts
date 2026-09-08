@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
-import { runTurn, codexAcpChildAuthEnv } from "../src/providers/codexAcpRuntime.js";
+import { runTurn, codexAcpChildAuthEnv, toCliResult } from "../src/providers/codexAcpRuntime.js";
 import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexRuntimeSelection.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
@@ -101,6 +101,63 @@ describe("Codex ACP invocation", () => {
       else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
       delete process.env.CODEX_ACP_COMMAND;
     }
+  });
+});
+
+describe("Codex ACP phase-aware final delivery", () => {
+  function fixture(updates: Array<{ channel: "live" | "replay"; phase?: "commentary" | "final_answer"; text: string }>): Parameters<typeof toCliResult>[0] {
+    const observed = updates.map((u) => ({
+      channel: u.channel,
+      notification: {
+        sessionId: "acp-sess-1",
+        update: { sessionUpdate: "agent_message_chunk" as const, content: { type: "text" as const, text: u.text } },
+        ...(u.phase ? { _meta: { codex: { phase: u.phase } } } : {}),
+      },
+    }));
+    const liveText = observed.filter((u) => u.channel === "live").map((u) => u.notification.update.content.text).join("");
+    return {
+      conversationId: "conv-1",
+      runId: "run-1",
+      acpSessionId: "acp-sess-1",
+      sessionMode: "fresh",
+      stopReason: "end_turn",
+      liveText,
+      events: [],
+      updates: observed,
+      initialize: { protocolVersion: 1, agentCapabilities: {} } as any,
+    } as any;
+  }
+
+  it("excludes commentary-phase chunks from the final delivered answer", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", phase: "commentary", text: "thinking out loud..." },
+      { channel: "live", phase: "final_answer", text: "the real answer" },
+    ]));
+    expect(result.text).toBe("the real answer");
+    expect(result.text).not.toContain("thinking out loud");
+  });
+
+  it("keeps concatenating all live text when the agent supplies no Codex phase metadata", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", text: "part one " },
+      { channel: "live", text: "part two" },
+    ]));
+    expect(result.text).toBe("part one part two");
+  });
+
+  it("falls back to full live text if only commentary phases were ever emitted", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", phase: "commentary", text: "only commentary, no final_answer phase" },
+    ]));
+    expect(result.text).toBe("only commentary, no final_answer phase");
+  });
+
+  it("still excludes replayed history regardless of phase metadata", () => {
+    const result = toCliResult(fixture([
+      { channel: "replay", phase: "final_answer", text: "replayed old answer" },
+      { channel: "live", phase: "final_answer", text: "current answer" },
+    ]));
+    expect(result.text).toBe("current answer");
   });
 });
 
@@ -278,7 +335,7 @@ describe("Codex ACP supervised stdio turn", () => {
     }
   }, 15_000);
 
-  it("retains rich ACP events through the real Bridge event sink, distinct from delivered text", async () => {
+  it("retains rich ACP events incrementally through the real Bridge event sink, distinct from delivered text", async () => {
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;
     process.env.CODEX_ACP_COMMAND = process.execPath;
@@ -330,13 +387,14 @@ describe("Codex ACP supervised stdio turn", () => {
         onEvent: (e) => secondStore.collect(e),
       }, { conversationId: "conv-events-1", runId: "run-events-2" });
 
-      const secondEvents = db.getEventsForRun("run-events-2").filter((e) => e.type === "acp.retained");
-      expect(secondEvents).toHaveLength(1);
-      const retained = JSON.parse(secondEvents[0].payload_json);
-      expect(retained.sessionMode).toBe("load");
-      expect(retained.events.some((e: { kind: string }) => e.kind === "tool_call" || (e.kind === "session_update" && e.notification?.update?.sessionUpdate === "tool_call"))).toBe(true);
-      expect(retained.events.some((e: { channel: string; notification?: { update?: { sessionUpdate?: string } } }) =>
-        e.channel === "replay" && e.notification?.update?.sessionUpdate === "agent_message_chunk")).toBe(true);
+      const secondEvents = db.getEventsForRun("run-events-2").filter((e) => e.type === "acp.event");
+      // One durable row per ACP event, not one aggregate at turn completion.
+      expect(secondEvents.length).toBeGreaterThan(1);
+      const retained = secondEvents.map((e) => JSON.parse(e.payload_json));
+      for (const r of retained) expect(r.sessionMode).toBe("load");
+      expect(retained.some((r) => r.event.kind === "session_update" && r.event.notification?.update?.sessionUpdate === "tool_call")).toBe(true);
+      expect(retained.some((r) =>
+        r.event.channel === "replay" && r.event.notification?.update?.sessionUpdate === "agent_message_chunk")).toBe(true);
       // Telegram/Discord delivery only ever reads live agent_message_chunk text off `second.text`, never this event.
       expect(second.text).toContain("User request:\nsecond");
       expect(second.text).not.toMatch(/User request:\nfirst/);
@@ -347,6 +405,59 @@ describe("Codex ACP supervised stdio turn", () => {
       if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
       else process.env.CODEX_ACP_ARGS = previousArgs;
       delete process.env.FAKE_ACP_STORE;
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("redacts provider credentials from raw ACP tool payloads before they are persisted", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    process.env.FAKE_ACP_SECRET_PROBE = "sk-test-secret-value";
+    const storeDir = mkdtempSync(join(tmpdir(), "fake-acp-store-"));
+    process.env.FAKE_ACP_STORE = join(storeDir, "sessions.json");
+    const { EventStore } = await import("../src/events/store.js");
+    const db = openDb(":memory:");
+    try {
+      const store = new EventStore(db);
+      await runTurn({
+        prompt: "first",
+        sessionId: null,
+        command: "codex-acp",
+        model: null,
+        executionMode: "trusted",
+        outputFormat: "json",
+        soulContext: null,
+        attachments: [],
+        outputDir: null,
+        effort: null,
+        toolMode: "default",
+      }, process.cwd(), {
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        chatId: "acp-secret-1",
+        contextEnv: { CODEX_API_KEY: "sk-test-secret-value" },
+        eventContext: { runId: "run-secret-1", bot: "codex", chatId: "acp-secret-1", chatKey: "acp-secret-1" },
+        onEvent: (e) => store.collect(e),
+      }, { conversationId: "conv-secret-1", runId: "run-secret-1" });
+
+      const events = db.getEventsForRun("run-secret-1").filter((e) => e.type === "acp.event");
+      expect(events.length).toBeGreaterThan(0);
+      for (const row of events) {
+        expect(row.payload_json).not.toContain("sk-test-secret-value");
+      }
+      const toolCallRow = events.find((e) => e.payload_json.includes("rawInput"));
+      expect(toolCallRow).toBeDefined();
+      expect(toolCallRow!.payload_json).toContain("REDACTED_PROVIDER_CREDENTIAL");
+    } finally {
+      db.close();
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
+      delete process.env.FAKE_ACP_STORE;
+      delete process.env.FAKE_ACP_SECRET_PROBE;
       rmSync(storeDir, { recursive: true, force: true });
     }
   }, 15_000);
