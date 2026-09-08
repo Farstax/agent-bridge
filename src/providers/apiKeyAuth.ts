@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
+import { runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
 import { resolveCodexRuntime } from "./codexRuntimeSelection.js";
 import type { ProviderId } from "./types.js";
 
@@ -28,7 +29,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   codex: {
     envVar: "CODEX_API_KEY",
     verification: "bounded_native_turn",
-    notes: "Legacy Codex preflights CODEX_API_KEY with codex exec; Codex ACP validates it through the adapter's ACP authenticate flow.",
+    notes: "Legacy Codex verifies with codex exec; Codex ACP verifies through the selected adapter's ACP authenticate + bounded prompt path.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
@@ -94,9 +95,12 @@ export type ProviderApiKeyProbeExecutor = (
   options: ProbeExecOptions,
 ) => Promise<unknown>;
 
+export type CodexAcpApiKeyProbeExecutor = (env: NodeJS.ProcessEnv) => Promise<void>;
+
 export interface VerifyProviderApiKeyOptions {
   env?: Env;
   execFile?: ProviderApiKeyProbeExecutor;
+  codexAcpProbe?: CodexAcpApiKeyProbeExecutor;
   useCache?: boolean;
 }
 
@@ -131,8 +135,8 @@ export function isProviderApiKeyVerified(provider: ProviderId, env: Env = proces
 /**
  * Keep provider credentials out of unrelated provider children. The issue-572
  * candidate key itself is withheld until its provider-specific verification
- * boundary has accepted it. For Codex ACP that boundary is the adapter's ACP
- * authenticate flow rather than an unrelated legacy `codex exec` preflight.
+ * boundary has accepted it. Codex ACP verification uses the selected adapter
+ * itself, so an ACP key never depends on or cross-qualifies legacy `codex exec`.
  */
 export function filterProviderCredentialEnv(
   bot: BotKind | undefined,
@@ -390,21 +394,6 @@ export async function verifyProviderApiKey(
   if (!apiKey) return false;
 
   const key = cacheKey(provider, apiKey, env);
-
-  if (codexAcpOwnsApiKeyValidation(provider, env)) {
-    // Do not make the selected ACP runtime depend on a successful legacy
-    // `codex exec` probe. The adapter's own `authenticate({methodId:"api-key"})`
-    // call is the authoritative validation boundary and fails the ACP Run if
-    // the key is unusable. This cache entry means only that the credential is
-    // allowed to reach that selected runtime; runtime-scoped cache keys prevent
-    // it from becoming legacy `codex exec` verification after a rollback.
-    if (options.useCache !== false) {
-      verificationCache.set(key, true);
-      verificationFailures.delete(key);
-    }
-    return true;
-  }
-
   if (options.useCache !== false) {
     if (verificationCache.get(key) === true) return true;
     const failedAt = verificationFailures.get(key);
@@ -419,7 +408,11 @@ export async function verifyProviderApiKey(
   const verification = (async () => {
     let verified = false;
     try {
-      await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
+      if (codexAcpOwnsApiKeyValidation(provider, env)) {
+        await (options.codexAcpProbe ?? runCodexAcpApiKeyProbe)(buildProbeEnv(provider, env));
+      } else {
+        await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
+      }
       verified = true;
     } catch {
       verified = false;
