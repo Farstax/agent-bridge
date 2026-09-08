@@ -21,6 +21,7 @@ acp.agent({ name: "failing-acp-qualification-agent" })
   .onRequest(acp.methods.agent.session.prompt, async () => {
     throw acp.RequestError.internalError({
       message: "usage limit reached",
+      additionalDetails: `credential=${process.env.CODEX_API_KEY ?? "none"}`,
       codexErrorInfo: "usageLimitExceeded",
     });
   })
