@@ -8,7 +8,7 @@ import { runSupervisedProcess } from "../cliSupervisor.js";
 import { resolveExecutionMode } from "../config.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
 import type { BotKind, CliOptions } from "../types.js";
-import { withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
+import { redactProviderApiKeySecrets, withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
 import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
@@ -395,7 +395,7 @@ interface QualificationStructuredErrorData {
   readonly codexErrorInfo?: string | Readonly<Record<string, unknown>>;
 }
 
-function qualificationDiagnostic(error: Error): string {
+function qualificationDiagnostic(error: Error, env: QualificationEnv): string {
   const data = (error as Error & { data?: unknown }).data;
   const structured = data && typeof data === "object"
     ? data as QualificationStructuredErrorData
@@ -406,24 +406,26 @@ function qualificationDiagnostic(error: Error): string {
     : info && typeof info === "object"
       ? Object.keys(info)[0]
       : null;
-  return [
+  const diagnostic = [
     error.message,
     structured?.message,
     structured?.additionalDetails,
     infoLabel ? `codexErrorInfo=${infoLabel}` : null,
   ].filter((part): part is string => Boolean(part)).join(" | ").slice(0, 500);
+  return redactProviderApiKeySecrets(diagnostic, env);
 }
 
 function checkForError(
   providerId: ProviderId,
   error: Error,
   name: ProviderQualificationCheck["name"],
+  env: QualificationEnv = process.env,
 ): {
   check: ProviderQualificationCheck;
   overall: "degraded" | "fail";
 } {
   const classification = classifyProviderError(providerId, error);
-  const diagnostic = qualificationDiagnostic(error);
+  const diagnostic = qualificationDiagnostic(error, env);
   if (classification.kind === "auth_required") {
     return {
       check: { name, status: "not_authenticated", diagnostic },
@@ -822,7 +824,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
       checks.push({ name: "fresh_prompt", status: "pass" });
     } catch (caught) {
       const error = caught instanceof Error ? caught : new Error(String(caught));
-      const failure = checkForError(options.providerId, error, "fresh_prompt");
+      const failure = checkForError(options.providerId, error, "fresh_prompt", runtimeEnv);
       checks.push(failure.check);
       checks.push({ name: "session_resume", status: "not_applicable" });
       checks.push({ name: "repository_grounding", status: "not_applicable" });
@@ -846,7 +848,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
           checks.push({ name: "session_resume", status: "pass" });
         } catch (caught) {
           const error = caught instanceof Error ? caught : new Error(String(caught));
-          const failure = checkForError(options.providerId, error, "session_resume");
+          const failure = checkForError(options.providerId, error, "session_resume", runtimeEnv);
           checks.push(failure.check);
           overall = failure.overall;
         }
@@ -869,7 +871,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         checks.push({ name: "repository_grounding", status: "pass" });
       } catch (caught) {
         const error = caught instanceof Error ? caught : new Error(String(caught));
-        const failure = checkForError(options.providerId, error, "repository_grounding");
+        const failure = checkForError(options.providerId, error, "repository_grounding", runtimeEnv);
         checks.push(failure.check);
         overall = failure.overall;
       }
