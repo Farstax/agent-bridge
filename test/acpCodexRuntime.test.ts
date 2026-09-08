@@ -621,6 +621,53 @@ describe("Codex ACP supervised stdio turn", () => {
     }
   }, 15_000);
 
+  it("redacts provider credentials from a thrown ACP turn error before it propagates", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    const apiKey = "codex-acp-error-secret-do-not-leak";
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    await verifyProviderApiKey("codex", {
+      env: { CODEX_API_KEY: apiKey },
+      execFile: async () => undefined,
+    });
+    try {
+      let caught: (Error & { data?: { additionalDetails?: string } }) | undefined;
+      try {
+        await runTurn({
+          prompt: "THROW_CREDENTIAL_ERROR",
+          sessionId: null,
+          command: "codex-acp",
+          model: null,
+          executionMode: "trusted",
+          outputFormat: "json",
+          soulContext: null,
+          attachments: [],
+          outputDir: null,
+          effort: null,
+          toolMode: "default",
+        }, process.cwd(), {
+          timeoutMs: 5_000,
+          idleTimeoutMs: 5_000,
+          chatId: `acp-error-redact-${Date.now()}`,
+          contextEnv: { CODEX_API_KEY: apiKey },
+        }, { conversationId: "conv-error-redact", runId: "run-error-redact" });
+      } catch (error) {
+        caught = error as Error & { data?: { additionalDetails?: string } };
+      }
+      expect(caught).toBeDefined();
+      expect(caught?.message).not.toContain(apiKey);
+      expect(JSON.stringify(caught?.data ?? {})).not.toContain(apiKey);
+      expect(JSON.stringify(caught?.data ?? {})).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
+      expect(caught?.data?.additionalDetails).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
+    } finally {
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
+      else process.env.CODEX_ACP_ARGS = previousArgs;
+    }
+  }, 15_000);
+
   it("times out a hung ACP stdio child", async () => {
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;

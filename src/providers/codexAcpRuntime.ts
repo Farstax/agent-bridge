@@ -117,6 +117,31 @@ function redactAcpEventCredentials(event: AcpRetainedEvent, env: NodeJS.ProcessE
   }
 }
 
+/**
+ * A live ACP turn failure (RequestError.data) can embed CODEX_API_KEY in
+ * provider-supplied text (message/additionalDetails) — the same structured
+ * shape qualification redacts. Turn failures propagate to engine.ts, which
+ * logs the raw error, so the credential must be scrubbed in place here
+ * before the error leaves this module. Mutates rather than replaces the
+ * error so downstream `instanceof`/`.code` classification stays intact.
+ */
+function redactAcpTurnError(error: unknown, env: NodeJS.ProcessEnv): unknown {
+  if (!(error instanceof Error)) return error;
+  const secrets = getProviderApiKeySecretValues(env);
+  if (secrets.length === 0) return error;
+  error.message = redactProviderApiKeySecrets(error.message, env);
+  const data = (error as Error & { data?: unknown }).data;
+  if (data && typeof data === "object") {
+    const redacted = redactProviderApiKeySecrets(JSON.stringify(data), env);
+    try {
+      (error as Error & { data?: unknown }).data = JSON.parse(redacted);
+    } catch {
+      (error as Error & { data?: unknown }).data = { redacted: "unparseable after credential redaction" };
+    }
+  }
+  return error;
+}
+
 function telemetryFromUsage(usage: Usage | undefined): RunTelemetry | undefined {
   if (!usage) return undefined;
   return {
@@ -190,48 +215,53 @@ export async function runTurn(
   const liveRedactor = createStreamingSecretRedactor(getProviderApiKeySecretValues(redactionEnv));
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
-  const result = await runSupervisedStdioSession(
-    invocation.command,
-    invocation.args,
-    cwd,
-    { ...options, contextEnv, bot: options.bot ?? "codex" },
-    async (io) => runAcpTurn({
-      stream: nodeStdioStream(io.stdin as import("node:stream").Writable, io.stdout as import("node:stream").Readable),
+  let result;
+  try {
+    result = await runSupervisedStdioSession(
+      invocation.command,
+      invocation.args,
       cwd,
-      conversationId: identities.conversationId,
-      runId: identities.runId,
-      existingAcpSessionId: request.sessionId,
-      prompt: promptBlocks(request),
-      executionMode: request.executionMode,
-      abortRequested: () => chatId != null && isAbortRequested(chatId),
-      signal: io.signal,
-      onLiveText: options.onProgress
-        ? (text) => {
-          const safe = liveRedactor.push(text);
-          if (safe) options.onProgress?.(safe);
-        }
-        : undefined,
-      // Forwarded as each ACP event arrives, not batched at turn completion,
-      // so events observed before a cancellation/timeout/crash/provider
-      // error are still persisted. Credentials are redacted per event before
-      // it crosses the process boundary into the durable event sink.
-      onEvent: eventContext && onEvent
-        ? (event) => {
-          if (!event.sessionMode) return;
-          onEvent(bridgeEventType.acpEvent({
-            runId: eventContext.runId,
-            bot: eventContext.bot,
-            chatId: eventContext.chatId,
-            chatKey: eventContext.chatKey,
-            threadId: eventContext.threadId,
-            sessionId: event.acpSessionId ?? null,
-            sessionMode: event.sessionMode,
-            event: redactAcpEventCredentials(event, redactionEnv),
-          }));
-        }
-        : undefined,
-    }),
-  );
+      { ...options, contextEnv, bot: options.bot ?? "codex" },
+      async (io) => runAcpTurn({
+        stream: nodeStdioStream(io.stdin as import("node:stream").Writable, io.stdout as import("node:stream").Readable),
+        cwd,
+        conversationId: identities.conversationId,
+        runId: identities.runId,
+        existingAcpSessionId: request.sessionId,
+        prompt: promptBlocks(request),
+        executionMode: request.executionMode,
+        abortRequested: () => chatId != null && isAbortRequested(chatId),
+        signal: io.signal,
+        onLiveText: options.onProgress
+          ? (text) => {
+            const safe = liveRedactor.push(text);
+            if (safe) options.onProgress?.(safe);
+          }
+          : undefined,
+        // Forwarded as each ACP event arrives, not batched at turn completion,
+        // so events observed before a cancellation/timeout/crash/provider
+        // error are still persisted. Credentials are redacted per event before
+        // it crosses the process boundary into the durable event sink.
+        onEvent: eventContext && onEvent
+          ? (event) => {
+            if (!event.sessionMode) return;
+            onEvent(bridgeEventType.acpEvent({
+              runId: eventContext.runId,
+              bot: eventContext.bot,
+              chatId: eventContext.chatId,
+              chatKey: eventContext.chatKey,
+              threadId: eventContext.threadId,
+              sessionId: event.acpSessionId ?? null,
+              sessionMode: event.sessionMode,
+              event: redactAcpEventCredentials(event, redactionEnv),
+            }));
+          }
+          : undefined,
+      }),
+    );
+  } catch (error) {
+    throw redactAcpTurnError(error, redactionEnv);
+  }
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   const parsed = toCliResult(result);

@@ -99,6 +99,14 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         .join("");
       session.history.push({ role: "user", text });
 
+      if (text.includes("THROW_CREDENTIAL_ERROR")) {
+        throw acp.RequestError.internalError({
+          message: "usage limit reached",
+          additionalDetails: `credential=${process.env.CODEX_API_KEY ?? "none"}`,
+          codexErrorInfo: "usageLimitExceeded",
+        });
+      }
+
       if (text.includes("HANG")) {
         await new Promise<void>((resolve, reject) => {
           const done = () => resolve();
