@@ -179,6 +179,52 @@ describe("ACP session persistence", () => {
     db.close();
   });
 
+  it("expires stale ACP session bindings after seven days on open, without disturbing conversation identity", () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "acp-binding-expiry-"));
+    const dbPath = join(storeDir, "bridge.sqlite");
+    try {
+      const first = openDb(dbPath);
+      first.putAcpSessionBinding({
+        conversationId: "conv-stale-1",
+        providerId: "codex",
+        acpSessionId: "acp-stale-sess",
+        runId: "run-1",
+      });
+      first.raw.prepare(
+        `UPDATE acp_session_bindings SET updated_at = datetime('now', '-8 days') WHERE conversation_id = ?`,
+      ).run("conv-stale-1");
+      first.close();
+
+      const second = openDb(dbPath);
+      // Stale native-resume pointer is gone; the next turn starts fresh.
+      expect(second.getAcpSessionBinding("conv-stale-1", "codex")).toBeNull();
+      second.close();
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an ACP session binding updated within the last seven days across reopen", () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "acp-binding-fresh-"));
+    const dbPath = join(storeDir, "bridge.sqlite");
+    try {
+      const first = openDb(dbPath);
+      first.putAcpSessionBinding({
+        conversationId: "conv-fresh-1",
+        providerId: "codex",
+        acpSessionId: "acp-fresh-sess",
+        runId: "run-1",
+      });
+      first.close();
+
+      const second = openDb(dbPath);
+      expect(second.getAcpSessionBinding("conv-fresh-1", "codex")?.acpSessionId).toBe("acp-fresh-sess");
+      second.close();
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to persist an ACP session id that equals the Bridge conversation id", () => {
     const db = openDb(":memory:");
     expect(() => db.putAcpSessionBinding({

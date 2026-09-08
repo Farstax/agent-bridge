@@ -2,9 +2,9 @@
 
 Agent Bridge treats Codex, Claude, Agy, Grok Build, and Cursor as external CLI contracts. Provider qualification checks the observable process/session behaviour that Agent Bridge depends on; it is not a model-quality or coding benchmark.
 
-## Contract v4
+## Contract v5
 
-`agent_bridge_provider_contract: 4`
+`agent_bridge_provider_contract: 5`
 
 The initial live contract is deliberately small and incident-driven:
 
@@ -19,7 +19,8 @@ probe is the invoked adapter (`CODEX_ACP_COMMAND --version`), not `codex
 --version`. The two implementations are not interchangeable inside one
 attempt. Cached evidence is current only for the same Codex runtime
 (`legacy` vs `acp`) as well as that observed executable version and contract
-version.
+version. Contract v5 added this `executionRuntime` distinction so ACP and
+legacy Codex evidence never cross-qualify each other.
 
 Agy qualification uses the same native `stream-json` output contract as managed runtime execution. Fresh checks require a valid terminal result; a provider that exposes an invocation-attributable conversation ID is also tested for resume, while a provider that exposes no resumable ID records `session_resume` as `not_applicable`. Resume checks require the matching conversation ID. Contradictory or malformed terminal results fail qualification; in particular, an Agy `ERROR` result carrying a non-empty `response` is a contract failure.
 

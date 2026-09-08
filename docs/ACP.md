@@ -28,6 +28,13 @@ It is persisted in `acp_session_bindings` (schema 16) so fresh sessions,
 resumed sessions, Bridge restart, and later provider handoff keep the
 outward conversation identity stable.
 
+`acp_session_bindings` follows the same seven-day stale-session policy as
+legacy provider sessions (`bridge_state`), keyed by `updated_at` (last
+successful use) rather than creation time. A binding untouched for seven
+days is cleared on the next database open; only the stale native-resume
+pointer goes away, Bridge conversation identity is untouched, and the next
+turn starts a fresh ACP session automatically.
+
 ## Codex selection
 
 The existing `codex exec --json` runtime remains the default.
@@ -78,9 +85,16 @@ metadata are unaffected — every live chunk is part of the answer, as before.
 ## Client capabilities
 
 Initialize advertises only the client capabilities Agent Bridge actually
-needs. Filesystem and terminal client methods are not advertised; the
-provider agent keeps those tools. Permission requests are mapped onto
-Bridge `safe` / `trusted` execution authority.
+needs: `plan: {}`, since Bridge retains structured plan updates as part of
+rich ACP event retention. Filesystem and terminal client methods are not
+advertised; the provider agent keeps those tools. Permission requests are
+mapped onto Bridge `safe` / `trusted` execution authority.
+
+Outbound prompt content is checked against the agent's negotiated
+`agentCapabilities.promptCapabilities` before dispatch. Text is always
+baseline-supported. An image/audio/embedded-resource block the agent did not
+negotiate fails closed with a precise error before the prompt is sent,
+rather than silently dropping the attachment.
 
 ## Tool-free execution
 

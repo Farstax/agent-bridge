@@ -145,12 +145,8 @@ describe("ACP core client", () => {
     expect(second.liveText).toBe("live:second");
   });
 
-  it("keeps resume-emitted history off the live delivery channel", async () => {
-    const agent = createFakeAcpAgent({
-      loadSession: false,
-      resume: true,
-      replayOnResume: true,
-    });
+  it("treats session/resume as a live continuation, per ACP v1: resume does not replay history", async () => {
+    const agent = createFakeAcpAgent({ loadSession: false, resume: true });
     const first = await runAcpTurn({
       peer: agent,
       cwd: process.cwd(),
@@ -170,7 +166,8 @@ describe("ACP core client", () => {
       executionMode: "trusted",
     });
     expect(second.sessionMode).toBe("resume");
-    expect(second.updates.some((update) => update.channel === "replay")).toBe(true);
+    // No replay channel exists for resume — every observed update is live.
+    expect(second.updates.every((update) => update.channel === "live")).toBe(true);
     expect(second.liveText).toBe("live:second");
     expect(second.liveText).not.toContain("first");
   });
@@ -311,6 +308,51 @@ describe("ACP core client", () => {
       expect(event.acpSessionId).toBe(first.acpSessionId);
       expect(event.sessionMode).toBe("load");
     }
+  });
+
+  it("dispatches an image prompt block when the agent negotiates image support", async () => {
+    const result = await runAcpTurn({
+      peer: createFakeAcpAgent({ promptCapabilities: { image: true } }),
+      cwd: process.cwd(),
+      conversationId: "conv-bridge-1",
+      runId: "run-1",
+      existingAcpSessionId: null,
+      prompt: [
+        { type: "text", text: "look at this" },
+        { type: "image", data: "base64data", mimeType: "image/png", uri: "file:///tmp/a.png" },
+      ],
+      executionMode: "trusted",
+    });
+    expect(result.stopReason).toBe("end_turn");
+  });
+
+  it("fails closed before dispatch when an image prompt block is not negotiated", async () => {
+    await expect(runAcpTurn({
+      peer: createFakeAcpAgent(),
+      cwd: process.cwd(),
+      conversationId: "conv-bridge-1",
+      runId: "run-1",
+      existingAcpSessionId: null,
+      prompt: [
+        { type: "text", text: "look at this" },
+        { type: "image", data: "base64data", mimeType: "image/png", uri: "file:///tmp/a.png" },
+      ],
+      executionMode: "trusted",
+    })).rejects.toThrow(/does not support prompt content block type "image"/);
+  });
+
+  it("keeps working for a text-only agent that negotiates no optional prompt capabilities", async () => {
+    const result = await runAcpTurn({
+      peer: createFakeAcpAgent(),
+      cwd: process.cwd(),
+      conversationId: "conv-bridge-1",
+      runId: "run-1",
+      existingAcpSessionId: null,
+      prompt: "plain text only",
+      executionMode: "trusted",
+    });
+    expect(result.stopReason).toBe("end_turn");
+    expect(result.liveText).toBe("live:plain text only");
   });
 });
 

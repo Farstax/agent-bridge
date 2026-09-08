@@ -82,6 +82,26 @@ function agentSupportsLoad(init: InitializeResponse): boolean {
   return Boolean(init.agentCapabilities?.loadSession);
 }
 
+/**
+ * Text is always baseline-supported. Every other ContentBlock type is
+ * gated by the agent's negotiated promptCapabilities (InitializeResponse) —
+ * fail closed with a precise error before dispatch rather than silently
+ * dropping an attachment the agent never agreed to accept.
+ */
+function assertPromptCapabilities(blocks: readonly ContentBlock[], init: InitializeResponse): void {
+  const caps = init.agentCapabilities?.promptCapabilities;
+  for (const block of blocks) {
+    if (block.type === "text") continue;
+    if (block.type === "image" && caps?.image) continue;
+    if (block.type === "audio" && caps?.audio) continue;
+    if (block.type === "resource" && caps?.embeddedContext) continue;
+    throw new Error(
+      `ACP agent does not support prompt content block type "${block.type}" `
+      + `(negotiated promptCapabilities: ${JSON.stringify(caps ?? {})})`,
+    );
+  }
+}
+
 /** Actual turn consumption comes only from PromptResponse.usage; usage_update never fabricates it. */
 function usageFrom(response: PromptResponse): Usage | undefined {
   return response.usage ?? undefined;
@@ -173,12 +193,13 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       sessionMode = "resume";
       currentAcpSessionId = acpSessionId;
       currentSessionMode = sessionMode;
-      gate.beginResume();
+      // ACP v1: session/resume resumes a live connection and does not
+      // replay previous messages, so any update observed here (there
+      // should be none) stays on the live channel, unlike session/load.
       await agent.request(acp.methods.agent.session.resume, {
         sessionId: acpSessionId,
         ...sessionParams,
       });
-      gate.endResume();
     } else if (acpSessionId && agentSupportsLoad(initialize)) {
       sessionMode = "load";
       currentAcpSessionId = acpSessionId;
@@ -204,6 +225,9 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
     if (!acpSessionId) throw new Error("ACP session id missing after session setup");
 
+    const blocks = promptBlocks(input.prompt);
+    assertPromptCapabilities(blocks, initialize);
+
     const cancel = () => {
       void agent.notify(acp.methods.agent.session.cancel, { sessionId: acpSessionId });
     };
@@ -212,7 +236,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
     const promptResponse = await agent.request(acp.methods.agent.session.prompt, {
       sessionId: acpSessionId,
-      prompt: promptBlocks(input.prompt),
+      prompt: blocks,
     }, input.signal ? { cancellationSignal: input.signal } : undefined);
 
     remember({ kind: "stop", channel: "live", stopReason: promptResponse.stopReason });

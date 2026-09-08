@@ -8,8 +8,11 @@ export interface AcpObservedUpdate {
 }
 
 /**
- * Distinguishes ACP session-load history from live turn output so replayed
- * messages cannot be delivered as current Telegram/Discord answers.
+ * Distinguishes ACP session/load history from live turn output so replayed
+ * messages cannot be delivered as current Telegram/Discord answers. ACP v1
+ * only defines replay for session/load; session/resume explicitly resumes a
+ * live connection without returning previous messages, so there is no
+ * resume-replay phase to gate.
  */
 export class AcpReplayGate {
   private channel: AcpUpdateChannel = "live";
@@ -19,14 +22,6 @@ export class AcpReplayGate {
   }
 
   endLoad(): void {
-    this.channel = "live";
-  }
-
-  beginResume(): void {
-    this.channel = "replay";
-  }
-
-  endResume(): void {
     this.channel = "live";
   }
 

@@ -125,6 +125,14 @@ function finishOpen(raw: Database.Database, options: OpenDbOptions): BridgeDb {
          AND ${bot}_session_created_at < datetime('now', '-7 days')`
     );
   }
+  // Same 7-day staleness policy applies to ACP session bindings, keyed by
+  // last successful use (updated_at) rather than creation time — an ACP
+  // binding is a durable resume handle that stays warm across many turns.
+  // Only the stale native-resume pointer is cleared; Bridge conversation
+  // identity (acp_session_bindings.conversation_id's owning chatKey) is
+  // untouched, so the next turn starts a fresh ACP session automatically.
+  // The migration above guarantees this table exists at CURRENT_SCHEMA_VERSION.
+  raw.exec(`DELETE FROM acp_session_bindings WHERE updated_at < datetime('now', '-7 days')`);
   const leaseMs = options.lockLeaseMs ?? 90_000;
   if (!Number.isFinite(leaseMs) || leaseMs <= 0) throw new Error("lockLeaseMs must be greater than zero");
   return new BridgeDb(raw, {

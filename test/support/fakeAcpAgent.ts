@@ -13,12 +13,13 @@ export interface FakeAcpAgentOptions {
   loadSession?: boolean;
   resume?: boolean;
   close?: boolean;
-  replayOnResume?: boolean;
   permissionOn?: string;
   onClose?: () => void;
   initializeError?: Error;
   /** Emit only the session/update usage_update notification; omit PromptResponse.usage. */
   usageUpdateOnly?: boolean;
+  /** Negotiated agentCapabilities.promptCapabilities. Omitted fields default to unsupported. */
+  promptCapabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean };
 }
 
 function persistSessions(sessions: Map<string, FakeSession>): void {
@@ -56,6 +57,7 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
             ...(options.resume ? { resume: {} } : {}),
             ...(options.close ? { close: {} } : {}),
           },
+          ...(options.promptCapabilities ? { promptCapabilities: options.promptCapabilities } : {}),
         },
       };
     })
@@ -79,18 +81,9 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       return {};
     })
     .onRequest(acp.methods.agent.session.resume, async (ctx) => {
-      const session = get(ctx.params.sessionId);
-      if (options.replayOnResume) {
-        for (const item of session.history) {
-          await ctx.client.notify(acp.methods.client.session.update, {
-            sessionId: ctx.params.sessionId,
-            update: {
-              sessionUpdate: item.role === "user" ? "user_message_chunk" : "agent_message_chunk",
-              content: { type: "text", text: item.text },
-            },
-          });
-        }
-      }
+      // ACP v1: session/resume never replays previous messages, unlike
+      // session/load. get() proves the session exists; nothing is emitted.
+      get(ctx.params.sessionId);
       return {};
     })
     .onRequest(acp.methods.agent.session.close, async () => {
