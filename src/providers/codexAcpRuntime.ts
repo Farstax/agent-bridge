@@ -11,6 +11,7 @@ import type { AcpObservedUpdate } from "../acp/replay.js";
 import { runSupervisedStdioSession } from "../cliSupervisor.js";
 import type { CliOptions, CliResult, RunTelemetry } from "../types.js";
 import { isAbortRequested } from "../cliSupervisor.js";
+import { cleanOutputDir } from "../fileOutput.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexRuntimeSelection.js";
@@ -337,6 +338,13 @@ export async function runTurn(
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   const parsed = toCliResult(result);
+  if (parsed.stopReason === "cancelled" && request.outputDir) {
+    try {
+      await cleanOutputDir(request.outputDir);
+    } catch (error) {
+      console.warn("[codex] failed to clean output after ACP provider cancellation", error);
+    }
+  }
   return {
     ...parsed,
     text: redactProviderApiKeySecrets(parsed.text, redactionEnv),
