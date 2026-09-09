@@ -178,6 +178,30 @@ describe("Codex ACP phase-aware final delivery", () => {
     ]))).toThrow(/final_answer/);
   });
 
+  it("fails closed when update._meta.codex is a malformed scalar", () => {
+    const malformed = fixture([
+      { channel: "live", text: "commentary that must not be promoted" },
+    ]) as any;
+    malformed.updates[0].notification.update._meta = { codex: "malformed" };
+    expect(() => toCliResult(malformed)).toThrow(/final_answer/);
+  });
+
+  it("fails closed when update._meta.codex is explicitly null", () => {
+    const malformed = fixture([
+      { channel: "live", text: "commentary that must not be promoted" },
+    ]) as any;
+    malformed.updates[0].notification.update._meta = { codex: null };
+    expect(() => toCliResult(malformed)).toThrow(/final_answer/);
+  });
+
+  it("fails closed when Codex phase metadata is misplaced on the notification envelope", () => {
+    const malformed = fixture([
+      { channel: "live", text: "commentary that must not be promoted" },
+    ]) as any;
+    malformed.updates[0].notification._meta = { codex: { phase: "commentary" } };
+    expect(() => toCliResult(malformed)).toThrow(/final_answer/);
+  });
+
   it("excludes a chunk with no phase metadata inside an otherwise phase-aware turn", () => {
     const result = toCliResult(fixture([
       { channel: "live", omitMeta: true, text: "no phase tag on this one" },
