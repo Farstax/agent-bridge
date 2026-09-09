@@ -107,6 +107,13 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         });
       }
 
+      if (text.includes("CANCEL_WITH_OUTPUT")) {
+        const outputFile = process.env.FAKE_ACP_OUTPUT_FILE;
+        if (!outputFile) throw new Error("FAKE_ACP_OUTPUT_FILE is required for CANCEL_WITH_OUTPUT");
+        writeFileSync(outputFile, "partial output from provider-cancelled turn");
+        return { stopReason: "cancelled" };
+      }
+
       if (text.includes("HANG")) {
         await new Promise<void>((resolve, reject) => {
           const done = () => resolve();
