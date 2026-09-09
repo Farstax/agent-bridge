@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
 import { runTurn, codexAcpChildAuthEnv, toCliResult, initialAgentMode } from "../src/providers/codexAcpRuntime.js";
+import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
 import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexRuntimeSelection.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
@@ -32,6 +33,116 @@ describe("Codex runtime selection", () => {
 
   it("refuses unknown runtime names rather than falling back", () => {
     expect(() => resolveCodexRuntime({ AGENT_BRIDGE_CODEX_RUNTIME: "auto" })).toThrow(/Unknown AGENT_BRIDGE_CODEX_RUNTIME/);
+  });
+});
+
+describe("Codex ACP provisional answer classification", () => {
+  function event({
+    channel = "live",
+    sessionUpdate = "agent_message_chunk",
+    text = "",
+    updateMeta,
+    notificationMeta,
+  }: {
+    channel?: "live" | "replay";
+    sessionUpdate?: string;
+    text?: string;
+    updateMeta?: unknown;
+    notificationMeta?: unknown;
+  }) {
+    const update: any = sessionUpdate === "agent_message_chunk" || sessionUpdate === "agent_thought_chunk"
+      ? { sessionUpdate, content: { type: "text", text } }
+      : { sessionUpdate, text };
+    if (updateMeta !== undefined) update._meta = updateMeta;
+    const notification: any = { sessionId: "acp-1", update };
+    if (notificationMeta !== undefined) notification._meta = notificationMeta;
+    return { kind: "session_update" as const, channel, notification } as any;
+  }
+
+  function previewCollector(secrets: string[] = []) {
+    const chunks: string[] = [];
+    const preview = createCodexAcpAnswerPreview((text) => chunks.push(text), secrets);
+    return { chunks, preview };
+  }
+
+  it("previews unphased live agent messages", () => {
+    const { chunks, preview } = previewCollector();
+    preview.observe(event({ text: "hello" }));
+    preview.finish("end_turn");
+    expect(chunks.join("")).toBe("hello");
+  });
+
+  it("previews explicit final_answer chunks", () => {
+    const { chunks, preview } = previewCollector();
+    preview.observe(event({ text: "answer", updateMeta: { codex: { phase: "final_answer" } } }));
+    preview.finish("end_turn");
+    expect(chunks.join("")).toBe("answer");
+  });
+
+  it("suppresses commentary and unphased chunks after phase semantics begin", () => {
+    const { chunks, preview } = previewCollector();
+    preview.observe(event({ text: "thinking", updateMeta: { codex: { phase: "commentary" } } }));
+    preview.observe(event({ text: "ambiguous" }));
+    preview.observe(event({ text: "answer", updateMeta: { codex: { phase: "final_answer" } } }));
+    preview.finish("end_turn");
+    expect(chunks.join("")).toBe("answer");
+  });
+
+  it("fails closed for malformed scalar, null, and misplaced Codex markers", () => {
+    for (const marked of [
+      event({ text: "scalar", updateMeta: { codex: "bad" } }),
+      event({ text: "null", updateMeta: { codex: null } }),
+      event({ text: "null-phase", updateMeta: { codex: { phase: null } } }),
+      event({ text: "scalar-phase", updateMeta: { codex: { phase: 7 } } }),
+      event({ text: "unknown-phase", updateMeta: { codex: { phase: "unknown" } } }),
+      event({ text: "misplaced", notificationMeta: { codex: { phase: "final_answer" } } }),
+    ]) {
+      const { chunks, preview } = previewCollector();
+      preview.observe(marked);
+      preview.observe(event({ text: "later-unphased" }));
+      preview.finish("end_turn");
+      expect(chunks.join("")).toBe("");
+    }
+  });
+
+  it("never previews thought, replay, tool, status, or progress events", () => {
+    const { chunks, preview } = previewCollector();
+    preview.observe(event({ sessionUpdate: "agent_thought_chunk", text: "secret thought" }));
+    preview.observe(event({ channel: "replay", text: "old answer" }));
+    preview.observe(event({ sessionUpdate: "tool_call", text: "tool output" }));
+    preview.observe(event({ sessionUpdate: "plan", text: "status" }));
+    preview.finish("end_turn");
+    expect(chunks.join("")).toBe("");
+  });
+
+  it("suppresses unphased messages after a phase marker on a non-answer update", () => {
+    const { chunks, preview } = previewCollector();
+    preview.observe(event({
+      sessionUpdate: "agent_thought_chunk",
+      text: "thought",
+      updateMeta: { codex: { phase: "commentary" } },
+    }));
+    preview.observe(event({ text: "ambiguous unphased message" }));
+    preview.finish("end_turn");
+    expect(chunks.join("")).toBe("");
+  });
+
+  it("redacts secrets split across multiple answer deltas", () => {
+    const secret = "split-secret-123";
+    const { chunks, preview } = previewCollector([secret]);
+    preview.observe(event({ text: "safe split-" }));
+    preview.observe(event({ text: "secret-" }));
+    preview.observe(event({ text: "123 done" }));
+    preview.finish("end_turn");
+    expect(chunks.join("")).toBe("safe [REDACTED_PROVIDER_CREDENTIAL] done");
+    expect(chunks.join("")).not.toContain(secret);
+  });
+
+  it("does not flush buffered provisional text on provider cancellation", () => {
+    const { chunks, preview } = previewCollector(["secret"]);
+    preview.observe(event({ text: "sec" }));
+    preview.finish("cancelled");
+    expect(chunks.join("")).toBe("");
   });
 });
 

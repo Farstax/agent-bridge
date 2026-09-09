@@ -908,3 +908,151 @@ describe("typing indicator throttling", () => {
     expect((client.sendChatAction as any).mock.calls.length).toBeLessThanOrEqual(3);
   });
 });
+
+describe("sendMessageWithProgress provider-neutral answer preview opt-in", () => {
+  it("accumulates deltas and reconciles the authoritative final without a duplicate message", async () => {
+    const client = createMockClient();
+    await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      allowAnswerPreview: true,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta("part one ");
+        await Promise.resolve();
+        onAnswerDelta("part two");
+        return { text: "authoritative final", sessionId: "s1" } as CliResult;
+      },
+    });
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.editMessageText).toHaveBeenLastCalledWith(expect.objectContaining({
+      message_id: 456,
+      text: expect.stringContaining("authoritative final"),
+    }));
+  });
+
+  it("removes the preview before a final response that requires separate delivery", async () => {
+    const client = createMockClient() as any;
+    client.capabilities = { ...client.capabilities, maxMessageLength: 24 };
+    const finalText = "authoritative final response beyond the edit limit";
+    await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      allowAnswerPreview: true,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta("provisional");
+        return { text: finalText, sessionId: "s1" } as CliResult;
+      },
+    });
+
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+    expect(client.sendMessage).toHaveBeenCalledTimes(2);
+    expect(client.sendMessage.mock.calls.at(-1)?.[0]?.text).toContain(finalText);
+  });
+
+  it("deletes a visible preview when provider cancellation fences delivery", async () => {
+    const client = createMockClient();
+    let aborted = false;
+    const result = await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      allowAnswerPreview: true,
+      isAborted: () => aborted,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta("provisional");
+        await Promise.resolve();
+        aborted = true;
+        return { text: "must not deliver", sessionId: "s1", stopReason: "cancelled" } as CliResult;
+      },
+    });
+    expect(result).toBeNull();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+    expect(client.editMessageText).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("must not deliver"),
+    }));
+  });
+
+  it("deletes a visible preview when execution fails", async () => {
+    const client = createMockClient();
+    await expect(sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      allowAnswerPreview: true,
+      propagateExecutionErrors: true,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta("provisional");
+        await Promise.resolve();
+        throw new Error("failed");
+      },
+    })).rejects.toThrow("failed");
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+  });
+
+  it("stops stale answer deltas from editing after execution authority is lost", async () => {
+    const client = createMockClient();
+    let aborted = false;
+    await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      allowAnswerPreview: true,
+      isAborted: () => aborted,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta("owned");
+        await Promise.resolve();
+        aborted = true;
+        const editsBefore = (client.editMessageText as any).mock.calls.length;
+        onAnswerDelta(" stale");
+        await Promise.resolve();
+        expect((client.editMessageText as any).mock.calls.length).toBe(editsBefore);
+        return { text: "stale final", sessionId: "s1" } as CliResult;
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+  });
+
+  it("does not reuse abandoned provisional text for a final error reply", async () => {
+    const client = createMockClient();
+    const result = await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      allowAnswerPreview: true,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta("abandoned provisional");
+        await Promise.resolve();
+        throw new Error("provider failed");
+      },
+    });
+    expect(result).toBeNull();
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+    expect(client.sendMessage).toHaveBeenCalledTimes(2);
+    expect((client.sendMessage as any).mock.calls.at(-1)?.[0]?.text).toMatch(/^❌ provider failed/);
+  });
+
+  it("removes a preview when final-delivery authority is rejected", async () => {
+    const client = createMockClient();
+    const result = await sendMessageWithProgress({
+      client,
+      kind: "codex",
+      chatId: 123,
+      allowAnswerPreview: true,
+      beforeFinalDelivery: () => false,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta("stale provisional");
+        await Promise.resolve();
+        return { text: "authoritative final", sessionId: "s1" } as CliResult;
+      },
+    });
+    expect(result).toBeNull();
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 123, message_id: 456 });
+    expect(client.editMessageText).not.toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining("authoritative final"),
+    }));
+  });
+});

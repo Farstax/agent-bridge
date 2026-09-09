@@ -774,6 +774,7 @@ export class BridgeEngine {
         chatId: input.chatId,
         body: { message_thread_id: input.threadId },
         showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
+        allowAnswerPreview: this._executionKind() === "codex" ? true : undefined,
         // A provider-side ACP cancellation (result.stopReason === "cancelled")
         // must never reach normal delivery/memory-commit, even though the
         // turn resolved without throwing and even if it carries partial text.
@@ -800,6 +801,7 @@ export class BridgeEngine {
             message_thread_id: input.threadId,
             onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
             onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
+            onAnswerDelta: executionKind === "codex" ? onAnswerDelta : undefined,
           };
           result = await this.executePromptAsync(
             input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments,
@@ -1454,6 +1456,7 @@ export class BridgeEngine {
             ...buildExecutionOptions(executionKind),
             onProgress,
             onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
+            onAnswerDelta: (body as { onAnswerDelta?: (text: string) => void }).onAnswerDelta,
             chatId: this._executionLane(chatKey),
             stdin: invocation.stdin,
             contextEnv: promptForCli.contextEnv,
@@ -1823,6 +1826,7 @@ export class BridgeEngine {
             ...buildExecutionOptions(executionKind),
             onProgress,
             onProviderOutputChunk: body.onProviderOutputChunk,
+            onAnswerDelta: body.onAnswerDelta,
             chatId: this._executionLane(chatKey),
             stdin: fallbackInvocation.stdin,
             contextEnv: fallbackPromptForCli.contextEnv,

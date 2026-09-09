@@ -20,6 +20,7 @@ import {
   redactProviderApiKeySecrets,
 } from "./apiKeyAuth.js";
 import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
+import { createCodexAcpAnswerPreview } from "./codexAcpAnswerPreview.js";
 import { type as bridgeEventType } from "../events/types.js";
 
 const IMAGE_MIME: Record<string, string> = {
@@ -285,7 +286,11 @@ export async function runTurn(
   };
   const chatId = options.chatId;
   const redactionEnv = { ...process.env, ...contextEnv };
-  const liveRedactor = createStreamingSecretRedactor(getProviderApiKeySecretValues(redactionEnv));
+  const secretValues = getProviderApiKeySecretValues(redactionEnv);
+  const liveRedactor = createStreamingSecretRedactor(secretValues);
+  const answerPreview = options.onAnswerDelta
+    ? createCodexAcpAnswerPreview(options.onAnswerDelta, secretValues)
+    : null;
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
   let result;
@@ -315,9 +320,10 @@ export async function runTurn(
         // so events observed before a cancellation/timeout/crash/provider
         // error are still persisted. Credentials are redacted per event before
         // it crosses the process boundary into the durable event sink.
-        onEvent: eventContext && onEvent
+        onEvent: answerPreview || (eventContext && onEvent)
           ? (event) => {
-            if (!event.sessionMode) return;
+            answerPreview?.observe(event);
+            if (!eventContext || !onEvent || !event.sessionMode) return;
             onEvent(bridgeEventType.acpEvent({
               runId: eventContext.runId,
               bot: eventContext.bot,
@@ -337,6 +343,7 @@ export async function runTurn(
   }
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
+  answerPreview?.finish(result.stopReason);
   const parsed = toCliResult(result);
   if (parsed.stopReason === "cancelled" && request.outputDir) {
     try {
