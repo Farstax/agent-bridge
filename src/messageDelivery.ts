@@ -214,6 +214,7 @@ export async function sendMessageWithProgress({
   onProgress = () => {},
   body = {},
   showProgressNarration = false,
+  allowAnswerPreview,
   isAborted,
   beforeFinalDelivery,
   afterFinalDelivery,
@@ -229,6 +230,8 @@ export async function sendMessageWithProgress({
   onProgress?: (text: string) => void;
   body?: any;
   showProgressNarration?: boolean;
+  /** Provider-neutral opt-in for safe provisional answer deltas. */
+  allowAnswerPreview?: boolean;
   isAborted?: () => boolean;
   beforeFinalDelivery?: () => boolean;
   afterFinalDelivery?: () => void | Promise<void>;
@@ -258,7 +261,7 @@ export async function sendMessageWithProgress({
   const streamingEnabled = kind === "antigravity";
   // Abandoned previews must be removable before fallback can publish the
   // authoritative answer. Clients without deletion support stay final-only.
-  let answerPreviewEnabled = (kind === "claude" || kind === "antigravity")
+  let answerPreviewEnabled = (allowAnswerPreview ?? (kind === "claude" || kind === "antigravity"))
     && capabilities.previewStreaming && capabilities.editMessages && capabilities.deleteMessages
     && typeof client.deleteMessage === "function";
   let answerPreviewMessageId: number | null = null;
@@ -387,6 +390,9 @@ export async function sendMessageWithProgress({
       answerPreviewTimer = null;
     }
     answerPreviewDirty = false;
+    // Once a preview is abandoned, its provisional text must not be reused
+    // by later error/fallback/fence delivery in this turn.
+    answerPreviewText = "";
     const aborted = isAborted?.() === true;
     if (aborted) answerPreviewEnabled = false;
     const pendingUpdates = [...answerPreviewUpdates];
@@ -477,6 +483,10 @@ export async function sendMessageWithProgress({
         answerPreviewEnabled = false;
       }
     }
+    if (answerPreviewMessageId != null) {
+      await deleteAnswerPreview(true);
+      answerPreviewEnabled = false;
+    }
     if (streamingEnabled && capabilities.editMessages && progressMsgId != null) {
       try {
         await client.editMessageText({
@@ -528,6 +538,7 @@ export async function sendMessageWithProgress({
     try {
       if (beforeFinalDelivery?.() === false) {
         clearInterval(typingInterval);
+        await discardAnswerPreview();
         return null;
       }
     } catch (err) {

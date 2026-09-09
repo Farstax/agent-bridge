@@ -125,6 +125,8 @@ export interface CliOptions {
   idleTimeoutMs?: number | null;
   killGraceMs?: number;
   onProgress?: (text: string) => void;
+  /** Safe provisional assistant-answer text for transient presentation only. */
+  onAnswerDelta?: (text: string) => void;
   /** Provider-owned observation hook for structured presentation decoders. */
   onProviderOutputChunk?: (text: string) => void;
   chatId?: number | string;

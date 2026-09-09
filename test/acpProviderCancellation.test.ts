@@ -82,10 +82,17 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   });
 
   it("does not deliver, complete, or remember a turn the provider ended with stopReason=cancelled", async () => {
-    runTurnMock.mockResolvedValue({
-      text: "",
-      sessionId: "acp-session-cancelled-1",
-      stopReason: "cancelled",
+    runTurnMock.mockImplementation(async (
+      _request: unknown,
+      _cwd: string,
+      options: { onAnswerDelta?: (text: string) => void },
+    ) => {
+      options.onAnswerDelta?.("provisional, must not survive");
+      return {
+        text: "",
+        sessionId: "acp-session-cancelled-1",
+        stopReason: "cancelled",
+      };
     });
     const { BridgeEngine } = await import("../src/engine.js");
     const client = makeMockClient();
@@ -95,9 +102,11 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     );
 
     await engine.handleMessages([makeMessage("hello")]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     // No normal final-answer delivery to the surface.
-    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 100, message_id: 1 });
 
     // The ACP session is preserved so a later turn can resume it...
     expect(db.getAcpSessionBinding("100", "codex")?.acpSessionId).toBe("acp-session-cancelled-1");
@@ -177,10 +186,18 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   });
 
   it("still delivers, completes, and remembers a normal (non-cancelled) ACP turn", async () => {
-    runTurnMock.mockResolvedValue({
-      text: "the real answer",
-      sessionId: "acp-session-normal-1",
-      stopReason: "end_turn",
+    runTurnMock.mockImplementation(async (
+      _request: unknown,
+      _cwd: string,
+      options: { onAnswerDelta?: (text: string) => void },
+    ) => {
+      options.onAnswerDelta?.("the provisional ");
+      options.onAnswerDelta?.("answer");
+      return {
+        text: "the real answer",
+        sessionId: "acp-session-normal-1",
+        stopReason: "end_turn",
+      };
     });
     const { BridgeEngine } = await import("../src/engine.js");
     const client = makeMockClient();
@@ -191,13 +208,26 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
 
     await engine.handleMessages([makeMessage("hello")]);
 
+    expect(typeof runTurnMock.mock.calls[0][2].onAnswerDelta).toBe("function");
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
-    expect(client.sendMessage.mock.calls[0][0].text).toContain("the real answer");
+    expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+      message_id: 1,
+      text: expect.stringContaining("the real answer"),
+    }));
     expect(db.getAcpSessionBinding("100", "codex")?.acpSessionId).toBe("acp-session-normal-1");
     expect(db.getConvStatus("100", "test").turnCount).toBeGreaterThan(0);
-    const runs = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").all("100") as Array<{ status: string }>;
+    const turns = db.raw.prepare(
+      "SELECT role, text FROM conversation_turns WHERE chat_key = ? ORDER BY id ASC",
+    ).all("100") as Array<{ role: string; text: string }>;
+    expect(turns.at(-1)).toMatchObject({ role: "assistant", text: "the real answer" });
+    const runs = db.raw.prepare(
+      "SELECT status, final_text_preview FROM bridge_runs WHERE chat_id = ?",
+    ).all("100") as Array<{ status: string; final_text_preview: string }>;
     expect(runs.length).toBeGreaterThan(0);
-    for (const run of runs) expect(run.status).toBe("done");
+    for (const run of runs) {
+      expect(run.status).toBe("done");
+      expect(run.final_text_preview).toBe("the real answer");
+    }
   });
 
   it("permits a later turn in the same conversation to proceed normally after provider cancellation", async () => {
@@ -225,6 +255,47 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     expect(client.sendMessage.mock.calls[0][0].text).toContain("resumed answer");
     expect(runTurnMock).toHaveBeenCalledTimes(2);
     expect(runTurnMock.mock.calls[1][0].sessionId).toBe("acp-session-recover-1");
+  });
+
+  it("passes the transient answer callback to a Codex ACP model fallback attempt", async () => {
+    runTurnMock.mockRejectedValueOnce(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    runTurnMock.mockImplementationOnce(async (
+      _request: unknown,
+      _cwd: string,
+      options: { onAnswerDelta?: (text: string) => void },
+    ) => {
+      options.onAnswerDelta?.("fallback preview");
+      return {
+        text: "fallback answer",
+        sessionId: "acp-session-fallback-1",
+        stopReason: "end_turn",
+      };
+    });
+    const { BridgeEngine } = await import("../src/engine.js");
+    const client = makeMockClient();
+    const engine = new BridgeEngine(
+      {
+        surfaceIdentity: "test",
+        kind: "codex",
+        botConfig: { command: "codex", modelPreference: ["primary", "fallback"] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+      },
+      db,
+      client,
+      {},
+    );
+
+    await engine.handleMessages([makeMessage("hello")]);
+
+    expect(runTurnMock).toHaveBeenCalledTimes(2);
+    expect(typeof runTurnMock.mock.calls[1][2].onAnswerDelta).toBe("function");
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+      message_id: 1,
+      text: expect.stringContaining("fallback answer"),
+    }));
   });
 
   it("does not turn a cancelled turn into an error reply or a completion when the ACP session binding write fails for a non-fencing reason", async () => {
