@@ -104,6 +104,54 @@ describe("BridgeEngine", () => {
     } as any, db, makeMockClient(), {})).toThrow("BridgeEngine surfaceIdentity is required");
   });
 
+  it("stores an ACP provider cancellation as cancelled without delivering partial text", async () => {
+    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
+    try {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const cancelledSpy = vi.spyOn(db, "updateRunCancelled");
+      const completedSpy = vi.spyOn(db, "updateRunCompleted");
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "codex",
+          botConfig: { command: "codex", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+        },
+        db,
+        client,
+      );
+      (engine as any)._runNativeOrAcp = vi.fn().mockResolvedValue({
+        stdout: "",
+        parsed: { text: "", sessionId: "provider-session", stopReason: "cancelled" },
+      });
+
+      db.enqueueMsg("test", "100", {
+        prompt: "request denied tool",
+        chatId: 100,
+        threadId: null,
+        chatType: "private",
+        userId: 42,
+      });
+      await engine.recoverPendingQueue("100");
+
+      expect(cancelledSpy).toHaveBeenCalledWith(expect.any(String), "provider");
+      expect(completedSpy).not.toHaveBeenCalled();
+      expect(client.sendMessage).not.toHaveBeenCalled();
+      expect(client.editMessageText).not.toHaveBeenCalled();
+      const runId = cancelledSpy.mock.calls[0][0];
+      expect(db.getRun(runId)).toMatchObject({ status: "cancelled", error: "provider" });
+      expect(db.getEventsForRun(runId).map((event) => event.type)).toContain("run.cancelled");
+      expect(db.pendingMsgCount("test", "100")).toBe(0);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
+      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
+    }
+  });
+
   describe("handoff consumption", () => {
     it("clears a pending handoff mark after the first turn for that chat+CLI", async () => {
       const { BridgeEngine } = await import("../src/engine.js");

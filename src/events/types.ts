@@ -43,7 +43,7 @@ export interface RunFailedEvent extends BridgeEventBase {
 
 export interface RunCancelledEvent extends BridgeEventBase {
   type: "run.cancelled";
-  reason: "user" | "shutdown" | "timeout";
+  reason: "user" | "shutdown" | "timeout" | "provider";
 }
 
 /**
@@ -143,7 +143,7 @@ export const type = {
     bot: BotKind;
     chatId: string;
     chatKey: string;
-    reason: "user" | "shutdown" | "timeout";
+    reason: "user" | "shutdown" | "timeout" | "provider";
     threadId?: string;
   }): RunCancelledEvent {
     return { ...base(fields), type: "run.cancelled", reason: fields.reason };

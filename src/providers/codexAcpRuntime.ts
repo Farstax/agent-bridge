@@ -60,7 +60,7 @@ export function buildInvocation(request: ProviderInvocationRequest): ProviderInv
 export function initialAgentMode(request: Pick<ProviderInvocationRequest, "executionMode" | "toolMode">): string {
   if (request.toolMode === "none") throw new CodexAcpToolFreeUnsupportedError();
   if (request.executionMode === "trusted") return "agent-full-access";
-  return "agent";
+  return "read-only";
 }
 
 export function codexAcpConfig(request: Pick<ProviderInvocationRequest, "model" | "effort">): Record<string, unknown> {
@@ -161,37 +161,51 @@ function telemetryFromUsage(usage: Usage | undefined): RunTelemetry | undefined 
  * Agents that supply no phase metadata are treated as before: every live
  * chunk is part of the answer.
  */
-function codexPhaseOf(notification: AcpObservedUpdate["notification"]): "commentary" | "final_answer" | undefined {
-  const meta = notification._meta as { codex?: { phase?: unknown } } | null | undefined;
-  const phase = meta?.codex?.phase;
-  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+type CodexPhase = "commentary" | "final_answer";
+type CodexPhaseState = CodexPhase | "absent" | "invalid";
+
+function codexPhaseOf(notification: AcpObservedUpdate["notification"]): CodexPhaseState {
+  const meta = notification.update._meta as Record<string, unknown> | null | undefined;
+  if (!meta || !Object.prototype.hasOwnProperty.call(meta, "codex")) {
+    const outerMeta = notification._meta as Record<string, unknown> | null | undefined;
+    return outerMeta && Object.prototype.hasOwnProperty.call(outerMeta, "codex") ? "invalid" : "absent";
+  }
+  const codex = meta.codex;
+  if (!codex || typeof codex !== "object") return "invalid";
+  const phase = (codex as { phase?: unknown }).phase;
+  return phase === "commentary" || phase === "final_answer" ? phase : "invalid";
 }
 
 /** The authoritative final answer, excluding Codex commentary-phase chunks. Replay is always excluded. */
-function codexFinalAnswerText(updates: readonly AcpObservedUpdate[]): string {
+function codexFinalAnswer(updates: readonly AcpObservedUpdate[]): { phaseAware: boolean; text: string } {
+  const phaseAware = updates.some((update) => {
+    const payload = update.notification.update;
+    return payload.sessionUpdate === "agent_message_chunk"
+      && payload.content.type === "text"
+      && codexPhaseOf(update.notification) !== "absent";
+  });
   let text = "";
   for (const update of updates) {
     if (update.channel !== "live") continue;
     const payload = update.notification.update;
     if (payload.sessionUpdate !== "agent_message_chunk") continue;
     if (payload.content.type !== "text") continue;
-    if (codexPhaseOf(update.notification) === "commentary") continue;
+    if (phaseAware && codexPhaseOf(update.notification) !== "final_answer") continue;
     text += payload.content.text;
   }
-  return text;
+  return { phaseAware, text };
 }
 
 export function toCliResult(result: AcpTurnResult): CliResult {
-  // Falls back to the full live text (commentary included) if the agent
-  // never emitted a final_answer-phase chunk, so a commentary-only turn
-  // still delivers something instead of erroring out as empty.
-  const text = (codexFinalAnswerText(result.updates).trim() || result.liveText.trim());
+  const answer = codexFinalAnswer(result.updates);
+  const text = (answer.phaseAware ? answer.text : result.liveText).trim();
   if (!text && result.stopReason !== "cancelled") {
-    throw new Error(`Codex ACP completed without live text (stopReason=${result.stopReason})`);
+    throw new Error(`Codex ACP completed without authoritative final text (stopReason=${result.stopReason})`);
   }
   return {
     text,
     sessionId: result.acpSessionId,
+    stopReason: result.stopReason,
     ...(telemetryFromUsage(result.usage) ? { telemetry: telemetryFromUsage(result.usage) } : {}),
   };
 }

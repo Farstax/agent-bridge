@@ -775,6 +775,7 @@ export class BridgeEngine {
         showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
         isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
         beforeFinalDelivery: () => {
+          if (result?.stopReason === "cancelled") return false;
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
@@ -805,7 +806,13 @@ export class BridgeEngine {
           this._commitResultState(input.laneHandle, input.prompt, result, input.runId);
         },
       });
-      return delivered ? result : null;
+      // Provider cancellation is a valid terminal outcome even though its
+      // partial text is intentionally not delivered. Return it to the queue
+      // owner so the claimed message is retired instead of treated as a
+      // stale/fenced attempt and made eligible for execution again.
+      const completedResult = result as StagedCliResult | null;
+      if (completedResult?.stopReason === "cancelled") return completedResult;
+      return delivered ? completedResult : null;
     } finally {
       this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
     }
@@ -1494,6 +1501,23 @@ export class BridgeEngine {
       }
       result.text = scrubOutputDir(result.text, outDir);
       const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
+      if (stagedResult.stopReason === "cancelled") {
+        if (collect && runId && eventContext) {
+          collect({
+            type: "run.cancelled",
+            version: 1,
+            id: randomUUID(),
+            runId,
+            timestamp: new Date().toISOString(),
+            bot: eventContext.bot,
+            chatId: eventContext.chatId,
+            chatKey: eventContext.chatKey,
+            threadId: eventContext.threadId,
+            reason: "provider",
+          });
+        }
+        return stagedResult;
+      }
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));

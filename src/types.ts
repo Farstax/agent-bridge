@@ -192,4 +192,5 @@ export interface CliResult {
   text: string;
   sessionId: string | null;
   telemetry?: RunTelemetry;
+  stopReason?: string;
 }

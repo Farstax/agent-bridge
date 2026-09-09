@@ -90,8 +90,11 @@ Codex ACP additionally tags `agent_message_chunk` updates with
 `_meta.codex.phase` (`"commentary"` | `"final_answer"`). That interpretation
 is Codex-specific and lives in `codexAcpRuntime.ts`, not the generic ACP
 core: commentary remains available as live intermediate progress, but the
-authoritative delivered answer excludes it. Agents that supply no phase
-metadata are unaffected — every live chunk is part of the answer, as before.
+authoritative delivered answer includes only valid live `final_answer`
+chunks. Once a turn contains Codex phase semantics, malformed, unknown, or
+missing phases fail closed for answer extraction. Agents that supply no Codex
+phase semantics are unaffected: every generic live text chunk remains part of
+the answer.
 
 ## Client capabilities
 
@@ -100,6 +103,9 @@ needs: `plan: {}`, since Bridge retains structured plan updates as part of
 rich ACP event retention. Filesystem and terminal client methods are not
 advertised; the provider agent keeps those tools. Permission requests are
 mapped onto Bridge `safe` / `trusted` execution authority.
+Codex safe execution selects the adapter's `read-only` mode, while trusted
+execution selects `agent-full-access`. This keeps network and mutation
+approval under the ACP client and Bridge policy in safe mode.
 
 Outbound prompt content is checked against the agent's negotiated
 `agentCapabilities.promptCapabilities` before dispatch. Text is always

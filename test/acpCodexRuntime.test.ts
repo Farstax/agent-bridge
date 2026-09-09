@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
-import { runTurn, codexAcpChildAuthEnv, toCliResult } from "../src/providers/codexAcpRuntime.js";
+import {
+  CodexAcpToolFreeUnsupportedError,
+  runTurn,
+  codexAcpChildAuthEnv,
+  initialAgentMode,
+  toCliResult,
+} from "../src/providers/codexAcpRuntime.js";
 import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexRuntimeSelection.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
@@ -36,6 +42,12 @@ describe("Codex runtime selection", () => {
 });
 
 describe("Codex ACP invocation", () => {
+  it("maps Bridge authority to the pinned adapter modes", () => {
+    expect(initialAgentMode({ executionMode: "safe", toolMode: "default" })).toBe("read-only");
+    expect(initialAgentMode({ executionMode: "trusted", toolMode: "default" })).toBe("agent-full-access");
+    expect(() => initialAgentMode({ executionMode: "safe", toolMode: "none" })).toThrow(CodexAcpToolFreeUnsupportedError);
+  });
+
   it("auto-authenticates the ACP adapter from a workspace-local CODEX_API_KEY", () => {
     expect(codexAcpChildAuthEnv({ CODEX_API_KEY: "sk-test" })).toEqual({
       DEFAULT_AUTH_REQUEST: JSON.stringify({ methodId: "api-key" }),
@@ -105,13 +117,22 @@ describe("Codex ACP invocation", () => {
 });
 
 describe("Codex ACP phase-aware final delivery", () => {
-  function fixture(updates: Array<{ channel: "live" | "replay"; phase?: "commentary" | "final_answer"; text: string }>): Parameters<typeof toCliResult>[0] {
+  function fixture(updates: Array<{
+    channel: "live" | "replay";
+    text: string;
+    codex?: { phase?: unknown } | null;
+    notificationCodex?: { phase?: unknown } | null;
+  }>): Parameters<typeof toCliResult>[0] {
     const observed = updates.map((u) => ({
       channel: u.channel,
       notification: {
         sessionId: "acp-sess-1",
-        update: { sessionUpdate: "agent_message_chunk" as const, content: { type: "text" as const, text: u.text } },
-        ...(u.phase ? { _meta: { codex: { phase: u.phase } } } : {}),
+        ...(u.notificationCodex !== undefined ? { _meta: { codex: u.notificationCodex } } : {}),
+        update: {
+          sessionUpdate: "agent_message_chunk" as const,
+          content: { type: "text" as const, text: u.text },
+          ...("codex" in u ? { _meta: { codex: u.codex } } : {}),
+        },
       },
     }));
     const liveText = observed.filter((u) => u.channel === "live").map((u) => u.notification.update.content.text).join("");
@@ -130,8 +151,8 @@ describe("Codex ACP phase-aware final delivery", () => {
 
   it("excludes commentary-phase chunks from the final delivered answer", () => {
     const result = toCliResult(fixture([
-      { channel: "live", phase: "commentary", text: "thinking out loud..." },
-      { channel: "live", phase: "final_answer", text: "the real answer" },
+      { channel: "live", codex: { phase: "commentary" }, text: "thinking out loud..." },
+      { channel: "live", codex: { phase: "final_answer" }, text: "the real answer" },
     ]));
     expect(result.text).toBe("the real answer");
     expect(result.text).not.toContain("thinking out loud");
@@ -145,17 +166,41 @@ describe("Codex ACP phase-aware final delivery", () => {
     expect(result.text).toBe("part one part two");
   });
 
-  it("falls back to full live text if only commentary phases were ever emitted", () => {
+  it("fails closed when a phase-aware turn has commentary but no valid final answer", () => {
+    expect(() => toCliResult(fixture([
+      { channel: "live", codex: { phase: "commentary" }, text: "private commentary" },
+    ]))).toThrow(/without authoritative final text/i);
+  });
+
+  it("preserves the ACP cancelled stop reason for Bridge lifecycle handling", () => {
+    const cancelled = fixture([
+      { channel: "live", codex: { phase: "commentary" }, text: "permission was denied" },
+    ]);
+    cancelled.stopReason = "cancelled";
+    expect(toCliResult(cancelled)).toMatchObject({ text: "", stopReason: "cancelled" });
+  });
+
+  it("excludes unknown, malformed, and missing phase chunks once Codex phase semantics are present", () => {
     const result = toCliResult(fixture([
-      { channel: "live", phase: "commentary", text: "only commentary, no final_answer phase" },
+      { channel: "live", codex: { phase: "commentary" }, text: "commentary" },
+      { channel: "live", codex: { phase: "future_phase" }, text: "unknown" },
+      { channel: "live", codex: null, text: "malformed" },
+      { channel: "live", text: "missing" },
+      { channel: "live", codex: { phase: "final_answer" }, text: "valid final" },
     ]));
-    expect(result.text).toBe("only commentary, no final_answer phase");
+    expect(result.text).toBe("valid final");
+  });
+
+  it("fails closed when Codex phase metadata is present at the obsolete notification level", () => {
+    expect(() => toCliResult(fixture([
+      { channel: "live", notificationCodex: { phase: "commentary" }, text: "outer-level protocol text" },
+    ]))).toThrow(/without authoritative final text/i);
   });
 
   it("still excludes replayed history regardless of phase metadata", () => {
     const result = toCliResult(fixture([
-      { channel: "replay", phase: "final_answer", text: "replayed old answer" },
-      { channel: "live", phase: "final_answer", text: "current answer" },
+      { channel: "replay", codex: { phase: "final_answer" }, text: "replayed old answer" },
+      { channel: "live", codex: { phase: "final_answer" }, text: "current answer" },
     ]));
     expect(result.text).toBe("current answer");
   });
@@ -328,7 +373,7 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.FAKE_ACP_STORE = join(storeDir, "sessions.json");
     try {
     const first = await runTurn({
-      prompt: "first",
+      prompt: "PHASED first",
       sessionId: null,
       command: "codex-acp",
       model: null,
@@ -345,7 +390,8 @@ describe("Codex ACP supervised stdio turn", () => {
       chatId: `acp-test-${Date.now()}`,
     }, { conversationId: "conv-bridge-1", runId: "run-1" });
 
-    expect(first.text).toContain("User request:\nfirst");
+    expect(first.text).toContain("User request:\nPHASED first");
+    expect(first.text).not.toContain("thinking out loud");
     expect(first.sessionId).toMatch(/^acp-/);
     expect(first.sessionId).not.toBe("conv-bridge-1");
     expect(first.telemetry?.outputTokens).toBe(8);
@@ -369,7 +415,7 @@ describe("Codex ACP supervised stdio turn", () => {
     }, { conversationId: "conv-bridge-1", runId: "run-2" });
 
     expect(second.text).toContain("User request:\nsecond");
-    expect(second.text).not.toMatch(/User request:\nfirst/);
+    expect(second.text).not.toMatch(/User request:\nPHASED first/);
     expect(liveDeliveryText([])).toBe("");
     } finally {
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
