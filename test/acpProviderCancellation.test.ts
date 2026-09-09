@@ -171,8 +171,9 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     expect(client.sendDocument).not.toHaveBeenCalled();
     expect(client.sendMessage).not.toHaveBeenCalled();
     expect(db.getConvStatus("100", "test").turnCount).toBe(0);
-    const completed = db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ? AND status = 'done'").get("100") as { count: number };
-    expect(completed.count).toBe(0);
+    const runs = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").all("100") as Array<{ status: string }>;
+    expect(runs.length).toBeGreaterThan(0);
+    for (const run of runs) expect(run.status).toBe("cancelled");
   });
 
   it("still delivers, completes, and remembers a normal (non-cancelled) ACP turn", async () => {
