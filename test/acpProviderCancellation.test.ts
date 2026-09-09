@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
@@ -9,13 +10,16 @@ import type { TelegramMessage } from "../src/types.js";
 // codexAcpRuntime.runTurn is the only ACP transport entry point engine.ts
 // calls (via cli.js's re-export). Mocking it here lets these tests drive the
 // engine's real cancellation/delivery/persistence pipeline deterministically,
-// without spawning a real ACP stdio child — the ACP protocol/transport layer
-// itself is covered by acpCodexRuntime.test.ts's supervised-stdio suite.
+// without spawning a real ACP stdio child — except for the explicit
+// production-shaped lease-loss regression, which delegates through the actual
+// runTurn implementation before invalidating the Bridge lane.
 const runTurnMock = vi.fn();
 vi.mock("../src/providers/codexAcpRuntime.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/providers/codexAcpRuntime.js")>();
   return { ...actual, runTurn: runTurnMock };
 });
+
+const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
 
 function makeMessage(text: string, userId = 42, chatId = 100): TelegramMessage {
   return {
@@ -73,6 +77,8 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
     else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
     delete process.env.CODEX_ACP_COMMAND;
+    delete process.env.CODEX_ACP_ARGS;
+    delete process.env.FAKE_ACP_OUTPUT_FILE;
   });
 
   it("does not deliver, complete, or remember a turn the provider ended with stopReason=cancelled", async () => {
@@ -132,19 +138,24 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("removes generated output when a cancelled provider turn loses lane ownership before settlement", async () => {
+  it("cleans cancelled output before a post-provider lease loss can fence settlement", async () => {
+    const actualRuntime = await vi.importActual<typeof import("../src/providers/codexAcpRuntime.js")>("../src/providers/codexAcpRuntime.js");
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+
     let fencedOutputDir: string | null = null;
-    runTurnMock.mockImplementation(async (request: { outputDir?: string | null }) => {
+    runTurnMock.mockImplementation(async (...args: Parameters<typeof actualRuntime.runTurn>) => {
+      const request = args[0];
       fencedOutputDir = request.outputDir ?? null;
       if (!fencedOutputDir) throw new Error("missing ACP outputDir in fenced cancellation test");
-      writeFileSync(join(fencedOutputDir, "partial.txt"), "partial output from fenced cancelled turn");
+      process.env.FAKE_ACP_OUTPUT_FILE = join(fencedOutputDir, "partial.txt");
+      const result = await actualRuntime.runTurn(...args);
+      // Simulate authority disappearing in the narrow window after the ACP
+      // turn has settled but before BridgeEngine's first post-provider fence.
       db.raw.prepare("DELETE FROM execution_locks WHERE surface = ? AND chat_key = ?").run("test", "100");
-      return {
-        text: "",
-        sessionId: "acp-session-cancelled-fenced-1",
-        stopReason: "cancelled",
-      };
+      return result;
     });
+
     const { BridgeEngine } = await import("../src/engine.js");
     const client = makeMockClient();
     const engine = new BridgeEngine(
@@ -152,7 +163,7 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
       db, client, {},
     );
 
-    await engine.handleMessages([makeMessage("hello")]);
+    await engine.handleMessages([makeMessage("CANCEL_WITH_OUTPUT")]);
 
     expect(fencedOutputDir).not.toBeNull();
     expect(existsSync(fencedOutputDir!)).toBe(false);
