@@ -7,7 +7,7 @@ permissions:
   contents: write
 jobs:
   migrate:
-    if: github.event.head_commit.message == 'chore: run issue 737 migration'
+    if: github.event.head_commit.message == 'chore-issue737-run'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
