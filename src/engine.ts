@@ -52,6 +52,7 @@ import { clearHandoffRequired, isProviderFallbackHandoffRequired } from "./hando
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
+import { type as eventType } from "./events/types.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
@@ -773,7 +774,13 @@ export class BridgeEngine {
         chatId: input.chatId,
         body: { message_thread_id: input.threadId },
         showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
-        isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle),
+        // A provider-side ACP cancellation (result.stopReason === "cancelled")
+        // must never reach normal delivery/memory-commit, even though the
+        // turn resolved without throwing and even if it carries partial text.
+        // Unlike a lease-loss/user-stop abort, this input was still fully
+        // consumed by the provider, so the caller must retire it (see the
+        // non-null return below) rather than leave it queued for retry.
+        isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle) || result?.stopReason === "cancelled",
         beforeFinalDelivery: () => {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
@@ -805,7 +812,9 @@ export class BridgeEngine {
           this._commitResultState(input.laneHandle, input.prompt, result, input.runId);
         },
       });
-      return delivered ? result : null;
+      const staged = result as StagedCliResult | null;
+      if (delivered) return staged;
+      return staged !== null && staged.stopReason === "cancelled" ? staged : null;
     } finally {
       this._releaseFinalDeliveryPhase(input.laneHandle, finalDeliveryPhase);
     }
@@ -1494,6 +1503,31 @@ export class BridgeEngine {
       }
       result.text = scrubOutputDir(result.text, outDir);
       const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
+      if (stagedResult.stopReason === "cancelled") {
+        // The provider ended the turn itself (ACP session/cancel resolving
+        // gracefully, not a process kill) — this must never look like a
+        // normal completion: no answer delivery, no output-file publication,
+        // no assistant-memory turn, and a run.cancelled terminal event
+        // instead of run.completed. The ACP session id is still preserved
+        // (when present) so a later turn in this conversation can resume it.
+        // _executeAndDeliverTurn's isAborted() reads this stopReason back off
+        // the staged result to suppress delivery/afterFinalDelivery, and
+        // still returns this result (non-null) so the caller retires the
+        // input message as consumed instead of leaving it queued for retry.
+        this._assertLaneOwned(laneHandle);
+        if (stagedResult.sessionId && isAgentKind(this.kind)) {
+          try {
+            this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, stagedResult.sessionId, runId));
+          } catch (error) {
+            if (error instanceof LostExecutionLeaseError) throw error;
+            console.warn(`[${this.kind}] failed to persist ACP session binding after provider cancellation`, error);
+          }
+        }
+        if (collect && runId && eventContext) {
+          collect(eventType.runCancelled({ ...eventContext, reason: "provider" }));
+        }
+        return stagedResult;
+      }
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));

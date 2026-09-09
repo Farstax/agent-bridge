@@ -71,6 +71,18 @@ Stdout on this path is ACP JSON-RPC, not user-visible text. Successful
 prompts do not call `session/close`; the provider ACP session id is a durable
 resume handle. Child-process teardown still kills the stdio agent.
 
+An ACP agent can also resolve a prompt gracefully with `stopReason:
+"cancelled"` (e.g. after `session/cancel`) without the child dying — the
+Bridge process fence never fires and the ACP session stays live. `CliResult`
+carries the raw ACP `stopReason` so `BridgeEngine` can tell this apart from a
+normal completion: a cancelled turn is never delivered, never published as
+output, and never remembered as a completed conversation turn, even if it
+carries partial text. The durable Run becomes `run.cancelled` (reason
+`"provider"`), the ACP session id is still persisted so the next turn in the
+conversation can resume it, and the input message is retired (not requeued)
+since the provider already consumed it. This is a distinct path from Bridge's
+own `/stop`, which kills the child process instead.
+
 ## Replay and delivery
 
 `session/load` may replay historical `session/update` events. Replay is
@@ -87,11 +99,18 @@ credentials are redacted from every retained event (including tool
 applied to delivered text.
 
 Codex ACP additionally tags `agent_message_chunk` updates with
-`_meta.codex.phase` (`"commentary"` | `"final_answer"`). That interpretation
-is Codex-specific and lives in `codexAcpRuntime.ts`, not the generic ACP
-core: commentary remains available as live intermediate progress, but the
-authoritative delivered answer excludes it. Agents that supply no phase
-metadata are unaffected — every live chunk is part of the answer, as before.
+`_meta.codex.phase` (`"commentary"` | `"final_answer"`), set on the update
+payload itself (`notification.update._meta`, via ACP's `ContentChunk`) — not
+on the `SessionNotification` envelope (`notification._meta`), which is a
+structurally distinct field ACP reserves for its own extensibility metadata.
+That interpretation is Codex-specific and lives in `codexAcpRuntime.ts`, not
+the generic ACP core: commentary remains available as live intermediate
+progress, but the authoritative delivered answer excludes it, along with any
+chunk with a missing or unrecognized phase value once a turn has shown any
+Codex phase metadata at all (fail closed rather than leak commentary/unknown
+text as if it were the answer). Agents that supply no phase metadata for the
+whole turn are unaffected — every live chunk is part of the answer, as
+before.
 
 ## Client capabilities
 
@@ -99,7 +118,14 @@ Initialize advertises only the client capabilities Agent Bridge actually
 needs: `plan: {}`, since Bridge retains structured plan updates as part of
 rich ACP event retention. Filesystem and terminal client methods are not
 advertised; the provider agent keeps those tools. Permission requests are
-mapped onto Bridge `safe` / `trusted` execution authority.
+mapped onto Bridge `safe` / `trusted` execution authority: `safe` selects the
+Codex ACP `read-only` agent mode (`approvalsReviewer: "user"` — every
+mutation/network request is routed back through Bridge's own permission
+decision) and `trusted` selects `agent-full-access`. Codex ACP's `agent` mode
+is never selected for a Bridge-mediated turn: it uses an `auto_review`
+approvals reviewer that lets the adapter self-approve actions it judges safe
+without ever asking Bridge, which would silently expand the provider's
+authority underneath Bridge's own policy.
 
 Outbound prompt content is checked against the agent's negotiated
 `agentCapabilities.promptCapabilities` before dispatch. Text is always

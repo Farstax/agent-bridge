@@ -192,4 +192,11 @@ export interface CliResult {
   text: string;
   sessionId: string | null;
   telemetry?: RunTelemetry;
+  /**
+   * Raw ACP StopReason ("end_turn" | "max_tokens" | "max_turn_requests" |
+   * "refusal" | "cancelled") when the provider result came from an ACP turn.
+   * Legacy (non-ACP) providers never set this, so callers that only check
+   * `=== "cancelled"` see unchanged behavior for every existing provider.
+   */
+  stopReason?: string;
 }

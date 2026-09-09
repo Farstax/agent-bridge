@@ -158,8 +158,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           update: {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "thinking out loud..." },
+            _meta: { codex: { phase: "commentary" } },
           },
-          _meta: { codex: { phase: "commentary" } },
         });
       }
       const reply = `live:${text}`;
@@ -168,8 +168,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         update: {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: reply },
+          ...(text.includes("PHASED") ? { _meta: { codex: { phase: "final_answer" } } } : {}),
         },
-        ...(text.includes("PHASED") ? { _meta: { codex: { phase: "final_answer" } } } : {}),
       });
       session.history.push({ role: "agent", text: reply });
       persistSessions(sessions);
