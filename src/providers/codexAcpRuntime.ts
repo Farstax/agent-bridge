@@ -165,6 +165,14 @@ type CodexAgentMessageChunk =
   Extract<AcpObservedUpdate["notification"]["update"], { sessionUpdate: "agent_message_chunk" }>
   & { content: Extract<ContentBlock, { type: "text" }> };
 
+type MetaCarrier = { _meta?: unknown };
+
+function hasOwnCodexMarker(meta: unknown): boolean {
+  return meta !== null
+    && typeof meta === "object"
+    && Object.prototype.hasOwnProperty.call(meta, "codex");
+}
+
 /**
  * Codex ACP tags agent_message_chunk notifications with `_meta.codex.phase`
  * ("commentary" | "final_answer"). Per the ACP v1 schema, `_meta` on a
@@ -178,7 +186,7 @@ type CodexAgentMessageChunk =
 function codexMetaOf(payload: CodexAgentMessageChunk): { phase?: unknown } | undefined {
   const meta = payload._meta as { codex?: unknown } | null | undefined;
   const codex = meta?.codex;
-  return codex && typeof codex === "object" ? codex as { phase?: unknown } : undefined;
+  return codex !== null && typeof codex === "object" ? codex as { phase?: unknown } : undefined;
 }
 
 /** Only a recognized phase value counts; a present-but-malformed value fails closed like a missing one. */
@@ -195,17 +203,30 @@ function liveAgentMessageChunk(update: AcpObservedUpdate): CodexAgentMessageChun
 }
 
 /**
+ * Presence is authoritative even when parsing is not. A malformed update-level
+ * `_meta.codex` value, or a Codex marker placed on the notification envelope
+ * instead of the update payload, is still unmistakably Codex phase semantics
+ * and therefore disables generic liveText fallback. Only a turn with no Codex
+ * marker at either relevant level may use generic live text.
+ */
+function hasCodexPhaseMarker(update: AcpObservedUpdate, payload: CodexAgentMessageChunk): boolean {
+  if (hasOwnCodexMarker((payload as MetaCarrier)._meta)) return true;
+  return hasOwnCodexMarker((update.notification as MetaCarrier)._meta);
+}
+
+/**
  * A turn "participates in Codex phase semantics" the moment any live chunk
- * carries `_meta.codex` at all — even with a malformed/unrecognized phase
- * value. Once a turn is phase-aware, every chunk in it (commentary, missing
- * phase, or malformed phase) fails closed out of the authoritative answer;
- * only "final_answer" chunks qualify. A turn with no Codex phase metadata at
- * all keeps the original generic behavior (every live chunk is the answer).
+ * carries a Codex marker at the correct update level or at the malformed
+ * notification-envelope level. Once a turn is phase-aware, every chunk in it
+ * (commentary, missing phase, malformed phase, or misplaced phase) fails
+ * closed out of the authoritative answer; only correctly located
+ * "final_answer" chunks qualify. A turn with no Codex phase marker at all
+ * keeps the original generic behavior (every live chunk is the answer).
  */
 function turnHasCodexPhaseSemantics(updates: readonly AcpObservedUpdate[]): boolean {
   return updates.some((update) => {
     const payload = liveAgentMessageChunk(update);
-    return payload !== undefined && codexMetaOf(payload) !== undefined;
+    return payload !== undefined && hasCodexPhaseMarker(update, payload);
   });
 }
 
