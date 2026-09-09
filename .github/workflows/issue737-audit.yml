@@ -1,0 +1,18 @@
+name: Issue 737 audit
+on:
+  push:
+    branches:
+      - feature/737-promote-codex-acp
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Legacy Codex reference inventory
+        run: |
+          echo '=== selector/native runtime refs ==='
+          rg -n 'AGENT_BRIDGE_CODEX_RUNTIME|resolveCodexRuntime|isCodexAcpRuntime|codexRuntimeSelection|providers/codexRuntime(\.js|\.ts)' . --glob '!node_modules/**' || true
+          echo '=== codex exec/native parser refs ==='
+          rg -n 'codex exec|parseCodex|Codex.*JSONL|JSONL.*Codex|native.*Codex|Codex.*native' src test scripts docs .env* --glob '!node_modules/**' || true
