@@ -37,7 +37,7 @@ import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { hasAudioAttachment, prepareVoiceBatchForDispatch } from "./voiceIngress.js";
 import { downloadSurfaceAttachment } from "./fileDownload.js";
-import { prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
+import { cleanOutputDir, prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
 import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 import { createClaudeAnswerPresentationDecoder } from "./providers/claudeAnswerPresentation.js";
 import { createAntigravityAnswerPresentationDecoder } from "./providers/antigravityAnswerPresentation.js";
@@ -414,10 +414,6 @@ export class BridgeEngine {
 
     const preProviderScope = this.laneCoordinator.beginPreProviderIngress(executionLane);
     try {
-      // Ordinary (non-voice) ingress must stay exactly as synchronous as
-      // before this scope existed: only messages carrying an audio
-      // attachment pay for the extra pre-provider await, so unrelated
-      // concurrent-arrival ordering (e.g. augment coalescing) is unaffected.
       if (messages.some(hasAudioAttachment)) {
         const prepared = await prepareVoiceBatchForDispatch(messages, {
           signal: preProviderScope.controller.signal,
@@ -425,10 +421,6 @@ export class BridgeEngine {
           notify: async (turn, message) => {
             await this.sendText(turn.delivery.chatId, { text: message, message_thread_id: turn.threadId });
           },
-          // On a genuine transcription failure (not /stop), forward the
-          // original audio back to the user through the same attachment
-          // delivery path already used for ordinary non-voice attachments
-          // (see fileOutput.ts) rather than losing it.
           retainAttachment: async (turn, filePath) => {
             const capabilities = surfaceCapabilities(this.client);
             if (!capabilities.attachments || typeof this.client.sendDocument !== "function") return;
@@ -607,9 +599,6 @@ export class BridgeEngine {
     let activeTaskCommitted = false;
 
     if (!laneHandle) {
-      // No await is permitted between this synchronous claim and durable
-      // admission. A stop accepted before the claim aborts the scope and makes
-      // the claim fail; after the claim, the ordinary durable lane owns stop.
       if (preProviderScope && !this.laneCoordinator.claimPreProviderIngress(this._executionLane(chatKey), preProviderScope)) return "fenced";
       const admission = this.db.admitMessage(this.surfaceIdentity, chatKey, {
         prompt, chatId, threadId, chatType, userId, attachments,
@@ -774,12 +763,6 @@ export class BridgeEngine {
         chatId: input.chatId,
         body: { message_thread_id: input.threadId },
         showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
-        // A provider-side ACP cancellation (result.stopReason === "cancelled")
-        // must never reach normal delivery/memory-commit, even though the
-        // turn resolved without throwing and even if it carries partial text.
-        // Unlike a lease-loss/user-stop abort, this input was still fully
-        // consumed by the provider, so the caller must retire it (see the
-        // non-null return below) rather than leave it queued for retry.
         isAborted: () => this.laneCoordinator.isAborted(this._executionLane(input.chatKey)) || !this.db.ownsLock(input.laneHandle) || result?.stopReason === "cancelled",
         beforeFinalDelivery: () => {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
@@ -933,9 +916,6 @@ export class BridgeEngine {
   private _installStopFence(chatKey: string, executionLane: string): void {
     this.laneCoordinator.markResetting(executionLane);
     this.laneCoordinator.markAborted(executionLane);
-    // A genuine /stop is the only signal that must synchronously abort every
-    // open pre-provider ingress scope (voice download/transcription, etc.)
-    // on this lane. Non-stop busy-mode fencing (augment/interrupt) must not.
     this.laneCoordinator.abortPreProviderIngress(executionLane);
     this._discardPendingMessages(chatKey);
   }
@@ -1504,16 +1484,6 @@ export class BridgeEngine {
       result.text = scrubOutputDir(result.text, outDir);
       const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
       if (stagedResult.stopReason === "cancelled") {
-        // The provider ended the turn itself (ACP session/cancel resolving
-        // gracefully, not a process kill) — this must never look like a
-        // normal completion: no answer delivery, no output-file publication,
-        // no assistant-memory turn, and a run.cancelled terminal event
-        // instead of run.completed. The ACP session id is still preserved
-        // (when present) so a later turn in this conversation can resume it.
-        // _executeAndDeliverTurn's isAborted() reads this stopReason back off
-        // the staged result to suppress delivery/afterFinalDelivery, and
-        // still returns this result (non-null) so the caller retires the
-        // input message as consumed instead of leaving it queued for retry.
         this._assertLaneOwned(laneHandle);
         if (stagedResult.sessionId && isAgentKind(this.kind)) {
           try {
@@ -1525,6 +1495,11 @@ export class BridgeEngine {
         }
         if (collect && runId && eventContext) {
           collect(eventType.runCancelled({ ...eventContext, reason: "provider" }));
+        }
+        try {
+          await cleanOutputDir(outDir);
+        } catch (error) {
+          console.warn(`[${this.kind}] failed to clean output after provider cancellation`, error);
         }
         return stagedResult;
       }
@@ -2067,8 +2042,6 @@ export function persistEngineProviderSession(
 ): void {
   if (kind === "codex" && resolveCodexRuntime() === "acp") {
     if (sessionId) {
-      // A completed ACP turn makes any stored legacy Codex session stale: it
-      // predates this ACP history and must not be resumed as legacy later.
       db.setSession(chatKey, "codex", null);
       db.putAcpSessionBinding({
         conversationId: chatKey,
@@ -2083,11 +2056,7 @@ export function persistEngineProviderSession(
   }
   try {
     db.setSession(chatKey, kind, sessionId);
-    // Symmetric to the ACP branch above: a completed legacy Codex turn makes
-    // any stored ACP session binding stale, so a later switch back to ACP
-    // must not resume it as though it saw this turn.
     if (kind === "codex" && sessionId) db.clearAcpSessionBinding(chatKey, "codex");
   } catch {
-    // ignore — non-agent kinds are not tracked
   }
 }
