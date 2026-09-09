@@ -13,6 +13,6 @@ jobs:
       - name: Legacy Codex reference inventory
         run: |
           echo '=== selector/native runtime refs ==='
-          rg -n 'AGENT_BRIDGE_CODEX_RUNTIME|resolveCodexRuntime|isCodexAcpRuntime|codexRuntimeSelection|providers/codexRuntime(\.js|\.ts)' . --glob '!node_modules/**' || true
+          grep -RInE 'AGENT_BRIDGE_CODEX_RUNTIME|resolveCodexRuntime|isCodexAcpRuntime|codexRuntimeSelection|providers/codexRuntime(\.js|\.ts)' src test scripts docs .env* 2>/dev/null || true
           echo '=== codex exec/native parser refs ==='
-          rg -n 'codex exec|parseCodex|Codex.*JSONL|JSONL.*Codex|native.*Codex|Codex.*native' src test scripts docs .env* --glob '!node_modules/**' || true
+          grep -RInE 'codex exec|parseCodex|Codex.*JSONL|JSONL.*Codex|native.*Codex|Codex.*native' src test scripts docs .env* 2>/dev/null || true
