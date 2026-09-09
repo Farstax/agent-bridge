@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
 import type { TelegramMessage } from "../src/types.js";
@@ -102,6 +102,34 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     const runs = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").all("100") as Array<{ status: string }>;
     expect(runs.length).toBeGreaterThan(0);
     for (const run of runs) expect(run.status).toBe("cancelled");
+  });
+
+  it("removes generated output from a provider-cancelled turn without publishing attachments", async () => {
+    let cancelledOutputDir: string | null = null;
+    runTurnMock.mockImplementation(async (request: { outputDir?: string | null }) => {
+      cancelledOutputDir = request.outputDir ?? null;
+      if (!cancelledOutputDir) throw new Error("missing ACP outputDir in cancellation test");
+      writeFileSync(join(cancelledOutputDir, "partial.txt"), "partial output from cancelled turn");
+      return {
+        text: "",
+        sessionId: "acp-session-cancelled-output-1",
+        stopReason: "cancelled",
+      };
+    });
+    const { BridgeEngine } = await import("../src/engine.js");
+    const client = makeMockClient();
+    const engine = new BridgeEngine(
+      { surfaceIdentity: "test", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000 },
+      db, client, {},
+    );
+
+    await engine.handleMessages([makeMessage("hello")]);
+
+    expect(cancelledOutputDir).not.toBeNull();
+    expect(existsSync(cancelledOutputDir!)).toBe(false);
+    expect(client.sendPhoto).not.toHaveBeenCalled();
+    expect(client.sendDocument).not.toHaveBeenCalled();
+    expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
   it("still delivers, completes, and remembers a normal (non-cancelled) ACP turn", async () => {
