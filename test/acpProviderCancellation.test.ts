@@ -132,6 +132,38 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("removes generated output when a cancelled provider turn loses lane ownership before settlement", async () => {
+    let fencedOutputDir: string | null = null;
+    runTurnMock.mockImplementation(async (request: { outputDir?: string | null }) => {
+      fencedOutputDir = request.outputDir ?? null;
+      if (!fencedOutputDir) throw new Error("missing ACP outputDir in fenced cancellation test");
+      writeFileSync(join(fencedOutputDir, "partial.txt"), "partial output from fenced cancelled turn");
+      db.raw.prepare("DELETE FROM execution_locks WHERE surface = ? AND chat_key = ?").run("test", "100");
+      return {
+        text: "",
+        sessionId: "acp-session-cancelled-fenced-1",
+        stopReason: "cancelled",
+      };
+    });
+    const { BridgeEngine } = await import("../src/engine.js");
+    const client = makeMockClient();
+    const engine = new BridgeEngine(
+      { surfaceIdentity: "test", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000 },
+      db, client, {},
+    );
+
+    await engine.handleMessages([makeMessage("hello")]);
+
+    expect(fencedOutputDir).not.toBeNull();
+    expect(existsSync(fencedOutputDir!)).toBe(false);
+    expect(client.sendPhoto).not.toHaveBeenCalled();
+    expect(client.sendDocument).not.toHaveBeenCalled();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(db.getConvStatus("100", "test").turnCount).toBe(0);
+    const completed = db.raw.prepare("SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ? AND status = 'done'").get("100") as { count: number };
+    expect(completed.count).toBe(0);
+  });
+
   it("still delivers, completes, and remembers a normal (non-cancelled) ACP turn", async () => {
     runTurnMock.mockResolvedValue({
       text: "the real answer",
