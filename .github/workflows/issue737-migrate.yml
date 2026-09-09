@@ -1,0 +1,22 @@
+name: Issue 737 migrate
+on:
+  push:
+    branches:
+      - feature/737-promote-codex-acp
+permissions:
+  contents: write
+jobs:
+  migrate:
+    if: github.event.head_commit.message == 'chore: run issue 737 migration'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply ACP-only migration
+        run: python3 scripts/issue737-migrate.py
+      - name: Commit migration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: promote Codex ACP and remove legacy runtime'
+          git push origin HEAD:feature/737-promote-codex-acp
