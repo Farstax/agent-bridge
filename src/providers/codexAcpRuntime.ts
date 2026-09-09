@@ -11,6 +11,7 @@ import type { AcpObservedUpdate } from "../acp/replay.js";
 import { runSupervisedStdioSession } from "../cliSupervisor.js";
 import type { CliOptions, CliResult, RunTelemetry } from "../types.js";
 import { isAbortRequested } from "../cliSupervisor.js";
+import { cleanOutputDir } from "../fileOutput.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexRuntimeSelection.js";
@@ -57,10 +58,18 @@ export function buildInvocation(request: ProviderInvocationRequest): ProviderInv
   };
 }
 
+/**
+ * Codex ACP's "agent" mode uses an "auto_review" approvals reviewer: the
+ * adapter can self-approve actions it judges safe without ever asking Bridge
+ * for a permission decision. That would let the provider silently expand its
+ * own authority underneath Bridge's "safe" execution mode. "read-only" always
+ * asks (approvalsReviewer: "user"), so every mutation/network request is
+ * routed through Bridge's own mapAcpPermissionRequest instead.
+ */
 export function initialAgentMode(request: Pick<ProviderInvocationRequest, "executionMode" | "toolMode">): string {
   if (request.toolMode === "none") throw new CodexAcpToolFreeUnsupportedError();
   if (request.executionMode === "trusted") return "agent-full-access";
-  return "agent";
+  return "read-only";
 }
 
 export function codexAcpConfig(request: Pick<ProviderInvocationRequest, "model" | "effort">): Record<string, unknown> {
@@ -153,45 +162,109 @@ function telemetryFromUsage(usage: Usage | undefined): RunTelemetry | undefined 
   };
 }
 
+type CodexAgentMessageChunk =
+  Extract<AcpObservedUpdate["notification"]["update"], { sessionUpdate: "agent_message_chunk" }>
+  & { content: Extract<ContentBlock, { type: "text" }> };
+
+type MetaCarrier = { _meta?: unknown };
+
+function hasOwnCodexMarker(meta: unknown): boolean {
+  return meta !== null
+    && typeof meta === "object"
+    && Object.prototype.hasOwnProperty.call(meta, "codex");
+}
+
 /**
  * Codex ACP tags agent_message_chunk notifications with `_meta.codex.phase`
- * ("commentary" | "final_answer"). This interpretation is Codex-specific and
+ * ("commentary" | "final_answer"). Per the ACP v1 schema, `_meta` on a
+ * SessionNotification (`notification._meta`) and `_meta` on the update
+ * payload itself (`notification.update._meta`, via ContentChunk) are
+ * distinct fields — Codex places its phase tag on the update payload, not
+ * the notification envelope. This interpretation is Codex-specific and
  * deliberately lives here rather than in the generic ACP core (acp/client.ts,
  * which keeps forwarding every live chunk unchanged for progress display).
- * Agents that supply no phase metadata are treated as before: every live
- * chunk is part of the answer.
  */
-function codexPhaseOf(notification: AcpObservedUpdate["notification"]): "commentary" | "final_answer" | undefined {
-  const meta = notification._meta as { codex?: { phase?: unknown } } | null | undefined;
-  const phase = meta?.codex?.phase;
+function codexMetaOf(payload: CodexAgentMessageChunk): { phase?: unknown } | undefined {
+  const meta = payload._meta as { codex?: unknown } | null | undefined;
+  const codex = meta?.codex;
+  return codex !== null && typeof codex === "object" ? codex as { phase?: unknown } : undefined;
+}
+
+/** Only a recognized phase value counts; a present-but-malformed value fails closed like a missing one. */
+function codexPhaseOf(payload: CodexAgentMessageChunk): "commentary" | "final_answer" | undefined {
+  const phase = codexMetaOf(payload)?.phase;
   return phase === "commentary" || phase === "final_answer" ? phase : undefined;
 }
 
-/** The authoritative final answer, excluding Codex commentary-phase chunks. Replay is always excluded. */
+function liveAgentMessageChunk(update: AcpObservedUpdate): CodexAgentMessageChunk | undefined {
+  if (update.channel !== "live") return undefined;
+  const payload = update.notification.update;
+  if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return undefined;
+  return payload as CodexAgentMessageChunk;
+}
+
+/**
+ * Presence is authoritative even when parsing is not. A malformed update-level
+ * `_meta.codex` value, or a Codex marker placed on the notification envelope
+ * instead of the update payload, is still unmistakably Codex phase semantics
+ * and therefore disables generic liveText fallback. Only a turn with no Codex
+ * marker at either relevant level may use generic live text.
+ */
+function hasCodexPhaseMarker(update: AcpObservedUpdate, payload: CodexAgentMessageChunk): boolean {
+  if (hasOwnCodexMarker((payload as MetaCarrier)._meta)) return true;
+  return hasOwnCodexMarker((update.notification as MetaCarrier)._meta);
+}
+
+/**
+ * A turn "participates in Codex phase semantics" the moment any live chunk
+ * carries a Codex marker at the correct update level or at the malformed
+ * notification-envelope level. Once a turn is phase-aware, every chunk in it
+ * (commentary, missing phase, malformed phase, or misplaced phase) fails
+ * closed out of the authoritative answer; only correctly located
+ * "final_answer" chunks qualify. A turn with no Codex phase marker at all
+ * keeps the original generic behavior (every live chunk is the answer).
+ */
+function turnHasCodexPhaseSemantics(updates: readonly AcpObservedUpdate[]): boolean {
+  return updates.some((update) => {
+    const payload = liveAgentMessageChunk(update);
+    return payload !== undefined && hasCodexPhaseMarker(update, payload);
+  });
+}
+
+/**
+ * The authoritative final answer for a phase-aware turn: only valid
+ * "final_answer" chunks, in original order. Replay is always excluded.
+ * Commentary, malformed phase, and missing-phase chunks are all excluded —
+ * never promoted, never leaked into the delivered answer.
+ */
 function codexFinalAnswerText(updates: readonly AcpObservedUpdate[]): string {
   let text = "";
   for (const update of updates) {
-    if (update.channel !== "live") continue;
-    const payload = update.notification.update;
-    if (payload.sessionUpdate !== "agent_message_chunk") continue;
-    if (payload.content.type !== "text") continue;
-    if (codexPhaseOf(update.notification) === "commentary") continue;
+    const payload = liveAgentMessageChunk(update);
+    if (!payload) continue;
+    if (codexPhaseOf(payload) !== "final_answer") continue;
     text += payload.content.text;
   }
   return text;
 }
 
 export function toCliResult(result: AcpTurnResult): CliResult {
-  // Falls back to the full live text (commentary included) if the agent
-  // never emitted a final_answer-phase chunk, so a commentary-only turn
-  // still delivers something instead of erroring out as empty.
-  const text = (codexFinalAnswerText(result.updates).trim() || result.liveText.trim());
+  const phaseAware = turnHasCodexPhaseSemantics(result.updates);
+  // Phase-aware turns never fall back to the raw live text — that would leak
+  // commentary (or any malformed/missing-phase chunk) as if it were the
+  // authoritative answer. A phase-aware turn with no valid final_answer chunk
+  // yields empty text here, same as an agent that produced no live text at
+  // all, and hits the same fail-closed guard below.
+  const text = (phaseAware ? codexFinalAnswerText(result.updates) : result.liveText).trim();
   if (!text && result.stopReason !== "cancelled") {
-    throw new Error(`Codex ACP completed without live text (stopReason=${result.stopReason})`);
+    throw new Error(
+      `Codex ACP completed without ${phaseAware ? "a valid final_answer chunk" : "live text"} (stopReason=${result.stopReason})`,
+    );
   }
   return {
     text,
     sessionId: result.acpSessionId,
+    stopReason: result.stopReason,
     ...(telemetryFromUsage(result.usage) ? { telemetry: telemetryFromUsage(result.usage) } : {}),
   };
 }
@@ -265,6 +338,13 @@ export async function runTurn(
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   const parsed = toCliResult(result);
+  if (parsed.stopReason === "cancelled" && request.outputDir) {
+    try {
+      await cleanOutputDir(request.outputDir);
+    } catch (error) {
+      console.warn("[codex] failed to clean output after ACP provider cancellation", error);
+    }
+  }
   return {
     ...parsed,
     text: redactProviderApiKeySecrets(parsed.text, redactionEnv),

@@ -107,6 +107,13 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         });
       }
 
+      if (text.includes("CANCEL_WITH_OUTPUT")) {
+        const outputFile = process.env.FAKE_ACP_OUTPUT_FILE;
+        if (!outputFile) throw new Error("FAKE_ACP_OUTPUT_FILE is required for CANCEL_WITH_OUTPUT");
+        writeFileSync(outputFile, "partial output from provider-cancelled turn");
+        return { stopReason: "cancelled" };
+      }
+
       if (text.includes("HANG")) {
         await new Promise<void>((resolve, reject) => {
           const done = () => resolve();
@@ -158,8 +165,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           update: {
             sessionUpdate: "agent_message_chunk",
             content: { type: "text", text: "thinking out loud..." },
+            _meta: { codex: { phase: "commentary" } },
           },
-          _meta: { codex: { phase: "commentary" } },
         });
       }
       const reply = `live:${text}`;
@@ -168,8 +175,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         update: {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: reply },
+          ...(text.includes("PHASED") ? { _meta: { codex: { phase: "final_answer" } } } : {}),
         },
-        ...(text.includes("PHASED") ? { _meta: { codex: { phase: "final_answer" } } } : {}),
       });
       session.history.push({ role: "agent", text: reply });
       persistSessions(sessions);

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
-import { runTurn, codexAcpChildAuthEnv, toCliResult } from "../src/providers/codexAcpRuntime.js";
+import { runTurn, codexAcpChildAuthEnv, toCliResult, initialAgentMode } from "../src/providers/codexAcpRuntime.js";
 import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexRuntimeSelection.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
@@ -105,13 +105,24 @@ describe("Codex ACP invocation", () => {
 });
 
 describe("Codex ACP phase-aware final delivery", () => {
-  function fixture(updates: Array<{ channel: "live" | "replay"; phase?: "commentary" | "final_answer"; text: string }>): Parameters<typeof toCliResult>[0] {
+  // Real Codex ACP notifications carry the phase tag on the update payload
+  // itself (`notification.update._meta.codex.phase`, via ACP's ContentChunk
+  // `_meta`) — not on the SessionNotification envelope
+  // (`notification._meta`), which ACP reserves for its own extensibility
+  // metadata and is a structurally distinct field.
+  function fixture(
+    updates: Array<{ channel: "live" | "replay"; phase?: "commentary" | "final_answer" | "bogus"; omitMeta?: boolean; text: string }>,
+    stopReason = "end_turn",
+  ): Parameters<typeof toCliResult>[0] {
     const observed = updates.map((u) => ({
       channel: u.channel,
       notification: {
         sessionId: "acp-sess-1",
-        update: { sessionUpdate: "agent_message_chunk" as const, content: { type: "text" as const, text: u.text } },
-        ...(u.phase ? { _meta: { codex: { phase: u.phase } } } : {}),
+        update: {
+          sessionUpdate: "agent_message_chunk" as const,
+          content: { type: "text" as const, text: u.text },
+          ...(u.phase !== undefined ? { _meta: { codex: { phase: u.phase } } } : {}),
+        },
       },
     }));
     const liveText = observed.filter((u) => u.channel === "live").map((u) => u.notification.update.content.text).join("");
@@ -120,7 +131,7 @@ describe("Codex ACP phase-aware final delivery", () => {
       runId: "run-1",
       acpSessionId: "acp-sess-1",
       sessionMode: "fresh",
-      stopReason: "end_turn",
+      stopReason,
       liveText,
       events: [],
       updates: observed,
@@ -137,6 +148,16 @@ describe("Codex ACP phase-aware final delivery", () => {
     expect(result.text).not.toContain("thinking out loud");
   });
 
+  it("preserves order and concatenates multiple final_answer chunks", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", phase: "commentary", text: "planning..." },
+      { channel: "live", phase: "final_answer", text: "part one. " },
+      { channel: "live", phase: "commentary", text: "more thinking..." },
+      { channel: "live", phase: "final_answer", text: "part two." },
+    ]));
+    expect(result.text).toBe("part one. part two.");
+  });
+
   it("keeps concatenating all live text when the agent supplies no Codex phase metadata", () => {
     const result = toCliResult(fixture([
       { channel: "live", text: "part one " },
@@ -145,11 +166,48 @@ describe("Codex ACP phase-aware final delivery", () => {
     expect(result.text).toBe("part one part two");
   });
 
-  it("falls back to full live text if only commentary phases were ever emitted", () => {
-    const result = toCliResult(fixture([
+  it("fails closed instead of leaking commentary when a phase-aware turn never emits a final_answer chunk", () => {
+    expect(() => toCliResult(fixture([
       { channel: "live", phase: "commentary", text: "only commentary, no final_answer phase" },
+    ]))).toThrow(/final_answer/);
+  });
+
+  it("fails closed on a malformed phase value within an otherwise phase-aware turn", () => {
+    expect(() => toCliResult(fixture([
+      { channel: "live", phase: "bogus" as any, text: "unrecognized phase value" },
+    ]))).toThrow(/final_answer/);
+  });
+
+  it("fails closed when update._meta.codex is a malformed scalar", () => {
+    const malformed = fixture([
+      { channel: "live", text: "commentary that must not be promoted" },
+    ]) as any;
+    malformed.updates[0].notification.update._meta = { codex: "malformed" };
+    expect(() => toCliResult(malformed)).toThrow(/final_answer/);
+  });
+
+  it("fails closed when update._meta.codex is explicitly null", () => {
+    const malformed = fixture([
+      { channel: "live", text: "commentary that must not be promoted" },
+    ]) as any;
+    malformed.updates[0].notification.update._meta = { codex: null };
+    expect(() => toCliResult(malformed)).toThrow(/final_answer/);
+  });
+
+  it("fails closed when Codex phase metadata is misplaced on the notification envelope", () => {
+    const malformed = fixture([
+      { channel: "live", text: "commentary that must not be promoted" },
+    ]) as any;
+    malformed.updates[0].notification._meta = { codex: { phase: "commentary" } };
+    expect(() => toCliResult(malformed)).toThrow(/final_answer/);
+  });
+
+  it("excludes a chunk with no phase metadata inside an otherwise phase-aware turn", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", omitMeta: true, text: "no phase tag on this one" },
+      { channel: "live", phase: "final_answer", text: "the real answer" },
     ]));
-    expect(result.text).toBe("only commentary, no final_answer phase");
+    expect(result.text).toBe("the real answer");
   });
 
   it("still excludes replayed history regardless of phase metadata", () => {
@@ -158,6 +216,36 @@ describe("Codex ACP phase-aware final delivery", () => {
       { channel: "live", phase: "final_answer", text: "current answer" },
     ]));
     expect(result.text).toBe("current answer");
+  });
+
+  it("resolves without throwing on ACP semantic cancellation even with no valid final_answer, and propagates stopReason", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", phase: "commentary", text: "cut off mid-thought" },
+    ], "cancelled"));
+    expect(result.text).toBe("");
+    expect(result.stopReason).toBe("cancelled");
+  });
+
+  it("propagates a non-cancelled stopReason onto the CliResult", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", text: "hi" },
+    ], "max_tokens"));
+    expect(result.stopReason).toBe("max_tokens");
+  });
+});
+
+describe("Codex ACP authority mapping", () => {
+  it("maps Bridge safe authority to Codex ACP read-only, never the self-approving \"agent\" mode", () => {
+    expect(initialAgentMode({ executionMode: "safe", toolMode: "default" })).toBe("read-only");
+  });
+
+  it("maps Bridge trusted authority to Codex ACP full access", () => {
+    expect(initialAgentMode({ executionMode: "trusted", toolMode: "default" })).toBe("agent-full-access");
+  });
+
+  it("fails closed for toolMode \"none\" in either execution mode", () => {
+    expect(() => initialAgentMode({ executionMode: "safe", toolMode: "none" })).toThrow(/tool-free/i);
+    expect(() => initialAgentMode({ executionMode: "trusted", toolMode: "none" })).toThrow(/tool-free/i);
   });
 });
 
