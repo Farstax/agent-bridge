@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveCodexAcpCommand } from "../src/providers/codexRuntimeSelection.js";
+import { resolveCodexAcpCommand } from "../src/providers/codexAcpConfig.js";
 
 const installer = resolve(process.cwd(), "scripts/agent-bridge-install.py");
 const installSh = resolve(process.cwd(), "scripts/install.sh");

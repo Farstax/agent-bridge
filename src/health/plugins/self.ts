@@ -5,19 +5,10 @@ import { execSync } from "node:child_process";
 import { getHeapStatistics } from "node:v8";
 import type { HealthPlugin, HealthReport, CheckResult } from "../types.js";
 import type { BridgeDb } from "../../db.js";
-import { resolveCodexRuntime } from "../../providers/codexRuntimeSelection.js";
 import { readInstalledProviderVersions } from "../../providers/qualificationStatus.js";
 
 const upgradeCommand = process.env.BRIDGE_UPGRADE_COMMAND
   ?? `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh --clis-only`;
-
-function isCodexAcpSelected(env: Record<string, string | undefined> = process.env): boolean {
-  try {
-    return resolveCodexRuntime(env) === "acp";
-  } catch {
-    return false;
-  }
-}
 
 function pinnedCodexAcpVersion(env: Record<string, string | undefined> = process.env): string | null {
   try {
@@ -211,12 +202,8 @@ export class SelfPlugin implements HealthPlugin {
       }
     }
 
-    const acpCodex = isCodexAcpSelected();
-    let runtimeVersions: ReturnType<typeof readInstalledProviderVersions> | undefined;
-    if (acpCodex) {
-      runtimeVersions = readInstalledProviderVersions();
-      checks.push(inspectBundledCodexAcp(runtimeVersions));
-    }
+    const runtimeVersions = readInstalledProviderVersions();
+    checks.push(inspectBundledCodexAcp(runtimeVersions));
 
     if (globalListSuccess) {
       runtimeVersions ??= readInstalledProviderVersions();

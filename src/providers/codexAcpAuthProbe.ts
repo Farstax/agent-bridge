@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
-import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexRuntimeSelection.js";
+import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
 
 const ACP_AUTH_PROBE_TIMEOUT_MS = 15_000;
 const ACP_AUTH_PROBE_PROMPT = "Reply with exactly OK.";

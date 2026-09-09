@@ -31,8 +31,7 @@ export interface ProviderAdapter {
 export type ChainCliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
 
 // Issue #135 Phase 3B — provider runtime invocation/parsing boundary.
-// Shared request/result shapes for src/providers/codexRuntime.ts and
-// src/providers/claudeRuntime.ts. Deliberately narrower than
+// Shared request/result shapes for // src/providers/claudeRuntime.ts. Deliberately narrower than
 // buildCliInvocation()'s full parameter set: no bot/sessionMode/logFile/
 // homeDir, since only antigravity uses logFile/homeDir and bot is already
 // implied by which runtime module is called.

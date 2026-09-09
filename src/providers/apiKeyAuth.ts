@@ -14,7 +14,6 @@ import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
 import { runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
-import { resolveCodexRuntime } from "./codexRuntimeSelection.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -29,7 +28,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   codex: {
     envVar: "CODEX_API_KEY",
     verification: "bounded_native_turn",
-    notes: "Legacy Codex verifies with codex exec; Codex ACP verifies through the selected adapter's ACP authenticate + bounded prompt path.",
+    notes: "Codex verifies through the managed ACP adapter's authenticate + bounded prompt path.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
@@ -198,22 +197,12 @@ function commandForProvider(provider: ProviderId, env: Env): string {
   return bots[provider].command;
 }
 
-function codexAcpOwnsApiKeyValidation(provider: ProviderId, env: Env): boolean {
-  if (provider !== "codex") return false;
-  try {
-    return resolveCodexRuntime(env) === "acp";
-  } catch {
-    return false;
-  }
+function codexAcpOwnsApiKeyValidation(provider: ProviderId, _env: Env): boolean {
+  return provider === "codex";
 }
 
-function verificationScope(provider: ProviderId, env: Env): string {
-  if (provider !== "codex") return "native";
-  try {
-    return resolveCodexRuntime(env);
-  } catch {
-    return "invalid";
-  }
+function verificationScope(provider: ProviderId, _env: Env): string {
+  return provider === "codex" ? "acp" : "native";
 }
 
 function cacheKey(provider: ProviderId, apiKey: string, env: Env): string {

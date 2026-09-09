@@ -7,17 +7,11 @@
  */
 
 import type { CliOptions, CliResult } from "./types.js";
-import {
-  CodexUncertainCompletionError,
-  hasUsableFinalResponse,
-  parseResult as parseCodexResult,
-} from "./providers/codexRuntime.js";
 import { parseAntigravityStreamJsonResult } from "./providers/antigravityRuntime.js";
 import { parseResult as parseGrokResult } from "./providers/grokRuntime.js";
 import { parseResult as parseCursorResult } from "./providers/cursorRuntime.js";
 import { inspectClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 
-const CODEX_MISSING_CUSTOM_TOOL_OUTPUT = "Custom tool call output is missing for call id:";
 const CLAUDE_BACKGROUND_TASK_CEILING = /^Background tasks still running after \d+(?:ms|s); terminating\.(?: Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely\.)?$/m;
 const CLAUDE_BACKGROUND_TASK_INCOMPLETE = "Claude stopped outstanding background work before completion could be verified";
 const CLAUDE_MISSING_TERMINAL_RESULT = "Claude structured output ended before completion could be verified";
@@ -25,13 +19,6 @@ const AGY_UNCERTAIN_COMPLETION = "Agy completion could not be verified from stru
 const GROK_UNCERTAIN_COMPLETION = "Grok completion could not be verified from structured output";
 const CURSOR_UNCERTAIN_COMPLETION = "Cursor completion could not be verified from structured output";
 const AGY_CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export class CodexMissingToolOutputError extends Error {
-  constructor() {
-    super("Codex custom tool call output is missing and no usable final response was produced");
-    this.name = "CodexMissingToolOutputError";
-  }
-}
 
 export type ClaudeUncertainCompletionReason = "background-task-ceiling" | "missing-terminal-result";
 
@@ -193,20 +180,6 @@ function validateClaudeSuccessfulExit(output: Readonly<{ stdout: string; stderr:
   return null;
 }
 
-function validateCodexSuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
-  if (output.stderr.includes(CODEX_MISSING_CUSTOM_TOOL_OUTPUT) && !hasUsableFinalResponse(output.stdout)) {
-    return new CodexMissingToolOutputError();
-  }
-  try {
-    parseCodexResult(output.stdout);
-    return null;
-  } catch (error) {
-    return error instanceof CodexUncertainCompletionError
-      ? error
-      : new CodexUncertainCompletionError(null);
-  }
-}
-
 function validateAgySuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
   try {
     parseAntigravityStreamJsonResult(output.stdout);
@@ -245,7 +218,6 @@ export function validateSuccessfulCliExit(
   output: Readonly<{ stdout: string; stderr: string }>,
 ): Error | null {
   if (bot === "claude") return validateClaudeSuccessfulExit(output);
-  if (bot === "codex") return validateCodexSuccessfulExit(output);
   if (bot === "antigravity") return validateAgySuccessfulExit(output);
   if (bot === "grok") return validateGrokSuccessfulExit(output);
   if (bot === "cursor") return validateCursorSuccessfulExit(output);

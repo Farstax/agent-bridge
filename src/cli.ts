@@ -12,9 +12,7 @@ import type { ProviderInvocation, ProviderInvocationRequest } from "./providers/
 import { randomUUID } from "node:crypto";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
-import * as codexRuntime from "./providers/codexRuntime.js";
 import * as codexAcpRuntime from "./providers/codexAcpRuntime.js";
-import { isCodexAcpRuntime } from "./providers/codexRuntimeSelection.js";
 import * as claudeRuntime from "./providers/claudeRuntime.js";
 import * as grokRuntime from "./providers/grokRuntime.js";
 import * as cursorRuntime from "./providers/cursorRuntime.js";
@@ -182,12 +180,9 @@ export function buildCliInvocation({
   const providerPrompt = seedFreshExecutionContract(bot, prompt, sessionId, attachments, includeResponseContract);
 
   if (bot === "codex") {
-    const request = {
+    return codexAcpRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
-    };
-    return isCodexAcpRuntime(bot)
-      ? codexAcpRuntime.buildInvocation(request)
-      : codexRuntime.buildInvocation(request);
+    });
   }
   if (bot === "claude") {
     return claudeRuntime.buildInvocation({
@@ -221,7 +216,6 @@ export function buildCliInvocation({
 
 export { validateBridgeConfig } from "./config.js";
 export { runTurn as runCodexAcpTurn } from "./providers/codexAcpRuntime.js";
-export { isCodexAcpRuntime, resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
 
 /** Run a built invocation on the matching transport. ACP stdio is never oneshot-parsed. */
 export async function runProviderInvocation(
@@ -276,7 +270,7 @@ export function parseCliResult({
   void logContent;
   let result: CliResult;
   if (bot === "codex") {
-    result = codexRuntime.parseResult(stdout);
+    throw new Error("Codex uses ACP structured results and is not parsed as native CLI output");
   } else if (bot === "claude") {
     result = claudeRuntime.parseResult(stdout);
   } else if (bot === "grok") {

@@ -1,6 +1,6 @@
 /**
- * PURPOSE: Parallel ACP-backed Codex runtime. Speaks ACP rather than parsing
- * Codex exec JSONL. The legacy `codexRuntime.ts` path remains selectable.
+ * PURPOSE: ACP-backed Codex runtime. Speaks ACP rather than parsing
+ * Codex exec JSONL. Codex execution is ACP-only.
  */
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
@@ -14,7 +14,7 @@ import { isAbortRequested } from "../cliSupervisor.js";
 import { cleanOutputDir } from "../fileOutput.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./types.js";
-import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexRuntimeSelection.js";
+import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
 import {
   getProviderApiKeySecretValues,
   redactProviderApiKeySecrets,

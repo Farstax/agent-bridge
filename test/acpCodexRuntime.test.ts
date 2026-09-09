@@ -7,7 +7,7 @@ import { openDb } from "../src/db.js";
 import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
 import { runTurn, codexAcpChildAuthEnv, toCliResult, initialAgentMode } from "../src/providers/codexAcpRuntime.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
-import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexRuntimeSelection.js";
+import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexAcpConfig.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
 import {

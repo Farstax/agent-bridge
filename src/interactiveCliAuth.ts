@@ -17,7 +17,7 @@ import {
   type CursorStatusSnapshot,
 } from "./providers/cursorAvailability.js";
 import { isGrokRouteable, resolveGrokAuthPaths } from "./providers/grokAvailability.js";
-import { resolveCodexAcpCommand, resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
+import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import { resolveProviderExecutable } from "./providers/registry.js";
 import type { ProviderId } from "./providers/types.js";
 
@@ -107,17 +107,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
     isProviderApiKeyVerified(provider, env));
   const hasRuntime = (provider: ProviderId): boolean => {
-    if (provider === "codex") {
-      try {
-        const runtime = resolveCodexRuntime(env);
-        const command = runtime === "acp"
-          ? resolveCodexAcpCommand(env)
-          : resolveProviderExecutable(provider, env);
-        return commandExists(command);
-      } catch {
-        return false;
-      }
-    }
+    if (provider === "codex") return commandExists(resolveCodexAcpCommand(env));
     return commandExists(resolveProviderExecutable(provider, env));
   };
 

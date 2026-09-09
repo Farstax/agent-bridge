@@ -41,7 +41,7 @@ The existing `codex exec --json` runtime remains the default.
 
 ```bash
 AGENT_BRIDGE_CODEX_RUNTIME=legacy   # default
-AGENT_BRIDGE_CODEX_RUNTIME=acp      # parallel ACP-backed Codex path
+AGENT_BRIDGE_CODEX_RUNTIME=acp      # ACP-backed Codex path
 CODEX_ACP_COMMAND=...               # optional override of the bundled adapter
 CODEX_ACP_ARGS=...                  # optional extra adapter argv
 ```

@@ -13,7 +13,7 @@ import { withAntigravityStateLock } from "./antigravityRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
 import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import type { ProviderId } from "./types.js";
-import { isCodexAcpRuntime, resolveCodexAcpCommand, resolveCodexRuntime } from "./codexRuntimeSelection.js";
+import { resolveCodexAcpCommand } from "./codexAcpConfig.js";
 
 export const PROVIDER_CONTRACT_VERSION = 5;
 
@@ -30,14 +30,13 @@ function qualificationToolMode(
   env: QualificationEnv,
 ): "default" | "none" {
   if (!adapter.capabilities.toolFree) return "default";
-  if (providerId === "codex" && isCodexAcpRuntime("codex", env)) return "default";
+  if (providerId === "codex") return "default";
   return "none";
 }
 
 type QualificationEnv = Record<string, string | undefined>;
 
 const CODEX_RUNTIME_ENV_KEYS = [
-  "AGENT_BRIDGE_CODEX_RUNTIME",
   "CODEX_ACP_COMMAND",
   "CODEX_ACP_ARGS",
   "CODEX_API_KEY",
@@ -102,7 +101,7 @@ export interface ProviderQualificationRecord {
   environment: string;
   overall: "pass" | "degraded" | "fail";
   checks: ProviderQualificationCheck[];
-  /** Codex ACP vs legacy. Omitted on pre-ACP records (treated as legacy). */
+  /** Runtime identity used to prevent evidence from cross-qualifying another transport. */
   executionRuntime?: string;
 }
 
@@ -232,9 +231,7 @@ export function resolveQualificationVersionCommand(
   env: QualificationEnv = process.env,
   executable?: string,
 ): string {
-  if (providerId === "codex" && resolveCodexRuntime(env) === "acp") {
-    return resolveCodexAcpCommand(env);
-  }
+  if (providerId === "codex") return resolveCodexAcpCommand(env);
   return executable ?? resolveProviderExecutable(providerId);
 }
 
@@ -334,7 +331,7 @@ export function currentQualificationRuntime(
   providerId: ProviderId,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return providerId === "codex" ? resolveCodexRuntime(env) : "native";
+  return providerId === "codex" ? "acp" : "native";
 }
 
 export function isQualificationCurrent(

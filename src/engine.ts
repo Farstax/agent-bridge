@@ -30,7 +30,6 @@ import {
 } from "./cli.js";
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
-import { resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
@@ -2061,7 +2060,7 @@ export function isInvalidProviderSessionError(error: unknown): boolean {
 }
 
 export function lookupEngineProviderSession(db: BridgeDb, chatKey: string, kind: BotKind): string | null {
-  if (kind === "codex" && resolveCodexRuntime() === "acp") {
+  if (kind === "codex") {
     return db.getAcpSessionBinding(chatKey, "codex")?.acpSessionId ?? null;
   }
   return db.getSession(chatKey, kind);
@@ -2074,11 +2073,8 @@ export function persistEngineProviderSession(
   sessionId: string | null,
   runId: string | null = null,
 ): void {
-  if (kind === "codex" && resolveCodexRuntime() === "acp") {
+  if (kind === "codex") {
     if (sessionId) {
-      // A completed ACP turn makes any stored legacy Codex session stale: it
-      // predates this ACP history and must not be resumed as legacy later.
-      db.setSession(chatKey, "codex", null);
       db.putAcpSessionBinding({
         conversationId: chatKey,
         providerId: "codex",
@@ -2092,10 +2088,6 @@ export function persistEngineProviderSession(
   }
   try {
     db.setSession(chatKey, kind, sessionId);
-    // Symmetric to the ACP branch above: a completed legacy Codex turn makes
-    // any stored ACP session binding stale, so a later switch back to ACP
-    // must not resume it as though it saw this turn.
-    if (kind === "codex" && sessionId) db.clearAcpSessionBinding(chatKey, "codex");
   } catch {
     // ignore — non-agent kinds are not tracked
   }

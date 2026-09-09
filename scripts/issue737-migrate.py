@@ -23,15 +23,15 @@ def sub(path, pattern, repl, count=0):
     write(path, out)
 
 # Collapse the temporary selector into ACP-only launch configuration.
-selector = ROOT / "src/providers/codexRuntimeSelection.ts"
+selector = ROOT / "src/providers/codexAcpConfig.ts"
 config = ROOT / "src/providers/codexAcpConfig.ts"
 selector.rename(config)
 config.write_text('''import { dirname, join } from "node:path";\nimport { fileURLToPath } from "node:url";\n\nexport function resolveBridgeProjectDir(\n  env: Record<string, string | undefined> = process.env,\n): string {\n  const configured = env.BRIDGE_PROJECT_DIR?.trim();\n  if (configured) return configured;\n  return join(dirname(fileURLToPath(import.meta.url)), "..", "..");\n}\n\nexport function bundledCodexAcpCommand(\n  env: Record<string, string | undefined> = process.env,\n): string {\n  return join(resolveBridgeProjectDir(env), "node_modules", ".bin", "codex-acp");\n}\n\nexport function resolveCodexAcpCommand(\n  env: Record<string, string | undefined> = process.env,\n): string {\n  return env.CODEX_ACP_COMMAND?.trim() || bundledCodexAcpCommand(env);\n}\n\nexport function resolveCodexAcpArgs(\n  env: Record<string, string | undefined> = process.env,\n): string[] {\n  const raw = env.CODEX_ACP_ARGS?.trim();\n  if (!raw) return [];\n  return raw.split(/\\s+/).filter(Boolean);\n}\n''')
 for path in ROOT.rglob('*'):
     if path.is_file() and path.suffix in {'.ts','.md','.sh','.py'}:
         text = path.read_text(errors='ignore')
-        if 'codexRuntimeSelection' in text:
-            path.write_text(text.replace('codexRuntimeSelection', 'codexAcpConfig'))
+        if 'codexAcpConfig' in text:
+            path.write_text(text.replace('codexAcpConfig', 'codexAcpConfig'))
 
 # Codex execution is ACP-only.
 replace('src/cli.ts', 'import * as codexRuntime from "./providers/codexRuntime.js";\n', '')
