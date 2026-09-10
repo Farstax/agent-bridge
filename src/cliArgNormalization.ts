@@ -1,22 +1,20 @@
 /**
- * PURPOSE: Provider-specific CLI argument policy (Codex, Antigravity/Agy).
+ * PURPOSE: Provider-specific CLI argument policy for Antigravity/Agy.
  * INPUTS: A raw command name and its argument list.
  * OUTPUTS: The provider's canonical argument list.
  * NEIGHBORS: src/cliSupervisor.ts (calls this before spawning), src/cli.ts (re-exports)
  * LOGIC: Issue #135 Phase 2 — kept separate from cliSupervisor.ts, which must
  * stay provider-agnostic. The supervisor calls normalizeCliArgs() but does not
- * own Codex/Agy argument-shape decisions itself.
+ * own Agy argument-shape decisions itself. Codex ACP arguments are already in
+ * adapter form and pass through unchanged.
  */
 
 import { basename } from "node:path";
-import type { EffortLevel } from "./effort.js";
-
 export function normalizeCliArgs(command: string, args: string[]): string[] {
   const cmdName = basename(command).toLowerCase();
   const isAgy = cmdName.includes("agy") || cmdName.includes("antigravity");
-  const isCodex = cmdName === "codex" || cmdName === "codex.exe";
 
-  if (!isAgy && !isCodex) {
+  if (!isAgy) {
     return args;
   }
 
@@ -25,21 +23,13 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
   let conversationId: string | null = null;
   let logFile: string | null = null;
   let printTimeout: string | null = null;
-  let model: string | null = null;
-  let effort: EffortLevel | null = null;
-  let resumeSessionId: string | null = null;
-  const attachments: string[] = [];
-  const disabledTools: string[] = [];
   let hasSandbox = false;
-  let hasDoubleDash = false;
   let hasDashPrompt = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "-") {
       hasDashPrompt = true;
-    } else if (arg === "--") {
-      hasDoubleDash = true;
     } else if (arg === "--sandbox") {
       hasSandbox = true;
     } else if (arg.startsWith("-")) {
@@ -74,35 +64,11 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
         i++;
       } else if (arg.startsWith("--output-format=")) {
         // Consume stale provider-mode hints. Agy is normalized to stream-json below.
-      } else if (arg === "--model") {
-        model = args[i + 1] ?? null;
-        i++;
-      } else if (arg === "--effort") {
-        effort = args[i + 1] as EffortLevel ?? null;
-        i++;
-      } else if (arg === "--resume") {
-        resumeSessionId = args[i + 1] ?? null;
-        i++;
-      } else if (arg === "-i") {
-        const att = args[i + 1];
-        if (att) attachments.push(att);
-        i++;
-      } else if (arg === "--disable") {
-        const tool = args[i + 1];
-        if (tool) disabledTools.push(tool);
-        i++;
       } else if (hasValue) {
         i++;
       }
     } else {
-      if (isCodex && arg === "exec") {
-        // skip
-      } else if (isCodex && arg === "resume") {
-        resumeSessionId = args[i + 1] ?? null;
-        i++;
-      } else {
-        prompt = arg;
-      }
+      prompt = arg;
     }
   }
 
@@ -111,7 +77,6 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
   }
 
   let hasPermissionBypass = false;
-  let hasJsonOutput = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--dangerously-skip-permissions") {
       hasPermissionBypass = true;
@@ -121,15 +86,6 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
     }
     if (args[i] === "--permission-mode" && args[i + 1] === "acceptEdits") {
       hasPermissionBypass = true;
-    }
-    if (args[i] === "--json") {
-      hasJsonOutput = true;
-    }
-    if (args[i] === "--output-format" && args[i + 1] === "json") {
-      hasJsonOutput = true;
-    }
-    if (args[i] === "--output-format=json") {
-      hasJsonOutput = true;
     }
   }
 
@@ -152,46 +108,6 @@ export function normalizeCliArgs(command: string, args: string[]): string[] {
     }
     newArgs.push("--output-format", "stream-json");
     newArgs.push("--print", prompt);
-    return newArgs;
-  }
-
-  if (isCodex) {
-    const newArgs: string[] = ["exec"];
-    if (!effort) {
-      for (let i = 0; i < args.length - 1; i += 1) {
-        if ((args[i] === "-c" || args[i] === "--config") && args[i + 1]?.startsWith("model_reasoning_effort=")) {
-          effort = args[i + 1].split("=", 2)[1]?.replace(/^"|"$/g, "") as EffortLevel;
-          break;
-        }
-      }
-    }
-    if (resumeSessionId) {
-      newArgs.push("resume", resumeSessionId);
-    }
-    if (effort) {
-      newArgs.push("-c", `model_reasoning_effort="${effort}"`);
-    }
-    if (model) {
-      newArgs.push("--model", model);
-    }
-    for (const tool of disabledTools) {
-      newArgs.push("--disable", tool);
-    }
-    if (hasPermissionBypass) {
-      newArgs.push("--dangerously-bypass-approvals-and-sandbox");
-    }
-    newArgs.push("--skip-git-repo-check");
-    if (hasJsonOutput) {
-      newArgs.push("--json");
-    }
-    if (attachments.length > 0) {
-      for (const att of attachments) {
-        newArgs.push("-i", att);
-      }
-      newArgs.push("--", "-");
-    } else {
-      newArgs.push(prompt);
-    }
     return newArgs;
   }
 

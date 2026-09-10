@@ -695,57 +695,24 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     expect(normalizeCliArgs("/usr/local/bin/antigravity", args)).toEqual(expected);
   });
 
-  it("normalizes arguments for Codex command", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["--print", "--output-format", "text", "--permission-mode", "acceptEdits", "hello"];
-    expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "hello"]);
-    expect(normalizeCliArgs("/opt/codex/bin/codex", args)).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "hello"]);
-  });
-
-  it("does not rewrite Codex ACP adapter argv into legacy exec shape", async () => {
+  it("keeps Codex ACP adapter argv unchanged", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     expect(normalizeCliArgs("codex-acp", [])).toEqual([]);
     expect(normalizeCliArgs("/opt/agent-bridge/releases/current/node_modules/.bin/codex-acp", ["--verbose"])).toEqual(["--verbose"]);
-  });
-
-  it("preserves Codex trusted bypass when normalizing already-built Codex args", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--json", "hello"];
-    expect(normalizeCliArgs("codex", args)).toEqual([
-      "exec",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--skip-git-repo-check",
-      "--json",
-      "hello",
-    ]);
-  });
-
-  it("preserves Codex effort config during argument translation", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["--print", "-c", "model_reasoning_effort=\"high\"", "hello"];
-    expect(normalizeCliArgs("codex", args)).toEqual([
-      "exec",
-      "-c",
-      "model_reasoning_effort=\"high\"",
-      "--skip-git-repo-check",
-      "hello",
-    ]);
   });
 
   it("adds stream-json to basic Antigravity arguments without permissions", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     const args = ["--print", "--output-format", "text", "hello"];
     expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
-    expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--skip-git-repo-check", "hello"]);
   });
 
-  it("translates json output for Codex and converges Antigravity to stream-json", async () => {
+  it("converges Antigravity json output hints to stream-json", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     for (const args of [
       ["--print", "--output-format", "json", "hello"],
       ["--print", "--output-format=json", "hello"],
     ]) {
-      expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--skip-git-repo-check", "--json", "hello"]);
       expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
     }
   });
@@ -769,29 +736,6 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     ]);
   });
 
-  it("preserves resume, model, and attachments for Codex", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = [
-      "exec", "resume", "session-xyz",
-      "--model", "gpt-5.5",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--skip-git-repo-check",
-      "--json",
-      "-i", "img1.png",
-      "-i", "img2.jpg",
-      "--", "-"
-    ];
-    expect(normalizeCliArgs("codex", args)).toEqual([
-      "exec", "resume", "session-xyz",
-      "--model", "gpt-5.5",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--skip-git-repo-check",
-      "--json",
-      "-i", "img1.png",
-      "-i", "img2.jpg",
-      "--", "-"
-    ]);
-  });
 });
 
 describe("wrapAntigravityPrompt — liveness and narration", () => {

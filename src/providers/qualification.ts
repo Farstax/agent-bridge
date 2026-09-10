@@ -46,7 +46,7 @@ const CODEX_RUNTIME_ENV_KEYS = [
   "CODEX_PATH",
   "CODEX_HOME",
   "MODEL_PROVIDER",
-  "BRIDGE_PROJECT_DIR",
+  "BRIDGE_CURRENT_RELEASE_DIR",
 ] as const;
 
 function normalizedEnvValue(env: QualificationEnv, key: string): string {

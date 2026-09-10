@@ -197,10 +197,6 @@ function commandForProvider(provider: ProviderId, env: Env): string {
   return bots[provider].command;
 }
 
-function codexAcpOwnsApiKeyValidation(provider: ProviderId, _env: Env): boolean {
-  return provider === "codex";
-}
-
 function verificationScope(provider: ProviderId, _env: Env): string {
   return provider === "codex" ? "acp" : "native";
 }
@@ -312,17 +308,6 @@ async function runProbe(
   };
 
   try {
-    if (provider === "codex") {
-      await execute(command, [
-        "exec",
-        "--json",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
-        "Reply with exactly OK.",
-      ], { ...common, env: { ...childEnv, CODEX_HOME: join(probeHome, ".codex") } });
-      return;
-    }
     if (provider === "claude") {
       await execute(command, [
         "--print",
@@ -397,7 +382,7 @@ export async function verifyProviderApiKey(
   const verification = (async () => {
     let verified = false;
     try {
-      if (codexAcpOwnsApiKeyValidation(provider, env)) {
+      if (provider === "codex") {
         await (options.codexAcpProbe ?? runCodexAcpApiKeyProbe)(buildProbeEnv(provider, env));
       } else {
         await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);

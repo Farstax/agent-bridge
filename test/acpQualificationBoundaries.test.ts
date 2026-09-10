@@ -15,6 +15,7 @@ import { qualifyProvider } from "../src/providers/qualification.js";
 const savedCommand = process.env.CODEX_ACP_COMMAND;
 const savedArgs = process.env.CODEX_ACP_ARGS;
 const savedApiKey = process.env.CODEX_API_KEY;
+const savedCurrentRelease = process.env.BRIDGE_CURRENT_RELEASE_DIR;
 
 function restore(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
@@ -25,6 +26,7 @@ afterEach(() => {
   restore("CODEX_ACP_COMMAND", savedCommand);
   restore("CODEX_ACP_ARGS", savedArgs);
   restore("CODEX_API_KEY", savedApiKey);
+  restore("BRIDGE_CURRENT_RELEASE_DIR", savedCurrentRelease);
   clearProviderApiKeyVerificationCache();
 });
 
@@ -74,6 +76,18 @@ describe("Codex ACP auth boundary", () => {
 });
 
 describe("Codex ACP qualification boundary", () => {
+  it("fails closed when qualification and runtime resolve different managed releases", async () => {
+    process.env.BRIDGE_CURRENT_RELEASE_DIR = "/opt/agent-bridge/releases/runtime";
+
+    await expect(qualifyProvider({
+      providerId: "codex",
+      env: {
+        ...process.env,
+        BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/releases/candidate",
+      },
+    })).rejects.toThrow(/runtime environment mismatch for BRIDGE_CURRENT_RELEASE_DIR/i);
+  });
+
   it("preserves structured ACP provider classification while redacting diagnostic secrets", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-acp-qualification-error-"));
     const failingAgent = fileURLToPath(new URL("./support/failingAcpQualificationAgent.ts", import.meta.url));
