@@ -21,7 +21,7 @@ ${body}
   return JSON.parse(execFileSync("python3", ["-c", source], { encoding: "utf8" }));
 }
 
-describe("managed Codex ACP installation", () => {
+describe("managed ACP installation", () => {
   it("propagates ACP adapter configuration through the existing interactive service", () => {
     const result = probe(`
 env = {
@@ -69,18 +69,24 @@ print(json.dumps({
     expect(script).toContain("CODEX_ACP_ARGS");
   });
 
-  it("pins the qualified Codex ACP adapter as a production dependency", () => {
+  it("pins every qualified npx ACP adapter as a production dependency", () => {
     const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
     };
-    const locked = getLockedAcpRegistryEntry("codex");
-    const packageSpec = locked?.distribution.npx?.package;
-    expect(packageSpec).toBe("@agentclientprotocol/codex-acp@1.10.0");
-    expect(pkg.dependencies?.["@agentclientprotocol/codex-acp"]).toBe(locked?.version);
-    expect(existsSync(resolve(process.cwd(), "node_modules/.bin/codex-acp"))).toBe(true);
+    const expected = [
+      { provider: "codex" as const, packageName: "@agentclientprotocol/codex-acp", bin: "codex-acp" },
+      { provider: "claude" as const, packageName: "@agentclientprotocol/claude-agent-acp", bin: "claude-agent-acp" },
+    ];
+
+    for (const { provider, packageName, bin } of expected) {
+      const locked = getLockedAcpRegistryEntry(provider);
+      expect(locked?.distribution.npx?.package).toBe(`${packageName}@${locked?.version}`);
+      expect(pkg.dependencies?.[packageName]).toBe(locked?.version);
+      expect(existsSync(resolve(process.cwd(), `node_modules/.bin/${bin}`))).toBe(true);
+    }
   });
 
-  it("resolves the same bundled adapter the production runtime launches", () => {
+  it("resolves the same bundled Codex adapter the production runtime launches", () => {
     const root = "/opt/agent-bridge/releases/current";
     expect(resolveCodexAcpCommand({ BRIDGE_CURRENT_RELEASE_DIR: root })).toBe(
       `${root}/node_modules/.bin/codex-acp`,
