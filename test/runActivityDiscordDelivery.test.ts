@@ -29,7 +29,6 @@ describe("Discord structured run activity delivery", () => {
       chatId: "channel-1",
       execution: async (progress) => {
         progress.activity?.({ kind: "subagents", state: "working", activeCount: 2 });
-        await vi.advanceTimersByTimeAsync(0);
         await new Promise<void>((resolve) => { finish = resolve; });
         return { text: "final answer", sessionId: "s1" } as CliResult;
       },

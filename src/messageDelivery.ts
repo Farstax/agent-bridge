@@ -408,8 +408,14 @@ export async function sendMessageWithProgress({
   };
 
   const publishAnswerPreview = async (): Promise<void> => {
+    // A delta already queued before this publish began running is allowed to
+    // finish (so a visible preview has a message id the abort path can
+    // delete); capture abort state up front rather than after awaiting
+    // progressCleanup, otherwise abort flipping mid-await would wrongly
+    // cancel a publish that already committed to running.
+    const abortedAtStart = isAborted?.() === true;
     if (progressCleanup) await progressCleanup;
-    if (isAborted?.()) {
+    if (abortedAtStart) {
       answerPreviewDirty = false;
       return;
     }
@@ -506,20 +512,30 @@ export async function sendMessageWithProgress({
       clearTimeout(answerPreviewTimer);
       answerPreviewTimer = null;
     }
-    answerPreviewDirty = false;
-    // Once a preview is abandoned, its provisional text must not be reused
-    // by later error/fallback/fence delivery in this turn.
-    answerPreviewText = "";
     const aborted = isAborted?.() === true;
-    if (aborted) answerPreviewEnabled = false;
     const pendingUpdates = [...answerPreviewUpdates];
+    // Any already-queued publish must be allowed to finish (so a sent
+    // preview has a message id to delete) before this turn's provisional
+    // text is cleared out from under it, or before this turn's preview is
+    // disabled from under it.
+    const finalizeAbandonedState = () => {
+      if (aborted) answerPreviewEnabled = false;
+      answerPreviewDirty = false;
+      // Once a preview is abandoned, its provisional text must not be reused
+      // by later error/fallback/fence delivery in this turn.
+      answerPreviewText = "";
+    };
     if (aborted) {
       void Promise.allSettled(pendingUpdates)
-        .then(() => deleteAnswerPreview(false))
+        .then(() => {
+          finalizeAbandonedState();
+          return deleteAnswerPreview(false);
+        })
         .catch(() => {});
       return;
     }
     await Promise.allSettled(pendingUpdates);
+    finalizeAbandonedState();
     await deleteAnswerPreview(true);
   };
 
