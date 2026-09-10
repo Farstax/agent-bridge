@@ -5,8 +5,9 @@ import {
   type ProviderId,
   PROVIDER_IDS,
 } from "./types.js";
+import type { AcpProviderPolicy } from "./acpRuntime.js";
 import { createPlannerStallWatch } from "./antigravityRuntime.js";
-import { resolveCodexAcpCommand } from "./codexAcpConfig.js";
+import { codexAcpPolicy } from "./codexAcpPolicy.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
@@ -72,14 +73,16 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   },
 };
 
+/** ACP-backed providers opt into one generic runtime with only provider-owned differences here. */
+const ACP_POLICIES: Readonly<Partial<Record<ProviderId, AcpProviderPolicy>>> = {
+  codex: codexAcpPolicy,
+};
+
 /**
- * buildCliInvocation()'s `bot` parameter uses CLI-kind vocabulary
- * ("antigravity"), not provider ids ("agy") — see ChainCliKind in types.ts.
- * Unrecognized bot names are treated as not supporting tool-free mode
- * rather than throwing, matching the original ALLOWED_TOOL_FREE_BOTS
- * Set-membership behaviour it replaces.
+ * buildCliInvocation() uses CLI-kind vocabulary ("antigravity"), while the
+ * provider registry uses "agy". Keep the vocabulary conversion in one place.
  */
-const BOT_NAME_TO_PROVIDER_ID: Record<string, ProviderId> = {
+const BOT_NAME_TO_PROVIDER_ID: Readonly<Record<string, ProviderId>> = {
   codex: "codex",
   claude: "claude",
   agy: "agy",
@@ -88,10 +91,24 @@ const BOT_NAME_TO_PROVIDER_ID: Record<string, ProviderId> = {
   cursor: "cursor",
 };
 
+export function providerIdForBotName(bot: string): ProviderId | null {
+  return BOT_NAME_TO_PROVIDER_ID[bot] ?? null;
+}
+
+export function getAcpProviderPolicy(id: ProviderId): AcpProviderPolicy | null {
+  return ACP_POLICIES[id] ?? null;
+}
+
 export function supportsToolFreeMode(bot: string): boolean {
-  const id = BOT_NAME_TO_PROVIDER_ID[bot];
+  const id = providerIdForBotName(bot);
   if (!id) return false;
-  return ADAPTERS[id].capabilities.toolFree;
+  return getAcpProviderPolicy(id)?.toolFree ?? ADAPTERS[id].capabilities.toolFree;
+}
+
+/** Provisional-answer presentation is runtime policy, not a messaging-provider branch. */
+export function supportsProvisionalAnswers(bot: string): boolean {
+  const id = providerIdForBotName(bot);
+  return id ? Boolean(getAcpProviderPolicy(id)?.presentation.provisionalAnswers) : false;
 }
 
 export function getProcessWatchForCommand(command: string): ProviderAdapter["processWatch"] {
@@ -109,9 +126,7 @@ export function getProcessWatchForCommand(command: string): ProviderAdapter["pro
 
 export function getProviderAdapter(id: ProviderId): ProviderAdapter {
   const adapter = ADAPTERS[id];
-  if (!adapter) {
-    throw new Error(`Unknown provider id: ${id}`);
-  }
+  if (!adapter) throw new Error(`Unknown provider id: ${id}`);
   return adapter;
 }
 
@@ -119,9 +134,13 @@ export function getProviderAdapters(): readonly ProviderAdapter[] {
   return PROVIDER_IDS.map((id) => ADAPTERS[id]);
 }
 
-/** Resolve the command used by the live bridge runtime, including command overrides. */
-export function resolveProviderExecutable(id: ProviderId, env: Record<string, string | undefined> = process.env): string {
-  if (id === "codex") return resolveCodexAcpCommand(env);
+/** Resolve the command used by the live bridge runtime, including ACP policy overrides. */
+export function resolveProviderExecutable(
+  id: ProviderId,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const acp = getAcpProviderPolicy(id);
+  if (acp) return acp.resolveExecutable(env);
   const bot = id === "agy" ? "antigravity" : id;
   return loadBotsConfig(env)[bot].command;
 }
@@ -131,9 +150,7 @@ export function isProviderId(value: string): value is ProviderId {
 }
 
 export function assertProviderId(value: string): ProviderId {
-  if (!isProviderId(value)) {
-    throw new Error(`Unknown provider id: ${value}`);
-  }
+  if (!isProviderId(value)) throw new Error(`Unknown provider id: ${value}`);
   return value;
 }
 
