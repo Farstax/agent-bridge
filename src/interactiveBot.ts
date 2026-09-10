@@ -109,6 +109,48 @@ export function isCliCommandText(rawText: string, botUsername?: string | null): 
   return command.slice("/cli@".length) === botUsername.toLowerCase();
 }
 
+export interface InteractiveCliCommandInput {
+  rawText: string;
+  botUsername?: string | null;
+  providerLock: CliKind | null;
+  chatKey: string;
+  chatId: number | string;
+  threadId?: number | string;
+  resolvePreference: (chatKey: string) => { pref: CliKind | null; available: ReadonlySet<CliKind>; stored: CliKind };
+  sendMessage: (body: {
+    text: string;
+    reply_markup?: ReturnType<typeof buildCliKeyboard>;
+    message_thread_id?: number | string;
+  }) => Promise<unknown>;
+}
+
+export async function handleInteractiveCliCommand(input: InteractiveCliCommandInput): Promise<boolean> {
+  if (!isCliCommandText(input.rawText, input.botUsername)) return false;
+  if (input.providerLock) {
+    await input.sendMessage({
+      text: `Provider is fixed to **${input.providerLock}** for this bot.`,
+      message_thread_id: input.threadId,
+    });
+    return true;
+  }
+  const { pref, available, stored } = input.resolvePreference(input.chatKey);
+  await input.sendMessage({
+    text: buildCliStatusText(pref ?? stored, available),
+    reply_markup: buildCliKeyboard(pref ?? stored, available),
+    message_thread_id: input.threadId,
+  });
+  return true;
+}
+
+export function runUnifiedTelegramIngress(input: {
+  recoverPendingQueues: () => Promise<void>;
+  runIngress: () => Promise<void>;
+  onRecoveryError: (error: unknown) => void;
+}): Promise<void> {
+  void input.recoverPendingQueues().catch(input.onRecoveryError);
+  return input.runIngress();
+}
+
 export function buildCliKeyboard(
   activeCli: CliKind,
   authenticated: ReadonlySet<CliKind> = DEFAULT_AUTHENTICATED_CLI_KINDS,
