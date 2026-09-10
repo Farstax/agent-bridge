@@ -43,7 +43,7 @@ describe("toUserMessage — Antigravity JSON error extraction", () => {
 
   it("surfaces empty response errors", () => {
     const err = new Error(JSON.stringify({ type: "error", message: "Agy execution returned empty response" }));
-    expect(toUserMessage(err)).toBe(innerMsg);
+    expect(toUserMessage(err)).toBe("Agy execution returned empty response");
   });
 });
 
