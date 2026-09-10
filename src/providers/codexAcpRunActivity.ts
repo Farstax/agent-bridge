@@ -113,10 +113,12 @@ export function createCodexAcpRunActivityProjector(): CodexAcpRunActivityProject
       working.delete(childKey);
     }
     if (!changed) return null;
+    // A failure/interruption signal must survive while siblings remain
+    // active, rather than collapsing to generic "working" and losing it.
+    if (transition.state === "failed") return activity("failed", active.size);
+    if (transition.state === "interrupted") return activity("interrupted", active.size);
     if (active.size > 0) return activity("working", active.size);
-    if (transition.state === "completed") return activity("reviewing", 0);
-    if (transition.state === "failed") return activity("failed", 0);
-    return activity("interrupted", 0);
+    return activity("reviewing", 0);
   };
 
   return {

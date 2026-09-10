@@ -107,4 +107,39 @@ describe("Codex ACP run activity projection", () => {
     expect(replay.observe(event({ sessionUpdate: "tool_call", _meta: { codex: { subagent: "bad" } } }))).toBeNull();
     expect(replay.observe(event({ sessionUpdate: "tool_call", _meta: { codex: { collaboration: { tool: "spawnAgent", receiverThreadIds: [null, 1] } } } }))).toBeNull();
   });
+
+  it("preserves a failure/interruption signal instead of collapsing to generic working when a sibling child remains active", () => {
+    const projector = createCodexAcpRunActivityProjector();
+    const spawn = (id: string) => event({
+      sessionUpdate: "subagent_spawned",
+      subagentSessionId: id,
+      name: "worker",
+      task: "private",
+      capabilities: {},
+    });
+    const state = (id: string, state: string) => event({
+      sessionUpdate: "subagent_state_update",
+      subagentSessionId: id,
+      state,
+    });
+
+    projector.observe(spawn("child-a"));
+    projector.observe(spawn("child-b"));
+
+    expect(projector.observe(state("child-a", "failed"))).toEqual({
+      kind: "subagents",
+      state: "failed",
+      activeCount: 1,
+    });
+
+    const stillInterrupted = createCodexAcpRunActivityProjector();
+    stillInterrupted.observe(spawn("child-c"));
+    stillInterrupted.observe(spawn("child-d"));
+
+    expect(stillInterrupted.observe(state("child-c", "cancelled"))).toEqual({
+      kind: "subagents",
+      state: "interrupted",
+      activeCount: 1,
+    });
+  });
 });
