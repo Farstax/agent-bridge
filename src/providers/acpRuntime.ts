@@ -36,10 +36,14 @@ export interface AcpAnswerPreview {
   finish(stopReason: string): void;
 }
 
+/**
+ * Bridge-owned differences that ACP/its Registry cannot decide. Straightforward
+ * providers can omit every hook after identity/presentation and use defaults.
+ */
 export interface AcpProviderPolicy {
   readonly providerId: string;
   readonly registryAgentId: string;
-  readonly toolFree: boolean;
+  readonly toolFree?: boolean;
   readonly presentation: {
     readonly provisionalAnswers: boolean;
     readonly createPreview?: (
@@ -47,7 +51,7 @@ export interface AcpProviderPolicy {
       secrets: readonly string[],
     ) => AcpAnswerPreview;
   };
-  readonly resolveExecutable: (env: Record<string, string | undefined>) => string;
+  readonly resolveExecutable?: (env: Record<string, string | undefined>) => string;
   readonly resolveArgs?: (
     env: Record<string, string | undefined>,
     entry: AcpRegistryAgentEntry,
@@ -56,7 +60,9 @@ export interface AcpProviderPolicy {
     request: ProviderInvocationRequest,
     env: Record<string, string | undefined>,
   ) => Record<string, string>;
-  /** Optional standard ACP authenticate method selected from workspace-local policy. */
+  /** Runtime-affecting env keys that qualification must compare with the active process. */
+  readonly qualificationEnvKeys?: readonly string[];
+  /** Standard ACP authenticate method selected from workspace-local policy. */
   readonly authenticateMethodId?: (
     env: Record<string, string | undefined>,
   ) => string | undefined;
@@ -98,7 +104,10 @@ export function resolveAcpProviderRuntime(
     );
   }
   const env = overrides.env ?? process.env;
-  const executable = overrides.executable ?? policy.resolveExecutable(env);
+  const executable = overrides.executable ?? policy.resolveExecutable?.(env);
+  if (!executable) {
+    throw new Error(`ACP provider ${policy.providerId} has no resolved executable`);
+  }
   const args = overrides.args
     ? [...overrides.args]
     : policy.resolveArgs
@@ -114,7 +123,7 @@ export function resolveAcpProviderRuntime(
     selectedVersion: entry.version,
     registryAgentId: entry.id,
     distribution: entry.distribution,
-    toolFree: policy.toolFree,
+    toolFree: policy.toolFree ?? false,
     provisionalAnswers: policy.presentation.provisionalAnswers,
   };
 }
@@ -127,7 +136,10 @@ export function resolveProviderRuntime(
   if (policy) {
     const entry = getLockedAcpRegistryEntry(providerId);
     if (!entry) throw new Error(`ACP provider ${providerId} has no release-locked registry entry`);
-    return resolveAcpProviderRuntime(policy, entry, { env });
+    return resolveAcpProviderRuntime(policy, entry, {
+      env,
+      executable: resolveProviderExecutable(providerId, env),
+    });
   }
   const adapter = getProviderAdapter(providerId);
   return {
