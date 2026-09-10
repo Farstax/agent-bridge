@@ -7,57 +7,140 @@ permissions:
   contents: write
 jobs:
   migrate:
-    if: github.event.head_commit.message == 'chore-issue737-fix'
+    if: github.event.head_commit.message == 'chore-issue737-finalize-tests'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Repair ACP promotion convergence
+      - name: Finalize ACP-only tests and ownership notes
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              if old not in text:
-                  raise SystemExit(f'missing expected text in {path}: {old!r}')
-              p.write_text(text.replace(old, new))
-
-          replace(
-              'scripts/agent-bridge-install.py',
-              '    "HEALTH_CONTENT_CRAWLER_ENABLED", "HEALTH_CONTENT_CRAWLER_SCRIPT",\n)',
-              '    "HEALTH_CONTENT_CRAWLER_ENABLED", "HEALTH_CONTENT_CRAWLER_SCRIPT",\n    "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS",\n)',
-          )
-          replace(
-              'scripts/agent-bridge-install.py',
-              '    "CODEX_COMMAND", "CODEX_MODEL_PREFERENCE", "CODEX_EFFORT", "CODEX_PROJECT_DIR",\n',
-              '    "CODEX_COMMAND", "CODEX_MODEL_PREFERENCE", "CODEX_EFFORT", "CODEX_PROJECT_DIR",\n    "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS",\n',
-          )
-          replace(
-              'scripts/install.sh',
-              '              CODEX_COMMAND ANTIGRAVITY_COMMAND CLAUDE_COMMAND \\\n              CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \\\n',
-              '              CODEX_COMMAND ANTIGRAVITY_COMMAND CLAUDE_COMMAND \\\n              CODEX_ACP_COMMAND CODEX_ACP_ARGS \\\n              CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \\\n',
-          )
-
-          p = Path('docs/ACP.md')
+          p = Path('test/providerQualification.test.ts')
           text = p.read_text()
-          start = text.index('## Codex selection\n')
-          end = text.index('\n## Process lifecycle\n', start)
-          replacement = '''## Codex runtime\n\nCodex runs through the managed ACP adapter. There is no native `codex exec`\nexecution path or ACP-vs-legacy runtime selector.\n\n```bash\nCODEX_ACP_COMMAND=...               # optional override of the bundled adapter\nCODEX_ACP_ARGS=...                  # optional extra adapter argv\n```\n\nThe pinned adapter ships with the Agent Bridge release as\n`@agentclientprotocol/codex-acp@1.10.0`. Fresh managed installation and\nsource `npm install` both obtain it. Execution, doctor, health, qualification,\nand runtime inspection resolve the same launchable artifact:\n\n`$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`\n\nSet `CODEX_ACP_COMMAND` only to override that bundled path. There is no\nsilent fallback to `codex exec` if the adapter is missing. Managed install\nand upgrade preserve `CODEX_ACP_COMMAND` and `CODEX_ACP_ARGS` when configured.\n'''
-          text = text[:start] + replacement + text[end:]
-          text = text.replace('Legacy Codex `toolMode: "none"` explicitly disables shell, browser, computer\nuse, plugins, hooks, goals, and apps. Codex ACP\'s `read-only` agent mode is\nnot equivalent:', 'Codex ACP\'s `read-only` agent mode is not equivalent to strict tool-free execution:')
-          text = text.replace('- Removing the legacy Codex runtime\n', '')
+          text, count = re.subn(
+              r'\n  it\("accepts native Codex result/session evidence without semantic marker prose", async \(\) => \{.*?\n  \}\);\n(?=\n  it\("accepts native Claude result/session evidence)',
+              '', text, flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'expected one obsolete Codex native qualification fixture, found {count}')
           p.write_text(text)
 
-          p = Path('.env.codex.example')
-          text = p.read_text().replace('Agent Bridge uses CODEX_API_KEY for both `codex exec`', 'Agent Bridge uses CODEX_API_KEY for the managed ACP adapter')
+          Path('test/cleanDropletAcceptance.test.ts').write_text(r'''import { describe, expect, it, vi } from "vitest";
+import { openDb } from "../src/db.js";
+import type { TelegramMessage } from "../src/types.js";
+
+const runTurnMock = vi.fn();
+vi.mock("../src/providers/codexAcpRuntime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/providers/codexAcpRuntime.js")>();
+  return { ...actual, runTurn: runTurnMock };
+});
+
+function makeMessage(text: string): TelegramMessage {
+  return {
+    message_id: 1,
+    chat: { id: 100, type: "private" },
+    from: { id: 42, first_name: "Test" },
+    text,
+  };
+}
+
+function makeClient() {
+  return {
+    capabilities: {
+      maxMessageLength: 4096,
+      editMessages: true,
+      deleteMessages: true,
+      previewStreaming: true,
+      threads: true,
+      attachments: true,
+      typing: true,
+      polling: true,
+      remoteFileDownload: true,
+      richMessages: true,
+      passiveSurroundingContext: false,
+      formatting: "telegram-html",
+    },
+    sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 2 } }),
+    sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+    editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+    deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
+  } as any;
+}
+
+describe("clean-droplet acceptance", () => {
+  it("starts the first Codex turn through ACP with no resume session after database startup", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    process.env.CODEX_ACP_COMMAND = "codex-acp";
+    runTurnMock.mockReset();
+    runTurnMock.mockResolvedValue({ text: "ok", sessionId: "acp-fresh-session", stopReason: "end_turn" });
+    const db = openDb(":memory:");
+    try {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "clean-appliance",
+          kind: "codex",
+          botConfig: { command: "codex", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "trusted",
+          pollIntervalMs: 1000,
+        },
+        db,
+        makeClient(),
+      );
+
+      await engine.handleMessages([makeMessage("first request on a new appliance")]);
+
+      expect(runTurnMock).toHaveBeenCalledTimes(1);
+      expect(runTurnMock.mock.calls[0]?.[0]).toMatchObject({
+        sessionId: null,
+        command: "codex-acp",
+        executionMode: "trusted",
+      });
+      expect(db.getAcpSessionBinding("100", "codex")?.acpSessionId).toBe("acp-fresh-session");
+    } finally {
+      db.raw.close();
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+    }
+  });
+});
+''')
+
+          p = Path('test/userMessage.test.ts')
+          text = p.read_text()
+          text = text.replace('CODEX_USAGE_LIMIT_STDOUT', 'UPSTREAM_USAGE_LIMIT_STDOUT')
+          text = text.replace('toUserMessage — Codex JSONL extraction', 'toUserMessage — structured upstream error extraction')
+          p.write_text(text)
+
+          p = Path('test/providerNativeCompletion.test.ts')
+          text = p.read_text().replace(
+              'it("does not invent a native completion wrapper for Codex", () => {',
+              'it("does not alter the Codex ACP invocation for the shared nativeCompletion hint", () => {',
+          )
+          p.write_text(text)
+
+          p = Path('docs/prompt-optimization-loop-research.md')
+          text = p.read_text()
+          marker = '`TELEGRAM_RESPONSE_STYLE` block. It does not change production bridge behavior.\n'
+          note = ('`TELEGRAM_RESPONSE_STYLE` block. It does not change production bridge behavior.\n'
+                  'Its `CodexPipeClient` is an out-of-band research harness that invokes the Codex CLI directly; '
+                  'it is not an Agent Bridge provider runtime, readiness, qualification, or delivery path.\n')
+          if marker not in text:
+              raise SystemExit('prompt optimization ownership marker missing')
+          p.write_text(text.replace(marker, note, 1))
+
+          p = Path('src/providers/codexAcpAuthProbe.ts')
+          text = p.read_text().replace('removed native Codex runtime runtime', 'removed native Codex runtime')
           p.write_text(text)
           PY
-      - name: Commit repair
+      - name: Commit test convergence
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add scripts/agent-bridge-install.py scripts/install.sh docs/ACP.md .env.codex.example
-          git commit -m 'fix: preserve managed Codex ACP install contract'
+          git add test/providerQualification.test.ts test/cleanDropletAcceptance.test.ts test/userMessage.test.ts test/providerNativeCompletion.test.ts docs/prompt-optimization-loop-research.md src/providers/codexAcpAuthProbe.ts
+          git commit -m 'test: remove obsolete Codex native-runtime fixtures'
           git push origin HEAD:feature/737-promote-codex-acp
