@@ -21,6 +21,7 @@ import {
 } from "./apiKeyAuth.js";
 import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 import { createCodexAcpAnswerPreview } from "./codexAcpAnswerPreview.js";
+import { createCodexAcpRunActivityProjector } from "./codexAcpRunActivity.js";
 import { type as bridgeEventType } from "../events/types.js";
 
 const IMAGE_MIME: Record<string, string> = {
@@ -291,6 +292,9 @@ export async function runTurn(
   const answerPreview = options.onAnswerDelta
     ? createCodexAcpAnswerPreview(options.onAnswerDelta, secretValues)
     : null;
+  const activityProjector = options.onProgress?.activity
+    ? createCodexAcpRunActivityProjector()
+    : null;
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
   let result;
@@ -316,12 +320,14 @@ export async function runTurn(
             if (safe) options.onProgress?.(safe);
           }
           : undefined,
-        // Forwarded as each ACP event arrives, not batched at turn completion,
-        // so events observed before a cancellation/timeout/crash/provider
-        // error are still persisted. Credentials are redacted per event before
-        // it crosses the process boundary into the durable event sink.
-        onEvent: answerPreview || (eventContext && onEvent)
+        // Structured activity is projected before durable event persistence;
+        // only safe state/count data crosses the presentation seam. Raw event
+        // retention keeps its existing credential redaction and answer preview
+        // authority remains separate.
+        onEvent: answerPreview || activityProjector || (eventContext && onEvent)
           ? (event) => {
+            const runActivity = activityProjector?.observe(event);
+            if (runActivity) options.onProgress?.activity?.(runActivity);
             answerPreview?.observe(event);
             if (!eventContext || !onEvent || !event.sessionMode) return;
             onEvent(bridgeEventType.acpEvent({
