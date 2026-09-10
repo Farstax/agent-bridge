@@ -240,25 +240,16 @@ printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
 
   it("only considers evidence current for the same provider version and contract version", () => {
     const current = passingRecord();
-    expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(true);
-    expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "9.9.9")).toBe(true);
-    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
-    try {
-      expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(false);
-      expect(isQualificationCurrent({ ...current, executionRuntime: "acp" }, "codex", "9.9.9")).toBe(true);
-    } finally {
-      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
-    }
+    expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(false);
+    expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "9.9.9")).toBe(false);
+    expect(isQualificationCurrent({ ...current, executionRuntime: "acp" }, "codex", "9.9.9")).toBe(true);
     expect(isQualificationCurrent(current, "codex", "9.9.10")).toBe(false);
     expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "9.9.9")).toBe(false);
     expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "9.9.9")).toBe(false);
   });
 
-  it("versions the Codex ACP executable when ACP runtime is selected", async () => {
+  it("versions the Codex ACP executable used by production", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-acp-version-"));
-    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;
     const acp = executable(join(root, "codex-acp"), `
@@ -267,7 +258,6 @@ echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
     const legacy = executable(join(root, "codex"), passingProviderBody("codex"));
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = acp;
     delete process.env.CODEX_ACP_ARGS;
     try {
@@ -281,7 +271,6 @@ exit 7
         timeoutMs: 5_000,
         env: {
           ...process.env,
-          AGENT_BRIDGE_CODEX_RUNTIME: "acp",
           CODEX_ACP_COMMAND: acp,
         },
       });
@@ -289,8 +278,6 @@ exit 7
       expect(result.providerVersion).toBe("1.10.0");
       expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/codex-acp 1\.10\.0/);
     } finally {
-      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
       else process.env.CODEX_ACP_COMMAND = previousCommand;
       if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
@@ -300,12 +287,10 @@ exit 7
 
   it("does not require tool-free execution for ACP Codex fresh_prompt qualification", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-acp-toolfree-"));
-    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;
     const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
     const acpArgs = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = acpArgs;
     try {
@@ -318,7 +303,6 @@ exit 7
         timeoutMs: 5_000,
         env: {
           ...process.env,
-          AGENT_BRIDGE_CODEX_RUNTIME: "acp",
           CODEX_ACP_COMMAND: process.execPath,
           CODEX_ACP_ARGS: acpArgs,
         },
@@ -327,8 +311,6 @@ exit 7
       expect(freshPrompt?.status).toBe("pass");
       expect(freshPrompt?.diagnostic ?? "").not.toMatch(/tool-free/i);
     } finally {
-      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
       else process.env.CODEX_ACP_COMMAND = previousCommand;
       if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;

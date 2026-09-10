@@ -964,9 +964,7 @@ describe("SelfPlugin — extended checks", () => {
   });
 
   it("reports the bundled Codex ACP adapter instead of the global @openai/codex package", async () => {
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
     const previousProject = process.env.BRIDGE_PROJECT_DIR;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.BRIDGE_PROJECT_DIR = process.cwd();
     (globalThis as any).__mockExecSync = (cmd: string) => {
       if (cmd.includes("npm list -g --depth=0 --json")) {
@@ -998,8 +996,6 @@ describe("SelfPlugin — extended checks", () => {
       expect(codexCheck?.message).not.toContain("@openai/codex");
       expect(codexCheck?.message).not.toContain("0.141.0");
     } finally {
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
       if (previousProject === undefined) delete process.env.BRIDGE_PROJECT_DIR;
       else process.env.BRIDGE_PROJECT_DIR = previousProject;
     }

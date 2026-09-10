@@ -4,7 +4,7 @@ Agent Bridge supports provider-owned API-key authentication without creating a s
 
 | Provider | Environment variable | Native verification | Runtime notes |
 | --- | --- | --- | --- |
-| Codex | `CODEX_API_KEY` | bounded `codex exec` turn | `OPENAI_API_KEY` is not the Agent Bridge Codex exec contract |
+| Codex | `CODEX_API_KEY` | bounded ACP adapter turn | `OPENAI_API_KEY` is not the Agent Bridge Codex auth contract |
 | Claude Code | `ANTHROPIC_API_KEY` | bounded `claude --print` turn | local auth-status output is not treated as proof that a request will succeed |
 | Agy / Antigravity | `GEMINI_API_KEY` | bounded Agy print-mode turn | requires `modelProvider: "gemini"`; Bridge scopes that setting to the run and restores the prior value |
 | Grok Build | `XAI_API_KEY` | bounded `grok -p` turn | stored account session remains the provider-preferred route when present |
@@ -40,7 +40,7 @@ Agent Bridge OSS does not persist provider API keys and exposes no app-facing se
 
 ## Upstream contracts
 
-- Codex: `CODEX_API_KEY` is the non-interactive `codex exec` API-key environment contract; Codex auth state lives under `CODEX_HOME`.
+- Codex: `CODEX_API_KEY` is verified through the managed ACP adapter; Codex auth state lives under `CODEX_HOME`.
 - Claude Code: `ANTHROPIC_API_KEY` is supported for print/headless use; request success, not local status alone, is the usability gate.
 - Agy: Antigravity CLI 1.1.13 added `GEMINI_API_KEY` direct API support with `modelProvider: "gemini"`.
 - Grok Build: xAI documents `XAI_API_KEY` for headless operation and account-session precedence over the environment fallback.

@@ -13,8 +13,8 @@ The initial live contract is deliberately small and incident-driven:
 3. `session_resume` — when the fresh result exposes an invocation-attributable session ID, a second bounded prompt resumes that session and returns the resume marker. Providers that do not expose such an ID report `not_applicable`.
 4. `repository_grounding` — one fresh native-tool-enabled invocation runs in a disposable Git repository. A runtime-generated source fact lives only in implementation source and a separate runtime-generated marker lives only in repository instructions; neither is included in the prompt. The check passes only when the native provider returns both exact values.
 
-When `AGENT_BRIDGE_CODEX_RUNTIME=acp`, Codex qualification uses the ACP-backed
-path (bundled `codex-acp` over stdio) rather than `codex exec --json`. The
+Codex qualification uses the production ACP-backed path (bundled `codex-acp`
+over stdio). The
 version probe is the invoked adapter (`CODEX_ACP_COMMAND` or the bundled
 `$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp --version`), not `codex
 --version`. The two implementations are not interchangeable inside one

@@ -23,7 +23,7 @@ function killProcessGroup(child: ChildProcess): void {
 
 /**
  * Verify CODEX_API_KEY through the selected Codex ACP adapter itself. This is
- * deliberately independent of the legacy `codex exec` runtime: initialize,
+ * deliberately independent of the removed native Codex runtime runtime: initialize,
  * explicit ACP api-key authentication, then one bounded no-tool prompt prove
  * the same credential/runtime pair that production will actually use.
  */

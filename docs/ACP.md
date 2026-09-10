@@ -152,5 +152,5 @@ silently weakening Advisor's tool-free contract to read-only.
 - Changing Telegram/Discord presentation to show tool calls or plans
 - A full interactive ACP `authenticate` handshake. When `CODEX_API_KEY` is
   present, the ACP child sets `DEFAULT_AUTH_REQUEST={"methodId":"api-key"}`
-  so the adapter uses the same workspace-local key as `codex exec`. ChatGPT
+  so the adapter uses the workspace-local key. ChatGPT
   login already stored in `~/.codex` remains sufficient without that env.

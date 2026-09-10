@@ -39,7 +39,6 @@ describe("interactive CLI availability filtering", () => {
       exists: () => true,
       commandExists: (command) => command === "codex" || command === "/opt/codex/bin/codex",
       env: {
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         CODEX_COMMAND: "codex",
         CODEX_ACP_COMMAND: "/missing/codex-acp",
       },
@@ -56,7 +55,6 @@ describe("interactive CLI availability filtering", () => {
       exists: () => true,
       commandExists: (command) => command === adapter,
       env: {
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         CODEX_ACP_COMMAND: adapter,
       },
       failedProviders: new Set(),

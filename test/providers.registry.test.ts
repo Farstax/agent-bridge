@@ -68,9 +68,8 @@ describe("provider registry", () => {
 
   it("treats Codex ACP as not tool-free while legacy Codex remains tool-free", () => {
     expect(supportsToolFreeMode("codex", {})).toBe(true);
-    expect(supportsToolFreeMode("codex", { AGENT_BRIDGE_CODEX_RUNTIME: "legacy" })).toBe(true);
-    expect(supportsToolFreeMode("codex", { AGENT_BRIDGE_CODEX_RUNTIME: "acp" })).toBe(false);
-    expect(supportsToolFreeMode("claude", { AGENT_BRIDGE_CODEX_RUNTIME: "acp" })).toBe(true);
+    expect(supportsToolFreeMode("codex")).toBe(false);
+    expect(supportsToolFreeMode("claude")).toBe(true);
   });
 
   it("exposes fallback metadata", () => {

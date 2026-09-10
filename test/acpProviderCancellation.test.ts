@@ -61,12 +61,10 @@ function makeMockClient() {
 describe("ACP provider-cancellation terminal lifecycle", () => {
   let dbPath: string;
   let db: BridgeDb;
-  const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
 
   beforeEach(() => {
     dbPath = join(tmpdir(), `acp-cancel-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
     db = openDb(dbPath);
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = "codex-acp";
     runTurnMock.mockReset();
   });
@@ -74,8 +72,6 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   afterEach(() => {
     db.close();
     try { rmSync(dbPath); } catch {}
-    if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
     delete process.env.CODEX_ACP_COMMAND;
     delete process.env.CODEX_ACP_ARGS;
     delete process.env.FAKE_ACP_OUTPUT_FILE;

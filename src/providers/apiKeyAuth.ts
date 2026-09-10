@@ -135,7 +135,7 @@ export function isProviderApiKeyVerified(provider: ProviderId, env: Env = proces
  * Keep provider credentials out of unrelated provider children. The issue-572
  * candidate key itself is withheld until its provider-specific verification
  * boundary has accepted it. Codex ACP verification uses the selected adapter
- * itself, so an ACP key never depends on or cross-qualifies legacy `codex exec`.
+ * itself, so an ACP key never depends on or cross-qualifies removed native Codex runtime.
  */
 export function filterProviderCredentialEnv(
   bot: BotKind | undefined,

@@ -277,36 +277,7 @@ describe("runtime inspector", () => {
     }
   });
 
-  it("projects legacy Codex session state from bridge_state", () => {
-    const { dir, path, db, healthDb } = fixture();
-    try {
-      db.insertRun("run-active", "chat-legacy", "codex");
-      db.setSession("chat-legacy", "codex", "legacy-session-secret");
-      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
-        AGENT_BRIDGE_CONTEXT_DB: path,
-        AGENT_BRIDGE_CHAT_KEY: "chat-legacy",
-        AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
-        AGENT_BRIDGE_RUN_ID: "run-active",
-        AGENT_BRIDGE_CODEX_RUNTIME: "legacy",
-        HOME: dir,
-      }));
-      expect(view.sessions.providers).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          provider: "codex",
-          runtime: "legacy",
-          exists: true,
-          source: "bridge_state",
-        }),
-      ]));
-      expect(JSON.stringify(view)).not.toContain("legacy-session-secret");
-    } finally {
-      db.close();
-      healthDb.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("projects ACP Codex bindings instead of the legacy session column", () => {
+  it("projects Codex ACP session bindings", () => {
     const { dir, path, db, healthDb } = fixture();
     try {
       db.insertRun("run-active", "chat-acp", "codex");
@@ -321,7 +292,6 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_CHAT_KEY: "chat-acp",
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_RUN_ID: "run-active",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         HOME: dir,
       }));
       const codex = view.sessions.providers.find((p: { provider: string }) => p.provider === "codex");
@@ -340,41 +310,6 @@ describe("runtime inspector", () => {
     }
   });
 
-  it("keeps a leftover legacy Codex session as rollback visibility when ACP is selected", () => {
-    const { dir, path, db, healthDb } = fixture();
-    try {
-      db.insertRun("run-active", "chat-both", "codex");
-      db.setSession("chat-both", "codex", "legacy-session-secret");
-      db.putAcpSessionBinding({
-        conversationId: "chat-both",
-        providerId: "codex",
-        acpSessionId: "acp-session-secret",
-        runId: "run-active",
-      });
-      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
-        AGENT_BRIDGE_CONTEXT_DB: path,
-        AGENT_BRIDGE_CHAT_KEY: "chat-both",
-        AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
-        AGENT_BRIDGE_RUN_ID: "run-active",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
-        HOME: dir,
-      }));
-      const codex = view.sessions.providers.find((p: { provider: string }) => p.provider === "codex");
-      expect(codex).toEqual(expect.objectContaining({
-        runtime: "acp",
-        exists: true,
-        source: "acp_session_bindings",
-        rollback: expect.objectContaining({ exists: true, source: "bridge_state" }),
-      }));
-      expect(JSON.stringify(view)).not.toContain("legacy-session-secret");
-      expect(JSON.stringify(view)).not.toContain("acp-session-secret");
-    } finally {
-      db.close();
-      healthDb.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it("does not invent an ACP session when no binding exists", () => {
     const { dir, path, db, healthDb } = fixture();
     try {
@@ -384,7 +319,6 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_CHAT_KEY: "chat-empty",
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_RUN_ID: "run-active",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         HOME: dir,
       }));
       expect(view.sessions.providers.find((p: { provider: string }) => p.provider === "codex")).toEqual(
@@ -419,7 +353,6 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_CHAT_KEY: "chat-stale",
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_RUN_ID: "run-active",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         HOME: dir,
       }));
       expect(view.sessions.providers.find((p: { provider: string }) => p.provider === "codex")).toEqual(
@@ -438,7 +371,7 @@ describe("runtime inspector", () => {
     }
   });
 
-  it("does not claim an ACP-selected Codex provider is available from a Run or the legacy executable", () => {
+  it("does not claim Codex is available from a Run when the ACP adapter is missing", () => {
     const { dir, path, db, healthDb } = fixture();
     try {
       db.insertRun("run-active", "chat-acp", "codex");
@@ -448,7 +381,6 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_CHAT_KEY: "chat-acp",
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_RUN_ID: "run-active",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         CODEX_ACP_COMMAND: adapter,
         CODEX_COMMAND: "codex",
         HOME: dir,

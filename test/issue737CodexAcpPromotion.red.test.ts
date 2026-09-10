@@ -8,7 +8,7 @@ afterEach(() => {
   else process.env.CODEX_ACP_COMMAND = originalCommand;
 });
 
-describe("Codex ACP production promotion", () => {
+describe("Codex ACP production runtime", () => {
   it("uses the managed ACP adapter for ordinary Codex execution without a runtime selector", () => {
     process.env.CODEX_ACP_COMMAND = "/opt/agent-bridge/node_modules/.bin/codex-acp";
 
