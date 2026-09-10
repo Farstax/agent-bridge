@@ -14,7 +14,6 @@ import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
 import { runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
-import { resolveCodexRuntime } from "./codexRuntimeSelection.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -29,7 +28,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   codex: {
     envVar: "CODEX_API_KEY",
     verification: "bounded_native_turn",
-    notes: "Legacy Codex verifies with codex exec; Codex ACP verifies through the selected adapter's ACP authenticate + bounded prompt path.",
+    notes: "Codex verifies through the managed ACP adapter's authenticate + bounded prompt path.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
@@ -136,7 +135,7 @@ export function isProviderApiKeyVerified(provider: ProviderId, env: Env = proces
  * Keep provider credentials out of unrelated provider children. The issue-572
  * candidate key itself is withheld until its provider-specific verification
  * boundary has accepted it. Codex ACP verification uses the selected adapter
- * itself, so an ACP key never depends on or cross-qualifies legacy `codex exec`.
+ * itself, so an ACP key never depends on or cross-qualifies removed native Codex runtime.
  */
 export function filterProviderCredentialEnv(
   bot: BotKind | undefined,
@@ -198,22 +197,8 @@ function commandForProvider(provider: ProviderId, env: Env): string {
   return bots[provider].command;
 }
 
-function codexAcpOwnsApiKeyValidation(provider: ProviderId, env: Env): boolean {
-  if (provider !== "codex") return false;
-  try {
-    return resolveCodexRuntime(env) === "acp";
-  } catch {
-    return false;
-  }
-}
-
-function verificationScope(provider: ProviderId, env: Env): string {
-  if (provider !== "codex") return "native";
-  try {
-    return resolveCodexRuntime(env);
-  } catch {
-    return "invalid";
-  }
+function verificationScope(provider: ProviderId, _env: Env): string {
+  return provider === "codex" ? "acp" : "native";
 }
 
 function cacheKey(provider: ProviderId, apiKey: string, env: Env): string {
@@ -323,17 +308,6 @@ async function runProbe(
   };
 
   try {
-    if (provider === "codex") {
-      await execute(command, [
-        "exec",
-        "--json",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
-        "Reply with exactly OK.",
-      ], { ...common, env: { ...childEnv, CODEX_HOME: join(probeHome, ".codex") } });
-      return;
-    }
     if (provider === "claude") {
       await execute(command, [
         "--print",
@@ -408,7 +382,7 @@ export async function verifyProviderApiKey(
   const verification = (async () => {
     let verified = false;
     try {
-      if (codexAcpOwnsApiKeyValidation(provider, env)) {
+      if (provider === "codex") {
         await (options.codexAcpProbe ?? runCodexAcpApiKeyProbe)(buildProbeEnv(provider, env));
       } else {
         await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);

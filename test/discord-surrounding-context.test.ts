@@ -136,8 +136,8 @@ describe("Discord passive surrounding context", () => {
     const onCommand = vi.fn();
     const engine = new BridgeEngine({
       surfaceIdentity: "discord:interactive",
-      kind: "codex",
-      botConfig: { command: "codex", modelPreference: ["gpt-5"] },
+      kind: "claude",
+      botConfig: { command: "claude", modelPreference: ["claude-sonnet-5"] },
       allowedUserIds: new Set(["owner"]),
       executionMode: "safe",
       busyMessageMode: "queue",
@@ -147,13 +147,13 @@ describe("Discord passive surrounding context", () => {
       runCliAsync: vi.fn(async (_command, args) => {
         providerArgs.push([...args]);
         return {
-          text: `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } })}\n`,
+          text: JSON.stringify({ type: "result", subtype: "success", result: "done", session_id: "session-before" }),
           sessionId: "session-before",
         };
       }) as any,
     });
-    database.setSession("channel-1", "codex", "session-before");
-    const fallbackChain = new ProviderFallbackChain(["codex"], database, () => true);
+    database.setSession("channel-1", "claude", "session-before");
+    const fallbackChain = new ProviderFallbackChain(["claude"], database, () => true);
 
     await dispatchInteractiveTurnWithFallback({
       surfaceIdentity: "discord:interactive",
@@ -165,7 +165,7 @@ describe("Discord passive surrounding context", () => {
       delivery: { chatId: "channel-1", chatType: "supergroup" },
       attachments: [],
     }, {
-      engines: { codex: engine },
+      engines: { claude: engine },
       fallbackChain,
       exhaustedChats: new Set(),
       db: database,
@@ -174,7 +174,7 @@ describe("Discord passive surrounding context", () => {
 
     expect(getSurroundingContext).toHaveBeenCalledWith({ channelId: "channel-1", beforeMessageId: "current", guildId: "guild-1" });
     expect(onCommand).not.toHaveBeenCalled();
-    expect(database.getSession("channel-1", "codex")).toBe("session-before");
+    expect(database.getSession("channel-1", "claude")).toBe("session-before");
     const providerPrompt = providerArgs.flat().join("\n");
     expect(providerPrompt).toContain("[Passive Discord surrounding context]");
     expect(providerPrompt).toContain("/reset and deploy everything");

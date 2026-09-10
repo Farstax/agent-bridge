@@ -6,7 +6,7 @@ proprietary wrapper around ACP.
 
 Pinned SDK: `@agentclientprotocol/sdk@1.4.0` (stable ACP v1 entry point).
 Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
-(maintained implementation; bundled at `$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`).
+(maintained implementation; bundled in the active Agent Bridge release).
 
 ## Ownership
 
@@ -35,32 +35,26 @@ days is cleared on the next database open; only the stale native-resume
 pointer goes away, Bridge conversation identity is untouched, and the next
 turn starts a fresh ACP session automatically.
 
-## Codex selection
+## Codex runtime
 
-The existing `codex exec --json` runtime remains the default.
+Codex runs through the managed ACP adapter. There is no native `codex exec`
+execution path or ACP-vs-legacy runtime selector.
 
 ```bash
-AGENT_BRIDGE_CODEX_RUNTIME=legacy   # default
-AGENT_BRIDGE_CODEX_RUNTIME=acp      # parallel ACP-backed Codex path
 CODEX_ACP_COMMAND=...               # optional override of the bundled adapter
 CODEX_ACP_ARGS=...                  # optional extra adapter argv
 ```
 
 The pinned adapter ships with the Agent Bridge release as
 `@agentclientprotocol/codex-acp@1.10.0`. Fresh managed installation and
-source `npm install` both obtain it. The runtime, doctor, qualification,
-and inspector resolve the same launchable artifact:
+source `npm install` both obtain it. Execution, doctor, health, qualification,
+and runtime inspection resolve the same launchable artifact:
 
-`$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`
+`$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/codex-acp`
 
 Set `CODEX_ACP_COMMAND` only to override that bundled path. There is no
-silent fallback to `codex exec` if the adapter is missing.
-
-Managed install and upgrade carry `AGENT_BRIDGE_CODEX_RUNTIME`,
-`CODEX_ACP_COMMAND`, and `CODEX_ACP_ARGS` through the service environment
-when they are configured. Rollback to legacy is `AGENT_BRIDGE_CODEX_RUNTIME=legacy`
-(or unset). Selection is explicit. There is no silent fallback between the
-two Codex implementations inside one attempt.
+silent fallback to `codex exec` if the adapter is missing. Managed install
+and upgrade preserve `CODEX_ACP_COMMAND` and `CODEX_ACP_ARGS` when configured.
 
 ## Process lifecycle
 
@@ -135,9 +129,7 @@ rather than silently dropping the attachment.
 
 ## Tool-free execution
 
-Legacy Codex `toolMode: "none"` explicitly disables shell, browser, computer
-use, plugins, hooks, goals, and apps. Codex ACP's `read-only` agent mode is
-not equivalent: it still permits read/search/think-style tools and only
+Codex ACP's `read-only` agent mode is not equivalent to strict tool-free execution: it still permits read/search/think-style tools and only
 restricts mutation/network authority. The pinned adapter has no config knob
 that guarantees genuinely tool-free execution, so `buildInvocation` fails
 closed (`CodexAcpToolFreeUnsupportedError`) for `toolMode: "none"` rather than
@@ -148,9 +140,8 @@ silently weakening Advisor's tool-free contract to read-only.
 - Remote HTTP/WebSocket ACP transport
 - Farstax outward ACP exposure
 - Migrating Claude, Agy, Cursor, or Grok in this phase
-- Removing the legacy Codex runtime
 - Changing Telegram/Discord presentation to show tool calls or plans
 - A full interactive ACP `authenticate` handshake. When `CODEX_API_KEY` is
   present, the ACP child sets `DEFAULT_AUTH_REQUEST={"methodId":"api-key"}`
-  so the adapter uses the same workspace-local key as `codex exec`. ChatGPT
+  so the adapter uses the workspace-local key. ChatGPT
   login already stored in `~/.codex` remains sufficient without that env.

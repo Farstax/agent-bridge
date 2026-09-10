@@ -7,7 +7,7 @@
 
 import { execFileSync } from "node:child_process";
 import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
-import { resolveCodexAcpCommand, resolveCodexRuntime } from "./codexRuntimeSelection.js";
+import { resolveCodexAcpCommand } from "./codexAcpConfig.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
@@ -84,27 +84,15 @@ function inspectCodexProvider(
   commandExists: (executable: string) => boolean,
   inspectVersion: (executable: string) => string | null,
 ): ProviderCheck {
-  try {
-    const runtime = resolveCodexRuntime(env);
-    const executable = runtime === "acp"
-      ? resolveCodexAcpCommand(env)
-      : resolveProviderExecutable("codex", env);
-    const available = commandExists(executable);
-    return {
-      id: "codex",
-      executable,
-      status: available ? "available" : "missing",
-      runtime,
-      ...(runtime === "acp" && available ? { version: inspectVersion(executable) } : {}),
-    };
-  } catch (error) {
-    return {
-      id: "codex",
-      executable: env.CODEX_COMMAND?.trim() || "codex",
-      status: "invalid",
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  }
+  const executable = resolveCodexAcpCommand(env);
+  const available = commandExists(executable);
+  return {
+    id: "codex",
+    executable,
+    status: available ? "available" : "missing",
+    runtime: "acp",
+    ...(available ? { version: inspectVersion(executable) } : {}),
+  };
 }
 
 export function runDoctor({

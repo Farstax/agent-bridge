@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
-import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexRuntimeSelection.js";
+import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
 
 const ACP_AUTH_PROBE_TIMEOUT_MS = 15_000;
 const ACP_AUTH_PROBE_PROMPT = "Reply with exactly OK.";
@@ -23,7 +23,7 @@ function killProcessGroup(child: ChildProcess): void {
 
 /**
  * Verify CODEX_API_KEY through the selected Codex ACP adapter itself. This is
- * deliberately independent of the legacy `codex exec` runtime: initialize,
+ * deliberately independent of the removed native Codex runtime: initialize,
  * explicit ACP api-key authentication, then one bounded no-tool prompt prove
  * the same credential/runtime pair that production will actually use.
  */

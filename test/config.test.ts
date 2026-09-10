@@ -13,7 +13,7 @@ describe("loadBotsConfig", () => {
   it("builds all supported bot configs with defaults from an empty env", () => {
     const bots = loadBotsConfig({});
     expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex", "cursor", "grok"]);
-    expect(bots.codex.command).toBe("codex");
+    expect(bots.codex.command).toContain("node_modules/.bin/codex-acp");
     expect(bots.claude.command).toBe("claude");
     expect(bots.antigravity.command).toBe("agy");
     expect(bots.grok.command).toBe("grok");
@@ -22,11 +22,11 @@ describe("loadBotsConfig", () => {
 
   it("respects env overrides for commands and model preferences", () => {
     const bots = loadBotsConfig({
-      CODEX_COMMAND: "/opt/bin/codex",
+      CODEX_ACP_COMMAND: "/opt/bin/codex-acp",
       REMOVED_PROVIDER_MODEL_PREFERENCE: "a,b",
       ANTIGRAVITY_MODEL_PREFERENCE: "m1, m2 ,m3",
     });
-    expect(bots.codex.command).toBe("/opt/bin/codex");
+    expect(bots.codex.command).toBe("/opt/bin/codex-acp");
     expect(bots.antigravity.modelPreference).toEqual(["m1", "m2", "m3"]);
   });
 

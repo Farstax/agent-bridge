@@ -1,27 +1,17 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import https from "node:https";
 import { execSync } from "node:child_process";
 import { getHeapStatistics } from "node:v8";
 import type { HealthPlugin, HealthReport, CheckResult } from "../types.js";
 import type { BridgeDb } from "../../db.js";
-import { resolveCodexRuntime } from "../../providers/codexRuntimeSelection.js";
 import { readInstalledProviderVersions } from "../../providers/qualificationStatus.js";
 
 const upgradeCommand = process.env.BRIDGE_UPGRADE_COMMAND
   ?? `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh --clis-only`;
 
-function isCodexAcpSelected(env: Record<string, string | undefined> = process.env): boolean {
-  try {
-    return resolveCodexRuntime(env) === "acp";
-  } catch {
-    return false;
-  }
-}
-
 function pinnedCodexAcpVersion(env: Record<string, string | undefined> = process.env): string | null {
   try {
-    const root = env.BRIDGE_PROJECT_DIR?.trim() || process.cwd();
+    const root = env.BRIDGE_CURRENT_RELEASE_DIR?.trim() || process.cwd();
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
     };
@@ -211,18 +201,12 @@ export class SelfPlugin implements HealthPlugin {
       }
     }
 
-    const acpCodex = isCodexAcpSelected();
-    let runtimeVersions: ReturnType<typeof readInstalledProviderVersions> | undefined;
-    if (acpCodex) {
-      runtimeVersions = readInstalledProviderVersions();
-      checks.push(inspectBundledCodexAcp(runtimeVersions));
-    }
+    const runtimeVersions = readInstalledProviderVersions();
+    checks.push(inspectBundledCodexAcp(runtimeVersions));
 
     if (globalListSuccess) {
-      runtimeVersions ??= readInstalledProviderVersions();
       const cliSpecs = [
         { pkg: "@anthropic-ai/claude-code", provider: "claude" as const, checkName: "cli-update-claude-code" },
-        ...(!acpCodex ? [{ pkg: "@openai/codex", provider: "codex" as const, checkName: "cli-update-codex" }] : []),
       ];
       for (const { pkg, provider, checkName } of cliSpecs) {
         const installed = globalListParsed[pkg];
@@ -275,7 +259,6 @@ export class SelfPlugin implements HealthPlugin {
       // unavailable; silently omitting both checks incorrectly reports the
       // plugin as green and hides a degraded update monitor.
       const unavailable: Array<[string, string]> = [["claude", "cli-update-claude-code"]];
-      if (!acpCodex) unavailable.push(["codex", "cli-update-codex"]);
       for (const [provider, checkName] of unavailable) {
         checks.push({
           name: checkName,

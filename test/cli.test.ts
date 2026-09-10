@@ -97,11 +97,10 @@ describe("CLI Runner", () => {
     expect(agy.args).toContain("--sandbox");
     expect(agy.args).toEqual(expect.arrayContaining(["--output-format", "stream-json"]));
 
-    const codex = buildCliInvocation({
-      bot: "codex", prompt: "advise", sessionId: null, command: "codex",
+    expect(() => buildCliInvocation({
+      bot: "codex", prompt: "advise", sessionId: null, command: "codex-acp",
       model: "gpt-5.6-luna", outputFormat: "json", toolMode: "none",
-    });
-    expect(codex.args).toEqual(expect.arrayContaining(["--disable", "shell_tool", "--disable", "browser_use"]));
+    })).toThrow("Tool-free mode is not supported for codex");
 
   });
 
@@ -469,20 +468,6 @@ describe("buildCliInvocation — attachment injection", () => {
     expect(prompt).not.toContain("[Attached file saved at:");
   });
 
-  it("codex: adds -i flag per attachment before prompt on new session", () => {
-    const { args } = buildCliInvocation({
-      ...base,
-      bot: "codex",
-      command: "codex",
-      attachments: ["/tmp/a.png", "/tmp/b.png"],
-    });
-    expect(args).toContain("-i");
-    const iIdx1 = args.indexOf("-i");
-    expect(args[iIdx1 + 1]).toBe("/tmp/a.png");
-    const iIdx2 = args.indexOf("-i", iIdx1 + 1);
-    expect(args[iIdx2 + 1]).toBe("/tmp/b.png");
-  });
-
   it("codex: no -i flags when attachments is empty", () => {
     const { args } = buildCliInvocation({
       ...base,
@@ -491,23 +476,6 @@ describe("buildCliInvocation — attachment injection", () => {
       attachments: [],
     });
     expect(args).not.toContain("-i");
-  });
-
-  it("codex: starts a fresh invocation with -i when attachments are present on a resumed chat", () => {
-    const result = buildCliInvocation({
-      ...base,
-      bot: "codex",
-      command: "codex",
-      sessionId: "sess_abc",
-      attachments: ["/tmp/img.png"],
-    });
-    const { args } = result;
-    expect(args[0]).toBe("exec");
-    expect(args).not.toContain("resume");
-    expect(args).toContain("-i");
-    expect(args[args.indexOf("-i") + 1]).toBe("/tmp/img.png");
-    expect(args.slice(-2)).toEqual(["--", "-"]);
-    expect(result.stdin).toContain("hello");
   });
 
   it("claude with attachments: returns stdin field with stream-json payload and uses stream-json args", async () => {
@@ -539,7 +507,7 @@ describe("buildCliInvocation — attachment injection", () => {
   });
 
   it("all bots: appends outputDir instruction to prompt when outputDir is set", () => {
-    for (const bot of ["antigravity", "codex", "claude"] as const) {
+    for (const bot of ["antigravity", "claude"] as const) {
       const { args } = buildCliInvocation({
         ...base,
         bot,
@@ -552,7 +520,7 @@ describe("buildCliInvocation — attachment injection", () => {
   });
 
   it("outputDir instruction states that the bridge handles delivery and omit file paths", () => {
-    for (const bot of ["antigravity", "codex", "claude"] as const) {
+    for (const bot of ["antigravity", "claude"] as const) {
       const { args } = buildCliInvocation({
         ...base,
         bot,
@@ -568,8 +536,8 @@ describe("buildCliInvocation — attachment injection", () => {
   it("wraps prompts with the minimum response contract when Soul is absent", () => {
     const { args } = buildCliInvocation({
       ...base,
-      bot: "codex",
-      command: "codex",
+      bot: "claude",
+      command: "claude",
     });
     const prompt = args[args.length - 1];
     expect(prompt).toContain("Response contract:");
@@ -580,16 +548,6 @@ describe("buildCliInvocation — attachment injection", () => {
 
 describe("buildCliInvocation — effort flags", () => {
   const base = { prompt: "hello", sessionId: null, model: null };
-
-  it("maps Codex effort to model_reasoning_effort config", () => {
-    const { args } = buildCliInvocation({
-      ...base,
-      bot: "codex",
-      command: "codex",
-      effort: "high",
-    });
-    expect(args.slice(0, 3)).toEqual(["exec", "-c", "model_reasoning_effort=\"high\""]);
-  });
 
   it("maps Claude effort to --effort", () => {
     const { args } = buildCliInvocation({
@@ -737,57 +695,24 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     expect(normalizeCliArgs("/usr/local/bin/antigravity", args)).toEqual(expected);
   });
 
-  it("normalizes arguments for Codex command", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["--print", "--output-format", "text", "--permission-mode", "acceptEdits", "hello"];
-    expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "hello"]);
-    expect(normalizeCliArgs("/opt/codex/bin/codex", args)).toEqual(["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "hello"]);
-  });
-
-  it("does not rewrite Codex ACP adapter argv into legacy exec shape", async () => {
+  it("keeps Codex ACP adapter argv unchanged", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     expect(normalizeCliArgs("codex-acp", [])).toEqual([]);
     expect(normalizeCliArgs("/opt/agent-bridge/releases/current/node_modules/.bin/codex-acp", ["--verbose"])).toEqual(["--verbose"]);
-  });
-
-  it("preserves Codex trusted bypass when normalizing already-built Codex args", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--json", "hello"];
-    expect(normalizeCliArgs("codex", args)).toEqual([
-      "exec",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--skip-git-repo-check",
-      "--json",
-      "hello",
-    ]);
-  });
-
-  it("preserves Codex effort config during argument translation", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["--print", "-c", "model_reasoning_effort=\"high\"", "hello"];
-    expect(normalizeCliArgs("codex", args)).toEqual([
-      "exec",
-      "-c",
-      "model_reasoning_effort=\"high\"",
-      "--skip-git-repo-check",
-      "hello",
-    ]);
   });
 
   it("adds stream-json to basic Antigravity arguments without permissions", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     const args = ["--print", "--output-format", "text", "hello"];
     expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
-    expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--skip-git-repo-check", "hello"]);
   });
 
-  it("translates json output for Codex and converges Antigravity to stream-json", async () => {
+  it("converges Antigravity json output hints to stream-json", async () => {
     const { normalizeCliArgs } = await import("../src/cli.js");
     for (const args of [
       ["--print", "--output-format", "json", "hello"],
       ["--print", "--output-format=json", "hello"],
     ]) {
-      expect(normalizeCliArgs("codex", args)).toEqual(["exec", "--skip-git-repo-check", "--json", "hello"]);
       expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
     }
   });
@@ -811,29 +736,6 @@ describe("normalizeCliArgs — CLI argument translator", () => {
     ]);
   });
 
-  it("preserves resume, model, and attachments for Codex", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = [
-      "exec", "resume", "session-xyz",
-      "--model", "gpt-5.5",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--skip-git-repo-check",
-      "--json",
-      "-i", "img1.png",
-      "-i", "img2.jpg",
-      "--", "-"
-    ];
-    expect(normalizeCliArgs("codex", args)).toEqual([
-      "exec", "resume", "session-xyz",
-      "--model", "gpt-5.5",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "--skip-git-repo-check",
-      "--json",
-      "-i", "img1.png",
-      "-i", "img2.jpg",
-      "--", "-"
-    ]);
-  });
 });
 
 describe("wrapAntigravityPrompt — liveness and narration", () => {

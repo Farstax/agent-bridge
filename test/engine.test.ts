@@ -1120,8 +1120,8 @@ describe("BridgeEngine", () => {
       });
       const secondRun = vi.fn().mockResolvedValue("claude done");
       const codex = new BridgeEngine({
-        kind: "codex", surfaceIdentity: "telegram:codex",
-        botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "claude", surfaceIdentity: "telegram:codex",
+        botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", pollIntervalMs: 1000,
       }, db, makeMockClient(), { runCli: firstRun });
       const claude = new BridgeEngine({
@@ -1154,8 +1154,8 @@ describe("BridgeEngine", () => {
       });
       const secondRun = vi.fn().mockResolvedValue("topic 8 done");
       const topic7 = new BridgeEngine({
-        kind: "codex", surfaceIdentity: "telegram:interactive",
-        botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "claude", surfaceIdentity: "telegram:interactive",
+        botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", pollIntervalMs: 1000,
       }, db, makeMockClient(), { runCli: firstRun });
       const topic8 = new BridgeEngine({
@@ -1190,8 +1190,8 @@ describe("BridgeEngine", () => {
       const firstClient = makeMockClient();
       const secondClient = makeMockClient();
       const first = new BridgeEngine({
-        kind: "codex", surfaceIdentity: "telegram:interactive",
-        botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "claude", surfaceIdentity: "telegram:interactive",
+        botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", busyMessageMode: "queue", pollIntervalMs: 1000,
       }, db, firstClient, { runCli: firstRun });
       const second = new BridgeEngine({
@@ -1238,10 +1238,7 @@ describe("BridgeEngine", () => {
     it("persists one run and lifecycle events from the async production path", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      const rawOutput = [
-        JSON.stringify({ type: "thread.started", thread_id: "session-123" }),
-        JSON.stringify({ type: "response.completed", output_text: "Persisted final answer" }),
-      ].join("\n");
+      const rawOutput = JSON.stringify({ type: "result", subtype: "success", result: "Persisted final answer", session_id: "session-123" });
 
       const runCliAsync = vi.fn().mockImplementation(async (
         _command: string,
@@ -1259,8 +1256,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "codex",
-          botConfig: { command: "codex", modelPreference: [] },
+          kind: "claude",
+          botConfig: { command: "claude", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000,
@@ -1276,7 +1273,7 @@ describe("BridgeEngine", () => {
       expect(runs).toHaveLength(1);
       expect(runs[0]).toMatchObject({
         chat_id: "100",
-        bot: "codex",
+        bot: "claude",
         status: "done",
         session_id: "session-123",
         final_text_preview: "Persisted final answer",
@@ -1350,8 +1347,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "codex",
-          botConfig: { command: "codex", modelPreference: [] },
+          kind: "claude",
+          botConfig: { command: "claude", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000,

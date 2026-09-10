@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
-import { BridgeEngine } from "../src/engine.js";
 import type { TelegramMessage } from "../src/types.js";
+
+const runTurnMock = vi.fn();
+vi.mock("../src/providers/codexAcpRuntime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/providers/codexAcpRuntime.js")>();
+  return { ...actual, runTurn: runTurnMock };
+});
 
 function makeMessage(text: string): TelegramMessage {
   return {
@@ -12,32 +17,64 @@ function makeMessage(text: string): TelegramMessage {
   };
 }
 
+function makeClient() {
+  return {
+    capabilities: {
+      maxMessageLength: 4096,
+      editMessages: true,
+      deleteMessages: true,
+      previewStreaming: true,
+      threads: true,
+      attachments: true,
+      typing: true,
+      polling: true,
+      remoteFileDownload: true,
+      richMessages: true,
+      passiveSurroundingContext: false,
+      formatting: "telegram-html",
+    },
+    sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 2 } }),
+    sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+    editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+    deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
+  } as any;
+}
+
 describe("clean-droplet acceptance", () => {
-  it("starts the first Codex invocation with codex exec after database startup", async () => {
+  it("starts the first Codex turn through ACP with no resume session after database startup", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    process.env.CODEX_ACP_COMMAND = "codex-acp";
+    runTurnMock.mockReset();
+    runTurnMock.mockResolvedValue({ text: "ok", sessionId: "acp-fresh-session", stopReason: "end_turn" });
     const db = openDb(":memory:");
-    let calls = 0;
-    const runCli = async (command: string, args: string[]) => {
-      calls += 1;
-      expect(command).toBe("codex");
-      expect(args[0]).toBe("exec");
-      expect(args).not.toContain("resume");
-      return JSON.stringify({ result: "ok", session_id: "fresh-session" });
-    };
-    const engine = new BridgeEngine(
-      {
-        surfaceIdentity: "clean-appliance",
-        kind: "codex",
-        botConfig: { command: "codex", modelPreference: [] },
-        allowedUserIds: new Set(["42"]),
+    try {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "clean-appliance",
+          kind: "codex",
+          botConfig: { command: "codex", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "trusted",
+          pollIntervalMs: 1000,
+        },
+        db,
+        makeClient(),
+      );
+
+      await engine.handleMessages([makeMessage("first request on a new appliance")]);
+
+      expect(runTurnMock).toHaveBeenCalledTimes(1);
+      expect(runTurnMock.mock.calls[0]?.[0]).toMatchObject({
+        sessionId: null,
+        command: "codex-acp",
         executionMode: "trusted",
-        pollIntervalMs: 1000,
-      },
-      db,
-      { sendMessage: async () => ({ ok: true, result: { message_id: 2 } }) } as any,
-      { runCli: runCli as any },
-    );
-    await engine.handleMessages([makeMessage("first request on a new appliance")]);
-    expect(calls).toBe(1);
-    db.raw.close();
+      });
+      expect(db.getAcpSessionBinding("100", "codex")?.acpSessionId).toBe("acp-fresh-session");
+    } finally {
+      db.raw.close();
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+    }
   });
 });

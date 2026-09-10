@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { toUserMessage } from "../src/cli.js";
 
-const CODEX_USAGE_LIMIT_STDOUT = [
+const UPSTREAM_USAGE_LIMIT_STDOUT = [
   '{"type":"thread.started","thread_id":"019e4f38-0522-72a1-bdd9-672beebf9c34"}',
   '{"type":"turn.started"}',
   '{"type":"error","message":"You\'ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:40 PM."}',
   '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:40 PM."}}',
 ].join("\n");
 
-describe("toUserMessage — Codex JSONL extraction", () => {
+describe("toUserMessage — structured upstream error extraction", () => {
   it("surfaces the upstream message from turn.failed payloads", () => {
-    const err = new Error(`CLI exited with code 1: ${CODEX_USAGE_LIMIT_STDOUT}`);
+    const err = new Error(`CLI exited with code 1: ${UPSTREAM_USAGE_LIMIT_STDOUT}`);
     expect(toUserMessage(err)).toBe(
       "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:40 PM.",
     );

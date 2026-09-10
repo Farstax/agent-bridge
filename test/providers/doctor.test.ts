@@ -55,12 +55,14 @@ describe("doctor diagnostics", () => {
 
   it("does not fail for an unavailable provider that no configured chain uses", () => {
     const configuredAgy = "/opt/antigravity/bin/agy-missing";
+    const codexAcp = "/opt/agent-bridge/node_modules/.bin/codex-acp";
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
+        CODEX_ACP_COMMAND: codexAcp,
         ANTIGRAVITY_COMMAND: configuredAgy,
       },
-      commandExists: (executable) => executable === "codex",
+      commandExists: (executable) => executable === codexAcp,
       inspectVoiceRuntime: voiceReady,
     });
 
@@ -177,34 +179,12 @@ describe("doctor diagnostics", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("checks the legacy Codex executable when that runtime is selected", () => {
-    const report = runDoctor({
-      env: {
-        INTERACTIVE_CLI_CHAIN: "codex",
-        AGENT_BRIDGE_CODEX_RUNTIME: "legacy",
-        CODEX_COMMAND: "/opt/codex/bin/codex",
-      },
-      commandExists: (executable) => executable === "/opt/codex/bin/codex",
-      inspectVoiceRuntime: voiceReady,
-    });
-    const codex = report.providers.find((p) => p.id === "codex");
-    expect(codex).toEqual(expect.objectContaining({
-      id: "codex",
-      executable: "/opt/codex/bin/codex",
-      status: "available",
-      runtime: "legacy",
-    }));
-    expect(report.ok).toBe(true);
-  });
-
-  it("checks the ACP adapter rather than the legacy executable when ACP is selected", () => {
+  it("checks the managed ACP adapter for Codex", () => {
     const adapter = "/opt/agent-bridge/releases/current/node_modules/.bin/codex-acp";
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
-        CODEX_COMMAND: "/opt/codex/bin/codex",
-        BRIDGE_PROJECT_DIR: "/opt/agent-bridge/releases/current",
+        BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/releases/current",
       },
       commandExists: (executable) => executable === adapter,
       inspectVersion: (executable) => executable === adapter ? "1.10.0" : null,
@@ -221,11 +201,10 @@ describe("doctor diagnostics", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("fails when ACP is selected and only the legacy Codex executable exists", () => {
+  it("fails when only the legacy Codex executable exists", () => {
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         CODEX_COMMAND: "codex",
       },
       commandExists: (executable) => executable === "codex",
@@ -238,12 +217,11 @@ describe("doctor diagnostics", () => {
     expect(report.ok).toBe(false);
   });
 
-  it("respects a custom CODEX_ACP_COMMAND when ACP is selected", () => {
+  it("respects a custom CODEX_ACP_COMMAND", () => {
     const custom = "/usr/local/bin/custom-codex-acp";
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
-        AGENT_BRIDGE_CODEX_RUNTIME: "acp",
         CODEX_ACP_COMMAND: custom,
       },
       commandExists: (executable) => executable === custom,
@@ -257,32 +235,4 @@ describe("doctor diagnostics", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("fails closed on an invalid Codex runtime selection", () => {
-    const report = runDoctor({
-      env: {
-        INTERACTIVE_CLI_CHAIN: "codex",
-        AGENT_BRIDGE_CODEX_RUNTIME: "auto",
-      },
-      commandExists: allFound,
-      inspectVoiceRuntime: voiceReady,
-    });
-    const codex = report.providers.find((p) => p.id === "codex");
-    expect(codex?.status).toBe("invalid");
-    expect(codex?.reason).toMatch(/Unknown AGENT_BRIDGE_CODEX_RUNTIME/);
-    expect(report.ok).toBe(false);
-  });
-
-  it("keeps the unconfigured default as legacy Codex", () => {
-    const report = runDoctor({
-      env: { INTERACTIVE_CLI_CHAIN: "codex" },
-      commandExists: (executable) => executable === "codex",
-      inspectVoiceRuntime: voiceReady,
-    });
-    expect(report.providers.find((p) => p.id === "codex")).toEqual(expect.objectContaining({
-      executable: "codex",
-      status: "available",
-      runtime: "legacy",
-    }));
-    expect(report.ok).toBe(true);
-  });
 });

@@ -17,7 +17,6 @@ import {
 import type { ProviderId } from "../src/providers/types.js";
 
 const providerCases: Array<{ provider: ProviderId; envVar: string; commandEnv: string }> = [
-  { provider: "codex", envVar: "CODEX_API_KEY", commandEnv: "CODEX_COMMAND" },
   { provider: "claude", envVar: "ANTHROPIC_API_KEY", commandEnv: "CLAUDE_COMMAND" },
   { provider: "agy", envVar: "GEMINI_API_KEY", commandEnv: "ANTIGRAVITY_COMMAND" },
   { provider: "grok", envVar: "XAI_API_KEY", commandEnv: "GROK_COMMAND" },
@@ -117,8 +116,10 @@ describe("provider API-key authentication", () => {
     expect(before.OPENAI_API_KEY).toBe("legacy-codex-secret");
     expect(before.ANTHROPIC_API_KEY).toBeUndefined();
 
-    const execFile: ProviderApiKeyProbeExecutor = async () => undefined;
-    await expect(verifyProviderApiKey("codex", { env, execFile })).resolves.toBe(true);
+    await expect(verifyProviderApiKey("codex", {
+      env,
+      codexAcpProbe: async () => undefined,
+    })).resolves.toBe(true);
     const after = filterProviderCredentialEnv("codex", env);
     expect(after.CODEX_API_KEY).toBe("codex-candidate");
     expect(after.ANTHROPIC_API_KEY).toBeUndefined();
@@ -148,14 +149,19 @@ describe("provider API-key authentication", () => {
       started.push(command);
       await gate;
     };
+    const codexAcpProbe = async () => {
+      started.push("codex-acp-probe");
+      await gate;
+    };
 
     const verification = verifyConfiguredProviderApiKeys({
-      env: { ...env, CODEX_COMMAND: "codex-probe", CLAUDE_COMMAND: "claude-probe" },
+      env: { ...env, CLAUDE_COMMAND: "claude-probe" },
       execFile,
+      codexAcpProbe,
       useCache: false,
     });
     await Promise.resolve();
-    expect(started.sort()).toEqual(["claude-probe", "codex-probe"]);
+    expect(started.sort()).toEqual(["claude-probe", "codex-acp-probe"]);
     release();
     await verification;
   });

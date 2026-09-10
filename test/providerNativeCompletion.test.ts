@@ -58,7 +58,7 @@ describe("provider-native terminal completion", () => {
     expect(ordinary).toEqual(native);
   });
 
-  it("does not invent a native completion wrapper for Codex", () => {
+  it("does not alter the Codex ACP invocation for the shared nativeCompletion hint", () => {
     const ordinary = buildCliInvocation({
       bot: "codex",
       prompt: "run the tests",

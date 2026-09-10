@@ -7,7 +7,6 @@ import { openDb } from "../src/db.js";
 import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
 import { runTurn, codexAcpChildAuthEnv, toCliResult, initialAgentMode } from "../src/providers/codexAcpRuntime.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
-import { resolveCodexRuntime, isCodexAcpRuntime } from "../src/providers/codexRuntimeSelection.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
 import {
@@ -18,23 +17,6 @@ import {
 import { verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
 
 const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
-
-describe("Codex runtime selection", () => {
-  it("defaults to the legacy Codex path", () => {
-    expect(resolveCodexRuntime({})).toBe("legacy");
-    expect(isCodexAcpRuntime("codex", {})).toBe(false);
-  });
-
-  it("selects ACP only when explicitly requested", () => {
-    expect(resolveCodexRuntime({ AGENT_BRIDGE_CODEX_RUNTIME: "acp" })).toBe("acp");
-    expect(isCodexAcpRuntime("codex", { AGENT_BRIDGE_CODEX_RUNTIME: "acp" })).toBe(true);
-    expect(isCodexAcpRuntime("claude", { AGENT_BRIDGE_CODEX_RUNTIME: "acp" })).toBe(false);
-  });
-
-  it("refuses unknown runtime names rather than falling back", () => {
-    expect(() => resolveCodexRuntime({ AGENT_BRIDGE_CODEX_RUNTIME: "auto" })).toThrow(/Unknown AGENT_BRIDGE_CODEX_RUNTIME/);
-  });
-});
 
 describe("Codex ACP provisional answer classification", () => {
   function event({
@@ -159,8 +141,6 @@ describe("Codex ACP invocation", () => {
   });
 
   it("builds an ACP stdio invocation instead of codex exec JSONL", () => {
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = "codex-acp";
     try {
       const inv = buildCliInvocation({
@@ -177,27 +157,11 @@ describe("Codex ACP invocation", () => {
       expect(inv.nativeSessionMode).toBe("resume");
       expect(inv.args.join(" ")).not.toContain("exec");
     } finally {
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
       delete process.env.CODEX_ACP_COMMAND;
     }
   });
 
-  it("keeps the legacy exec invocation when ACP is not selected", () => {
-    const inv = buildCliInvocation({
-      bot: "codex",
-      prompt: "hi",
-      sessionId: "thread-1",
-      command: "codex",
-    });
-    expect(inv.transport ?? "oneshot").not.toBe("acp-stdio");
-    expect(inv.args[0]).toBe("exec");
-    expect(inv.args).toContain("resume");
-  });
-
   it("fails closed on toolMode \"none\" instead of weakening to ACP read-only", () => {
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = "codex-acp";
     try {
       expect(() => buildCliInvocation({
@@ -208,8 +172,6 @@ describe("Codex ACP invocation", () => {
         toolMode: "none",
       })).toThrow(/tool-free/i);
     } finally {
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
       delete process.env.CODEX_ACP_COMMAND;
     }
   });
@@ -436,8 +398,6 @@ describe("ACP session persistence", () => {
   });
 
   it("stores ACP bindings beside Bridge conversation identity without writing the sessions table", () => {
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     const db = openDb(":memory:");
     try {
       persistEngineProviderSession(db, "conv-bridge-1", "codex", "acp-sess-aaa", "run-9");
@@ -451,56 +411,6 @@ describe("ACP session persistence", () => {
       expect(db.getSession("conv-bridge-1", "codex")).toBeNull();
     } finally {
       db.close();
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
-    }
-  });
-
-  it("does not resume a pre-ACP legacy session after intervening ACP turns", () => {
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    const db = openDb(":memory:");
-    try {
-      // Legacy session L exists before any ACP turn.
-      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "legacy";
-      persistEngineProviderSession(db, "conv-transition-1", "codex", "legacy-session-L", "run-legacy");
-      expect(lookupEngineProviderSession(db, "conv-transition-1", "codex")).toBe("legacy-session-L");
-
-      // Switch to ACP and complete a turn.
-      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
-      persistEngineProviderSession(db, "conv-transition-1", "codex", "acp-session-A", "run-acp");
-      expect(lookupEngineProviderSession(db, "conv-transition-1", "codex")).toBe("acp-session-A");
-
-      // Switch back to legacy: L predates the ACP turns and must not resume.
-      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "legacy";
-      expect(lookupEngineProviderSession(db, "conv-transition-1", "codex")).toBeNull();
-    } finally {
-      db.close();
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
-    }
-  });
-
-  it("does not resume a pre-legacy ACP session after intervening legacy turns", () => {
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    const db = openDb(":memory:");
-    try {
-      // ACP session A exists before any legacy turn.
-      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
-      persistEngineProviderSession(db, "conv-transition-2", "codex", "acp-session-A2", "run-acp");
-      expect(lookupEngineProviderSession(db, "conv-transition-2", "codex")).toBe("acp-session-A2");
-
-      // Switch to legacy and complete a turn.
-      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "legacy";
-      persistEngineProviderSession(db, "conv-transition-2", "codex", "legacy-session-L2", "run-legacy");
-      expect(lookupEngineProviderSession(db, "conv-transition-2", "codex")).toBe("legacy-session-L2");
-
-      // Switch back to ACP: A predates the legacy turn and must not resume.
-      process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
-      expect(lookupEngineProviderSession(db, "conv-transition-2", "codex")).toBeNull();
-    } finally {
-      db.close();
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
     }
   });
 
@@ -786,7 +696,7 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     await verifyProviderApiKey("codex", {
       env: { CODEX_API_KEY: apiKey },
-      execFile: async () => undefined,
+      codexAcpProbe: async () => undefined,
     });
     const progress: string[] = [];
     try {
@@ -828,7 +738,7 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     await verifyProviderApiKey("codex", {
       env: { CODEX_API_KEY: apiKey },
-      execFile: async () => undefined,
+      codexAcpProbe: async () => undefined,
     });
     try {
       let caught: (Error & { data?: { additionalDetails?: string } }) | undefined;
@@ -1001,10 +911,8 @@ describe("Codex ACP supervised stdio turn", () => {
   }, 15_000);
 
   it("runs ACP transport through runProviderInvocation instead of oneshot parse", async () => {
-    const previousRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     try {
@@ -1036,8 +944,6 @@ describe("Codex ACP supervised stdio turn", () => {
       expect(result.text).toContain("User request:\nqualify");
       expect(result.sessionId).toMatch(/^acp-/);
     } finally {
-      if (previousRuntime === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previousRuntime;
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
       else process.env.CODEX_ACP_COMMAND = previousCommand;
       if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;

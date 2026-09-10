@@ -77,22 +77,6 @@ describe("agent bridge MVP", () => {
     expect(isBridgeCommand("/unknown@mybot")).toBe(false);
   });
 
-  it("creates fresh codex invocation using exec subcommand", () => {
-    const { command, args } = buildCliInvocation({
-      bot: "codex",
-      prompt: "hello",
-      sessionId: null,
-      command: "codex",
-      model: null,
-    });
-    expect(command).toBe("codex");
-    expect(args[0]).toBe("exec");
-    expect(args.at(-1)).toContain("hello");
-    expect(args).toContain("--skip-git-repo-check");
-    expect(args).not.toContain("--thread");
-    expect(args).not.toContain("--output");
-  });
-
   it("uses the bot-specific project dir when BRIDGE_PROJECT_DIR is not enough", () => {
     const prevBridgeRoot = process.env.BRIDGE_ROOT_DIR;
     const prevCodexProjectDir = process.env.CODEX_PROJECT_DIR;
@@ -141,96 +125,6 @@ describe("agent bridge MVP", () => {
     expect(getBridgeProjectDir()).toBe(process.cwd());
 
     if (prevBridgeProjectDir === undefined) delete process.env.BRIDGE_PROJECT_DIR; else process.env.BRIDGE_PROJECT_DIR = prevBridgeProjectDir;
-  });
-
-  it("creates trusted codex invocation only when explicitly requested", () => {
-    expect(
-      buildCliInvocation({
-        bot: "codex",
-        prompt: "hello",
-        sessionId: null,
-        command: "codex",
-        model: null,
-        executionMode: "trusted",
-      }).args,
-    ).toContain("--dangerously-bypass-approvals-and-sandbox");
-  });
-
-  it("creates resume codex invocation using exec resume subcommand", () => {
-    const { args } = buildCliInvocation({
-      bot: "codex",
-      prompt: "hello again",
-      sessionId: "019e1299-3d2c-7f11-8194-500feee6614e",
-      command: "codex",
-      model: null,
-    });
-    expect(args[0]).toBe("exec");
-    expect(args[1]).toBe("resume");
-    expect(args).toContain("019e1299-3d2c-7f11-8194-500feee6614e");
-    expect(args.at(-1)).toContain("hello again");
-    expect(args).not.toContain("--thread");
-  });
-
-  it("codex json invocation uses --json flag not --output", () => {
-    const { args } = buildCliInvocation({
-      bot: "codex",
-      prompt: "hello",
-      sessionId: null,
-      command: "codex",
-      model: null,
-      outputFormat: "json",
-    });
-    expect(args).toContain("--json");
-    expect(args).not.toContain("--output");
-  });
-
-  it("wraps codex prompts with the minimum response contract when Soul is absent", () => {
-    const { args } = buildCliInvocation({
-      bot: "codex",
-      prompt: "hello",
-      sessionId: null,
-      command: "codex",
-      model: null,
-    });
-
-    const printedPrompt = String(args.at(-1));
-    expect(printedPrompt).toContain("hello");
-    expect(printedPrompt).toContain("Response contract:");
-    expect(printedPrompt).toContain("Preserve critical facts");
-    expect(printedPrompt).not.toContain("Keep replies extremely concise");
-  });
-
-  it("includes SOUL.md context in wrapped prompts when provided", () => {
-    const { args } = buildCliInvocation({
-      bot: "codex",
-      prompt: "hello",
-      sessionId: null,
-      command: "codex",
-      model: null,
-      soulContext: "Identity: Chas\nValues: clarity before cleverness",
-    });
-
-    const printedPrompt = String(args.at(-1));
-    expect(printedPrompt).toContain("Soul contract:");
-    expect(printedPrompt).toContain("Identity: Chas");
-    expect(printedPrompt).toContain("Values: clarity before cleverness");
-    expect(printedPrompt).toContain("Response contract:");
-    expect(printedPrompt).toContain("User request:");
-  });
-
-  it("uses Soul's configurable Communication Style instead of the fallback contract", () => {
-    const { args } = buildCliInvocation({
-      bot: "codex",
-      prompt: "hello",
-      sessionId: null,
-      command: "codex",
-      model: null,
-      soulContext: "## Communication Style\nUse a warm paragraph.",
-    });
-
-    const printedPrompt = String(args.at(-1));
-    expect(printedPrompt).toContain("Use a warm paragraph.");
-    expect(printedPrompt).not.toContain("Response contract:");
   });
 
   it("creates fresh antigravity invocation with --print prompt after all flags", () => {
@@ -392,30 +286,6 @@ describe("agent bridge MVP", () => {
       ),
     ).rejects.toThrow(/CLI idle timeout/);
     expect(await shutdownCliProcessesAndWait()).toBe(0);
-  });
-
-  it("parses codex JSONL output with item.completed agent_message", () => {
-    const stdout = [
-      '{"type":"thread.started","thread_id":"abc-123"}',
-      '{"type":"turn.started"}',
-      '{"type":"item.completed","item":{"type":"agent_message","text":"Hello back"}}',
-      '{"type":"turn.completed"}',
-    ].join("\n");
-    expect(parseCliResult({ bot: "codex", stdout })).toEqual({
-      text: "Hello back",
-      sessionId: "abc-123",
-    });
-  });
-
-  it("parses codex JSONL output with response.completed event", () => {
-    const stdout = [
-      '{"type":"thread.started","thread_id":"xyz-789"}',
-      '{"type":"response.completed","output_text":"Final answer"}',
-    ].join("\n");
-    expect(parseCliResult({ bot: "codex", stdout })).toEqual({
-      text: "Final answer",
-      sessionId: "xyz-789",
-    });
   });
 
   it("parses the Agy stream-json terminal result", () => {

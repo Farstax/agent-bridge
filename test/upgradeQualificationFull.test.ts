@@ -87,9 +87,11 @@ if [ "$1" = --version ]; then
 fi
 if [ "$1" = update ]; then touch "${claudeState}"; exit 0; fi
 `, qualificationLog);
-      fakeProvider(codex, `
-if [ "$1" = --version ]; then echo 'codex-cli 1.1.0'; exit 0; fi
-`, qualificationLog);
+      script(codex, `
+printf '%s\n' "$0 $*" >> "${qualificationLog}"
+if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/codex-acp 1.1.0'; exit 0; fi
+exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
+`);
       fakeProvider(agy, `
 if [ "$1" = --version ]; then
   if [ -f "${agyState}" ]; then echo 'agy 1.1.13'; else echo 'agy 1.1.12'; fi
@@ -146,7 +148,9 @@ exit 97
           HOME: root,
           NODE_BIN: process.execPath,
           CLAUDE_COMMAND: claude,
-          CODEX_COMMAND: codex,
+          CODEX_ACP_COMMAND: codex,
+          FAKE_ACP_STORE: join(root, "codex-acp-sessions.json"),
+          FAKE_ACP_RESUME: "1",
           ANTIGRAVITY_COMMAND: agy,
           GROK_COMMAND: grok,
           CURSOR_COMMAND: cursor,

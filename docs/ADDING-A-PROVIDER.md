@@ -74,7 +74,7 @@ Adding a `ProviderId` also widens exhaustive provider records. Inspect compiler 
 
 ## 2. Add the provider runtime
 
-Create `src/providers/<provider>Runtime.ts`, following existing modules such as `grokRuntime.ts`, `codexRuntime.ts`, or `claudeRuntime.ts`.
+Create `src/providers/<provider>Runtime.ts`, following existing modules such as `grokRuntime.ts`, `codexAcpRuntime.ts`, or `claudeRuntime.ts`.
 
 The normal boundary is:
 

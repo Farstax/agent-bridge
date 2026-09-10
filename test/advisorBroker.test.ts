@@ -41,8 +41,6 @@ function setup(
 
 describe("bounded cross-provider frontier advice", () => {
   it("keeps Advisor available on a remaining tool-free target when Codex ACP is selected", () => {
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     try {
       const { broker } = setup();
       expect(() => broker.issue({
@@ -53,8 +51,6 @@ describe("bounded cross-provider frontier advice", () => {
         repoPath: "/trusted/repo",
       })).not.toThrow();
     } finally {
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
     }
   });
 
@@ -97,7 +93,6 @@ describe("bounded cross-provider frontier advice", () => {
   });
 
   it.each([
-    { active: "claude", provider: "codex", command: "/trusted/codex", model: "gpt-5.6-sol" },
     { active: "agy", provider: "claude", command: "/trusted/claude", model: "claude-opus-5" },
   ])("returns one configured independent result to an active $active run", async ({ active, provider, command, model }) => {
     const { broker, db, runCli } = setup();

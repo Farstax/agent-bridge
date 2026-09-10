@@ -122,14 +122,14 @@ describe("execution lane correctness", () => {
       cliOptions,
     ));
     const claudeRun = vi.fn().mockResolvedValue("claude done");
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db);
+    const fallbackChain = new ProviderFallbackChain(["claude"], db);
     const exhaustedChats = new Set<string>();
     const engines = {} as Record<string, BridgeEngine>;
     // This test is about durable FIFO routing across providers, not busy-mode
     // admission — pin busyMessageMode explicitly so a default flip elsewhere
     // can't change this test's meaning.
     const codex = new BridgeEngine({
-      ...options("codex", {
+      ...options("claude", {
         onQueuedMessage: (queued: any) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
           engines, fallbackChain, exhaustedChats, db, notify: vi.fn(),
         }),
@@ -447,8 +447,6 @@ describe("execution lane correctness", () => {
 
   it("fails closed for Codex ACP /btw instead of claiming tool-free execution", async () => {
     const path = join(tmpdir(), `btw-acp-${Date.now()}-${Math.random()}.sqlite`);
-    const previous = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     const db = openDb(path);
     const c = client();
     const runCli = vi.fn().mockResolvedValue("must not run");
@@ -461,8 +459,6 @@ describe("execution lane correctness", () => {
       expect(runCli).not.toHaveBeenCalled();
       expect(c.sendMessage.mock.calls.some((call: any[]) => /unavailable/i.test(call[0]?.text))).toBe(true);
     } finally {
-      if (previous === undefined) delete process.env.AGENT_BRIDGE_CODEX_RUNTIME;
-      else process.env.AGENT_BRIDGE_CODEX_RUNTIME = previous;
       db.close(); rmSync(path, { force: true });
     }
   });

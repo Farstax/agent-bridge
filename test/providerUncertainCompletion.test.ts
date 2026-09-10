@@ -7,7 +7,6 @@ import { validateSuccessfulCliExit } from "../src/cliSuccessfulExitValidation.js
 import type { BridgeEvent } from "../src/events/types.js";
 
 const AGY_SESSION = "11111111-2222-3333-4444-555555555555";
-const CODEX_SESSION = "codex-session-575";
 const GROK_SESSION = "grok-session-575";
 const CURSOR_SESSION = "cursor-session-575";
 
@@ -19,7 +18,7 @@ function terminalEvents(events: BridgeEvent[]): BridgeEvent[] {
 
 async function providerFixture(
   root: string,
-  provider: "codex" | "antigravity" | "grok" | "cursor",
+  provider: "antigravity" | "grok" | "cursor",
   sessionId: string,
 ): Promise<string> {
   const script = join(root, `${provider}-fixture`);
@@ -30,14 +29,11 @@ const provider = ${JSON.stringify(provider)};
 const sessionId = ${JSON.stringify(sessionId)};
 const args = process.argv.slice(2);
 const root = process.cwd();
-const resumed = provider === "codex" ? args.includes("resume") : args.includes(provider === "antigravity" ? "--conversation" : "--resume");
+const resumed = args.includes(provider === "antigravity" ? "--conversation" : "--resume");
 const emit = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 if (!resumed) {
   fs.appendFileSync(path.join(root, "side-effects.txt"), "effect\\n");
-  if (provider === "codex") {
-    emit({ type: "thread.started", thread_id: sessionId });
-    emit({ type: "item.completed", item: { type: "command_execution", text: "SECRET_TOOL_OUTPUT" } });
-  } else if (provider === "antigravity") {
+  if (provider === "antigravity") {
     emit({ event: "init", conversation_id: sessionId, init: { cwd: "/private/provider/path" } });
     emit({ event: "step_update", step_update: { step_type: "tool", tool_info: { output: "SECRET_TOOL_OUTPUT" } } });
   } else if (provider === "grok") {
@@ -49,10 +45,7 @@ if (!resumed) {
   process.exit(0);
 }
 fs.writeFileSync(path.join(root, "recovery-args.json"), JSON.stringify(args));
-if (provider === "codex") {
-  emit({ type: "thread.started", thread_id: sessionId });
-  emit({ type: "item.completed", item: { type: "agent_message", text: "verified final answer" } });
-} else if (provider === "antigravity") {
+if (provider === "antigravity") {
   emit({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "verified final answer" } });
 } else if (provider === "grok") {
   emit({ type: "text", data: "verified final answer" });
@@ -66,45 +59,6 @@ if (provider === "codex") {
 }
 
 describe("provider uncertain completion contract", () => {
-  it("fails closed when Codex exit-zero output is malformed", () => {
-    expect(() => parseCliResult({
-      bot: "codex",
-      stdout: `${JSON.stringify({ type: "thread.started", thread_id: CODEX_SESSION })}\nnot-json\n`,
-    })).toThrow(/completion could not be verified/i);
-  });
-
-  it("fails closed when Codex has session evidence but no final answer", () => {
-    expect(() => parseCliResult({
-      bot: "codex",
-      stdout: `${JSON.stringify({ type: "thread.started", thread_id: CODEX_SESSION })}\n`,
-    })).toThrow(/completion could not be verified/i);
-  });
-
-  it("preserves Codex item.updated agent-message finals", () => {
-    const stdout = [
-      JSON.stringify({ type: "thread.started", thread_id: CODEX_SESSION }),
-      JSON.stringify({ type: "item.updated", item: { type: "agent_message", text: "updated final answer" } }),
-    ].join("\n") + "\n";
-
-    expect(parseCliResult({ bot: "codex", stdout })).toEqual({
-      text: "updated final answer",
-      sessionId: CODEX_SESSION,
-    });
-  });
-
-  it("does not treat Codex item.updated as terminal evidence for the missing-tool diagnostic", () => {
-    const stdout = [
-      JSON.stringify({ type: "thread.started", thread_id: CODEX_SESSION }),
-      JSON.stringify({ type: "item.updated", item: { type: "agent_message", text: "interim answer" } }),
-    ].join("\n") + "\n";
-    const error = validateSuccessfulCliExit("codex", {
-      stdout,
-      stderr: "ERROR codex_core::util: Custom tool call output is missing for call id: call_stale\n",
-    });
-
-    expect(error?.message).toMatch(/custom tool call output is missing/i);
-  });
-
   it("rejects exit-zero Agy output without a terminal result before run.completed", () => {
     const error = validateSuccessfulCliExit("antigravity", {
       stdout: `${JSON.stringify({ event: "init", conversation_id: AGY_SESSION })}\n`,
@@ -161,7 +115,6 @@ describe("provider uncertain completion contract", () => {
   });
 
   it.each([
-    { provider: "codex" as const, bot: "codex" as const, sessionId: CODEX_SESSION, outputFormat: "json" as const },
     { provider: "antigravity" as const, bot: "antigravity" as const, sessionId: AGY_SESSION, outputFormat: "stream-json" as const },
     { provider: "grok" as const, bot: "grok" as const, sessionId: GROK_SESSION, outputFormat: "streaming-json" as const },
     { provider: "cursor" as const, bot: "cursor" as const, sessionId: CURSOR_SESSION, outputFormat: "stream-json" as const },
@@ -179,7 +132,7 @@ describe("provider uncertain completion contract", () => {
         model: null,
         outputFormat,
         homeDir,
-        effort: provider === "codex" ? "high" : null,
+        effort: null,
       });
       const stdout = await runCli(command, invocation.args, root, {
         bot,
@@ -193,7 +146,6 @@ describe("provider uncertain completion contract", () => {
       const recoveryArgs = JSON.parse(await readFile(join(root, "recovery-args.json"), "utf8")) as string[];
       expect(recoveryArgs).toContain(sessionId);
       expect(recoveryArgs.join(" ")).toMatch(/Do not repeat side effects/i);
-      if (provider === "codex") expect(recoveryArgs).toContain('model_reasoning_effort="high"');
       if (provider === "antigravity") {
         const printIndex = recoveryArgs.lastIndexOf("--print");
         expect(printIndex).toBeGreaterThan(-1);
@@ -252,51 +204,6 @@ setInterval(() => {}, 1000);
 
       expect(stdout).toBe("");
       expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.cancelled"]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("recovers a resumed Codex session with effort when stdout omits thread evidence", async () => {
-    const root = await mkdtemp(join(tmpdir(), "codex-resume-uncertain-"));
-    const command = join(root, "codex-resume-fixture");
-    const source = `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-const countPath = path.join(process.cwd(), "attempt-count.txt");
-const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, "utf8")) : 0;
-fs.writeFileSync(countPath, String(count + 1));
-const emit = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
-if (count === 0) {
-  emit({ type: "item.completed", item: { type: "command_execution", text: "SECRET_TOOL_OUTPUT" } });
-} else {
-  fs.writeFileSync(path.join(process.cwd(), "recovery-args.json"), JSON.stringify(process.argv.slice(2)));
-  emit({ type: "thread.started", thread_id: ${JSON.stringify(CODEX_SESSION)} });
-  emit({ type: "item.completed", item: { type: "agent_message", text: "verified resumed answer" } });
-}
-`;
-    await writeFile(command, source, { mode: 0o700 });
-
-    try {
-      const invocation = buildCliInvocation({
-        bot: "codex",
-        prompt: "continue prior work",
-        sessionId: CODEX_SESSION,
-        command,
-        model: null,
-        outputFormat: "json",
-        effort: "high",
-      });
-      const stdout = await runCli(command, invocation.args, root, {
-        bot: "codex",
-        bypassWorkspaceLock: true,
-      });
-
-      expect(parseCliResult({ bot: "codex", stdout }).text).toBe("verified resumed answer");
-      expect(await readFile(join(root, "attempt-count.txt"), "utf8")).toBe("2");
-      const recoveryArgs = JSON.parse(await readFile(join(root, "recovery-args.json"), "utf8")) as string[];
-      expect(recoveryArgs).toContain(CODEX_SESSION);
-      expect(recoveryArgs).toContain('model_reasoning_effort="high"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

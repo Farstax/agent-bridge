@@ -16,8 +16,8 @@ afterEach(() => {
 describe("interactive API-key startup", () => {
   it("completes configured-key verification before the first availability snapshot", async () => {
     const env = {
-      CODEX_API_KEY: "codex-startup-key",
-      CODEX_COMMAND: "fake-codex",
+      ANTHROPIC_API_KEY: "claude-startup-key",
+      CLAUDE_COMMAND: "fake-claude",
     };
     let calls = 0;
     const execFile: ProviderApiKeyProbeExecutor = async () => {
@@ -35,7 +35,7 @@ describe("interactive API-key startup", () => {
     });
 
     expect(calls).toBe(1);
-    expect(available).toEqual(new Set(["codex"]));
+    expect(available).toEqual(new Set(["claude"]));
   });
 
   it("loads the canonical interactive env before startup auth verification", async () => {
@@ -43,7 +43,7 @@ describe("interactive API-key startup", () => {
     try {
       await writeFile(
         join(cwd, "custom.env"),
-        "CODEX_API_KEY=codex-env-startup-key\nCODEX_COMMAND=fake-codex\n",
+        "ANTHROPIC_API_KEY=claude-env-startup-key\nCLAUDE_COMMAND=fake-claude\n",
         "utf8",
       );
       const env: NodeJS.ProcessEnv = {
@@ -64,10 +64,10 @@ describe("interactive API-key startup", () => {
         failedProviders: new Set(),
       });
 
-      expect(env.CODEX_API_KEY).toBe("codex-env-startup-key");
-      expect(env.CODEX_COMMAND).toBe("fake-codex");
+      expect(env.ANTHROPIC_API_KEY).toBe("claude-env-startup-key");
+      expect(env.CLAUDE_COMMAND).toBe("fake-claude");
       expect(calls).toBe(1);
-      expect(available).toEqual(new Set(["codex"]));
+      expect(available).toEqual(new Set(["claude"]));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -5,20 +5,21 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("upgrade CLI verification", () => {
-  it("fails when npm installation fails instead of suppressing the error", () => {
+  it("fails when the active Claude updater fails", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-"));
     const npm = join(root, "npm");
     const node = join(root, "node");
     writeFileSync(node, "#!/usr/bin/env bash\nif [ \"$1\" = \"-p\" ]; then echo 24.0.0; else exit 0; fi\n", { mode: 0o755 });
     chmodSync(node, 0o755);
-    writeFileSync(npm, `#!/usr/bin/env bash\nif [ "$1" = list ]; then echo '@scope/pkg@1.0.0'; exit 0; fi\nexit 42\n`, { mode: 0o755 });
+    writeFileSync(npm, `#!/usr/bin/env bash\nif [ "$1" = list ]; then echo '@anthropic-ai/claude-code@1.0.0'; exit 0; fi\nexit 0\n`, { mode: 0o755 });
     chmodSync(npm, 0o755);
+    const claude = join(root, "claude");
+    writeFileSync(claude, "#!/usr/bin/env bash\nif [ \"$1\" = --version ]; then echo 'Claude Code 1.0.0'; exit 0; fi\nif [ \"$1\" = update ]; then exit 42; fi\n", { mode: 0o755 });
     const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
       encoding: "utf8",
-      env: { ...process.env, NODE_BIN: node, PATH: `${root}:${process.env.PATH}` },
+      env: { ...process.env, NODE_BIN: node, CLAUDE_COMMAND: claude, PATH: `${root}:${process.env.PATH}` },
     });
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("npm CLI installation failed");
   });
 
   it("requires a version after installation", () => {
@@ -39,7 +40,7 @@ describe("upgrade CLI verification", () => {
     expect(result.status).not.toBe(0);
   });
 
-  it("runs bounded provider qualification for verified Claude and Codex versions", () => {
+  it("runs bounded provider qualification for the verified Claude version", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-upgrade-qualification-"));
     const npm = join(root, "npm");
     const node = join(root, "node");
@@ -74,7 +75,11 @@ exit 0
 `, { mode: 0o755 });
     chmodSync(npm, 0o755);
     const claude = join(root, "claude");
-    writeFileSync(claude, "#!/usr/bin/env bash\nif [ \"$1\" = --version ]; then echo 'Claude Code 1.1.0'; exit 0; fi\nif [ \"$1\" = update ]; then exit 0; fi\nexit 0\n", { mode: 0o755 });
+    writeFileSync(claude, `#!/usr/bin/env bash
+if [ "$1" = --version ]; then if [ -f "${state}" ]; then echo 'Claude Code 1.1.0'; else echo 'Claude Code 1.0.0'; fi; exit 0; fi
+if [ "$1" = update ]; then touch "${state}"; exit 0; fi
+exit 0
+`, { mode: 0o755 });
     chmodSync(claude, 0o755);
 
     const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
@@ -86,9 +91,7 @@ exit 0
     const invocations = readFileSync(log, "utf8");
     expect(invocations).toContain("provider-qualification.ts --provider claude --expected-version 1.1.0");
     expect(invocations).toContain("--previous-version 1.0.0");
-    expect(invocations).toContain("provider-qualification.ts --provider codex --expected-version 1.1.0");
     expect(result.stdout).toContain("[qualification] claude 1.1.0");
-    expect(result.stdout).toContain("[qualification] codex 1.1.0");
   });
 
   it("updates Claude through the active executable and qualifies its observed version", () => {
@@ -211,7 +214,11 @@ if [ "$1" = install ]; then touch "${state}"; exit 0; fi
 exit 0
 `, { mode: 0o755 });
     chmodSync(npm, 0o755);
-    writeFileSync(claude, "#!/usr/bin/env bash\nif [ \"$1\" = --version ]; then echo 'Claude Code 1.1.0'; exit 0; fi\nif [ \"$1\" = update ]; then exit 0; fi\nexit 0\n", { mode: 0o755 });
+    writeFileSync(claude, `#!/usr/bin/env bash
+if [ "$1" = --version ]; then if [ -f "${state}" ]; then echo 'Claude Code 1.1.0'; else echo 'Claude Code 1.0.0'; fi; exit 0; fi
+if [ "$1" = update ]; then touch "${state}"; exit 0; fi
+exit 0
+`, { mode: 0o755 });
     chmodSync(claude, 0o755);
 
     const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
@@ -256,7 +263,11 @@ if [ "$1" = install ]; then touch "${state}"; exit 0; fi
 exit 0
 `, { mode: 0o755 });
     chmodSync(npm, 0o755);
-    writeFileSync(claude, "#!/usr/bin/env bash\nif [ \"$1\" = --version ]; then echo 'Claude Code 1.1.0'; exit 0; fi\nif [ \"$1\" = update ]; then exit 0; fi\nexit 0\n", { mode: 0o755 });
+    writeFileSync(claude, `#!/usr/bin/env bash
+if [ "$1" = --version ]; then if [ -f "${state}" ]; then echo 'Claude Code 1.1.0'; else echo 'Claude Code 1.0.0'; fi; exit 0; fi
+if [ "$1" = update ]; then touch "${state}"; exit 0; fi
+exit 0
+`, { mode: 0o755 });
     chmodSync(claude, 0o755);
 
     const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {

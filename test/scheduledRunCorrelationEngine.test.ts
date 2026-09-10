@@ -127,10 +127,7 @@ describe("authoritative scheduled Run correlation", () => {
       const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
       const exhaustedChats = new Set<string>();
       const claudeCli = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
-      const codexCli = vi.fn().mockResolvedValue([
-        JSON.stringify({ type: "thread.started", thread_id: "fallback-session" }),
-        JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "ROUTINE_TEST_OK" } }),
-      ].join("\n"));
+      const codexCli = vi.fn().mockResolvedValue(JSON.stringify({ event: "result", result: { conversation_id: "11111111-2222-4333-8444-555555555555", status: "SUCCESS", response: "ROUTINE_TEST_OK" } }));
       const claude = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
         kind: "claude",
@@ -142,15 +139,15 @@ describe("authoritative scheduled Run correlation", () => {
       }, db, mockClient(), { runCli: claudeCli });
       const codex = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
-        kind: "codex",
-        botConfig: { command: "codex", modelPreference: [] },
+        kind: "antigravity",
+        botConfig: { command: "agy", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         pollIntervalMs: 1000,
       }, db, mockClient(), { runCli: codexCli });
       const deps = {
-        engines: { claude, codex },
-        fallbackChain: new ProviderFallbackChain(["claude", "codex"], db),
+        engines: { claude, antigravity: codex },
+        fallbackChain: new ProviderFallbackChain(["claude", "antigravity"], db),
         exhaustedChats,
         db,
         notify: async () => undefined,
@@ -175,7 +172,7 @@ describe("authoritative scheduled Run correlation", () => {
       expect(run).toEqual(expect.objectContaining({
         run_id: evidence!.runId,
         chat_id: routine.chatKey,
-        bot: "codex",
+        bot: "antigravity",
         status: "done",
       }));
     } finally {

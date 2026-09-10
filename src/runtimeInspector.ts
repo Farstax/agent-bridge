@@ -14,7 +14,7 @@ import { loadBotsConfig } from "./config.js";
 import { CURRENT_SCHEMA_VERSION } from "./db/schema.js";
 import { parseCadenceSeconds } from "./health/config.js";
 import { PROVIDER_CONTRACT_VERSION, qualificationEvidencePath, readQualificationEvidence } from "./providers/qualification.js";
-import { resolveCodexAcpCommand, resolveCodexRuntime } from "./providers/codexRuntimeSelection.js";
+import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import { getProviderAdapters } from "./providers/registry.js";
 import { latestDueScheduledOccurrence, type ScheduledRoutine } from "./scheduledRoutines.js";
 import { parseScheduledOccurrenceEvidence, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
@@ -125,24 +125,7 @@ function isStaleTimestamp(value: unknown): boolean {
   return Number.isFinite(ms) && Date.now() - ms > 7 * 24 * HOUR_MS;
 }
 
-function projectCodexSession(db: Database.Database, chatKey: string, row: Row | undefined, env: Env) {
-  let runtime: "legacy" | "acp";
-  try {
-    runtime = resolveCodexRuntime(env);
-  } catch {
-    return { provider: "codex" as const, exists: false, createdAt: null, reasonCode: "invalid_codex_runtime" };
-  }
-  const legacyExists = Boolean(row?.codex_session_id);
-  const legacyCreatedAt = text(row?.codex_session_created_at, 40);
-  if (runtime === "legacy") {
-    return {
-      provider: "codex" as const,
-      runtime,
-      exists: legacyExists,
-      createdAt: legacyCreatedAt,
-      source: "bridge_state",
-    };
-  }
+function projectCodexSession(db: Database.Database, chatKey: string) {
   let binding: Row | undefined;
   if (hasTable(db, "acp_session_bindings")) {
     binding = db.prepare(
@@ -153,13 +136,12 @@ function projectCodexSession(db: Database.Database, chatKey: string, row: Row | 
   const active = Boolean(binding) && !stale;
   return {
     provider: "codex" as const,
-    runtime,
+    runtime: "acp" as const,
     exists: active,
     createdAt: active ? text(binding?.created_at, 40) : null,
     updatedAt: active ? text(binding?.updated_at, 40) : null,
     source: "acp_session_bindings",
     ...(stale ? { reasonCode: "stale_binding" } : {}),
-    ...(legacyExists ? { rollback: { exists: true, createdAt: legacyCreatedAt, source: "bridge_state" } } : {}),
   };
 }
 
@@ -172,7 +154,7 @@ function sessions(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
     status: "ready",
     reasonCode: null,
     providers: fields.map(([provider, key]) => provider === "codex"
-      ? projectCodexSession(db, s.chatKey!, row, env)
+      ? projectCodexSession(db, s.chatKey!)
       : { provider, exists: Boolean(row?.[`${key}_session_id`]), createdAt: text(row?.[`${key}_session_created_at`], 40) }),
   };
 }
@@ -302,19 +284,9 @@ function providers(s: ReturnType<typeof scope>, env: Env, commit: string | null)
     const selected = s.provider === adapter.id;
     let availability: "available" | "unknown" | "unavailable" = selected ? "available" : "unknown";
     let availabilityReasonCode: string | null = selected ? null : "not_live_probed";
-    if (adapter.id === "codex") {
-      try {
-        if (resolveCodexRuntime(env) === "acp") {
-          const adapterPath = resolveCodexAcpCommand(env);
-          if (!isExecutable(adapterPath)) {
-            availability = "unavailable";
-            availabilityReasonCode = "acp_adapter_missing";
-          }
-        }
-      } catch {
-        availability = "unavailable";
-        availabilityReasonCode = "invalid_codex_runtime";
-      }
+    if (adapter.id === "codex" && !isExecutable(resolveCodexAcpCommand(env))) {
+      availability = "unavailable";
+      availabilityReasonCode = "acp_adapter_missing";
     }
     const qualification = !record
       ? { status: "unknown", reasonCode: evidenceReason ?? "no_qualification_evidence" }

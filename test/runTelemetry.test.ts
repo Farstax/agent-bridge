@@ -18,36 +18,6 @@ import {
 const AGY_SESSION = "c107dfbd-181e-4cf0-a840-894662adee43";
 
 describe("normalized provider run telemetry", () => {
-  it("extracts only supported Codex token categories", () => {
-    const stdout = [
-      JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
-      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }),
-      JSON.stringify({
-        type: "turn.completed",
-        usage: {
-          input_tokens: 120,
-          cached_input_tokens: 40,
-          output_tokens: 30,
-          reasoning_output_tokens: 7,
-          cache_write_input_tokens: 999,
-          raw_secret: "must-not-survive",
-        },
-      }),
-    ].join("\n");
-
-    expect(parseCliResult({ bot: "codex", stdout })).toEqual({
-      text: "done",
-      sessionId: "thread-1",
-      telemetry: {
-        provider: "codex",
-        inputTokens: 120,
-        cachedInputTokens: 40,
-        outputTokens: 30,
-        reasoningTokens: 7,
-      },
-    });
-  });
-
   it("extracts Claude usage while allowlisting tool counters", () => {
     const stdout = JSON.stringify({
       type: "result",
@@ -215,28 +185,24 @@ describe("normalized provider run telemetry", () => {
     const db = openDb(dbPath);
     try {
       const runId = "durable-telemetry-run";
-      const stdout = [
-        JSON.stringify({ type: "thread.started", thread_id: "thread-durable" }),
-        JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "done" } }),
-        JSON.stringify({ type: "turn.completed", usage: { input_tokens: 12, output_tokens: 4 } }),
-      ].join("\n");
-      noteRunProviderAttempt(runId, "codex", "requested-codex");
-      registerProviderOutput(runId, "codex", stdout);
-      const parsed = parseCliResult({ bot: "codex", stdout });
+      const stdout = JSON.stringify({ type: "result", result: "done", session_id: "session-durable", usage: { input_tokens: 12, output_tokens: 4 } });
+      noteRunProviderAttempt(runId, "claude", "requested-claude");
+      registerProviderOutput(runId, "claude", stdout);
+      const parsed = parseCliResult({ bot: "claude", stdout });
 
       const store = new EventStore(db);
       store.collect(eventType.runStarted({
         runId,
-        bot: "codex",
+        bot: "claude",
         chatId: "100",
         chatKey: "100",
-        command: "codex",
+        command: "claude",
         cwd: "/repo",
         model: null,
       }));
       store.queueCompleted(eventType.runCompleted({
         runId,
-        bot: "codex",
+        bot: "claude",
         chatId: "100",
         chatKey: "100",
         text: parsed.text,
@@ -248,8 +214,8 @@ describe("normalized provider run telemetry", () => {
       expect(rows.map((row: any) => row.type)).toEqual(["run.started", "run.completed"]);
       const payload = JSON.parse(rows[1].payload_json);
       expect(payload.telemetry).toMatchObject({
-        provider: "codex",
-        model: "requested-codex",
+        provider: "claude",
+        model: "requested-claude",
         inputTokens: 12,
         outputTokens: 4,
       });

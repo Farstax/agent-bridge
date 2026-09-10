@@ -6,19 +6,19 @@ import {
   PROVIDER_IDS,
 } from "./types.js";
 import { createPlannerStallWatch } from "./antigravityRuntime.js";
-import { isCodexAcpRuntime } from "./codexRuntimeSelection.js";
+import { resolveCodexAcpCommand } from "./codexAcpConfig.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
     id: "codex",
     displayName: "Codex",
-    executable: "codex",
+    executable: "codex-acp",
     versionArgs: ["--version"],
-    defaultArgs: ["--approval-mode", "full-auto"],
+    defaultArgs: [],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
-      toolFree: true,
+      toolFree: false,
     },
   },
   claude: {
@@ -88,17 +88,9 @@ const BOT_NAME_TO_PROVIDER_ID: Record<string, ProviderId> = {
   cursor: "cursor",
 };
 
-export function supportsToolFreeMode(
-  bot: string,
-  env: Record<string, string | undefined> = process.env,
-): boolean {
+export function supportsToolFreeMode(bot: string): boolean {
   const id = BOT_NAME_TO_PROVIDER_ID[bot];
   if (!id) return false;
-  try {
-    if (id === "codex" && isCodexAcpRuntime("codex", env)) return false;
-  } catch {
-    return false;
-  }
   return ADAPTERS[id].capabilities.toolFree;
 }
 
@@ -129,6 +121,7 @@ export function getProviderAdapters(): readonly ProviderAdapter[] {
 
 /** Resolve the command used by the live bridge runtime, including command overrides. */
 export function resolveProviderExecutable(id: ProviderId, env: Record<string, string | undefined> = process.env): string {
+  if (id === "codex") return resolveCodexAcpCommand(env);
   const bot = id === "agy" ? "antigravity" : id;
   return loadBotsConfig(env)[bot].command;
 }

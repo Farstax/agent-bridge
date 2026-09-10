@@ -13,15 +13,13 @@ The initial live contract is deliberately small and incident-driven:
 3. `session_resume` — when the fresh result exposes an invocation-attributable session ID, a second bounded prompt resumes that session and returns the resume marker. Providers that do not expose such an ID report `not_applicable`.
 4. `repository_grounding` — one fresh native-tool-enabled invocation runs in a disposable Git repository. A runtime-generated source fact lives only in implementation source and a separate runtime-generated marker lives only in repository instructions; neither is included in the prompt. The check passes only when the native provider returns both exact values.
 
-When `AGENT_BRIDGE_CODEX_RUNTIME=acp`, Codex qualification uses the ACP-backed
-path (bundled `codex-acp` over stdio) rather than `codex exec --json`. The
-version probe is the invoked adapter (`CODEX_ACP_COMMAND` or the bundled
-`$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp --version`), not `codex
---version`. The two implementations are not interchangeable inside one
-attempt. Cached evidence is current only for the same Codex runtime
-(`legacy` vs `acp`) as well as that observed executable version and contract
-version. Contract v5 added this `executionRuntime` distinction so ACP and
-legacy Codex evidence never cross-qualify each other.
+Codex qualification uses the production ACP-backed path (bundled `codex-acp`
+over stdio). The version probe is the invoked adapter (`CODEX_ACP_COMMAND` or
+the bundled `$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/codex-acp --version`), not
+`codex --version`. Current Codex evidence must record `executionRuntime: "acp"`
+as well as the observed adapter version and contract version. Pre-ACP records,
+including records without an execution-runtime identity, are stale and cannot
+qualify the ACP runtime.
 
 Agy qualification uses the same native `stream-json` output contract as managed runtime execution. Fresh checks require a valid terminal result; a provider that exposes an invocation-attributable conversation ID is also tested for resume, while a provider that exposes no resumable ID records `session_resume` as `not_applicable`. Resume checks require the matching conversation ID. Contradictory or malformed terminal results fail qualification; in particular, an Agy `ERROR` result carrying a non-empty `response` is a contract failure.
 

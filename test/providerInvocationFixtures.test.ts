@@ -40,59 +40,6 @@ function managedPrompt(): string {
   return prompt;
 }
 
-describe("provider invocation fixtures — codex", () => {
-  it("delivers managed repository context to the provider prompt", () => {
-    const prompt = managedPrompt();
-    const inv = buildCliInvocation({ bot: "codex", prompt, sessionId: null, command: "codex" });
-    expect(inv.args.join("\n")).toContain("selected-owner/selected-repo");
-  });
-  it("fresh session, safe mode, no model — exact arg order", () => {
-    const inv = buildCliInvocation({ bot: "codex", prompt: "hi", sessionId: null, command: "codex" });
-    expect(inv.command).toBe("codex");
-    expect(inv.args).toEqual(["exec", "--skip-git-repo-check", anyPrompt()]);
-  });
-
-  it("resumes an existing session when sessionId is set and there are no attachments — exact arg order", () => {
-    const inv = buildCliInvocation({ bot: "codex", prompt: "hi", sessionId: "sess-1", command: "codex" });
-    expect(inv.args).toEqual(["exec", "resume", "sess-1", "--skip-git-repo-check", anyPrompt()]);
-  });
-
-  it("forces a fresh session when attachments are present even with a sessionId — exact arg order, stdin carries the prompt", () => {
-    const inv = buildCliInvocation({
-      bot: "codex", prompt: "hi", sessionId: "sess-1", command: "codex", attachments: ["/tmp/a.png"],
-    });
-    expect(inv.args).toEqual(["exec", "--skip-git-repo-check", "-i", "/tmp/a.png", "--", "-"]);
-    expect(inv.stdin).toBeTruthy();
-  });
-
-  it("trusted mode — exact arg order", () => {
-    const inv = buildCliInvocation({ bot: "codex", prompt: "hi", sessionId: null, command: "codex", executionMode: "trusted" });
-    expect(inv.args).toEqual(["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", anyPrompt()]);
-  });
-
-  it("tool-free mode — exact arg order, full documented Codex tool set, nothing extra", () => {
-    const inv = buildCliInvocation({ bot: "codex", prompt: "hi", sessionId: null, command: "codex", toolMode: "none" });
-    expect(inv.args).toEqual([
-      "exec",
-      "--disable", "shell_tool",
-      "--disable", "browser_use",
-      "--disable", "computer_use",
-      "--disable", "plugins",
-      "--disable", "guardian_approval",
-      "--disable", "hooks",
-      "--disable", "goals",
-      "--disable", "apps",
-      "--skip-git-repo-check",
-      anyPrompt(),
-    ]);
-  });
-
-  it("json output format — exact arg order", () => {
-    const inv = buildCliInvocation({ bot: "codex", prompt: "hi", sessionId: null, command: "codex", outputFormat: "json" });
-    expect(inv.args).toEqual(["exec", "--skip-git-repo-check", "--json", anyPrompt()]);
-  });
-});
-
 describe("provider invocation fixtures — claude", () => {
   it("delivers managed repository context to the provider prompt", () => {
     const prompt = managedPrompt();
@@ -213,22 +160,6 @@ describe("provider invocation fixtures — antigravity", () => {
 });
 
 describe("provider result parsing fixtures", () => {
-  it("codex: extracts sessionId from thread.started and text from response.completed", () => {
-    const stdout = [
-      JSON.stringify({ type: "thread.started", thread_id: "t-1" }),
-      JSON.stringify({ type: "response.completed", output_text: "done" }),
-    ].join("\n");
-    const result = parseCliResult({ bot: "codex", stdout });
-    expect(result.sessionId).toBe("t-1");
-    expect(result.text).toBe("done");
-  });
-
-  it("codex: malformed structured lines fail closed even with a later final", () => {
-    const stdout = "not json\n{\"broken\n" + JSON.stringify({ type: "response.completed", output_text: "ok" });
-    expect(() => parseCliResult({ bot: "codex", stdout }))
-      .toThrow(/completion could not be verified/i);
-  });
-
   it("claude: parses the last JSON object with a result field", () => {
     const stdout = `noise\n${JSON.stringify({ type: "result", subtype: "success", session_id: "s-1", result: "hello" })}`;
     const result = parseCliResult({ bot: "claude", stdout });

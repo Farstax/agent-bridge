@@ -12,10 +12,10 @@ import {
 import { runCodexAcpApiKeyProbe } from "../src/providers/codexAcpAuthProbe.js";
 import { qualifyProvider } from "../src/providers/qualification.js";
 
-const savedRuntime = process.env.AGENT_BRIDGE_CODEX_RUNTIME;
 const savedCommand = process.env.CODEX_ACP_COMMAND;
 const savedArgs = process.env.CODEX_ACP_ARGS;
 const savedApiKey = process.env.CODEX_API_KEY;
+const savedCurrentRelease = process.env.BRIDGE_CURRENT_RELEASE_DIR;
 
 function restore(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
@@ -23,20 +23,19 @@ function restore(name: string, value: string | undefined): void {
 }
 
 afterEach(() => {
-  restore("AGENT_BRIDGE_CODEX_RUNTIME", savedRuntime);
   restore("CODEX_ACP_COMMAND", savedCommand);
   restore("CODEX_ACP_ARGS", savedArgs);
   restore("CODEX_API_KEY", savedApiKey);
+  restore("BRIDGE_CURRENT_RELEASE_DIR", savedCurrentRelease);
   clearProviderApiKeyVerificationCache();
 });
 
 describe("Codex ACP auth boundary", () => {
-  it("verifies CODEX_API_KEY through ACP without invoking legacy codex exec", async () => {
+  it("verifies CODEX_API_KEY through ACP through the managed ACP adapter", async () => {
     const legacyProbe = vi.fn(async () => undefined);
     const acpProbe = vi.fn(async () => undefined);
     const env = {
       ...process.env,
-      AGENT_BRIDGE_CODEX_RUNTIME: "acp",
       CODEX_API_KEY: "test-acp-key",
     };
 
@@ -54,7 +53,6 @@ describe("Codex ACP auth boundary", () => {
   it("keeps an invalid ACP key unverified and withheld from production children", async () => {
     const env = {
       ...process.env,
-      AGENT_BRIDGE_CODEX_RUNTIME: "acp",
       CODEX_API_KEY: "bad-acp-key",
     };
     const acpProbe = vi.fn(async () => { throw new Error("authentication failed"); });
@@ -64,30 +62,10 @@ describe("Codex ACP auth boundary", () => {
     expect(filterProviderCredentialEnv("codex", env).CODEX_API_KEY).toBeUndefined();
   });
 
-  it("does not reuse ACP credential evidence as legacy Codex verification", async () => {
-    const legacyProbe = vi.fn(async () => undefined);
-    const acpProbe = vi.fn(async () => undefined);
-    const acpEnv = {
-      ...process.env,
-      AGENT_BRIDGE_CODEX_RUNTIME: "acp",
-      CODEX_API_KEY: "same-key",
-    };
-    await verifyProviderApiKey("codex", { env: acpEnv, execFile: legacyProbe, codexAcpProbe: acpProbe });
-    expect(acpProbe).toHaveBeenCalledTimes(1);
-    expect(legacyProbe).not.toHaveBeenCalled();
-
-    const legacyEnv = { ...acpEnv, AGENT_BRIDGE_CODEX_RUNTIME: "legacy" };
-    expect(isProviderApiKeyVerified("codex", legacyEnv)).toBe(false);
-    await verifyProviderApiKey("codex", { env: legacyEnv, execFile: legacyProbe, codexAcpProbe: acpProbe });
-    expect(legacyProbe).toHaveBeenCalledTimes(1);
-    expect(isProviderApiKeyVerified("codex", legacyEnv)).toBe(true);
-  });
-
   it("runs the production ACP auth probe over stdio and rejects a bad key", async () => {
     const fakeAgent = fileURLToPath(new URL("./support/fakeCodexAcpAuthAgent.ts", import.meta.url));
     const baseEnv = {
       ...process.env,
-      AGENT_BRIDGE_CODEX_RUNTIME: "acp",
       CODEX_ACP_COMMAND: process.execPath,
       CODEX_ACP_ARGS: `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`,
     };
@@ -98,22 +76,22 @@ describe("Codex ACP auth boundary", () => {
 });
 
 describe("Codex ACP qualification boundary", () => {
-  it("fails closed when the supplied qualification runtime differs from the active process runtime", async () => {
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "legacy";
-    const env = { ...process.env, AGENT_BRIDGE_CODEX_RUNTIME: "acp" };
+  it("fails closed when qualification and runtime resolve different managed releases", async () => {
+    process.env.BRIDGE_CURRENT_RELEASE_DIR = "/opt/agent-bridge/releases/runtime";
 
     await expect(qualifyProvider({
       providerId: "codex",
-      env,
-      timeoutMs: 1_000,
-    })).rejects.toThrow(/qualification runtime environment mismatch/i);
+      env: {
+        ...process.env,
+        BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/releases/candidate",
+      },
+    })).rejects.toThrow(/runtime environment mismatch for BRIDGE_CURRENT_RELEASE_DIR/i);
   });
 
   it("preserves structured ACP provider classification while redacting diagnostic secrets", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-acp-qualification-error-"));
     const failingAgent = fileURLToPath(new URL("./support/failingAcpQualificationAgent.ts", import.meta.url));
     const secret = "qualification-secret-value";
-    process.env.AGENT_BRIDGE_CODEX_RUNTIME = "acp";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${failingAgent}`;
     process.env.CODEX_API_KEY = secret;

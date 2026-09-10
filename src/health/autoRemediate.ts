@@ -104,7 +104,7 @@ export async function autoUpdateClis(
   if (report.pluginName !== "agent-bridge") return;
 
   const needsUpdate = report.checks.filter(
-    c => c.name.startsWith("cli-update-") && c.status !== "green"
+    c => c.name === "cli-update-claude-code" && c.status !== "green"
   );
   if (needsUpdate.length === 0) {
     await qualifyOutOfBandVersionChanges(options);
