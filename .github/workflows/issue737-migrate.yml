@@ -7,16 +7,57 @@ permissions:
   contents: write
 jobs:
   migrate:
-    if: github.event.head_commit.message == 'chore-issue737-converge'
+    if: github.event.head_commit.message == 'chore-issue737-fix'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply ACP-only convergence
-        run: python3 scripts/issue737-converge.py
-      - name: Commit convergence
+      - name: Repair ACP promotion convergence
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'missing expected text in {path}: {old!r}')
+              p.write_text(text.replace(old, new))
+
+          replace(
+              'scripts/agent-bridge-install.py',
+              '    "HEALTH_CONTENT_CRAWLER_ENABLED", "HEALTH_CONTENT_CRAWLER_SCRIPT",\n)',
+              '    "HEALTH_CONTENT_CRAWLER_ENABLED", "HEALTH_CONTENT_CRAWLER_SCRIPT",\n    "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS",\n)',
+          )
+          replace(
+              'scripts/agent-bridge-install.py',
+              '    "CODEX_COMMAND", "CODEX_MODEL_PREFERENCE", "CODEX_EFFORT", "CODEX_PROJECT_DIR",\n',
+              '    "CODEX_COMMAND", "CODEX_MODEL_PREFERENCE", "CODEX_EFFORT", "CODEX_PROJECT_DIR",\n    "CODEX_ACP_COMMAND", "CODEX_ACP_ARGS",\n',
+          )
+          replace(
+              'scripts/install.sh',
+              '              CODEX_COMMAND ANTIGRAVITY_COMMAND CLAUDE_COMMAND \\\n              CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \\\n',
+              '              CODEX_COMMAND ANTIGRAVITY_COMMAND CLAUDE_COMMAND \\\n              CODEX_ACP_COMMAND CODEX_ACP_ARGS \\\n              CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \\\n',
+          )
+
+          p = Path('docs/ACP.md')
+          text = p.read_text()
+          start = text.index('## Codex selection\n')
+          end = text.index('\n## Process lifecycle\n', start)
+          replacement = '''## Codex runtime\n\nCodex runs through the managed ACP adapter. There is no native `codex exec`\nexecution path or ACP-vs-legacy runtime selector.\n\n```bash\nCODEX_ACP_COMMAND=...               # optional override of the bundled adapter\nCODEX_ACP_ARGS=...                  # optional extra adapter argv\n```\n\nThe pinned adapter ships with the Agent Bridge release as\n`@agentclientprotocol/codex-acp@1.10.0`. Fresh managed installation and\nsource `npm install` both obtain it. Execution, doctor, health, qualification,\nand runtime inspection resolve the same launchable artifact:\n\n`$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`\n\nSet `CODEX_ACP_COMMAND` only to override that bundled path. There is no\nsilent fallback to `codex exec` if the adapter is missing. Managed install\nand upgrade preserve `CODEX_ACP_COMMAND` and `CODEX_ACP_ARGS` when configured.\n'''
+          text = text[:start] + replacement + text[end:]
+          text = text.replace('Legacy Codex `toolMode: "none"` explicitly disables shell, browser, computer\nuse, plugins, hooks, goals, and apps. Codex ACP\'s `read-only` agent mode is\nnot equivalent:', 'Codex ACP\'s `read-only` agent mode is not equivalent to strict tool-free execution:')
+          text = text.replace('- Removing the legacy Codex runtime\n', '')
+          p.write_text(text)
+
+          p = Path('.env.codex.example')
+          text = p.read_text().replace('Agent Bridge uses CODEX_API_KEY for both `codex exec`', 'Agent Bridge uses CODEX_API_KEY for the managed ACP adapter')
+          p.write_text(text)
+          PY
+      - name: Commit repair
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git commit -m 'test: converge Codex ACP promotion coverage'
+          git add scripts/agent-bridge-install.py scripts/install.sh docs/ACP.md .env.codex.example
+          git commit -m 'fix: preserve managed Codex ACP install contract'
           git push origin HEAD:feature/737-promote-codex-acp
