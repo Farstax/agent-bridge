@@ -80,6 +80,11 @@ export function defaultInspectVersion(executable: string): string | null {
   }
 }
 
+function normalizedVersion(raw: string): string {
+  const match = raw.trim().match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/);
+  return match?.[0] ?? raw.trim();
+}
+
 export function runDoctor({
   env = process.env,
   requiredEnv = [],
@@ -96,15 +101,26 @@ export function runDoctor({
   const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => {
     const runtime = resolveProviderRuntime(adapter.id, env);
     const available = commandExists(runtime.executable);
+    const version = runtime.transport === "acp-stdio" && available
+      ? inspectVersion(runtime.executable)
+      : null;
+    const releaseVersionMismatch = Boolean(
+      runtime.selectedVersion
+      && version
+      && normalizedVersion(version) !== runtime.selectedVersion,
+    );
     return {
       id: adapter.id,
       executable: runtime.executable,
-      status: available ? "available" : "missing",
+      status: !available ? "missing" : releaseVersionMismatch ? "invalid" : "available",
       ...(runtime.transport === "acp-stdio"
         ? {
           runtime: "acp" as const,
           runtimeIdentity: runtime.runtimeIdentity,
-          ...(available ? { version: inspectVersion(runtime.executable) } : {}),
+          ...(available ? { version } : {}),
+          ...(releaseVersionMismatch
+            ? { reason: `release lock expects ${runtime.selectedVersion}, observed ${normalizedVersion(version!)}` }
+            : {}),
         }
         : {}),
     };
