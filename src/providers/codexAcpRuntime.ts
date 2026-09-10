@@ -183,8 +183,9 @@ function hasOwnCodexMarker(meta: unknown): boolean {
  * payload itself (`notification.update._meta`, via ContentChunk) are
  * distinct fields — Codex places its phase tag on the update payload, not
  * the notification envelope. This interpretation is Codex-specific and
- * deliberately lives here rather than in the generic ACP core (acp/client.ts,
- * which keeps forwarding every live chunk unchanged for progress display).
+ * deliberately lives here rather than in the generic ACP core. The generic
+ * core scopes human-facing live text to the parent/root session before this
+ * Codex phase policy is applied.
  */
 function codexMetaOf(payload: CodexAgentMessageChunk): { phase?: unknown } | undefined {
   const meta = payload._meta as { codex?: unknown } | null | undefined;
@@ -198,8 +199,12 @@ function codexPhaseOf(payload: CodexAgentMessageChunk): "commentary" | "final_an
   return phase === "commentary" || phase === "final_answer" ? phase : undefined;
 }
 
-function liveAgentMessageChunk(update: AcpObservedUpdate): CodexAgentMessageChunk | undefined {
+function liveAgentMessageChunk(
+  update: AcpObservedUpdate,
+  sessionId: string,
+): CodexAgentMessageChunk | undefined {
   if (update.channel !== "live") return undefined;
+  if (update.notification.sessionId !== sessionId) return undefined;
   const payload = update.notification.update;
   if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return undefined;
   return payload as CodexAgentMessageChunk;
@@ -218,31 +223,38 @@ function hasCodexPhaseMarker(update: AcpObservedUpdate, payload: CodexAgentMessa
 }
 
 /**
- * A turn "participates in Codex phase semantics" the moment any live chunk
- * carries a Codex marker at the correct update level or at the malformed
- * notification-envelope level. Once a turn is phase-aware, every chunk in it
- * (commentary, missing phase, malformed phase, or misplaced phase) fails
- * closed out of the authoritative answer; only correctly located
- * "final_answer" chunks qualify. A turn with no Codex phase marker at all
- * keeps the original generic behavior (every live chunk is the answer).
+ * A turn "participates in Codex phase semantics" the moment any root-session
+ * live chunk carries a Codex marker at the correct update level or at the
+ * malformed notification-envelope level. Child-session phase markers never
+ * influence parent answer authority. Once a turn is phase-aware, every root
+ * chunk in it (commentary, missing phase, malformed phase, or misplaced phase)
+ * fails closed out of the authoritative answer; only correctly located
+ * "final_answer" chunks qualify. A turn with no root Codex phase marker keeps
+ * the original generic behavior (every root live chunk is the answer).
  */
-function turnHasCodexPhaseSemantics(updates: readonly AcpObservedUpdate[]): boolean {
+function turnHasCodexPhaseSemantics(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): boolean {
   return updates.some((update) => {
-    const payload = liveAgentMessageChunk(update);
+    const payload = liveAgentMessageChunk(update, sessionId);
     return payload !== undefined && hasCodexPhaseMarker(update, payload);
   });
 }
 
 /**
- * The authoritative final answer for a phase-aware turn: only valid
- * "final_answer" chunks, in original order. Replay is always excluded.
- * Commentary, malformed phase, and missing-phase chunks are all excluded —
- * never promoted, never leaked into the delivered answer.
+ * The authoritative final answer for a phase-aware turn: only valid root
+ * "final_answer" chunks, in original order. Replay and child sessions are
+ * always excluded. Commentary, malformed phase, and missing-phase chunks are
+ * all excluded — never promoted, never leaked into the delivered answer.
  */
-function codexFinalAnswerText(updates: readonly AcpObservedUpdate[]): string {
+function codexFinalAnswerText(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): string {
   let text = "";
   for (const update of updates) {
-    const payload = liveAgentMessageChunk(update);
+    const payload = liveAgentMessageChunk(update, sessionId);
     if (!payload) continue;
     if (codexPhaseOf(payload) !== "final_answer") continue;
     text += payload.content.text;
@@ -251,13 +263,17 @@ function codexFinalAnswerText(updates: readonly AcpObservedUpdate[]): string {
 }
 
 export function toCliResult(result: AcpTurnResult): CliResult {
-  const phaseAware = turnHasCodexPhaseSemantics(result.updates);
+  const phaseAware = turnHasCodexPhaseSemantics(result.updates, result.acpSessionId);
   // Phase-aware turns never fall back to the raw live text — that would leak
-  // commentary (or any malformed/missing-phase chunk) as if it were the
-  // authoritative answer. A phase-aware turn with no valid final_answer chunk
-  // yields empty text here, same as an agent that produced no live text at
-  // all, and hits the same fail-closed guard below.
-  const text = (phaseAware ? codexFinalAnswerText(result.updates) : result.liveText).trim();
+  // commentary (or any malformed/missing-phase root chunk) as if it were the
+  // authoritative answer. Child-session chunks are filtered before phase
+  // semantics are considered. A phase-aware turn with no valid root
+  // final_answer chunk yields empty text and hits the fail-closed guard below.
+  const text = (
+    phaseAware
+      ? codexFinalAnswerText(result.updates, result.acpSessionId)
+      : result.liveText
+  ).trim();
   if (!text && result.stopReason !== "cancelled") {
     throw new Error(
       `Codex ACP completed without ${phaseAware ? "a valid final_answer chunk" : "live text"} (stopReason=${result.stopReason})`,
