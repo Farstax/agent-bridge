@@ -197,6 +197,19 @@ export function normalizeProviderVersion(raw: string): string {
   return match?.[0] ?? trimmed;
 }
 
+function assertReleaseLockedVersion(
+  providerId: ProviderId,
+  observedVersion: string,
+  env: QualificationEnv,
+): void {
+  const selectedVersion = resolveProviderRuntime(providerId, env).selectedVersion;
+  if (selectedVersion && observedVersion !== selectedVersion) {
+    throw new Error(
+      `installed version mismatch: release lock expects ${selectedVersion}, observed ${observedVersion}`,
+    );
+  }
+}
+
 /** Observe the version of the exact command used by the resolved bridge runtime. */
 export function resolveQualificationVersionCommand(
   providerId: ProviderId,
@@ -219,7 +232,9 @@ export function readProviderVersion(
     timeout: 10_000,
   }).trim();
   if (!raw) throw new Error(`${providerId} version command returned no output`);
-  return normalizeProviderVersion(raw);
+  const observedVersion = normalizeProviderVersion(raw);
+  assertReleaseLockedVersion(providerId, observedVersion, env);
+  return observedVersion;
 }
 
 export function qualificationEvidencePath(homeDir: string = homedir()): string {
@@ -311,11 +326,14 @@ export function isQualificationCurrent(
   installedVersion: string,
   env: QualificationEnv = process.env,
 ): boolean {
+  const runtime = resolveProviderRuntime(providerId, env);
+  const normalizedInstalledVersion = normalizeProviderVersion(installedVersion);
+  if (runtime.selectedVersion && normalizedInstalledVersion !== runtime.selectedVersion) return false;
   return Boolean(record
     && record.provider === providerId
-    && record.providerVersion === normalizeProviderVersion(installedVersion)
+    && record.providerVersion === normalizedInstalledVersion
     && record.contractVersion === PROVIDER_CONTRACT_VERSION
-    && record.executionRuntime === currentQualificationRuntime(providerId, env));
+    && record.executionRuntime === runtime.runtimeIdentity);
 }
 
 function failedCheckNames(record: ProviderQualificationRecord): string[] {
@@ -724,12 +742,20 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const evidencePath = options.evidencePath ?? qualificationEvidencePath(homeDir);
   const qualifiedAt = new Date().toISOString();
   const checks: ProviderQualificationCheck[] = [];
-  let providerVersion = options.expectedVersion ? normalizeProviderVersion(options.expectedVersion) : "unknown";
+  const requestedExpectedVersion = options.expectedVersion
+    ? normalizeProviderVersion(options.expectedVersion)
+    : null;
+  let providerVersion = runtime.selectedVersion ?? requestedExpectedVersion ?? "unknown";
   let overall: ProviderQualificationRecord["overall"] = "pass";
 
   const versionCommand = resolveQualificationVersionCommand(options.providerId, runtimeEnv, executable);
   try {
     try {
+      if (runtime.selectedVersion && requestedExpectedVersion && requestedExpectedVersion !== runtime.selectedVersion) {
+        throw new Error(
+          `qualification expectation mismatch: release lock requires ${runtime.selectedVersion}, requested ${requestedExpectedVersion}`,
+        );
+      }
       const versionOutput = execFileSync(versionCommand, [...runtime.versionArgs], {
         cwd,
         encoding: "utf8",
@@ -737,8 +763,9 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         timeout: timeoutMs === 0 ? 10_000 : Math.min(timeoutMs, 10_000),
       }).trim();
       providerVersion = normalizeProviderVersion(versionOutput);
-      if (options.expectedVersion && providerVersion !== normalizeProviderVersion(options.expectedVersion)) {
-        throw new Error(`installed version mismatch: expected ${normalizeProviderVersion(options.expectedVersion)}, observed ${providerVersion}`);
+      assertReleaseLockedVersion(options.providerId, providerVersion, runtimeEnv);
+      if (requestedExpectedVersion && providerVersion !== requestedExpectedVersion) {
+        throw new Error(`installed version mismatch: expected ${requestedExpectedVersion}, observed ${providerVersion}`);
       }
       checks.push({ name: "version", status: "pass", diagnostic: versionOutput.slice(0, 200) });
     } catch (error) {
