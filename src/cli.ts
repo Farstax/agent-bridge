@@ -17,7 +17,6 @@ import {
   resolveProviderRuntime,
   runAcpProviderTurn,
 } from "./providers/acpRuntime.js";
-import * as claudeRuntime from "./providers/claudeRuntime.js";
 import * as grokRuntime from "./providers/grokRuntime.js";
 import * as cursorRuntime from "./providers/cursorRuntime.js";
 import * as antigravityRuntime from "./providers/antigravityRuntime.js";
@@ -80,14 +79,11 @@ import {
   registerProviderOutput,
 } from "./runTelemetry.js";
 import { wrapPromptContext } from "./promptWrapping.js";
-import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 import {
   AntigravityUncertainCompletionError,
-  ClaudeUncertainCompletionError,
   CursorUncertainCompletionError,
   GrokUncertainCompletionError,
   isAntigravityUncertainCompletionFailureMessage,
-  isClaudeUncertainCompletionFailureMessage,
   isCursorUncertainCompletionFailureMessage,
   isGrokUncertainCompletionFailureMessage,
 } from "./cliSuccessfulExitValidation.js";
@@ -201,11 +197,6 @@ export function buildCliInvocation({
       nativeCompletion,
     });
   }
-  if (bot === "claude") {
-    return claudeRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
-    });
-  }
   if (bot === "grok") {
     return grokRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
@@ -278,7 +269,7 @@ export function buildExecutionOptions(kind: BotKind): CliOptions {
   };
 }
 
-/** Parses the CLI result. */
+/** Parses native CLI results. ACP-backed providers bypass this path. */
 export function parseCliResult({
   bot,
   stdout,
@@ -295,8 +286,6 @@ export function parseCliResult({
   const providerId = providerIdForBotName(bot);
   if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
     throw new Error(`${bot} uses ACP structured results and is not parsed as native CLI output`);
-  } else if (bot === "claude") {
-    result = claudeRuntime.parseResult(stdout);
   } else if (bot === "grok") {
     result = grokRuntime.parseResult(stdout);
   } else if (bot === "cursor") {
@@ -316,7 +305,6 @@ export function parseCliResult({
 function extractUpstreamCliError(raw: string): string | null {
   let turnFailed: string | null = null;
   let genericError: string | null = null;
-  let claudeError: string | null = null;
   for (const line of raw.split(/\r?\n/)) {
     const start = line.indexOf("{");
     if (start === -1) continue;
@@ -326,12 +314,10 @@ function extractUpstreamCliError(raw: string): string | null {
         turnFailed = obj.error.message;
       } else if (obj?.type === "error" && typeof obj?.message === "string") {
         genericError = obj.message;
-      } else if (obj?.type === "result" && obj?.is_error === true && typeof obj?.result === "string") {
-        claudeError = obj.result;
       }
     } catch { /* not JSON, skip */ }
   }
-  return turnFailed ?? genericError ?? claudeError;
+  return turnFailed ?? genericError;
 }
 
 export function toUserMessage(err: Error): string {
@@ -358,14 +344,6 @@ function isAntigravityExecution(options: CliOptions): boolean {
 function eventChatKey(options: CliOptions): string | undefined {
   return options.eventContext?.chatKey;
 }
-
-const CLAUDE_UNCERTAIN_COMPLETION_RECOVERY_PROMPT = [
-  "Agent Bridge detected that the immediately preceding turn ended with uncertain native completion.",
-  "Reconcile the current Claude session state for that preceding user request.",
-  "Determine what work actually completed, finish any remaining safe work if needed, and return one final user-facing closure.",
-  "Do not repeat side effects that already completed.",
-  "If completion cannot be verified, state the concrete blocker or uncertainty.",
-].join(" ");
 
 function providerRecoveryPrompt(provider: RecoverableProvider): string {
   const name = provider === "antigravity" ? "Agy" : provider === "grok" ? "Grok" : "Cursor";
@@ -404,15 +382,6 @@ function safeRecoveryResult(options: CliOptions, result: CliResult): CliResult {
   };
 }
 
-function serializeClaudeResult(result: CliResult): string {
-  return JSON.stringify({
-    type: "result",
-    subtype: "success",
-    result: result.text,
-    session_id: result.sessionId ?? null,
-  });
-}
-
 function serializeProviderResult(
   provider: RecoverableProvider,
   result: CliResult,
@@ -436,18 +405,6 @@ function serializeProviderResult(
     result: result.text,
     session_id: result.sessionId,
   }) + "\n";
-}
-
-function incompleteClaudeResult(error: ClaudeUncertainCompletionError): CliResult {
-  const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
-  const note = "Claude stopped before confirming completion. Some work may have been applied, but completion could not be verified.";
-  return {
-    text: error.safeResult?.text.trim()
-      ? `${error.safeResult.text.trim()}\n\n${note}`
-      : note,
-    sessionId,
-    ...(error.safeResult?.telemetry ? { telemetry: error.safeResult.telemetry } : {}),
-  };
 }
 
 function incompleteProviderText(provider: RecoverableProvider): string {
@@ -497,64 +454,6 @@ function finishRecoveryCancelled(options: CliOptions): { stdout: string } {
     }
   }
   return { stdout: "" };
-}
-
-async function recoverClaudeUncertainCompletion(
-  command: string,
-  args: string[],
-  cwd: string,
-  options: CliOptions,
-  error: ClaudeUncertainCompletionError,
-): Promise<{ stdout: string }> {
-  const finishIncomplete = (): { stdout: string } => {
-    const result = safeRecoveryResult(options, incompleteClaudeResult(error));
-    emitRecoveryCompleted(options, result);
-    return { stdout: serializeClaudeResult(result) };
-  };
-  if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
-  const sessionId = error.sessionId ?? error.safeResult?.sessionId ?? null;
-  if (!sessionId) return finishIncomplete();
-
-  const recoveryInvocation = buildCliInvocation({
-    bot: "claude",
-    prompt: CLAUDE_UNCERTAIN_COMPLETION_RECOVERY_PROMPT,
-    sessionId,
-    command,
-    model: optionValue(args, "--model"),
-    executionMode: args.includes("--dangerously-skip-permissions") ? "trusted" : "safe",
-    outputFormat: "stream-json",
-    soulContext: null,
-    includeResponseContract: false,
-    attachments: [],
-    outputDir: null,
-    effort: effortFromArgs(args),
-    nativeCompletion: true,
-  });
-
-  try {
-    const recovery = await runSupervisedProcess(
-      recoveryInvocation.command,
-      recoveryInvocation.args,
-      cwd,
-      {
-        ...options,
-        bot: "claude",
-        stdin: recoveryInvocation.stdin,
-        eventContext: undefined,
-        onEvent: undefined,
-        onProviderOutputChunk: undefined,
-      },
-    );
-    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
-    const parsed = parseClaudeStreamJsonOutput(recovery.stdout);
-    if (!parsed) return finishIncomplete();
-    const result = safeRecoveryResult(options, parsed);
-    emitRecoveryCompleted(options, result);
-    return { stdout: serializeClaudeResult(result) };
-  } catch {
-    if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
-    return finishIncomplete();
-  }
 }
 
 type NonClaudeUncertainCompletionError =
@@ -613,7 +512,6 @@ function isNonClaudeUncertainCompletion(
 }
 
 function isProviderUncertainCompletionFailureMessage(provider: string | undefined, message: string): boolean {
-  if (provider === "claude") return isClaudeUncertainCompletionFailureMessage(message);
   if (provider === "antigravity") return isAntigravityUncertainCompletionFailureMessage(message);
   if (provider === "grok") return isGrokUncertainCompletionFailureMessage(message);
   if (provider === "cursor") return isCursorUncertainCompletionFailureMessage(message);
@@ -739,9 +637,7 @@ async function runConfiguredCli(
         )
       : await runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
   } catch (error) {
-    if (provider === "claude" && error instanceof ClaudeUncertainCompletionError) {
-      outcome = await recoverClaudeUncertainCompletion(command, args, cwd, executionOptions, error);
-    } else if (isRecoverableProvider(provider) && isNonClaudeUncertainCompletion(provider, error)) {
+    if (isRecoverableProvider(provider) && isNonClaudeUncertainCompletion(provider, error)) {
       outcome = await recoverProviderUncertainCompletion(command, args, cwd, executionOptions, provider, error);
     } else {
       throw error;
