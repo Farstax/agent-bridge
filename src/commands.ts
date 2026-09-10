@@ -14,6 +14,7 @@ import { buildModelKeyboard, buildModelsText } from "./bridge.js";
 import { listLocalCatalog } from "./skills.js";
 import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js";
 import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
+import { persistProviderSession } from "./providers/sessionRuntime.js";
 
 export type CommandResult =
   | { kind: "message"; text: string }
@@ -218,7 +219,7 @@ export function handleCommand(
   }
 
   if (text === "/reset") {
-    db.setSession(chatId, kind, null);
+    persistProviderSession(db, chatId, kind, null);
     db.clearConvHistory(chatId, surfaceIdentity);
     return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };
   }

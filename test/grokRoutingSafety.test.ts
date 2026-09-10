@@ -55,6 +55,7 @@ function withGrokEnvironment<T>(run: (root: string, evidencePath: string) => T):
 function writeFailedGrokQualification(evidencePath: string): void {
   writeQualificationRecord({
     provider: "grok",
+    executionRuntime: "native:grok",
     providerVersion: "1.0.5",
     previousVersion: null,
     bridgeCommit: "e".repeat(40),

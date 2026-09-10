@@ -305,7 +305,6 @@ export class BridgeDb {
 
   setSession(chatId: string, bot: BotKind, sessionId: string | null): void {
     this.sessions.setSession(chatId, bot, sessionId);
-    if (sessionId === null && bot === "codex") this.acpSessions.clear(chatId, "codex");
   }
 
   getAcpSessionBinding(conversationId: string, providerId: string): AcpSessionBinding | null {

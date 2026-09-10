@@ -7,7 +7,7 @@
 
 import { execFileSync } from "node:child_process";
 import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
-import { resolveProviderRuntime } from "./acpRuntime.js";
+import { resolveProviderRuntime, type ResolvedProviderRuntime } from "./acpRuntime.js";
 import { getProviderAdapters } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
@@ -67,9 +67,9 @@ export function defaultCommandExists(executable: string): boolean {
   }
 }
 
-export function defaultInspectVersion(executable: string): string | null {
+export function defaultInspectVersion(executable: string, versionArgs: readonly string[] = ["--version"]): string | null {
   try {
-    const output = execFileSync(executable, ["--version"], {
+    const output = execFileSync(executable, [...versionArgs], {
       encoding: "utf8",
       timeout: 5_000,
       stdio: ["ignore", "pipe", "pipe"],
@@ -78,6 +78,40 @@ export function defaultInspectVersion(executable: string): string | null {
   } catch {
     return null;
   }
+}
+
+export function inspectResolvedProviderRuntime(
+  runtime: ResolvedProviderRuntime,
+  commandExists: (executable: string) => boolean = defaultCommandExists,
+  inspectVersion: (executable: string, versionArgs: readonly string[]) => string | null = defaultInspectVersion,
+): ProviderCheck {
+  const available = commandExists(runtime.executable);
+  const version = runtime.transport === "acp-stdio" && available
+    ? inspectVersion(runtime.executable, runtime.versionArgs)
+    : null;
+  const versionInspectionFailed = runtime.transport === "acp-stdio" && available && !version;
+  const releaseVersionMismatch = Boolean(
+    runtime.selectedVersion
+    && version
+    && normalizedVersion(version) !== runtime.selectedVersion,
+  );
+  return {
+    id: runtime.providerId,
+    executable: runtime.executable,
+    status: !available ? "missing" : versionInspectionFailed || releaseVersionMismatch ? "invalid" : "available",
+    ...(runtime.transport === "acp-stdio"
+      ? {
+        runtime: "acp" as const,
+        runtimeIdentity: runtime.runtimeIdentity,
+        ...(available ? { version } : {}),
+        ...(versionInspectionFailed
+          ? { reason: "unable to inspect ACP runtime version" }
+          : releaseVersionMismatch
+            ? { reason: `release lock expects ${runtime.selectedVersion}, observed ${normalizedVersion(version!)}` }
+            : {}),
+      }
+      : {}),
+  };
 }
 
 function normalizedVersion(raw: string): string {
@@ -95,36 +129,11 @@ export function runDoctor({
   env?: Record<string, string | undefined>;
   requiredEnv?: string[];
   commandExists?: (executable: string) => boolean;
-  inspectVersion?: (executable: string) => string | null;
+  inspectVersion?: (executable: string, versionArgs: readonly string[]) => string | null;
   inspectVoiceRuntime?: (env: Record<string, string | undefined>) => VoiceRuntimeReadiness;
 } = {}): DoctorReport {
-  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => {
-    const runtime = resolveProviderRuntime(adapter.id, env);
-    const available = commandExists(runtime.executable);
-    const version = runtime.transport === "acp-stdio" && available
-      ? inspectVersion(runtime.executable)
-      : null;
-    const releaseVersionMismatch = Boolean(
-      runtime.selectedVersion
-      && version
-      && normalizedVersion(version) !== runtime.selectedVersion,
-    );
-    return {
-      id: adapter.id,
-      executable: runtime.executable,
-      status: !available ? "missing" : releaseVersionMismatch ? "invalid" : "available",
-      ...(runtime.transport === "acp-stdio"
-        ? {
-          runtime: "acp" as const,
-          runtimeIdentity: runtime.runtimeIdentity,
-          ...(available ? { version } : {}),
-          ...(releaseVersionMismatch
-            ? { reason: `release lock expects ${runtime.selectedVersion}, observed ${normalizedVersion(version!)}` }
-            : {}),
-        }
-        : {}),
-    };
-  });
+  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) =>
+    inspectResolvedProviderRuntime(resolveProviderRuntime(adapter.id, env), commandExists, inspectVersion));
 
   const effectiveEntries: Record<(typeof CHAIN_ENV_VARS)[number], string[]> = {
     INTERACTIVE_CLI_CHAIN: parseCliChain(

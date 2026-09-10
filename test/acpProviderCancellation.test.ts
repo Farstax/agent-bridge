@@ -7,16 +7,16 @@ import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
 import type { TelegramMessage } from "../src/types.js";
 
-// codexAcpRuntime.runTurn is the only ACP transport entry point engine.ts
-// calls (via cli.js's re-export). Mocking it here lets these tests drive the
+// runProviderInvocation is the provider-neutral ACP transport entry point used
+// by engine.ts. Mocking it here lets these tests drive the
 // engine's real cancellation/delivery/persistence pipeline deterministically,
 // without spawning a real ACP stdio child — except for the explicit
 // production-shaped lease-loss regression, which delegates through the actual
-// runTurn implementation before invalidating the Bridge lane.
-const runTurnMock = vi.fn();
-vi.mock("../src/providers/codexAcpRuntime.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/providers/codexAcpRuntime.js")>();
-  return { ...actual, runTurn: runTurnMock };
+// generic implementation before invalidating the Bridge lane.
+const runProviderInvocationMock = vi.fn();
+vi.mock("../src/cli.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/cli.js")>();
+  return { ...actual, runProviderInvocation: runProviderInvocationMock };
 });
 
 const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
@@ -66,7 +66,7 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     dbPath = join(tmpdir(), `acp-cancel-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
     db = openDb(dbPath);
     process.env.CODEX_ACP_COMMAND = "codex-acp";
-    runTurnMock.mockReset();
+    runProviderInvocationMock.mockReset();
   });
 
   afterEach(() => {
@@ -78,8 +78,9 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   });
 
   it("does not deliver, complete, or remember a turn the provider ended with stopReason=cancelled", async () => {
-    runTurnMock.mockImplementation(async (
-      _request: unknown,
+    runProviderInvocationMock.mockImplementation(async (
+      _bot: unknown,
+      _invocation: unknown,
       _cwd: string,
       options: { onAnswerDelta?: (text: string) => void },
     ) => {
@@ -117,7 +118,13 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
 
   it("removes generated output from a provider-cancelled turn without publishing attachments", async () => {
     let cancelledOutputDir: string | null = null;
-    runTurnMock.mockImplementation(async (request: { outputDir?: string | null }) => {
+    runProviderInvocationMock.mockImplementation(async (
+      _bot: unknown,
+      _invocation: unknown,
+      _cwd: string,
+      _options: unknown,
+      request: { outputDir?: string | null },
+    ) => {
       cancelledOutputDir = request.outputDir ?? null;
       if (!cancelledOutputDir) throw new Error("missing ACP outputDir in cancellation test");
       writeFileSync(join(cancelledOutputDir, "partial.txt"), "partial output from cancelled turn");
@@ -144,17 +151,17 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   });
 
   it("cleans cancelled output before a post-provider lease loss can fence settlement", async () => {
-    const actualRuntime = await vi.importActual<typeof import("../src/providers/codexAcpRuntime.js")>("../src/providers/codexAcpRuntime.js");
+    const actualCli = await vi.importActual<typeof import("../src/cli.js")>("../src/cli.js");
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
 
     let fencedOutputDir: string | null = null;
-    runTurnMock.mockImplementation(async (...args: Parameters<typeof actualRuntime.runTurn>) => {
-      const request = args[0];
+    runProviderInvocationMock.mockImplementation(async (...args: Parameters<typeof actualCli.runProviderInvocation>) => {
+      const request = args[4];
       fencedOutputDir = request.outputDir ?? null;
       if (!fencedOutputDir) throw new Error("missing ACP outputDir in fenced cancellation test");
       process.env.FAKE_ACP_OUTPUT_FILE = join(fencedOutputDir, "partial.txt");
-      const result = await actualRuntime.runTurn(...args);
+      const result = await actualCli.runProviderInvocation(...args);
       // Simulate authority disappearing in the narrow window after the ACP
       // turn has settled but before BridgeEngine's first post-provider fence.
       db.raw.prepare("DELETE FROM execution_locks WHERE surface = ? AND chat_key = ?").run("test", "100");
@@ -182,8 +189,9 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   });
 
   it("still delivers, completes, and remembers a normal (non-cancelled) ACP turn", async () => {
-    runTurnMock.mockImplementation(async (
-      _request: unknown,
+    runProviderInvocationMock.mockImplementation(async (
+      _bot: unknown,
+      _invocation: unknown,
       _cwd: string,
       options: { onAnswerDelta?: (text: string) => void },
     ) => {
@@ -204,7 +212,7 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
 
     await engine.handleMessages([makeMessage("hello")]);
 
-    expect(typeof runTurnMock.mock.calls[0][2].onAnswerDelta).toBe("function");
+    expect(typeof runProviderInvocationMock.mock.calls[0][3].onAnswerDelta).toBe("function");
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
       message_id: 1,
@@ -227,12 +235,12 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
   });
 
   it("permits a later turn in the same conversation to proceed normally after provider cancellation", async () => {
-    runTurnMock.mockResolvedValueOnce({
+    runProviderInvocationMock.mockResolvedValueOnce({
       text: "",
       sessionId: "acp-session-recover-1",
       stopReason: "cancelled",
     });
-    runTurnMock.mockResolvedValueOnce({
+    runProviderInvocationMock.mockResolvedValueOnce({
       text: "resumed answer",
       sessionId: "acp-session-recover-1",
       stopReason: "end_turn",
@@ -249,14 +257,15 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
 
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     expect(client.sendMessage.mock.calls[0][0].text).toContain("resumed answer");
-    expect(runTurnMock).toHaveBeenCalledTimes(2);
-    expect(runTurnMock.mock.calls[1][0].sessionId).toBe("acp-session-recover-1");
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(2);
+    expect(runProviderInvocationMock.mock.calls[1][4].sessionId).toBe("acp-session-recover-1");
   });
 
   it("passes the transient answer callback to a Codex ACP model fallback attempt", async () => {
-    runTurnMock.mockRejectedValueOnce(new Error("MODEL_CAPACITY_EXHAUSTED"));
-    runTurnMock.mockImplementationOnce(async (
-      _request: unknown,
+    runProviderInvocationMock.mockRejectedValueOnce(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    runProviderInvocationMock.mockImplementationOnce(async (
+      _bot: unknown,
+      _invocation: unknown,
       _cwd: string,
       options: { onAnswerDelta?: (text: string) => void },
     ) => {
@@ -285,8 +294,8 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
 
     await engine.handleMessages([makeMessage("hello")]);
 
-    expect(runTurnMock).toHaveBeenCalledTimes(2);
-    expect(typeof runTurnMock.mock.calls[1][2].onAnswerDelta).toBe("function");
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(2);
+    expect(typeof runProviderInvocationMock.mock.calls[1][3].onAnswerDelta).toBe("function");
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
       message_id: 1,
@@ -298,7 +307,7 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     // putAcpSessionBinding refuses a session id equal to the Bridge
     // conversation id (chatKey "100" here) — a real, non-fencing DB
     // rejection, distinct from a lost execution lease.
-    runTurnMock.mockResolvedValue({
+    runProviderInvocationMock.mockResolvedValue({
       text: "",
       sessionId: "100",
       stopReason: "cancelled",

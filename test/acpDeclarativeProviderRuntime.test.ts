@@ -1,15 +1,23 @@
 import * as acp from "@agentclientprotocol/sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
 import {
   ACP_REGISTRY_SCHEMA_VERSION,
   getLockedAcpRegistryEntry,
 } from "../src/providers/acpRegistry.js";
 import {
+  acpProviderIdForBotName,
+  buildResolvedAcpProviderInvocation,
   resolveAcpProviderRuntime,
   resolveProviderRuntime,
+  supportsProvisionalAnswers,
   type AcpProviderPolicy,
+  type ResolvedProviderRuntime,
 } from "../src/providers/acpRuntime.js";
+import { inspectResolvedProviderRuntime } from "../src/providers/doctor.js";
+import { lookupProviderSession, persistProviderSession } from "../src/providers/sessionRuntime.js";
+import type { BridgeDb } from "../src/db.js";
+import type { BotKind } from "../src/types.js";
 
 const fixturePolicy: AcpProviderPolicy = {
   providerId: "fixture-acp",
@@ -44,24 +52,82 @@ describe("declarative ACP provider runtime", () => {
     }));
   });
 
-  it("uses the same generic ACP resolver for a fixture second provider", () => {
+  it("uses the release-locked Registry launcher for a fixture second provider", () => {
     const lockedEntry = {
       id: "fixture-agent",
       name: "Fixture Agent",
       version: "2.3.4",
       distribution: { npx: { package: "@example/fixture-agent@2.3.4", args: ["--acp"] } },
     } as const;
-    const runtime = resolveAcpProviderRuntime(fixturePolicy, lockedEntry, {
-      executable: "/release/node_modules/.bin/fixture-agent",
-    });
+    const runtime = resolveAcpProviderRuntime(fixturePolicy, lockedEntry);
     expect(runtime).toEqual(expect.objectContaining({
       providerId: "fixture-acp",
       transport: "acp-stdio",
-      executable: "/release/node_modules/.bin/fixture-agent",
-      args: ["--acp"],
+      executable: "npx",
+      args: ["@example/fixture-agent@2.3.4", "--acp"],
+      versionArgs: ["@example/fixture-agent@2.3.4", "--version"],
       runtimeIdentity: "acp:fixture-agent@2.3.4",
       provisionalAnswers: true,
     }));
+    expect(buildResolvedAcpProviderInvocation(runtime, null)).toEqual({
+      command: "npx",
+      args: ["@example/fixture-agent@2.3.4", "--acp"],
+      nativeSessionMode: "fresh",
+      transport: "acp-stdio",
+    });
+  });
+
+  it("lets engine presentation and session routing consume a resolved second-provider runtime", () => {
+    const fixtureRuntime: ResolvedProviderRuntime = {
+      providerId: "fixture-acp",
+      transport: "acp-stdio",
+      executable: "npx",
+      args: ["@example/fixture-agent@2.3.4"],
+      versionArgs: ["@example/fixture-agent@2.3.4", "--version"],
+      runtimeIdentity: "acp:fixture-agent@2.3.4",
+      selectedVersion: "2.3.4",
+      registryAgentId: "fixture-agent",
+      distribution: { npx: { package: "@example/fixture-agent@2.3.4" } },
+      toolFree: false,
+      provisionalAnswers: true,
+    };
+    const resolveFixture = () => fixtureRuntime;
+    expect(supportsProvisionalAnswers("fixture", {}, resolveFixture)).toBe(true);
+    expect(acpProviderIdForBotName("fixture", {}, resolveFixture)).toBe("fixture-acp");
+
+    const db = {
+      getAcpSessionBinding: vi.fn(() => ({ acpSessionId: "fixture-session" })),
+      putAcpSessionBinding: vi.fn(),
+      clearAcpSessionBinding: vi.fn(),
+      getSession: vi.fn(),
+      setSession: vi.fn(),
+    } as unknown as BridgeDb;
+    const kind = "fixture" as BotKind;
+    expect(lookupProviderSession(db, "conversation", kind, resolveFixture)).toBe("fixture-session");
+    persistProviderSession(db, "conversation", kind, "next-session", "run-1", resolveFixture);
+    expect(db.putAcpSessionBinding).toHaveBeenCalledWith({
+      conversationId: "conversation",
+      providerId: "fixture-acp",
+      acpSessionId: "next-session",
+      runId: "run-1",
+    });
+    expect(db.setSession).not.toHaveBeenCalled();
+  });
+
+  it("passes Registry launcher version args through the generic doctor boundary", () => {
+    const runtime = resolveAcpProviderRuntime(fixturePolicy, {
+      id: "fixture-agent",
+      name: "Fixture Agent",
+      version: "2.3.4",
+      distribution: { uvx: { package: "fixture-agent==2.3.4", args: ["serve"] } },
+    });
+    const inspectVersion = vi.fn(() => "fixture-agent 2.3.4");
+    const result = inspectResolvedProviderRuntime(runtime, () => true, inspectVersion);
+    expect(inspectVersion).toHaveBeenCalledWith(
+      "uvx",
+      ["fixture-agent==2.3.4", "--version"],
+    );
+    expect(result).toMatchObject({ status: "available", version: "fixture-agent 2.3.4" });
   });
 
   it("can invoke the standard ACP authenticate request after initialize without a provider-name branch", async () => {
@@ -103,5 +169,25 @@ describe("declarative ACP provider runtime", () => {
 
     expect(authenticatedWith).toBe("workspace-token");
     expect(result.liveText).toBe("authenticated");
+  });
+
+  it("rejects an authentication method that the ACP agent did not advertise", async () => {
+    const agent = acp.agent({ name: "auth-fixture" })
+      .onRequest(acp.methods.agent.initialize, async () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: { loadSession: false },
+        authMethods: [{ id: "supported-method", name: "Supported method" }],
+      }));
+
+    await expect(runAcpTurn({
+      peer: agent,
+      cwd: process.cwd(),
+      conversationId: "conv-auth-invalid",
+      runId: "run-auth-invalid",
+      existingAcpSessionId: null,
+      prompt: "hello",
+      executionMode: "safe",
+      authenticateMethodId: "unknown-method",
+    })).rejects.toThrow(/did not advertise authentication method/);
   });
 });

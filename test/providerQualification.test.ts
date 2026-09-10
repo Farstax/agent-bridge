@@ -8,6 +8,7 @@ import {
   isQualificationCurrent,
   qualificationHealthCheck,
   qualifyProvider,
+  readProviderVersion,
   readQualificationEvidence,
   writeQualificationRecord,
   type ProviderQualificationRecord,
@@ -162,14 +163,30 @@ exit 1
     expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
   });
 
-  it("only considers evidence current for the same provider version and contract version", () => {
-    const current = passingRecord();
-    expect(isQualificationCurrent(current, "codex", "9.9.9")).toBe(true);
-    expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "9.9.9")).toBe(false);
-    expect(isQualificationCurrent({ ...current, executionRuntime: "acp" }, "codex", "9.9.9")).toBe(true);
-    expect(isQualificationCurrent(current, "codex", "9.9.10")).toBe(false);
-    expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "9.9.9")).toBe(false);
-    expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "9.9.9")).toBe(false);
+  it("only considers evidence current for the same provider version, contract version and exact runtime identity", () => {
+    const current = passingRecord({
+      provider: "codex",
+      providerVersion: "1.10.0",
+      executionRuntime: "acp:codex-acp@1.10.0",
+    });
+    expect(isQualificationCurrent(current, "codex", "1.10.0")).toBe(true);
+    expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "1.10.0")).toBe(false);
+    // A different distribution/version identity for the same version string must not qualify.
+    expect(isQualificationCurrent({ ...current, executionRuntime: "acp:codex-acp@1.9.0" }, "codex", "1.10.0")).toBe(false);
+    expect(isQualificationCurrent(current, "codex", "1.10.1")).toBe(false);
+    expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "1.10.0")).toBe(false);
+    expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "1.10.0")).toBe(false);
+  });
+
+  it("only considers native (non-ACP) evidence current for the resolved runtime identity", () => {
+    const current = passingRecord({
+      provider: "claude",
+      providerVersion: "2.1.229",
+      executionRuntime: "native:claude",
+    });
+    expect(isQualificationCurrent(current, "claude", "2.1.229")).toBe(true);
+    expect(isQualificationCurrent({ ...current, executionRuntime: "native:codex" }, "claude", "2.1.229")).toBe(false);
+    expect(isQualificationCurrent(current, "claude", "2.1.230")).toBe(false);
   });
 
   it("versions the Codex ACP executable used by production", async () => {
@@ -198,7 +215,7 @@ exit 7
           CODEX_ACP_COMMAND: acp,
         },
       });
-      expect(result.executionRuntime).toBe("acp");
+      expect(result.executionRuntime).toBe("acp:codex-acp@1.10.0");
       expect(result.providerVersion).toBe("1.10.0");
       expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/codex-acp 1\.10\.0/);
     } finally {
@@ -209,14 +226,46 @@ exit 7
     }
   });
 
+  it("reports the observed version of a wrongly installed ACP adapter instead of throwing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-acp-version-drift-"));
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const wrongVersion = executable(join(root, "codex-acp"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/codex-acp 0.141.0"; exit 0; fi
+exit 7
+`);
+    process.env.CODEX_ACP_COMMAND = wrongVersion;
+    try {
+      // A passive version observation (used by health/doctor consumers) must
+      // report what is actually installed, not fail closed the way an
+      // active qualification run does — otherwise a real "wrong version
+      // installed" diagnostic gets misreported as "executable not found".
+      expect(readProviderVersion("codex", undefined, {
+        ...process.env,
+        CODEX_ACP_COMMAND: wrongVersion,
+      })).toBe("0.141.0");
+    } finally {
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
+      else process.env.CODEX_ACP_COMMAND = previousCommand;
+    }
+  });
+
   it("does not require tool-free execution for ACP Codex fresh_prompt qualification", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-acp-toolfree-"));
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;
     const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
-    const acpArgs = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
-    process.env.CODEX_ACP_COMMAND = process.execPath;
-    process.env.CODEX_ACP_ARGS = acpArgs;
+    // Qualification always probes the resolved ACP runtime's own executable
+    // for `--version` (never a test-only invocation override), so the
+    // wrapper must answer the release-locked version itself before
+    // delegating the actual ACP session to the fake agent.
+    const wrapper = join(root, "codex-acp");
+    writeFileSync(wrapper, `#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then echo "@agentclientprotocol/codex-acp 1.10.0"; exit 0; fi
+exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${fakeAgent}"
+`);
+    chmodSync(wrapper, 0o755);
+    process.env.CODEX_ACP_COMMAND = wrapper;
+    delete process.env.CODEX_ACP_ARGS;
     try {
       const result = await qualifyProvider({
         providerId: "codex",
@@ -227,8 +276,7 @@ exit 7
         timeoutMs: 5_000,
         env: {
           ...process.env,
-          CODEX_ACP_COMMAND: process.execPath,
-          CODEX_ACP_ARGS: acpArgs,
+          CODEX_ACP_COMMAND: wrapper,
         },
       });
       const freshPrompt = result.checks.find((check) => check.name === "fresh_prompt");
@@ -287,7 +335,7 @@ exit 1
     const cached = passingRecord({
       provider: "claude",
       providerVersion: "2.1.229",
-      executionRuntime: "native",
+      executionRuntime: "native:claude",
     });
     writeQualificationRecord(cached, evidencePath);
 
@@ -310,14 +358,20 @@ exit 1
   it("surfaces persistent pass, degraded and unqualified states for health without rerunning tests", () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-health-"));
     const evidencePath = join(root, "qualification.json");
-    writeQualificationRecord(passingRecord(), evidencePath);
+    const nativeRecord = (overrides: Partial<ProviderQualificationRecord> = {}) => passingRecord({
+      provider: "claude",
+      providerVersion: "9.9.9",
+      executionRuntime: "native:claude",
+      ...overrides,
+    });
+    writeQualificationRecord(nativeRecord(), evidencePath);
 
-    expect(qualificationHealthCheck("codex", "9.9.9", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("claude", "9.9.9", evidencePath)).toMatchObject({
       status: "green",
       message: expect.stringContaining("qualified"),
     });
 
-    writeQualificationRecord(passingRecord({
+    writeQualificationRecord(nativeRecord({
       overall: "fail",
       checks: [
         { name: "version", status: "pass" },
@@ -325,12 +379,12 @@ exit 1
         { name: "session_resume", status: "not_applicable" },
       ],
     }), evidencePath);
-    expect(qualificationHealthCheck("codex", "9.9.9", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("claude", "9.9.9", evidencePath)).toMatchObject({
       status: "red",
       message: expect.stringMatching(/degraded.*fresh_prompt/i),
     });
 
-    expect(qualificationHealthCheck("codex", "9.9.10", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("claude", "9.9.10", evidencePath)).toMatchObject({
       status: "amber",
       message: expect.stringMatching(/9\.9\.10.*unqualified/i),
     });

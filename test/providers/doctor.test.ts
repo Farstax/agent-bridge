@@ -63,6 +63,7 @@ describe("doctor diagnostics", () => {
         ANTIGRAVITY_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable === codexAcp,
+      inspectVersion: (executable) => executable === codexAcp ? "1.10.0" : null,
       inspectVoiceRuntime: voiceReady,
     });
 
@@ -225,6 +226,7 @@ describe("doctor diagnostics", () => {
         CODEX_ACP_COMMAND: custom,
       },
       commandExists: (executable) => executable === custom,
+      inspectVersion: (executable) => executable === custom ? "1.10.0" : null,
       inspectVoiceRuntime: voiceReady,
     });
     expect(report.providers.find((p) => p.id === "codex")).toEqual(expect.objectContaining({
@@ -233,6 +235,20 @@ describe("doctor diagnostics", () => {
       runtime: "acp",
     }));
     expect(report.ok).toBe(true);
+  });
+
+  it("fails closed when an available ACP runtime does not return a version", () => {
+    const report = runDoctor({
+      env: { INTERACTIVE_CLI_CHAIN: "codex" },
+      commandExists: allFound,
+      inspectVersion: () => null,
+      inspectVoiceRuntime: voiceReady,
+    });
+    expect(report.providers.find((p) => p.id === "codex")).toMatchObject({
+      status: "invalid",
+      reason: "unable to inspect ACP runtime version",
+    });
+    expect(report.ok).toBe(false);
   });
 
 });

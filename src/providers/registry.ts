@@ -105,12 +105,6 @@ export function supportsToolFreeMode(bot: string): boolean {
   return getAcpProviderPolicy(id)?.toolFree ?? ADAPTERS[id].capabilities.toolFree;
 }
 
-/** Provisional-answer presentation is runtime policy, not a messaging-provider branch. */
-export function supportsProvisionalAnswers(bot: string): boolean {
-  const id = providerIdForBotName(bot);
-  return id ? Boolean(getAcpProviderPolicy(id)?.presentation.provisionalAnswers) : false;
-}
-
 export function getProcessWatchForCommand(command: string): ProviderAdapter["processWatch"] {
   const executable = basename(command).toLowerCase();
   const commandText = command.toLowerCase();

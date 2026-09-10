@@ -89,7 +89,7 @@ if [ "$1" = update ]; then touch "${claudeState}"; exit 0; fi
 `, qualificationLog);
       script(codex, `
 printf '%s\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/codex-acp 1.1.0'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/codex-acp 1.10.0'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       fakeProvider(agy, `
@@ -179,7 +179,7 @@ exit 97
       };
       expect(evidence.providers).toMatchObject({
         claude: { overall: "pass", providerVersion: "1.1.0" },
-        codex: { overall: "pass", providerVersion: "1.1.0" },
+        codex: { overall: "pass", providerVersion: "1.10.0" },
         agy: { overall: "pass", providerVersion: "1.1.13" },
       });
     } finally {

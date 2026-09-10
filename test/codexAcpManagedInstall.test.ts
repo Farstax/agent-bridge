@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveCodexAcpCommand } from "../src/providers/codexAcpConfig.js";
+import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
 
 const installer = resolve(process.cwd(), "scripts/agent-bridge-install.py");
 const installSh = resolve(process.cwd(), "scripts/install.sh");
@@ -72,7 +73,10 @@ print(json.dumps({
     const pkg = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
     };
-    expect(pkg.dependencies?.["@agentclientprotocol/codex-acp"]).toBe("1.10.0");
+    const locked = getLockedAcpRegistryEntry("codex");
+    const packageSpec = locked?.distribution.npx?.package;
+    expect(packageSpec).toBe("@agentclientprotocol/codex-acp@1.10.0");
+    expect(pkg.dependencies?.["@agentclientprotocol/codex-acp"]).toBe(locked?.version);
     expect(existsSync(resolve(process.cwd(), "node_modules/.bin/codex-acp"))).toBe(true);
   });
 

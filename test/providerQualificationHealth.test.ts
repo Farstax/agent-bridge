@@ -44,6 +44,7 @@ describe("provider qualification health integration", () => {
       JSON.stringify({
         ran: true,
         provider: "claude",
+        executionRuntime: "native:claude",
         providerVersion: "2.1.229",
         overall: "fail",
         checks: [
@@ -99,6 +100,7 @@ describe("provider qualification health integration", () => {
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord({
       provider: "agy",
+      executionRuntime: "native:agy",
       providerVersion: "1.1.12",
       previousVersion: "1.1.11",
       bridgeCommit: "d".repeat(40),

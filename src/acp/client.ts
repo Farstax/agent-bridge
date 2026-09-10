@@ -200,7 +200,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       if (!method) {
         throw new Error(`ACP agent did not advertise authentication method "${input.authenticateMethodId}"`);
       }
-      if (method.type === "terminal") {
+      if ("type" in method && method.type === "terminal") {
         throw new Error(`ACP authentication method "${input.authenticateMethodId}" requires an interactive terminal`);
       }
       await agent.request(acp.methods.agent.authenticate, { methodId: input.authenticateMethodId });

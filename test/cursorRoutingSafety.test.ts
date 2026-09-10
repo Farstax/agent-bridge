@@ -49,6 +49,7 @@ echo '2026.08.11-e8db854'
 function writeFailedCursorQualification(evidencePath: string): void {
   writeQualificationRecord({
     provider: "cursor",
+    executionRuntime: "native:cursor",
     providerVersion: "2026.08.11-e8db854",
     previousVersion: null,
     bridgeCommit: "e".repeat(40),

@@ -210,15 +210,31 @@ function assertReleaseLockedVersion(
   }
 }
 
-/** Observe the version of the exact command used by the resolved bridge runtime. */
+/**
+ * Observe the version of the exact command used by the resolved bridge
+ * runtime. An ACP provider's version must always come from the resolved
+ * runtime executable — a caller-supplied `executable` override exists to
+ * substitute the fixture binary for the oneshot invocation checks, not to
+ * redirect which binary's version qualifies the release lock.
+ */
 export function resolveQualificationVersionCommand(
   providerId: ProviderId,
   env: QualificationEnv = process.env,
   executable?: string,
 ): string {
-  return executable ?? resolveProviderRuntime(providerId, env).executable;
+  const runtime = resolveProviderRuntime(providerId, env);
+  if (runtime.transport === "acp-stdio") return runtime.executable;
+  return executable ?? runtime.executable;
 }
 
+/**
+ * Passive observation of the installed version, used by health/doctor/routing
+ * consumers that need to report what is actually installed. Deliberately
+ * does not enforce the release lock — a caller-facing "wrong version
+ * installed" diagnostic must stay distinguishable from "not installed",
+ * which a thrown/swallowed error here would collapse. Active qualification
+ * (qualifyProvider) enforces the lock itself.
+ */
 export function readProviderVersion(
   providerId: ProviderId,
   executable?: string,
@@ -232,9 +248,7 @@ export function readProviderVersion(
     timeout: 10_000,
   }).trim();
   if (!raw) throw new Error(`${providerId} version command returned no output`);
-  const observedVersion = normalizeProviderVersion(raw);
-  assertReleaseLockedVersion(providerId, observedVersion, env);
-  return observedVersion;
+  return normalizeProviderVersion(raw);
 }
 
 export function qualificationEvidencePath(homeDir: string = homedir()): string {

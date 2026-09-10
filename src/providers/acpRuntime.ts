@@ -21,6 +21,7 @@ import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
 import {
   getAcpProviderPolicy,
   getProviderAdapter,
+  providerIdForBotName,
   resolveProviderExecutable,
 } from "./registry.js";
 
@@ -196,21 +197,54 @@ export function resolveProviderRuntime(
   };
 }
 
+/** Resolve a messaging/CLI-kind name through the runtime descriptor used by execution. */
+export function resolveRuntimeForBotName(
+  bot: string,
+  env: Record<string, string | undefined> = process.env,
+): ResolvedProviderRuntime | null {
+  const providerId = providerIdForBotName(bot);
+  return providerId ? resolveProviderRuntime(providerId, env) : null;
+}
+
+export function supportsProvisionalAnswers(
+  bot: string,
+  env: Record<string, string | undefined> = process.env,
+  resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
+): boolean {
+  return resolveRuntime(bot, env)?.provisionalAnswers ?? false;
+}
+
+export function acpProviderIdForBotName(
+  bot: string,
+  env: Record<string, string | undefined> = process.env,
+  resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
+): string | null {
+  const runtime = resolveRuntime(bot, env);
+  return runtime?.transport === "acp-stdio" ? runtime.providerId : null;
+}
+
+export function buildResolvedAcpProviderInvocation(
+  runtime: ResolvedProviderRuntime,
+  sessionId: string | null,
+): ProviderInvocation {
+  if (runtime.transport !== "acp-stdio") {
+    throw new Error(`Provider ${runtime.providerId} is not configured for ACP stdio`);
+  }
+  return {
+    command: runtime.executable,
+    args: [...runtime.args],
+    nativeSessionMode: sessionId ? "resume" : "fresh",
+    transport: "acp-stdio",
+  };
+}
+
 export function buildAcpProviderInvocation(
   providerId: ProviderId,
   request: ProviderInvocationRequest,
   env: Record<string, string | undefined> = process.env,
 ): ProviderInvocation {
   const runtime = resolveProviderRuntime(providerId, env);
-  if (runtime.transport !== "acp-stdio") {
-    throw new Error(`Provider ${providerId} is not configured for ACP stdio`);
-  }
-  return {
-    command: runtime.executable,
-    args: [...runtime.args],
-    nativeSessionMode: request.sessionId ? "resume" : "fresh",
-    transport: "acp-stdio",
-  };
+  return buildResolvedAcpProviderInvocation(runtime, request.sessionId);
 }
 
 function providerBotKind(providerId: ProviderId): BotKind {

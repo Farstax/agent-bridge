@@ -68,7 +68,7 @@ describe("issue #644 qualification runtime policy", () => {
       ],
     };
 
-    expect(PROVIDER_CONTRACT_VERSION).toBe(5);
+    expect(PROVIDER_CONTRACT_VERSION).toBeGreaterThan(oldRecord.contractVersion);
     expect(isQualificationCurrent(oldRecord, "codex", "9.9.9")).toBe(false);
   });
 });
