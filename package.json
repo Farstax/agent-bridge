@@ -32,6 +32,7 @@
     "scan-token-savings": "tsx scripts/scan-token-savings.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.76.0",
     "@agentclientprotocol/codex-acp": "1.10.0",
     "@agentclientprotocol/sdk": "1.4.0",
     "better-sqlite3": "^12.9.0",
