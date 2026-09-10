@@ -5,6 +5,7 @@ import type { ProviderInvocationRequest } from "./types.js";
 import type { AcpProviderPolicy } from "./acpRuntime.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
 import { createCodexAcpAnswerPreview } from "./codexAcpAnswerPreview.js";
+import { createCodexAcpRunActivityProjector } from "./codexAcpRunActivity.js";
 
 export class CodexAcpToolFreeUnsupportedError extends Error {
   constructor() {
@@ -61,8 +62,12 @@ function codexPhaseOf(payload: CodexAgentMessageChunk): "commentary" | "final_an
   return phase === "commentary" || phase === "final_answer" ? phase : undefined;
 }
 
-function liveAgentMessageChunk(update: AcpObservedUpdate): CodexAgentMessageChunk | undefined {
+function liveAgentMessageChunk(
+  update: AcpObservedUpdate,
+  sessionId: string,
+): CodexAgentMessageChunk | undefined {
   if (update.channel !== "live") return undefined;
+  if (update.notification.sessionId !== sessionId) return undefined;
   const payload = update.notification.update;
   if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return undefined;
   return payload as CodexAgentMessageChunk;
@@ -73,17 +78,23 @@ function hasCodexPhaseMarker(update: AcpObservedUpdate, payload: CodexAgentMessa
   return hasOwnCodexMarker((update.notification as MetaCarrier)._meta);
 }
 
-function turnHasCodexPhaseSemantics(updates: readonly AcpObservedUpdate[]): boolean {
+function turnHasCodexPhaseSemantics(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): boolean {
   return updates.some((update) => {
-    const payload = liveAgentMessageChunk(update);
+    const payload = liveAgentMessageChunk(update, sessionId);
     return payload !== undefined && hasCodexPhaseMarker(update, payload);
   });
 }
 
-function codexFinalAnswerText(updates: readonly AcpObservedUpdate[]): string {
+function codexFinalAnswerText(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): string {
   let text = "";
   for (const update of updates) {
-    const payload = liveAgentMessageChunk(update);
+    const payload = liveAgentMessageChunk(update, sessionId);
     if (!payload) continue;
     if (codexPhaseOf(payload) !== "final_answer") continue;
     text += payload.content.text;
@@ -92,9 +103,9 @@ function codexFinalAnswerText(updates: readonly AcpObservedUpdate[]): string {
 }
 
 export function selectCodexAcpAnswer(result: AcpTurnResult): { text: string; missingDescription: string } {
-  const phaseAware = turnHasCodexPhaseSemantics(result.updates);
+  const phaseAware = turnHasCodexPhaseSemantics(result.updates, result.acpSessionId);
   return {
-    text: (phaseAware ? codexFinalAnswerText(result.updates) : result.liveText).trim(),
+    text: (phaseAware ? codexFinalAnswerText(result.updates, result.acpSessionId) : result.liveText).trim(),
     missingDescription: phaseAware ? "a valid final_answer chunk" : "live text",
   };
 }
@@ -123,6 +134,7 @@ export const codexAcpPolicy: AcpProviderPolicy = {
   resolveExecutable: resolveCodexAcpCommand,
   resolveArgs: (env) => resolveCodexAcpArgs(env),
   qualificationEnvKeys: CODEX_QUALIFICATION_ENV_KEYS,
+  createActivityProjector: createCodexAcpRunActivityProjector,
   buildChildEnv(request, env) {
     const config = codexAcpConfig(request);
     return {
