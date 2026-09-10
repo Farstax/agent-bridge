@@ -7,8 +7,8 @@
 
 import { execFileSync } from "node:child_process";
 import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
-import { resolveCodexAcpCommand } from "./codexAcpConfig.js";
-import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
+import { resolveProviderRuntime } from "./acpRuntime.js";
+import { getProviderAdapters } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
@@ -32,6 +32,7 @@ export interface ProviderCheck {
   executable: string;
   status: "available" | "missing" | "invalid";
   runtime?: "legacy" | "acp";
+  runtimeIdentity?: string;
   version?: string | null;
   reason?: string;
 }
@@ -79,22 +80,6 @@ export function defaultInspectVersion(executable: string): string | null {
   }
 }
 
-function inspectCodexProvider(
-  env: Record<string, string | undefined>,
-  commandExists: (executable: string) => boolean,
-  inspectVersion: (executable: string) => string | null,
-): ProviderCheck {
-  const executable = resolveCodexAcpCommand(env);
-  const available = commandExists(executable);
-  return {
-    id: "codex",
-    executable,
-    status: available ? "available" : "missing",
-    runtime: "acp",
-    ...(available ? { version: inspectVersion(executable) } : {}),
-  };
-}
-
 export function runDoctor({
   env = process.env,
   requiredEnv = [],
@@ -109,12 +94,19 @@ export function runDoctor({
   inspectVoiceRuntime?: (env: Record<string, string | undefined>) => VoiceRuntimeReadiness;
 } = {}): DoctorReport {
   const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => {
-    if (adapter.id === "codex") return inspectCodexProvider(env, commandExists, inspectVersion);
-    const executable = resolveProviderExecutable(adapter.id, env);
+    const runtime = resolveProviderRuntime(adapter.id, env);
+    const available = commandExists(runtime.executable);
     return {
       id: adapter.id,
-      executable,
-      status: commandExists(executable) ? "available" : "missing",
+      executable: runtime.executable,
+      status: available ? "available" : "missing",
+      ...(runtime.transport === "acp-stdio"
+        ? {
+          runtime: "acp" as const,
+          runtimeIdentity: runtime.runtimeIdentity,
+          ...(available ? { version: inspectVersion(runtime.executable) } : {}),
+        }
+        : {}),
     };
   });
 
@@ -166,9 +158,10 @@ export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [];
   for (const p of report.providers) {
     const runtime = p.runtime ? ` runtime=${p.runtime}` : "";
+    const identity = p.runtimeIdentity ? ` identity=${p.runtimeIdentity}` : "";
     const version = p.version ? ` version=${p.version}` : "";
     const reason = p.reason ? ` (${p.reason})` : "";
-    lines.push(`provider ${p.id} (${p.executable})${runtime}: ${p.status}${version}${reason}`);
+    lines.push(`provider ${p.id} (${p.executable})${runtime}${identity}: ${p.status}${version}${reason}`);
   }
   for (const c of report.chains) {
     if (!c.set) {
