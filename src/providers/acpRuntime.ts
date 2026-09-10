@@ -7,6 +7,7 @@ import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
 import { isAbortRequested, runSupervisedStdioSession } from "../cliSupervisor.js";
 import { cleanOutputDir } from "../fileOutput.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
+import type { RunActivity } from "../runActivity.js";
 import type { BotKind, CliOptions, CliResult, RunTelemetry } from "../types.js";
 import { type as bridgeEventType } from "../events/types.js";
 import {
@@ -36,9 +37,14 @@ export interface AcpAnswerPreview {
   finish(stopReason: string): void;
 }
 
+export interface AcpActivityProjector {
+  observe(event: AcpRetainedEvent): RunActivity | null;
+}
+
 /**
  * Bridge-owned differences that ACP/its Registry cannot decide. Straightforward
- * providers can omit every hook after identity/presentation and use defaults.
+ * providers can omit every hook after identity/presentation and use Registry
+ * distribution defaults.
  */
 export interface AcpProviderPolicy {
   readonly providerId: string;
@@ -51,6 +57,7 @@ export interface AcpProviderPolicy {
       secrets: readonly string[],
     ) => AcpAnswerPreview;
   };
+  /** Optional installed-command resolver when Bridge does not invoke the Registry launcher directly. */
   readonly resolveExecutable?: (env: Record<string, string | undefined>) => string;
   readonly resolveArgs?: (
     env: Record<string, string | undefined>,
@@ -66,6 +73,8 @@ export interface AcpProviderPolicy {
   readonly authenticateMethodId?: (
     env: Record<string, string | undefined>,
   ) => string | undefined;
+  /** Provider extension for structured run activity; generic ACP lifecycle remains here. */
+  readonly createActivityProjector?: () => AcpActivityProjector;
   readonly selectAnswer?: (
     result: AcpTurnResult,
   ) => { text: string; missingDescription: string };
@@ -85,8 +94,36 @@ export interface ResolvedProviderRuntime {
   readonly provisionalAnswers: boolean;
 }
 
-function npxArgs(entry: AcpRegistryAgentEntry): string[] {
-  return [...(entry.distribution.npx?.args ?? [])];
+function distributionArgs(entry: AcpRegistryAgentEntry): string[] {
+  if (entry.distribution.npx) return [...(entry.distribution.npx.args ?? [])];
+  if (entry.distribution.uvx) return [...(entry.distribution.uvx.args ?? [])];
+  return [];
+}
+
+function registryLaunch(entry: AcpRegistryAgentEntry): {
+  executable: string;
+  args: string[];
+  versionArgs: string[];
+} {
+  if (entry.distribution.npx) {
+    const packageSpec = entry.distribution.npx.package;
+    return {
+      executable: "npx",
+      args: [packageSpec, ...(entry.distribution.npx.args ?? [])],
+      versionArgs: [packageSpec, "--version"],
+    };
+  }
+  if (entry.distribution.uvx) {
+    const packageSpec = entry.distribution.uvx.package;
+    return {
+      executable: "uvx",
+      args: [packageSpec, ...(entry.distribution.uvx.args ?? [])],
+      versionArgs: [packageSpec, "--version"],
+    };
+  }
+  throw new Error(
+    `ACP Registry entry ${entry.id}@${entry.version} requires a managed binary install resolver`,
+  );
 }
 
 export function resolveAcpProviderRuntime(
@@ -104,21 +141,23 @@ export function resolveAcpProviderRuntime(
     );
   }
   const env = overrides.env ?? process.env;
-  const executable = overrides.executable ?? policy.resolveExecutable?.(env);
-  if (!executable) {
-    throw new Error(`ACP provider ${policy.providerId} has no resolved executable`);
-  }
+  const directExecutable = overrides.executable ?? policy.resolveExecutable?.(env);
+  const upstreamLaunch = directExecutable ? null : registryLaunch(entry);
+  const executable = directExecutable ?? upstreamLaunch!.executable;
   const args = overrides.args
     ? [...overrides.args]
     : policy.resolveArgs
       ? policy.resolveArgs(env, entry)
-      : npxArgs(entry);
+      : directExecutable
+        ? distributionArgs(entry)
+        : upstreamLaunch!.args;
+  const versionArgs = upstreamLaunch?.versionArgs ?? ["--version"];
   return {
     providerId: policy.providerId,
     transport: "acp-stdio",
     executable,
     args,
-    versionArgs: ["--version"],
+    versionArgs,
     runtimeIdentity: `acp:${entry.id}@${entry.version}`,
     selectedVersion: entry.version,
     registryAgentId: entry.id,
@@ -138,7 +177,7 @@ export function resolveProviderRuntime(
     if (!entry) throw new Error(`ACP provider ${providerId} has no release-locked registry entry`);
     return resolveAcpProviderRuntime(policy, entry, {
       env,
-      executable: resolveProviderExecutable(providerId, env),
+      ...(policy.resolveExecutable ? { executable: resolveProviderExecutable(providerId, env) } : {}),
     });
   }
   const adapter = getProviderAdapter(providerId);
@@ -266,6 +305,7 @@ function createStandardAnswerPreview(
   return {
     observe(event): void {
       if (event.kind !== "session_update" || event.channel !== "live" || !event.notification) return;
+      if (event.acpSessionId && event.notification.sessionId !== event.acpSessionId) return;
       const update = event.notification.update;
       if (update.sessionUpdate !== "agent_message_chunk" || update.content.type !== "text") return;
       const safe = redactor.push(update.content.text);
@@ -300,6 +340,9 @@ export async function runAcpProviderTurn(
     ? (policy.presentation.createPreview?.(options.onAnswerDelta, secretValues)
       ?? createStandardAnswerPreview(options.onAnswerDelta, secretValues))
     : null;
+  const activityProjector = options.onProgress?.activity && policy.createActivityProjector
+    ? policy.createActivityProjector()
+    : null;
   const chatId = options.chatId;
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
@@ -330,8 +373,10 @@ export async function runAcpProviderTurn(
             if (safe) options.onProgress?.(safe);
           }
           : undefined,
-        onEvent: answerPreview || (eventContext && onEvent)
+        onEvent: answerPreview || activityProjector || (eventContext && onEvent)
           ? (event) => {
+            const runActivity = activityProjector?.observe(event);
+            if (runActivity) options.onProgress?.activity?.(runActivity);
             answerPreview?.observe(event);
             if (!eventContext || !onEvent || !event.sessionMode) return;
             onEvent(bridgeEventType.acpEvent({
