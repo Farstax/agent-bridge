@@ -11,6 +11,7 @@ import {
   buildAcpProviderInvocation,
   runAcpProviderTurn,
 } from "./acpRuntime.js";
+import { codexAcpPolicy } from "./codexAcpPolicy.js";
 
 export {
   CodexAcpToolFreeUnsupportedError,
@@ -26,7 +27,7 @@ export function buildInvocation(request: ProviderInvocationRequest): ProviderInv
 
 /** @deprecated Prefer provider-neutral ACP result conversion. */
 export function toCliResult(result: AcpTurnResult): CliResult {
-  return acpTurnResultToCliResult("codex", result);
+  return acpTurnResultToCliResult("codex", result, codexAcpPolicy);
 }
 
 /** @deprecated Prefer runAcpProviderTurn(providerId, ...). */
