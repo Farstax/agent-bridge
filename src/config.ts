@@ -8,6 +8,7 @@
  */
 
 import { normalizeAgyModelFamily } from "./effort.js";
+import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -55,7 +56,7 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
   return {
     codex: {
       token: token(env.TELEGRAM_BOT_TOKEN_CODEX),
-      command: env.CODEX_COMMAND || "codex",
+      command: resolveCodexAcpCommand(env),
       modelPreference: parseModelPreference(env.CODEX_MODEL_PREFERENCE),
     },
     antigravity: {

@@ -31,7 +31,7 @@ describe("interactive capacity fallback durable admission", () => {
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
     client.deleteMessage.mockRejectedValue(new Error("Telegram delete failed"));
-    const fallbackChain = new ProviderFallbackChain(["claude", "codex"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["claude", "antigravity"], db, () => true);
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
@@ -87,17 +87,14 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new ProviderFallbackChain(["claude", "codex"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["claude", "antigravity"], db, () => true);
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
       throw new Error("rate limit capacity exhausted");
     });
-    const codexRun = vi.fn().mockResolvedValue([
-      JSON.stringify({ type: "thread.started", thread_id: "codex-fallback-session" }),
-      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "authoritative Codex fallback" } }),
-    ].join("\n"));
-    const makeEngine = (kind: "claude" | "codex", runCli: any) => new BridgeEngine(
+    const codexRun = vi.fn().mockResolvedValue(JSON.stringify({ event: "result", result: { conversation_id: "11111111-2222-4333-8444-555555555555", status: "SUCCESS", response: "authoritative Agy fallback" } }));
+    const makeEngine = (kind: "claude" | "antigravity", runCli: any) => new BridgeEngine(
       {
         surfaceIdentity: "telegram:interactive",
         kind,
@@ -112,7 +109,7 @@ describe("interactive capacity fallback durable admission", () => {
       client,
       { runCli },
     );
-    const engines = { claude: makeEngine("claude", claudeRun), codex: makeEngine("codex", codexRun) };
+    const engines = { claude: makeEngine("claude", claudeRun), antigravity: makeEngine("antigravity", codexRun) };
     const deps = { engines, fallbackChain, exhaustedChats, db, notify: async (message: string) => { notifications.push(message); } };
 
     try {
@@ -131,10 +128,10 @@ describe("interactive capacity fallback durable admission", () => {
       expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 100, message_id: 1 });
       expect(client.sendMessage.mock.calls.map(([body]: [any]) => body?.text)).toEqual([
         expect.stringContaining("stale Claude preview"),
-        expect.stringContaining("authoritative Codex fallback"),
+        expect.stringContaining("authoritative Agy fallback"),
       ]);
       expect(client.sendMessage).toHaveBeenCalledTimes(2);
-      expect(notifications).toEqual(["Switching to codex (claude at capacity)"]);
+      expect(notifications).toEqual(["Switching to antigravity (claude at capacity)"]);
     } finally {
       db.close();
     }

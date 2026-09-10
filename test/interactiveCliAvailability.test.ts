@@ -39,7 +39,6 @@ describe("interactive CLI availability filtering", () => {
       exists: () => true,
       commandExists: (command) => command === "codex" || command === "/opt/codex/bin/codex",
       env: {
-        CODEX_COMMAND: "codex",
         CODEX_ACP_COMMAND: "/missing/codex-acp",
       },
       failedProviders: new Set(),
@@ -230,7 +229,7 @@ describe("interactive CLI availability filtering", () => {
       },
       failedProviders: new Set(),
       env: {
-        CODEX_COMMAND: commands.codex,
+        CODEX_ACP_COMMAND: commands.codex,
         CLAUDE_COMMAND: commands.claude,
         ANTIGRAVITY_COMMAND: commands.agy,
         GROK_COMMAND: commands.grok,
@@ -258,7 +257,7 @@ describe("interactive CLI availability filtering", () => {
       commandExists: (command) => command !== missingCommand,
       failedProviders: new Set(),
       env: {
-        CODEX_COMMAND: "/runtime/codex-custom",
+        CODEX_ACP_COMMAND: "/runtime/codex-custom",
         CLAUDE_COMMAND: "/runtime/claude-custom",
         ANTIGRAVITY_COMMAND: "/runtime/agy-custom",
         GROK_COMMAND: "/runtime/grok-custom",

@@ -169,7 +169,12 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           },
         });
       }
-      const reply = `live:${text}`;
+      let reply = `live:${text}`;
+      if (text.includes("repository-grounding qualification")) {
+        const source = readFileSync("src/repositoryGroundingFixture.ts", "utf8");
+        const instructions = readFileSync("AGENTS.md", "utf8");
+        reply = `${source}\n${instructions}`;
+      }
       await ctx.client.notify(acp.methods.client.session.update, {
         sessionId: ctx.params.sessionId,
         update: {

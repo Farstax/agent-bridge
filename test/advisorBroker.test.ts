@@ -93,7 +93,6 @@ describe("bounded cross-provider frontier advice", () => {
   });
 
   it.each([
-    { active: "claude", provider: "codex", command: "/trusted/codex", model: "gpt-5.6-sol" },
     { active: "agy", provider: "claude", command: "/trusted/claude", model: "claude-opus-5" },
   ])("returns one configured independent result to an active $active run", async ({ active, provider, command, model }) => {
     const { broker, db, runCli } = setup();

@@ -88,7 +88,7 @@ import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
 
-type RecoverableProvider = "codex" | "antigravity" | "grok" | "cursor";
+type RecoverableProvider = "antigravity" | "grok" | "cursor";
 
 export {
   getExecutionProcessState,
@@ -344,7 +344,7 @@ const CLAUDE_UNCERTAIN_COMPLETION_RECOVERY_PROMPT = [
 ].join(" ");
 
 function providerRecoveryPrompt(provider: RecoverableProvider): string {
-  const name = provider === "antigravity" ? "Agy" : provider === "codex" ? "Codex" : provider === "grok" ? "Grok" : "Cursor";
+  const name = provider === "antigravity" ? "Agy" : provider === "grok" ? "Grok" : "Cursor";
   return [
     "Agent Bridge detected that the immediately preceding turn ended with uncertain completion.",
     `Reconcile the current ${name} session state for that preceding user request.`,
@@ -358,10 +358,6 @@ function providerRecoveryPrompt(provider: RecoverableProvider): string {
 function optionValue(args: string[], name: string): string | null {
   const index = args.lastIndexOf(name);
   return index >= 0 && index + 1 < args.length ? args[index + 1] : null;
-}
-
-function hasOptionPair(args: string[], name: string, value: string): boolean {
-  return args.some((arg, index) => arg === name && args[index + 1] === value);
 }
 
 function effortFromArgs(args: string[]): EffortLevel | null {
@@ -397,12 +393,6 @@ function serializeProviderResult(
   provider: RecoverableProvider,
   result: CliResult,
 ): string {
-  if (provider === "codex") {
-    return [
-      JSON.stringify({ type: "thread.started", thread_id: result.sessionId }),
-      JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: result.text } }),
-    ].join("\n") + "\n";
-  }
   if (provider === "antigravity") {
     return JSON.stringify({
       event: "result",
@@ -437,7 +427,7 @@ function incompleteClaudeResult(error: ClaudeUncertainCompletionError): CliResul
 }
 
 function incompleteProviderText(provider: RecoverableProvider): string {
-  const name = provider === "antigravity" ? "Agy" : provider === "codex" ? "Codex" : provider === "grok" ? "Grok" : "Cursor";
+  const name = provider === "antigravity" ? "Agy" : provider === "grok" ? "Grok" : "Cursor";
   return `${name} stopped before confirming completion. Some work may have been applied, but completion could not be verified.`;
 }
 
@@ -544,7 +534,6 @@ async function recoverClaudeUncertainCompletion(
 }
 
 type NonClaudeUncertainCompletionError =
-  | codexRuntime.CodexUncertainCompletionError
   | AntigravityUncertainCompletionError
   | GrokUncertainCompletionError
   | CursorUncertainCompletionError;
@@ -557,22 +546,6 @@ function originalSessionId(
   provider: RecoverableProvider,
   args: string[],
 ): string | null {
-  if (provider === "codex") {
-    if (args[0] !== "exec") return null;
-    for (let index = 1; index < args.length; ) {
-      const arg = args[index];
-      if ((arg === "-c" || arg === "--config") && index + 1 < args.length) {
-        index += 2;
-        continue;
-      }
-      if (arg === "resume") {
-        const sessionId = args[index + 1];
-        return typeof sessionId === "string" && sessionId.trim() ? sessionId : null;
-      }
-      return null;
-    }
-    return null;
-  }
   if (provider === "antigravity") return optionValue(args, "--conversation");
   return optionValue(args, "--resume");
 }
@@ -581,7 +554,6 @@ function providerExecutionMode(
   provider: RecoverableProvider,
   args: string[],
 ): "safe" | "trusted" {
-  if (provider === "codex") return args.includes("--dangerously-bypass-approvals-and-sandbox") ? "trusted" : "safe";
   if (provider === "antigravity") return args.includes("--dangerously-skip-permissions") ? "trusted" : "safe";
   if (provider === "grok") return args.includes("--always-approve") ? "trusted" : "safe";
   return optionValue(args, "--sandbox") === "disabled" ? "trusted" : "safe";
@@ -591,7 +563,6 @@ function providerToolMode(
   provider: RecoverableProvider,
   args: string[],
 ): "default" | "none" {
-  if (provider === "codex") return hasOptionPair(args, "--disable", "shell_tool") ? "none" : "default";
   if (provider === "antigravity") return args.includes("--sandbox") ? "none" : "default";
   return "default";
 }
@@ -599,29 +570,26 @@ function providerToolMode(
 function providerOutputFormat(
   provider: RecoverableProvider,
 ): ProviderInvocationRequest["outputFormat"] {
-  if (provider === "codex") return "json";
   if (provider === "cursor") return "stream-json";
   if (provider === "grok") return "streaming-json";
   return "stream-json";
 }
 
 function isRecoverableProvider(provider: string | undefined): provider is RecoverableProvider {
-  return provider === "codex" || provider === "antigravity" || provider === "grok" || provider === "cursor";
+  return provider === "antigravity" || provider === "grok" || provider === "cursor";
 }
 
 function isNonClaudeUncertainCompletion(
   provider: RecoverableProvider,
   error: unknown,
 ): error is NonClaudeUncertainCompletionError {
-  return (provider === "codex" && error instanceof codexRuntime.CodexUncertainCompletionError)
-    || (provider === "antigravity" && error instanceof AntigravityUncertainCompletionError)
+  return (provider === "antigravity" && error instanceof AntigravityUncertainCompletionError)
     || (provider === "grok" && error instanceof GrokUncertainCompletionError)
     || (provider === "cursor" && error instanceof CursorUncertainCompletionError);
 }
 
 function isProviderUncertainCompletionFailureMessage(provider: string | undefined, message: string): boolean {
   if (provider === "claude") return isClaudeUncertainCompletionFailureMessage(message);
-  if (provider === "codex") return codexRuntime.isCodexUncertainCompletionFailureMessage(message);
   if (provider === "antigravity") return isAntigravityUncertainCompletionFailureMessage(message);
   if (provider === "grok") return isGrokUncertainCompletionFailureMessage(message);
   if (provider === "cursor") return isCursorUncertainCompletionFailureMessage(message);

@@ -878,7 +878,7 @@ export async function runAutonomousGoalOperator(
 }
 
 // Resolves a durable goal's bot to the same provider command/config the
-// interactive bridge already uses (loadBotsConfig — CODEX_COMMAND,
+// interactive bridge already uses (loadBotsConfig — CODEX_ACP_COMMAND,
 // CLAUDE_COMMAND, ANTIGRAVITY_COMMAND/GEMINI_COMMAND env overrides) and the
 // same execution-mode resolution (resolveExecutionMode — per-bot
 // <BOT>_EXECUTION_MODE, then global BRIDGE_EXECUTION_MODE, then "safe").

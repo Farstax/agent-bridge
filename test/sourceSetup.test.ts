@@ -19,14 +19,14 @@ import {
 describe("source setup", () => {
   it("detects interactive providers through the shared registry and keeps runtime fallback order", () => {
     const installed = new Map([
-      ["codex", "/usr/local/bin/codex"],
+      ["codex-acp", "/usr/local/bin/codex-acp"],
       ["grok", "/usr/local/bin/grok"],
       ["agy", "/usr/local/bin/agy"],
       ["cursor-agent", "/usr/local/bin/cursor-agent"],
     ]);
 
     const providers = detectInteractiveProviders({
-      env: {},
+      env: { CODEX_ACP_COMMAND: "codex-acp" },
       resolvePath: (command) => installed.get(command) ?? null,
     });
 
@@ -37,7 +37,7 @@ describe("source setup", () => {
       "cursor",
     ]);
     expect(providers.map((provider) => provider.commandEnv)).toEqual([
-      "CODEX_COMMAND",
+      "CODEX_ACP_COMMAND",
       "GROK_COMMAND",
       "ANTIGRAVITY_COMMAND",
       "CURSOR_COMMAND",
@@ -46,9 +46,9 @@ describe("source setup", () => {
 
   it("renders one minimal interactive config from detected providers", () => {
     const providers = detectInteractiveProviders({
-      env: {},
+      env: { CODEX_ACP_COMMAND: "codex-acp" },
       resolvePath: (command) => ({
-        codex: "/opt/bin/codex",
+        "codex-acp": "/opt/bin/codex-acp",
         claude: "/opt/bin/claude",
       } as Record<string, string | undefined>)[command] ?? null,
     });
@@ -65,7 +65,7 @@ describe("source setup", () => {
     expect(parsed.TELEGRAM_ALLOWED_USER_IDS).toBe("123,456");
     expect(parsed.BRIDGE_PROJECT_DIR).toBe("/srv/example-app");
     expect(parsed.DB_PATH).toBe(resolveSourceInteractiveDbPath("/srv/example-app"));
-    expect(parsed.CODEX_COMMAND).toBe("/opt/bin/codex");
+    expect(parsed.CODEX_ACP_COMMAND).toBe("/opt/bin/codex-acp");
     expect(parsed.CLAUDE_COMMAND).toBe("/opt/bin/claude");
     expect(parsed.INTERACTIVE_DEFAULT_CLI).toBe("codex");
     expect(parsed.INTERACTIVE_CLI_CHAIN).toBe("codex,claude");

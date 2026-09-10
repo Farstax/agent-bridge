@@ -86,7 +86,7 @@ cli_command_version() {
   local configured=""
   case "${command}" in
     claude) configured="${CLAUDE_COMMAND:-}" ;;
-    codex) configured="${CODEX_COMMAND:-}" ;;
+    codex) configured="${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" ;;
     agy) configured="${ANTIGRAVITY_COMMAND:-}" ;;
   esac
   if [[ -n "${configured}" ]]; then
@@ -244,19 +244,17 @@ require_node
 # Does NOT reinstall systemd units.
 if [[ "${1:-}" == "--update" ]]; then
   before_claude=""
-  before_codex=""
+  before_codex="$(cli_command_version codex)"
   before_claude_package=""
   before_claude="$(cli_command_version claude)"
   if command -v npm >/dev/null 2>&1; then
     before_claude_package="$(npm_pkg_version @anthropic-ai/claude-code)"
-    before_codex="$(npm_pkg_version @openai/codex)"
   fi
   before_agy="$(cli_command_version agy)"
 
   echo "[update] Updating CLI packages..."
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
-    npm update -g @openai/codex 2>/dev/null || true
   fi
   update_claude_runtime
 
@@ -271,10 +269,8 @@ if [[ "${1:-}" == "--update" ]]; then
   verify_claude_runtime_update "${before_claude}" "${after_claude}" "${before_claude_package}"
   qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
 
-  if command -v npm >/dev/null 2>&1; then
-    after_codex="$(npm_pkg_version @openai/codex)"
-    [[ -z "${after_codex}" ]] || qualify_provider_if_needed codex "${before_codex}" "${after_codex}"
-  fi
+  after_codex="$(cli_command_version codex)"
+  [[ -z "${after_codex}" ]] || qualify_provider_if_needed codex "${before_codex}" "${after_codex}"
   after_agy="$(cli_command_version agy)"
   [[ -z "${after_agy}" ]] || qualify_provider_if_needed agy "${before_agy}" "${after_agy}"
 
@@ -330,17 +326,6 @@ if [[ "${1:-}" == "--clis-only" ]]; then
     exit 1
   fi
 
-  CLIS=("@openai/codex")
-  declare -A before_versions
-  for pkg in "${CLIS[@]}"; do
-    before_versions["${pkg}"]="$(npm_pkg_version "${pkg}")"
-  done
-
-  if ! npm install -g "${CLIS[@]}"; then
-    echo "npm CLI installation failed" >&2
-    exit 1
-  fi
-
   updated_any=0
   before_claude="$(cli_command_version claude)"
   claude_package_version="$(npm_pkg_version @anthropic-ai/claude-code)"
@@ -359,22 +344,6 @@ if [[ "${1:-}" == "--clis-only" ]]; then
   verify_claude_runtime_update "${before_claude}" "${after_claude}" "${claude_package_version}"
   qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
 
-  for pkg in "${CLIS[@]}"; do
-    after="$(npm_pkg_version "${pkg}")"
-    before="${before_versions[${pkg}]:-}"
-    if [[ -z "${after}" ]]; then
-      echo "unable to verify installed version for ${pkg}" >&2
-      exit 1
-    elif [[ "${after}" != "${before}" ]]; then
-      echo "updated: ${pkg} ${before}→${after}"
-      updated_any=1
-    else
-      echo "verified: ${pkg} ${after}"
-    fi
-
-    qualify_provider_if_needed codex "${before}" "${after}"
-  done
-
   if [[ "${updated_any}" == "0" ]]; then
     echo "no-op: CLIs already up to date; qualification cache verified"
   fi
@@ -384,12 +353,12 @@ fi
 if [[ "${1:-}" != "--skip-cli-install" ]]; then
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install)
-    npm update -g @anthropic-ai/claude-code @openai/codex 2>/dev/null || true
+    npm update -g @anthropic-ai/claude-code 2>/dev/null || true
     install_shared_skills
   fi
 
-  if command -v codex >/dev/null 2>&1; then
-    run_as_target_user codex --help >/dev/null
+  if [[ -x "${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" ]]; then
+    run_as_target_user "${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" --version >/dev/null
   fi
 
   if ! command -v agy >/dev/null 2>&1; then

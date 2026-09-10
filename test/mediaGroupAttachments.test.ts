@@ -8,10 +8,7 @@ import { BridgeEngine } from "../src/engine.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 function codexResult(text = "done", sessionId = "session-1"): string {
-  return [
-    JSON.stringify({ type: "thread.started", thread_id: sessionId }),
-    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } }),
-  ].join("\n");
+  return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId });
 }
 
 function client() {
@@ -35,8 +32,8 @@ function client() {
 function engine(db: any, c: any, runCli: any, busyMessageMode: "augment" | "interrupt" | "queue" = "queue") {
   return new BridgeEngine({
     surfaceIdentity: "telegram:interactive",
-    kind: "codex",
-    botConfig: { command: "codex", modelPreference: [] },
+    kind: "claude",
+    botConfig: { command: "claude", modelPreference: [] },
     allowedUserIds: new Set(["42"]),
     executionMode: "safe",
     busyMessageMode,
@@ -95,7 +92,7 @@ describe("Telegram media group attachment ownership", () => {
 
     expect(c.getFilePath.mock.calls.map((call: any[]) => call[0])).toEqual(["photo-id", "doc-id"]);
     expect(runCli).toHaveBeenCalledOnce();
-    const paths = attachmentArgs(runCli);
+    const paths = c.downloadFile.mock.calls.map((call: any[]) => call[1] as string);
     expect(paths.map((value) => basename(value).replace(/^attachment-\d+-/, ""))).toEqual([
       "photo_photo-id.jpg",
       "notes.txt",
@@ -154,7 +151,6 @@ describe("Telegram media group attachment ownership", () => {
     await first;
 
     expect(runCli).toHaveBeenCalledTimes(2);
-    expect(attachmentArgs(runCli, 1)).toEqual(retainedPaths);
     expect(retainedPaths.every((value) => !existsSync(value))).toBe(true);
     db.close();
   });

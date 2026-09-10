@@ -31,7 +31,12 @@ describe("runtime inspector", () => {
       db.insertRun("run-active", "chat-1", "codex");
       db.insertRun("run-failed", "chat-1", "claude");
       db.updateRunFailed("run-failed", "github token ghp_supersecret must never escape");
-      db.setSession("chat-1", "codex", "secret-session-id");
+      db.putAcpSessionBinding({
+        conversationId: "chat-1",
+        providerId: "codex",
+        acpSessionId: "secret-session-id",
+        runId: "run-active",
+      });
       expect(db.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
       createScheduledRoutine(db, {
         id: "routine-1",
@@ -382,7 +387,6 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_RUN_ID: "run-active",
         CODEX_ACP_COMMAND: adapter,
-        CODEX_COMMAND: "codex",
         HOME: dir,
       }));
       const codex = view.providers.find((p: { id: string }) => p.id === "codex");

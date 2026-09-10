@@ -6,6 +6,7 @@ import {
   assertProviderId,
   PROVIDER_IDS,
   supportsToolFreeMode,
+  resolveProviderExecutable,
 } from "../src/providers/registry.js";
 import type { ProviderId } from "../src/providers/types.js";
 
@@ -23,9 +24,10 @@ describe("provider registry", () => {
     const adapter = getProviderAdapter("codex");
     expect(adapter.id).toBe("codex");
     expect(adapter.displayName).toBe("Codex");
-    expect(adapter.executable).toBe("codex");
-    expect(adapter.defaultArgs).toBeInstanceOf(Array);
+    expect(adapter.executable).toBe("codex-acp");
+    expect(adapter.defaultArgs).toEqual([]);
     expect(adapter.capabilities.interactive).toBe(true);
+    expect(adapter.capabilities.toolFree).toBe(false);
   });
 
   it("returns the claude adapter", () => {
@@ -66,10 +68,16 @@ describe("provider registry", () => {
     expect(() => getProviderAdapter("not-a-provider" as ProviderId)).toThrow();
   });
 
-  it("treats Codex ACP as not tool-free while legacy Codex remains tool-free", () => {
-    expect(supportsToolFreeMode("codex", {})).toBe(true);
+  it("reports Codex ACP as not supporting strict tool-free execution", () => {
     expect(supportsToolFreeMode("codex")).toBe(false);
     expect(supportsToolFreeMode("claude")).toBe(true);
+  });
+
+  it("resolves the bundled or explicitly configured Codex ACP command", () => {
+    expect(resolveProviderExecutable("codex", { BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge" }))
+      .toBe("/opt/agent-bridge/node_modules/.bin/codex-acp");
+    expect(resolveProviderExecutable("codex", { CODEX_ACP_COMMAND: "/trusted/codex-acp" }))
+      .toBe("/trusted/codex-acp");
   });
 
   it("exposes fallback metadata", () => {

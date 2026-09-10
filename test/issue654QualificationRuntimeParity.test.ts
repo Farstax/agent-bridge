@@ -145,19 +145,7 @@ describe("issue #654 qualification runtime parity", () => {
     });
   });
 
-  it("generates trusted Codex and Agy qualification flags while safe mode omits them", () => {
-    const trustedCodex = buildQualificationInvocation({
-      providerId: "codex", executable: "codex", prompt: "probe", sessionId: null,
-      executionMode: "trusted", homeDir: "/tmp",
-    });
-    expect(trustedCodex.args).toContain("--dangerously-bypass-approvals-and-sandbox");
-
-    const safeCodex = buildQualificationInvocation({
-      providerId: "codex", executable: "codex", prompt: "probe", sessionId: null,
-      executionMode: "safe", homeDir: "/tmp",
-    });
-    expect(safeCodex.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-
+  it("generates trusted Agy qualification flags while safe mode omits them", () => {
     const trustedAgy = buildQualificationInvocation({
       providerId: "agy", executable: "agy", prompt: "probe", sessionId: null,
       executionMode: "trusted", homeDir: "/tmp",

@@ -15,7 +15,7 @@ The initial live contract is deliberately small and incident-driven:
 
 Codex qualification uses the production ACP-backed path (bundled `codex-acp`
 over stdio). The version probe is the invoked adapter (`CODEX_ACP_COMMAND` or
-the bundled `$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp --version`), not
+the bundled `$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/codex-acp --version`), not
 `codex --version`. Current Codex evidence must record `executionRuntime: "acp"`
 as well as the observed adapter version and contract version. Pre-ACP records,
 including records without an execution-runtime identity, are stale and cannot

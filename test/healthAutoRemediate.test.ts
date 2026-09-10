@@ -70,8 +70,7 @@ describe("autoUpdateClis", () => {
     expect(notifications[0]).toContain("2.1.185");
   });
 
-  it("runs upgrade script when a cli-update check is red", async () => {
-    execFileSync.mockReturnValue("updated: @openai/codex 0.140.0→0.141.0\n");
+  it("does not try to update the bundled Codex ACP adapter outside a release", async () => {
     const { autoUpdateClis } = await import("../src/health/autoRemediate.js");
     const notifications: string[] = [];
     await autoUpdateClis(
@@ -80,8 +79,8 @@ describe("autoUpdateClis", () => {
       }),
       { upgradeScript: "/path/to/upgrade.sh", sendNotification: async t => { notifications.push(t); } }
     );
-    expect(execFileSync).toHaveBeenCalled();
-    expect(notifications[0]).toContain("@openai/codex");
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(notifications).toHaveLength(0);
   });
 
   it("sends error notification when upgrade script throws", async () => {
@@ -97,10 +96,8 @@ describe("autoUpdateClis", () => {
     expect(notifications[0]).toContain("npm install failed");
   });
 
-  it("lists all updated packages when multiple are upgraded", async () => {
-    execFileSync.mockReturnValue(
-      "updated: @anthropic-ai/claude-code 2.1.180→2.1.185\nupdated: @openai/codex 0.140.0→0.141.0\n"
-    );
+  it("updates the external Claude runtime while leaving bundled Codex to release management", async () => {
+    execFileSync.mockReturnValue("updated: @anthropic-ai/claude-code 2.1.180→2.1.185\n");
     const { autoUpdateClis } = await import("../src/health/autoRemediate.js");
     const notifications: string[] = [];
     await autoUpdateClis(
@@ -113,7 +110,7 @@ describe("autoUpdateClis", () => {
       { upgradeScript: "/path/to/upgrade.sh", sendNotification: async t => { notifications.push(t); } }
     );
     expect(notifications[0]).toContain("@anthropic-ai/claude-code");
-    expect(notifications[0]).toContain("@openai/codex");
+    expect(notifications[0]).not.toContain("@openai/codex");
   });
 
   it("sends no notification when script output has no updated lines", async () => {

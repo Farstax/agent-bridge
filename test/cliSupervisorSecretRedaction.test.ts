@@ -31,8 +31,8 @@ describe("provider credential redaction", () => {
 
   it("keeps split API keys out of logs, events, progress, and failures", async () => {
     const apiKey = "provider-secret-572-do-not-leak";
-    const env = { CODEX_API_KEY: apiKey };
-    await verifyProviderApiKey("codex", { env, execFile: async () => undefined });
+    const env = { ANTHROPIC_API_KEY: apiKey };
+    await verifyProviderApiKey("claude", { env, execFile: async () => undefined });
 
     const logs: string[] = [];
     const events: BridgeEvent[] = [];
@@ -42,7 +42,7 @@ describe("provider credential redaction", () => {
 
     const splitAt = 13;
     const script = [
-      `const key=process.env.CODEX_API_KEY;const n=${splitAt};`,
+      `const key=process.env.ANTHROPIC_API_KEY;const n=${splitAt};`,
       'process.stdout.write("stdout=" + key.slice(0,n));',
       'process.stderr.write("stderr=" + key.slice(0,n));',
       'setTimeout(()=>{process.stdout.write(key.slice(n)+"\\n");process.stderr.write(key.slice(n)+"\\n");setTimeout(()=>process.exit(1),10);},20);',
@@ -52,8 +52,8 @@ describe("provider credential redaction", () => {
     try {
       await runSupervisedProcess(process.execPath, ["-e", script], process.cwd(), {
         contextEnv: env,
-        bot: "codex",
-        eventContext: { runId: "run-572", bot: "codex", chatId: "1", chatKey: "1" },
+        bot: "claude",
+        eventContext: { runId: "run-572", bot: "claude", chatId: "1", chatKey: "1" },
         onEvent: (event) => events.push(event),
       }, (chunk) => progress.push(chunk));
     } catch (error) {
@@ -76,21 +76,22 @@ describe("provider credential redaction", () => {
 
   it("verifies the active key at the shared boundary and passes no unrelated provider key to its child", async () => {
     const env = {
-      CODEX_API_KEY: "codex-secret-572",
-      CODEX_COMMAND: "/bin/true",
       ANTHROPIC_API_KEY: "claude-secret-572",
+      CLAUDE_COMMAND: "/bin/true",
+      CODEX_API_KEY: "codex-secret-572",
     };
+    await verifyProviderApiKey("claude", { env, execFile: async () => undefined });
 
     const script = [
-      'const text=JSON.stringify({codex:Boolean(process.env.CODEX_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY)});',
-      'process.stdout.write(JSON.stringify({type:"response.completed",output_text:text}));',
+      'const text=JSON.stringify({claude:Boolean(process.env.ANTHROPIC_API_KEY),codex:Boolean(process.env.CODEX_API_KEY)});',
+      'process.stdout.write(JSON.stringify({type:"result",subtype:"success",result:text,session_id:"test-session"}));',
     ].join("");
     const result = await runSupervisedProcess(process.execPath, ["-e", script], process.cwd(), {
       contextEnv: env,
-      bot: "codex",
+      bot: "claude",
     });
 
-    const parsed = parseCliResult({ bot: "codex", stdout: result.stdout });
-    expect(JSON.parse(parsed.text)).toEqual({ codex: true, claude: false });
+    const parsed = parseCliResult({ bot: "claude", stdout: result.stdout });
+    expect(JSON.parse(parsed.text)).toEqual({ claude: true, codex: false });
   });
 });

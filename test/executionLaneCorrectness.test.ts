@@ -122,14 +122,14 @@ describe("execution lane correctness", () => {
       cliOptions,
     ));
     const claudeRun = vi.fn().mockResolvedValue("claude done");
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db);
+    const fallbackChain = new ProviderFallbackChain(["claude"], db);
     const exhaustedChats = new Set<string>();
     const engines = {} as Record<string, BridgeEngine>;
     // This test is about durable FIFO routing across providers, not busy-mode
     // admission — pin busyMessageMode explicitly so a default flip elsewhere
     // can't change this test's meaning.
     const codex = new BridgeEngine({
-      ...options("codex", {
+      ...options("claude", {
         onQueuedMessage: (queued: any) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
           engines, fallbackChain, exhaustedChats, db, notify: vi.fn(),
         }),

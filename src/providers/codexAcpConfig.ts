@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 export function resolveBridgeProjectDir(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const configured = env.BRIDGE_PROJECT_DIR?.trim();
+  const configured = env.BRIDGE_CURRENT_RELEASE_DIR?.trim();
   if (configured) return configured;
   return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }

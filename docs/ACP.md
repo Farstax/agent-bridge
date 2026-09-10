@@ -6,7 +6,7 @@ proprietary wrapper around ACP.
 
 Pinned SDK: `@agentclientprotocol/sdk@1.4.0` (stable ACP v1 entry point).
 Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
-(maintained implementation; bundled at `$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`).
+(maintained implementation; bundled in the active Agent Bridge release).
 
 ## Ownership
 
@@ -50,7 +50,7 @@ The pinned adapter ships with the Agent Bridge release as
 source `npm install` both obtain it. Execution, doctor, health, qualification,
 and runtime inspection resolve the same launchable artifact:
 
-`$BRIDGE_PROJECT_DIR/node_modules/.bin/codex-acp`
+`$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/codex-acp`
 
 Set `CODEX_ACP_COMMAND` only to override that bundled path. There is no
 silent fallback to `codex exec` if the adapter is missing. Managed install

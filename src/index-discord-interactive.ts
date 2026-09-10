@@ -12,7 +12,7 @@
  *   DISCORD_GUILD_ID             — optional; instant slash command propagation
  *   DISCORD_ALLOWED_USER_IDS     — comma-separated Discord snowflake user IDs
  *   INTERACTIVE_CLI_CHAIN        — comma-separated fallback order (default: codex,claude,grok,antigravity,cursor)
- *   CODEX_COMMAND / CLAUDE_COMMAND / ANTIGRAVITY_COMMAND — CLI binary paths
+ *   CODEX_ACP_COMMAND / CLAUDE_COMMAND / ANTIGRAVITY_COMMAND — CLI binary paths
  *   DB_PATH                      — SQLite for session/lock/CLI-preference state
  *   BRIDGE_EXECUTION_MODE        — "safe" | "trusted"
  */

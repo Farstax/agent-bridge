@@ -89,7 +89,7 @@ seed_from_env_file() {
   for key in BRIDGE_ROOT_DIR BRIDGE_PROJECT_DIR BRIDGE_CURRENT_RELEASE_DIR \
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
                TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
-              CODEX_COMMAND ANTIGRAVITY_COMMAND CLAUDE_COMMAND \
+              ANTIGRAVITY_COMMAND CLAUDE_COMMAND \
               CODEX_ACP_COMMAND CODEX_ACP_ARGS \
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
@@ -203,7 +203,7 @@ prompt DISCORD_BOT_TOKEN              "Discord bot token (leave blank to skip)"
 prompt DISCORD_APPLICATION_ID         "Discord application ID (leave blank to skip)"
 prompt DISCORD_ALLOWED_USER_IDS       "Discord allowed user IDs (leave blank to skip)"
 prompt DISCORD_GUILD_ID               "Discord guild ID (optional, leave blank for global commands)"
-prompt CODEX_COMMAND       "Codex command"       "$(command -v codex  2>/dev/null || true)"
+prompt CODEX_ACP_COMMAND   "Codex ACP command"   "${REPO_DIR}/node_modules/.bin/codex-acp"
 prompt ANTIGRAVITY_COMMAND "Antigravity command" "$(command -v agy    2>/dev/null || true)"
 prompt CLAUDE_COMMAND      "Claude command"      "$(command -v claude 2>/dev/null || true)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
@@ -289,13 +289,13 @@ resolve_binary() {
   echo ""
 }
 
-# Install or upgrade codex and claude via npm; exit with install hint if npm unavailable.
+# Install or upgrade Claude via npm; Codex ACP is a pinned project dependency.
 install_or_upgrade_npm_clis() {
   if ! command -v npm >/dev/null 2>&1; then
     echo "npm not found — install Node 24+ first" >&2
     exit 1
   fi
-  npm install -g @anthropic-ai/claude-code @openai/codex
+  npm install -g @anthropic-ai/claude-code
   export PATH="${TARGET_HOME}/.local/bin:${PATH}"
 }
 
@@ -313,7 +313,6 @@ if [[ "${SKIP_CLI_INSTALL}" != "1" ]]; then
   (cd "${REPO_DIR}" && npm install)
   install_or_upgrade_npm_clis
   ensure_agy_cli
-  CODEX_COMMAND="${CODEX_COMMAND:-$(resolve_binary codex)}"
   ANTIGRAVITY_COMMAND="${ANTIGRAVITY_COMMAND:-$(resolve_binary agy)}"
   CLAUDE_COMMAND="${CLAUDE_COMMAND:-$(resolve_binary claude)}"
   install_shared_skills
@@ -321,7 +320,7 @@ elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" ]]; then
   install_shared_skills
 fi
 
-ensure_var CODEX_COMMAND       "Codex command"
+ensure_var CODEX_ACP_COMMAND   "Codex ACP command"
 ensure_var ANTIGRAVITY_COMMAND "Antigravity command"
 if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
   ensure_var CLAUDE_COMMAND "Claude command"
@@ -398,7 +397,6 @@ _write_systemd_defaults() {
     echo "${cmd_var}=${!cmd_var:-}"
     [[ -n "${!proj_var:-}" ]] && echo "${proj_var}=${!proj_var}"
     if [[ "${bot}" == "codex" ]]; then
-      [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     fi
     true
@@ -417,7 +415,7 @@ _write_release_defaults() {
 
 _write_release_defaults
 _write_shared_defaults
-_write_systemd_defaults codex       TELEGRAM_BOT_TOKEN_CODEX       CODEX_COMMAND       CODEX_PROJECT_DIR
+_write_systemd_defaults codex       TELEGRAM_BOT_TOKEN_CODEX       CODEX_ACP_COMMAND   CODEX_PROJECT_DIR
 _write_systemd_defaults antigravity TELEGRAM_BOT_TOKEN_ANTIGRAVITY ANTIGRAVITY_COMMAND ANTIGRAVITY_PROJECT_DIR
 if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
   if [[ "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
@@ -435,10 +433,9 @@ _write_interactive_defaults() {
     echo "TELEGRAM_BOT_TOKEN_INTERACTIVE=${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}"
     echo "INTERACTIVE_DEFAULT_CLI=${INTERACTIVE_DEFAULT_CLI:-codex}"
     echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,grok,antigravity,cursor}"
-    echo "CODEX_COMMAND=${CODEX_COMMAND:-codex}"
+    echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
     echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
     echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
-    [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     echo "DB_PATH=${DB_PATH:-${BRIDGE_ROOT_DIR}/runtime/agent-bridge/interactive/bridge.sqlite}"
     true
@@ -463,10 +460,9 @@ _write_discord_defaults() {
     else
       echo "INTERACTIVE_DEFAULT_CLI=${INTERACTIVE_DEFAULT_CLI:-codex}"
       echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,grok,antigravity,cursor}"
-      echo "CODEX_COMMAND=${CODEX_COMMAND:-codex}"
+      echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
       echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
       echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
-      [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
       echo "BRIDGE_EXECUTION_MODE=${BRIDGE_EXECUTION_MODE:-trusted}"
     fi

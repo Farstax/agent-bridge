@@ -55,12 +55,14 @@ describe("doctor diagnostics", () => {
 
   it("does not fail for an unavailable provider that no configured chain uses", () => {
     const configuredAgy = "/opt/antigravity/bin/agy-missing";
+    const codexAcp = "/opt/agent-bridge/node_modules/.bin/codex-acp";
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
+        CODEX_ACP_COMMAND: codexAcp,
         ANTIGRAVITY_COMMAND: configuredAgy,
       },
-      commandExists: (executable) => executable === "codex",
+      commandExists: (executable) => executable === codexAcp,
       inspectVoiceRuntime: voiceReady,
     });
 
@@ -182,8 +184,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
-        CODEX_COMMAND: "/opt/codex/bin/codex",
-        BRIDGE_PROJECT_DIR: "/opt/agent-bridge/releases/current",
+        BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/releases/current",
       },
       commandExists: (executable) => executable === adapter,
       inspectVersion: (executable) => executable === adapter ? "1.10.0" : null,

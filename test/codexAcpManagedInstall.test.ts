@@ -78,11 +78,11 @@ print(json.dumps({
 
   it("resolves the same bundled adapter the production runtime launches", () => {
     const root = "/opt/agent-bridge/releases/current";
-    expect(resolveCodexAcpCommand({ BRIDGE_PROJECT_DIR: root })).toBe(
+    expect(resolveCodexAcpCommand({ BRIDGE_CURRENT_RELEASE_DIR: root })).toBe(
       `${root}/node_modules/.bin/codex-acp`,
     );
     expect(resolveCodexAcpCommand({
-      BRIDGE_PROJECT_DIR: root,
+      BRIDGE_CURRENT_RELEASE_DIR: root,
       CODEX_ACP_COMMAND: "/custom/codex-acp",
     })).toBe("/custom/codex-acp");
   });

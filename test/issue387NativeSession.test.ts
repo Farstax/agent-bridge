@@ -25,20 +25,6 @@ describe("Issue #387 native invocation boundary", () => {
     expect(invocation.args).toContain("--resume");
   });
 
-  it("reports fresh when Codex uses attachments despite a stored session", () => {
-    const invocation = buildCliInvocation({
-      ...base,
-      bot: "codex",
-      prompt: "inspect this image",
-      sessionId: "codex-session",
-      attachments: ["/tmp/image.png"],
-    });
-
-    expect(invocation.nativeSessionMode).toBe("fresh");
-    expect(invocation.args).not.toContain("resume");
-    expect(invocation.args).toContain("-i");
-  });
-
   it("reports fresh when a provider has no resumable session", () => {
     const invocation = buildCliInvocation({
       ...base,

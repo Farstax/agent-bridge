@@ -14,7 +14,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 const report: HealthReport = {
   pluginName: "agent-bridge",
   status: "amber",
-  checks: [{ name: "cli-update-codex", status: "amber", message: "update available" }],
+  checks: [{ name: "cli-update-claude-code", status: "amber", message: "update available" }],
   summary: "CLI update available",
   timestamp: "2026-08-10T17:00:00.000Z",
 };
@@ -40,11 +40,11 @@ describe("provider qualification health integration", () => {
     const cp = await import("node:child_process");
     const execFileSync = vi.mocked(cp.execFileSync);
     execFileSync.mockReturnValue([
-      "updated: @openai/codex 0.140.0→0.141.0",
+      "updated: @anthropic-ai/claude-code 2.1.228→2.1.229",
       JSON.stringify({
         ran: true,
-        provider: "codex",
-        providerVersion: "0.141.0",
+        provider: "claude",
+        providerVersion: "2.1.229",
         overall: "fail",
         checks: [
           { name: "version", status: "pass" },
@@ -65,7 +65,7 @@ describe("provider qualification health integration", () => {
     expect(notifications).toHaveLength(2);
     expect(notifications[0]).toContain("CLI auto-updated");
     expect(notifications[1]).toContain("CLI qualification fail");
-    expect(notifications[1]).toContain("codex 0.141.0");
+    expect(notifications[1]).toContain("claude 2.1.229");
     expect(notifications[1]).toContain("fresh_prompt");
   });
 

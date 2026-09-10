@@ -734,12 +734,12 @@ describe("runAutonomousGoalOperatorStandalone", () => {
   });
 
   it("resolves the real (non-injected) standalone engine's provider from the durable goal's bot, not a hard-coded Claude default", () => {
-    const overrideKeys = ["CODEX_COMMAND", "CLAUDE_COMMAND", "ANTIGRAVITY_COMMAND", "GEMINI_COMMAND"] as const;
+    const overrideKeys = ["CODEX_ACP_COMMAND", "CLAUDE_COMMAND", "ANTIGRAVITY_COMMAND", "GEMINI_COMMAND"] as const;
     const previous = Object.fromEntries(overrideKeys.map((key) => [key, process.env[key]]));
     for (const key of overrideKeys) delete process.env[key];
     try {
       expect(standaloneBotConfig("codex").executionKind).toBe("codex");
-      expect(standaloneBotConfig("codex").botConfig.command).toBe("codex");
+      expect(standaloneBotConfig("codex").botConfig.command).toContain("node_modules/.bin/codex-acp");
       expect(standaloneBotConfig("claude").executionKind).toBe("claude");
       expect(standaloneBotConfig("claude").botConfig.command).toBe("claude");
       expect(standaloneBotConfig("antigravity").executionKind).toBe("antigravity");
@@ -752,12 +752,12 @@ describe("runAutonomousGoalOperatorStandalone", () => {
   });
 
   it("honors the same per-bot command env overrides the interactive bridge already uses", () => {
-    const previous = process.env.CODEX_COMMAND;
-    process.env.CODEX_COMMAND = "/opt/custom/codex";
+    const previous = process.env.CODEX_ACP_COMMAND;
+    process.env.CODEX_ACP_COMMAND = "/opt/custom/codex-acp";
     try {
-      expect(standaloneBotConfig("codex").botConfig.command).toBe("/opt/custom/codex");
+      expect(standaloneBotConfig("codex").botConfig.command).toBe("/opt/custom/codex-acp");
     } finally {
-      if (previous === undefined) delete process.env.CODEX_COMMAND; else process.env.CODEX_COMMAND = previous;
+      if (previous === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previous;
     }
   });
 

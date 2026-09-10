@@ -2,7 +2,6 @@ import { accessSync, chmodSync, constants, existsSync, statSync, writeFileSync }
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 export { bootstrapSourceInteractiveDb } from "./db.js";
-import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./providers/registry.js";
 import type { ChainCliKind, ProviderId } from "./providers/types.js";
 import { TelegramClient } from "./telegram.js";
@@ -16,7 +15,7 @@ const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
 };
 
 const PROVIDER_COMMAND_ENV: Record<ProviderId, string> = {
-  codex: "CODEX_COMMAND",
+  codex: "CODEX_ACP_COMMAND",
   claude: "CLAUDE_COMMAND",
   agy: "ANTIGRAVITY_COMMAND",
   grok: "GROK_COMMAND",
@@ -81,9 +80,7 @@ export function detectInteractiveProviders(options: {
   const detected = getProviderAdapters()
     .filter((adapter) => adapter.capabilities.interactive)
     .flatMap((adapter) => {
-      const configuredCommand = adapter.id === "codex"
-        ? resolveCodexAcpCommand(env)
-        : resolveProviderExecutable(adapter.id, env);
+      const configuredCommand = resolveProviderExecutable(adapter.id, env);
       const commandPath = resolvePath(configuredCommand);
       if (!commandPath) return [];
       return [{

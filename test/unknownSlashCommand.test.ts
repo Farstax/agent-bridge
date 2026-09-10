@@ -73,7 +73,6 @@ describe("unknown authenticated slash commands", () => {
 
   it.each([
     { bot: "claude", command: "claude", sessionId: "sess-claude" },
-    { bot: "codex", command: "codex", sessionId: "sess-codex" },
     { bot: "antigravity", command: "agy", sessionId: "sess-agy" },
   ])("keeps resumed unclaimed slash requests out of native $bot slash parsing", ({ bot, command, sessionId }) => {
     for (const prompt of ["/company", "/company status", "/company approve", "/company stop"]) {
@@ -93,7 +92,6 @@ describe("unknown authenticated slash commands", () => {
 
   it.each([
     { bot: "claude", command: "claude", sessionId: "sess-claude" },
-    { bot: "codex", command: "codex", sessionId: "sess-codex" },
   ])("leaves ordinary resumed $bot prompts unchanged", ({ bot, command, sessionId }) => {
     const invocation = buildCliInvocation({
       bot,

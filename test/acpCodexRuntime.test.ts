@@ -696,7 +696,7 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     await verifyProviderApiKey("codex", {
       env: { CODEX_API_KEY: apiKey },
-      execFile: async () => undefined,
+      codexAcpProbe: async () => undefined,
     });
     const progress: string[] = [];
     try {
@@ -738,7 +738,7 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     await verifyProviderApiKey("codex", {
       env: { CODEX_API_KEY: apiKey },
-      execFile: async () => undefined,
+      codexAcpProbe: async () => undefined,
     });
     try {
       let caught: (Error & { data?: { additionalDetails?: string } }) | undefined;

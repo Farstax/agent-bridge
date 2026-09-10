@@ -34,7 +34,7 @@ vi.mock("node:child_process", async (importOriginal) => {
         const mockedList = (globalThis as any).__mockExecSync?.("npm list -g --depth=0 --json");
         const installed = mockedList ? JSON.parse(String(mockedList)).dependencies ?? {} : {};
         if (command === "claude") return installed["@anthropic-ai/claude-code"]?.version ?? "2.1.185";
-        if (command === "codex") return installed["@openai/codex"]?.version ?? "0.141.0";
+        if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
         if (command === "agy") return "1.0.10";
       }
       return actual.execFileSync(command, args, options);
@@ -274,7 +274,8 @@ describe("SelfPlugin", () => {
     try {
       const plugin = new SelfPlugin(db, dbPath);
       const report = await plugin.check();
-      expect(report.status).toBe("green");
+      expect(report.checks.find((check) => check.name === "db-file")?.status).toBe("green");
+      expect(report.checks.find((check) => check.name === "db-read")?.status).toBe("green");
       expect(report.pluginName).toBe("agent-bridge");
     } finally {
       db.close();
@@ -892,7 +893,7 @@ describe("SelfPlugin — extended checks", () => {
     };
     (globalThis as any).__mockExecFileSync = (command: string) => {
       if (command.includes("claude")) return "Claude Code 2.1.158";
-      if (command.includes("codex")) return "codex 0.135.0";
+      if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
       return "agy 1.0.10";
     };
 
@@ -909,10 +910,8 @@ describe("SelfPlugin — extended checks", () => {
 
     const codexCheck = report.checks.find(c => c.name === "cli-update-codex");
     expect(codexCheck).toBeDefined();
-    expect(codexCheck?.status).toBe("green"); // 2 versions behind
-    expect(codexCheck?.message).toContain("0.135.0 -> 0.137.0");
-    expect(codexCheck?.message).toContain("upgrade.sh");
-    expect(codexCheck?.message).toContain("--clis-only");
+    expect(codexCheck?.status).toBe("green");
+    expect(codexCheck?.message).toContain("bundled Codex ACP adapter 1.10.0");
 
     // agy is now checked directly via agy --version, not npm outdated
     const antigravityNpmCheck = report.checks.find(c => c.name === "cli-update-antigravity");
@@ -936,7 +935,7 @@ describe("SelfPlugin — extended checks", () => {
     };
     (globalThis as any).__mockExecFileSync = (command: string) => {
       if (command.includes("claude")) return "Claude Code 2.1.185";
-      if (command.includes("codex")) return "codex 0.141.0";
+      if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
       return "agy 1.0.10";
     };
 
@@ -952,7 +951,7 @@ describe("SelfPlugin — extended checks", () => {
     const codexCheck = report.checks.find(c => c.name === "cli-update-codex");
     expect(codexCheck).toBeDefined();
     expect(codexCheck?.status).toBe("green");
-    expect(codexCheck?.message).toContain("up to date");
+    expect(codexCheck?.message).toContain("bundled Codex ACP adapter 1.10.0");
 
     // agy checked via direct binary, not npm outdated
     const antigravityNpmCheck = report.checks.find(c => c.name === "cli-update-antigravity");
@@ -964,8 +963,8 @@ describe("SelfPlugin — extended checks", () => {
   });
 
   it("reports the bundled Codex ACP adapter instead of the global @openai/codex package", async () => {
-    const previousProject = process.env.BRIDGE_PROJECT_DIR;
-    process.env.BRIDGE_PROJECT_DIR = process.cwd();
+    const previousRelease = process.env.BRIDGE_CURRENT_RELEASE_DIR;
+    process.env.BRIDGE_CURRENT_RELEASE_DIR = process.cwd();
     (globalThis as any).__mockExecSync = (cmd: string) => {
       if (cmd.includes("npm list -g --depth=0 --json")) {
         return JSON.stringify({
@@ -996,8 +995,8 @@ describe("SelfPlugin — extended checks", () => {
       expect(codexCheck?.message).not.toContain("@openai/codex");
       expect(codexCheck?.message).not.toContain("0.141.0");
     } finally {
-      if (previousProject === undefined) delete process.env.BRIDGE_PROJECT_DIR;
-      else process.env.BRIDGE_PROJECT_DIR = previousProject;
+      if (previousRelease === undefined) delete process.env.BRIDGE_CURRENT_RELEASE_DIR;
+      else process.env.BRIDGE_CURRENT_RELEASE_DIR = previousRelease;
     }
   });
 
