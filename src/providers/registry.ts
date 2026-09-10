@@ -7,6 +7,7 @@ import {
 } from "./types.js";
 import type { AcpProviderPolicy } from "./acpRuntime.js";
 import { createPlannerStallWatch } from "./antigravityRuntime.js";
+import { claudeAcpPolicy } from "./claudeAcpPolicy.js";
 import { codexAcpPolicy } from "./codexAcpPolicy.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
@@ -27,7 +28,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
     displayName: "Claude Code",
     executable: "claude",
     versionArgs: ["--version"],
-    defaultArgs: ["--dangerously-skip-permissions"],
+    defaultArgs: [],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
@@ -76,6 +77,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
 /** ACP-backed providers opt into one generic runtime with only provider-owned differences here. */
 const ACP_POLICIES: Readonly<Partial<Record<ProviderId, AcpProviderPolicy>>> = {
   codex: codexAcpPolicy,
+  claude: claudeAcpPolicy,
 };
 
 /**
@@ -128,7 +130,7 @@ export function getProviderAdapters(): readonly ProviderAdapter[] {
   return PROVIDER_IDS.map((id) => ADAPTERS[id]);
 }
 
-/** Resolve the command used by the live bridge runtime, including ACP policy overrides. */
+/** Resolve a native provider command or an ACP policy's explicit installed-command override. */
 export function resolveProviderExecutable(
   id: ProviderId,
   env: Record<string, string | undefined> = process.env,
