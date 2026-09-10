@@ -3,6 +3,7 @@
 Research-only spike. This document records findings from external prompt/style
 patterns and the standalone implementation plan for optimizing the
 `TELEGRAM_RESPONSE_STYLE` block. It does not change production bridge behavior.
+Its `CodexPipeClient` is an out-of-band research harness that invokes the Codex CLI directly; it is not an Agent Bridge provider runtime, readiness, qualification, or delivery path.
 
 ## Context
 

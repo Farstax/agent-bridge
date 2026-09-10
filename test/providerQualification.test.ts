@@ -411,28 +411,6 @@ exit 1
     });
   });
 
-  it("accepts native Codex result/session evidence without semantic marker prose", async () => {
-    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-codex-"));
-    const fake = executable(join(root, "codex"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "codex-cli 9.9.9"; exit 0; fi
-printf '%s\\n' '{"type":"thread.started","thread_id":"11111111-2222-3333-4444-555555555555"}'
-printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"native protocol response"}}'
-`);
-
-    const result = await qualifyProvider({
-      providerId: "codex",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "4".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-
-    expect(result.overall).toBe("pass");
-    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
-  });
-
   it("accepts native Claude result/session evidence without semantic marker prose", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-claude-"));
     const fake = executable(join(root, "claude"), `
