@@ -10,67 +10,46 @@ import { resolveTimeoutsForKind } from "../timeouts.js";
 import type { BotKind, CliOptions } from "../types.js";
 import { redactProviderApiKeySecrets, withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
 import { withAntigravityStateLock } from "./antigravityRuntime.js";
+import { resolveProviderRuntime } from "./acpRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
-import { getProcessWatchForCommand, getProviderAdapter, resolveProviderExecutable } from "./registry.js";
+import { getAcpProviderPolicy, getProcessWatchForCommand, getProviderAdapter } from "./registry.js";
 import type { ProviderId } from "./types.js";
-import { resolveCodexAcpCommand } from "./codexAcpConfig.js";
 
-export const PROVIDER_CONTRACT_VERSION = 5;
+export const PROVIDER_CONTRACT_VERSION = 6;
 
-/**
- * Qualification prefers tool-free probes to keep fresh_prompt/session_resume
- * side-effect-free. Codex ACP cannot guarantee genuine tool-free execution
- * (buildInvocation fails closed for toolMode "none"), so qualification must
- * not request it there — otherwise every ACP Codex qualification would fail
- * on a contract the runtime was never asked to prove.
- */
+/** Qualification uses the resolved runtime capability rather than provider-name branches. */
 function qualificationToolMode(
   providerId: ProviderId,
-  adapter: { capabilities: { toolFree: boolean } },
+  _adapter: { capabilities: { toolFree: boolean } },
   env: QualificationEnv,
 ): "default" | "none" {
-  if (!adapter.capabilities.toolFree) return "default";
-  if (providerId === "codex") return "default";
-  return "none";
+  return resolveProviderRuntime(providerId, env).toolFree ? "none" : "default";
 }
 
 type QualificationEnv = Record<string, string | undefined>;
-
-const CODEX_RUNTIME_ENV_KEYS = [
-  "CODEX_ACP_COMMAND",
-  "CODEX_ACP_ARGS",
-  "CODEX_API_KEY",
-  "OPENAI_API_KEY",
-  "DEFAULT_AUTH_REQUEST",
-  "NO_BROWSER",
-  "CODEX_PATH",
-  "CODEX_HOME",
-  "MODEL_PROVIDER",
-  "BRIDGE_CURRENT_RELEASE_DIR",
-] as const;
 
 function normalizedEnvValue(env: QualificationEnv, key: string): string {
   return env[key]?.trim() ?? "";
 }
 
 /**
- * The public qualification API accepts an explicit environment, but the
- * provider invocation/runtime currently reads its effective Codex launch and
- * auth settings from process.env. Refuse any disagreement instead of probing
- * one executable/runtime and behaviorally qualifying another. The supported
- * CLI entrypoint applies the resolved service environment before calling us.
+ * Refuse to behaviorally qualify a runtime under environment values that differ
+ * from the values ordinary execution will read. Provider-specific keys live in
+ * the provider policy; qualification itself stays transport/provider neutral.
  */
 export function assertQualificationRuntimeEnvironment(
   providerId: ProviderId,
   env: QualificationEnv,
   activeEnv: QualificationEnv = process.env,
 ): void {
-  if (providerId !== "codex" || env === activeEnv) return;
-  const mismatched = CODEX_RUNTIME_ENV_KEYS.filter((key) =>
+  if (env === activeEnv) return;
+  const keys = getAcpProviderPolicy(providerId)?.qualificationEnvKeys ?? [];
+  if (keys.length === 0) return;
+  const mismatched = keys.filter((key) =>
     normalizedEnvValue(env, key) !== normalizedEnvValue(activeEnv, key));
   if (mismatched.length === 0) return;
   throw new Error(
-    `Codex qualification runtime environment mismatch for ${mismatched.join(", ")}; `
+    `${providerId} qualification runtime environment mismatch for ${mismatched.join(", ")}; `
     + "apply the resolved runtime environment before qualification",
   );
 }
@@ -101,7 +80,7 @@ export interface ProviderQualificationRecord {
   environment: string;
   overall: "pass" | "degraded" | "fail";
   checks: ProviderQualificationCheck[];
-  /** Runtime identity used to prevent evidence from cross-qualifying another transport. */
+  /** Exact runtime identity prevents evidence from cross-qualifying another transport or ACP distribution. */
   executionRuntime?: string;
 }
 
@@ -122,9 +101,7 @@ export interface ProviderQualificationOptions {
   environment?: string;
   cwd?: string;
   homeDir?: string;
-  /** Explicit hard-timeout override. Runtime hard timeout is used when omitted. */
   timeoutMs?: number;
-  /** Explicit idle-timeout override. Runtime idle timeout is used when omitted. */
   idleTimeoutMs?: number;
   env?: QualificationEnv;
 }
@@ -149,11 +126,6 @@ function providerBotKind(providerId: ProviderId): BotKind {
   return providerId === "agy" ? "antigravity" : providerId;
 }
 
-/**
- * Resolve qualification policy from the same execution-mode and timeout
- * resolvers as ordinary runtime. Explicit qualification overrides win only
- * for their corresponding hard/idle timeout dimension.
- */
 export function resolveQualificationRuntimePolicy(
   providerId: ProviderId,
   env: QualificationEnv = process.env,
@@ -225,14 +197,13 @@ export function normalizeProviderVersion(raw: string): string {
   return match?.[0] ?? trimmed;
 }
 
-/** Observe the version of the exact command used by the bridge runtime. */
+/** Observe the version of the exact command used by the resolved bridge runtime. */
 export function resolveQualificationVersionCommand(
   providerId: ProviderId,
   env: QualificationEnv = process.env,
   executable?: string,
 ): string {
-  if (providerId === "codex") return resolveCodexAcpCommand(env);
-  return executable ?? resolveProviderExecutable(providerId);
+  return executable ?? resolveProviderRuntime(providerId, env).executable;
 }
 
 export function readProviderVersion(
@@ -240,9 +211,9 @@ export function readProviderVersion(
   executable?: string,
   env: QualificationEnv = process.env,
 ): string {
-  const adapter = getProviderAdapter(providerId);
+  const runtime = resolveProviderRuntime(providerId, env);
   const command = resolveQualificationVersionCommand(providerId, env, executable);
-  const raw = execFileSync(command, [...adapter.versionArgs], {
+  const raw = execFileSync(command, [...runtime.versionArgs], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 10_000,
@@ -331,7 +302,7 @@ export function currentQualificationRuntime(
   providerId: ProviderId,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return providerId === "codex" ? "acp" : "native";
+  return resolveProviderRuntime(providerId, env).runtimeIdentity;
 }
 
 export function isQualificationCurrent(
@@ -340,13 +311,11 @@ export function isQualificationCurrent(
   installedVersion: string,
   env: QualificationEnv = process.env,
 ): boolean {
-  const recordedRuntime = record?.executionRuntime
-    ?? (providerId === "codex" ? "legacy" : "native");
   return Boolean(record
     && record.provider === providerId
     && record.providerVersion === normalizeProviderVersion(installedVersion)
     && record.contractVersion === PROVIDER_CONTRACT_VERSION
-    && recordedRuntime === currentQualificationRuntime(providerId, env));
+    && record.executionRuntime === currentQualificationRuntime(providerId, env));
 }
 
 function failedCheckNames(record: ProviderQualificationRecord): string[] {
@@ -484,9 +453,6 @@ async function runQualificationInvocation({
     return runCli(command, args, cwd, supervisorOptions);
   }
 
-  // Qualification bypasses runtime recovery so contradictory terminal results
-  // remain visible as provider-contract drift. It keeps the same invocation,
-  // supervisor, process watch, state lock and strict stream-json result parser.
   return withAntigravityStateLock(homeDir, async () =>
     withAntigravityApiKeyProvider(homeDir, runtimeEnv, async () => {
       try {
@@ -593,10 +559,6 @@ async function executeNativeQualificationCheck({
       });
     }
   } catch (caught) {
-    // ACP RequestError carries provider classification in `.data`. Preserve
-    // the original error object so checkForError() can distinguish auth,
-    // capacity and transient prerequisites from protocol failure. Native
-    // one-shot parsing keeps the historical wrapper for parser diagnostics.
     if (invocation.transport === "acp-stdio") throw caught;
     const error = caught instanceof Error ? caught : new Error(String(caught));
     throw new Error(`provider native result parsing failed: ${error.message}`);
@@ -605,9 +567,6 @@ async function executeNativeQualificationCheck({
   if (!parsed.text.trim()) {
     throw new Error("provider native result parsing failed: native result did not contain a non-empty response");
   }
-  // Some providers complete a fresh native turn without exposing a
-  // resumable session. Resume is then not applicable, while the independent
-  // repository-grounding check must still run.
   if (!parsed.sessionId?.trim()) {
     if (sessionId) throw new Error("provider session identity missing from native result");
     return { sessionId: null };
@@ -748,9 +707,9 @@ async function executeRepositoryGroundingCheck({
 }
 
 export async function qualifyProvider(options: ProviderQualificationOptions): Promise<ProviderQualificationRecord> {
-  const adapter = getProviderAdapter(options.providerId);
-  const executable = options.executable ?? adapter.executable;
   const runtimeEnv = options.env ?? process.env;
+  const runtime = resolveProviderRuntime(options.providerId, runtimeEnv);
+  const executable = options.executable ?? runtime.executable;
   assertQualificationRuntimeEnvironment(options.providerId, runtimeEnv);
   const runtimePolicy = resolveQualificationRuntimePolicy(
     options.providerId,
@@ -771,7 +730,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const versionCommand = resolveQualificationVersionCommand(options.providerId, runtimeEnv, executable);
   try {
     try {
-      const versionOutput = execFileSync(versionCommand, [...adapter.versionArgs], {
+      const versionOutput = execFileSync(versionCommand, [...runtime.versionArgs], {
         cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -899,14 +858,13 @@ export async function qualifyProviderIfNeeded(
   const runtimeEnv = options.env ?? process.env;
   assertQualificationRuntimeEnvironment(options.providerId, runtimeEnv);
   const evidencePath = options.evidencePath ?? qualificationEvidencePath(options.homeDir ?? homedir());
-  const executable = options.executable ?? resolveProviderExecutable(options.providerId);
+  const executable = options.executable ?? resolveProviderRuntime(options.providerId, runtimeEnv).executable;
   let observedVersion: string;
   try {
     observedVersion = readProviderVersion(options.providerId, executable, runtimeEnv);
   } catch {
     const evidence = readQualificationEvidence(evidencePath);
     const current = evidence.providers[options.providerId];
-    // Let qualifyProvider persist the version-check failure and diagnostic.
     const record = await qualifyProvider({
       ...options,
       executable,
