@@ -1,6 +1,7 @@
 /** Provider-neutral ACP launch, lifecycle, presentation and result plumbing. */
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
+import { createHash } from "node:crypto";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
 import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
 import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
@@ -127,6 +128,31 @@ function registryLaunch(entry: AcpRegistryAgentEntry): {
   );
 }
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function acpRuntimeIdentity(
+  entry: AcpRegistryAgentEntry,
+  executable: string,
+  args: readonly string[],
+  versionArgs: readonly string[],
+): string {
+  const fingerprint = createHash("sha256").update(canonicalJson({
+    distribution: entry.distribution,
+    executable,
+    args,
+    versionArgs,
+  })).digest("hex");
+  return `acp:${entry.id}@${entry.version}:${fingerprint}`;
+}
+
 export function resolveAcpProviderRuntime(
   policy: AcpProviderPolicy,
   entry: AcpRegistryAgentEntry,
@@ -159,7 +185,7 @@ export function resolveAcpProviderRuntime(
     executable,
     args,
     versionArgs,
-    runtimeIdentity: `acp:${entry.id}@${entry.version}`,
+    runtimeIdentity: acpRuntimeIdentity(entry, executable, args, versionArgs),
     selectedVersion: entry.version,
     registryAgentId: entry.id,
     distribution: entry.distribution,

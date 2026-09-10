@@ -68,7 +68,7 @@ describe("declarative ACP provider runtime", () => {
       executable: "/opt/agent-bridge/current/node_modules/.bin/codex-acp",
       args: [],
       versionArgs: ["--version"],
-      runtimeIdentity: "acp:codex-acp@1.10.0",
+      runtimeIdentity: expect.stringMatching(/^acp:codex-acp@1\.10\.0:[a-f0-9]{64}$/),
       provisionalAnswers: true,
     }));
   });
@@ -87,7 +87,7 @@ describe("declarative ACP provider runtime", () => {
       executable: "npx",
       args: ["@example/fixture-agent@2.3.4", "--acp"],
       versionArgs: ["@example/fixture-agent@2.3.4", "--version"],
-      runtimeIdentity: "acp:fixture-agent@2.3.4",
+      runtimeIdentity: expect.stringMatching(/^acp:fixture-agent@2\.3\.4:[a-f0-9]{64}$/),
       provisionalAnswers: true,
     }));
     expect(buildResolvedAcpProviderInvocation(runtime, null)).toEqual({
@@ -98,6 +98,27 @@ describe("declarative ACP provider runtime", () => {
     });
   });
 
+  it("changes qualification identity when a same-version distribution changes", () => {
+    const first = resolveAcpProviderRuntime(fixturePolicy, {
+      id: "fixture-agent",
+      name: "Fixture Agent",
+      version: "2.3.4",
+      distribution: { npx: { package: "@example/fixture-agent@2.3.4", args: ["--acp"] } },
+    });
+    const changed = resolveAcpProviderRuntime(fixturePolicy, {
+      id: "fixture-agent",
+      name: "Fixture Agent",
+      version: "2.3.4",
+      distribution: {
+        npx: {
+          package: "@example/fixture-agent@2.3.4",
+          args: ["--acp", "--changed"],
+        },
+      },
+    });
+    expect(changed.runtimeIdentity).not.toBe(first.runtimeIdentity);
+  });
+
   it("lets engine presentation and session routing consume a resolved second-provider runtime", () => {
     const fixtureRuntime: ResolvedProviderRuntime = {
       providerId: "fixture-acp",
@@ -105,7 +126,7 @@ describe("declarative ACP provider runtime", () => {
       executable: "npx",
       args: ["@example/fixture-agent@2.3.4"],
       versionArgs: ["@example/fixture-agent@2.3.4", "--version"],
-      runtimeIdentity: "acp:fixture-agent@2.3.4",
+      runtimeIdentity: "acp:fixture-agent@2.3.4:fixture",
       selectedVersion: "2.3.4",
       registryAgentId: "fixture-agent",
       distribution: { npx: { package: "@example/fixture-agent@2.3.4" } },

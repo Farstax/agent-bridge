@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   PROVIDER_CONTRACT_VERSION,
+  currentQualificationRuntime,
   isQualificationCurrent,
   qualificationHealthCheck,
   qualifyProvider,
@@ -13,6 +14,7 @@ import {
   writeQualificationRecord,
   type ProviderQualificationRecord,
 } from "../src/providers/qualification.js";
+import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 
 type GroundingMode = "pass" | "omit_instruction" | "omit_source" | "capacity";
 
@@ -164,15 +166,16 @@ exit 1
   });
 
   it("only considers evidence current for the same provider version, contract version and exact runtime identity", () => {
+    const runtimeIdentity = currentQualificationRuntime("codex");
     const current = passingRecord({
       provider: "codex",
       providerVersion: "1.10.0",
-      executionRuntime: "acp:codex-acp@1.10.0",
+      executionRuntime: runtimeIdentity,
     });
     expect(isQualificationCurrent(current, "codex", "1.10.0")).toBe(true);
     expect(isQualificationCurrent({ ...current, executionRuntime: "legacy" }, "codex", "1.10.0")).toBe(false);
     // A different distribution/version identity for the same version string must not qualify.
-    expect(isQualificationCurrent({ ...current, executionRuntime: "acp:codex-acp@1.9.0" }, "codex", "1.10.0")).toBe(false);
+    expect(isQualificationCurrent({ ...current, executionRuntime: `${runtimeIdentity}-changed` }, "codex", "1.10.0")).toBe(false);
     expect(isQualificationCurrent(current, "codex", "1.10.1")).toBe(false);
     expect(isQualificationCurrent({ ...current, contractVersion: PROVIDER_CONTRACT_VERSION + 1 }, "codex", "1.10.0")).toBe(false);
     expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "1.10.0")).toBe(false);
@@ -215,7 +218,10 @@ exit 7
           CODEX_ACP_COMMAND: acp,
         },
       });
-      expect(result.executionRuntime).toBe("acp:codex-acp@1.10.0");
+      expect(result.executionRuntime).toBe(resolveProviderRuntime("codex", {
+        ...process.env,
+        CODEX_ACP_COMMAND: acp,
+      }).runtimeIdentity);
       expect(result.providerVersion).toBe("1.10.0");
       expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/codex-acp 1\.10\.0/);
     } finally {
