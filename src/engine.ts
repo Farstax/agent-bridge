@@ -243,7 +243,9 @@ export class BridgeEngine {
         commands: buildTelegramCommands(this.kind),
       }).catch((err) => console.warn(`[${this.kind}] setMyCommands failed`, err));
     }
-    await this.recoverPendingQueues();
+    void this.recoverPendingQueues().catch((error) => {
+      console.error(`[${this.kind}] startup queue recovery failed`, error);
+    });
 
     let offset = isAgentKind(this.kind) ? this.db.getLastUpdateId(this.kind) + 1 : 0;
     console.log(`[${this.kind}] engine online (offset: ${offset})`);

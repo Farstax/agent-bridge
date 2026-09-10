@@ -2,7 +2,7 @@
  * Tests for the interactive bot's CLI routing and /switch + /cli commands.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, onTestFinished, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
 import type { TelegramUpdate } from "../src/types.js";
@@ -22,11 +22,16 @@ import {
   buildGlobalInteractiveCommandRegistrations,
   buildChatInteractiveCommandRegistrations,
   dispatchInteractiveTurnWithFallback,
+  dispatchUnifiedTelegramUpdate,
+  handleInteractiveCliCommand,
+  runUnifiedTelegramIngress,
   applyManualCliSwitchHandoff,
   getSelectableCliKinds,
   type CliKind,
 } from "../src/interactiveBot.js";
 import { isHandoffRequired } from "../src/handoffState.js";
+import { BridgeEngine } from "../src/engine.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 
@@ -102,6 +107,111 @@ describe("isCliCommandText", () => {
 
   it("ignores group command suffix for a different bot", () => {
     expect(isCliCommandText("/cli@otherbot", "crawlerinteractivebot")).toBe(false);
+  });
+
+  it("starts unified ingress and routes /cli plus another chat while recovery owns its lane", async () => {
+    const db = openDb(":memory:");
+    onTestFinished(() => db.close());
+    const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
+      sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
+      sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+      setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
+      answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
+      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+      sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
+      sendDocument: vi.fn().mockResolvedValue({ ok: true }),
+    } as any;
+    db.enqueueMsg("telegram:interactive", "recovered-chat", {
+      prompt: "recovered work",
+      chatId: 100,
+      chatType: "private",
+      userId: 99,
+    });
+    const engine = new BridgeEngine({
+      kind: "codex",
+      surfaceIdentity: "telegram:interactive",
+      botConfig: { command: "codex", modelPreference: [] },
+      allowedUserIds: new Set(["99"]),
+      executionMode: "trusted",
+      busyMessageMode: "queue",
+      pollIntervalMs: 1,
+    }, db, client);
+    let recoveryStarted!: () => void;
+    let releaseRecovery!: () => void;
+    const started = new Promise<void>((resolve) => { recoveryStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+    let recoveryExecutions = 0;
+    engine.setQueuedMessageHandler(async () => {
+      recoveryExecutions++;
+      recoveryStarted();
+      await release;
+      return "committed";
+    });
+
+    const available = new Set<CliKind>(["codex"]);
+    const dispatchMessage = vi.fn().mockResolvedValue(undefined);
+    const updates: TelegramUpdate[] = [{
+      update_id: 1,
+      message: {
+        message_id: 10,
+        chat: { id: 200, type: "private" },
+        from: { id: 99, first_name: "Test" },
+        text: "/cli",
+      },
+    }, {
+      update_id: 2,
+      message: {
+        message_id: 11,
+        chat: { id: 300, type: "private" },
+        from: { id: 99, first_name: "Test" },
+        text: "unrelated chat",
+      },
+    }];
+    const ingress = runUnifiedTelegramIngress({
+      recoverPendingQueues: () => engine.recoverPendingQueues(),
+      onRecoveryError: vi.fn(),
+      runIngress: async () => {
+        for (const update of updates) {
+          const message = update.message!;
+          const handled = await handleInteractiveCliCommand({
+            rawText: message.text ?? "",
+            botUsername: "crawlerinteractivebot",
+            providerLock: null,
+            chatKey: String(message.chat.id),
+            chatId: message.chat.id,
+            threadId: message.message_thread_id,
+            resolvePreference: () => ({ pref: "codex", available, stored: "codex" }),
+            sendMessage: (body) => client.sendMessage({ chat_id: message.chat.id, ...body }),
+          });
+          if (!handled) {
+            await dispatchUnifiedTelegramUpdate(
+              update,
+              String(message.chat.id),
+              "telegram:interactive",
+              engine,
+              dispatchMessage,
+            );
+          }
+        }
+      },
+    });
+    await started;
+    await ingress;
+
+    expect(db.acquireLock("telegram:interactive", "recovered-chat")).toBeNull();
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 200,
+      text: expect.stringContaining("Active CLI"),
+    }));
+    expect(dispatchMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chatKey: "300",
+      text: "unrelated chat",
+    }));
+
+    releaseRecovery();
+    await vi.waitFor(() => expect(db.pendingMsgCount("telegram:interactive", "recovered-chat")).toBe(0));
+    expect(recoveryExecutions).toBe(1);
   });
 });
 

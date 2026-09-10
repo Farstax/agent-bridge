@@ -28,7 +28,6 @@ import {
   resolveUpdateChatKey,
   resolveMessageThreadId,
   isAuthorizedInteractiveUpdate,
-  isCliCommandText,
   describeInteractiveUpdateForLog,
   isGroupInteractiveUpdate,
   dispatchInteractiveTurnWithFallback,
@@ -37,6 +36,8 @@ import {
   dispatchClaimedInteractiveWithFallback,
   resolveAvailableCliPreference,
   applyManualCliSwitchHandoff,
+  handleInteractiveCliCommand,
+  runUnifiedTelegramIngress,
   type CliKind,
 } from "./interactiveBot.js";
 import { targetTelegramAbortUpdate } from "./telegramCommandTarget.js";
@@ -349,8 +350,13 @@ for (const engine of Object.values(engines)) {
   });
 }
 
-await engines[defaultPref].recoverPendingQueues();
+await runUnifiedTelegramIngress({
+  recoverPendingQueues: () => engines[defaultPref].recoverPendingQueues(),
+  onRecoveryError: (error) => console.error("[interactive] startup queue recovery failed", error),
+  runIngress: runInteractiveIngress,
+});
 
+async function runInteractiveIngress(): Promise<void> {
 const scheduledOwnerKey = deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds);
 const scheduledActorId = allowedUserIds.values().next().value;
 const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new ScheduledRoutineRunner(
@@ -524,20 +530,16 @@ for (;;) {
             }
           }
 
-          if (isCliCommandText(rawText, botUsername)) {
-            if (providerLock) {
-              await sendTelegramMessage({ client, kind: "interactive", chatId, body: {
-                text: `Provider is fixed to **${providerLock}** for this bot.`,
-                message_thread_id: message.message_thread_id,
-              } });
-              continue;
-            }
-            const { pref, available, stored } = resolveCredentialCheckedPreference(chatKey);
-            await sendTelegramMessage({ client, kind: "interactive", chatId, body: {
-              text: buildCliStatusText(pref ?? stored, available),
-              reply_markup: buildCliKeyboard(pref ?? stored, available),
-              message_thread_id: message.message_thread_id,
-            } });
+          if (await handleInteractiveCliCommand({
+            rawText,
+            botUsername,
+            providerLock,
+            chatKey,
+            chatId,
+            threadId: message.message_thread_id,
+            resolvePreference: resolveCredentialCheckedPreference,
+            sendMessage: (body) => sendTelegramMessage({ client, kind: "interactive", chatId, body }),
+          })) {
             continue;
           }
           if (integratedHealthRuntime && await handleIntegratedHealthCommand({
@@ -667,4 +669,5 @@ for (;;) {
     console.error("[interactive] poll error", err);
     await new Promise(r => setTimeout(r, 5000));
   }
+}
 }
