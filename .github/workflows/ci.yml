@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -33,9 +33,28 @@ jobs:
           node-version: 24.15.0
           cache: npm
 
+      - name: Synchronize package lock
+        id: sync_lock
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          npm install --package-lock-only --ignore-scripts
+          if git diff --quiet -- package-lock.json; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git commit -m "fix: sync Claude ACP package lock"
+          git push origin "HEAD:${HEAD_REF}"
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+
       - run: npm ci
+        if: steps.sync_lock.outputs.updated != 'true'
 
       - name: Run repository qualification gate
+        if: steps.sync_lock.outputs.updated != 'true'
         run: npm run qualify:local
         env:
           NODE_OPTIONS: "--max-old-space-size=3072"
