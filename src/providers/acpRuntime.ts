@@ -4,7 +4,7 @@ import { extname } from "node:path";
 import { createHash } from "node:crypto";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
 import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
-import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
+import type { AcpRetainedEvent, AcpSessionConfigValue, AcpTurnResult } from "../acp/client.js";
 import { isAbortRequested, runSupervisedStdioSession } from "../cliSupervisor.js";
 import { cleanOutputDir } from "../fileOutput.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
@@ -43,6 +43,12 @@ export interface AcpActivityProjector {
   observe(event: AcpRetainedEvent): RunActivity | null;
 }
 
+export interface AcpProviderSessionSettings {
+  readonly meta?: Readonly<Record<string, unknown>>;
+  readonly modeId?: string;
+  readonly config?: readonly AcpSessionConfigValue[];
+}
+
 /**
  * Bridge-owned differences that ACP/its Registry cannot decide. Straightforward
  * providers can omit every hook after identity/presentation and use Registry
@@ -69,6 +75,8 @@ export interface AcpProviderPolicy {
     request: ProviderInvocationRequest,
     env: Record<string, string | undefined>,
   ) => Record<string, string>;
+  /** Standard ACP session metadata/mode/config selected from Bridge provider policy. */
+  readonly sessionSettings?: (request: ProviderInvocationRequest) => AcpProviderSessionSettings;
   /** Runtime-affecting env keys that qualification must compare with the active process. */
   readonly qualificationEnvKeys?: readonly string[];
   /** Standard ACP authenticate method selected from workspace-local policy. */
@@ -427,6 +435,7 @@ export async function runResolvedAcpProviderTurn(
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
   const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
+  const sessionSettings = policy.sessionSettings?.(request);
   const contextEnv = { ...(options.contextEnv ?? {}), ...providerEnv };
   const redactionEnv = { ...process.env, ...contextEnv };
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
@@ -459,6 +468,9 @@ export async function runResolvedAcpProviderTurn(
         existingAcpSessionId: request.sessionId,
         prompt: promptBlocks(request),
         executionMode: request.executionMode,
+        sessionMeta: sessionSettings?.meta,
+        sessionModeId: sessionSettings?.modeId,
+        sessionConfig: sessionSettings?.config,
         authenticateMethodId: policy.authenticateMethodId?.(effectiveEnv),
         abortRequested: () => chatId != null && isAbortRequested(chatId),
         signal: io.signal,
