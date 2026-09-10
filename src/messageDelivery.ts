@@ -275,7 +275,7 @@ export async function sendMessageWithProgress({
   let lastAnswerPreviewEditMs = 0;
   const answerPreviewUpdates: Promise<unknown>[] = [];
 
-  let progressMsgId: number | null = null;
+  let progressMsgId: number | string | null = null;
   let progressPublishPending = false;
   let progressTimer: NodeJS.Timeout | null = null;
   let pendingProgressText: string | null = null;
@@ -305,8 +305,8 @@ export async function sendMessageWithProgress({
     try {
       if (progressMsgId == null) {
         const sent = await client.sendMessage({ chat_id: chatId, ...body, text });
-        const messageId = sent?.result?.message_id;
-        if (typeof messageId !== "number") return;
+        const messageId = sent?.result?.message_id ?? sent?.id;
+        if (typeof messageId !== "number" && typeof messageId !== "string") return;
         progressMsgId = messageId;
       } else {
         await client.editMessageText({
@@ -381,11 +381,21 @@ export async function sendMessageWithProgress({
       progressTimer = null;
     }
     await Promise.allSettled([...progressUpdates, progressChain]);
-    if (progressMsgId == null || typeof client.deleteMessage !== "function" || !capabilities.deleteMessages) return;
+    if (progressMsgId == null) return;
     const messageId = progressMsgId;
+    if (typeof client.deleteMessage === "function" && capabilities.deleteMessages) {
+      try {
+        await client.deleteMessage({ chat_id: chatId, message_id: messageId });
+        if (progressMsgId === messageId) progressMsgId = null;
+        return;
+      } catch {
+        /* fall through to a neutral terminal edit when supported */
+      }
+    }
+    if (!capabilities.editMessages) return;
     try {
-      await client.deleteMessage({ chat_id: chatId, message_id: messageId });
-      if (progressMsgId === messageId) progressMsgId = null;
+      await client.editMessageText({ chat_id: chatId, message_id: messageId, ...body, text: "Stopped." });
+      lastSentPreviewText = "Stopped.";
     } catch {
       /* transient cleanup failure must not fail the Run */
     }
