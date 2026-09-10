@@ -44,6 +44,11 @@ export function createCodexAcpAnswerPreview(
   return {
     observe(event): void {
       if (event.kind !== "session_update" || event.channel !== "live" || !event.notification) return;
+      // Production retained events are tagged with the parent/root ACP session.
+      // Native child notifications keep their own notification.sessionId and
+      // must not contribute provisional parent answer text. Untagged synthetic
+      // events retain legacy classifier behavior for isolated unit fixtures.
+      if (event.acpSessionId && event.notification.sessionId !== event.acpSessionId) return;
       const notification = event.notification as typeof event.notification & MetaCarrier;
       const update = notification.update as typeof notification.update & MetaCarrier;
       const misplacedCodexMarker = hasOwnCodexMarker(notification._meta);
