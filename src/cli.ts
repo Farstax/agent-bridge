@@ -12,7 +12,11 @@ import type { ProviderInvocation, ProviderInvocationRequest } from "./providers/
 import { randomUUID } from "node:crypto";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
-import * as codexAcpRuntime from "./providers/codexAcpRuntime.js";
+import {
+  buildAcpProviderInvocation,
+  resolveProviderRuntime,
+  runAcpProviderTurn,
+} from "./providers/acpRuntime.js";
 import * as claudeRuntime from "./providers/claudeRuntime.js";
 import * as grokRuntime from "./providers/grokRuntime.js";
 import * as cursorRuntime from "./providers/cursorRuntime.js";
@@ -44,7 +48,11 @@ export {
 };
 import { appendEffortArgs, resolveAgyModelForEffort, type EffortLevel } from "./effort.js";
 import { isProviderFallbackEligibleError } from "./providers/fallbackEligibility.js";
-import { getProcessWatchForCommand, supportsToolFreeMode } from "./providers/registry.js";
+import {
+  getProcessWatchForCommand,
+  providerIdForBotName,
+  supportsToolFreeMode,
+} from "./providers/registry.js";
 import {
   runSupervisedProcess,
   runSupervisedStdioSession,
@@ -108,13 +116,13 @@ export {
   resolveSupervisorTimeouts,
   isAbortRequested,
   isChildRunning,
+  runAcpProviderTurn,
 };
 
 export function scrubOutputDir(text: string, outDir: string | null | undefined): string {
   if (!outDir) return text;
   const lines = text.split("\n");
   const filtered = lines.filter((line) => !line.includes(outDir));
-  // Collapse runs of more than one consecutive blank line left by removed lines
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -128,9 +136,6 @@ function seedFreshExecutionContract(
   if (includeResponseContract) return prompt;
   const startsFresh = !sessionId || (bot === "codex" && attachments.length > 0);
   if (startsFresh) return wrapPromptContext(prompt, null, false, true);
-  // Resumed turns intentionally stay otherwise raw so the native session owns
-  // continuity. A leading slash is the one exception: native CLIs may consume
-  // it as their own command before the model or installed Skills can see it.
   return prompt.startsWith("/") ? `User request:\n${prompt}` : prompt;
 }
 
@@ -178,10 +183,22 @@ export function buildCliInvocation({
   }
 
   const providerPrompt = seedFreshExecutionContract(bot, prompt, sessionId, attachments, includeResponseContract);
-
-  if (bot === "codex") {
-    return codexAcpRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
+  const providerId = providerIdForBotName(bot);
+  if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
+    return buildAcpProviderInvocation(providerId, {
+      prompt: providerPrompt,
+      sessionId,
+      command,
+      model,
+      executionMode,
+      outputFormat,
+      soulContext,
+      includeResponseContract,
+      attachments,
+      outputDir,
+      effort,
+      toolMode,
+      nativeCompletion,
     });
   }
   if (bot === "claude") {
@@ -215,6 +232,7 @@ export function buildCliInvocation({
 }
 
 export { validateBridgeConfig } from "./config.js";
+/** Backwards-compatible test/import alias; execution dispatch no longer depends on it. */
 export { runTurn as runCodexAcpTurn } from "./providers/codexAcpRuntime.js";
 
 /** Run a built invocation on the matching transport. ACP stdio is never oneshot-parsed. */
@@ -230,7 +248,12 @@ export async function runProviderInvocation(
   },
 ): Promise<CliResult> {
   if (invocation.transport === "acp-stdio") {
-    return codexAcpRuntime.runTurn(request, cwd, { ...options, bot: (options.bot ?? bot) as BotKind }, identities);
+    const providerId = providerIdForBotName(bot);
+    if (!providerId) throw new Error(`Unknown ACP provider: ${bot}`);
+    return runAcpProviderTurn(providerId, request, cwd, {
+      ...options,
+      bot: (options.bot ?? bot) as BotKind,
+    }, identities);
   }
   const { stdout } = await runConfiguredCli(invocation.command, invocation.args, cwd, {
     ...options,
@@ -269,8 +292,9 @@ export function parseCliResult({
 }): CliResult {
   void logContent;
   let result: CliResult;
-  if (bot === "codex") {
-    throw new Error("Codex uses ACP structured results and is not parsed as native CLI output");
+  const providerId = providerIdForBotName(bot);
+  if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
+    throw new Error(`${bot} uses ACP structured results and is not parsed as native CLI output`);
   } else if (bot === "claude") {
     result = claudeRuntime.parseResult(stdout);
   } else if (bot === "grok") {

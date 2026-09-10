@@ -40,6 +40,8 @@ export interface AcpTurnInput {
   readonly existingAcpSessionId: string | null;
   readonly prompt: string | ContentBlock | ContentBlock[];
   readonly executionMode: "safe" | "trusted";
+  /** Standard ACP authentication method selected by provider/workspace policy. */
+  readonly authenticateMethodId?: string;
   readonly abortRequested?: () => boolean;
   readonly signal?: AbortSignal;
   readonly stream?: Stream;
@@ -193,6 +195,17 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
   const execute = async (agent: ClientContext): Promise<AcpTurnResult> => {
     const initialize = await agent.request(acp.methods.agent.initialize, bridgeInitializeRequest());
+    if (input.authenticateMethodId) {
+      const method = initialize.authMethods?.find((candidate) => candidate.id === input.authenticateMethodId);
+      if (!method) {
+        throw new Error(`ACP agent did not advertise authentication method "${input.authenticateMethodId}"`);
+      }
+      if ("type" in method && method.type === "terminal") {
+        throw new Error(`ACP authentication method "${input.authenticateMethodId}" requires an interactive terminal`);
+      }
+      await agent.request(acp.methods.agent.authenticate, { methodId: input.authenticateMethodId });
+    }
+
     const sessionParams = { cwd: input.cwd, mcpServers: [] as [] };
     let acpSessionId = input.existingAcpSessionId;
     let sessionMode: AcpSessionMode = "fresh";

@@ -13,6 +13,7 @@ import type { ExecutionOutcome, PendingMessage } from "./engine.js";
 import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
+import { persistProviderSession } from "./providers/sessionRuntime.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
 export type InteractiveCommandRegistration = {
@@ -344,7 +345,7 @@ export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chat
 }
 
 function prepareCliHandoff(db: BridgeDb, chatKey: string, targetCli: CliKind, reason: string): void {
-  db.setSession(chatKey, targetCli, null);
+  persistProviderSession(db, chatKey, targetCli, null);
   markHandoffRequired(db, chatKey, targetCli, reason);
 }
 

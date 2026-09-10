@@ -1,43 +1,35 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { getHeapStatistics } from "node:v8";
 import type { HealthPlugin, HealthReport, CheckResult } from "../types.js";
 import type { BridgeDb } from "../../db.js";
 import { readInstalledProviderVersions } from "../../providers/qualificationStatus.js";
+import { resolveProviderRuntime } from "../../providers/acpRuntime.js";
+import type { ProviderId } from "../../providers/types.js";
 
 const upgradeCommand = process.env.BRIDGE_UPGRADE_COMMAND
   ?? `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh --clis-only`;
 
-function pinnedCodexAcpVersion(env: Record<string, string | undefined> = process.env): string | null {
-  try {
-    const root = env.BRIDGE_CURRENT_RELEASE_DIR?.trim() || process.cwd();
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
-      dependencies?: Record<string, string>;
-    };
-    return pkg.dependencies?.["@agentclientprotocol/codex-acp"] ?? null;
-  } catch {
-    return null;
+function inspectReleaseLockedAcpProvider(
+  providerId: ProviderId,
+  runtimeVersions: Partial<Record<ProviderId, string>>,
+): CheckResult | null {
+  const selected = resolveProviderRuntime(providerId);
+  if (selected.transport !== "acp-stdio" || !selected.selectedVersion) return null;
+  const observedVersion = runtimeVersions[providerId];
+  const name = `cli-update-${providerId}`;
+  if (!observedVersion) {
+    return { name, status: "red", message: `${providerId} ACP adapter executable not found` };
   }
-}
-
-function inspectBundledCodexAcp(runtimeVersions: Partial<Record<string, string>>): CheckResult {
-  const runtime = runtimeVersions.codex;
-  const pinned = pinnedCodexAcpVersion();
-  if (!runtime) {
-    return { name: "cli-update-codex", status: "red", message: "Codex ACP adapter executable not found" };
-  }
-  if (!pinned) {
-    return { name: "cli-update-codex", status: "amber", message: `Codex ACP adapter ${runtime} (release pin unavailable)` };
-  }
-  if (runtime !== pinned) {
+  if (observedVersion !== selected.selectedVersion) {
     return {
-      name: "cli-update-codex",
+      name,
       status: "amber",
-      message: `bundled Codex ACP adapter runtime ${runtime} differs from pinned ${pinned}`,
+      message: `${providerId} ACP adapter runtime ${observedVersion} differs from release lock ${selected.selectedVersion}`,
     };
   }
-  return { name: "cli-update-codex", status: "green", message: `bundled Codex ACP adapter ${runtime}` };
+  const label = providerId === "codex" ? "bundled Codex ACP adapter" : `${providerId} ACP adapter`;
+  return { name, status: "green", message: `${label} ${observedVersion}` };
 }
 
 export class SelfPlugin implements HealthPlugin {
@@ -202,7 +194,10 @@ export class SelfPlugin implements HealthPlugin {
     }
 
     const runtimeVersions = readInstalledProviderVersions();
-    checks.push(inspectBundledCodexAcp(runtimeVersions));
+    for (const providerId of ["codex", "claude", "agy", "grok", "cursor"] as const) {
+      const acpCheck = inspectReleaseLockedAcpProvider(providerId, runtimeVersions);
+      if (acpCheck) checks.push(acpCheck);
+    }
 
     if (globalListSuccess) {
       const cliSpecs = [

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,8 +92,17 @@ describe("Codex ACP qualification boundary", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-acp-qualification-error-"));
     const failingAgent = fileURLToPath(new URL("./support/failingAcpQualificationAgent.ts", import.meta.url));
     const secret = "qualification-secret-value";
-    process.env.CODEX_ACP_COMMAND = process.execPath;
-    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${failingAgent}`;
+    // Qualification always probes the resolved ACP runtime's own executable
+    // for `--version` (never CODEX_ACP_ARGS), so answer the release-locked
+    // version directly before delegating the turn to the failing agent.
+    const wrapper = join(root, "codex-acp");
+    writeFileSync(wrapper, `#!/usr/bin/env bash
+if [ "\${1:-}" = "--version" ]; then echo "@agentclientprotocol/codex-acp 1.10.0"; exit 0; fi
+exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${failingAgent}"
+`);
+    chmodSync(wrapper, 0o755);
+    process.env.CODEX_ACP_COMMAND = wrapper;
+    delete process.env.CODEX_ACP_ARGS;
     process.env.CODEX_API_KEY = secret;
 
     try {

@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import type { TelegramMessage } from "../src/types.js";
 
-const runTurnMock = vi.fn();
-vi.mock("../src/providers/codexAcpRuntime.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/providers/codexAcpRuntime.js")>();
-  return { ...actual, runTurn: runTurnMock };
+const runProviderInvocationMock = vi.fn();
+vi.mock("../src/cli.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/cli.js")>();
+  return { ...actual, runProviderInvocation: runProviderInvocationMock };
 });
 
 function makeMessage(text: string): TelegramMessage {
@@ -44,8 +44,12 @@ describe("clean-droplet acceptance", () => {
   it("starts the first Codex turn through ACP with no resume session after database startup", async () => {
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     process.env.CODEX_ACP_COMMAND = "codex-acp";
-    runTurnMock.mockReset();
-    runTurnMock.mockResolvedValue({ text: "ok", sessionId: "acp-fresh-session", stopReason: "end_turn" });
+    runProviderInvocationMock.mockReset();
+    runProviderInvocationMock.mockResolvedValue({
+      text: "ok",
+      sessionId: "acp-fresh-session",
+      stopReason: "end_turn",
+    });
     const db = openDb(":memory:");
     try {
       const { BridgeEngine } = await import("../src/engine.js");
@@ -64,8 +68,12 @@ describe("clean-droplet acceptance", () => {
 
       await engine.handleMessages([makeMessage("first request on a new appliance")]);
 
-      expect(runTurnMock).toHaveBeenCalledTimes(1);
-      expect(runTurnMock.mock.calls[0]?.[0]).toMatchObject({
+      expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
+      expect(runProviderInvocationMock.mock.calls[0]?.[1]).toMatchObject({
+        transport: "acp-stdio",
+        command: "codex-acp",
+      });
+      expect(runProviderInvocationMock.mock.calls[0]?.[4]).toMatchObject({
         sessionId: null,
         command: "codex-acp",
         executionMode: "trusted",

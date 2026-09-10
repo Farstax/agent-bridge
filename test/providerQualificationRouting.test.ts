@@ -14,6 +14,7 @@ describe("provider qualification routing", () => {
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord({
       provider: "agy",
+      executionRuntime: "native:agy",
       providerVersion: "1.1.12",
       previousVersion: "1.1.11",
       bridgeCommit: "e".repeat(40),
@@ -29,6 +30,7 @@ describe("provider qualification routing", () => {
     }, evidencePath);
     writeQualificationRecord({
       provider: "claude",
+      executionRuntime: "native:claude",
       providerVersion: "2.3.4",
       previousVersion: "2.3.3",
       bridgeCommit: "e".repeat(40),
@@ -54,6 +56,7 @@ describe("provider qualification routing", () => {
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord({
       provider: "agy",
+      executionRuntime: "native:agy",
       providerVersion: "1.1.12",
       previousVersion: "1.1.11",
       bridgeCommit: "e".repeat(40),
@@ -76,6 +79,7 @@ describe("provider qualification routing", () => {
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord({
       provider: "grok",
+      executionRuntime: "native:grok",
       providerVersion: "1.0.5",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
@@ -94,6 +98,7 @@ describe("provider qualification routing", () => {
 
     writeQualificationRecord({
       provider: "grok",
+      executionRuntime: "native:grok",
       providerVersion: "1.0.5",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),

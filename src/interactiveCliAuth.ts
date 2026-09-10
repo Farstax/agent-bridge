@@ -17,8 +17,7 @@ import {
   type CursorStatusSnapshot,
 } from "./providers/cursorAvailability.js";
 import { isGrokRouteable, resolveGrokAuthPaths } from "./providers/grokAvailability.js";
-import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
-import { resolveProviderExecutable } from "./providers/registry.js";
+import { resolveProviderRuntime } from "./providers/acpRuntime.js";
 import type { ProviderId } from "./providers/types.js";
 
 export interface InteractiveCliAuthPaths {
@@ -106,10 +105,8 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const available = new Set<CliKind>();
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
     isProviderApiKeyVerified(provider, env));
-  const hasRuntime = (provider: ProviderId): boolean => {
-    if (provider === "codex") return commandExists(resolveCodexAcpCommand(env));
-    return commandExists(resolveProviderExecutable(provider, env));
-  };
+  const hasRuntime = (provider: ProviderId): boolean =>
+    commandExists(resolveProviderRuntime(provider, env).executable);
 
   const codexAuthenticated = exists(paths.codex)
     || (isProviderApiKeyConfigured("codex", env) && verifyApiKey("codex"));

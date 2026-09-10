@@ -16,7 +16,7 @@ import {
   buildExecutionOptions,
   runCli as _runCli,
   runCliAsync as _runCliAsync,
-  runCodexAcpTurn,
+  runProviderInvocation,
   parseCliResult,
   isCapacityExhaustedError,
   getNextFallbackModel,
@@ -29,7 +29,9 @@ import {
   CliTimeoutError,
 } from "./cli.js";
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
+import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
+import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
@@ -775,7 +777,7 @@ export class BridgeEngine {
         chatId: input.chatId,
         body: { message_thread_id: input.threadId },
         showProgressNarration: this.kind === "antigravity" && isAntigravityNarrationVisible(this.db, input.chatKey),
-        allowAnswerPreview: this._executionKind() === "codex" ? true : undefined,
+        allowAnswerPreview: supportsProvisionalAnswers(this._executionKind()) ? true : undefined,
         // A provider-side ACP cancellation (result.stopReason === "cancelled")
         // must never reach normal delivery/memory-commit, even though the
         // turn resolved without throwing and even if it carries partial text.
@@ -802,7 +804,11 @@ export class BridgeEngine {
             message_thread_id: input.threadId,
             onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
             onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
-            onAnswerDelta: executionKind === "codex" ? onAnswerDelta : undefined,
+            // A messaging-kind decoder already routes provisional deltas through
+            // onProviderOutputChunk; only providers without one and whose
+            // resolved runtime policy opts into provisional answers get the
+            // raw seam directly, so a future ACP provider needs no engine edit.
+            onAnswerDelta: !answerDecoder && supportsProvisionalAnswers(executionKind) ? onAnswerDelta : undefined,
           };
           result = await this.executePromptAsync(
             input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments,
@@ -1353,7 +1359,7 @@ export class BridgeEngine {
     identities: { conversationId: string; runId: string },
   ): Promise<{ stdout: string; parsed: CliResult | null }> {
     if (invocation.transport === "acp-stdio") {
-      const parsed = await runCodexAcpTurn({
+      const parsed = await runProviderInvocation(executionKind, invocation, cwd, options, {
         prompt: acpRequest.prompt,
         sessionId: acpRequest.sessionId,
         command: invocation.command,
@@ -1367,9 +1373,9 @@ export class BridgeEngine {
         effort: acpRequest.effort,
         toolMode: acpRequest.toolMode ?? "default",
         nativeCompletion: true,
-      }, cwd, { ...options, bot: executionKind }, identities);
-      registerProviderOutput(identities.runId, "codex", parsed.text);
-      captureParsedProviderOutput("codex", parsed.text, parsed.telemetry);
+      }, identities);
+      registerProviderOutput(identities.runId, executionKind, parsed.text);
+      captureParsedProviderOutput(executionKind, parsed.text, parsed.telemetry);
       return { stdout: parsed.text, parsed };
     }
     const stdout = (await this.exec.runCliAsync(invocation.command, invocation.args, cwd, options)).text;
@@ -2062,10 +2068,7 @@ export function isInvalidProviderSessionError(error: unknown): boolean {
 }
 
 export function lookupEngineProviderSession(db: BridgeDb, chatKey: string, kind: BotKind): string | null {
-  if (kind === "codex") {
-    return db.getAcpSessionBinding(chatKey, "codex")?.acpSessionId ?? null;
-  }
-  return db.getSession(chatKey, kind);
+  return lookupProviderSession(db, chatKey, kind);
 }
 
 export function persistEngineProviderSession(
@@ -2075,22 +2078,5 @@ export function persistEngineProviderSession(
   sessionId: string | null,
   runId: string | null = null,
 ): void {
-  if (kind === "codex") {
-    if (sessionId) {
-      db.putAcpSessionBinding({
-        conversationId: chatKey,
-        providerId: "codex",
-        acpSessionId: sessionId,
-        runId,
-      });
-    } else {
-      db.clearAcpSessionBinding(chatKey, "codex");
-    }
-    return;
-  }
-  try {
-    db.setSession(chatKey, kind, sessionId);
-  } catch {
-    // ignore — non-agent kinds are not tracked
-  }
+  persistProviderSession(db, chatKey, kind, sessionId, runId);
 }

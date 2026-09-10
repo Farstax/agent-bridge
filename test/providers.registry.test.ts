@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  acpProviderIdForBotName,
+  supportsProvisionalAnswers,
+} from "../src/providers/acpRuntime.js";
+import {
   getProviderAdapter,
   getProviderAdapters,
   isProviderId,
@@ -71,6 +75,20 @@ describe("provider registry", () => {
   it("reports Codex ACP as not supporting strict tool-free execution", () => {
     expect(supportsToolFreeMode("codex")).toBe(false);
     expect(supportsToolFreeMode("claude")).toBe(true);
+  });
+
+  it("derives provisional-answer eligibility from the resolved ACP presentation policy, not a provider-name branch", () => {
+    expect(supportsProvisionalAnswers("codex")).toBe(true);
+    expect(supportsProvisionalAnswers("claude")).toBe(false);
+    expect(supportsProvisionalAnswers("antigravity")).toBe(false);
+    expect(supportsProvisionalAnswers("not-a-bot-kind")).toBe(false);
+  });
+
+  it("resolves the ACP-backed provider id behind a bot kind generically for session-binding routing", () => {
+    expect(acpProviderIdForBotName("codex")).toBe("codex");
+    expect(acpProviderIdForBotName("claude")).toBeNull();
+    expect(acpProviderIdForBotName("antigravity")).toBeNull();
+    expect(acpProviderIdForBotName("not-a-bot-kind")).toBeNull();
   });
 
   it("resolves the bundled or explicitly configured Codex ACP command", () => {

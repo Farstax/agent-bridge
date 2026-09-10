@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
 import { runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
+import { resolveProviderRuntime } from "./acpRuntime.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -197,8 +198,8 @@ function commandForProvider(provider: ProviderId, env: Env): string {
   return bots[provider].command;
 }
 
-function verificationScope(provider: ProviderId, _env: Env): string {
-  return provider === "codex" ? "acp" : "native";
+function verificationScope(provider: ProviderId, env: Env): string {
+  return resolveProviderRuntime(provider, env).runtimeIdentity;
 }
 
 function cacheKey(provider: ProviderId, apiKey: string, env: Env): string {

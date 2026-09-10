@@ -7,8 +7,8 @@
 
 import { execFileSync } from "node:child_process";
 import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
-import { resolveCodexAcpCommand } from "./codexAcpConfig.js";
-import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
+import { resolveProviderRuntime, type ResolvedProviderRuntime } from "./acpRuntime.js";
+import { getProviderAdapters } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
@@ -32,6 +32,7 @@ export interface ProviderCheck {
   executable: string;
   status: "available" | "missing" | "invalid";
   runtime?: "legacy" | "acp";
+  runtimeIdentity?: string;
   version?: string | null;
   reason?: string;
 }
@@ -66,9 +67,9 @@ export function defaultCommandExists(executable: string): boolean {
   }
 }
 
-export function defaultInspectVersion(executable: string): string | null {
+export function defaultInspectVersion(executable: string, versionArgs: readonly string[] = ["--version"]): string | null {
   try {
-    const output = execFileSync(executable, ["--version"], {
+    const output = execFileSync(executable, [...versionArgs], {
       encoding: "utf8",
       timeout: 5_000,
       stdio: ["ignore", "pipe", "pipe"],
@@ -79,20 +80,43 @@ export function defaultInspectVersion(executable: string): string | null {
   }
 }
 
-function inspectCodexProvider(
-  env: Record<string, string | undefined>,
-  commandExists: (executable: string) => boolean,
-  inspectVersion: (executable: string) => string | null,
+export function inspectResolvedProviderRuntime(
+  runtime: ResolvedProviderRuntime,
+  commandExists: (executable: string) => boolean = defaultCommandExists,
+  inspectVersion: (executable: string, versionArgs: readonly string[]) => string | null = defaultInspectVersion,
 ): ProviderCheck {
-  const executable = resolveCodexAcpCommand(env);
-  const available = commandExists(executable);
+  const available = commandExists(runtime.executable);
+  const version = runtime.transport === "acp-stdio" && available
+    ? inspectVersion(runtime.executable, runtime.versionArgs)
+    : null;
+  const versionInspectionFailed = runtime.transport === "acp-stdio" && available && !version;
+  const releaseVersionMismatch = Boolean(
+    runtime.selectedVersion
+    && version
+    && normalizedVersion(version) !== runtime.selectedVersion,
+  );
   return {
-    id: "codex",
-    executable,
-    status: available ? "available" : "missing",
-    runtime: "acp",
-    ...(available ? { version: inspectVersion(executable) } : {}),
+    id: runtime.providerId,
+    executable: runtime.executable,
+    status: !available ? "missing" : versionInspectionFailed || releaseVersionMismatch ? "invalid" : "available",
+    ...(runtime.transport === "acp-stdio"
+      ? {
+        runtime: "acp" as const,
+        runtimeIdentity: runtime.runtimeIdentity,
+        ...(available ? { version } : {}),
+        ...(versionInspectionFailed
+          ? { reason: "unable to inspect ACP runtime version" }
+          : releaseVersionMismatch
+            ? { reason: `release lock expects ${runtime.selectedVersion}, observed ${normalizedVersion(version!)}` }
+            : {}),
+      }
+      : {}),
   };
+}
+
+function normalizedVersion(raw: string): string {
+  const match = raw.trim().match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/);
+  return match?.[0] ?? raw.trim();
 }
 
 export function runDoctor({
@@ -105,18 +129,11 @@ export function runDoctor({
   env?: Record<string, string | undefined>;
   requiredEnv?: string[];
   commandExists?: (executable: string) => boolean;
-  inspectVersion?: (executable: string) => string | null;
+  inspectVersion?: (executable: string, versionArgs: readonly string[]) => string | null;
   inspectVoiceRuntime?: (env: Record<string, string | undefined>) => VoiceRuntimeReadiness;
 } = {}): DoctorReport {
-  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) => {
-    if (adapter.id === "codex") return inspectCodexProvider(env, commandExists, inspectVersion);
-    const executable = resolveProviderExecutable(adapter.id, env);
-    return {
-      id: adapter.id,
-      executable,
-      status: commandExists(executable) ? "available" : "missing",
-    };
-  });
+  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) =>
+    inspectResolvedProviderRuntime(resolveProviderRuntime(adapter.id, env), commandExists, inspectVersion));
 
   const effectiveEntries: Record<(typeof CHAIN_ENV_VARS)[number], string[]> = {
     INTERACTIVE_CLI_CHAIN: parseCliChain(
@@ -166,9 +183,10 @@ export function formatDoctorReport(report: DoctorReport): string {
   const lines: string[] = [];
   for (const p of report.providers) {
     const runtime = p.runtime ? ` runtime=${p.runtime}` : "";
+    const identity = p.runtimeIdentity ? ` identity=${p.runtimeIdentity}` : "";
     const version = p.version ? ` version=${p.version}` : "";
     const reason = p.reason ? ` (${p.reason})` : "";
-    lines.push(`provider ${p.id} (${p.executable})${runtime}: ${p.status}${version}${reason}`);
+    lines.push(`provider ${p.id} (${p.executable})${runtime}${identity}: ${p.status}${version}${reason}`);
   }
   for (const c of report.chains) {
     if (!c.set) {
