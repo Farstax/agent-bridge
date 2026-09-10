@@ -288,14 +288,22 @@ describe("declarative ACP provider runtime", () => {
     );
     expect(cancelled).toMatchObject({ text: "", stopReason: "cancelled" });
 
-    await expect(runResolvedAcpProviderTurn(
-      policy,
-      runtime,
-      fixtureRequest("FAIL_WITH_SECRET"),
-      process.cwd(),
-      { bot: "grok", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
-      { conversationId: "fixture-fail", runId: "fixture-fail" },
-    )).rejects.toThrow();
+    const secret = "fixture-xai-secret-value";
+    let caught: unknown;
+    try {
+      await runResolvedAcpProviderTurn(
+        policy,
+        runtime,
+        fixtureRequest("FAIL_WITH_SECRET"),
+        process.cwd(),
+        { bot: "grok", timeoutMs: 5_000, idleTimeoutMs: 5_000, contextEnv: { XAI_API_KEY: secret } },
+        { conversationId: "fixture-fail", runId: "fixture-fail" },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(JSON.stringify(caught, Object.getOwnPropertyNames(caught as Error))).not.toContain(secret);
   }, 20_000);
 
   it("recursively redacts Error causes, custom fields, and structured rejections", () => {
