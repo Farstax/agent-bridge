@@ -58,3 +58,5 @@ jobs:
         run: npm run qualify:local
         env:
           NODE_OPTIONS: "--max-old-space-size=3072"
+
+# Temporary lock synchronization only; restore before final qualification.
