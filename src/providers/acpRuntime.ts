@@ -247,8 +247,8 @@ export function buildAcpProviderInvocation(
   return buildResolvedAcpProviderInvocation(runtime, request.sessionId);
 }
 
-function providerBotKind(providerId: ProviderId): BotKind {
-  return providerId === "agy" ? "antigravity" : providerId;
+function providerBotKind(providerId: string): BotKind {
+  return (providerId === "agy" ? "antigravity" : providerId) as BotKind;
 }
 
 function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {
@@ -280,23 +280,56 @@ function redactAcpEventCredentials(event: AcpRetainedEvent, env: NodeJS.ProcessE
   }
 }
 
-function redactAcpTurnError(error: unknown, env: NodeJS.ProcessEnv): unknown {
-  if (!(error instanceof Error)) return error;
-  if (getProviderApiKeySecretValues(env).length === 0) return error;
-  error.message = redactProviderApiKeySecrets(error.message, env);
-  const data = (error as Error & { data?: unknown }).data;
-  if (data && typeof data === "object") {
-    const redacted = redactProviderApiKeySecrets(JSON.stringify(data), env);
-    try {
-      (error as Error & { data?: unknown }).data = JSON.parse(redacted);
-    } catch {
-      (error as Error & { data?: unknown }).data = { redacted: "unparseable after credential redaction" };
+function redactAcpFailureValue(
+  value: unknown,
+  env: NodeJS.ProcessEnv,
+  seen: WeakSet<object>,
+): unknown {
+  if (typeof value === "string") return redactProviderApiKeySecrets(value, env);
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return "[REDACTED_CIRCULAR_VALUE]";
+  seen.add(value);
+  if (value instanceof Error) {
+    const source = value as Error & { cause?: unknown; [key: string]: unknown };
+    const error = Object.create(Object.getPrototypeOf(value)) as Error & {
+      cause?: unknown;
+      [key: string]: unknown;
+    };
+    Object.defineProperty(error, "name", { value: value.name, writable: true, configurable: true });
+    Object.defineProperty(error, "message", {
+      value: redactProviderApiKeySecrets(value.message, env),
+      writable: true,
+      configurable: true,
+    });
+    if (value.stack) {
+      Object.defineProperty(error, "stack", {
+        value: redactProviderApiKeySecrets(value.stack, env),
+        writable: true,
+        configurable: true,
+      });
     }
+    if ("cause" in source) error.cause = redactAcpFailureValue(source.cause, env, seen);
+    for (const key of Object.keys(source)) {
+      if (key === "cause") continue;
+      error[key] = redactAcpFailureValue(source[key], env, seen);
+    }
+    return error;
   }
-  return error;
+  if (Array.isArray(value)) {
+    return value.map((item) => redactAcpFailureValue(item, env, seen));
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, redactAcpFailureValue(item, env, seen)]),
+  );
 }
 
-function telemetryFromUsage(providerId: ProviderId, usage: Usage | undefined): RunTelemetry | undefined {
+/** Recursively remove provider secrets from Error and structured rejection shapes. */
+export function redactAcpFailure(error: unknown, env: NodeJS.ProcessEnv): unknown {
+  if (getProviderApiKeySecretValues(env).length === 0) return error;
+  return redactAcpFailureValue(error, env, new WeakSet<object>());
+}
+
+function telemetryFromUsage(providerId: string, usage: Usage | undefined): RunTelemetry | undefined {
   if (!usage) return undefined;
   return {
     provider: providerBotKind(providerId),
@@ -308,9 +341,9 @@ function telemetryFromUsage(providerId: ProviderId, usage: Usage | undefined): R
 }
 
 export function acpTurnResultToCliResult(
-  providerId: ProviderId,
+  providerId: string,
   result: AcpTurnResult,
-  policy: AcpProviderPolicy | null = getAcpProviderPolicy(providerId),
+  policy: AcpProviderPolicy | null = null,
 ): CliResult {
   const selected = policy?.selectAnswer?.(result) ?? {
     text: result.liveText.trim(),
@@ -353,17 +386,19 @@ function createStandardAnswerPreview(
   };
 }
 
-export async function runAcpProviderTurn(
-  providerId: ProviderId,
+export async function runResolvedAcpProviderTurn(
+  policy: AcpProviderPolicy,
+  runtime: ResolvedProviderRuntime,
   request: ProviderInvocationRequest,
   cwd: string,
   options: CliOptions,
   identities: { conversationId: string; runId: string },
 ): Promise<CliResult> {
-  const policy = getAcpProviderPolicy(providerId);
-  if (!policy) throw new Error(`Provider ${providerId} has no ACP runtime policy`);
+  const providerId = runtime.providerId;
+  if (policy.providerId !== providerId) {
+    throw new Error(`ACP runtime/policy mismatch: ${providerId} != ${policy.providerId}`);
+  }
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
-  const runtime = resolveProviderRuntime(providerId, effectiveEnv);
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
   const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
   const contextEnv = { ...(options.contextEnv ?? {}), ...providerEnv };
@@ -428,7 +463,7 @@ export async function runAcpProviderTurn(
       }),
     );
   } catch (error) {
-    throw redactAcpTurnError(error, redactionEnv);
+    throw redactAcpFailure(error, redactionEnv);
   }
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
@@ -445,4 +480,24 @@ export async function runAcpProviderTurn(
     ...parsed,
     text: redactProviderApiKeySecrets(parsed.text, redactionEnv),
   };
+}
+
+export async function runAcpProviderTurn(
+  providerId: ProviderId,
+  request: ProviderInvocationRequest,
+  cwd: string,
+  options: CliOptions,
+  identities: { conversationId: string; runId: string },
+): Promise<CliResult> {
+  const policy = getAcpProviderPolicy(providerId);
+  if (!policy) throw new Error(`Provider ${providerId} has no ACP runtime policy`);
+  const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
+  return runResolvedAcpProviderTurn(
+    policy,
+    resolveProviderRuntime(providerId, effectiveEnv),
+    request,
+    cwd,
+    options,
+    identities,
+  );
 }

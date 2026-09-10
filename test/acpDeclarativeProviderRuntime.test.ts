@@ -1,4 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
 import {
@@ -8,8 +10,10 @@ import {
 import {
   acpProviderIdForBotName,
   buildResolvedAcpProviderInvocation,
+  redactAcpFailure,
   resolveAcpProviderRuntime,
   resolveProviderRuntime,
+  runResolvedAcpProviderTurn,
   supportsProvisionalAnswers,
   type AcpProviderPolicy,
   type ResolvedProviderRuntime,
@@ -24,6 +28,23 @@ const fixturePolicy: AcpProviderPolicy = {
   registryAgentId: "fixture-agent",
   presentation: { provisionalAnswers: true },
 };
+const fakeSecondAgent = fileURLToPath(new URL("./support/fakeSecondAcpAgent.ts", import.meta.url));
+
+function fixtureRequest(prompt: string) {
+  return {
+    prompt,
+    sessionId: null,
+    command: process.execPath,
+    model: null,
+    executionMode: "safe" as const,
+    outputFormat: "json" as const,
+    soulContext: null,
+    attachments: [],
+    outputDir: null,
+    effort: null,
+    toolMode: "default" as const,
+  };
+}
 
 describe("declarative ACP provider runtime", () => {
   it("keeps the qualified Codex registry distribution release-owned and pinned", () => {
@@ -189,5 +210,93 @@ describe("declarative ACP provider runtime", () => {
       executionMode: "safe",
       authenticateMethodId: "unknown-method",
     })).rejects.toThrow(/did not advertise authentication method/);
+  });
+
+  it("runs a fixture second provider through the supervised generic runtime", async () => {
+    const policy: AcpProviderPolicy = {
+      ...fixturePolicy,
+      authenticateMethodId: () => "workspace-token",
+    };
+    const runtime = resolveAcpProviderRuntime(policy, {
+      id: "fixture-agent",
+      name: "Fixture Agent",
+      version: "2.3.4",
+      distribution: { npx: { package: "@example/fixture-agent@2.3.4" } },
+    }, {
+      executable: process.execPath,
+      args: [join(process.cwd(), "node_modules/tsx/dist/cli.mjs"), fakeSecondAgent],
+    });
+    const previews: string[] = [];
+    const progress: string[] = [];
+    const retained: unknown[] = [];
+    const result = await runResolvedAcpProviderTurn(
+      policy,
+      runtime,
+      fixtureRequest("answer"),
+      process.cwd(),
+      {
+        bot: "grok",
+        timeoutMs: 5_000,
+        idleTimeoutMs: 5_000,
+        onAnswerDelta: (text) => previews.push(text),
+        onProgress: (text) => progress.push(text),
+        eventContext: { runId: "fixture-run", bot: "grok", chatId: "fixture", chatKey: "fixture" },
+        onEvent: (event) => retained.push(event),
+      },
+      { conversationId: "fixture-conversation", runId: "fixture-run" },
+    );
+
+    expect(result).toMatchObject({
+      text: "fixture parent answer",
+      sessionId: "fixture-root-session",
+      stopReason: "end_turn",
+      telemetry: { provider: "fixture-acp", inputTokens: 7, outputTokens: 3 },
+    });
+    expect(previews.join("")).toBe("fixture parent answer");
+    expect(progress.join("")).toBe("fixture parent answer");
+    expect(JSON.stringify(retained)).toContain("fixture-child-session");
+    expect(JSON.stringify(retained)).toContain("private child output");
+
+    const cancelled = await runResolvedAcpProviderTurn(
+      policy,
+      runtime,
+      fixtureRequest("CANCEL"),
+      process.cwd(),
+      { bot: "grok", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
+      { conversationId: "fixture-cancel", runId: "fixture-cancel" },
+    );
+    expect(cancelled).toMatchObject({ text: "", stopReason: "cancelled" });
+
+    await expect(runResolvedAcpProviderTurn(
+      policy,
+      runtime,
+      fixtureRequest("FAIL_WITH_SECRET"),
+      process.cwd(),
+      { bot: "grok", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
+      { conversationId: "fixture-fail", runId: "fixture-fail" },
+    )).rejects.toThrow();
+  }, 20_000);
+
+  it("recursively redacts Error causes, custom fields, and structured rejections", () => {
+    const secret = "fixture-provider-secret";
+    const cause = Object.assign(new Error(`cause ${secret}`), {
+      context: { values: [secret] },
+    });
+    const failure = Object.assign(new Error(`top ${secret}`, { cause }), {
+      data: { nested: { credential: secret } },
+    });
+    const redactedError = redactAcpFailure(failure, { XAI_API_KEY: secret }) as Error & {
+      cause?: Error;
+      data?: unknown;
+    };
+    expect(`${redactedError.message}\n${redactedError.stack}\n${redactedError.cause?.message}\n${JSON.stringify(redactedError.cause)}\n${JSON.stringify(redactedError.data)}`)
+      .not.toContain(secret);
+
+    const structured = redactAcpFailure({
+      message: secret,
+      nested: [{ token: secret }],
+    }, { XAI_API_KEY: secret });
+    expect(JSON.stringify(structured)).not.toContain(secret);
+    expect(JSON.stringify(structured)).toContain("REDACTED_PROVIDER_CREDENTIAL");
   });
 });
