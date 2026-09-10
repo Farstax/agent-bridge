@@ -13,8 +13,8 @@ import { fileURLToPath } from "node:url";
 import { loadBotsConfig } from "./config.js";
 import { CURRENT_SCHEMA_VERSION } from "./db/schema.js";
 import { parseCadenceSeconds } from "./health/config.js";
+import { resolveProviderRuntime } from "./providers/acpRuntime.js";
 import { PROVIDER_CONTRACT_VERSION, qualificationEvidencePath, readQualificationEvidence } from "./providers/qualification.js";
-import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import { getProviderAdapters } from "./providers/registry.js";
 import { latestDueScheduledOccurrence, type ScheduledRoutine } from "./scheduledRoutines.js";
 import { parseScheduledOccurrenceEvidence, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
@@ -125,18 +125,19 @@ function isStaleTimestamp(value: unknown): boolean {
   return Number.isFinite(ms) && Date.now() - ms > 7 * 24 * HOUR_MS;
 }
 
-function projectCodexSession(db: Database.Database, chatKey: string) {
+function projectAcpSession(db: Database.Database, chatKey: string, provider: ProviderId) {
   let binding: Row | undefined;
   if (hasTable(db, "acp_session_bindings")) {
     binding = db.prepare(
       `SELECT created_at, updated_at FROM acp_session_bindings WHERE conversation_id=? AND provider_id=?`,
-    ).get(chatKey, "codex") as Row | undefined;
+    ).get(chatKey, provider) as Row | undefined;
   }
   const stale = Boolean(binding && isStaleTimestamp(binding.updated_at));
   const active = Boolean(binding) && !stale;
   return {
-    provider: "codex" as const,
+    provider,
     runtime: "acp" as const,
+    runtimeIdentity: resolveProviderRuntime(provider).runtimeIdentity,
     exists: active,
     createdAt: active ? text(binding?.created_at, 40) : null,
     updatedAt: active ? text(binding?.updated_at, 40) : null,
@@ -153,9 +154,9 @@ function sessions(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
   return {
     status: "ready",
     reasonCode: null,
-    providers: fields.map(([provider, key]) => provider === "codex"
-      ? projectCodexSession(db, s.chatKey!)
-      : { provider, exists: Boolean(row?.[`${key}_session_id`]), createdAt: text(row?.[`${key}_session_created_at`], 40) }),
+    providers: fields.map(([provider, key]) => resolveProviderRuntime(provider, env).transport === "acp-stdio"
+      ? projectAcpSession(db, s.chatKey!, provider)
+      : { provider, runtime: "native" as const, exists: Boolean(row?.[`${key}_session_id`]), createdAt: text(row?.[`${key}_session_created_at`], 40) }),
   };
 }
 
@@ -279,24 +280,31 @@ function providers(s: ReturnType<typeof scope>, env: Env, commit: string | null)
   let evidenceReason: string | null = null;
   try { evidence = readQualificationEvidence(path); } catch { evidenceReason = "qualification_evidence_unreadable"; }
   return getProviderAdapters().map((adapter) => {
+    const runtime = resolveProviderRuntime(adapter.id, env);
     const record = evidence?.providers[adapter.id];
     const key = (adapter.id === "agy" ? "antigravity" : adapter.id) as keyof typeof bots;
     const selected = s.provider === adapter.id;
     let availability: "available" | "unknown" | "unavailable" = selected ? "available" : "unknown";
     let availabilityReasonCode: string | null = selected ? null : "not_live_probed";
-    if (adapter.id === "codex" && !isExecutable(resolveCodexAcpCommand(env))) {
+    if (runtime.transport === "acp-stdio" && !isExecutable(runtime.executable)) {
       availability = "unavailable";
       availabilityReasonCode = "acp_adapter_missing";
     }
     const qualification = !record
       ? { status: "unknown", reasonCode: evidenceReason ?? "no_qualification_evidence" }
       : record.contractVersion !== PROVIDER_CONTRACT_VERSION
-        ? { status: "unqualified", reasonCode: "provider_contract_changed", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), executionRuntime: text(record.executionRuntime,20) }
-        : { status: "unknown", reasonCode: "runtime_version_unobserved", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), bridgeCommitMatches: Boolean(commit && record.bridgeCommit===commit), executionRuntime: text(record.executionRuntime,20) };
+        ? { status: "unqualified", reasonCode: "provider_contract_changed", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), executionRuntime: text(record.executionRuntime,120) }
+        : record.executionRuntime !== runtime.runtimeIdentity
+          ? { status: "unqualified", reasonCode: "runtime_identity_changed", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), executionRuntime: text(record.executionRuntime,120) }
+          : { status: "unknown", reasonCode: "runtime_version_unobserved", lastResult: record.overall, providerVersion: text(record.providerVersion,80), contractVersion: record.contractVersion, qualifiedAt: text(record.qualifiedAt,60), bridgeCommitMatches: Boolean(commit && record.bridgeCommit===commit), executionRuntime: text(record.executionRuntime,120) };
     return {
       id: adapter.id,
       displayName: adapter.displayName,
       selected,
+      runtime: runtime.transport === "acp-stdio" ? "acp" : "native",
+      runtimeIdentity: runtime.runtimeIdentity,
+      registryAgentId: runtime.registryAgentId,
+      selectedVersion: runtime.selectedVersion,
       availability,
       availabilityReasonCode,
       authentication: "unknown",
@@ -357,7 +365,7 @@ function capabilityIndex(s: ReturnType<typeof scope>, env: Env, h: ReturnType<ty
     cap("health-investigation",h.enabled?"ready":"unavailable",h.enabled?null:"health_monitor_disabled","runtime","read-only","none","runtime inspector health projection"),
     cap("installed-skills",sk.installedStatus,sk.installedReasonCode,"runtime","read-only","none",sk.root),
     cap("chat-surfaces","ready",null,"runtime","read-only","none","telegram,discord"),
-    cap("provider-execution",ps.some((p)=>p.selected)?"ready":"unknown",ps.some((p)=>p.selected)?null:"no_current_run_context","run","execution","existing bridge authority","native provider CLI"),
+    cap("provider-execution",ps.some((p)=>p.selected)?"ready":"unknown",ps.some((p)=>p.selected)?null:"no_current_run_context","run","execution","existing bridge authority","resolved provider runtime"),
   ];
 }
 
