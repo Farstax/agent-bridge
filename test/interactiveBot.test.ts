@@ -27,6 +27,8 @@ import {
   type CliKind,
 } from "../src/interactiveBot.js";
 import { isHandoffRequired } from "../src/handoffState.js";
+import { BridgeEngine } from "../src/engine.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 
@@ -102,6 +104,65 @@ describe("isCliCommandText", () => {
 
   it("ignores group command suffix for a different bot", () => {
     expect(isCliCommandText("/cli@otherbot", "crawlerinteractivebot")).toBe(false);
+  });
+
+  it("answers /cli while startup recovery owns another lane", async () => {
+    const db = openDb(":memory:");
+    const client = {
+      capabilities: TELEGRAM_SURFACE_CAPABILITIES,
+      sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
+      sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+      setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
+      answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
+      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+      sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
+      sendDocument: vi.fn().mockResolvedValue({ ok: true }),
+    } as any;
+    db.enqueueMsg("telegram:interactive", "recovered-chat", {
+      prompt: "recovered work",
+      chatId: 100,
+      chatType: "private",
+      userId: 99,
+    });
+    const engine = new BridgeEngine({
+      kind: "codex",
+      surfaceIdentity: "telegram:interactive",
+      botConfig: { command: "codex", modelPreference: [] },
+      allowedUserIds: new Set(["99"]),
+      executionMode: "trusted",
+      busyMessageMode: "queue",
+      pollIntervalMs: 1,
+    }, db, client);
+    let recoveryStarted!: () => void;
+    let releaseRecovery!: () => void;
+    const started = new Promise<void>((resolve) => { recoveryStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+    engine.setQueuedMessageHandler(async () => {
+      recoveryStarted();
+      await release;
+      return "committed";
+    });
+
+    const recovery = engine.recoverPendingQueues();
+    void recovery.catch((error) => console.error("[interactive] startup queue recovery failed", error));
+    await started;
+
+    expect(db.acquireLock("telegram:interactive", "recovered-chat")).toBeNull();
+    expect(isCliCommandText("/cli", "crawlerinteractivebot")).toBe(true);
+    const available = new Set<CliKind>(["codex"]);
+    await client.sendMessage({
+      chat_id: 200,
+      text: buildCliStatusText("codex", available),
+      reply_markup: buildCliKeyboard("codex", available),
+    });
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 200,
+      text: expect.stringContaining("Active CLI"),
+    }));
+
+    releaseRecovery();
+    await recovery;
+    db.close();
   });
 });
 

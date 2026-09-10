@@ -206,7 +206,7 @@ describe("startup queue recovery", () => {
     expect(current.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(1);
   });
 
-  it("returns from startup recovery while recovered work retains exclusive lane ownership", async () => {
+  it("keeps startup recovery awaitable while recovered work retains exclusive lane ownership", async () => {
     const db = openDb(":memory:");
     dbs.push(db);
     db.enqueueMsg(SURFACE, CHAT_KEY, {
@@ -232,14 +232,17 @@ describe("startup queue recovery", () => {
       return release.promise;
     });
 
-    await expect(engine.recoverPendingQueues()).resolves.toBeUndefined();
+    let recoverySettled = false;
+    const recovery = engine.recoverPendingQueues().finally(() => { recoverySettled = true; });
     await started.promise;
 
     expect(db.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(1);
     expect(db.acquireLock(SURFACE, CHAT_KEY)).toBeNull();
+    expect(recoverySettled).toBe(false);
 
     release.resolve("committed");
-    await vi.waitFor(() => expect(db.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(0));
+    await expect(recovery).resolves.toBeUndefined();
+    expect(db.pendingMsgCount(SURFACE, CHAT_KEY)).toBe(0);
   });
 
   it("starts polling and dispatches an unrelated chat while recovered work remains open", async () => {

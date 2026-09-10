@@ -349,7 +349,9 @@ for (const engine of Object.values(engines)) {
   });
 }
 
-await engines[defaultPref].recoverPendingQueues();
+void engines[defaultPref].recoverPendingQueues().catch((error) => {
+  console.error("[interactive] startup queue recovery failed", error);
+});
 
 const scheduledOwnerKey = deriveConversationOwnerKey(runtimePolicy.surfaceIdentity, allowedUserIds);
 const scheduledActorId = allowedUserIds.values().next().value;
