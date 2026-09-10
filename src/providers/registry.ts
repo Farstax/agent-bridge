@@ -140,7 +140,7 @@ export function resolveProviderExecutable(
   env: Record<string, string | undefined> = process.env,
 ): string {
   const acp = getAcpProviderPolicy(id);
-  if (acp) return acp.resolveExecutable(env);
+  if (acp?.resolveExecutable) return acp.resolveExecutable(env);
   const bot = id === "agy" ? "antigravity" : id;
   return loadBotsConfig(env)[bot].command;
 }
