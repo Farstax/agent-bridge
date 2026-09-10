@@ -2,6 +2,7 @@ import { splitTelegramText, toTelegramEntitiesText } from "./render.js";
 import { toUserMessage, isCapacityExhaustedError, CliTimeoutError } from "./cli.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import type { CliResult } from "./types.js";
+import { runActivityText, type ProgressReporter, type RunActivity } from "./runActivity.js";
 import { type as eventType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
 import { reduce as reduceEvents } from "./events/reducer.js";
@@ -15,6 +16,7 @@ import { parseMarkdownToIR, renderMarkerString, TELEGRAM_HTML_MARKERS, markdownT
 const MAX_TELEGRAM_TEXT = 4096;
 const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
 const ANSWER_PREVIEW_ABORT_POLL_MS = 50;
+const RUN_ACTIVITY_EDIT_INTERVAL_MS = 700;
 
 export class PreviewCleanupError extends Error {
   readonly cause: unknown;
@@ -226,8 +228,8 @@ export async function sendMessageWithProgress({
   client: MessagingPlatform;
   kind: string;
   chatId: number | string;
-  execution: ((onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => Promise<CliResult>) | Promise<CliResult>;
-  onProgress?: (text: string) => void;
+  execution: ((onProgress: ProgressReporter, onAnswerDelta: (text: string) => void) => Promise<CliResult>) | Promise<CliResult>;
+  onProgress?: ProgressReporter;
   body?: any;
   showProgressNarration?: boolean;
   /** Provider-neutral opt-in for safe provisional answer deltas. */
@@ -272,8 +274,15 @@ export async function sendMessageWithProgress({
   let answerPreviewChain = Promise.resolve();
   let lastAnswerPreviewEditMs = 0;
   const answerPreviewUpdates: Promise<unknown>[] = [];
-  let progressMsgId: number | null = null;
-  let progressMsgPending = false;
+
+  let progressMsgId: number | string | null = null;
+  let progressPublishPending = false;
+  let progressTimer: NodeJS.Timeout | null = null;
+  let pendingProgressText: string | null = null;
+  let pendingProgressIntervalMs = RUN_ACTIVITY_EDIT_INTERVAL_MS;
+  let progressStopped = false;
+  let progressCleanup: Promise<void> | null = null;
+  let progressChain = Promise.resolve();
   const progressUpdates: Promise<unknown>[] = [];
 
   let currentText = "";
@@ -291,8 +300,122 @@ export async function sendMessageWithProgress({
     try { return { text: renderTelegramHtml(bounded), parse_mode: "HTML" }; } catch { return { text: bounded }; }
   };
 
+  const publishProgressText = async (text: string): Promise<void> => {
+    if (progressStopped || isAborted?.() || !text || text === lastSentPreviewText) return;
+    try {
+      if (progressMsgId == null) {
+        const sent = await client.sendMessage({ chat_id: chatId, ...body, text });
+        const messageId = sent?.result?.message_id ?? sent?.id;
+        if (typeof messageId !== "number" && typeof messageId !== "string") return;
+        progressMsgId = messageId;
+      } else {
+        await client.editMessageText({
+          chat_id: chatId,
+          message_id: progressMsgId,
+          ...body,
+          text,
+        });
+      }
+      lastSentPreviewText = text;
+      lastProgressEditMs = Date.now();
+    } catch (error) {
+      if (isTelegramMessageNotModified(error)) {
+        lastSentPreviewText = text;
+        lastProgressEditMs = Date.now();
+      }
+      // Transient activity must never fail the Run.
+    }
+  };
+
+  const startProgressPublish = (): void => {
+    if (progressPublishPending || progressStopped || !pendingProgressText) return;
+    const text = pendingProgressText;
+    pendingProgressText = null;
+    progressPublishPending = true;
+    progressChain = progressChain
+      .then(() => publishProgressText(text))
+      .finally(() => {
+        progressPublishPending = false;
+        if (pendingProgressText && !progressStopped && !isAborted?.()) {
+          const elapsed = Date.now() - lastProgressEditMs;
+          const delay = progressMsgId == null ? 0 : Math.max(0, pendingProgressIntervalMs - elapsed);
+          if (delay === 0) startProgressPublish();
+          else if (!progressTimer) {
+            progressTimer = setTimeout(() => {
+              progressTimer = null;
+              startProgressPublish();
+            }, delay);
+            progressTimer.unref();
+          }
+        }
+      });
+    progressUpdates.push(progressChain);
+  };
+
+  const queueProgressText = (text: string, minIntervalMs: number): void => {
+    if (progressStopped || isAborted?.() || !text) return;
+    if (text === lastSentPreviewText || text === pendingProgressText) return;
+    pendingProgressText = text;
+    pendingProgressIntervalMs = minIntervalMs;
+    if (progressPublishPending) return;
+    const elapsed = Date.now() - lastProgressEditMs;
+    const delay = progressMsgId == null ? 0 : Math.max(0, minIntervalMs - elapsed);
+    if (delay === 0) {
+      startProgressPublish();
+      return;
+    }
+    if (!progressTimer) {
+      progressTimer = setTimeout(() => {
+        progressTimer = null;
+        startProgressPublish();
+      }, delay);
+      progressTimer.unref();
+    }
+  };
+
+  const discardProgress = async (): Promise<void> => {
+    progressStopped = true;
+    pendingProgressText = null;
+    if (progressTimer) {
+      clearTimeout(progressTimer);
+      progressTimer = null;
+    }
+    await Promise.allSettled([...progressUpdates, progressChain]);
+    if (progressMsgId == null) return;
+    const messageId = progressMsgId;
+    if (typeof client.deleteMessage === "function" && capabilities.deleteMessages) {
+      try {
+        await client.deleteMessage({ chat_id: chatId, message_id: messageId });
+        if (progressMsgId === messageId) progressMsgId = null;
+        return;
+      } catch {
+        /* fall through to a neutral terminal edit when supported */
+      }
+    }
+    if (!capabilities.editMessages) return;
+    try {
+      await client.editMessageText({ chat_id: chatId, message_id: messageId, ...body, text: "Stopped." });
+      lastSentPreviewText = "Stopped.";
+    } catch {
+      /* transient cleanup failure must not fail the Run */
+    }
+  };
+
+  const beginProgressCleanup = (): Promise<void> => {
+    progressStopped = true;
+    if (!progressCleanup) progressCleanup = discardProgress();
+    return progressCleanup;
+  };
+
   const publishAnswerPreview = async (): Promise<void> => {
-    if (isAborted?.()) {
+    // A delta already queued before this publish began running is allowed to
+    // finish (so a visible preview has a message id the abort path can
+    // delete); capture abort state up front rather than after awaiting
+    // progressCleanup, otherwise abort flipping mid-await would wrongly
+    // cancel a publish that already committed to running.
+    const abortedAtStart = isAborted?.() === true;
+    if (progressCleanup) await progressCleanup;
+    if (abortedAtStart) {
       answerPreviewDirty = false;
       return;
     }
@@ -389,30 +512,41 @@ export async function sendMessageWithProgress({
       clearTimeout(answerPreviewTimer);
       answerPreviewTimer = null;
     }
-    answerPreviewDirty = false;
-    // Once a preview is abandoned, its provisional text must not be reused
-    // by later error/fallback/fence delivery in this turn.
-    answerPreviewText = "";
     const aborted = isAborted?.() === true;
-    if (aborted) answerPreviewEnabled = false;
     const pendingUpdates = [...answerPreviewUpdates];
+    // Any already-queued publish must be allowed to finish (so a sent
+    // preview has a message id to delete) before this turn's provisional
+    // text is cleared out from under it, or before this turn's preview is
+    // disabled from under it.
+    const finalizeAbandonedState = () => {
+      if (aborted) answerPreviewEnabled = false;
+      answerPreviewDirty = false;
+      // Once a preview is abandoned, its provisional text must not be reused
+      // by later error/fallback/fence delivery in this turn.
+      answerPreviewText = "";
+    };
     if (aborted) {
       void Promise.allSettled(pendingUpdates)
-        .then(() => deleteAnswerPreview(false))
+        .then(() => {
+          finalizeAbandonedState();
+          return deleteAnswerPreview(false);
+        })
         .catch(() => {});
       return;
     }
     await Promise.allSettled(pendingUpdates);
+    finalizeAbandonedState();
     await deleteAnswerPreview(true);
   };
 
   const onAnswerDelta = (delta: string): void => {
     if (!answerPreviewEnabled || !delta || isAborted?.()) return;
+    void beginProgressCleanup();
     answerPreviewText += delta;
     queueAnswerPreview(answerPreviewMessageId == null);
   };
 
-  const wrappedOnProgress = (chunk: string) => {
+  const wrappedOnProgress = ((chunk: string) => {
     currentText += chunk;
     originalOnProgress?.(chunk);
 
@@ -426,36 +560,27 @@ export async function sendMessageWithProgress({
         void sendTyping();
       }
       if (!showProgressNarration) return;
-      const now = Date.now();
-      if (now - lastProgressEditMs >= PROGRESS_EDIT_INTERVAL_MS) {
-        lastProgressEditMs = now;
-        const previewText = truncate(extractStatusProgress(currentText));
-        if (!previewText) return;
-        if (previewText === lastSentPreviewText) return;
-        lastSentPreviewText = previewText;
-        if (progressMsgId == null) {
-          if (progressMsgPending) return;
-          progressMsgPending = true;
-          const update = client.sendMessage({ chat_id: chatId, ...body, text: previewText })
-            .then((sent: any) => { progressMsgId = sent?.result?.message_id ?? null; })
-            .catch(() => { /* ignore send failures during streaming */ })
-            .finally(() => { progressMsgPending = false; });
-          progressUpdates.push(update);
-          return;
-        }
-        const update = client.editMessageText({
-          chat_id: chatId,
-          message_id: progressMsgId,
-          ...body,
-          text: previewText,
-        }).catch(() => { /* ignore edit failures during streaming */ });
-        progressUpdates.push(update);
-      }
+      const previewText = truncate(extractStatusProgress(currentText));
+      if (!previewText) return;
+      queueProgressText(previewText, PROGRESS_EDIT_INTERVAL_MS);
     }
+  }) as ProgressReporter;
+
+  wrappedOnProgress.activity = (activity: RunActivity): void => {
+    originalOnProgress.activity?.(activity);
+    if (progressStopped || isAborted?.()) return;
+    queueProgressText(truncate(runActivityText(activity)), RUN_ACTIVITY_EDIT_INTERVAL_MS);
   };
 
   async function deliverFinal(text: string): Promise<void> {
-    await Promise.allSettled(progressUpdates);
+    progressStopped = true;
+    pendingProgressText = null;
+    if (progressTimer) {
+      clearTimeout(progressTimer);
+      progressTimer = null;
+    }
+    await Promise.allSettled([...progressUpdates, progressChain]);
+    if (progressCleanup) await progressCleanup;
     if (answerPreviewTimer) {
       clearTimeout(answerPreviewTimer);
       answerPreviewTimer = null;
@@ -487,20 +612,28 @@ export async function sendMessageWithProgress({
       await deleteAnswerPreview(true);
       answerPreviewEnabled = false;
     }
-    if (streamingEnabled && capabilities.editMessages && progressMsgId != null) {
+    if (capabilities.editMessages && progressMsgId != null
+      && text.length <= capabilities.maxMessageLength
+      && routeNativeLayout(text, { documentEnabled: documentFallbackEnabled() }).kind === "plain") {
       try {
         await client.editMessageText({
           chat_id: chatId,
           message_id: progressMsgId,
           ...body,
-          text: renderTelegramHtml(truncate(text)),
-          parse_mode: "HTML",
+          ...renderAnswerPreview(text),
         });
         return;
       } catch (editErr: any) {
-        const msg = String(editErr?.message ?? editErr);
-        if (msg.includes("message is not modified")) return;
-        /* fall through to sendTelegramMessage if edit fails */
+        if (isTelegramMessageNotModified(editErr)) return;
+        /* fall through to cleanup + normal final delivery */
+      }
+    }
+    if (progressMsgId != null && typeof client.deleteMessage === "function" && capabilities.deleteMessages) {
+      try {
+        await client.deleteMessage({ chat_id: chatId, message_id: progressMsgId });
+        progressMsgId = null;
+      } catch {
+        /* stale transient cleanup is best-effort before normal final delivery */
       }
     }
     await sendSurfaceMessage({ client, kind, chatId, body: { ...body, text } });
@@ -523,7 +656,7 @@ export async function sendMessageWithProgress({
 
     if (isAborted?.()) {
       clearInterval(typingInterval);
-      await discardAnswerPreview();
+      await Promise.all([discardAnswerPreview(), beginProgressCleanup()]);
       return null;
     }
 
@@ -538,7 +671,7 @@ export async function sendMessageWithProgress({
     try {
       if (beforeFinalDelivery?.() === false) {
         clearInterval(typingInterval);
-        await discardAnswerPreview();
+        await Promise.all([discardAnswerPreview(), beginProgressCleanup()]);
         return null;
       }
     } catch (err) {
@@ -554,11 +687,24 @@ export async function sendMessageWithProgress({
   } catch (err: any) {
     clearInterval(typingInterval);
     if (!finalDeliveryCompleted) await discardAnswerPreview();
-    if (isAborted?.()) return null;
-    if (propagateTimeoutErrors && err instanceof CliTimeoutError) throw err;
-    if (propagateExecutionErrors && !finalDeliveryPreparationFailed) throw err;
-    if (finalDeliveryPreparationFailed) throw err;
+    if (isAborted?.()) {
+      await beginProgressCleanup();
+      return null;
+    }
+    if (propagateTimeoutErrors && err instanceof CliTimeoutError) {
+      await beginProgressCleanup();
+      throw err;
+    }
+    if (propagateExecutionErrors && !finalDeliveryPreparationFailed) {
+      await beginProgressCleanup();
+      throw err;
+    }
+    if (finalDeliveryPreparationFailed) {
+      await beginProgressCleanup();
+      throw err;
+    }
     if (isCapacityExhaustedError(err instanceof Error ? err : new Error(String(err)))) {
+      await beginProgressCleanup();
       throw err;
     }
     const errorText = `❌ ${toUserMessage(err instanceof Error ? err : new Error(String(err)))}`;

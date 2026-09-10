@@ -6,6 +6,8 @@
  * LOGIC: Declares central data types representing telegram payload structures, configuration schemas, and CLI returns.
  */
 
+import type { ProgressReporter } from "./runActivity.js";
+
 export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
 /**
@@ -124,7 +126,8 @@ export interface CliOptions {
   timeoutMs?: number;
   idleTimeoutMs?: number | null;
   killGraceMs?: number;
-  onProgress?: (text: string) => void;
+  /** Text progress plus an optional provider-neutral structured activity side channel. */
+  onProgress?: ProgressReporter;
   /** Safe provisional assistant-answer text for transient presentation only. */
   onAnswerDelta?: (text: string) => void;
   /** Provider-owned observation hook for structured presentation decoders. */

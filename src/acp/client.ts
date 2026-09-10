@@ -28,7 +28,7 @@ export interface AcpRetainedEvent {
   /** What the agent asked for and what Bridge decided, not merely that a permission event happened. */
   readonly permissionRequest?: RequestPermissionRequest;
   readonly permissionResponse?: RequestPermissionResponse;
-  /** The ACP session this event belongs to, and how that session was entered. Known by the time any event fires. */
+  /** The parent/root ACP session for this Bridge turn, and how that session was entered. */
   readonly acpSessionId?: string;
   readonly sessionMode?: AcpSessionMode;
 }
@@ -108,9 +108,14 @@ function usageFrom(response: PromptResponse): Usage | undefined {
 }
 
 /** ACP v1 usage_update.used/size describe context-window occupancy, not per-turn consumption. */
-function contextUsageFrom(updates: readonly AcpObservedUpdate[]): AcpContextUsage | undefined {
+function contextUsageFrom(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): AcpContextUsage | undefined {
   for (let i = updates.length - 1; i >= 0; i -= 1) {
-    const update = updates[i].notification.update;
+    const observed = updates[i];
+    if (observed.notification.sessionId !== sessionId) continue;
+    const update = observed.notification.update;
     if (update.sessionUpdate === "usage_update") {
       return { used: update.used, size: update.size };
     }
@@ -138,9 +143,9 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   const events: AcpRetainedEvent[] = [];
   let liveEmitted = "";
   // Set by execute() before any notification/permission request can arrive
-  // for the corresponding session, so remember() always tags events with the
-  // session they actually belong to — even ones observed during session/load
-  // replay, which happens before the prompt request.
+  // for the corresponding parent session, so remember() can tag child events
+  // with their owning root turn while notification.sessionId remains the
+  // actual root/child protocol session id.
   let currentAcpSessionId: string | undefined;
   let currentSessionMode: AcpSessionMode | undefined;
 
@@ -177,6 +182,9 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         notification: observed.notification,
       });
       if (observed.channel !== "live") return;
+      // Native subagent output is retained for structured lifecycle/activity,
+      // but only the parent/root ACP session may feed human-facing live text.
+      if (!currentAcpSessionId || observed.notification.sessionId !== currentAcpSessionId) return;
       const payload = observed.notification.update;
       if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return;
       liveEmitted += payload.content.text;
@@ -241,7 +249,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
     remember({ kind: "stop", channel: "live", stopReason: promptResponse.stopReason });
 
-    const liveText = liveDeliveryText(updates) || liveEmitted;
+    const liveText = liveDeliveryText(updates, acpSessionId) || liveEmitted;
     return {
       conversationId: input.conversationId,
       runId: input.runId,
@@ -252,7 +260,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       events,
       updates,
       usage: usageFrom(promptResponse),
-      contextUsage: contextUsageFrom(updates),
+      contextUsage: contextUsageFrom(updates, acpSessionId),
       initialize,
     };
   };

@@ -30,10 +30,19 @@ export class AcpReplayGate {
   }
 }
 
-export function liveDeliveryText(updates: readonly AcpObservedUpdate[]): string {
+/**
+ * Select live agent text, optionally scoped to one ACP session. Callers that
+ * own a parent/root turn must provide its session id so native child-session
+ * output remains observable without becoming parent delivery text.
+ */
+export function liveDeliveryText(
+  updates: readonly AcpObservedUpdate[],
+  sessionId?: string,
+): string {
   let text = "";
   for (const update of updates) {
     if (update.channel !== "live") continue;
+    if (sessionId && update.notification.sessionId !== sessionId) continue;
     const payload = update.notification.update;
     if (payload.sessionUpdate !== "agent_message_chunk") continue;
     if (payload.content.type === "text") text += payload.content.text;
