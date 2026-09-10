@@ -99,6 +99,19 @@ export function selectCodexAcpAnswer(result: AcpTurnResult): { text: string; mis
   };
 }
 
+const CODEX_QUALIFICATION_ENV_KEYS = [
+  "CODEX_ACP_COMMAND",
+  "CODEX_ACP_ARGS",
+  "CODEX_API_KEY",
+  "OPENAI_API_KEY",
+  "DEFAULT_AUTH_REQUEST",
+  "NO_BROWSER",
+  "CODEX_PATH",
+  "CODEX_HOME",
+  "MODEL_PROVIDER",
+  "BRIDGE_CURRENT_RELEASE_DIR",
+] as const;
+
 export const codexAcpPolicy: AcpProviderPolicy = {
   providerId: "codex",
   registryAgentId: "codex-acp",
@@ -109,6 +122,7 @@ export const codexAcpPolicy: AcpProviderPolicy = {
   },
   resolveExecutable: resolveCodexAcpCommand,
   resolveArgs: (env) => resolveCodexAcpArgs(env),
+  qualificationEnvKeys: CODEX_QUALIFICATION_ENV_KEYS,
   buildChildEnv(request, env) {
     const config = codexAcpConfig(request);
     return {
