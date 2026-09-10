@@ -66,7 +66,7 @@ export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel) {
 export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): string {
   const support =
     kind === "codex" ? "Codex maps effort to model_reasoning_effort." :
-    kind === "claude" ? "Claude maps effort to --effort." :
+    kind === "claude" ? "Claude maps effort through its ACP session configuration." :
     kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
     kind === "cursor" ? "Cursor effort is unsupported by the qualified headless contract; this setting is recorded for parity only." :
     "A separate Agy effort CLI flag is unsupported; Agent Bridge maps effort to the selected Gemini model variant. Low/medium/high map directly; xhigh/max use high.";
