@@ -91,7 +91,6 @@ describe("Claude ACP provider", () => {
         { configId: "effort", value: "xhigh" },
       ],
       meta: {
-        systemPrompt: { append: expect.any(String) },
         disableBuiltInTools: true,
         claudeCode: {
           options: {
@@ -217,7 +216,10 @@ describe("Claude ACP provider", () => {
 
     expect(result.liveText).toBe("configured");
     expect(calls.map((call) => call.kind)).toEqual(["new-meta", "mode", "model", "effort"]);
-    expect(calls[0]?.value).toEqual(expect.objectContaining({ disableBuiltInTools: true }));
+    expect(calls[0]?.value).toEqual(expect.objectContaining({
+      disableBuiltInTools: true,
+      claudeCode: { options: expect.objectContaining({ settingSources: [] }) },
+    }));
     expect(calls.slice(1)).toEqual([
       { kind: "mode", value: "default" },
       { kind: "model", value: "claude-b" },
