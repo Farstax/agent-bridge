@@ -10,6 +10,7 @@ import { createOutwardAcpAgent } from "../src/acpServer/app.js";
 import {
   BridgeOutwardAcpPromptExecutor,
   createProductionOutwardAcpPromptExecutor,
+  OUTWARD_ACP_SURFACE,
 } from "../src/acpServer/execution.js";
 
 describe("outward ACP prompt execution", () => {
@@ -308,6 +309,45 @@ describe("outward ACP prompt execution", () => {
       expect(() => createProductionOutwardAcpPromptExecutor(db, dbPath, {
         BRIDGE_PROVIDER_LOCK: "not-a-provider",
       })).toThrow(/unsupported outward ACP provider lock/);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("releases the outward lane when durable Run admission fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-run-admission-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      db.insertRun("duplicate-run", "other-conversation", "codex");
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "outward-run-admission",
+        conversationId: "acp:run-admission",
+        cwd: root,
+      });
+      let executed = false;
+      const promptExecutor = new BridgeOutwardAcpPromptExecutor({
+        db,
+        provider: "codex",
+        runId: () => "duplicate-run",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async () => {
+            executed = true;
+            return { text: "must not run", sessionId: null, stopReason: "end_turn" };
+          },
+        }),
+      });
+
+      await expect(promptExecutor.execute({
+        session,
+        prompt: "hi",
+        onUpdate: () => undefined,
+      })).rejects.toMatchObject({ code: -32001 });
+      expect(executed).toBe(false);
+
+      const reacquired = db.acquireLock(OUTWARD_ACP_SURFACE, session.conversationId);
+      expect(reacquired).not.toBeNull();
+      if (reacquired) db.unlock(reacquired);
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
