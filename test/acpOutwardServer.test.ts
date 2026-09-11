@@ -162,6 +162,15 @@ describe("outward ACP stdio boundary", () => {
         error: { code: -32602, data: { field: "additionalDirectories" } },
       });
 
+      const unsupportedMcp = await newSession(first, 5, cwd, {
+        mcpServers: [{ name: "test", command: "echo", args: [], env: [] }],
+      });
+      expect(unsupportedMcp).toMatchObject({
+        jsonrpc: "2.0",
+        id: 5,
+        error: { code: -32602, data: { field: "mcpServers" } },
+      });
+
       await stopProcess(first);
       first = null;
 
@@ -180,8 +189,8 @@ describe("outward ACP stdio boundary", () => {
       persisted.close();
 
       second = startOutwardAcpProcess(dbPath);
-      await initialize(second, 5);
-      const afterRestart = await newSession(second, 6, cwd);
+      await initialize(second, 6);
+      const afterRestart = await newSession(second, 7, cwd);
       expect(afterRestart.result?.sessionId).toEqual(expect.any(String));
       expect(afterRestart.result?.sessionId).not.toBe(sessionId);
       await stopProcess(second);
