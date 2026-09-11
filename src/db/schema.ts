@@ -91,6 +91,11 @@ export function applyMigrationsUpTo(
   }
   if (current === targetVersion) return;
 
+  // PRAGMA foreign_keys is a documented no-op inside a transaction, so it
+  // must be toggled here, before db.transaction() opens its BEGIN, for
+  // migrations that rename/recreate tables (e.g. to widen a CHECK
+  // constraint) to actually run with enforcement suspended. Restored
+  // unconditionally afterward, success or failure.
   const foreignKeysWereEnabled = Number(db.pragma("foreign_keys", { simple: true })) === 1;
   if (foreignKeysWereEnabled) db.pragma("foreign_keys = OFF");
   try {
@@ -100,6 +105,12 @@ export function applyMigrationsUpTo(
         migration.up(db, databaseRole);
         db.pragma(`user_version = ${migration.version}`);
       }
+      // foreign_key_check runs a full on-demand scan regardless of the
+      // foreign_keys enforcement setting, and works inside a transaction
+      // (unlike the foreign_keys pragma itself). Restoring foreign_keys = ON
+      // afterward does not retroactively detect violations left by a rename
+      // /recreate repair, so verify explicitly before this transaction can
+      // commit and stamp user_version.
       const violations = db.pragma("foreign_key_check") as ForeignKeyViolation[];
       if (violations.length > 0) throw new MigrationForeignKeyViolationError(violations);
     });
