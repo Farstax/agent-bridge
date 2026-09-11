@@ -38,6 +38,7 @@ export interface BridgeOutwardAcpPromptExecutorOptions {
 
 type RetainedSessionUpdate = {
   kind?: unknown;
+  channel?: unknown;
   acpSessionId?: unknown;
   notification?: {
     sessionId?: unknown;
@@ -45,18 +46,27 @@ type RetainedSessionUpdate = {
   };
 };
 
-function rootProviderUpdate(event: BridgeEvent): OutwardUpdate | null {
+function isBridgeAuthoritativeTextUpdate(update: OutwardUpdate): boolean {
+  return update.sessionUpdate === "agent_message_chunk"
+    || update.sessionUpdate === "agent_thought_chunk"
+    || update.sessionUpdate === "user_message_chunk";
+}
+
+/**
+ * Forward only live structured updates from the parent provider session.
+ * Bridge owns human-facing answer authority: provider message/thought chunks
+ * may contain replay, commentary, provisional text, or cancelled partials, so
+ * the outward client receives only Bridge's final selected answer below.
+ */
+function liveRootProviderUpdate(event: BridgeEvent): OutwardUpdate | null {
   if (event.type !== "acp.event" || !event.event || typeof event.event !== "object") return null;
   const retained = event.event as RetainedSessionUpdate;
-  if (retained.kind !== "session_update") return null;
+  if (retained.kind !== "session_update" || retained.channel !== "live") return null;
   if (typeof retained.acpSessionId !== "string" || !retained.notification) return null;
   if (retained.notification.sessionId !== retained.acpSessionId) return null;
   if (!retained.notification.update || typeof retained.notification.update !== "object") return null;
-  return retained.notification.update as OutwardUpdate;
-}
-
-function isAgentMessageChunk(update: OutwardUpdate): boolean {
-  return update.sessionUpdate === "agent_message_chunk";
+  const update = retained.notification.update as OutwardUpdate;
+  return isBridgeAuthoritativeTextUpdate(update) ? null : update;
 }
 
 function normalizeStopReason(value: string | undefined): acp.StopReason {
@@ -100,16 +110,16 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     const runId = this.options.runId?.() ?? randomUUID();
     db.insertRun(runId, input.session.conversationId, provider);
     const eventStore = new EventStore(db, runId);
-    const pendingUpdates: Promise<void>[] = [];
     let completed: RunCompletedEvent | null = null;
-    let streamedAnswer = false;
+    let updateChain = Promise.resolve();
+    const enqueueUpdate = (update: OutwardUpdate): void => {
+      updateChain = updateChain.then(() => input.onUpdate(update));
+    };
     const collect = (event: BridgeEvent): void => {
       if (event.type === "run.completed") completed = event;
       else eventStore.collect(event);
-      const update = rootProviderUpdate(event);
-      if (!update) return;
-      streamedAnswer ||= isAgentMessageChunk(update);
-      pendingUpdates.push(Promise.resolve(input.onUpdate(update)));
+      const update = liveRootProviderUpdate(event);
+      if (update) enqueueUpdate(update);
     };
 
     const eventContext: NonNullable<SurfaceNeutralTurnInput["eventContext"]> = {
@@ -139,13 +149,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         persistProviderSession(db, input.session.conversationId, provider, result.sessionId, runId);
       });
 
-      if (!streamedAnswer && result.text) {
-        pendingUpdates.push(Promise.resolve(input.onUpdate({
+      if (result.stopReason !== "cancelled" && result.text) {
+        enqueueUpdate({
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: result.text },
-        })));
+        });
       }
-      await Promise.all(pendingUpdates);
+      await updateChain;
 
       if (completed) {
         eventStore.queueCompleted(completed);
@@ -202,8 +212,13 @@ const NO_DELIVERY_PLATFORM: MessagingPlatform = {
 
 function configuredProvider(env: NodeJS.ProcessEnv): BotKind {
   const allowed = interactiveChainKinds() as BotKind[];
-  const locked = env.BRIDGE_PROVIDER_LOCK?.trim() as BotKind | undefined;
-  if (locked && allowed.includes(locked)) return locked;
+  const locked = env.BRIDGE_PROVIDER_LOCK?.trim();
+  if (locked) {
+    if (!allowed.includes(locked as BotKind)) {
+      throw new Error(`unsupported outward ACP provider lock: ${locked}`);
+    }
+    return locked as BotKind;
+  }
   const fallback = (["codex", "claude", "grok", "antigravity", "cursor"] as BotKind[])
     .filter((kind) => allowed.includes(kind));
   const chain = parseCliChain(env.INTERACTIVE_CLI_CHAIN, { allowed, fallback });
