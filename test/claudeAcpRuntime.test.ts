@@ -65,11 +65,17 @@ describe("Claude ACP provider", () => {
   it("keeps Bridge permission authority in Claude manual mode for safe and trusted Runs", () => {
     expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }))).toMatchObject({
       modeId: "default",
-      meta: { claudeCode: { options: { settingSources: ["project"] } } },
+      meta: {
+        systemPrompt: { append: expect.any(String) },
+        claudeCode: { options: { settingSources: [] } },
+      },
     });
     expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }))).toMatchObject({
       modeId: "default",
-      meta: { claudeCode: { options: { settingSources: ["project"] } } },
+      meta: {
+        systemPrompt: { append: expect.any(String) },
+        claudeCode: { options: { settingSources: [] } },
+      },
     });
   });
 
@@ -85,19 +91,21 @@ describe("Claude ACP provider", () => {
         { configId: "effort", value: "xhigh" },
       ],
       meta: {
+        systemPrompt: { append: expect.any(String) },
         disableBuiltInTools: true,
         claudeCode: {
           options: {
             tools: [],
             mcpServers: {},
             strictMcpConfig: true,
-            settingSources: ["project"],
+            settingSources: [],
           },
         },
       },
     });
     expect(claudeAcpPolicy.sessionSettings?.(request()).meta).toEqual({
-      claudeCode: { options: { settingSources: ["project"] } },
+      systemPrompt: { append: expect.any(String) },
+      claudeCode: { options: { settingSources: [] } },
     });
     expect(supportsToolFreeMode("claude")).toBe(true);
   });
