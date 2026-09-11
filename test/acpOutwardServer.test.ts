@@ -275,21 +275,21 @@ describe("outward ACP stdio boundary", () => {
     const providerStore = join(root, "provider-sessions.json");
     openDb(dbPath, { databaseRole: "interactive" }).close();
 
-    let process: RunningOutwardAcp | null = null;
+    let server: RunningOutwardAcp | null = null;
     try {
-      process = startOutwardAcpProcess(dbPath, {
+      server = startOutwardAcpProcess(dbPath, {
         BRIDGE_PROVIDER_LOCK: "codex",
         INTERACTIVE_CLI_CHAIN: "codex",
-        CODEX_ACP_COMMAND: process?.execPath ?? undefined,
+        CODEX_ACP_COMMAND: process.execPath,
         CODEX_ACP_ARGS: `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`,
         FAKE_ACP_STORE: providerStore,
       });
-      await initialize(process, 1);
-      const created = await newSession(process, 2, root);
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
       const outwardSessionId = created.result?.sessionId;
       expect(outwardSessionId).toEqual(expect.any(String));
 
-      const turn = await promptSession(process, 3, outwardSessionId!, "wire prompt");
+      const turn = await promptSession(server, 3, outwardSessionId!, "wire prompt");
       expect(turn.response).toMatchObject({
         jsonrpc: "2.0",
         id: 3,
@@ -309,8 +309,8 @@ describe("outward ACP stdio boundary", () => {
           && update.content.text.includes("wire prompt");
       })).toBe(true);
 
-      await stopProcess(process);
-      process = null;
+      await stopProcess(server);
+      server = null;
 
       const persisted = openDb(dbPath, { databaseRole: "interactive" });
       const outward = persisted.raw.prepare(`
@@ -333,7 +333,7 @@ describe("outward ACP stdio boundary", () => {
       `).get(outward?.conversation_id)).toEqual({ status: "done", bot: "codex" });
       persisted.close();
     } finally {
-      if (process) await stopProcess(process);
+      if (server) await stopProcess(server);
       rmSync(root, { recursive: true, force: true });
     }
   });
