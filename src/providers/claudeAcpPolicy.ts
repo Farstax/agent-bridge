@@ -19,8 +19,9 @@ function sessionSettings(request: ProviderInvocationRequest): AcpProviderSession
     modeId: "default",
     ...(config.length > 0 ? { config } : {}),
     meta: {
-      systemPrompt: { append: REPOSITORY_GROUNDING_APPEND },
-      ...(request.toolMode === "none" ? { disableBuiltInTools: true } : {}),
+      ...(request.toolMode === "none"
+        ? { disableBuiltInTools: true }
+        : { systemPrompt: { append: REPOSITORY_GROUNDING_APPEND } }),
       claudeCode: {
         options: {
           // File-backed user/project/local settings can contain permission rules
