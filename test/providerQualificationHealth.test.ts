@@ -14,7 +14,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 const report: HealthReport = {
   pluginName: "agent-bridge",
   status: "amber",
-  checks: [{ name: "cli-update-claude-code", status: "amber", message: "update available" }],
+  checks: [{ name: "cli-update-claude", status: "amber", message: "update available" }],
   summary: "CLI update available",
   timestamp: "2026-08-10T17:00:00.000Z",
 };
@@ -26,13 +26,13 @@ describe("provider qualification health integration", () => {
     writeFileSync(claude, "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo 'Claude Code 2.1.228'; else exit 1; fi\n", { mode: 0o755 });
     const cp = await import("node:child_process");
     vi.mocked(cp.execFileSync).mockReturnValue("Claude Code 2.1.228\n" as never);
-    const previous = process.env.CLAUDE_COMMAND;
-    process.env.CLAUDE_COMMAND = claude;
+    const previous = process.env.CLAUDE_ACP_COMMAND;
+    process.env.CLAUDE_ACP_COMMAND = claude;
     try {
       expect(readInstalledProviderVersions().claude).toBe("2.1.228");
     } finally {
-      if (previous === undefined) delete process.env.CLAUDE_COMMAND;
-      else process.env.CLAUDE_COMMAND = previous;
+      if (previous === undefined) delete process.env.CLAUDE_ACP_COMMAND;
+      else process.env.CLAUDE_ACP_COMMAND = previous;
     }
   });
 
