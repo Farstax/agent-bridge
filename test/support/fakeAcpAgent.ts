@@ -146,10 +146,10 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       }
 
       if (text.includes("HANG")) {
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((resolve) => {
           const done = () => resolve();
           session.pending?.signal.addEventListener("abort", done, { once: true });
-          ctx.signal.addEventListener("abort", () => reject(Object.assign(new Error("cancelled"), { code: -32800 })), { once: true });
+          ctx.signal.addEventListener("abort", done, { once: true });
         });
         return { stopReason: "cancelled" };
       }
