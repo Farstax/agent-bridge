@@ -16,9 +16,10 @@ function sessionSettings(request: ProviderInvocationRequest): AcpProviderSession
       ...(request.toolMode === "none" ? { disableBuiltInTools: true } : {}),
       claudeCode: {
         options: {
-          // Local settings can contain allow rules that bypass the ACP
-          // permission callback. Bridge remains the permission authority.
-          settingSources: [],
+          // Local and user settings can contain allow rules that bypass the ACP
+          // permission callback. Project settings are retained so repository instructions
+          // (such as CLAUDE.md) are loaded while Bridge remains the permission authority.
+          settingSources: ["project"],
           ...(request.toolMode === "none"
             ? { tools: [], mcpServers: {}, strictMcpConfig: true }
             : {}),
