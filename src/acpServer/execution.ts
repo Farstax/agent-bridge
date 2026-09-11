@@ -1,6 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
-import type { BridgeDb, ExecutionLaneHandle } from "../db.js";
+import type { BridgeDb } from "../db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "../engine.js";
 import { EventStore } from "../events/store.js";
 import { type as eventType, type BridgeEvent, type RunCompletedEvent } from "../events/types.js";
@@ -72,12 +72,7 @@ function normalizeStopReason(value: string | undefined): acp.StopReason {
   }
 }
 
-function failedEvent(
-  runId: string,
-  provider: BotKind,
-  session: OutwardAcpSessionRecord,
-  lane: ExecutionLaneHandle,
-): BridgeEvent {
+function failedEvent(runId: string, provider: BotKind, session: OutwardAcpSessionRecord): BridgeEvent {
   return eventType.runFailed({
     runId,
     bot: provider,
@@ -85,9 +80,7 @@ function failedEvent(
     chatKey: session.conversationId,
     error: "outward ACP prompt execution failed",
     category: "unknown",
-    serviceId: lane.serviceId,
-    acquisitionId: lane.acquisitionId,
-  } as Parameters<typeof eventType.runFailed>[0]);
+  });
 }
 
 export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor {
@@ -156,7 +149,17 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
 
       if (completed) {
         eventStore.queueCompleted(completed);
-      } else if (result.stopReason !== "cancelled") {
+      } else if (result.stopReason === "cancelled") {
+        if (db.getRun(runId)?.status === "running") {
+          eventStore.collect(eventType.runCancelled({
+            runId,
+            bot: provider,
+            chatId: input.session.sessionId,
+            chatKey: input.session.conversationId,
+            reason: "provider",
+          }));
+        }
+      } else {
         eventStore.queueCompleted(eventType.runCompleted({
           runId,
           bot: provider,
@@ -171,7 +174,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       return { stopReason: normalizeStopReason(result.stopReason) };
     } catch (error) {
       if (db.getRun(runId)?.status === "running") {
-        eventStore.collect(failedEvent(runId, provider, input.session, lane));
+        eventStore.collect(failedEvent(runId, provider, input.session));
         eventStore.finalize();
       }
       if (error instanceof acp.RequestError) throw error;
