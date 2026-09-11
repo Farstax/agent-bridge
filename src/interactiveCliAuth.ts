@@ -9,6 +9,7 @@ import {
   isProviderApiKeyVerified,
   verifyConfiguredProviderApiKeys,
   type ProviderApiKeyProbeExecutor,
+  type VerifyProviderApiKeyOptions,
 } from "./providers/apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import {
@@ -38,10 +39,9 @@ export interface AvailableCliOptions {
   verifyApiKey?: (provider: ProviderId) => boolean;
 }
 
-export interface InteractiveCliAuthStartupOptions {
+export interface InteractiveCliAuthStartupOptions extends VerifyProviderApiKeyOptions {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
-  execFile?: ProviderApiKeyProbeExecutor;
 }
 
 /**
@@ -51,9 +51,12 @@ export interface InteractiveCliAuthStartupOptions {
  */
 export async function prepareInteractiveCliAuth(
   env: Record<string, string | undefined> = process.env,
-  execFile?: ProviderApiKeyProbeExecutor,
+  options?: ProviderApiKeyProbeExecutor | VerifyProviderApiKeyOptions,
 ): Promise<void> {
-  await verifyConfiguredProviderApiKeys({ env, ...(execFile ? { execFile } : {}) });
+  const opts: VerifyProviderApiKeyOptions = typeof options === "function"
+    ? { execFile: options }
+    : (options ?? {});
+  await verifyConfiguredProviderApiKeys({ env, ...opts });
 }
 
 /**
@@ -66,7 +69,7 @@ export async function prepareInteractiveCliAuthStartup(
 ): Promise<void> {
   const env = options.env ?? process.env;
   loadInteractiveEnvFile({ env, processEnv: env, ...(options.cwd ? { cwd: options.cwd } : {}) });
-  await prepareInteractiveCliAuth(env, options.execFile);
+  await prepareInteractiveCliAuth(env, options);
 }
 
 if (process.env.NODE_ENV !== "test") {

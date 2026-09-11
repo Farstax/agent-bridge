@@ -85,7 +85,7 @@ exit 0
 `, { mode: 0o755 });
     chmodSync(claudeAcp, 0o755);
 
-    const result = spawnSync("bash", ["scripts/upgrade.sh", "--update"], {
+    const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
       encoding: "utf8",
       env: { ...process.env, NODE_BIN: node, CLAUDE_ACP_COMMAND: claudeAcp, PATH: `${root}:${process.env.PATH}` },
     });
@@ -112,13 +112,13 @@ exit 0
 `, { mode: 0o755 });
     chmodSync(claudeAcp, 0o755);
 
-    const result = spawnSync("bash", ["scripts/upgrade.sh", "--update"], {
+    const result = spawnSync("bash", ["scripts/upgrade.sh", "--clis-only"], {
       encoding: "utf8",
       env: { ...process.env, NODE_BIN: node, CLAUDE_ACP_COMMAND: claudeAcp, PATH: `${root}:${process.env.PATH}` },
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("unable to verify active Claude runtime version after update");
+    expect(result.stderr).toContain("unable to verify release-owned Claude ACP runtime version");
     expect(existsSync(log)).toBe(false);
   });
 
