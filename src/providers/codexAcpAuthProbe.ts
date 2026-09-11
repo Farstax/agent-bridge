@@ -21,32 +21,28 @@ function killProcessGroup(child: ChildProcess): void {
   try { child.kill("SIGTERM"); } catch { /* already exited */ }
 }
 
+export interface AcpApiKeyProbeOptions {
+  readonly label: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+  readonly authenticateMethodId?: string;
+  readonly sessionMeta?: Readonly<Record<string, unknown>>;
+  readonly prepareEnv?: (root: string, env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+}
+
 /**
- * Verify CODEX_API_KEY through the selected Codex ACP adapter itself. This is
- * deliberately independent of the removed native Codex runtime: initialize,
- * explicit ACP api-key authentication, then one bounded no-tool prompt prove
- * the same credential/runtime pair that production will actually use.
+ * Verify a provider key through the exact ACP program selected for production.
+ * The probe is bounded, refuses permissions, creates an isolated HOME, drains
+ * diagnostics without logging them, and always tears down the process group.
  */
-export async function runCodexAcpApiKeyProbe(
-  env: Record<string, string | undefined>,
-): Promise<void> {
-  if (!env.CODEX_API_KEY?.trim()) throw new Error("CODEX_API_KEY is not configured");
+export async function runAcpApiKeyProbe(options: AcpApiKeyProbeOptions): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), `agent-bridge-${options.label.toLowerCase()}-acp-auth-`));
+  const childEnv = options.prepareEnv
+    ? options.prepareEnv(root, { ...options.env, HOME: root })
+    : { ...options.env, HOME: root };
 
-  const root = mkdtempSync(join(tmpdir(), "agent-bridge-codex-acp-auth-"));
-  const command = resolveCodexAcpCommand(env);
-  const args = resolveCodexAcpArgs(env);
-  const childEnv: NodeJS.ProcessEnv = {
-    ...env,
-    HOME: root,
-    CODEX_HOME: join(root, ".codex"),
-    NO_BROWSER: "1",
-    INITIAL_AGENT_MODE: "agent",
-  };
-  // The probe authenticates explicitly. A caller-provided default request
-  // must not create a second, implicit auth path inside session/new.
-  delete childEnv.DEFAULT_AUTH_REQUEST;
-
-  const child = spawn(command, args, {
+  const child = spawn(options.command, [...options.args], {
     cwd: root,
     env: childEnv,
     shell: false,
@@ -61,20 +57,16 @@ export async function runCodexAcpApiKeyProbe(
   const spawnFailure = new Promise<never>((_resolve, reject) => {
     child.once("error", reject);
   });
-  // Reject an unexpected clean/failed child exit too; otherwise a closed ACP
-  // stream can race the timeout and obscure the actual runtime failure.
   const earlyClose = new Promise<never>((_resolve, reject) => {
     child.once("close", (code, signal) => {
-      if (!settled) reject(new Error(`Codex ACP auth probe exited early (code=${String(code)} signal=${String(signal)})`));
+      if (!settled) reject(new Error(`${options.label} ACP auth probe exited early (code=${String(code)} signal=${String(signal)})`));
     });
   });
-  // Attach sinks immediately so a same-tick spawn failure/close never becomes
-  // an unhandled rejection if another race branch wins first.
   spawnFailure.catch(() => undefined);
   earlyClose.catch(() => undefined);
 
   try {
-    if (!child.stdin || !child.stdout) throw new Error("Codex ACP auth probe is missing stdio pipes");
+    if (!child.stdin || !child.stdout) throw new Error(`${options.label} ACP auth probe is missing stdio pipes`);
     const stream = acp.ndJsonStream(
       Writable.toWeb(child.stdin),
       Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
@@ -86,13 +78,20 @@ export async function runCodexAcpApiKeyProbe(
       .onNotification(acp.methods.client.session.update, () => undefined);
 
     const probe = client.connectWith(stream, async (agent) => {
-      await agent.request(acp.methods.agent.initialize, {
+      const initialized = await agent.request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION,
         clientCapabilities: {},
         clientInfo: { name: "agent-bridge-auth-probe", version: "1" },
       });
-      await agent.request(acp.methods.agent.authenticate, { methodId: "api-key" });
+      if (options.authenticateMethodId) {
+        const supported = initialized.authMethods?.some((method) => method.id === options.authenticateMethodId);
+        if (!supported) {
+          throw new Error(`${options.label} ACP adapter does not advertise auth method ${options.authenticateMethodId}`);
+        }
+        await agent.request(acp.methods.agent.authenticate, { methodId: options.authenticateMethodId });
+      }
       const session = await agent.request(acp.methods.agent.session.new, {
+        ...(options.sessionMeta ? { _meta: options.sessionMeta } : {}),
         cwd: root,
         mcpServers: [],
       });
@@ -101,12 +100,12 @@ export async function runCodexAcpApiKeyProbe(
         prompt: [{ type: "text", text: ACP_AUTH_PROBE_PROMPT }],
       });
       if (result.stopReason === "cancelled") {
-        throw new Error("Codex ACP auth probe was cancelled");
+        throw new Error(`${options.label} ACP auth probe was cancelled`);
       }
     });
 
     const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`Codex ACP auth probe timed out after ${ACP_AUTH_PROBE_TIMEOUT_MS}ms`)), ACP_AUTH_PROBE_TIMEOUT_MS);
+      timer = setTimeout(() => reject(new Error(`${options.label} ACP auth probe timed out after ${ACP_AUTH_PROBE_TIMEOUT_MS}ms`)), ACP_AUTH_PROBE_TIMEOUT_MS);
     });
     await Promise.race([probe, spawnFailure, earlyClose, timeout]);
   } finally {
@@ -116,4 +115,33 @@ export async function runCodexAcpApiKeyProbe(
     killProcessGroup(child);
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+/**
+ * Verify CODEX_API_KEY through the selected Codex ACP adapter itself. This is
+ * deliberately independent of the removed native Codex runtime.
+ */
+export async function runCodexAcpApiKeyProbe(
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  if (!env.CODEX_API_KEY?.trim()) throw new Error("CODEX_API_KEY is not configured");
+  await runAcpApiKeyProbe({
+    label: "Codex",
+    command: resolveCodexAcpCommand(env),
+    args: resolveCodexAcpArgs(env),
+    env: { ...env },
+    authenticateMethodId: "api-key",
+    prepareEnv: (root, childEnv) => {
+      const prepared: NodeJS.ProcessEnv = {
+        ...childEnv,
+        CODEX_HOME: join(root, ".codex"),
+        NO_BROWSER: "1",
+        INITIAL_AGENT_MODE: "agent",
+      };
+      // The probe authenticates explicitly. A caller-provided default request
+      // must not create a second, implicit auth path inside session/new.
+      delete prepared.DEFAULT_AUTH_REQUEST;
+      return prepared;
+    },
+  });
 }
