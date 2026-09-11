@@ -28,6 +28,14 @@ function sessionSettings(request: ProviderInvocationRequest): AcpProviderSession
   };
 }
 
+const CLAUDE_QUALIFICATION_ENV_KEYS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+  "BRIDGE_CURRENT_RELEASE_DIR",
+] as const;
+
 /** Claude-specific policy only; lifecycle/session/replay/cancel/presentation stay in the shared ACP runtime. */
 export const claudeAcpPolicy: AcpProviderPolicy = {
   providerId: "claude",
@@ -36,5 +44,6 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   presentation: {
     provisionalAnswers: true,
   },
+  qualificationEnvKeys: CLAUDE_QUALIFICATION_ENV_KEYS,
   sessionSettings,
 };
