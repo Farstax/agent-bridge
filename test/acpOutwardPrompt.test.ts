@@ -7,10 +7,13 @@ import { openDb } from "../src/db.js";
 import { type as eventType } from "../src/events/types.js";
 import { OutwardAcpSessionRepository } from "../src/repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent } from "../src/acpServer/app.js";
-import { BridgeOutwardAcpPromptExecutor } from "../src/acpServer/execution.js";
+import {
+  BridgeOutwardAcpPromptExecutor,
+  createProductionOutwardAcpPromptExecutor,
+} from "../src/acpServer/execution.js";
 
 describe("outward ACP prompt execution", () => {
-  it("keeps provider session identity private while forwarding root ACP updates on the outward session", async () => {
+  it("keeps provider identity private, suppresses replay/provisional text, and forwards live structured updates", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-"));
     const dbPath = join(root, "bridge.sqlite");
     const db = openDb(dbPath, { databaseRole: "interactive" });
@@ -42,16 +45,87 @@ describe("outward ACP prompt execution", () => {
               chatId: String(input.chatId),
               chatKey: input.chatKey,
               sessionId: "provider-session",
-              sessionMode: "fresh",
+              sessionMode: "load",
               event: {
                 kind: "session_update",
+                channel: "replay",
                 acpSessionId: "provider-session",
-                sessionMode: "fresh",
+                sessionMode: "load",
                 notification: {
                   sessionId: "provider-session",
                   update: {
                     sessionUpdate: "agent_message_chunk",
-                    content: { type: "text", text: "hello" },
+                    content: { type: "text", text: "old replayed answer" },
+                  },
+                },
+              },
+            }));
+            input.collect(eventType.acpEvent({
+              runId: input.runId,
+              bot: "codex",
+              chatId: String(input.chatId),
+              chatKey: input.chatKey,
+              sessionId: "provider-session",
+              sessionMode: "load",
+              event: {
+                kind: "session_update",
+                channel: "live",
+                acpSessionId: "provider-session",
+                sessionMode: "load",
+                notification: {
+                  sessionId: "provider-session",
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: "provider commentary" },
+                    _meta: { codex: { phase: "commentary" } },
+                  },
+                },
+              },
+            }));
+            input.collect(eventType.acpEvent({
+              runId: input.runId,
+              bot: "codex",
+              chatId: String(input.chatId),
+              chatKey: input.chatKey,
+              sessionId: "provider-session",
+              sessionMode: "load",
+              event: {
+                kind: "session_update",
+                channel: "live",
+                acpSessionId: "provider-session",
+                sessionMode: "load",
+                notification: {
+                  sessionId: "child-session",
+                  update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "child-call",
+                    title: "child work",
+                    kind: "think",
+                    status: "completed",
+                  },
+                },
+              },
+            }));
+            input.collect(eventType.acpEvent({
+              runId: input.runId,
+              bot: "codex",
+              chatId: String(input.chatId),
+              chatKey: input.chatKey,
+              sessionId: "provider-session",
+              sessionMode: "load",
+              event: {
+                kind: "session_update",
+                channel: "live",
+                acpSessionId: "provider-session",
+                sessionMode: "load",
+                notification: {
+                  sessionId: "provider-session",
+                  update: {
+                    sessionUpdate: "tool_call",
+                    toolCallId: "root-call",
+                    title: "root work",
+                    kind: "think",
+                    status: "completed",
                   },
                 },
               },
@@ -89,20 +163,105 @@ describe("outward ACP prompt execution", () => {
       );
 
       expect(response.stopReason).toBe("end_turn");
-      expect(updates).toEqual([{
-        sessionId: "outward-session",
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: "hello" },
+      expect(updates).toEqual([
+        {
+          sessionId: "outward-session",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "root-call",
+            title: "root work",
+            kind: "think",
+            status: "completed",
+          },
         },
-      }]);
-      expect(updates[0]?.sessionId).not.toBe("provider-session");
+        {
+          sessionId: "outward-session",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "hello" },
+          },
+        },
+      ]);
+      expect(JSON.stringify(updates)).not.toContain("old replayed answer");
+      expect(JSON.stringify(updates)).not.toContain("provider commentary");
+      expect(JSON.stringify(updates)).not.toContain("child-call");
+      expect(updates.every((update) => update.sessionId !== "provider-session")).toBe(true);
       expect(db.getAcpSessionBinding("acp:conversation", "codex")?.acpSessionId).toBe("provider-session");
       expect(db.getRun("run-1")).toMatchObject({
         run_id: "run-1",
         chat_id: "acp:conversation",
         status: "done",
       });
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never publishes provider partial answer text when the turn is cancelled", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-cancel-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const sessions = new OutwardAcpSessionRepository(db.raw);
+      const session = sessions.create({ sessionId: "outward-cancel", conversationId: "acp:cancel", cwd: root });
+      const promptExecutor = new BridgeOutwardAcpPromptExecutor({
+        db,
+        provider: "codex",
+        runId: () => "run-cancel",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async (input) => {
+            input.collect(eventType.acpEvent({
+              runId: input.runId,
+              bot: "codex",
+              chatId: String(input.chatId),
+              chatKey: input.chatKey,
+              sessionId: "provider-cancel",
+              sessionMode: "fresh",
+              event: {
+                kind: "session_update",
+                channel: "live",
+                acpSessionId: "provider-cancel",
+                sessionMode: "fresh",
+                notification: {
+                  sessionId: "provider-cancel",
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: { type: "text", text: "partial answer that must not escape" },
+                  },
+                },
+              },
+            }));
+            input.collect(eventType.runCancelled({
+              runId: input.runId,
+              bot: "codex",
+              chatId: String(input.chatId),
+              chatKey: input.chatKey,
+              reason: "provider",
+            }));
+            return {
+              text: "partial answer that must not escape",
+              sessionId: "provider-cancel",
+              stopReason: "cancelled",
+            };
+          },
+        }),
+      });
+      const updates: acp.SessionNotification[] = [];
+      const client = acp.client({ name: "outward-test-client" })
+        .onNotification(acp.methods.client.session.update, (ctx) => updates.push(ctx.params));
+
+      const response = await client.connectWith(
+        createOutwardAcpAgent({ sessions, promptExecutor }),
+        (agent) => agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "cancel me" }],
+        }),
+      );
+
+      expect(response.stopReason).toBe("cancelled");
+      expect(updates).toEqual([]);
+      expect(db.getRun("run-cancel")?.status).toBe("cancelled");
+      expect(db.getAcpSessionBinding("acp:cancel", "codex")?.acpSessionId).toBe("provider-cancel");
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -135,6 +294,20 @@ describe("outward ACP prompt execution", () => {
         prompt: [{ type: "image", data: "AA==", mimeType: "image/png" }],
       }))).rejects.toMatchObject({ code: -32602 });
       expect(executions).toBe(0);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed instead of silently weakening an invalid provider lock", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-provider-lock-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const db = openDb(dbPath, { databaseRole: "interactive" });
+    try {
+      expect(() => createProductionOutwardAcpPromptExecutor(db, dbPath, {
+        BRIDGE_PROVIDER_LOCK: "not-a-provider",
+      })).toThrow(/unsupported outward ACP provider lock/);
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
