@@ -32,8 +32,10 @@ describe("Claude ACP qualification environment", () => {
     })).toThrow(/claude qualification runtime environment mismatch.*ANTHROPIC_API_KEY.*CLAUDE_CONFIG_DIR/i);
   });
 
-  it("accepts an exact active Claude ACP environment", () => {
-    const env = { ...process.env };
-    expect(() => assertQualificationRuntimeEnvironment("claude", env, env)).not.toThrow();
+  it("accepts equal active and qualification environments", () => {
+    process.env.ANTHROPIC_API_KEY = "active-key";
+    process.env.CLAUDE_CONFIG_DIR = "/runtime/.claude";
+    const active = { ...process.env };
+    expect(() => assertQualificationRuntimeEnvironment("claude", { ...active }, active)).not.toThrow();
   });
 });
