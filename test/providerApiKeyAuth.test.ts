@@ -16,8 +16,7 @@ import {
 } from "../src/providers/apiKeyAuth.js";
 import type { ProviderId } from "../src/providers/types.js";
 
-const providerCases: Array<{ provider: ProviderId; envVar: string; commandEnv: string }> = [
-  { provider: "claude", envVar: "ANTHROPIC_API_KEY", commandEnv: "CLAUDE_COMMAND" },
+const nativeProviderCases: Array<{ provider: ProviderId; envVar: string; commandEnv: string }> = [
   { provider: "agy", envVar: "GEMINI_API_KEY", commandEnv: "ANTIGRAVITY_COMMAND" },
   { provider: "grok", envVar: "XAI_API_KEY", commandEnv: "GROK_COMMAND" },
   { provider: "cursor", envVar: "CURSOR_API_KEY", commandEnv: "CURSOR_COMMAND" },
@@ -34,10 +33,11 @@ describe("provider API-key authentication", () => {
   it("classifies every supported provider and rejects unknown providers", () => {
     expect(Object.keys(PROVIDER_API_KEY_AUTH).sort()).toEqual(["agy", "claude", "codex", "cursor", "grok"]);
     expect(getProviderApiKeyCapability("cursor")?.envVar).toBe("CURSOR_API_KEY");
+    expect(getProviderApiKeyCapability("claude")?.verification).toBe("bounded_acp_turn");
     expect(getProviderApiKeyCapability("future-provider")).toBeNull();
   });
 
-  it.each(providerCases)("requires a successful bounded native probe for $provider", async ({ provider, envVar, commandEnv }) => {
+  it.each(nativeProviderCases)("requires a successful bounded native probe for $provider", async ({ provider, envVar, commandEnv }) => {
     const homeDir = mkdtempSync(join(tmpdir(), `agent-bridge-${provider}-auth-test-`));
     tempDirs.push(homeDir);
     const apiKey = `secret-${provider}-572`;
@@ -64,11 +64,31 @@ describe("provider API-key authentication", () => {
     expect(call!.args.join(" ")).not.toContain(apiKey);
     expect(call!.env[envVar]).toBe(apiKey);
     expect(call!.env.TELEGRAM_BOT_TOKEN).toBeUndefined();
-    if (envVar !== "ANTHROPIC_AUTH_TOKEN") expect(call!.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(call!.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(call!.timeout).toBe(15_000);
   });
 
-  it.each(providerCases)("does not treat a non-empty $envVar as proof for $provider", async ({ provider, envVar }) => {
+  it("verifies Claude through the selected ACP probe and isolates unrelated credentials", async () => {
+    const env = {
+      ANTHROPIC_API_KEY: "claude-acp-secret",
+      CLAUDE_COMMAND: "must-not-be-used",
+      TELEGRAM_BOT_TOKEN_CLAUDE: "telegram-secret",
+      CODEX_API_KEY: "unrelated-codex-secret",
+    };
+    let probeEnv: NodeJS.ProcessEnv | null = null;
+    await expect(verifyProviderApiKey("claude", {
+      env,
+      useCache: false,
+      claudeAcpProbe: async (candidateEnv) => { probeEnv = candidateEnv; },
+      execFile: async () => { throw new Error("native Claude probe must not execute"); },
+    })).resolves.toBe(true);
+    expect(probeEnv).not.toBeNull();
+    expect(probeEnv!.ANTHROPIC_API_KEY).toBe("claude-acp-secret");
+    expect(probeEnv!.TELEGRAM_BOT_TOKEN_CLAUDE).toBeUndefined();
+    expect(probeEnv!.CODEX_API_KEY).toBeUndefined();
+  });
+
+  it.each(nativeProviderCases)("does not treat a non-empty $envVar as proof for $provider", async ({ provider, envVar }) => {
     const env = { [envVar]: `invalid-${provider}-572` };
     const execFile: ProviderApiKeyProbeExecutor = async () => {
       throw new Error("provider rejected credential");
@@ -77,13 +97,21 @@ describe("provider API-key authentication", () => {
     expect(isProviderApiKeyVerified(provider, env)).toBe(false);
   });
 
+  it("does not treat a non-empty ANTHROPIC_API_KEY as proof when the ACP adapter rejects it", async () => {
+    const env = { ANTHROPIC_API_KEY: "invalid-claude-572" };
+    await expect(verifyProviderApiKey("claude", {
+      env,
+      useCache: false,
+      claudeAcpProbe: async () => { throw new Error("authentication required"); },
+    })).resolves.toBe(false);
+    expect(isProviderApiKeyVerified("claude", env)).toBe(false);
+  });
+
   it("does not probe when the key is missing or blank", async () => {
     let calls = 0;
-    const execFile: ProviderApiKeyProbeExecutor = async () => {
-      calls += 1;
-    };
-    await expect(verifyProviderApiKey("claude", { env: {}, execFile, useCache: false })).resolves.toBe(false);
-    await expect(verifyProviderApiKey("claude", { env: { ANTHROPIC_API_KEY: "   " }, execFile, useCache: false })).resolves.toBe(false);
+    const claudeAcpProbe = async () => { calls += 1; };
+    await expect(verifyProviderApiKey("claude", { env: {}, claudeAcpProbe, useCache: false })).resolves.toBe(false);
+    await expect(verifyProviderApiKey("claude", { env: { ANTHROPIC_API_KEY: "   " }, claudeAcpProbe, useCache: false })).resolves.toBe(false);
     expect(calls).toBe(0);
   });
 
@@ -145,23 +173,23 @@ describe("provider API-key authentication", () => {
     const started: string[] = [];
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const execFile: ProviderApiKeyProbeExecutor = async (command) => {
-      started.push(command);
-      await gate;
-    };
     const codexAcpProbe = async () => {
       started.push("codex-acp-probe");
       await gate;
     };
+    const claudeAcpProbe = async () => {
+      started.push("claude-acp-probe");
+      await gate;
+    };
 
     const verification = verifyConfiguredProviderApiKeys({
-      env: { ...env, CLAUDE_COMMAND: "claude-probe" },
-      execFile,
+      env,
+      claudeAcpProbe,
       codexAcpProbe,
       useCache: false,
     });
     await Promise.resolve();
-    expect(started.sort()).toEqual(["claude-probe", "codex-acp-probe"]);
+    expect(started.sort()).toEqual(["claude-acp-probe", "codex-acp-probe"]);
     release();
     await verification;
   });

@@ -60,15 +60,17 @@ describe("conversation-turn post-delivery atomicity", () => {
   it("rolls back the user turn when the assistant turn insert fails, without double-delivering after the answer", async () => {
     const { BridgeEngine } = await import("../src/engine.js");
     const client = makeMockClient();
-    const runCli = vi.fn().mockResolvedValue("the real answer");
+    const runCli = vi.fn().mockResolvedValue(JSON.stringify({
+      type: "result", result: "the real answer", session_id: "cursor-session",
+    }));
     const engine = new BridgeEngine(
       {
         surfaceIdentity: "test",
-        kind: "claude",
-        botConfig: { command: "claude", modelPreference: [] },
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        pollIntervalMs: 1000,
+        pollIntervalMs: 1000, workingDir: process.cwd(),
       },
       db,
       client,

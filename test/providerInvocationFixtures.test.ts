@@ -5,24 +5,11 @@ import { join } from "node:path";
 import { buildCliInvocation, parseCliResult, isCapacityExhaustedError, setAntigravityModel } from "../src/cli.js";
 import { prependWorkspaceContext } from "../src/workspaceContext.js";
 
-function withTempImage(fn: (path: string) => void): void {
-  const dir = mkdtempSync(join(tmpdir(), "agent-bridge-fixture-attachment-"));
-  const path = join(dir, "a.png");
-  writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-  try {
-    fn(path);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 // Issue #135 Phase 3A — characterization fixtures.
 //
 // This file locks in buildCliInvocation()/parseCliResult()'s current
-// per-provider behaviour across the dimensions the Phase 3 plan calls out
-// (invocation snapshots per provider, tool-free flags, attachment/stdin
-// contracts, trusted/safe flags, session resume/fresh-session rules, native
-// structured output handling, and fallback classification).
+// per-provider behaviour. ACP-backed providers are characterized at the
+// transport boundary here; protocol/session policy lives in their ACP suites.
 
 // Wrapped prompts embed the full soul contract + Telegram response-style
 // block, which is itself characterized elsewhere — matched positionally here
@@ -40,80 +27,45 @@ function managedPrompt(): string {
   return prompt;
 }
 
-describe("provider invocation fixtures — claude", () => {
-  it("delivers managed repository context to the provider prompt", () => {
-    const prompt = managedPrompt();
-    const inv = buildCliInvocation({ bot: "claude", prompt, sessionId: null, command: "claude" });
-    expect(inv.args.join("\n")).toContain("selected-owner/selected-repo");
-  });
-  it("fresh session, safe mode — exact arg order: --print, settings, prompt last", () => {
-    const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: null, command: "claude" });
-    expect(inv.args[0]).toBe("--print");
-    expect(inv.args[1]).toBe("--settings");
-    expect(JSON.parse(inv.args[2])).toEqual({ enabledPlugins: { "telegram@claude-plugins-official": false } });
-    expect(inv.args.slice(3)).toEqual([anyPrompt()]);
-    expect(inv.stdin).toBeUndefined();
-  });
-
-  it("resumes an existing session — exact arg order", () => {
-    const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: "sess-9", command: "claude" });
-    expect(inv.args[0]).toBe("--print");
-    expect(inv.args[1]).toBe("--settings");
-    expect(inv.args.slice(3)).toEqual(["--resume", "sess-9", anyPrompt()]);
-  });
-
-  it("trusted mode — exact arg order", () => {
-    const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: null, command: "claude", executionMode: "trusted" });
-    expect(inv.args.slice(3)).toEqual(["--dangerously-skip-permissions", anyPrompt()]);
-  });
-
-  it("tool-free mode — exact arg order, strict empty MCP config", () => {
-    const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: null, command: "claude", toolMode: "none" });
-    expect(inv.args[0]).toBe("--print");
-    expect(inv.args.slice(1, 6)).toEqual(["--tools", "", "--disable-slash-commands", "--strict-mcp-config", "--mcp-config"]);
-    expect(inv.args[6]).toBe('{"mcpServers":{}}');
-    expect(inv.args[7]).toBe("--settings");
-    expect(inv.args.slice(9)).toEqual([anyPrompt()]);
-  });
-
-  it("attachments switch to the stream-json stdin contract — exact arg order, no trailing prompt arg", () => {
-    withTempImage((path) => {
-      const inv = buildCliInvocation({
-        bot: "claude", prompt: "hi", sessionId: "sess-1", command: "claude", attachments: [path],
-      });
-      expect(inv.args[0]).toBe("--settings");
-      expect(inv.args.slice(2)).toEqual([
-        "--resume", "sess-1", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-      ]);
-      expect(inv.stdin).toBeTruthy();
-    });
-  });
-
-  it("json output format — exact arg order (not the stream-json attachment contract)", () => {
-    const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: null, command: "claude", outputFormat: "json" });
-    expect(inv.args.slice(3)).toEqual(["--output-format", "json", anyPrompt()]);
-  });
-
-  it("stream-json output ignores provider background bookkeeping", () => {
-    const inv = buildCliInvocation({ bot: "claude", prompt: "hi", sessionId: "sess-9", command: "claude", outputFormat: "stream-json" });
-    expect(inv.args[0]).toBe("--print");
-    expect(inv.args[1]).toBe("--settings");
-    expect(inv.args.slice(3)).toEqual([
-      "--resume", "sess-9", "--output-format", "stream-json", "--verbose", "--include-partial-messages", anyPrompt(),
-    ]);
-    expect(inv.stdin).toBeUndefined();
-
-    expect(parseCliResult({
+describe("provider invocation fixtures — claude ACP", () => {
+  it("always selects the release-locked ACP transport instead of native Claude argv", () => {
+    const fresh = buildCliInvocation({
       bot: "claude",
-      stdout: [
-        '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test","run_in_background":true}}]}}',
-        '{"type":"result","subtype":"success","result":"Tests are running.","session_id":"sess-9"}',
-      ].join("\n"),
-      logContent: null,
-    })).toEqual({
-      text: "Tests are running.",
-      sessionId: "sess-9",
+      prompt: managedPrompt(),
+      sessionId: null,
+      command: "claude",
+      executionMode: "safe",
+      toolMode: "none",
     });
+    expect(fresh).toMatchObject({
+      command: expect.stringContaining("node_modules/.bin/claude-agent-acp") as unknown as string,
+      args: [],
+      nativeSessionMode: "fresh",
+      transport: "acp-stdio",
+    });
+    expect(fresh.stdin).toBeUndefined();
+    expect(fresh.args).not.toContain("--print");
+    expect(fresh.args).not.toContain("--dangerously-skip-permissions");
+
+    const resumed = buildCliInvocation({
+      bot: "claude",
+      prompt: "hi",
+      sessionId: "sess-9",
+      command: "claude",
+      executionMode: "trusted",
+    });
+    expect(resumed).toMatchObject({
+      command: expect.stringContaining("node_modules/.bin/claude-agent-acp") as unknown as string,
+      args: [],
+      nativeSessionMode: "resume",
+      transport: "acp-stdio",
+    });
+    expect(resumed.args).not.toContain("--resume");
+  });
+
+  it("refuses native Claude output parsing because ACP returns structured results", () => {
+    expect(() => parseCliResult({ bot: "claude", stdout: "plain response" }))
+      .toThrow(/ACP structured results/);
   });
 });
 
@@ -160,19 +112,6 @@ describe("provider invocation fixtures — antigravity", () => {
 });
 
 describe("provider result parsing fixtures", () => {
-  it("claude: parses the last JSON object with a result field", () => {
-    const stdout = `noise\n${JSON.stringify({ type: "result", subtype: "success", session_id: "s-1", result: "hello" })}`;
-    const result = parseCliResult({ bot: "claude", stdout });
-    expect(result.sessionId).toBe("s-1");
-    expect(result.text).toBe("hello");
-  });
-
-  it("claude: falls back to plain text when no JSON result object is present", () => {
-    const result = parseCliResult({ bot: "claude", stdout: "plain response, no JSON here" });
-    expect(result.text).toBe("plain response, no JSON here");
-    expect(result.sessionId).toBeNull();
-  });
-
   it("unknown bot type throws", () => {
     expect(() => parseCliResult({ bot: "unknown-bot", stdout: "x" })).toThrow(/Unknown bot type/);
   });

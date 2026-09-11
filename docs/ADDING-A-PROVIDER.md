@@ -74,7 +74,7 @@ Adding a `ProviderId` also widens exhaustive provider records. Inspect compiler 
 
 ## 2. Add the provider runtime
 
-Create `src/providers/<provider>Runtime.ts`, following existing modules such as `grokRuntime.ts`, `codexAcpRuntime.ts`, or `claudeRuntime.ts`.
+For an ACP provider, add Registry metadata and a narrow policy beside `src/providers/acpRuntime.ts`. Do not add a provider-specific ACP lifecycle. Native providers can follow modules such as `grokRuntime.ts`.
 
 The normal boundary is:
 

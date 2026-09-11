@@ -65,7 +65,17 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       const sessionId = `acp-${randomUUID()}`;
       sessions.set(sessionId, { history: [], pending: null });
       persistSessions(sessions);
-      return { sessionId };
+      return {
+        sessionId,
+        modes: {
+          currentModeId: "default",
+          availableModes: [
+            { id: "default", name: "Default" },
+            { id: "read-only", name: "Read Only" },
+            { id: "agent-full-access", name: "Full Access" },
+          ],
+        },
+      };
     })
     .onRequest(acp.methods.agent.session.load, async (ctx) => {
       const session = get(ctx.params.sessionId);
@@ -78,13 +88,34 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           },
         });
       }
+      return {
+        modes: {
+          currentModeId: "default",
+          availableModes: [
+            { id: "default", name: "Default" },
+            { id: "read-only", name: "Read Only" },
+            { id: "agent-full-access", name: "Full Access" },
+          ],
+        },
+      };
+    })
+    .onRequest(acp.methods.agent.session.setMode, async () => {
       return {};
     })
     .onRequest(acp.methods.agent.session.resume, async (ctx) => {
       // ACP v1: session/resume never replays previous messages, unlike
       // session/load. get() proves the session exists; nothing is emitted.
       get(ctx.params.sessionId);
-      return {};
+      return {
+        modes: {
+          currentModeId: "default",
+          availableModes: [
+            { id: "default", name: "Default" },
+            { id: "read-only", name: "Read Only" },
+            { id: "agent-full-access", name: "Full Access" },
+          ],
+        },
+      };
     })
     .onRequest(acp.methods.agent.session.close, async () => {
       options.onClose?.();
@@ -115,10 +146,10 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
       }
 
       if (text.includes("HANG")) {
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((resolve) => {
           const done = () => resolve();
           session.pending?.signal.addEventListener("abort", done, { once: true });
-          ctx.signal.addEventListener("abort", () => reject(Object.assign(new Error("cancelled"), { code: -32800 })), { once: true });
+          ctx.signal.addEventListener("abort", done, { once: true });
         });
         return { stopReason: "cancelled" };
       }

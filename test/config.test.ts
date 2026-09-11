@@ -14,7 +14,7 @@ describe("loadBotsConfig", () => {
     const bots = loadBotsConfig({});
     expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex", "cursor", "grok"]);
     expect(bots.codex.command).toContain("node_modules/.bin/codex-acp");
-    expect(bots.claude.command).toBe("claude");
+    expect(bots.claude.command).toContain("node_modules/.bin/claude-agent-acp");
     expect(bots.antigravity.command).toBe("agy");
     expect(bots.grok.command).toBe("grok");
     expect(bots.cursor.command).toBe("cursor-agent");
@@ -23,10 +23,12 @@ describe("loadBotsConfig", () => {
   it("respects env overrides for commands and model preferences", () => {
     const bots = loadBotsConfig({
       CODEX_ACP_COMMAND: "/opt/bin/codex-acp",
+      CLAUDE_ACP_COMMAND: "/opt/bin/claude-agent-acp",
       REMOVED_PROVIDER_MODEL_PREFERENCE: "a,b",
       ANTIGRAVITY_MODEL_PREFERENCE: "m1, m2 ,m3",
     });
     expect(bots.codex.command).toBe("/opt/bin/codex-acp");
+    expect(bots.claude.command).toBe("/opt/bin/claude-agent-acp");
     expect(bots.antigravity.modelPreference).toEqual(["m1", "m2", "m3"]);
   });
 

@@ -6,9 +6,23 @@ import { AdvisorBroker, requestAdvisorViaBroker } from "../src/advisorBroker.js"
 import { parseAdvisorConfig } from "../src/advisorConfig.js";
 import { openDb } from "../src/db.js";
 
+// Claude and Codex are ACP-transport providers: their advisor calls go
+// through runProviderInvocation() (the shared ACP entry point), never the
+// injectable native runCli() seam, because ACP requires the exact
+// release-locked executable rather than an arbitrary configured command.
+// Mocking runProviderInvocation here drives the broker's bounded/redaction/
+// budget/cancellation logic deterministically without spawning a real ACP
+// stdio child.
+const { runProviderInvocationMock } = vi.hoisted(() => ({ runProviderInvocationMock: vi.fn() }));
+vi.mock("../src/cli.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/cli.js")>();
+  return { ...actual, runProviderInvocation: runProviderInvocationMock };
+});
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  runProviderInvocationMock.mockReset();
 });
 
 function setup(
@@ -18,6 +32,7 @@ function setup(
     : JSON.stringify({ result: "Independent view" })),
   abortCli?: (executionId: string) => Promise<boolean>,
 ) {
+  runProviderInvocationMock.mockResolvedValue({ text: "Independent view" });
   const dir = mkdtempSync(join(tmpdir(), "advisor-broker-"));
   dirs.push(dir);
   const db = openDb(join(dir, "bridge.sqlite"));
@@ -55,7 +70,7 @@ describe("bounded cross-provider frontier advice", () => {
   });
 
   it("uses one allowed provider different from the active provider and records minimal audit", async () => {
-    const { broker, db, runCli } = setup();
+    const { broker, db } = setup();
     const capability = broker.issue({
       chatKey: "chat:7",
       cliKind: "codex",
@@ -71,13 +86,12 @@ describe("bounded cross-provider frontier advice", () => {
     });
 
     expect(output).toBe("Independent view");
-    expect(runCli).toHaveBeenCalledTimes(1);
-    expect(runCli).toHaveBeenCalledWith(
-      "/trusted/claude",
-      expect.arrayContaining(["--model", "claude-opus-5", "--tools", ""]),
-      "/trusted/repo",
-      expect.objectContaining({ advisorChild: true, timeoutMs: expect.any(Number), chatId: expect.stringMatching(/^advisor:/) }),
-    );
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
+    const [bot, , cwd, options, requestPayload] = runProviderInvocationMock.mock.calls[0];
+    expect(bot).toBe("claude");
+    expect(cwd).toBe("/trusted/repo");
+    expect(requestPayload).toMatchObject({ model: "claude-opus-5", toolMode: "none" });
+    expect(options).toMatchObject({ advisorChild: true, timeoutMs: expect.any(Number), chatId: expect.stringMatching(/^advisor:/) });
     const call = db.raw.prepare("SELECT scope_key, turn_key, task_key, selected_provider, selected_model, status FROM advisor_calls").get() as any;
     expect(call).toMatchObject({
       scope_key: "chat:7",
@@ -93,9 +107,9 @@ describe("bounded cross-provider frontier advice", () => {
   });
 
   it.each([
-    { active: "agy", provider: "claude", command: "/trusted/claude", model: "claude-opus-5" },
-  ])("returns one configured independent result to an active $active run", async ({ active, provider, command, model }) => {
-    const { broker, db, runCli } = setup();
+    { active: "agy", provider: "claude", model: "claude-opus-5" },
+  ])("returns one configured independent result to an active $active run", async ({ active, provider, model }) => {
+    const { broker, db } = setup();
     const capability = broker.issue({
       chatKey: `chat:${active}`,
       cliKind: active,
@@ -110,16 +124,17 @@ describe("bounded cross-provider frontier advice", () => {
       question: "Give one independent view",
     })).resolves.toBe("Independent view");
 
-    expect(runCli).toHaveBeenCalledTimes(1);
-    expect(runCli.mock.calls[0][0]).toBe(command);
-    expect(runCli.mock.calls[0][1]).toEqual(expect.arrayContaining(["--model", model]));
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
+    const [bot, , , , requestPayload] = runProviderInvocationMock.mock.calls[0];
+    expect(bot).toBe(provider);
+    expect(requestPayload).toMatchObject({ model });
     const call = db.raw.prepare("SELECT selected_provider, selected_model, status FROM advisor_calls").get() as any;
     expect(call).toMatchObject({ selected_provider: provider, selected_model: model, status: "succeeded" });
     db.close();
   });
 
   it("accepts only a configured independent provider and never lets the caller choose its own provider", async () => {
-    const { broker, db, runCli } = setup();
+    const { broker, db } = setup();
     const capability = broker.issue({
       chatKey: "chat",
       cliKind: "claude",
@@ -138,23 +153,23 @@ describe("bounded cross-provider frontier advice", () => {
       provider: "agy",
       question: "Review this",
     })).rejects.toThrow(/allowed advisor provider/i);
-    expect(runCli).not.toHaveBeenCalled();
+    expect(runProviderInvocationMock).not.toHaveBeenCalled();
     db.close();
   });
 
   it("rejects an untrusted capability before invoking a provider", async () => {
-    const { broker, db, runCli } = setup();
+    const { broker, db } = setup();
     await expect(broker.requestWithCapability({
       capability: "not-a-capability",
       question: "Review this",
     })).rejects.toThrow(/invalid capability/i);
-    expect(runCli).not.toHaveBeenCalled();
+    expect(runProviderInvocationMock).not.toHaveBeenCalled();
     db.close();
   });
 
   it("makes exactly one provider call with the configured timeout and does not fall back on failure", async () => {
-    const runCli = vi.fn().mockRejectedValue(new Error("provider unavailable"));
-    const { broker, db } = setup({ BRIDGE_ADVISOR_TIMEOUT_MS: "1234" }, runCli);
+    const { broker, db } = setup({ BRIDGE_ADVISOR_TIMEOUT_MS: "1234" });
+    runProviderInvocationMock.mockRejectedValue(new Error("provider unavailable"));
     const capability = broker.issue({
       chatKey: "chat",
       cliKind: "agy",
@@ -168,15 +183,15 @@ describe("bounded cross-provider frontier advice", () => {
       provider: "claude",
       question: "One opinion only",
     })).rejects.toThrow(/provider unavailable/i);
-    expect(runCli).toHaveBeenCalledTimes(1);
-    expect(runCli.mock.calls[0][3]).toEqual(expect.objectContaining({ timeoutMs: 1234, advisorChild: true }));
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
+    expect(runProviderInvocationMock.mock.calls[0][3]).toEqual(expect.objectContaining({ timeoutMs: 1234, advisorChild: true }));
     const attempts = db.raw.prepare("SELECT provider, status FROM advisor_attempts ORDER BY ordinal").all() as any[];
     expect(attempts).toEqual([{ provider: "claude", status: "failed" }]);
     db.close();
   });
 
   it("redacts secret-shaped question and context before invoking the second provider", async () => {
-    const { broker, db, runCli } = setup();
+    const { broker, db } = setup();
     const capability = broker.issue({
       chatKey: "chat:secret-boundary",
       cliKind: "codex",
@@ -192,22 +207,23 @@ describe("bounded cross-provider frontier advice", () => {
       context: "password=context-secret\n-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----",
     });
 
-    expect(runCli).toHaveBeenCalledTimes(1);
-    const providerArgs = JSON.stringify(runCli.mock.calls[0][1]);
-    expect(providerArgs).not.toContain("question-secret");
-    expect(providerArgs).not.toContain("context-secret");
-    expect(providerArgs).not.toContain(githubToken);
-    expect(providerArgs).not.toContain("private-material");
-    expect(providerArgs).toContain("[REDACTED");
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
+    const requestPayload = runProviderInvocationMock.mock.calls[0][4];
+    const providerPrompt = JSON.stringify(requestPayload.prompt);
+    expect(providerPrompt).not.toContain("question-secret");
+    expect(providerPrompt).not.toContain("context-secret");
+    expect(providerPrompt).not.toContain(githubToken);
+    expect(providerPrompt).not.toContain("private-material");
+    expect(providerPrompt).toContain("[REDACTED");
     db.close();
   });
 
   it("bounds caller context, output and per-turn invocation budget", async () => {
-    const oversizedOutput = vi.fn().mockResolvedValue(JSON.stringify({ result: "x".repeat(16_001) }));
     const { broker, db } = setup({
       BRIDGE_ADVISOR_CONTEXT_MAX_CHARS: "32",
       BRIDGE_ADVISOR_MAX_CALLS_PER_TURN: "1",
-    }, oversizedOutput);
+    });
+    runProviderInvocationMock.mockResolvedValue({ text: "x".repeat(16_001) });
     const capability = broker.issue({
       chatKey: "chat",
       cliKind: "codex",
@@ -221,26 +237,26 @@ describe("bounded cross-provider frontier advice", () => {
       question: "Review",
       context: "c".repeat(33),
     })).rejects.toThrow(/context.*bound/i);
-    expect(oversizedOutput).not.toHaveBeenCalled();
+    expect(runProviderInvocationMock).not.toHaveBeenCalled();
 
     await expect(broker.requestWithCapability({ capability, question: "Review" }))
       .rejects.toThrow(/output.*bound/i);
-    expect(oversizedOutput).toHaveBeenCalledTimes(1);
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
 
     await expect(broker.requestWithCapability({ capability, question: "Again" }))
       .rejects.toThrow(/budget exhausted/i);
-    expect(oversizedOutput).toHaveBeenCalledTimes(1);
+    expect(runProviderInvocationMock).toHaveBeenCalledTimes(1);
     db.close();
   });
 
   it("aborts the one advisor subprocess when its provider-side client disconnects", async () => {
     let rejectRun: ((error: Error) => void) | null = null;
-    const runCli = vi.fn(() => new Promise<string>((_resolve, reject) => { rejectRun = reject; }));
     const abortCli = vi.fn(async () => {
       rejectRun?.(new Error("advisor cancelled"));
       return true;
     });
-    const { broker, db, dir } = setup({}, runCli, abortCli);
+    const { broker, db, dir } = setup({}, undefined, abortCli);
+    runProviderInvocationMock.mockImplementation(() => new Promise((_resolve, reject) => { rejectRun = reject; }));
     await broker.start();
     const capability = broker.issue({
       chatKey: "chat",
@@ -257,7 +273,7 @@ describe("bounded cross-provider frontier advice", () => {
       controller.signal,
     );
 
-    await vi.waitFor(() => expect(runCli).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(runProviderInvocationMock).toHaveBeenCalledTimes(1));
     controller.abort();
     await expect(pending).rejects.toThrow(/abort|cancel/i);
     await vi.waitFor(() => expect(abortCli).toHaveBeenCalledTimes(1));

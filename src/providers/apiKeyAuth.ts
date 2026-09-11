@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
-import { runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
+import { runAcpApiKeyProbe, runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
 import type { ProviderId } from "./types.js";
 
@@ -21,20 +21,20 @@ type Env = Record<string, string | undefined>;
 
 export interface ProviderApiKeyAuthCapability {
   readonly envVar: string;
-  readonly verification: "bounded_native_turn";
+  readonly verification: "bounded_native_turn" | "bounded_acp_turn";
   readonly notes: string;
 }
 
 export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAuthCapability>> = {
   codex: {
     envVar: "CODEX_API_KEY",
-    verification: "bounded_native_turn",
+    verification: "bounded_acp_turn",
     notes: "Codex verifies through the managed ACP adapter's authenticate + bounded prompt path.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
-    verification: "bounded_native_turn",
-    notes: "Claude local auth status is not authoritative for request usability, so Bridge verifies with print mode.",
+    verification: "bounded_acp_turn",
+    notes: "Claude verifies the key through the selected managed ACP adapter with an isolated bounded prompt.",
   },
   agy: {
     envVar: "GEMINI_API_KEY",
@@ -95,12 +95,14 @@ export type ProviderApiKeyProbeExecutor = (
   options: ProbeExecOptions,
 ) => Promise<unknown>;
 
-export type CodexAcpApiKeyProbeExecutor = (env: NodeJS.ProcessEnv) => Promise<void>;
+export type AcpApiKeyProbeExecutor = (env: NodeJS.ProcessEnv) => Promise<void>;
+export type CodexAcpApiKeyProbeExecutor = AcpApiKeyProbeExecutor;
 
 export interface VerifyProviderApiKeyOptions {
   env?: Env;
   execFile?: ProviderApiKeyProbeExecutor;
   codexAcpProbe?: CodexAcpApiKeyProbeExecutor;
+  claudeAcpProbe?: AcpApiKeyProbeExecutor;
   useCache?: boolean;
 }
 
@@ -133,10 +135,8 @@ export function isProviderApiKeyVerified(provider: ProviderId, env: Env = proces
 }
 
 /**
- * Keep provider credentials out of unrelated provider children. The issue-572
- * candidate key itself is withheld until its provider-specific verification
- * boundary has accepted it. Codex ACP verification uses the selected adapter
- * itself, so an ACP key never depends on or cross-qualifies removed native Codex runtime.
+ * Keep provider credentials out of unrelated provider children. Candidate keys
+ * are withheld until their selected provider runtime has verified them.
  */
 export function filterProviderCredentialEnv(
   bot: BotKind | undefined,
@@ -160,8 +160,8 @@ export function filterProviderCredentialEnv(
     }),
   );
 
-  // Temporary upstream Claude Code mitigation tracked by #645. Headless
-  // print-mode turns cannot reliably retain ownership of background work.
+  // Retain the existing Claude SDK background-work fence until its dedicated
+  // ownership issue is retired; ACP migration must not broaden run authority.
   if (provider === "claude") out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV] = "1";
   else delete out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV];
   return out;
@@ -289,6 +289,34 @@ const defaultProbeExecutor: ProviderApiKeyProbeExecutor = (command, args, option
     });
   });
 
+async function runClaudeAcpApiKeyProbe(env: Env): Promise<void> {
+  const runtime = resolveProviderRuntime("claude", env);
+  if (runtime.transport !== "acp-stdio") {
+    throw new Error("Claude selected runtime is not ACP stdio");
+  }
+  await runAcpApiKeyProbe({
+    label: "Claude",
+    command: runtime.executable,
+    args: runtime.args,
+    env: buildProbeEnv("claude", env),
+    sessionMeta: {
+      disableBuiltInTools: true,
+      claudeCode: {
+        options: {
+          tools: [],
+          mcpServers: {},
+          settingSources: [],
+        },
+      },
+    },
+    prepareEnv: (root, childEnv) => ({
+      ...childEnv,
+      CLAUDE_CONFIG_DIR: join(root, ".claude"),
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+    }),
+  });
+}
+
 async function runProbe(
   provider: ProviderId,
   env: Env,
@@ -309,21 +337,6 @@ async function runProbe(
   };
 
   try {
-    if (provider === "claude") {
-      await execute(command, [
-        "--print",
-        "--tools",
-        "",
-        "--disable-slash-commands",
-        "--strict-mcp-config",
-        "--mcp-config",
-        '{"mcpServers":{}}',
-        "--output-format",
-        "json",
-        "Reply with exactly OK.",
-      ], { ...common, env: { ...childEnv, CLAUDE_CONFIG_DIR: join(probeHome, ".claude") } });
-      return;
-    }
     if (provider === "agy") {
       writeSettings(join(probeHome, ".gemini", "antigravity-cli", "settings.json"), { modelProvider: "gemini" });
       await execute(command, [
@@ -346,15 +359,19 @@ async function runProbe(
       ], { ...common, env: { ...childEnv, GROK_HOME: join(probeHome, ".grok") } });
       return;
     }
-    await execute(command, [
-      "-p",
-      "Reply with exactly OK.",
-      "--output-format",
-      "json",
-      "--mode",
-      "ask",
-      "--trust",
-    ], common);
+    if (provider === "cursor") {
+      await execute(command, [
+        "-p",
+        "Reply with exactly OK.",
+        "--output-format",
+        "json",
+        "--mode",
+        "ask",
+        "--trust",
+      ], common);
+      return;
+    }
+    throw new Error(`Native API-key probe is not supported for ${provider}`);
   } finally {
     rmSync(probeHome, { recursive: true, force: true });
   }
@@ -385,6 +402,8 @@ export async function verifyProviderApiKey(
     try {
       if (provider === "codex") {
         await (options.codexAcpProbe ?? runCodexAcpApiKeyProbe)(buildProbeEnv(provider, env));
+      } else if (provider === "claude") {
+        await (options.claudeAcpProbe ?? runClaudeAcpApiKeyProbe)(buildProbeEnv(provider, env));
       } else {
         await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
       }

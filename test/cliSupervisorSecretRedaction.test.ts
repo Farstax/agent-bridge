@@ -32,7 +32,7 @@ describe("provider credential redaction", () => {
   it("keeps split API keys out of logs, events, progress, and failures", async () => {
     const apiKey = "provider-secret-572-do-not-leak";
     const env = { ANTHROPIC_API_KEY: apiKey };
-    await verifyProviderApiKey("claude", { env, execFile: async () => undefined });
+    await verifyProviderApiKey("claude", { env, claudeAcpProbe: async () => undefined });
 
     const logs: string[] = [];
     const events: BridgeEvent[] = [];
@@ -77,10 +77,9 @@ describe("provider credential redaction", () => {
   it("verifies the active key at the shared boundary and passes no unrelated provider key to its child", async () => {
     const env = {
       ANTHROPIC_API_KEY: "claude-secret-572",
-      CLAUDE_COMMAND: "/bin/true",
       CODEX_API_KEY: "codex-secret-572",
     };
-    await verifyProviderApiKey("claude", { env, execFile: async () => undefined });
+    await verifyProviderApiKey("claude", { env, claudeAcpProbe: async () => undefined });
 
     const script = [
       'const text=JSON.stringify({claude:Boolean(process.env.ANTHROPIC_API_KEY),codex:Boolean(process.env.CODEX_API_KEY)});',
@@ -91,7 +90,7 @@ describe("provider credential redaction", () => {
       bot: "claude",
     });
 
-    const parsed = parseCliResult({ bot: "claude", stdout: result.stdout });
-    expect(JSON.parse(parsed.text)).toEqual({ claude: true, codex: false });
+    const parsed = JSON.parse(result.stdout) as { result: string };
+    expect(JSON.parse(parsed.result)).toEqual({ claude: true, codex: false });
   });
 });

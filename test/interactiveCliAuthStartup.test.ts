@@ -7,7 +7,7 @@ import {
   prepareInteractiveCliAuth,
   prepareInteractiveCliAuthStartup,
 } from "../src/interactiveCliAuth.js";
-import { clearProviderApiKeyVerificationCache, type ProviderApiKeyProbeExecutor } from "../src/providers/apiKeyAuth.js";
+import { clearProviderApiKeyVerificationCache, type AcpApiKeyProbeExecutor } from "../src/providers/apiKeyAuth.js";
 
 afterEach(() => {
   clearProviderApiKeyVerificationCache();
@@ -17,14 +17,13 @@ describe("interactive API-key startup", () => {
   it("completes configured-key verification before the first availability snapshot", async () => {
     const env = {
       ANTHROPIC_API_KEY: "claude-startup-key",
-      CLAUDE_COMMAND: "fake-claude",
     };
     let calls = 0;
-    const execFile: ProviderApiKeyProbeExecutor = async () => {
+    const claudeAcpProbe: AcpApiKeyProbeExecutor = async () => {
       calls += 1;
     };
 
-    await prepareInteractiveCliAuth(env, execFile);
+    await prepareInteractiveCliAuth(env, { claudeAcpProbe });
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       env,
@@ -43,18 +42,18 @@ describe("interactive API-key startup", () => {
     try {
       await writeFile(
         join(cwd, "custom.env"),
-        "ANTHROPIC_API_KEY=claude-env-startup-key\nCLAUDE_COMMAND=fake-claude\n",
+        "ANTHROPIC_API_KEY=claude-env-startup-key\n",
         "utf8",
       );
       const env: NodeJS.ProcessEnv = {
         BRIDGE_ENV_FILE: "  custom.env  ",
       };
       let calls = 0;
-      const execFile: ProviderApiKeyProbeExecutor = async () => {
+      const claudeAcpProbe: AcpApiKeyProbeExecutor = async () => {
         calls += 1;
       };
 
-      await prepareInteractiveCliAuthStartup({ env, cwd, execFile });
+      await prepareInteractiveCliAuthStartup({ env, cwd, claudeAcpProbe });
       const available = getAvailableCliKinds({
         homeDir: "/home/tester",
         env,
@@ -65,7 +64,6 @@ describe("interactive API-key startup", () => {
       });
 
       expect(env.ANTHROPIC_API_KEY).toBe("claude-env-startup-key");
-      expect(env.CLAUDE_COMMAND).toBe("fake-claude");
       expect(calls).toBe(1);
       expect(available).toEqual(new Set(["claude"]));
     } finally {

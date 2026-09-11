@@ -6,6 +6,7 @@ import { parseCliResult } from "../src/cli.js";
 import { openDb } from "../src/db.js";
 import { EventStore } from "../src/events/store.js";
 import { type as eventType } from "../src/events/types.js";
+import { acpTurnResultToCliResult } from "../src/providers/acpRuntime.js";
 import {
   captureParsedProviderOutput,
   consumePendingRunFallback,
@@ -18,46 +19,29 @@ import {
 const AGY_SESSION = "c107dfbd-181e-4cf0-a840-894662adee43";
 
 describe("normalized provider run telemetry", () => {
-  it("extracts Claude usage while allowlisting tool counters", () => {
-    const stdout = JSON.stringify({
-      type: "result",
-      result: "done",
-      session_id: "session-1",
-      duration_ms: 2500,
-      duration_api_ms: 1800,
-      num_turns: 3,
-      total_cost_usd: 0.0123,
-      stop_reason: "end_turn",
-      terminal_reason: "completed",
-      modelUsage: { "claude-sonnet-4-6": { inputTokens: 1 } },
+  it("extracts Claude ACP usage into normalized telemetry", () => {
+    const parsed = acpTurnResultToCliResult("claude", {
+      liveText: "done",
+      acpSessionId: "session-1",
+      stopReason: "end_turn",
       usage: {
-        input_tokens: 100,
-        cache_creation_input_tokens: 15,
-        cache_read_input_tokens: 45,
-        output_tokens: 25,
-        service_tier: "standard",
-        server_tool_use: { web_search_requests: 2, secret_numeric_field: 999 },
+        inputTokens: 100,
+        outputTokens: 25,
+        cachedReadTokens: 45,
+        thoughtTokens: 10,
       },
     });
 
-    expect(parseCliResult({ bot: "claude", stdout })).toEqual({
+    expect(parsed).toEqual({
       text: "done",
       sessionId: "session-1",
+      stopReason: "end_turn",
       telemetry: {
         provider: "claude",
-        model: "claude-sonnet-4-6",
         inputTokens: 100,
-        cachedInputTokens: 45,
-        cacheCreationInputTokens: 15,
         outputTokens: 25,
-        costUsd: 0.0123,
-        providerDurationMs: 2500,
-        providerApiDurationMs: 1800,
-        turns: 3,
-        stopReason: "end_turn",
-        terminalReason: "completed",
-        serviceTier: "standard",
-        toolUseCounts: { web_search_requests: 2 },
+        cachedInputTokens: 45,
+        reasoningTokens: 10,
       },
     });
   });
@@ -99,10 +83,11 @@ describe("normalized provider run telemetry", () => {
   });
 
   it("preserves legacy parser shapes when telemetry is absent", () => {
-    expect(parseCliResult({
-      bot: "claude",
-      stdout: JSON.stringify({ type: "result", result: "done", session_id: "legacy-session" }),
-    })).toEqual({ text: "done", sessionId: "legacy-session" });
+    expect(acpTurnResultToCliResult("claude", {
+      liveText: "done",
+      acpSessionId: "legacy-session",
+      stopReason: "end_turn",
+    })).toEqual({ text: "done", sessionId: "legacy-session", stopReason: "end_turn" });
 
     expect(parseCliResult({
       bot: "antigravity",
@@ -185,24 +170,32 @@ describe("normalized provider run telemetry", () => {
     const db = openDb(dbPath);
     try {
       const runId = "durable-telemetry-run";
-      const stdout = JSON.stringify({ type: "result", result: "done", session_id: "session-durable", usage: { input_tokens: 12, output_tokens: 4 } });
-      noteRunProviderAttempt(runId, "claude", "requested-claude");
-      registerProviderOutput(runId, "claude", stdout);
-      const parsed = parseCliResult({ bot: "claude", stdout });
+      const stdout = JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: AGY_SESSION,
+          status: "SUCCESS",
+          response: "done",
+          usage: { input_tokens: 12, output_tokens: 4 },
+        },
+      });
+      noteRunProviderAttempt(runId, "antigravity", "requested-antigravity");
+      registerProviderOutput(runId, "antigravity", stdout);
+      const parsed = parseCliResult({ bot: "antigravity", stdout, outputFormat: "stream-json" });
 
       const store = new EventStore(db);
       store.collect(eventType.runStarted({
         runId,
-        bot: "claude",
+        bot: "antigravity",
         chatId: "100",
         chatKey: "100",
-        command: "claude",
+        command: "agy",
         cwd: "/repo",
         model: null,
       }));
       store.queueCompleted(eventType.runCompleted({
         runId,
-        bot: "claude",
+        bot: "antigravity",
         chatId: "100",
         chatKey: "100",
         text: parsed.text,
@@ -214,8 +207,8 @@ describe("normalized provider run telemetry", () => {
       expect(rows.map((row: any) => row.type)).toEqual(["run.started", "run.completed"]);
       const payload = JSON.parse(rows[1].payload_json);
       expect(payload.telemetry).toMatchObject({
-        provider: "claude",
-        model: "requested-claude",
+        provider: "antigravity",
+        model: "requested-antigravity",
         inputTokens: 12,
         outputTokens: 4,
       });

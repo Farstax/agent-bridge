@@ -80,13 +80,11 @@ exit 97
 `);
       }
 
-      fakeProvider(claude, `
-if [ "$1" = --version ]; then
-  if [ -f "${claudeState}" ]; then echo 'Claude Code 1.1.0'; else echo 'Claude Code 1.0.0'; fi
-  exit 0
-fi
-if [ "$1" = update ]; then touch "${claudeState}"; exit 0; fi
-`, qualificationLog);
+      script(claude, `
+printf '%s\n' "$0 $*" >> "${qualificationLog}"
+if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.76.0'; exit 0; fi
+exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
+`);
       script(codex, `
 printf '%s\n' "$0 $*" >> "${qualificationLog}"
 if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/codex-acp 1.10.0'; exit 0; fi
@@ -147,7 +145,7 @@ exit 97
           ...process.env,
           HOME: root,
           NODE_BIN: process.execPath,
-          CLAUDE_COMMAND: claude,
+          CLAUDE_ACP_COMMAND: claude,
           CODEX_ACP_COMMAND: codex,
           FAKE_ACP_STORE: join(root, "codex-acp-sessions.json"),
           FAKE_ACP_RESUME: "1",
@@ -178,7 +176,7 @@ exit 97
         providers?: Record<string, { overall?: string; providerVersion?: string }>;
       };
       expect(evidence.providers).toMatchObject({
-        claude: { overall: "pass", providerVersion: "1.1.0" },
+        claude: { overall: "pass", providerVersion: "0.76.0" },
         codex: { overall: "pass", providerVersion: "1.10.0" },
         agy: { overall: "pass", providerVersion: "1.1.13" },
       });
@@ -189,5 +187,5 @@ exit 97
 
     expect(existsSync(root)).toBe(false);
     expect(existsSync(hostRoot)).toBe(false);
-  });
+  }, 30_000);
 });

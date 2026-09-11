@@ -141,9 +141,9 @@ exit 1
   it("treats authentication prerequisites as degraded rather than a provider contract failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-auth-"));
     const evidencePath = join(root, "qualification.json");
-    const fake = executable(join(root, "claude"), `
+    const fake = executable(join(root, "cursor-agent"), `
 if [[ "\${1:-}" == "--version" ]]; then
-  echo "2.3.4"
+  echo "cursor-agent 2.3.4"
   exit 0
 fi
 echo "Authentication required. Please log in." >&2
@@ -151,7 +151,7 @@ exit 1
 `);
 
     const result = await qualifyProvider({
-      providerId: "claude",
+      providerId: "cursor",
       executable: fake,
       evidencePath,
       bridgeCommit: "c".repeat(40),
@@ -183,13 +183,13 @@ exit 1
 
   it("only considers native (non-ACP) evidence current for the resolved runtime identity", () => {
     const current = passingRecord({
-      provider: "claude",
-      providerVersion: "2.1.229",
-      executionRuntime: "native:claude",
+      provider: "cursor",
+      providerVersion: "1.2.3",
+      executionRuntime: "native:cursor",
     });
-    expect(isQualificationCurrent(current, "claude", "2.1.229")).toBe(true);
-    expect(isQualificationCurrent({ ...current, executionRuntime: "native:codex" }, "claude", "2.1.229")).toBe(false);
-    expect(isQualificationCurrent(current, "claude", "2.1.230")).toBe(false);
+    expect(isQualificationCurrent(current, "cursor", "1.2.3")).toBe(true);
+    expect(isQualificationCurrent({ ...current, executionRuntime: "native:codex" }, "cursor", "1.2.3")).toBe(false);
+    expect(isQualificationCurrent(current, "cursor", "1.2.4")).toBe(false);
   });
 
   it("versions the Codex ACP executable used by production", async () => {
@@ -229,6 +229,46 @@ exit 7
       else process.env.CODEX_ACP_COMMAND = previousCommand;
       if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
       else process.env.CODEX_ACP_ARGS = previousArgs;
+    }
+  });
+
+  it("versions the Claude ACP executable used by production", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-claude-acp-version-"));
+    const previousCommand = process.env.CLAUDE_ACP_COMMAND;
+    const previousArgs = process.env.CLAUDE_ACP_ARGS;
+    const acp = executable(join(root, "claude-agent-acp"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "@agentclientprotocol/claude-agent-acp 0.76.0"; exit 0; fi
+echo "acp should not be oneshot-parsed" >&2
+exit 7
+`);
+    const legacy = executable(join(root, "claude"), passingProviderBody("claude"));
+    process.env.CLAUDE_ACP_COMMAND = acp;
+    delete process.env.CLAUDE_ACP_ARGS;
+    try {
+      const result = await qualifyProvider({
+        providerId: "claude",
+        executable: legacy,
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "a".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: {
+          ...process.env,
+          CLAUDE_ACP_COMMAND: acp,
+        },
+      });
+      expect(result.executionRuntime).toBe(resolveProviderRuntime("claude", {
+        ...process.env,
+        CLAUDE_ACP_COMMAND: acp,
+      }).runtimeIdentity);
+      expect(result.providerVersion).toBe("0.76.0");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/claude-agent-acp 0\.76\.0/);
+    } finally {
+      if (previousCommand === undefined) delete process.env.CLAUDE_ACP_COMMAND;
+      else process.env.CLAUDE_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CLAUDE_ACP_ARGS;
+      else process.env.CLAUDE_ACP_ARGS = previousArgs;
     }
   });
 
@@ -300,20 +340,21 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-runtime-version-"));
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord(passingRecord({
-      provider: "claude",
+      provider: "cursor",
       providerVersion: "2.1.229",
+      executionRuntime: "native:cursor-agent",
     }), evidencePath);
-    const fake = executable(join(root, "claude"), `
+    const fake = executable(join(root, "cursor-agent"), `
 if [[ "\${1:-}" == "--version" ]]; then
-  echo "Claude Code 2.1.228"
+  echo "cursor-agent 2.1.228"
   exit 0
 fi
-printf '%s\\n' '{"result":"AGENT_BRIDGE_QUALIFICATION_OK","session_id":"session-1"}'
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"AGENT_BRIDGE_QUALIFICATION_OK","session_id":"session-1"}'
 `);
 
     const result = await import("../src/providers/qualification.js").then(({ qualifyProviderIfNeeded }) =>
       qualifyProviderIfNeeded({
-        providerId: "claude",
+        providerId: "cursor",
         executable: fake,
         installedVersion: "2.1.229",
         evidencePath,
@@ -325,29 +366,29 @@ printf '%s\\n' '{"result":"AGENT_BRIDGE_QUALIFICATION_OK","session_id":"session-
 
     expect(result.ran).toBe(true);
     expect(result.record.providerVersion).toBe("2.1.228");
-    expect(readQualificationEvidence(evidencePath).providers.claude?.providerVersion).toBe("2.1.228");
+    expect(readQualificationEvidence(evidencePath).providers.cursor?.providerVersion).toBe("2.1.228");
   });
 
   it("reuses cached evidence only when the active executable version agrees", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-runtime-cache-"));
     const evidencePath = join(root, "qualification.json");
-    const fake = executable(join(root, "claude"), `
+    const fake = executable(join(root, "cursor-agent"), `
 if [[ "\${1:-}" == "--version" ]]; then
-  echo "Claude Code 2.1.229"
+  echo "cursor-agent 2.1.229"
   exit 0
 fi
 exit 1
 `);
     const cached = passingRecord({
-      provider: "claude",
+      provider: "cursor",
       providerVersion: "2.1.229",
-      executionRuntime: "native:claude",
+      executionRuntime: "native:cursor",
     });
     writeQualificationRecord(cached, evidencePath);
 
     const { qualifyProviderIfNeeded } = await import("../src/providers/qualification.js");
     const result = await qualifyProviderIfNeeded({
-      providerId: "claude",
+      providerId: "cursor",
       executable: fake,
       installedVersion: "2.1.229",
       evidencePath,
@@ -365,14 +406,14 @@ exit 1
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-health-"));
     const evidencePath = join(root, "qualification.json");
     const nativeRecord = (overrides: Partial<ProviderQualificationRecord> = {}) => passingRecord({
-      provider: "claude",
+      provider: "cursor",
       providerVersion: "9.9.9",
-      executionRuntime: "native:claude",
+      executionRuntime: "native:cursor",
       ...overrides,
     });
     writeQualificationRecord(nativeRecord(), evidencePath);
 
-    expect(qualificationHealthCheck("claude", "9.9.9", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("cursor", "9.9.9", evidencePath)).toMatchObject({
       status: "green",
       message: expect.stringContaining("qualified"),
     });
@@ -385,26 +426,26 @@ exit 1
         { name: "session_resume", status: "not_applicable" },
       ],
     }), evidencePath);
-    expect(qualificationHealthCheck("claude", "9.9.9", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("cursor", "9.9.9", evidencePath)).toMatchObject({
       status: "red",
       message: expect.stringMatching(/degraded.*fresh_prompt/i),
     });
 
-    expect(qualificationHealthCheck("claude", "9.9.10", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("cursor", "9.9.10", evidencePath)).toMatchObject({
       status: "amber",
       message: expect.stringMatching(/9\.9\.10.*unqualified/i),
     });
   });
 
-  it("accepts native Claude result/session evidence without semantic marker prose", async () => {
-    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-claude-"));
-    const fake = executable(join(root, "claude"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "Claude Code 2.3.4"; exit 0; fi
-printf '%s\\n' '{"result":"native protocol response","session_id":"11111111-2222-3333-4444-555555555555"}'
+  it("accepts native Cursor result/session evidence without semantic marker prose", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-cursor-"));
+    const fake = executable(join(root, "cursor-agent"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "cursor-agent 2.3.4"; exit 0; fi
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"native protocol response","session_id":"11111111-2222-3333-4444-555555555555"}'
 `);
 
     const result = await qualifyProvider({
-      providerId: "claude",
+      providerId: "cursor",
       executable: fake,
       evidencePath: join(root, "qualification.json"),
       bridgeCommit: "4".repeat(40),
@@ -440,19 +481,13 @@ printf '%s\\n' '{"event":"result","result":{"conversation_id":"11111111-2222-333
 
   it("fails closed when a required native session identity is missing", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-missing-session-"));
-    const fake = executable(join(root, "claude"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "Claude Code 2.3.4"; exit 0; fi
-if [[ " $* " == *"Agent Bridge repository-grounding qualification."* ]]; then
-  fact="$(grep -o 'AGENT_BRIDGE_GROUNDING_FACT_[A-Za-z0-9]*' src/repositoryGroundingFixture.ts | head -n1)"
-  marker="$(grep -o 'AGENT_BRIDGE_GROUNDING_INSTRUCTION_[A-Za-z0-9]*' AGENTS.md | head -n1)"
-  printf '%s\\n' '{"result":"'"$fact $marker"'"}'
-  exit 0
-fi
-printf '%s\\n' '{"result":"native protocol response"}'
+    const fake = executable(join(root, "cursor-agent"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "cursor-agent 2.3.4"; exit 0; fi
+printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"native protocol response"}'
 `);
 
     const result = await qualifyProvider({
-      providerId: "claude",
+      providerId: "cursor",
       executable: fake,
       evidencePath: join(root, "qualification.json"),
       bridgeCommit: "4".repeat(40),
@@ -461,12 +496,12 @@ printf '%s\\n' '{"result":"native protocol response"}'
       timeoutMs: 5_000,
     });
 
-    expect(result.overall).toBe("pass");
+    expect(result.overall).toBe("fail");
     expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
-      status: "pass",
+      status: "fail",
+      diagnostic: expect.stringMatching(/session|stopped before confirming completion/i),
     });
     expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
-    expect(result.checks.find((check) => check.name === "repository_grounding")?.status).toBe("pass");
   });
 
   it("fails closed on malformed provider-native envelopes", async () => {
@@ -493,7 +528,7 @@ printf '%s\\n' '{not-json'
     });
   });
 
-  it.each(["claude", "agy", "grok", "cursor"] as const)(
+  it.each(["agy", "grok", "cursor"] as const)(
     "runs repository-grounding qualification with native tools for %s",
     async (provider) => {
       const root = mkdtempSync(join(tmpdir(), `provider-grounding-${provider}-`));
@@ -518,9 +553,9 @@ printf '%s\\n' '{not-json'
 
   it("fails repository grounding when the native answer omits the repository instruction marker", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-omission-"));
-    const fake = executable(join(root, "claude"), passingProviderBody("claude"), "omit_instruction");
+    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"), "omit_instruction");
     const result = await qualifyProvider({
-      providerId: "claude",
+      providerId: "cursor",
       executable: fake,
       evidencePath: join(root, "qualification.json"),
       bridgeCommit: "7".repeat(40),
@@ -537,9 +572,9 @@ printf '%s\\n' '{not-json'
 
   it("fails repository grounding when the native answer returns the wrong source fact", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-wrong-source-"));
-    const fake = executable(join(root, "claude"), passingProviderBody("claude"), "omit_source");
+    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"), "omit_source");
     const result = await qualifyProvider({
-      providerId: "claude",
+      providerId: "cursor",
       executable: fake,
       evidencePath: join(root, "qualification.json"),
       bridgeCommit: "9".repeat(40),
@@ -556,9 +591,9 @@ printf '%s\\n' '{not-json'
 
   it("keeps provider capacity exhaustion distinct from a deterministic grounding failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-capacity-"));
-    const fake = executable(join(root, "claude"), passingProviderBody("claude"), "capacity");
+    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"), "capacity");
     const result = await qualifyProvider({
-      providerId: "claude",
+      providerId: "cursor",
       executable: fake,
       evidencePath: join(root, "qualification.json"),
       bridgeCommit: "8".repeat(40),

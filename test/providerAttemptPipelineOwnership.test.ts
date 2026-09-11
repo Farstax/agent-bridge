@@ -19,18 +19,20 @@ describe("BridgeEngine provider-attempt contract", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-attempt-"));
     const db = openDb(join(root, "bridge.sqlite"));
     const runCli = vi.fn().mockResolvedValue("legacy response");
-    const runCliAsync = vi.fn().mockResolvedValue({ text: "provider response" });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: JSON.stringify({
+      type: "result", result: "provider response", session_id: "cursor-session",
+    }) });
     const engine = new BridgeEngine({
-      kind: "claude", surfaceIdentity: "test",
-      botConfig: { command: "claude", modelPreference: ["claude-primary"] },
-      allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1_000,
+      kind: "cursor", surfaceIdentity: "test",
+      botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1_000, workingDir: process.cwd(),
     }, db, client(), { runCli, runCliAsync });
     const handle = db.acquireLock("test", "100");
     try {
       expect(handle).not.toBeNull();
       const result = await engine.executePromptAsync("hello", null, 100, {}, () => {}, [], undefined, null, null, "100", handle!);
       expect(result.text).toBe("provider response");
-      expect(result.sessionId).toBeNull();
+      expect(result.sessionId).toBe("cursor-session");
       expect(runCliAsync).toHaveBeenCalledOnce();
       expect(runCli).not.toHaveBeenCalled();
     } finally {

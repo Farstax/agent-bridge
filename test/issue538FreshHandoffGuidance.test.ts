@@ -28,11 +28,11 @@ function makeEngine(db: ReturnType<typeof openDb>, dbPath: string, runCli: Retur
   return new BridgeEngine(
     {
       surfaceIdentity: "test",
-      kind: "claude",
-      botConfig: { command: "claude", modelPreference: [] },
+      kind: "cursor",
+      botConfig: { command: "cursor", modelPreference: [] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      pollIntervalMs: 1000,
+      pollIntervalMs: 1000, workingDir: process.cwd(),
       fullConfig: { dbPath } as any,
     },
     db,
@@ -64,7 +64,7 @@ describe("Issue #538 fresh-session handoff guidance", () => {
     db.addConvTurn("100", "user", HISTORY_MARKER);
     let capturedPrompt = "";
     const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-      capturedPrompt = args[args.length - 1];
+      capturedPrompt = args[1];
       return JSON.stringify({ type: "result", result: "ok", session_id: "issue-538-session" });
     });
 
@@ -80,7 +80,7 @@ describe("Issue #538 fresh-session handoff guidance", () => {
   it("keeps first-ever fresh-session guidance conditional when no prior turns exist", async () => {
     let capturedPrompt = "";
     const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-      capturedPrompt = args[args.length - 1];
+      capturedPrompt = args[1];
       return JSON.stringify({ type: "result", result: "ok", session_id: "issue-538-new-session" });
     });
 
@@ -93,11 +93,11 @@ describe("Issue #538 fresh-session handoff guidance", () => {
 
   it("does not repeat the handoff guidance on an ordinary resumed native turn", async () => {
     db.addConvTurn("100", "user", HISTORY_MARKER);
-    db.setSession("100", "claude", "existing-session");
+    db.setSession("100", "cursor", "existing-session");
     let capturedPrompt = "";
     const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-      capturedPrompt = args[args.length - 1];
-      return "ok";
+      capturedPrompt = args[1];
+      return JSON.stringify({ type: "result", result: "ok", session_id: "existing-session" });
     });
 
     await makeEngine(db, dbPath, runCli).handleMessages([makeMessage("ordinary continuation")]);

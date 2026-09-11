@@ -44,11 +44,13 @@ describe("unknown authenticated slash commands", () => {
     try { rmSync(dbPath); } catch {}
   });
 
-  it("passes an unknown slash command to the active native CLI as the original prompt", async () => {
+  it("passes an unknown slash command to the active CLI as the original prompt", async () => {
     let capturedPrompt = "";
-    const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
-      capturedPrompt = args.at(-1) ?? "";
-      return "Company status returned by native skill.";
+    // Claude resolves to ACP-stdio: its provider call goes through
+    // exec.runProviderInvocation, not the native exec.runCli seam.
+    const runProviderInvocation = vi.fn().mockImplementation(async (_bot: string, _invocation: unknown, _cwd: string, _options: unknown, request: { prompt: string }) => {
+      capturedPrompt = request.prompt;
+      return { text: "Company status returned by native skill." };
     });
     const client = makeClient();
     const engine = new BridgeEngine(
@@ -62,17 +64,16 @@ describe("unknown authenticated slash commands", () => {
       },
       db,
       client,
-      { runCli },
+      { runProviderInvocation },
     );
 
     await engine.handleMessages([makeMessage("/company status")]);
 
-    expect(runCli).toHaveBeenCalledTimes(1);
+    expect(runProviderInvocation).toHaveBeenCalledTimes(1);
     expect(capturedPrompt).toContain("/company status");
   });
 
   it.each([
-    { bot: "claude", command: "claude", sessionId: "sess-claude" },
     { bot: "antigravity", command: "agy", sessionId: "sess-agy" },
   ])("keeps resumed unclaimed slash requests out of native $bot slash parsing", ({ bot, command, sessionId }) => {
     for (const prompt of ["/company", "/company status", "/company approve", "/company stop"]) {
@@ -88,20 +89,6 @@ describe("unknown authenticated slash commands", () => {
       expect(providerPrompt).toContain(prompt);
       expect(providerPrompt.startsWith("/")).toBe(false);
     }
-  });
-
-  it.each([
-    { bot: "claude", command: "claude", sessionId: "sess-claude" },
-  ])("leaves ordinary resumed $bot prompts unchanged", ({ bot, command, sessionId }) => {
-    const invocation = buildCliInvocation({
-      bot,
-      prompt: "status please",
-      sessionId,
-      command,
-      includeResponseContract: false,
-    });
-
-    expect(invocation.args.at(-1)).toBe("status please");
   });
 
   it("keeps a known Bridge command local instead of sending it to the native CLI", async () => {

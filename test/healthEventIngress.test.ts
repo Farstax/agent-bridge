@@ -270,8 +270,8 @@ function makeMockClient() {
   } as any;
 }
 
-function claudeStreamJsonOutput(text: string, sessionId: string | null): string {
-  return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId });
+function cursorResult(text: string, sessionId: string | null): string {
+  return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId ?? "cursor-health-session" });
 }
 
 function makeEngine(
@@ -283,11 +283,11 @@ function makeEngine(
     {
       surfaceIdentity: HEALTH_RUN_SURFACE,
       kind: "health",
-      executionKind: "claude",
-      botConfig: { command: "claude", modelPreference: ["default-model"] },
+      executionKind: "cursor",
+      botConfig: { command: "cursor", modelPreference: ["default-model"] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      pollIntervalMs: 1000,
+      pollIntervalMs: 1000, workingDir: process.cwd(),
     },
     db,
     client,
@@ -318,10 +318,10 @@ describe("executeHealthOpsRun", () => {
     expect(() => acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN })).toThrow("simulated crash");
     (db as unknown as { insertRun: typeof db.insertRun }).insertRun = originalInsertRun;
 
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("recovered", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("recovered", null) });
     const { engine } = makeEngine(runCliAsync, db);
-    await resumeDurablePendingHealthEvents(db, engine, { bot: "claude" });
-    await resumeDurablePendingHealthEvents(db, engine, { bot: "claude" });
+    await resumeDurablePendingHealthEvents(db, engine, { bot: "cursor" });
+    await resumeDurablePendingHealthEvents(db, engine, { bot: "cursor" });
 
     expect(runCliAsync).toHaveBeenCalledTimes(1);
     expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts").get()).toEqual({ count: 1 });
@@ -333,7 +333,7 @@ describe("executeHealthOpsRun", () => {
 
   it("calls the surface-neutral provider-turn owner used by ordinary turns", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("investigated", null) });
     const { engine } = makeEngine(runCliAsync, db);
     const spy = vi.spyOn(engine, "executeSurfaceNeutralTurn");
 
@@ -347,7 +347,7 @@ describe("executeHealthOpsRun", () => {
     let capturedPrompt = "";
     const runCliAsync = vi.fn(async (_command: string, args: string[]) => {
       capturedPrompt = args.join(" ");
-      return { text: claudeStreamJsonOutput("investigated", null) };
+      return { text: cursorResult("investigated", null) };
     });
     const { engine } = makeEngine(runCliAsync, db);
 
@@ -374,7 +374,7 @@ describe("executeHealthOpsRun", () => {
       expect(prompt).toContain("accepted summary");
       expect(prompt).not.toContain("untrusted replacement");
       await new Promise((resolve) => setTimeout(resolve, 150));
-      return { text: claudeStreamJsonOutput("finished", "sess-1") };
+      return { text: cursorResult("finished", "sess-1") };
     });
     const { engine } = makeEngine(runCliAsync, db);
 
@@ -387,19 +387,19 @@ describe("executeHealthOpsRun", () => {
 
   it("never delivers to Telegram and never persists conversation/session state merely because a health event ran", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", "sess-1") });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("investigated", "sess-1") });
     const { engine, client } = makeEngine(runCliAsync, db);
 
     await executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(client.sendMessage).not.toHaveBeenCalled();
     expect(client.sendChatAction).not.toHaveBeenCalled();
-    expect(db.getSession(HEALTH_RUN_CHAT_KEY, "claude")).toBeNull();
+    expect(db.getSession(HEALTH_RUN_CHAT_KEY, "cursor")).toBeNull();
   });
 
   it("does not recreate legacy Worker tables during execution", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("ok", null) });
     const { engine } = makeEngine(runCliAsync, db);
 
     await executeHealthOpsRun(db, accepted.receiptId, engine);
@@ -423,7 +423,7 @@ describe("executeHealthOpsRun", () => {
     const execPromise = executeHealthOpsRun(db, accepted.receiptId, engine);
 
     expect(db.updateRunCancelled(accepted.runId, "operator cancelled")).toBe(true);
-    resolveCli({ text: claudeStreamJsonOutput("late result", null) });
+    resolveCli({ text: cursorResult("late result", null) });
 
     const outcome = await execPromise;
     expect(outcome.status).toBe("failed");
@@ -432,7 +432,7 @@ describe("executeHealthOpsRun", () => {
 
   it("does not re-invoke the provider when a lane waiter resolves to a Run that already terminalized (startup replay racing live dispatch)", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("investigated", null) });
     const { engine } = makeEngine(runCliAsync, db);
 
     // Live dispatch completes the Run first.
@@ -451,7 +451,7 @@ describe("executeHealthOpsRun", () => {
 
   it("invokes the provider zero times when the Run is cancelled while a caller was waiting for the health lane", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("investigated", null) });
     const { engine } = makeEngine(runCliAsync, db);
 
     // Simulate another owner holding the lane while this Run gets cancelled,
@@ -471,7 +471,7 @@ describe("executeHealthOpsRun", () => {
 
   it("invokes the provider zero times when the durable provider-start marker already exists for a still-running Run", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("investigated", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("investigated", null) });
     const { engine } = makeEngine(runCliAsync, db);
 
     // A prior attempt for this same receipt/Run reached the provider
@@ -541,7 +541,7 @@ describe("executeHealthOpsRun", () => {
     // so scheduling a retry against it would only ever misattribute again.
     expect(scheduleRetry).not.toHaveBeenCalled();
 
-    resolveCli({ text: claudeStreamJsonOutput("investigated", null) });
+    resolveCli({ text: cursorResult("investigated", null) });
     const outcomeB = await execPromiseB;
     expect(runCliAsync).toHaveBeenCalledTimes(1);
     expect(outcomeB.status).toBe("done");
@@ -556,7 +556,7 @@ describe("executeHealthOpsRun", () => {
 
   it("rejects with HealthOpsRunLaneUnavailableError when the health execution lane is already held", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("ok", null) });
     const { engine } = makeEngine(runCliAsync, db);
 
     const handle = db.acquireLock(HEALTH_RUN_SURFACE, HEALTH_RUN_CHAT_KEY);
@@ -572,7 +572,7 @@ describe("executeHealthOpsRun", () => {
 
   it("reconcileEventReceiptResult correlates a completed Run's result back onto the receipt", async () => {
     const accepted = acceptHealthOpsEvent(db, makeEvent(), { expectedToken: EXPECTED_TOKEN });
-    const runCliAsync = vi.fn().mockResolvedValue({ text: claudeStreamJsonOutput("ok", null) });
+    const runCliAsync = vi.fn().mockResolvedValue({ text: cursorResult("ok", null) });
     const { engine } = makeEngine(runCliAsync, db);
     await executeHealthOpsRun(db, accepted.receiptId, engine);
 

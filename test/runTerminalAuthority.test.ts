@@ -94,16 +94,16 @@ describe("durable Run terminal authority", () => {
     const store = new EventStore(db);
     const started = eventType.runStarted({
       runId: "r-fallback",
-      bot: "claude",
+      bot: "cursor",
       chatId: "100",
       chatKey: "100",
-      command: "claude",
+      command: "cursor",
       cwd: "/",
       model: "claude-primary",
     });
     const attemptFailed = eventType.runFailed({
       runId: "r-fallback",
-      bot: "claude",
+      bot: "cursor",
       chatId: "100",
       chatKey: "100",
       error: "rate limit capacity exhausted",
@@ -117,7 +117,7 @@ describe("durable Run terminal authority", () => {
 
     store.queueCompleted(eventType.runCompleted({
       runId: "r-fallback",
-      bot: "claude",
+      bot: "cursor",
       chatId: "100",
       chatKey: "100",
       text: "fallback answer",
@@ -136,16 +136,16 @@ describe("durable Run terminal authority", () => {
     const store = new EventStore(db);
     store.collect(eventType.runStarted({
       runId: "r-exhausted",
-      bot: "claude",
+      bot: "cursor",
       chatId: "100",
       chatKey: "100",
-      command: "claude",
+      command: "cursor",
       cwd: "/",
       model: null,
     }));
     store.collect(eventType.runFailed({
       runId: "r-exhausted",
-      bot: "claude",
+      bot: "cursor",
       chatId: "100",
       chatKey: "100",
       error: "rate limit capacity exhausted",
@@ -168,18 +168,18 @@ describe("durable Run terminal authority", () => {
     const paused = new Promise<void>((resolve) => { release = resolve; });
     const runCliAsync = vi.fn(async (_command: string, _args: string[], cwd: string, options: any) => {
       const ctx = options.eventContext;
-      options.onEvent?.(eventType.runStarted({ ...ctx, command: "claude", cwd, model: null }));
+      options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd, model: null }));
       options.onEvent?.(eventType.runCompleted({ ...ctx, text: "finished work", sessionId: null }));
       await paused;
       return { text: JSON.stringify({ type: "result", result: "finished work", session_id: "s-1" }) };
     });
     const engine = new BridgeEngine({
       surfaceIdentity: "test",
-      kind: "claude",
-      botConfig: { command: "claude", modelPreference: ["claude-primary"] },
+      kind: "cursor",
+      botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      pollIntervalMs: 1000,
+      pollIntervalMs: 1000, workingDir: process.cwd(),
     }, runA, client, { runCliAsync });
 
     const active = engine.handleMessages([makeMessage("finish this")]);
@@ -207,7 +207,7 @@ describe("durable Run terminal authority", () => {
       const ctx = options.eventContext;
       attempt += 1;
       if (attempt === 1) {
-        options.onEvent?.(eventType.runStarted({ ...ctx, command: "claude", cwd, model: "claude-primary" }));
+        options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd, model: "claude-primary" }));
         options.onEvent?.(eventType.runFailed({
           ...ctx,
           error: "rate limit capacity exhausted",
@@ -215,17 +215,17 @@ describe("durable Run terminal authority", () => {
         }));
         throw new Error("rate limit capacity exhausted");
       }
-      options.onEvent?.(eventType.runStarted({ ...ctx, command: "claude", cwd, model: "claude-fallback" }));
+      options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd, model: "claude-fallback" }));
       options.onEvent?.(eventType.runCompleted({ ...ctx, text: "fallback answer", sessionId: "s-2" }));
       return { text: JSON.stringify({ type: "result", result: "fallback answer", session_id: "s-2" }) };
     });
     const engine = new BridgeEngine({
       surfaceIdentity: "test",
-      kind: "claude",
-      botConfig: { command: "claude", modelPreference: ["claude-primary", "claude-fallback"] },
+      kind: "cursor",
+      botConfig: { command: "cursor", modelPreference: ["claude-primary", "claude-fallback"] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      pollIntervalMs: 1000,
+      pollIntervalMs: 1000, workingDir: process.cwd(),
     }, db, client, { runCliAsync });
 
     await engine.handleMessages([makeMessage("need fallback")]);
@@ -252,16 +252,16 @@ describe("durable Run terminal authority", () => {
         input.onProviderExecutionStarted?.();
         input.collect(eventType.runStarted({
           runId: input.runId,
-          bot: "claude",
+          bot: "cursor",
           chatId: input.chatKey,
           chatKey: input.chatKey,
-          command: "claude",
+          command: "cursor",
           cwd: "/",
           model: null,
         }));
         input.collect(eventType.runCompleted({
           runId: input.runId,
-          bot: "claude",
+          bot: "cursor",
           chatId: input.chatKey,
           chatKey: input.chatKey,
           text: "bounded result",
@@ -271,7 +271,7 @@ describe("durable Run terminal authority", () => {
       },
     };
 
-    const response = await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "claude" });
+    const response = await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "cursor" });
     expect(response).toMatchObject({ runId: "run-1", status: "failed", errorClass: "ambiguous" });
     expect(db.getRun("run-1").status).toBe("running");
     const receipt = db.getEventReceipt(accepted.receiptId);
@@ -293,16 +293,16 @@ describe("durable Run terminal authority", () => {
         input.onProviderExecutionStarted?.();
         input.collect(eventType.runStarted({
           runId: input.runId,
-          bot: "claude",
+          bot: "cursor",
           chatId: input.chatKey,
           chatKey: input.chatKey,
-          command: "claude",
+          command: "cursor",
           cwd: "/",
           model: null,
         }));
         input.collect(eventType.runCompleted({
           runId: input.runId,
-          bot: "claude",
+          bot: "cursor",
           chatId: input.chatKey,
           chatKey: input.chatKey,
           text: "bounded result",
@@ -312,8 +312,8 @@ describe("durable Run terminal authority", () => {
       },
     };
 
-    await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "claude" });
-    const replay = await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "claude" });
+    await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "cursor" });
+    const replay = await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "cursor" });
     expect(invocations).toBe(1);
     expect(replay).toMatchObject({ runId: "run-1", status: "failed", errorClass: "ambiguous" });
     db.close();
@@ -341,7 +341,7 @@ describe("durable Run terminal authority", () => {
       },
     };
 
-    const response = await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "claude" });
+    const response = await executeRunIngressRequest(db, accepted.receiptId, engine, { bot: "cursor" });
     expect(invoked).toBe(false);
     expect(response).toMatchObject({ runId: "run-1", status: "failed" });
     expect(db.getRun("run-1").status).toBe("failed");
@@ -361,16 +361,16 @@ describe("durable Run terminal authority", () => {
         input.onProviderExecutionStarted?.();
         input.collect(eventType.runStarted({
           runId: input.runId,
-          bot: "claude",
+          bot: "cursor",
           chatId: input.chatKey,
           chatKey: input.chatKey,
-          command: "claude",
+          command: "cursor",
           cwd: "/",
           model: null,
         }));
         input.collect(eventType.runCompleted({
           runId: input.runId,
-          bot: "claude",
+          bot: "cursor",
           chatId: input.chatKey,
           chatKey: input.chatKey,
           text: "bounded result",
@@ -378,7 +378,7 @@ describe("durable Run terminal authority", () => {
         }));
         return { text: "bounded result", sessionId: null, memoryCandidates: [], nativeSessionMode: "fresh" };
       },
-    }, { bot: "claude" });
+    }, { bot: "cursor" });
     db.close();
 
     const reopened = openDb(path, { serviceId: "test-ingress", runId: "proc-2" });
@@ -388,7 +388,7 @@ describe("durable Run terminal authority", () => {
         invoked = true;
         throw new Error("must not execute");
       },
-    }, { bot: "claude" });
+    }, { bot: "cursor" });
     expect(invoked).toBe(false);
     expect(replay).toMatchObject({ runId: "run-1", status: "failed", errorClass: "ambiguous" });
     expect(reopened.getRun("run-1").status).toBe("running");

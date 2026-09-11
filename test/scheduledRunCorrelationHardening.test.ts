@@ -81,11 +81,11 @@ async function executeScheduledTurn(
   }));
   const engine = new BridgeEngine({
     surfaceIdentity: routine.surfaceIdentity,
-    kind: "claude",
-    botConfig: { command: "claude", modelPreference: [] },
+    kind: "cursor",
+    botConfig: { command: "cursor", modelPreference: [] },
     allowedUserIds: new Set(["42"]),
     executionMode: "safe",
-    pollIntervalMs: 1000,
+    pollIntervalMs: 1000, workingDir: process.cwd(),
   }, db, mockClient(), { runCli });
   await engine.handleInteractiveTurn(buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey));
 }
@@ -105,7 +105,7 @@ describe("scheduled Run correlation hardening", () => {
       expect(claimScheduledRoutineOccurrence(db, routine.id, intendedAt)).toBe(true);
       const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
 
-      db.insertRun("manual-run", routine.chatKey, "claude");
+      db.insertRun("manual-run", routine.chatKey, "cursor");
       expect(db.updateRunCompleted("manual-run", "manual", null)).toBe(true);
 
       await executeScheduledTurn(db, routine, intendedAt, occurrenceKey);

@@ -9,6 +9,7 @@
 
 import { normalizeAgyModelFamily } from "./effort.js";
 import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
+import { resolveClaudeAcpCommand } from "./providers/claudeAcpConfig.js";
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -66,7 +67,7 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     },
     claude: {
       token: token(env.TELEGRAM_BOT_TOKEN_CLAUDE),
-      command: env.CLAUDE_COMMAND || "claude",
+      command: resolveClaudeAcpCommand(env),
       modelPreference: parseModelPreference(env.CLAUDE_MODEL_PREFERENCE),
     },
     grok: {

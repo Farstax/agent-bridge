@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCliInvocation, parseCliResult } from "../src/cli.js";
-
-function claudeSettings(args: string[]): Record<string, unknown> {
-  const index = args.indexOf("--settings");
-  expect(index).toBeGreaterThanOrEqual(0);
-  return JSON.parse(args[index + 1]);
-}
+import { buildCliInvocation } from "../src/cli.js";
 
 function agyPrintPrompt(args: string[]): string {
   const index = args.indexOf("--print");
@@ -14,7 +8,7 @@ function agyPrintPrompt(args: string[]): string {
 }
 
 describe("provider-native terminal completion", () => {
-  it("does not override Claude's native Stop lifecycle", () => {
+  it("does not alter the Claude ACP invocation for the shared nativeCompletion hint", () => {
     const ordinary = buildCliInvocation({
       bot: "claude",
       prompt: "run the tests",
@@ -32,7 +26,6 @@ describe("provider-native terminal completion", () => {
       nativeCompletion: false,
     });
 
-    expect(claudeSettings(ordinary.args)).not.toHaveProperty("hooks.Stop");
     expect(ordinary).toEqual(native);
   });
 
@@ -78,19 +71,5 @@ describe("provider-native terminal completion", () => {
 
     expect(ordinary).toEqual(bounded);
   });
-
-  it("treats Claude background Bash records as provider-owned output, not a Bridge continuation request", () => {
-    const result = parseCliResult({
-      bot: "claude",
-      stdout: [
-        '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test","run_in_background":true}}]}}',
-        '{"type":"result","subtype":"success","result":"Tests are running.","session_id":"sess-9"}',
-      ].join("\n"),
-    });
-
-    expect(result).toEqual({
-      text: "Tests are running.",
-      sessionId: "sess-9",
-    });
-  });
 });
+

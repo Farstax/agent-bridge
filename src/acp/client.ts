@@ -20,6 +20,11 @@ import { AcpReplayGate, liveDeliveryText, type AcpObservedUpdate } from "./repla
 
 export type AcpSessionMode = "fresh" | "load" | "resume";
 
+export interface AcpSessionConfigValue {
+  readonly configId: string;
+  readonly value: string;
+}
+
 export interface AcpRetainedEvent {
   readonly kind: "session_update" | "permission" | "stop";
   readonly channel: "replay" | "live";
@@ -40,6 +45,12 @@ export interface AcpTurnInput {
   readonly existingAcpSessionId: string | null;
   readonly prompt: string | ContentBlock | ContentBlock[];
   readonly executionMode: "safe" | "trusted";
+  /** Provider-owned session metadata forwarded on new/load/resume. */
+  readonly sessionMeta?: Readonly<Record<string, unknown>>;
+  /** Requested standard ACP session mode. Applied only when the agent advertises it. */
+  readonly sessionModeId?: string;
+  /** Requested standard ACP session configuration, applied in order. */
+  readonly sessionConfig?: readonly AcpSessionConfigValue[];
   /** Standard ACP authentication method selected by provider/workspace policy. */
   readonly authenticateMethodId?: string;
   readonly abortRequested?: () => boolean;
@@ -71,6 +82,22 @@ export interface AcpTurnResult {
   readonly initialize: InitializeResponse;
 }
 
+type SessionModeState = {
+  readonly currentModeId?: string;
+  readonly availableModes?: readonly { readonly id: string }[];
+};
+
+type SessionConfigOptionState = {
+  readonly id: string;
+  readonly currentValue?: unknown;
+  readonly options?: readonly { readonly value: string }[];
+};
+
+type SessionSetupState = {
+  readonly modes?: SessionModeState | null;
+  readonly configOptions?: readonly SessionConfigOptionState[] | null;
+};
+
 function promptBlocks(prompt: AcpTurnInput["prompt"]): ContentBlock[] {
   if (typeof prompt === "string") return [{ type: "text", text: prompt }];
   return Array.isArray(prompt) ? prompt : [prompt];
@@ -82,6 +109,51 @@ function agentSupportsResume(init: InitializeResponse): boolean {
 
 function agentSupportsLoad(init: InitializeResponse): boolean {
   return Boolean(init.agentCapabilities?.loadSession);
+}
+
+function sessionSetupState(value: unknown): SessionSetupState {
+  return value && typeof value === "object" ? value as SessionSetupState : {};
+}
+
+async function applySessionSettings(
+  agent: ClientContext,
+  sessionId: string,
+  state: SessionSetupState,
+  input: Pick<AcpTurnInput, "sessionModeId" | "sessionConfig">,
+): Promise<void> {
+  if (input.sessionModeId) {
+    const modes = state.modes;
+    if (!modes?.availableModes?.some((mode) => mode.id === input.sessionModeId)) {
+      throw new Error(`ACP agent did not advertise session mode "${input.sessionModeId}"`);
+    }
+    if (modes.currentModeId !== input.sessionModeId) {
+      await agent.request(acp.methods.agent.session.setMode, {
+        sessionId,
+        modeId: input.sessionModeId,
+      });
+    }
+  }
+
+  let configOptions = state.configOptions ?? undefined;
+  for (const requested of input.sessionConfig ?? []) {
+    const option = configOptions?.find((candidate) => candidate.id === requested.configId);
+    if (!option) {
+      throw new Error(`ACP agent did not advertise session config option "${requested.configId}"`);
+    }
+    if (option.options && !option.options.some((candidate) => candidate.value === requested.value)) {
+      throw new Error(
+        `ACP session config option "${requested.configId}" does not support value "${requested.value}"`,
+      );
+    }
+    if (option.currentValue === requested.value) continue;
+    const updated = await agent.request(acp.methods.agent.session.setConfigOption, {
+      sessionId,
+      configId: requested.configId,
+      value: requested.value,
+    });
+    const next = sessionSetupState(updated).configOptions;
+    if (next) configOptions = next;
+  }
 }
 
 /**
@@ -206,9 +278,14 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       await agent.request(acp.methods.agent.authenticate, { methodId: input.authenticateMethodId });
     }
 
-    const sessionParams = { cwd: input.cwd, mcpServers: [] as [] };
+    const sessionParams = {
+      cwd: input.cwd,
+      mcpServers: [] as [],
+      ...(input.sessionMeta ? { _meta: input.sessionMeta } : {}),
+    };
     let acpSessionId = input.existingAcpSessionId;
     let sessionMode: AcpSessionMode = "fresh";
+    let setupState: SessionSetupState = {};
 
     if (acpSessionId && agentSupportsResume(initialize)) {
       sessionMode = "resume";
@@ -217,25 +294,26 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       // ACP v1: session/resume resumes a live connection and does not
       // replay previous messages, so any update observed here (there
       // should be none) stays on the live channel, unlike session/load.
-      await agent.request(acp.methods.agent.session.resume, {
+      setupState = sessionSetupState(await agent.request(acp.methods.agent.session.resume, {
         sessionId: acpSessionId,
         ...sessionParams,
-      });
+      }));
     } else if (acpSessionId && agentSupportsLoad(initialize)) {
       sessionMode = "load";
       currentAcpSessionId = acpSessionId;
       currentSessionMode = sessionMode;
       gate.beginLoad();
-      await agent.request(acp.methods.agent.session.load, {
+      setupState = sessionSetupState(await agent.request(acp.methods.agent.session.load, {
         sessionId: acpSessionId,
         ...sessionParams,
-      });
+      }));
       gate.endLoad();
     } else if (acpSessionId) {
       throw new Error("ACP agent does not support resume or load for an existing session");
     } else {
       const created = await agent.request(acp.methods.agent.session.new, sessionParams) as NewSessionResponse;
       acpSessionId = created.sessionId;
+      setupState = sessionSetupState(created);
       sessionMode = "fresh";
       if (acpSessionId === input.conversationId) {
         throw new Error("ACP session id must not equal the Bridge conversation id");
@@ -245,6 +323,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }
 
     if (!acpSessionId) throw new Error("ACP session id missing after session setup");
+    await applySessionSettings(agent, acpSessionId, setupState, input);
 
     const blocks = promptBlocks(input.prompt);
     assertPromptCapabilities(blocks, initialize);

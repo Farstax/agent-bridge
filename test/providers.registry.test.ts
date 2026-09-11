@@ -79,14 +79,14 @@ describe("provider registry", () => {
 
   it("derives provisional-answer eligibility from the resolved ACP presentation policy, not a provider-name branch", () => {
     expect(supportsProvisionalAnswers("codex")).toBe(true);
-    expect(supportsProvisionalAnswers("claude")).toBe(false);
+    expect(supportsProvisionalAnswers("claude")).toBe(true);
     expect(supportsProvisionalAnswers("antigravity")).toBe(false);
     expect(supportsProvisionalAnswers("not-a-bot-kind")).toBe(false);
   });
 
   it("resolves the ACP-backed provider id behind a bot kind generically for session-binding routing", () => {
     expect(acpProviderIdForBotName("codex")).toBe("codex");
-    expect(acpProviderIdForBotName("claude")).toBeNull();
+    expect(acpProviderIdForBotName("claude")).toBe("claude");
     expect(acpProviderIdForBotName("antigravity")).toBeNull();
     expect(acpProviderIdForBotName("not-a-bot-kind")).toBeNull();
   });
@@ -96,6 +96,13 @@ describe("provider registry", () => {
       .toBe("/opt/agent-bridge/node_modules/.bin/codex-acp");
     expect(resolveProviderExecutable("codex", { CODEX_ACP_COMMAND: "/trusted/codex-acp" }))
       .toBe("/trusted/codex-acp");
+  });
+
+  it("resolves the bundled or explicitly configured Claude ACP command", () => {
+    expect(resolveProviderExecutable("claude", { BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge" }))
+      .toBe("/opt/agent-bridge/node_modules/.bin/claude-agent-acp");
+    expect(resolveProviderExecutable("claude", { CLAUDE_ACP_COMMAND: "/trusted/claude-agent-acp" }))
+      .toBe("/trusted/claude-agent-acp");
   });
 
   it("exposes fallback metadata", () => {

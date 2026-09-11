@@ -10,6 +10,48 @@ import {
 } from "../src/interactiveBot.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
+// Claude (and, by shared ACP transport, Codex) resolve to ACP-stdio, which
+// engine.ts drives through exec.runProviderInvocation rather than
+// exec.runCli/runCliAsync. Adapt the existing native-shaped runCli fakes so
+// each engine's injected fake still governs its own simulated CLI regardless
+// of transport. Streamed answer-preview text flows through the
+// provider-neutral onAnswerDelta callback under ACP (not the legacy native
+// onProviderOutputChunk stream_event/content_block_delta shape), so bridge
+// the fakes' existing stream_event chunks into onAnswerDelta here.
+function extractStreamDeltaText(chunk: string): string | null {
+  try {
+    const obj = JSON.parse(chunk.trim());
+    return obj?.event?.delta?.text ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function extractResultText(stdout: string): string {
+  try {
+    const obj = JSON.parse(stdout);
+    if (typeof obj?.result === "string") return obj.result;
+  } catch {
+    // not JSON — use the raw stdout as-is.
+  }
+  return stdout;
+}
+
+function asAcpAdapter(runCli: any) {
+  return async (_bot: string, invocation: any, cwd: string, options: any) => {
+    const bridgedOptions = {
+      ...options,
+      onProviderOutputChunk: (chunk: string) => {
+        options.onProviderOutputChunk?.(chunk);
+        const delta = extractStreamDeltaText(chunk);
+        if (delta) options.onAnswerDelta?.(delta);
+      },
+    };
+    const stdout = await runCli(invocation.command, invocation.args, cwd, bridgedOptions);
+    return { text: extractResultText(stdout) };
+  };
+}
+
 function makeMockClient() {
   return {
     capabilities: TELEGRAM_SURFACE_CAPABILITIES,
@@ -54,7 +96,7 @@ describe("interactive capacity fallback durable admission", () => {
       },
       db,
       client,
-      { runCli },
+      { runCli, runProviderInvocation: asAcpAdapter(runCli) },
     );
     const engines = { claude: makeEngine("claude", claudeRun), codex: makeEngine("codex", codexRun) };
     const deps = { engines, fallbackChain, exhaustedChats, db, notify: async (message: string) => { notifications.push(message); } };
@@ -107,7 +149,7 @@ describe("interactive capacity fallback durable admission", () => {
       },
       db,
       client,
-      { runCli },
+      { runCli, runProviderInvocation: asAcpAdapter(runCli) },
     );
     const engines = { claude: makeEngine("claude", claudeRun), antigravity: makeEngine("antigravity", codexRun) };
     const deps = { engines, fallbackChain, exhaustedChats, db, notify: async (message: string) => { notifications.push(message); } };
@@ -171,7 +213,7 @@ describe("interactive capacity fallback durable admission", () => {
       },
       db,
       client,
-      { runCli: runCli as any },
+      { runCli: runCli as any, runProviderInvocation: asAcpAdapter(runCli) },
     );
 
     const engines = {
@@ -267,7 +309,7 @@ describe("interactive capacity fallback durable admission", () => {
       },
       db,
       client,
-      { runCli: runCli as any },
+      { runCli: runCli as any, runProviderInvocation: asAcpAdapter(runCli) },
     );
 
     const engines = {

@@ -102,6 +102,27 @@ function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, 
     invokeDisposition(prompt, result.autonomyDisposition, result.autonomyNotify === true);
     return { text: result.text };
   };
+  const dispositionAwareRunProviderInvocation = async (
+    _kind: BotKind,
+    invocation: any,
+    cwd: string,
+    options: any,
+    request: any,
+  ) => {
+    const prompt = invocation.prompt ?? request?.prompt ?? "";
+    const result = await runCliAsync("claude", [prompt], cwd, options) as {
+      text: string;
+      autonomyDisposition?: TestDisposition;
+      autonomyNotify?: boolean;
+    };
+    if (result.autonomyDisposition) {
+      invokeDisposition(prompt, result.autonomyDisposition, result.autonomyNotify === true);
+    }
+    const text = result.text.startsWith("{")
+      ? (JSON.parse(result.text).result ?? result.text)
+      : result.text;
+    return { text, sessionId: null };
+  };
   return new BridgeEngine(
     {
       surfaceIdentity: AUTONOMOUS_RUN_SURFACE,
@@ -114,7 +135,10 @@ function makeEngine(runCliAsync: (...args: any[]) => Promise<{ text: string }>, 
     },
     db,
     makeMockClient(),
-    { runCliAsync: dispositionAwareRunCliAsync as any },
+    {
+      runCliAsync: dispositionAwareRunCliAsync as any,
+      runProviderInvocation: dispositionAwareRunProviderInvocation as any,
+    },
   );
 }
 
@@ -734,14 +758,14 @@ describe("runAutonomousGoalOperatorStandalone", () => {
   });
 
   it("resolves the real (non-injected) standalone engine's provider from the durable goal's bot, not a hard-coded Claude default", () => {
-    const overrideKeys = ["CODEX_ACP_COMMAND", "CLAUDE_COMMAND", "ANTIGRAVITY_COMMAND", "GEMINI_COMMAND"] as const;
+    const overrideKeys = ["CODEX_ACP_COMMAND", "CLAUDE_ACP_COMMAND", "ANTIGRAVITY_COMMAND", "GEMINI_COMMAND"] as const;
     const previous = Object.fromEntries(overrideKeys.map((key) => [key, process.env[key]]));
     for (const key of overrideKeys) delete process.env[key];
     try {
       expect(standaloneBotConfig("codex").executionKind).toBe("codex");
       expect(standaloneBotConfig("codex").botConfig.command).toContain("node_modules/.bin/codex-acp");
       expect(standaloneBotConfig("claude").executionKind).toBe("claude");
-      expect(standaloneBotConfig("claude").botConfig.command).toBe("claude");
+      expect(standaloneBotConfig("claude").botConfig.command).toContain("node_modules/.bin/claude-agent-acp");
       expect(standaloneBotConfig("antigravity").executionKind).toBe("antigravity");
       expect(standaloneBotConfig("antigravity").botConfig.command).toBe("agy");
     } finally {

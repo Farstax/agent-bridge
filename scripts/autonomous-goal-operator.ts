@@ -12,7 +12,7 @@
  * EnvironmentFile=/etc/agent-bridge-local/env the way the running bridge
  * process does — so without loading it explicitly, "run" would build its
  * standalone engine (and workspace-context delivery) without
- * AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE or the CODEX_ACP_COMMAND/CLAUDE_COMMAND/
+ * AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE or the CODEX_ACP_COMMAND/CLAUDE_ACP_COMMAND/
  * ANTIGRAVITY_COMMAND overrides the running bridge already has.
  */
 import { existsSync } from "node:fs";

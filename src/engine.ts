@@ -16,7 +16,7 @@ import {
   buildExecutionOptions,
   runCli as _runCli,
   runCliAsync as _runCliAsync,
-  runProviderInvocation,
+  runProviderInvocation as _runProviderInvocation,
   parseCliResult,
   isCapacityExhaustedError,
   getNextFallbackModel,
@@ -39,8 +39,6 @@ import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type 
 import { hasAudioAttachment, prepareVoiceBatchForDispatch } from "./voiceIngress.js";
 import { downloadSurfaceAttachment } from "./fileDownload.js";
 import { cleanOutputDir, prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
-import { parseClaudeStreamJsonOutput } from "./claudeStreamJson.js";
-import { createClaudeAnswerPresentationDecoder } from "./providers/claudeAnswerPresentation.js";
 import { createAntigravityAnswerPresentationDecoder } from "./providers/antigravityAnswerPresentation.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { sendSurfaceMessage, sendMessageWithProgress, PreviewCleanupError } from "./messageDelivery.js";
@@ -133,6 +131,7 @@ export interface BridgeEngineOptions {
 export interface ExecFns {
   runCli: typeof _runCli;
   runCliAsync: typeof _runCliAsync;
+  runProviderInvocation: typeof _runProviderInvocation;
 }
 
 export interface SurfaceNeutralTurnInput {
@@ -221,6 +220,7 @@ export class BridgeEngine {
     this.exec = {
       runCli: exec.runCli ?? _runCli,
       runCliAsync,
+      runProviderInvocation: exec.runProviderInvocation ?? _runProviderInvocation,
     };
     this.mediaBuffer = new InteractiveTurnBuffer((_groupId, turns) => {
       return this.handleInteractiveMessages(turns).catch((err) => {
@@ -795,11 +795,9 @@ export class BridgeEngine {
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
           const executionKind = this._executionKind();
-          const answerDecoder = executionKind === "claude"
-            ? createClaudeAnswerPresentationDecoder(onAnswerDelta)
-            : executionKind === "antigravity"
-              ? createAntigravityAnswerPresentationDecoder(onAnswerDelta)
-              : null;
+          const answerDecoder = executionKind === "antigravity"
+            ? createAntigravityAnswerPresentationDecoder(onAnswerDelta)
+            : null;
           const body = {
             message_thread_id: input.threadId,
             onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
@@ -1359,7 +1357,7 @@ export class BridgeEngine {
     identities: { conversationId: string; runId: string },
   ): Promise<{ stdout: string; parsed: CliResult | null }> {
     if (invocation.transport === "acp-stdio") {
-      const parsed = await runProviderInvocation(executionKind, invocation, cwd, options, {
+      const parsed = await this.exec.runProviderInvocation(executionKind, invocation, cwd, options, {
         prompt: acpRequest.prompt,
         sessionId: acpRequest.sessionId,
         command: invocation.command,
@@ -1436,7 +1434,7 @@ export class BridgeEngine {
       prompt: promptForCli.prompt,
       sessionId,
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" || executionKind === "claude"
+      outputFormat: executionKind === "antigravity"
         ? "stream-json"
         : executionKind === "grok"
           ? "streaming-json"
@@ -1448,8 +1446,6 @@ export class BridgeEngine {
       outputDir: outDir,
       nativeCompletion: true,
     });
-    const isClaudeStreamJson = executionKind === "claude"
-      && invocation.args.includes("stream-json");
     try {
       let stdout: string;
       let parsedAcp: CliResult | null = null;
@@ -1471,7 +1467,7 @@ export class BridgeEngine {
             onEvent: collect ?? undefined,
           },
           {
-            prompt: promptForCli.prompt,
+            prompt: invocation.prompt ?? promptForCli.prompt,
             sessionId,
             model,
             executionMode: this.opts.executionMode,
@@ -1499,9 +1495,6 @@ export class BridgeEngine {
       let result: CliResult;
       if (parsedAcp) {
         result = parsedAcp;
-      } else if (isClaudeStreamJson) {
-        const parsed = parseClaudeStreamJsonOutput(stdout);
-        result = parsed ?? { text: stdout.trim(), sessionId: null };
       } else {
         const outputFormat = executionKind === "antigravity"
           ? (invocation.args.includes("stream-json") ? "stream-json" : (invocation.args.includes("json") ? "json" : "text"))
@@ -1627,7 +1620,7 @@ export class BridgeEngine {
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" || executionKind === "claude"
+      outputFormat: executionKind === "antigravity"
         ? "stream-json"
         : executionKind === "grok"
           ? "streaming-json"
@@ -1804,7 +1797,7 @@ export class BridgeEngine {
       sessionId: null,
       sessionMode: "resume",
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" || executionKind === "claude"
+      outputFormat: executionKind === "antigravity"
         ? "stream-json"
         : executionKind === "grok"
           ? "streaming-json"
@@ -1816,9 +1809,6 @@ export class BridgeEngine {
       attachments,
       nativeCompletion: true,
     });
-    const isFallbackClaudeStreamJson = executionKind === "claude"
-      && fallbackInvocation.args.includes("stream-json");
-
     try {
       const fallbackCwd = this._workingDir(executionKind);
       const fallbackStartedAtMs = Date.now();
@@ -1841,7 +1831,7 @@ export class BridgeEngine {
             onEvent: collect ?? undefined,
           },
           {
-            prompt: fallbackPromptForCli.prompt,
+            prompt: fallbackInvocation.prompt ?? fallbackPromptForCli.prompt,
             sessionId: null,
             model: fallbackModel,
             executionMode: this.opts.executionMode,
@@ -1869,9 +1859,6 @@ export class BridgeEngine {
       let result: CliResult;
       if (parsedAcp) {
         result = parsedAcp;
-      } else if (isFallbackClaudeStreamJson) {
-        const parsed = parseClaudeStreamJsonOutput(rawResult);
-        result = parsed ?? { text: rawResult.trim(), sessionId: null };
       } else {
         const outputFormat = executionKind === "antigravity"
           ? (fallbackInvocation.args.includes("stream-json") ? "stream-json" : (fallbackInvocation.args.includes("json") ? "json" : "text"))
@@ -1901,10 +1888,7 @@ export class BridgeEngine {
   private _handleCircuitBreaker(error: Error, chatKey: string, laneHandle: ExecutionLaneHandle): void {
     if (!isAgentKind(this.kind)) return;
     const msg = error.message ?? "";
-    const silentResumedClaudeExit = this.kind === "claude"
-      && this.db.getSession(chatKey, "claude") !== null
-      && /^CLI exited with code 1: \(no diagnostic output\)$/.test(msg);
-    if (/timeout|killed by signal/i.test(msg) || silentResumedClaudeExit) {
+    if (/timeout|killed by signal/i.test(msg)) {
       this._runWithFence(laneHandle, () => {
         const failures = this.db.incrementFailures(chatKey, this.kind as BotKind);
         if (failures >= 2) {
