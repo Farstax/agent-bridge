@@ -3,44 +3,18 @@
  * INPUTS: Provider kind plus complete stdout/stderr captured by cliSupervisor.
  * OUTPUTS: null for a valid success, or a classified Error that converts the
  * otherwise exit-zero process into a failed run before run.completed emits.
- * NEIGHBORS: src/cliSupervisor.ts, provider runtimes, src/claudeStreamJson.ts
+ * NEIGHBORS: src/cliSupervisor.ts and native provider runtimes.
  */
 
-import type { CliOptions, CliResult } from "./types.js";
+import type { CliOptions } from "./types.js";
 import { parseAntigravityStreamJsonResult } from "./providers/antigravityRuntime.js";
 import { parseResult as parseGrokResult } from "./providers/grokRuntime.js";
 import { parseResult as parseCursorResult } from "./providers/cursorRuntime.js";
-import { inspectClaudeStreamJsonOutput } from "./claudeStreamJson.js";
 
-const CLAUDE_BACKGROUND_TASK_CEILING = /^Background tasks still running after \d+(?:ms|s); terminating\.(?: Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely\.)?$/m;
-const CLAUDE_BACKGROUND_TASK_INCOMPLETE = "Claude stopped outstanding background work before completion could be verified";
-const CLAUDE_MISSING_TERMINAL_RESULT = "Claude structured output ended before completion could be verified";
 const AGY_UNCERTAIN_COMPLETION = "Agy completion could not be verified from structured output";
 const GROK_UNCERTAIN_COMPLETION = "Grok completion could not be verified from structured output";
 const CURSOR_UNCERTAIN_COMPLETION = "Cursor completion could not be verified from structured output";
 const AGY_CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export type ClaudeUncertainCompletionReason = "background-task-ceiling" | "missing-terminal-result";
-
-export class ClaudeUncertainCompletionError extends Error {
-  readonly reason: ClaudeUncertainCompletionReason;
-  readonly sessionId: string | null;
-  readonly safeResult: CliResult | null;
-
-  constructor(
-    reason: ClaudeUncertainCompletionReason,
-    sessionId: string | null,
-    safeResult: CliResult | null,
-  ) {
-    super(reason === "background-task-ceiling"
-      ? CLAUDE_BACKGROUND_TASK_INCOMPLETE
-      : CLAUDE_MISSING_TERMINAL_RESULT);
-    this.name = "ClaudeUncertainCompletionError";
-    this.reason = reason;
-    this.sessionId = sessionId;
-    this.safeResult = safeResult;
-  }
-}
 
 export class AntigravityUncertainCompletionError extends Error {
   readonly sessionId: string | null;
@@ -70,10 +44,6 @@ export class CursorUncertainCompletionError extends Error {
     this.name = "CursorUncertainCompletionError";
     this.sessionId = sessionId;
   }
-}
-
-export function isClaudeUncertainCompletionFailureMessage(message: string): boolean {
-  return message === CLAUDE_BACKGROUND_TASK_INCOMPLETE || message === CLAUDE_MISSING_TERMINAL_RESULT;
 }
 
 export function isAntigravityUncertainCompletionFailureMessage(message: string): boolean {
@@ -161,25 +131,6 @@ function agyHasExplicitFailure(stdout: string): boolean {
   });
 }
 
-function validateClaudeSuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
-  const inspection = inspectClaudeStreamJsonOutput(output.stdout);
-  if (CLAUDE_BACKGROUND_TASK_CEILING.test(output.stderr)) {
-    return new ClaudeUncertainCompletionError(
-      "background-task-ceiling",
-      inspection.result?.sessionId ?? inspection.sessionId,
-      inspection.result,
-    );
-  }
-  if (inspection.structured && !inspection.result) {
-    return new ClaudeUncertainCompletionError(
-      "missing-terminal-result",
-      inspection.sessionId,
-      null,
-    );
-  }
-  return null;
-}
-
 function validateAgySuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
   try {
     parseAntigravityStreamJsonResult(output.stdout);
@@ -217,7 +168,6 @@ export function validateSuccessfulCliExit(
   bot: CliOptions["bot"],
   output: Readonly<{ stdout: string; stderr: string }>,
 ): Error | null {
-  if (bot === "claude") return validateClaudeSuccessfulExit(output);
   if (bot === "antigravity") return validateAgySuccessfulExit(output);
   if (bot === "grok") return validateGrokSuccessfulExit(output);
   if (bot === "cursor") return validateCursorSuccessfulExit(output);
