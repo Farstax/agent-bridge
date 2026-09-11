@@ -289,7 +289,7 @@ describe("outward ACP stdio boundary", () => {
       const outwardSessionId = created.result?.sessionId;
       expect(outwardSessionId).toEqual(expect.any(String));
 
-      const turn = await promptSession(server, 3, outwardSessionId!, "wire prompt");
+      const turn = await promptSession(server, 3, outwardSessionId!, "PHASED wire prompt");
       expect(turn.response).toMatchObject({
         jsonrpc: "2.0",
         id: 3,
@@ -298,16 +298,24 @@ describe("outward ACP stdio boundary", () => {
       const sessionUpdates = turn.notifications.filter((notification) => notification.method === "session/update");
       expect(sessionUpdates.length).toBeGreaterThan(0);
       expect(sessionUpdates.every((notification) => notification.params?.sessionId === outwardSessionId)).toBe(true);
+      expect(JSON.stringify(sessionUpdates)).not.toContain("thinking out loud");
       expect(sessionUpdates.some((notification) => {
-        const update = notification.params?.update as {
-          sessionUpdate?: unknown;
-          content?: { type?: unknown; text?: unknown };
-        } | undefined;
-        return update?.sessionUpdate === "agent_message_chunk"
-          && update.content?.type === "text"
-          && typeof update.content.text === "string"
-          && update.content.text.includes("wire prompt");
+        const update = notification.params?.update as { sessionUpdate?: unknown } | undefined;
+        return update?.sessionUpdate === "tool_call";
       })).toBe(true);
+      expect(sessionUpdates.some((notification) => {
+        const update = notification.params?.update as { sessionUpdate?: unknown } | undefined;
+        return update?.sessionUpdate === "usage_update";
+      })).toBe(true);
+      const answerUpdates = sessionUpdates.filter((notification) => {
+        const update = notification.params?.update as { sessionUpdate?: unknown } | undefined;
+        return update?.sessionUpdate === "agent_message_chunk";
+      });
+      expect(answerUpdates).toHaveLength(1);
+      expect(answerUpdates[0]?.params?.update).toMatchObject({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: expect.stringContaining("PHASED wire prompt") },
+      });
 
       await stopProcess(server);
       server = null;
