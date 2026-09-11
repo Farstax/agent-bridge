@@ -57,16 +57,16 @@ describe("provider-native context lifecycle", () => {
     try {
       const capturedPrompts: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
-        capturedPrompts.push(args[args.length - 1]);
+        capturedPrompts.push(args[1]);
         return JSON.stringify({ type: "result", result: "ok", session_id: "native-session-706" });
       });
       const engine = new BridgeEngine({
         surfaceIdentity: "test",
-        kind: "claude",
-        botConfig: { command: "claude", modelPreference: [] },
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        pollIntervalMs: 1000,
+        pollIntervalMs: 1000, workingDir: process.cwd(),
       }, database, makeMockClient(), { runCli });
 
       await withPassiveSurroundingContext([

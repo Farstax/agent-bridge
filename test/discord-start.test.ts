@@ -81,11 +81,11 @@ describe("Discord /start ingress", () => {
     const client = mockClient();
     const engine = new BridgeEngine({
       surfaceIdentity: "discord:interactive",
-      kind: "claude",
-      botConfig: { command: "claude", modelPreference: [] },
+      kind: "cursor",
+      botConfig: { command: "cursor", modelPreference: [] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
-      pollIntervalMs: 1000,
+      pollIntervalMs: 1000, workingDir: process.cwd(),
     }, db, client, { runCli });
     const resolved = resolveDiscordStartInteraction(interaction("incident-42"), { surfaceIdentity: "discord:interactive", chatKey: "channel:100", userId: "42" });
     expect(resolved.kind).toBe("accepted");

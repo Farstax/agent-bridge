@@ -7,8 +7,8 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
-function codexResult(text = "done", sessionId = "session-1"): string {
-  return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId });
+function providerResult(text = "done", sessionId = "11111111-1111-4111-8111-111111111111"): string {
+  return JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: text } });
 }
 
 function client() {
@@ -32,12 +32,12 @@ function client() {
 function engine(db: any, c: any, runCli: any, busyMessageMode: "augment" | "interrupt" | "queue" = "queue") {
   return new BridgeEngine({
     surfaceIdentity: "telegram:interactive",
-    kind: "claude",
-    botConfig: { command: "claude", modelPreference: [] },
+    kind: "antigravity",
+    botConfig: { command: "agy", modelPreference: [] },
     allowedUserIds: new Set(["42"]),
     executionMode: "safe",
     busyMessageMode,
-    pollIntervalMs: 1,
+    pollIntervalMs: 1, workingDir: process.cwd(),
   }, db, c, { runCli });
 }
 
@@ -85,7 +85,7 @@ describe("Telegram media group attachment ownership", () => {
   it("passes every supported album attachment to execution in message order and cleans the run directory", async () => {
     const db = openDb(":memory:");
     const c = client();
-    const runCli = vi.fn().mockResolvedValue(codexResult());
+    const runCli = vi.fn().mockResolvedValue(providerResult());
     const subject = engine(db, c, runCli);
 
     await subject.handleMessages(album());
@@ -109,7 +109,7 @@ describe("Telegram media group attachment ownership", () => {
       if (remotePath.endsWith("doc-id")) throw new Error("download failed");
       await writeFile(localPath, remotePath, "utf8");
     });
-    const runCli = vi.fn().mockResolvedValue(codexResult());
+    const runCli = vi.fn().mockResolvedValue(providerResult());
     const subject = engine(db, c, runCli);
 
     await subject.handleMessages(album());
@@ -127,7 +127,7 @@ describe("Telegram media group attachment ownership", () => {
     const firstResult = new Promise<string>((resolve) => { releaseFirst = resolve; });
     const runCli = vi.fn()
       .mockImplementationOnce(() => firstResult)
-      .mockResolvedValueOnce(codexResult("album done", "session-2"));
+      .mockResolvedValueOnce(providerResult("album done", "22222222-2222-4222-8222-222222222222"));
     const subject = engine(db, c, runCli, "queue");
 
     const first = subject.handleMessages([{
@@ -147,7 +147,7 @@ describe("Telegram media group attachment ownership", () => {
     expect(queued!.attachments.every((value) => existsSync(value))).toBe(true);
 
     const retainedPaths = [...queued!.attachments];
-    releaseFirst(codexResult("first done", "session-1"));
+    releaseFirst(providerResult("first done"));
     await first;
 
     expect(runCli).toHaveBeenCalledTimes(2);

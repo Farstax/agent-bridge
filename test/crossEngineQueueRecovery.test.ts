@@ -27,7 +27,7 @@ function makeMockClient() {
 }
 
 function makeEngine(
-  kind: "codex" | "claude",
+  kind: "codex" | "cursor",
   db: ReturnType<typeof openDb>,
   client: ReturnType<typeof makeMockClient>,
   runCli: ReturnType<typeof vi.fn>,
@@ -40,7 +40,7 @@ function makeEngine(
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       busyMessageMode: "augment",
-      pollIntervalMs: 1000,
+      pollIntervalMs: 1000, workingDir: process.cwd(),
     },
     db,
     client,
@@ -65,7 +65,7 @@ function claudeResult(text: string, sessionId: string) {
 }
 
 function wireInteractiveQueue(
-  engines: Record<"codex" | "claude", BridgeEngine>,
+  engines: Record<"codex" | "cursor", BridgeEngine>,
   deps: any,
 ) {
   for (const engine of Object.values(engines)) {
@@ -92,11 +92,11 @@ describe("cross-engine queue recovery", () => {
       .mockResolvedValueOnce(claudeResult("live", "session-live"));
     const engines = {
       codex: makeEngine("codex", db, client, recoveryRun),
-      claude: makeEngine("claude", db, client, preferredRun),
+      cursor: makeEngine("cursor", db, client, preferredRun),
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db, () => true),
+      fallbackChain: new ProviderFallbackChain(["codex", "cursor"], db, () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -104,7 +104,7 @@ describe("cross-engine queue recovery", () => {
     wireInteractiveQueue(engines, deps);
 
     try {
-      setUserCliPreference(db, "100", "claude");
+      setUserCliPreference(db, "100", "cursor");
       db.enqueueMsg(SURFACE, "100", {
         prompt: "recovered work",
         chatId: 100,
@@ -143,11 +143,11 @@ describe("cross-engine queue recovery", () => {
       .mockResolvedValueOnce(claudeResult("combined successor", "session-successor"));
     const engines = {
       codex: makeEngine("codex", db, client, recoveryRun),
-      claude: makeEngine("claude", db, client, preferredRun),
+      cursor: makeEngine("cursor", db, client, preferredRun),
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "claude"], db, () => true),
+      fallbackChain: new ProviderFallbackChain(["codex", "cursor"], db, () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -155,7 +155,7 @@ describe("cross-engine queue recovery", () => {
     wireInteractiveQueue(engines, deps);
 
     try {
-      setUserCliPreference(db, "100", "claude");
+      setUserCliPreference(db, "100", "cursor");
       db.enqueueMsg(SURFACE, "100", {
         prompt: "recovered work",
         chatId: 100,
@@ -176,7 +176,7 @@ describe("cross-engine queue recovery", () => {
       expect(preferredRun).toHaveBeenCalledTimes(2);
       const providerPrompts = preferredRun.mock.calls.map(([, args]) => {
         const argv = args as string[];
-        return argv.at(-1) ?? "";
+        return argv[1] ?? "";
       });
       expect(providerPrompts).toHaveLength(2);
       expect(providerPrompts[0]).toContain("recovered work");

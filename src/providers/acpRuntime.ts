@@ -260,6 +260,7 @@ export function acpProviderIdForBotName(
 export function buildResolvedAcpProviderInvocation(
   runtime: ResolvedProviderRuntime,
   sessionId: string | null,
+  prompt?: string,
 ): ProviderInvocation {
   if (runtime.transport !== "acp-stdio") {
     throw new Error(`Provider ${runtime.providerId} is not configured for ACP stdio`);
@@ -269,6 +270,7 @@ export function buildResolvedAcpProviderInvocation(
     args: [...runtime.args],
     nativeSessionMode: sessionId ? "resume" : "fresh",
     transport: "acp-stdio",
+    ...(prompt !== undefined ? { prompt } : {}),
   };
 }
 
@@ -278,7 +280,7 @@ export function buildAcpProviderInvocation(
   env: Record<string, string | undefined> = process.env,
 ): ProviderInvocation {
   const runtime = resolveProviderRuntime(providerId, env);
-  return buildResolvedAcpProviderInvocation(runtime, request.sessionId);
+  return buildResolvedAcpProviderInvocation(runtime, request.sessionId, request.prompt);
 }
 
 function providerBotKind(providerId: string): BotKind {

@@ -302,6 +302,7 @@ export function parseCliResult({
 
 function extractUpstreamCliError(raw: string): string | null {
   let turnFailed: string | null = null;
+  let resultError: string | null = null;
   let genericError: string | null = null;
   for (const line of raw.split(/\r?\n/)) {
     const start = line.indexOf("{");
@@ -310,12 +311,14 @@ function extractUpstreamCliError(raw: string): string | null {
       const obj = JSON.parse(line.slice(start));
       if (obj?.type === "turn.failed" && typeof obj?.error?.message === "string") {
         turnFailed = obj.error.message;
+      } else if (obj?.type === "result" && obj?.is_error === true && typeof obj?.result === "string") {
+        resultError = obj.result;
       } else if (obj?.type === "error" && typeof obj?.message === "string") {
         genericError = obj.message;
       }
     } catch { /* not JSON, skip */ }
   }
-  return turnFailed ?? genericError;
+  return turnFailed ?? resultError ?? genericError;
 }
 
 export function toUserMessage(err: Error): string {

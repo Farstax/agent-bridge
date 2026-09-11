@@ -7,6 +7,8 @@ proprietary wrapper around ACP.
 Pinned SDK: `@agentclientprotocol/sdk@1.4.0` (stable ACP v1 entry point).
 Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
 (maintained implementation; bundled in the active Agent Bridge release).
+Pinned Claude ACP adapter: `@agentclientprotocol/claude-agent-acp@0.76.0`
+(official Registry distribution; bundled in the active Agent Bridge release).
 
 ## Ownership
 
@@ -55,6 +57,25 @@ and runtime inspection resolve the same launchable artifact:
 Set `CODEX_ACP_COMMAND` only to override that bundled path. There is no
 silent fallback to `codex exec` if the adapter is missing. Managed install
 and upgrade preserve `CODEX_ACP_COMMAND` and `CODEX_ACP_ARGS` when configured.
+
+## Claude runtime
+
+Claude uses the same managed ACP lifecycle as Codex. There is no native
+Claude stream-json invocation or parser path.
+
+```bash
+CLAUDE_ACP_COMMAND=...              # optional override of the bundled adapter
+CLAUDE_ACP_ARGS=...                 # optional extra adapter argv
+```
+
+The release owns `@agentclientprotocol/claude-agent-acp@0.76.0` and resolves
+the default executable as
+`$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/claude-agent-acp`. Session
+mode stays `default` for safe and trusted runs because Agent Bridge answers
+ACP permission requests. Claude setting sources are disabled for every
+Bridge run so local allow rules cannot bypass that authority. Strict
+tool-free runs also disable built-in tools, external MCP configuration, and
+all configured tools through Claude ACP session metadata.
 
 ## Process lifecycle
 
@@ -112,7 +133,7 @@ Initialize advertises only the client capabilities Agent Bridge actually
 needs: `plan: {}`, since Bridge retains structured plan updates as part of
 rich ACP event retention. Filesystem and terminal client methods are not
 advertised; the provider agent keeps those tools. Permission requests are
-mapped onto Bridge `safe` / `trusted` execution authority: `safe` selects the
+mapped onto Bridge `safe` / `trusted` execution authority. For Codex, `safe` selects the
 Codex ACP `read-only` agent mode (`approvalsReviewer: "user"` — every
 mutation/network request is routed back through Bridge's own permission
 decision) and `trusted` selects `agent-full-access`. Codex ACP's `agent` mode
@@ -135,13 +156,16 @@ that guarantees genuinely tool-free execution, so `buildInvocation` fails
 closed (`CodexAcpToolFreeUnsupportedError`) for `toolMode: "none"` rather than
 silently weakening Advisor's tool-free contract to read-only.
 
+Claude ACP supports strict tool-free execution through its provider metadata.
+Agent Bridge supplies an empty tool set, disables built-in tools and setting
+sources, clears MCP servers, and enables strict MCP configuration.
+
 ## Non-goals
 
 - Remote HTTP/WebSocket ACP transport
 - Farstax outward ACP exposure
-- Migrating Claude, Agy, Cursor, or Grok in this phase
+- Migrating Agy, Cursor, or Grok in this phase
 - Changing Telegram/Discord presentation to show tool calls or plans
-- A full interactive ACP `authenticate` handshake. When `CODEX_API_KEY` is
-  present, the ACP child sets `DEFAULT_AUTH_REQUEST={"methodId":"api-key"}`
-  so the adapter uses the workspace-local key. ChatGPT
-  login already stored in `~/.codex` remains sufficient without that env.
+- Remote interactive authentication UI. Provider API-key authentication uses
+  the ACP authenticate method when configured; existing provider-local login
+  state remains available to the managed adapter.

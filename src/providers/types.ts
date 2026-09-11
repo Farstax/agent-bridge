@@ -31,7 +31,7 @@ export interface ProviderAdapter {
 export type ChainCliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
 
 // Issue #135 Phase 3B — provider runtime invocation/parsing boundary.
-// Shared request/result shapes for // src/providers/claudeRuntime.ts. Deliberately narrower than
+// Shared request/result shapes for provider runtime modules. Deliberately narrower than
 // buildCliInvocation()'s full parameter set: no bot/sessionMode/logFile/
 // homeDir, since only antigravity uses logFile/homeDir and bot is already
 // implied by which runtime module is called.
@@ -60,6 +60,13 @@ export interface ProviderInvocation {
   nativeSessionMode: "fresh" | "resume";
   /** Process transport. One-shot stdout collection is the default CLI path. */
   transport?: "oneshot" | "acp-stdio";
+  /**
+   * ACP-stdio only: the fully seeded prompt (execution-contract/slash-guard
+   * applied by seedFreshExecutionContract). ACP has no args/stdin to carry it,
+   * so callers building the real ACP request must prefer this over their own
+   * unseeded prompt text.
+   */
+  prompt?: string;
 }
 
 // Issue #135 Phase 3C — Antigravity is the only provider using logFile/

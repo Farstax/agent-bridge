@@ -85,7 +85,7 @@ cli_command_version() {
   local command="$1" raw
   local configured=""
   case "${command}" in
-    claude) configured="${CLAUDE_COMMAND:-}" ;;
+    claude) configured="${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" ;;
     codex) configured="${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" ;;
     agy) configured="${ANTIGRAVITY_COMMAND:-}" ;;
   esac
@@ -96,28 +96,6 @@ cli_command_version() {
   fi
   raw="$(run_as_target_user "${command}" --version 2>/dev/null || true)"
   printf '%s\n' "${raw}" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?' | head -1 || true
-}
-
-update_claude_runtime() {
-  local command="${CLAUDE_COMMAND:-claude}"
-  if ! command -v "${command}" >/dev/null 2>&1 && [[ ! -x "${command}" ]]; then
-    echo "claude runtime executable not found: ${command}" >&2
-    return 1
-  fi
-  echo "[update] Updating Claude through the active executable (${command})..."
-  run_as_target_user "${command}" update
-}
-
-verify_claude_runtime_update() {
-  local before="$1" after="$2" package_version="$3"
-  # Claude's native updater owns the active executable. Package metadata is
-  # only a drift signal: it must never be used as qualification evidence.
-  # When it changed independently and the native updater leaves the runtime
-  # where it was, fail closed instead of qualifying the package version.
-  if [[ -n "${package_version}" && "${before}" == "${after}" && "${after}" != "${package_version}" ]]; then
-    echo "Claude runtime update mismatch: active executable remains ${after}, package metadata reports ${package_version}" >&2
-    return 1
-  fi
 }
 
 qualification_bridge_commit() {
@@ -243,21 +221,14 @@ require_node
 # ── --update mode: update CLIs + qualify + build + test + safe restart ────────
 # Does NOT reinstall systemd units.
 if [[ "${1:-}" == "--update" ]]; then
-  before_claude=""
   before_codex="$(cli_command_version codex)"
-  before_claude_package=""
   before_claude="$(cli_command_version claude)"
-  if command -v npm >/dev/null 2>&1; then
-    before_claude_package="$(npm_pkg_version @anthropic-ai/claude-code)"
-  fi
   before_agy="$(cli_command_version agy)"
 
   echo "[update] Updating CLI packages..."
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
   fi
-  update_claude_runtime
-
   echo "[update] Updating agy (antigravity)..."
   bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
 
@@ -266,7 +237,6 @@ if [[ "${1:-}" == "--update" ]]; then
     echo "unable to verify active Claude runtime version after update" >&2
     exit 1
   fi
-  verify_claude_runtime_update "${before_claude}" "${after_claude}" "${before_claude_package}"
   qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
 
   after_codex="$(cli_command_version codex)"
@@ -327,22 +297,13 @@ if [[ "${1:-}" == "--clis-only" ]]; then
   fi
 
   updated_any=0
-  before_claude="$(cli_command_version claude)"
-  claude_package_version="$(npm_pkg_version @anthropic-ai/claude-code)"
-  update_claude_runtime
-  after_claude="$(cli_command_version claude)"
-  if [[ -z "${after_claude}" ]]; then
-    echo "unable to verify active Claude runtime version after update" >&2
+  claude_version="$(cli_command_version claude)"
+  if [[ -z "${claude_version}" ]]; then
+    echo "unable to verify release-owned Claude ACP runtime version" >&2
     exit 1
   fi
-  if [[ "${after_claude}" != "${before_claude}" ]]; then
-    echo "updated: claude ${before_claude}→${after_claude}"
-    updated_any=1
-  else
-    echo "verified: claude ${after_claude}"
-  fi
-  verify_claude_runtime_update "${before_claude}" "${after_claude}" "${claude_package_version}"
-  qualify_provider_if_needed claude "${before_claude}" "${after_claude}"
+  echo "verified: claude-acp ${claude_version}"
+  qualify_provider_if_needed claude "${claude_version}" "${claude_version}"
 
   if [[ "${updated_any}" == "0" ]]; then
     echo "no-op: CLIs already up to date; qualification cache verified"
@@ -353,7 +314,6 @@ fi
 if [[ "${1:-}" != "--skip-cli-install" ]]; then
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install)
-    npm update -g @anthropic-ai/claude-code 2>/dev/null || true
     install_shared_skills
   fi
 
@@ -369,8 +329,8 @@ if [[ "${1:-}" != "--skip-cli-install" ]]; then
     run_as_target_user agy --help >/dev/null
   fi
 
-  if command -v claude >/dev/null 2>&1; then
-    run_as_target_user claude --version >/dev/null
+  if [[ -x "${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" ]]; then
+    run_as_target_user "${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" --version >/dev/null
   fi
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" && "${AGENT_BRIDGE_SKILLS}" != "none" && "${AGENT_BRIDGE_SKILLS}" != "skip" ]]; then
   install_shared_skills

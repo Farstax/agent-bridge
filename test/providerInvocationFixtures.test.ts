@@ -38,8 +38,8 @@ describe("provider invocation fixtures — claude ACP", () => {
       toolMode: "none",
     });
     expect(fresh).toMatchObject({
-      command: "npx",
-      args: ["@agentclientprotocol/claude-agent-acp@0.76.0"],
+      command: expect.stringContaining("node_modules/.bin/claude-agent-acp") as unknown as string,
+      args: [],
       nativeSessionMode: "fresh",
       transport: "acp-stdio",
     });
@@ -55,8 +55,8 @@ describe("provider invocation fixtures — claude ACP", () => {
       executionMode: "trusted",
     });
     expect(resumed).toMatchObject({
-      command: "npx",
-      args: ["@agentclientprotocol/claude-agent-acp@0.76.0"],
+      command: expect.stringContaining("node_modules/.bin/claude-agent-acp") as unknown as string,
+      args: [],
       nativeSessionMode: "resume",
       transport: "acp-stdio",
     });

@@ -33,7 +33,7 @@ vi.mock("node:child_process", async (importOriginal) => {
       if (args.includes("--version")) {
         const mockedList = (globalThis as any).__mockExecSync?.("npm list -g --depth=0 --json");
         const installed = mockedList ? JSON.parse(String(mockedList)).dependencies ?? {} : {};
-        if (command === "claude") return installed["@anthropic-ai/claude-code"]?.version ?? "2.1.185";
+        if (command.includes("claude")) return "@agentclientprotocol/claude-agent-acp 0.76.0";
         if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
         if (command === "agy") return "1.0.10";
       }
@@ -866,33 +866,11 @@ describe("SelfPlugin — extended checks", () => {
 
   it("reports appropriate status for agent CLI updates based on version distance thresholds", async () => {
     (globalThis as any).__mockExecSync = (cmd: string) => {
-      if (cmd.includes("npm list -g --depth=0 --json")) {
-        return JSON.stringify({
-          dependencies: {
-            "@anthropic-ai/claude-code": { version: "2.1.158" },
-            "@openai/codex": { version: "0.135.0" }
-          }
-        });
-      }
-      if (cmd.includes("npm view @anthropic-ai/claude-code version") && !cmd.includes("versions")) {
-        return "2.1.168";
-      }
-      if (cmd.includes("npm view @openai/codex version") && !cmd.includes("versions")) {
-        return "0.137.0";
-      }
-      if (cmd.includes("npm view @anthropic-ai/claude-code versions --json")) {
-        return JSON.stringify([
-          "2.1.158", "2.1.159", "2.1.160", "2.1.161", "2.1.162",
-          "2.1.163", "2.1.164", "2.1.165", "2.1.166", "2.1.167", "2.1.168"
-        ]);
-      }
-      if (cmd.includes("npm view @openai/codex versions --json")) {
-        return JSON.stringify(["0.135.0", "0.136.0", "0.137.0"]);
-      }
+      if (cmd.includes("agy --version")) return "1.0.10";
       return undefined;
     };
     (globalThis as any).__mockExecFileSync = (command: string) => {
-      if (command.includes("claude")) return "Claude Code 2.1.158";
+      if (command.includes("claude")) return "@agentclientprotocol/claude-agent-acp 0.75.0";
       if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
       return "agy 1.0.10";
     };
@@ -901,12 +879,10 @@ describe("SelfPlugin — extended checks", () => {
     const plugin = new SelfPlugin(db as any, dbPath);
     const report = await plugin.check();
 
-    const claudeCheck = report.checks.find(c => c.name === "cli-update-claude-code");
+    const claudeCheck = report.checks.find(c => c.name === "cli-update-claude");
     expect(claudeCheck).toBeDefined();
-    expect(claudeCheck?.status).toBe("red"); // 10 versions behind
-    expect(claudeCheck?.message).toContain("2.1.158 -> 2.1.168");
-    expect(claudeCheck?.message).toContain("upgrade.sh");
-    expect(claudeCheck?.message).toContain("--clis-only");
+    expect(claudeCheck?.status).toBe("amber"); // release lock differs (0.75.0 vs 0.76.0)
+    expect(claudeCheck?.message).toContain("0.75.0 differs from release lock 0.76.0");
 
     const codexCheck = report.checks.find(c => c.name === "cli-update-codex");
     expect(codexCheck).toBeDefined();
@@ -920,21 +896,11 @@ describe("SelfPlugin — extended checks", () => {
 
   it("reports green status when agent CLIs are up to date", async () => {
     (globalThis as any).__mockExecSync = (cmd: string) => {
-      if (cmd.includes("npm list -g --depth=0 --json")) {
-        return JSON.stringify({
-          dependencies: {
-            "@anthropic-ai/claude-code": { version: "2.1.185" },
-            "@openai/codex": { version: "0.141.0" }
-          }
-        });
-      }
-      if (cmd.includes("npm view @anthropic-ai/claude-code version") && !cmd.includes("versions")) return "2.1.185";
-      if (cmd.includes("npm view @openai/codex version") && !cmd.includes("versions")) return "0.141.0";
       if (cmd.includes("agy --version")) return "1.0.10";
       return undefined;
     };
     (globalThis as any).__mockExecFileSync = (command: string) => {
-      if (command.includes("claude")) return "Claude Code 2.1.185";
+      if (command.includes("claude")) return "@agentclientprotocol/claude-agent-acp 0.76.0";
       if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
       return "agy 1.0.10";
     };
@@ -943,10 +909,10 @@ describe("SelfPlugin — extended checks", () => {
     const plugin = new SelfPlugin(db as any, dbPath);
     const report = await plugin.check();
 
-    const claudeCheck = report.checks.find(c => c.name === "cli-update-claude-code");
+    const claudeCheck = report.checks.find(c => c.name === "cli-update-claude");
     expect(claudeCheck).toBeDefined();
     expect(claudeCheck?.status).toBe("green");
-    expect(claudeCheck?.message).toContain("up to date");
+    expect(claudeCheck?.message).toContain("claude ACP adapter 0.76.0");
 
     const codexCheck = report.checks.find(c => c.name === "cli-update-codex");
     expect(codexCheck).toBeDefined();
@@ -966,22 +932,12 @@ describe("SelfPlugin — extended checks", () => {
     const previousRelease = process.env.BRIDGE_CURRENT_RELEASE_DIR;
     process.env.BRIDGE_CURRENT_RELEASE_DIR = process.cwd();
     (globalThis as any).__mockExecSync = (cmd: string) => {
-      if (cmd.includes("npm list -g --depth=0 --json")) {
-        return JSON.stringify({
-          dependencies: {
-            "@anthropic-ai/claude-code": { version: "2.1.185" },
-            "@openai/codex": { version: "0.141.0" },
-          },
-        });
-      }
-      if (cmd.includes("npm view @anthropic-ai/claude-code version") && !cmd.includes("versions")) return "2.1.185";
-      if (cmd.includes("npm view @openai/codex version") && !cmd.includes("versions")) return "0.141.0";
       if (cmd.includes("agy --version")) return "1.0.10";
       return undefined;
     };
     (globalThis as any).__mockExecFileSync = (command: string) => {
       if (String(command).includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
-      if (command.includes("claude")) return "Claude Code 2.1.185";
+      if (command.includes("claude")) return "@agentclientprotocol/claude-agent-acp 0.76.0";
       if (command.includes("codex")) return "codex 0.141.0";
       return "agy 1.0.10";
     };
@@ -1000,23 +956,21 @@ describe("SelfPlugin — extended checks", () => {
     }
   });
 
-  it("handles npm list errors gracefully without failing the entire plugin", async () => {
-    (globalThis as any).__mockExecSync = (cmd: string) => {
-      if (cmd.includes("npm list -g --depth=0 --json")) {
-        throw new Error("npm command completely failed");
-      }
-      return undefined;
+  it("handles missing ACP adapter executables gracefully without failing the entire plugin", async () => {
+    (globalThis as any).__mockExecFileSync = (command: string) => {
+      if (command.includes("claude")) throw new Error("claude ACP adapter executable not found");
+      if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
+      return "agy 1.0.10";
     };
 
     const { SelfPlugin } = await import("../src/health/plugins/self.js");
     const plugin = new SelfPlugin(db as any, dbPath);
     const report = await plugin.check();
 
-    // The plugin check itself should succeed, but there won't be any update checks
-    expect(report.status).toBe("amber");
-    const claudeCheck = report.checks.find(c => c.name === "cli-update-claude-code");
-    expect(claudeCheck?.status).toBe("amber");
-    expect(claudeCheck?.message).toContain("npm package metadata unavailable");
+    expect(report.status).toBe("red");
+    const claudeCheck = report.checks.find(c => c.name === "cli-update-claude");
+    expect(claudeCheck?.status).toBe("red");
+    expect(claudeCheck?.message).toContain("claude ACP adapter executable not found");
   });
   it("reports agy version as green when agy is installed", async () => {
     (globalThis as any).__mockExecSync = (cmd: string) => {

@@ -35,12 +35,12 @@ describe("Claude ACP provider", () => {
       },
     }));
     expect(getAcpProviderPolicy("claude")).toBe(claudeAcpPolicy);
-    expect(resolveProviderRuntime("claude")).toEqual(expect.objectContaining({
+    expect(resolveProviderRuntime("claude", { BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge" })).toEqual(expect.objectContaining({
       providerId: "claude",
       transport: "acp-stdio",
-      executable: "npx",
-      args: ["@agentclientprotocol/claude-agent-acp@0.76.0"],
-      versionArgs: ["@agentclientprotocol/claude-agent-acp@0.76.0", "--version"],
+      executable: "/opt/agent-bridge/node_modules/.bin/claude-agent-acp",
+      args: [],
+      versionArgs: ["--version"],
       runtimeIdentity: expect.stringMatching(/^acp:claude-acp@0\.76\.0:[a-f0-9]{64}$/),
       toolFree: true,
       provisionalAnswers: true,
@@ -54,9 +54,10 @@ describe("Claude ACP provider", () => {
       model: null,
     });
     expect(invocation).toEqual({
-      command: "npx",
-      args: ["@agentclientprotocol/claude-agent-acp@0.76.0"],
+      command: expect.stringMatching(/node_modules\/\.bin\/claude-agent-acp$/),
+      args: [],
       nativeSessionMode: "fresh",
+      prompt: "hello",
       transport: "acp-stdio",
     });
   });
@@ -64,9 +65,11 @@ describe("Claude ACP provider", () => {
   it("keeps Bridge permission authority in Claude manual mode for safe and trusted Runs", () => {
     expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }))).toMatchObject({
       modeId: "default",
+      meta: { claudeCode: { options: { settingSources: [] } } },
     });
     expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }))).toMatchObject({
       modeId: "default",
+      meta: { claudeCode: { options: { settingSources: [] } } },
     });
   });
 
@@ -87,12 +90,15 @@ describe("Claude ACP provider", () => {
           options: {
             tools: [],
             mcpServers: {},
+            strictMcpConfig: true,
             settingSources: [],
           },
         },
       },
     });
-    expect(claudeAcpPolicy.sessionSettings?.(request()).meta).toBeUndefined();
+    expect(claudeAcpPolicy.sessionSettings?.(request()).meta).toEqual({
+      claudeCode: { options: { settingSources: [] } },
+    });
     expect(supportsToolFreeMode("claude")).toBe(true);
   });
 

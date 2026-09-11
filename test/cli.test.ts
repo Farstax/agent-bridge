@@ -81,15 +81,7 @@ describe("CLI Runner", () => {
     expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
   });
 
-  it("technically disables Claude tools and rejects unsupported tool-free providers", () => {
-    const claude = buildCliInvocation({
-      bot: "claude", prompt: "advise", sessionId: null, command: "claude",
-      model: "claude-fable-5", outputFormat: "json", toolMode: "none",
-    });
-    expect(claude.args).toEqual(expect.arrayContaining(["--tools", "", "--disable-slash-commands", "--strict-mcp-config"]));
-    // The real CLI rejects a bare {}: --mcp-config must be {"mcpServers":{}}.
-    expect(claude.args[claude.args.indexOf("--mcp-config") + 1]).toBe('{"mcpServers":{}}');
-
+  it("rejects unsupported tool-free providers", () => {
     const agy = buildCliInvocation({
       bot: "antigravity", prompt: "advise", sessionId: null, command: "agy",
       model: "gemini-3.5-flash-high", outputFormat: "json", toolMode: "none",
@@ -478,36 +470,8 @@ describe("buildCliInvocation — attachment injection", () => {
     expect(args).not.toContain("-i");
   });
 
-  it("claude with attachments: returns stdin field with stream-json payload and uses stream-json args", async () => {
-    const { mkdtemp: mkd, writeFile: wf, rm: rmf } = await import("node:fs/promises");
-    const { join: pjoin } = await import("node:path");
-    const { tmpdir } = await import("node:os");
-    const dir = await mkd(pjoin(tmpdir(), "bridge-test-"));
-    const imgPath = pjoin(dir, "img.png");
-    await wf(imgPath, Buffer.from([137, 80, 78, 71]));
-    try {
-      const result = buildCliInvocation({
-        ...base,
-        bot: "claude",
-        command: "claude",
-        attachments: [imgPath],
-      });
-      expect(result.args).toContain("--input-format");
-      expect(result.args).toContain("stream-json");
-      expect(result.args).toContain("--output-format");
-      expect(result.args).toContain("--verbose");
-      expect(result.args).toContain("--include-partial-messages");
-      expect(result.stdin).toBeDefined();
-      const payload = JSON.parse(result.stdin!);
-      expect(payload.type).toBe("user");
-      expect(Array.isArray(payload.message.content)).toBe(true);
-    } finally {
-      await rmf(dir, { recursive: true, force: true });
-    }
-  });
-
   it("all bots: appends outputDir instruction to prompt when outputDir is set", () => {
-    for (const bot of ["antigravity", "claude"] as const) {
+    for (const bot of ["antigravity"] as const) {
       const { args } = buildCliInvocation({
         ...base,
         bot,
@@ -520,7 +484,7 @@ describe("buildCliInvocation — attachment injection", () => {
   });
 
   it("outputDir instruction states that the bridge handles delivery and omit file paths", () => {
-    for (const bot of ["antigravity", "claude"] as const) {
+    for (const bot of ["antigravity"] as const) {
       const { args } = buildCliInvocation({
         ...base,
         bot,
@@ -536,8 +500,8 @@ describe("buildCliInvocation — attachment injection", () => {
   it("wraps prompts with the minimum response contract when Soul is absent", () => {
     const { args } = buildCliInvocation({
       ...base,
-      bot: "claude",
-      command: "claude",
+      bot: "antigravity",
+      command: "agy",
     });
     const prompt = args[args.length - 1];
     expect(prompt).toContain("Response contract:");
@@ -548,16 +512,6 @@ describe("buildCliInvocation — attachment injection", () => {
 
 describe("buildCliInvocation — effort flags", () => {
   const base = { prompt: "hello", sessionId: null, model: null };
-
-  it("maps Claude effort to --effort", () => {
-    const { args } = buildCliInvocation({
-      ...base,
-      bot: "claude",
-      command: "claude",
-      effort: "xhigh",
-    });
-    expect(args.slice(0, 2)).toEqual(["--effort", "xhigh"]);
-  });
 
   it("leaves Agy effort unimplemented because the CLI has no effort flag", () => {
     const { args } = buildCliInvocation({

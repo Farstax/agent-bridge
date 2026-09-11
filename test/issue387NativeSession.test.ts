@@ -13,7 +13,7 @@ const base = {
 };
 
 describe("Issue #387 native invocation boundary", () => {
-  it("reports resume when Claude resumes a stored native session", () => {
+  it("reports resume when Claude resumes a stored session via ACP stdio", () => {
     const invocation = buildCliInvocation({
       ...base,
       bot: "claude",
@@ -22,7 +22,7 @@ describe("Issue #387 native invocation boundary", () => {
     });
 
     expect(invocation.nativeSessionMode).toBe("resume");
-    expect(invocation.args).toContain("--resume");
+    expect(invocation.transport).toBe("acp-stdio");
   });
 
   it("reports fresh when a provider has no resumable session", () => {

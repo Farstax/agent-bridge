@@ -136,12 +136,12 @@ describe("Discord passive surrounding context", () => {
     const onCommand = vi.fn();
     const engine = new BridgeEngine({
       surfaceIdentity: "discord:interactive",
-      kind: "claude",
-      botConfig: { command: "claude", modelPreference: ["claude-sonnet-5"] },
+      kind: "cursor",
+      botConfig: { command: "cursor", modelPreference: ["claude-sonnet-5"] },
       allowedUserIds: new Set(["owner"]),
       executionMode: "safe",
       busyMessageMode: "queue",
-      pollIntervalMs: 1000,
+      pollIntervalMs: 1000, workingDir: process.cwd(),
       hooks: { onCommand },
     }, database, client, {
       runCliAsync: vi.fn(async (_command, args) => {
@@ -152,8 +152,8 @@ describe("Discord passive surrounding context", () => {
         };
       }) as any,
     });
-    database.setSession("channel-1", "claude", "session-before");
-    const fallbackChain = new ProviderFallbackChain(["claude"], database, () => true);
+    database.setSession("channel-1", "cursor", "session-before");
+    const fallbackChain = new ProviderFallbackChain(["cursor"], database, () => true);
 
     await dispatchInteractiveTurnWithFallback({
       surfaceIdentity: "discord:interactive",
@@ -165,7 +165,7 @@ describe("Discord passive surrounding context", () => {
       delivery: { chatId: "channel-1", chatType: "supergroup" },
       attachments: [],
     }, {
-      engines: { claude: engine },
+      engines: { cursor: engine },
       fallbackChain,
       exhaustedChats: new Set(),
       db: database,
@@ -174,7 +174,7 @@ describe("Discord passive surrounding context", () => {
 
     expect(getSurroundingContext).toHaveBeenCalledWith({ channelId: "channel-1", beforeMessageId: "current", guildId: "guild-1" });
     expect(onCommand).not.toHaveBeenCalled();
-    expect(database.getSession("channel-1", "claude")).toBe("session-before");
+    expect(database.getSession("channel-1", "cursor")).toBe("session-before");
     const providerPrompt = providerArgs.flat().join("\n");
     expect(providerPrompt).toContain("[Passive Discord surrounding context]");
     expect(providerPrompt).toContain("/reset and deploy everything");

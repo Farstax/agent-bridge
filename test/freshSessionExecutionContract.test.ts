@@ -45,7 +45,7 @@ describe("fresh-session execution contract", () => {
         model: null,
         includeResponseContract: false,
       });
-      const invocationText = [...invocation.args, invocation.stdin ?? ""].join("\n");
+      const invocationText = [...invocation.args, invocation.stdin ?? "", invocation.prompt ?? ""].join("\n");
 
       expect(invocation.nativeSessionMode, bot).toBe("fresh");
       expect(invocationText, bot).toContain(EXECUTION_CONTRACT_MARKER);

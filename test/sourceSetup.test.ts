@@ -20,24 +20,27 @@ describe("source setup", () => {
   it("detects interactive providers through the shared registry and keeps runtime fallback order", () => {
     const installed = new Map([
       ["codex-acp", "/usr/local/bin/codex-acp"],
+      ["claude-agent-acp", "/usr/local/bin/claude-agent-acp"],
       ["grok", "/usr/local/bin/grok"],
       ["agy", "/usr/local/bin/agy"],
       ["cursor-agent", "/usr/local/bin/cursor-agent"],
     ]);
 
     const providers = detectInteractiveProviders({
-      env: { CODEX_ACP_COMMAND: "codex-acp" },
+      env: { CODEX_ACP_COMMAND: "codex-acp", CLAUDE_ACP_COMMAND: "claude-agent-acp" },
       resolvePath: (command) => installed.get(command) ?? null,
     });
 
     expect(providers.map((provider) => provider.chainKind)).toEqual([
       "codex",
+      "claude",
       "grok",
       "antigravity",
       "cursor",
     ]);
     expect(providers.map((provider) => provider.commandEnv)).toEqual([
       "CODEX_ACP_COMMAND",
+      "CLAUDE_ACP_COMMAND",
       "GROK_COMMAND",
       "ANTIGRAVITY_COMMAND",
       "CURSOR_COMMAND",
@@ -46,10 +49,10 @@ describe("source setup", () => {
 
   it("renders one minimal interactive config from detected providers", () => {
     const providers = detectInteractiveProviders({
-      env: { CODEX_ACP_COMMAND: "codex-acp" },
+      env: { CODEX_ACP_COMMAND: "codex-acp", CLAUDE_ACP_COMMAND: "claude-agent-acp" },
       resolvePath: (command) => ({
         "codex-acp": "/opt/bin/codex-acp",
-        claude: "/opt/bin/claude",
+        "claude-agent-acp": "/opt/bin/claude-agent-acp",
       } as Record<string, string | undefined>)[command] ?? null,
     });
 
@@ -66,7 +69,7 @@ describe("source setup", () => {
     expect(parsed.BRIDGE_PROJECT_DIR).toBe("/srv/example-app");
     expect(parsed.DB_PATH).toBe(resolveSourceInteractiveDbPath("/srv/example-app"));
     expect(parsed.CODEX_ACP_COMMAND).toBe("/opt/bin/codex-acp");
-    expect(parsed.CLAUDE_COMMAND).toBe("/opt/bin/claude");
+    expect(parsed.CLAUDE_ACP_COMMAND).toBe("/opt/bin/claude-agent-acp");
     expect(parsed.INTERACTIVE_DEFAULT_CLI).toBe("codex");
     expect(parsed.INTERACTIVE_CLI_CHAIN).toBe("codex,claude");
     expect(parsed.BRIDGE_BUSY_MESSAGE_MODE).toBe("interrupt");

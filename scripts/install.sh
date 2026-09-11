@@ -89,7 +89,7 @@ seed_from_env_file() {
   for key in BRIDGE_ROOT_DIR BRIDGE_PROJECT_DIR BRIDGE_CURRENT_RELEASE_DIR \
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
                TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
-              ANTIGRAVITY_COMMAND CLAUDE_COMMAND \
+              ANTIGRAVITY_COMMAND CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS \
               CODEX_ACP_COMMAND CODEX_ACP_ARGS \
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
@@ -204,8 +204,8 @@ prompt DISCORD_APPLICATION_ID         "Discord application ID (leave blank to sk
 prompt DISCORD_ALLOWED_USER_IDS       "Discord allowed user IDs (leave blank to skip)"
 prompt DISCORD_GUILD_ID               "Discord guild ID (optional, leave blank for global commands)"
 prompt CODEX_ACP_COMMAND   "Codex ACP command"   "${REPO_DIR}/node_modules/.bin/codex-acp"
+prompt CLAUDE_ACP_COMMAND  "Claude ACP command"  "${REPO_DIR}/node_modules/.bin/claude-agent-acp"
 prompt ANTIGRAVITY_COMMAND "Antigravity command" "$(command -v agy    2>/dev/null || true)"
-prompt CLAUDE_COMMAND      "Claude command"      "$(command -v claude 2>/dev/null || true)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""
 prompt CLAUDE_PROJECT_DIR      "Claude working directory (blank = BRIDGE_PROJECT_DIR)"      ""
@@ -289,16 +289,6 @@ resolve_binary() {
   echo ""
 }
 
-# Install or upgrade Claude via npm; Codex ACP is a pinned project dependency.
-install_or_upgrade_npm_clis() {
-  if ! command -v npm >/dev/null 2>&1; then
-    echo "npm not found — install Node 24+ first" >&2
-    exit 1
-  fi
-  npm install -g @anthropic-ai/claude-code
-  export PATH="${TARGET_HOME}/.local/bin:${PATH}"
-}
-
 # Install or upgrade agy via the Google Antigravity installer (idempotent).
 ensure_agy_cli() {
   echo "Installing/updating agy via Google Antigravity installer..."
@@ -311,20 +301,16 @@ ensure_target_user
 
 if [[ "${SKIP_CLI_INSTALL}" != "1" ]]; then
   (cd "${REPO_DIR}" && npm install)
-  install_or_upgrade_npm_clis
   ensure_agy_cli
   ANTIGRAVITY_COMMAND="${ANTIGRAVITY_COMMAND:-$(resolve_binary agy)}"
-  CLAUDE_COMMAND="${CLAUDE_COMMAND:-$(resolve_binary claude)}"
   install_shared_skills
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" ]]; then
   install_shared_skills
 fi
 
 ensure_var CODEX_ACP_COMMAND   "Codex ACP command"
+ensure_var CLAUDE_ACP_COMMAND  "Claude ACP command"
 ensure_var ANTIGRAVITY_COMMAND "Antigravity command"
-if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
-  ensure_var CLAUDE_COMMAND "Claude command"
-fi
 
 # Write local .env.* files from examples (machine-specific values substituted in)
 echo "Writing local env files..."
@@ -369,6 +355,8 @@ _write_shared_defaults() {
     [[ -n "${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES:-}" ]] && echo "AGENT_BRIDGE_AUTONOMY_MAX_CYCLES=${AGENT_BRIDGE_AUTONOMY_MAX_CYCLES}"
     [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
+    [[ -n "${CLAUDE_ACP_COMMAND:-}" ]] && echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
+    [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
     echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
     echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
     echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
@@ -398,6 +386,8 @@ _write_systemd_defaults() {
     [[ -n "${!proj_var:-}" ]] && echo "${proj_var}=${!proj_var}"
     if [[ "${bot}" == "codex" ]]; then
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
+    elif [[ "${bot}" == "claude" ]]; then
+      [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
     fi
     true
   } | sudo tee "${dest}" > /dev/null
@@ -434,9 +424,10 @@ _write_interactive_defaults() {
     echo "INTERACTIVE_DEFAULT_CLI=${INTERACTIVE_DEFAULT_CLI:-codex}"
     echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,grok,antigravity,cursor}"
     echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
-    echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
+    echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
     echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
+    [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
     echo "DB_PATH=${DB_PATH:-${BRIDGE_ROOT_DIR}/runtime/agent-bridge/interactive/bridge.sqlite}"
     true
   } | sudo tee "${dest}" > /dev/null
@@ -461,9 +452,10 @@ _write_discord_defaults() {
       echo "INTERACTIVE_DEFAULT_CLI=${INTERACTIVE_DEFAULT_CLI:-codex}"
       echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,grok,antigravity,cursor}"
       echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
-      echo "CLAUDE_COMMAND=${CLAUDE_COMMAND:-claude}"
+      echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
       echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
+      [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
       echo "BRIDGE_EXECUTION_MODE=${BRIDGE_EXECUTION_MODE:-trusted}"
     fi
     true
@@ -494,7 +486,7 @@ if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" ==
 fi
 
 if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
-  _write_systemd_defaults claude TELEGRAM_BOT_TOKEN_CLAUDE CLAUDE_COMMAND CLAUDE_PROJECT_DIR
+  _write_systemd_defaults claude TELEGRAM_BOT_TOKEN_CLAUDE CLAUDE_ACP_COMMAND CLAUDE_PROJECT_DIR
   install_unit agent-bridge-claude
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-claude"
 fi

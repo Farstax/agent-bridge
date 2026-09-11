@@ -3,7 +3,7 @@
  * multiple provider invocation builders.
  * INPUTS: A raw user prompt, optional soul context, output dir, attachments.
  * OUTPUTS: The final prompt text to send to a CLI.
- * NEIGHBORS: src/cli.ts, src/providers/claudeRuntime.ts
+ * NEIGHBORS: src/cli.ts, src/providers/acpRuntime.ts
  * LOGIC: Issue #135 Phase 3B — extracted so codex/claude provider runtime
  * modules and the remaining inline antigravity branch in src/cli.ts
  * can share this without a circular import between cli.ts and the new

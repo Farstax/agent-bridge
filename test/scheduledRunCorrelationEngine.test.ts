@@ -90,11 +90,11 @@ describe("authoritative scheduled Run correlation", () => {
       }));
       const engine = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
-        kind: "claude",
-        botConfig: { command: "claude", modelPreference: [] },
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        pollIntervalMs: 1000,
+        pollIntervalMs: 1000, workingDir: process.cwd(),
       }, db, mockClient(), { runCli });
 
       const turn = buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey);
@@ -107,7 +107,7 @@ describe("authoritative scheduled Run correlation", () => {
       expect(run).toEqual(expect.objectContaining({
         run_id: evidence!.runId,
         chat_id: routine.chatKey,
-        bot: "claude",
+        bot: "cursor",
         status: "done",
       }));
     } finally {
@@ -130,11 +130,11 @@ describe("authoritative scheduled Run correlation", () => {
       const codexCli = vi.fn().mockResolvedValue(JSON.stringify({ event: "result", result: { conversation_id: "11111111-2222-4333-8444-555555555555", status: "SUCCESS", response: "ROUTINE_TEST_OK" } }));
       const claude = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
-        kind: "claude",
-        botConfig: { command: "claude", modelPreference: [] },
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        pollIntervalMs: 1000,
+        pollIntervalMs: 1000, workingDir: process.cwd(),
         hooks: { onCapacityExhausted: async (chatKey) => { exhaustedChats.add(chatKey); } },
       }, db, mockClient(), { runCli: claudeCli });
       const codex = new BridgeEngine({
@@ -143,11 +143,11 @@ describe("authoritative scheduled Run correlation", () => {
         botConfig: { command: "agy", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        pollIntervalMs: 1000,
+        pollIntervalMs: 1000, workingDir: process.cwd(),
       }, db, mockClient(), { runCli: codexCli });
       const deps = {
-        engines: { claude, antigravity: codex },
-        fallbackChain: new ProviderFallbackChain(["claude", "antigravity"], db),
+        engines: { cursor: claude, antigravity: codex },
+        fallbackChain: new ProviderFallbackChain(["cursor", "antigravity"], db, () => true),
         exhaustedChats,
         db,
         notify: async () => undefined,
@@ -157,7 +157,7 @@ describe("authoritative scheduled Run correlation", () => {
           dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
       }
 
-      setUserCliPreference(db, routine.chatKey, "claude");
+      setUserCliPreference(db, routine.chatKey, "cursor");
       const turn = buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey);
       const outcome = await dispatchInteractiveTurnWithFallback(turn, deps);
       // Capacity fallback recovers the persisted occurrence through the pending queue.
@@ -197,10 +197,10 @@ describe("authoritative scheduled Run correlation", () => {
           id: "evt-start",
           runId: options.eventContext.runId,
           timestamp: new Date().toISOString(),
-          bot: "claude",
+          bot: "cursor",
           chatId: String(routine.chatKey),
           chatKey: routine.chatKey,
-          command: "claude",
+          command: "cursor",
           cwd: "/tmp",
           model: null,
         });
@@ -210,7 +210,7 @@ describe("authoritative scheduled Run correlation", () => {
           id: "evt-fail",
           runId: options.eventContext.runId,
           timestamp: new Date().toISOString(),
-          bot: "claude",
+          bot: "cursor",
           chatId: String(routine.chatKey),
           chatKey: routine.chatKey,
           category: "provider",
@@ -220,11 +220,11 @@ describe("authoritative scheduled Run correlation", () => {
       });
       const engine = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
-        kind: "claude",
-        botConfig: { command: "claude", modelPreference: [] },
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
-        pollIntervalMs: 1000,
+        pollIntervalMs: 1000, workingDir: process.cwd(),
       }, db, mockClient(), { runCli });
 
       await engine.handleInteractiveTurn(buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey));
@@ -235,7 +235,7 @@ describe("authoritative scheduled Run correlation", () => {
       expect(run).toEqual(expect.objectContaining({
         run_id: evidence!.runId,
         chat_id: routine.chatKey,
-        bot: "claude",
+        bot: "cursor",
         status: "failed",
       }));
     } finally {
@@ -258,7 +258,7 @@ describe("authoritative scheduled Run correlation", () => {
       expect(linkScheduledOccurrenceRun(db, key, "run-b")).toBe(true);
       expect(parseScheduledOccurrenceEvidence(db.getSetting(key))?.runId).toBe("run-b");
 
-      db.insertRun("run-b", "100", "claude");
+      db.insertRun("run-b", "100", "cursor");
       expect(linkScheduledOccurrenceRun(db, key, "run-c")).toBe(false);
 
       db.updateRunFailed("run-b", "MODEL_CAPACITY_EXHAUSTED");

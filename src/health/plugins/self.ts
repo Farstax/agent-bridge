@@ -174,94 +174,14 @@ export class SelfPlugin implements HealthPlugin {
       checks.push({ name: "service-restarts", status: restartStatus, message: restartMsg, value: totalRestarts });
     }
 
-    // Agent CLI update checks — CLIs are external global installs, not local deps
-    let globalListParsed: Record<string, { version?: string }> = {};
-    let globalListSuccess = false;
-    try {
-      const stdout = execSync("npm list -g --depth=0 --json", {
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 10000,
-      }).toString();
-      globalListParsed = (JSON.parse(stdout).dependencies ?? {}) as Record<string, { version?: string }>;
-      globalListSuccess = true;
-    } catch (err: any) {
-      if (err.stdout) {
-        try {
-          globalListParsed = (JSON.parse(err.stdout.toString()).dependencies ?? {}) as Record<string, { version?: string }>;
-          globalListSuccess = true;
-        } catch { /* ignore */ }
-      }
-    }
-
+    // Release-locked ACP adapters are checked against the installed release
+    // manifest. They never use mutable global npm package state.
     const runtimeVersions = readInstalledProviderVersions();
     for (const providerId of ["codex", "claude", "agy", "grok", "cursor"] as const) {
       const acpCheck = inspectReleaseLockedAcpProvider(providerId, runtimeVersions);
       if (acpCheck) checks.push(acpCheck);
     }
 
-    if (globalListSuccess) {
-      const cliSpecs = [
-        { pkg: "@anthropic-ai/claude-code", provider: "claude" as const, checkName: "cli-update-claude-code" },
-      ];
-      for (const { pkg, provider, checkName } of cliSpecs) {
-        const installed = globalListParsed[pkg];
-        const runtime = runtimeVersions[provider];
-        if (!runtime) {
-          checks.push({
-            name: checkName,
-            status: "red",
-            message: `${provider} runtime executable not found — run: ${upgradeCommand}`,
-          });
-          continue;
-        }
-        const packageVersion = installed?.version;
-        const mismatch = packageVersion && packageVersion !== runtime
-          ? ` package metadata ${packageVersion} differs from runtime ${runtime}`
-          : "";
-        const current = runtime;
-        try {
-          const latest = execSync(`npm view ${pkg} version`, {
-            stdio: ["ignore", "pipe", "ignore"],
-            timeout: 5000,
-          }).toString().trim();
-          if (current !== latest) {
-            const behind = getVersionsBehind(pkg, current, latest);
-            let status: "green" | "amber" | "red" = "green";
-            if (behind >= 10) status = "red";
-            else if (behind >= 3) status = "amber";
-            checks.push({
-              name: checkName,
-              status: mismatch ? "amber" : status,
-              message: `${pkg} runtime ${current}${mismatch}; update available: ${current} -> ${latest} (${behind} version${behind === 1 ? "" : "s"} behind). Run: ${upgradeCommand}`,
-            });
-          } else {
-            checks.push({
-              name: checkName,
-              status: mismatch ? "amber" : "green",
-              message: `${pkg} runtime ${current}${mismatch} is up to date. Run: ${upgradeCommand}`,
-            });
-          }
-        } catch {
-          checks.push({
-            name: checkName,
-            status: mismatch ? "amber" : "green",
-            message: `${pkg} runtime ${current}${mismatch} (latest version unavailable)`,
-          });
-        }
-      }
-    } else {
-      // Preserve an observable health signal when npm metadata is
-      // unavailable; silently omitting both checks incorrectly reports the
-      // plugin as green and hides a degraded update monitor.
-      const unavailable: Array<[string, string]> = [["claude", "cli-update-claude-code"]];
-      for (const [provider, checkName] of unavailable) {
-        checks.push({
-          name: checkName,
-          status: "amber",
-          message: `${provider} npm package metadata unavailable`,
-        });
-      }
-    }
     // ── Agy (Antigravity) version check ───────────────────────────────────────
     try {
       const agyVersion = execSync("agy --version", {

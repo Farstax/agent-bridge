@@ -91,7 +91,7 @@ describe("provider credential redaction", () => {
       bot: "claude",
     });
 
-    const parsed = parseCliResult({ bot: "claude", stdout: result.stdout });
-    expect(JSON.parse(parsed.text)).toEqual({ claude: true, codex: false });
+    const parsed = JSON.parse(result.stdout) as { result: string };
+    expect(JSON.parse(parsed.result)).toEqual({ claude: true, codex: false });
   });
 });

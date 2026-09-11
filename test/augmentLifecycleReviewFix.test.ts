@@ -32,12 +32,12 @@ function client() {
 function options(mode: "augment" | "interrupt", hooks: any = {}) {
   return {
     surfaceIdentity: "telegram:interactive",
-    kind: "claude",
-    botConfig: { command: "claude", modelPreference: [] },
+    kind: "cursor",
+    botConfig: { command: "cursor", modelPreference: [] },
     allowedUserIds: new Set(["42"]),
     executionMode: "safe" as const,
     busyMessageMode: mode,
-    pollIntervalMs: 1000,
+    pollIntervalMs: 1000, workingDir: process.cwd(),
     hooks,
   };
 }

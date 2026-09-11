@@ -25,7 +25,7 @@ At least one service token is required. A service is installed only when its tok
 sudo env \
   TELEGRAM_ALLOWED_USER_IDS=123456789 \
   TELEGRAM_BOT_TOKEN_INTERACTIVE='123456:replace-me' \
-  CLAUDE_COMMAND=/home/agentbridge/.local/bin/claude \
+  CLAUDE_ACP_COMMAND=/opt/agent-bridge/releases/current/node_modules/.bin/claude-agent-acp \
   ANTIGRAVITY_COMMAND=/home/agentbridge/.local/bin/agy \
   python3 scripts/agent-bridge-install.py \
     --release /root/agent-bridge-<commit>.tar.gz \
