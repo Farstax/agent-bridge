@@ -11,7 +11,6 @@ import type { CliOptions, CliResult, BotKind } from "./types.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./providers/types.js";
 import { randomUUID } from "node:crypto";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { buildClaudeExcludedPluginSettings } from "./claudeSettings.js";
 import {
   buildAcpProviderInvocation,
   resolveProviderRuntime,
@@ -35,7 +34,6 @@ import {
   type AntigravityExecutionContext,
 } from "./providers/antigravitySerializedRunner.js";
 
-export { buildClaudeExcludedPluginSettings };
 export {
   extractAntigravityConversationId,
   toAntigravityModelLabel,
