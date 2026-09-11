@@ -129,13 +129,9 @@ export function appendEffortArgs(command: string, args: string[], effort: Effort
   const isClaude = cmdName.includes("claude");
   const isAgy = cmdName.includes("agy") || cmdName.includes("antigravity");
 
-  // Agy has no separate effort flag. The Antigravity invocation builder resolves
-  // model family + effort before execution and keeps the CLI args native.
-  if (isAgy) return args;
-  if (isClaude) {
-    if (args.includes("--effort")) return args;
-    return ["--effort", effort, ...args];
-  }
+  // Agy and Claude do not accept CLI effort flags. Claude configures effort
+  // via ACP session configuration, and Antigravity resolves model family + effort before execution.
+  if (isAgy || isClaude) return args;
   if (isCodex) {
     for (let i = 0; i < args.length - 1; i += 1) {
       if ((args[i] === "-c" || args[i] === "--config") && args[i + 1]?.startsWith("model_reasoning_effort=")) {
