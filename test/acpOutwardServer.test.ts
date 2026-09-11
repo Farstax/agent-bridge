@@ -5,9 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as acp from "@agentclientprotocol/sdk";
 import { openDb } from "../src/db.js";
+
+const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
 
 type JsonRpcResponse = {
   readonly jsonrpc: "2.0";
@@ -17,6 +20,7 @@ type JsonRpcResponse = {
     readonly agentCapabilities?: Record<string, unknown>;
     readonly agentInfo?: { readonly name?: string };
     readonly sessionId?: string;
+    readonly stopReason?: string;
   };
   readonly error?: {
     readonly code: number;
@@ -25,6 +29,17 @@ type JsonRpcResponse = {
   };
 };
 
+type JsonRpcNotification = {
+  readonly jsonrpc: "2.0";
+  readonly method: string;
+  readonly params?: {
+    readonly sessionId?: string;
+    readonly update?: unknown;
+  };
+};
+
+type JsonRpcMessage = JsonRpcResponse | JsonRpcNotification;
+
 type RunningOutwardAcp = {
   child: ChildProcessWithoutNullStreams;
   output: Interface;
@@ -32,7 +47,7 @@ type RunningOutwardAcp = {
   stderr: () => string;
 };
 
-function startOutwardAcpProcess(dbPath: string): RunningOutwardAcp {
+function startOutwardAcpProcess(dbPath: string, extraEnv: NodeJS.ProcessEnv = {}): RunningOutwardAcp {
   const child = spawn(process.execPath, ["--import", "tsx", "src/acpServer/stdio.ts"], {
     cwd: process.cwd(),
     env: {
@@ -40,6 +55,7 @@ function startOutwardAcpProcess(dbPath: string): RunningOutwardAcp {
       DB_PATH: dbPath,
       NODE_ENV: "test",
       AGENT_BRIDGE_INSTALLATION_ID: "",
+      ...extraEnv,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -81,12 +97,38 @@ async function stopProcess(process: RunningOutwardAcp): Promise<void> {
   output.close();
 }
 
-async function nextResponse(process: RunningOutwardAcp): Promise<JsonRpcResponse> {
+async function nextMessage(process: RunningOutwardAcp): Promise<JsonRpcMessage> {
   const next = await process.lines.next();
   if (next.done) {
     throw new Error(`outward ACP process closed stdout before responding; stderr=${process.stderr()}`);
   }
-  return JSON.parse(next.value) as JsonRpcResponse;
+  return JSON.parse(next.value) as JsonRpcMessage;
+}
+
+async function nextResponse(process: RunningOutwardAcp): Promise<JsonRpcResponse> {
+  const message = await nextMessage(process);
+  if (!("id" in message)) {
+    throw new Error(`outward ACP process sent notification before expected response: ${message.method}`);
+  }
+  return message;
+}
+
+async function readThroughResponse(
+  process: RunningOutwardAcp,
+  id: number,
+): Promise<{ response: JsonRpcResponse; notifications: JsonRpcNotification[] }> {
+  const notifications: JsonRpcNotification[] = [];
+  for (;;) {
+    const message = await nextMessage(process);
+    if ("method" in message) {
+      notifications.push(message);
+      continue;
+    }
+    if (message.id !== id) {
+      throw new Error(`outward ACP process returned unexpected response id ${message.id}; expected ${id}`);
+    }
+    return { response: message, notifications };
+  }
 }
 
 async function initialize(process: RunningOutwardAcp, id: number): Promise<JsonRpcResponse> {
@@ -115,6 +157,24 @@ async function newSession(
     params: { cwd, mcpServers: [], ...extra },
   })}\n`);
   return nextResponse(process);
+}
+
+async function promptSession(
+  process: RunningOutwardAcp,
+  id: number,
+  sessionId: string,
+  text: string,
+): Promise<{ response: JsonRpcResponse; notifications: JsonRpcNotification[] }> {
+  process.child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    method: "session/prompt",
+    params: {
+      sessionId,
+      prompt: [{ type: "text", text }],
+    },
+  })}\n`);
+  return readThroughResponse(process, id);
 }
 
 describe("outward ACP stdio boundary", () => {
@@ -205,6 +265,75 @@ describe("outward ACP stdio boundary", () => {
     } finally {
       if (first) await stopProcess(first);
       if (second) await stopProcess(second);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("executes a text prompt through the production outward process and supervised inward ACP provider", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-prompt-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let process: RunningOutwardAcp | null = null;
+    try {
+      process = startOutwardAcpProcess(dbPath, {
+        BRIDGE_PROVIDER_LOCK: "codex",
+        INTERACTIVE_CLI_CHAIN: "codex",
+        CODEX_ACP_COMMAND: process?.execPath ?? undefined,
+        CODEX_ACP_ARGS: `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`,
+        FAKE_ACP_STORE: providerStore,
+      });
+      await initialize(process, 1);
+      const created = await newSession(process, 2, root);
+      const outwardSessionId = created.result?.sessionId;
+      expect(outwardSessionId).toEqual(expect.any(String));
+
+      const turn = await promptSession(process, 3, outwardSessionId!, "wire prompt");
+      expect(turn.response).toMatchObject({
+        jsonrpc: "2.0",
+        id: 3,
+        result: { stopReason: "end_turn" },
+      });
+      const sessionUpdates = turn.notifications.filter((notification) => notification.method === "session/update");
+      expect(sessionUpdates.length).toBeGreaterThan(0);
+      expect(sessionUpdates.every((notification) => notification.params?.sessionId === outwardSessionId)).toBe(true);
+      expect(sessionUpdates.some((notification) => {
+        const update = notification.params?.update as {
+          sessionUpdate?: unknown;
+          content?: { type?: unknown; text?: unknown };
+        } | undefined;
+        return update?.sessionUpdate === "agent_message_chunk"
+          && update.content?.type === "text"
+          && typeof update.content.text === "string"
+          && update.content.text.includes("wire prompt");
+      })).toBe(true);
+
+      await stopProcess(process);
+      process = null;
+
+      const persisted = openDb(dbPath, { databaseRole: "interactive" });
+      const outward = persisted.raw.prepare(`
+        SELECT conversation_id
+        FROM outward_acp_sessions
+        WHERE session_id = ?
+      `).get(outwardSessionId) as { conversation_id: string } | undefined;
+      expect(outward?.conversation_id).toMatch(/^acp:[0-9a-f-]+$/);
+      const providerSessionId = outward
+        ? persisted.getAcpSessionBinding(outward.conversation_id, "codex")?.acpSessionId
+        : null;
+      expect(providerSessionId).toEqual(expect.any(String));
+      expect(providerSessionId).not.toBe(outwardSessionId);
+      expect(persisted.raw.prepare(`
+        SELECT status, bot
+        FROM bridge_runs
+        WHERE chat_id = ?
+        ORDER BY started_at DESC
+        LIMIT 1
+      `).get(outward?.conversation_id)).toEqual({ status: "done", bot: "codex" });
+      persisted.close();
+    } finally {
+      if (process) await stopProcess(process);
       rmSync(root, { recursive: true, force: true });
     }
   });
