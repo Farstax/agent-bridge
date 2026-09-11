@@ -28,14 +28,21 @@ function startOutwardAcpProcess(): ChildProcessWithoutNullStreams {
   });
 }
 
+function processExited(child: ChildProcessWithoutNullStreams): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
 async function stopProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (processExited(child)) return;
   child.stdin.end();
+  const gracefulExit = once(child, "exit");
   child.kill("SIGTERM");
-  await Promise.race([once(child, "exit"), delay(1_000)]);
-  if (child.exitCode !== null) return;
+  await Promise.race([gracefulExit, delay(1_000)]);
+  if (processExited(child)) return;
+
+  const forcedExit = once(child, "exit");
   child.kill("SIGKILL");
-  await once(child, "exit");
+  await forcedExit;
 }
 
 async function nextResponse(lines: AsyncIterator<string>, stderr: () => string): Promise<JsonRpcResponse> {
