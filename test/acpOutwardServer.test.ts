@@ -40,7 +40,6 @@ function startOutwardAcpProcess(dbPath: string): RunningOutwardAcp {
       DB_PATH: dbPath,
       NODE_ENV: "test",
       AGENT_BRIDGE_INSTALLATION_ID: "",
-      BRIDGE_ENV_FILE: join(tmpdir(), "agent-bridge-no-outward-env"),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -103,12 +102,17 @@ async function initialize(process: RunningOutwardAcp, id: number): Promise<JsonR
   return nextResponse(process);
 }
 
-async function newSession(process: RunningOutwardAcp, id: number, cwd: string): Promise<JsonRpcResponse> {
+async function newSession(
+  process: RunningOutwardAcp,
+  id: number,
+  cwd: string,
+  extra: Record<string, unknown> = {},
+): Promise<JsonRpcResponse> {
   process.child.stdin.write(`${JSON.stringify({
     jsonrpc: "2.0",
     id,
     method: "session/new",
-    params: { cwd, mcpServers: [] },
+    params: { cwd, mcpServers: [], ...extra },
   })}\n`);
   return nextResponse(process);
 }
@@ -142,11 +146,20 @@ describe("outward ACP stdio boundary", () => {
       const sessionId = created.result?.sessionId;
       expect(sessionId).toBeTruthy();
 
-      const invalid = await newSession(first, 3, "relative/workspace");
-      expect(invalid).toMatchObject({
+      const invalidCwd = await newSession(first, 3, "relative/workspace");
+      expect(invalidCwd).toMatchObject({
         jsonrpc: "2.0",
         id: 3,
         error: { code: -32602, data: { field: "cwd" } },
+      });
+
+      const unsupportedDirectories = await newSession(first, 4, cwd, {
+        additionalDirectories: [join(root, "other-workspace")],
+      });
+      expect(unsupportedDirectories).toMatchObject({
+        jsonrpc: "2.0",
+        id: 4,
+        error: { code: -32602, data: { field: "additionalDirectories" } },
       });
 
       await stopProcess(first);
@@ -167,8 +180,8 @@ describe("outward ACP stdio boundary", () => {
       persisted.close();
 
       second = startOutwardAcpProcess(dbPath);
-      await initialize(second, 4);
-      const afterRestart = await newSession(second, 5, cwd);
+      await initialize(second, 5);
+      const afterRestart = await newSession(second, 6, cwd);
       expect(afterRestart.result?.sessionId).toEqual(expect.any(String));
       expect(afterRestart.result?.sessionId).not.toBe(sessionId);
       await stopProcess(second);

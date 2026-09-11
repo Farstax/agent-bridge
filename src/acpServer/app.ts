@@ -28,14 +28,20 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     agentCapabilities: BRIDGE_ACP_AGENT_CAPABILITIES,
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
-
-  if (!options.sessions) return app;
+  const sessions = options.sessions;
+  if (!sessions) return app;
 
   return app.onRequest(acp.methods.agent.session.new, (ctx) => {
     if (!isAbsolute(ctx.params.cwd)) {
       throw acp.RequestError.invalidParams(
         { field: "cwd" },
         "session cwd must be an absolute path",
+      );
+    }
+    if ((ctx.params.additionalDirectories?.length ?? 0) > 0) {
+      throw acp.RequestError.invalidParams(
+        { field: "additionalDirectories" },
+        "outward additional directories are not supported",
       );
     }
     if (ctx.params.mcpServers.length > 0) {
@@ -47,7 +53,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
 
     const sessionId = randomUUID();
     const conversationId = `acp:${randomUUID()}`;
-    options.sessions.create({ sessionId, conversationId, cwd: ctx.params.cwd });
+    sessions.create({ sessionId, conversationId, cwd: ctx.params.cwd });
     return { sessionId };
   });
 }
