@@ -108,31 +108,32 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     }
 
     const runId = this.options.runId?.() ?? randomUUID();
-    db.insertRun(runId, input.session.conversationId, provider);
-    const eventStore = new EventStore(db, runId);
-    let completed: RunCompletedEvent | null = null;
-    let updateChain = Promise.resolve();
-    const enqueueUpdate = (update: OutwardUpdate): void => {
-      updateChain = updateChain.then(() => input.onUpdate(update));
-    };
-    const collect = (event: BridgeEvent): void => {
-      if (event.type === "run.completed") completed = event;
-      else eventStore.collect(event);
-      const update = liveRootProviderUpdate(event);
-      if (update) enqueueUpdate(update);
-    };
-
-    const eventContext: NonNullable<SurfaceNeutralTurnInput["eventContext"]> = {
-      runId,
-      bot: provider,
-      chatId: input.session.sessionId,
-      chatKey: input.session.conversationId,
-      threadId: undefined,
-      serviceId: lane.serviceId,
-      acquisitionId: lane.acquisitionId,
-    };
-
+    let eventStore: EventStore | null = null;
     try {
+      db.insertRun(runId, input.session.conversationId, provider);
+      eventStore = new EventStore(db, runId);
+      let completed: RunCompletedEvent | null = null;
+      let updateChain = Promise.resolve();
+      const enqueueUpdate = (update: OutwardUpdate): void => {
+        updateChain = updateChain.then(() => input.onUpdate(update));
+      };
+      const collect = (event: BridgeEvent): void => {
+        if (event.type === "run.completed") completed = event;
+        else eventStore!.collect(event);
+        const update = liveRootProviderUpdate(event);
+        if (update) enqueueUpdate(update);
+      };
+
+      const eventContext: NonNullable<SurfaceNeutralTurnInput["eventContext"]> = {
+        runId,
+        bot: provider,
+        chatId: input.session.sessionId,
+        chatKey: input.session.conversationId,
+        threadId: undefined,
+        serviceId: lane.serviceId,
+        acquisitionId: lane.acquisitionId,
+      };
+
       const providerSessionId = lookupProviderSession(db, input.session.conversationId, provider);
       const result: CliResult = await this.options.createEngine(input.session).executeSurfaceNeutralTurn({
         prompt: input.prompt,
@@ -183,7 +184,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       eventStore.finalize();
       return { stopReason: normalizeStopReason(result.stopReason) };
     } catch (error) {
-      if (db.getRun(runId)?.status === "running") {
+      if (eventStore && db.getRun(runId)?.status === "running") {
         eventStore.collect(failedEvent(runId, provider, input.session));
         eventStore.finalize();
       }
