@@ -2,10 +2,10 @@
 
 Agent Bridge supports provider-owned API-key authentication without creating a separate routing, session, or execution path. Account/OAuth authentication remains supported and is not invalidated by a bad optional API key.
 
-| Provider | Environment variable | Native verification | Runtime notes |
+| Provider | Environment variable | Verification | Runtime notes |
 | --- | --- | --- | --- |
-| Codex | `CODEX_API_KEY` | bounded ACP adapter turn | `OPENAI_API_KEY` is not the Agent Bridge Codex auth contract |
-| Claude Code | `ANTHROPIC_API_KEY` | bounded `claude --print` turn | local auth-status output is not treated as proof that a request will succeed |
+| Codex | `CODEX_API_KEY` | bounded selected ACP adapter turn | `OPENAI_API_KEY` is not the Agent Bridge Codex auth contract |
+| Claude | `ANTHROPIC_API_KEY` | bounded selected `claude-acp` adapter turn | verification uses the same release-locked ACP runtime as ordinary Claude Runs with isolated account state |
 | Agy / Antigravity | `GEMINI_API_KEY` | bounded Agy print-mode turn | requires `modelProvider: "gemini"`; Bridge scopes that setting to the run and restores the prior value |
 | Grok Build | `XAI_API_KEY` | bounded `grok -p` turn | stored account session remains the provider-preferred route when present |
 | Cursor Agent | `CURSOR_API_KEY` | bounded `cursor-agent -p` turn | account sessions continue to use native status detection |
@@ -14,11 +14,11 @@ The matrix is an exhaustive `Record<ProviderId, ...>` in `src/providers/apiKeyAu
 
 ## Verification contract
 
-A non-empty environment variable is only a candidate credential. Agent Bridge makes the provider selectable through API-key auth only after that provider's CLI completes a real headless request within 15 seconds.
+A non-empty environment variable is only a candidate credential. Agent Bridge makes the provider selectable through API-key auth only after the provider's selected runtime completes a real headless request within 15 seconds. ACP-backed providers are verified through their release-locked ACP runtime rather than a removed or unrelated native CLI path.
 
 The interactive runtime completes configured-key verification during auth-module startup before taking its first synchronous availability/routing snapshot, so a key-only provider cannot lose the first request to an empty verification cache. Configured providers are probed in parallel. Other surfaces that reach the shared process supervisor perform the same bounded asynchronous verification before provider spawn. Concurrent checks for the same provider/key fingerprint share one in-flight probe. Verification runs with isolated account state so a cached OAuth/account session cannot make an invalid API key look valid. Telegram secrets and unrelated provider credentials are removed from the verification child environment. API keys stay in environment variables and are never placed in process arguments.
 
-Successful verification is cached for the process by a SHA-256 fingerprint of the exact key. Failed probes are negatively cached for 30 seconds: repeated requests do not pay the full provider timeout for the same bad optional key, while transient provider/network failures are retried after the short TTL. A changed key has a different fingerprint and therefore requires fresh evidence; the raw key is never stored in either cache. Service environment changes are applied through the normal service restart path.
+Successful verification is cached for the process by a SHA-256 fingerprint of the exact key plus the selected runtime identity. Failed probes are negatively cached for 30 seconds: repeated requests do not pay the full provider timeout for the same bad optional key, while transient provider/network failures are retried after the short TTL. A changed key or selected runtime has a different cache key and therefore requires fresh evidence; the raw key is never stored in either cache. Service environment changes are applied through the normal service restart path.
 
 ## Routing and qualification
 
@@ -34,14 +34,14 @@ Agy's direct Gemini API route requires both `GEMINI_API_KEY` and `modelProvider:
 
 ## Secret boundary
 
-The shared CLI supervisor redacts configured provider credential values before stdout/stderr, progress chunks, lifecycle events, spawn logs, or returned errors leave the process boundary. Streaming redaction buffers possible credential prefixes, so a key split across arbitrary child-process chunks cannot bypass redaction. Each provider child receives only its own provider credential family, and the new candidate API-key variable is withheld until verified. Internal raw output is retained only long enough for provider validation and process-watch logic.
+The shared process supervision/redaction boundary removes configured provider credential values before stdout/stderr, progress chunks, lifecycle events, spawn logs, or returned errors leave the process boundary. Streaming redaction buffers possible credential prefixes, so a key split across arbitrary child-process chunks cannot bypass redaction. Each provider child receives only its own provider credential family, and the candidate API-key variable is withheld until verified. Internal raw output is retained only long enough for provider validation and process-watch logic.
 
 Agent Bridge OSS does not persist provider API keys and exposes no app-facing secret state. Encrypted persistence and onboarding/UI belong to `agent-bridge-platform#482`.
 
 ## Upstream contracts
 
 - Codex: `CODEX_API_KEY` is verified through the managed ACP adapter; Codex auth state lives under `CODEX_HOME`.
-- Claude Code: `ANTHROPIC_API_KEY` is supported for print/headless use; request success, not local status alone, is the usability gate.
+- Claude: `ANTHROPIC_API_KEY` is supplied to the official `claude-acp` adapter and verified by an isolated ACP session/prompt using the exact selected release runtime.
 - Agy: Antigravity CLI 1.1.13 added `GEMINI_API_KEY` direct API support with `modelProvider: "gemini"`.
 - Grok Build: xAI documents `XAI_API_KEY` for headless operation and account-session precedence over the environment fallback.
 - Cursor: Cursor documents `CURSOR_API_KEY` for headless/CI authentication.
