@@ -202,7 +202,7 @@ Manual `/health` returns one combined report; plugin reports may be persisted si
 
 ### CLI effort
 
-Supported effort levels: `low`, `medium`, `high`, `xhigh`, `max`; default `medium`. Codex uses `model_reasoning_effort`, Claude uses `--effort`; Agy has no separate effort flag and exposes the setting as unsupported/no-op.
+Supported effort levels: `low`, `medium`, `high`, `xhigh`, `max`; default `medium`. Codex uses `model_reasoning_effort`, Claude routes effort through ACP session configuration (`effort`); Agy has no separate effort flag and exposes the setting as unsupported/no-op.
 
 ## Worktree/branch cleanup
 
