@@ -45,8 +45,6 @@ export interface ProviderInvocationRequest {
    * provider:model target), not a stale-tolerant interactive user override.
    */
   modelRequired?: boolean;
-  /** ACP-only: leave the provider model at its advertised/current default. */
-  modelUseProviderDefault?: boolean;
   executionMode: "safe" | "trusted";
   outputFormat: "json" | "stream-json" | "streaming-json" | null;
   soulContext: string | null;
@@ -54,8 +52,6 @@ export interface ProviderInvocationRequest {
   attachments: string[];
   outputDir: string | null;
   effort: import("../effort.js").EffortLevel | null;
-  /** ACP-only: leave provider reasoning/thought level at its advertised/current default. */
-  effortUseProviderDefault?: boolean;
   toolMode: "default" | "none";
   /** Keep provider-owned native background/task work inside this CLI turn until terminal completion. */
   nativeCompletion?: boolean;
