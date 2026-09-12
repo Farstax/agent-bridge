@@ -139,6 +139,7 @@ export async function executeFrontierAdvice(deps: {
       sessionId: null,
       command: invocation.command,
       model: target.model,
+      modelRequired: true,
       executionMode: "safe" as const,
       outputFormat: "json" as const,
       soulContext: null,
