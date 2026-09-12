@@ -81,13 +81,13 @@ describe("Claude ACP provider", () => {
 
   it("maps model and effort through standard ACP config and enables only proven strict tool-free metadata", () => {
     expect(claudeAcpPolicy.sessionSettings?.(request({
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-5",
       effort: "xhigh",
       toolMode: "none",
     }))).toEqual({
       modeId: "default",
       config: [
-        { configId: "model", value: "claude-sonnet-4-5" },
+        { configId: "model", value: "sonnet" },
         { configId: "effort", value: "xhigh" },
       ],
       meta: {
@@ -102,6 +102,12 @@ describe("Claude ACP provider", () => {
         },
       },
     });
+    expect(claudeAcpPolicy.sessionSettings?.(request({ model: "sonnet" }))?.config).toEqual([
+      { configId: "model", value: "sonnet" },
+    ]);
+    expect(claudeAcpPolicy.sessionSettings?.(request({ model: "claude-opus-4-8" }))?.config).toEqual([
+      { configId: "model", value: "claude-opus-4-8" },
+    ]);
     expect(claudeAcpPolicy.sessionSettings?.(request()).meta).toEqual({
       systemPrompt: { append: expect.any(String) },
       claudeCode: { options: { settingSources: [] } },
