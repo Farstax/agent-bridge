@@ -8,6 +8,7 @@ import {
   buildEffortKeyboard,
   buildEffortText,
   isEffortLevel,
+  resolveDefaultEffort,
   resolveEffort,
 } from "../src/effort.js";
 
@@ -55,6 +56,11 @@ describe("ACP-native effort values", () => {
 
     expect(resolveEffort("claude", db)).toBe("future-provider-value");
     expect(isEffortLevel("future-provider-value")).toBe(false);
+  });
+
+  it("keeps provider-default reset valid before a live ACP snapshot exists", () => {
+    expect(resolveDefaultEffort("claude", { CLAUDE_EFFORT: "future-provider-value" })).toBe("medium");
+    expect(isEffortLevel(resolveDefaultEffort("claude", { CLAUDE_EFFORT: "future-provider-value" }))).toBe(true);
   });
 
   it("does not broaden native Bridge effort normalization", () => {
