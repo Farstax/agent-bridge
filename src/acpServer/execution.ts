@@ -317,10 +317,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       if (active && this.active.get(input.session.conversationId) === active) {
         this.active.delete(input.session.conversationId);
       }
-      db.unlock(lane);
-      if (active) {
-        active.settled = true;
-        active.finishDone();
+      try {
+        db.unlock(lane);
+      } finally {
+        if (active) {
+          active.settled = true;
+          active.finishDone();
+        }
       }
     }
   }
