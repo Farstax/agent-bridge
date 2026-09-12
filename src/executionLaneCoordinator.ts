@@ -1,8 +1,8 @@
 /**
  * PURPOSE: Own transient execution-lane coordination shared across provider engines.
  * INPUTS: BridgeDb identity, stable surface identity, and lane-scoped state transitions.
- * OUTPUTS: Shared in-process coordination for pre-provider ingress, cancellation, drainers, delivery, augment, and fences.
- * NEIGHBORS: src/engine.ts, src/db.ts
+ * OUTPUTS: Shared in-process coordination for ingress, cancellation, drainers, durable recovery, delivery, augment, and fences.
+ * NEIGHBORS: src/engine.ts, src/db.ts, src/durableQueueRecovery.ts
  */
 
 import type { BridgeDb } from "./db.js";
@@ -31,10 +31,21 @@ export interface FinalDeliveryPhase {
   release: () => void;
 }
 
+export type LaneRecoveryAttempt = () => Promise<boolean>;
+
+type LaneRecoveryState = {
+  attempt: LaneRecoveryAttempt;
+  delayMs: number;
+  generation: number;
+  timer: NodeJS.Timeout | null;
+  running: boolean;
+};
+
 export class ExecutionLaneCoordinator {
   private readonly cancellationOperations = new Map<string, LaneCancellation>();
   private readonly preProviderIngressScopes = new Map<string, Set<PreProviderIngressScope>>();
   private readonly laneDrainers = new Map<string, LaneDrainer>();
+  private readonly laneRecoveries = new Map<string, LaneRecoveryState>();
   private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
   private readonly activeAugmentedTasks = new Map<string, AugmentedTask>();
   private readonly transferredAugmentedLanes = new Set<string>();
@@ -106,6 +117,53 @@ export class ExecutionLaneCoordinator {
   setDrainer(lane: string, drainer: LaneDrainer): void { this.laneDrainers.set(lane, drainer); }
   clearDrainer(lane: string, expected?: LaneDrainer): void {
     if (!expected || this.laneDrainers.get(lane) === expected) this.laneDrainers.delete(lane);
+  }
+
+  scheduleRecovery(lane: string, delayMs: number, attempt: LaneRecoveryAttempt): void {
+    const existing = this.laneRecoveries.get(lane);
+    if (existing) {
+      existing.attempt = attempt;
+      existing.delayMs = Math.max(1, delayMs);
+      existing.generation += 1;
+      return;
+    }
+
+    const state: LaneRecoveryState = {
+      attempt,
+      delayMs: Math.max(1, delayMs),
+      generation: 0,
+      timer: null,
+      running: false,
+    };
+    this.laneRecoveries.set(lane, state);
+
+    const arm = () => {
+      if (this.laneRecoveries.get(lane) !== state || state.timer || state.running) return;
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        state.running = true;
+        const generation = state.generation;
+        void state.attempt()
+          .then((done) => {
+            if (this.laneRecoveries.get(lane) !== state) return;
+            if (done && state.generation === generation) {
+              this.laneRecoveries.delete(lane);
+              return;
+            }
+            state.running = false;
+            arm();
+          })
+          .catch((error) => {
+            console.error(`[queue-recovery] durable recovery attempt failed lane=${lane}`, error);
+            if (this.laneRecoveries.get(lane) !== state) return;
+            state.running = false;
+            arm();
+          });
+      }, state.delayMs);
+      state.timer.unref();
+    };
+
+    arm();
   }
 
   getFinalDelivery(lane: string): FinalDeliveryPhase | undefined { return this.finalDeliveryPhases.get(lane); }
