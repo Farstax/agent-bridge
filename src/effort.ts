@@ -5,7 +5,12 @@
  * NEIGHBORS: src/cli.ts, src/commands.ts, src/engine.ts
  */
 
-import { ACP_PROVIDER_DEFAULT, getAcpSessionConfigOption } from "./acp/sessionConfig.js";
+import {
+  ACP_PROVIDER_DEFAULT,
+  getAcpSessionConfigOption,
+  hasAcpProviderDefaultIntent,
+  setAcpProviderDefaultIntent,
+} from "./acp/sessionConfig.js";
 import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 
@@ -63,7 +68,9 @@ export function resolveEffort(
 ): EffortLevel | null {
   const saved = db.getSetting(effortSettingKey(kind));
   if (ACP_EFFORT_KINDS.has(kind)) {
-    if (saved === ACP_PROVIDER_DEFAULT) return null;
+    const providerDefault = saved === ACP_PROVIDER_DEFAULT;
+    setAcpProviderDefaultIntent(kind, "thought_level", providerDefault);
+    if (providerDefault) return null;
     if (isEffortLevel(saved)) return saved;
     const configured = env[ENV_KEYS[kind]]?.trim().toLowerCase();
     return isEffortLevel(configured) ? configured : null;
@@ -74,20 +81,26 @@ export function resolveEffort(
 export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel | null) {
   if (ACP_EFFORT_KINDS.has(kind)) {
     const option = getAcpSessionConfigOption(kind, "thought_level");
-    const levels = (option?.options ?? []).map((candidate) => candidate.value).filter(isEffortLevel);
+    const candidates = (option?.options ?? []).filter((candidate) => isEffortLevel(candidate.value));
     const providerCurrent = typeof option?.currentValue === "string" && isEffortLevel(option.currentValue)
       ? option.currentValue
       : null;
-    const selected = currentEffort ?? providerCurrent;
+    const providerDefault = hasAcpProviderDefaultIntent(kind, "thought_level");
+    const selected = providerDefault ? null : currentEffort ?? providerCurrent;
     return {
       inline_keyboard: [
-        ...(levels.length > 0
-          ? [levels.map((level) => ({
-              text: level === selected ? `✓ ${level}` : level,
-              callback_data: `effort:${kind}:${level}`,
+        ...(candidates.length > 0
+          ? [candidates.map((candidate) => ({
+              text: candidate.value === selected
+                ? `✓ ${candidate.name ?? candidate.value}`
+                : candidate.name ?? candidate.value,
+              callback_data: `effort:${kind}:${candidate.value}`,
             }))]
           : []),
-        [{ text: "Use provider default", callback_data: `effort:${kind}:reset` }],
+        [{
+          text: providerDefault ? "✓ Use provider default" : "Use provider default",
+          callback_data: `effort:${kind}:reset`,
+        }],
       ],
     };
   }
@@ -111,11 +124,21 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel | null
         "The live ACP session has not advertised a reasoning selector yet.",
       ].join("\n");
     }
+    const providerDefault = hasAcpProviderDefaultIntent(kind, "thought_level");
     const providerCurrent = typeof option.currentValue === "string" ? option.currentValue : "provider default";
+    const available = (option.options ?? [])
+      .filter((candidate) => isEffortLevel(candidate.value))
+      .map((candidate) => {
+        const label = candidate.name && candidate.name !== candidate.value
+          ? `${candidate.name} (${candidate.value})`
+          : candidate.value;
+        return candidate.description ? `${label}: ${candidate.description}` : label;
+      });
     return [
-      `Effort for ${kind}: ${currentEffort ?? providerCurrent}`,
+      `Effort for ${kind}: ${providerDefault ? `provider default (${providerCurrent})` : currentEffort ?? providerCurrent}`,
       "Default: provider-controlled",
       option.description ?? "Available values come from the active ACP agent.",
+      ...(available.length > 0 ? ["Available:", ...available.map((value) => `- ${value}`)] : []),
     ].join("\n");
   }
 
