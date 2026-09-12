@@ -14,10 +14,16 @@ import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
-export type EffortLevel = typeof EFFORT_LEVELS[number];
+type BridgeEffortLevel = typeof EFFORT_LEVELS[number];
+/**
+ * ACP-backed providers own their thought-level value vocabulary, so an effort
+ * value is intentionally an opaque string at the provider boundary. Native
+ * Bridge-managed providers are still normalized against EFFORT_LEVELS.
+ */
+export type EffortLevel = string;
 type AgyEffortVariant = "low" | "medium" | "high";
 
-export const DEFAULT_EFFORT_LEVEL: EffortLevel = "medium";
+export const DEFAULT_EFFORT_LEVEL: BridgeEffortLevel = "medium";
 
 const ENV_KEYS: Record<BotKind, string> = {
   codex: "CODEX_EFFORT",
@@ -37,25 +43,43 @@ const AGY_GEMINI_EFFORT_VARIANTS: Readonly<Record<string, readonly AgyEffortVari
   "gemini-3.1-pro": ["low", "high"],
 };
 
-export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
+function isBridgeEffortLevel(value: string | null | undefined): value is BridgeEffortLevel {
   return !!value && (EFFORT_LEVELS as readonly string[]).includes(value);
+}
+
+function isAdvertisedAcpEffortValue(value: string | null | undefined): value is string {
+  if (!value) return false;
+  for (const kind of ACP_EFFORT_KINDS) {
+    const option = getAcpSessionConfigOption(kind, "thought_level");
+    if (option?.options?.some((candidate) => candidate.value === value)) return true;
+  }
+  return false;
+}
+
+/**
+ * True for Bridge-native effort levels or an opaque thought-level value that a
+ * live ACP provider actually advertised. This keeps Telegram callback
+ * validation provider-authoritative without inventing ACP values in Bridge.
+ */
+export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
+  return isBridgeEffortLevel(value) || isAdvertisedAcpEffortValue(value);
 }
 
 export function effortSettingKey(kind: BotKind): string {
   return `effort:${kind}`;
 }
 
-export function normalizeEffort(value: string | null | undefined): EffortLevel {
+export function normalizeEffort(value: string | null | undefined): BridgeEffortLevel {
   const raw = String(value || "").trim().toLowerCase();
-  return isEffortLevel(raw) ? raw : DEFAULT_EFFORT_LEVEL;
+  return isBridgeEffortLevel(raw) ? raw : DEFAULT_EFFORT_LEVEL;
 }
 
 export function resolveDefaultEffort(kind: BotKind, env: NodeJS.ProcessEnv = process.env): EffortLevel {
   if (ACP_EFFORT_KINDS.has(kind)) {
     const advertised = getAcpSessionConfigOption(kind, "thought_level")?.currentValue;
-    if (typeof advertised === "string" && isEffortLevel(advertised)) return advertised;
-    const configured = env[ENV_KEYS[kind]]?.trim().toLowerCase();
-    if (isEffortLevel(configured)) return configured;
+    if (typeof advertised === "string" && advertised.trim()) return advertised;
+    const configured = env[ENV_KEYS[kind]]?.trim();
+    if (configured) return configured;
   }
   return normalizeEffort(env[ENV_KEYS[kind]]);
 }
@@ -68,9 +92,9 @@ export function resolveEffort(
   const saved = db.getSetting(effortSettingKey(kind));
   if (ACP_EFFORT_KINDS.has(kind)) {
     if (isAcpProviderDefaultSelected(db, kind, "thought_level")) return null;
-    if (isEffortLevel(saved)) return saved;
-    const configured = env[ENV_KEYS[kind]]?.trim().toLowerCase();
-    return isEffortLevel(configured) ? configured : null;
+    if (saved?.trim()) return saved.trim();
+    const configured = env[ENV_KEYS[kind]]?.trim();
+    return configured || null;
   }
   return normalizeEffort(saved || resolveDefaultEffort(kind, env));
 }
@@ -82,8 +106,8 @@ export function buildEffortKeyboard(
 ) {
   if (ACP_EFFORT_KINDS.has(kind)) {
     const option = getAcpSessionConfigOption(kind, "thought_level");
-    const candidates = (option?.options ?? []).filter((candidate) => isEffortLevel(candidate.value));
-    const providerCurrent = typeof option?.currentValue === "string" && isEffortLevel(option.currentValue)
+    const candidates = option?.options ?? [];
+    const providerCurrent = typeof option?.currentValue === "string"
       ? option.currentValue
       : null;
     const selected = providerDefaultSelected ? null : currentEffort ?? providerCurrent;
@@ -130,7 +154,6 @@ export function buildEffortText(
     }
     const providerCurrent = typeof option.currentValue === "string" ? option.currentValue : "provider default";
     const available = (option.options ?? [])
-      .filter((candidate) => isEffortLevel(candidate.value))
       .map((candidate) => {
         const label = candidate.name && candidate.name !== candidate.value
           ? `${candidate.name} (${candidate.value})`
@@ -187,11 +210,12 @@ export function resolveAgyModelForEffort(
   if (!variants) return trimmed;
 
   const explicitVariant = variants.find((variant) => trimmed.toLowerCase() === `${family}-${variant}`);
-  if (effort == null && explicitVariant) return `${family}-${explicitVariant}`;
+  const normalizedEffort = isBridgeEffortLevel(effort) ? effort : null;
+  if (normalizedEffort == null && explicitVariant) return `${family}-${explicitVariant}`;
 
   let desired: AgyEffortVariant =
-    effort === "low" ? "low" :
-    effort === "high" || effort === "xhigh" || effort === "max" ? "high" :
+    normalizedEffort === "low" ? "low" :
+    normalizedEffort === "high" || normalizedEffort === "xhigh" || normalizedEffort === "max" ? "high" :
     "medium";
 
   if (!variants.includes(desired)) {
@@ -201,7 +225,7 @@ export function resolveAgyModelForEffort(
 }
 
 export function appendEffortArgs(command: string, args: string[], effort: EffortLevel | null | undefined): string[] {
-  if (!effort) return args;
+  if (!isBridgeEffortLevel(effort)) return args;
 
   const cmdName = command.split(/[\\/]/).pop()?.toLowerCase() || command.toLowerCase();
   const isCodex = cmdName.includes("codex");
