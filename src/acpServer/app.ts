@@ -24,13 +24,16 @@ export interface OutwardAcpAgentOptions {
 }
 
 function promptText(prompt: readonly acp.ContentBlock[]): string {
-  if (prompt.some((block) => block.type !== "text")) {
+  return prompt.map((block) => {
+    if (block.type === "text") return block.text;
+    if (block.type === "resource_link") {
+      return `[ACP resource_link]\n${JSON.stringify(block)}`;
+    }
     throw acp.RequestError.invalidParams(
       { field: "prompt" },
-      "outward ACP currently accepts text prompt blocks only",
+      `outward ACP does not advertise support for ${block.type} prompt blocks`,
     );
-  }
-  return prompt.map((block) => block.type === "text" ? block.text : "").join("\n\n");
+  }).join("\n\n");
 }
 
 /**
@@ -76,7 +79,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
   if (!options.promptExecutor || !sessions.get) return app;
   const promptExecutor = options.promptExecutor;
   const getSession = sessions.get.bind(sessions);
-  return app.onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+  app = app.onRequest(acp.methods.agent.session.prompt, async (ctx) => {
     const session = getSession(ctx.params.sessionId);
     if (!session) {
       throw acp.RequestError.invalidParams(
@@ -87,10 +90,17 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     return promptExecutor.execute({
       session,
       prompt: promptText(ctx.params.prompt),
+      signal: ctx.signal,
       onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
         sessionId: session.sessionId,
         update,
       }),
     });
+  });
+
+  return app.onNotification(acp.methods.agent.session.cancel, async (ctx) => {
+    const session = getSession(ctx.params.sessionId);
+    if (!session) return;
+    await promptExecutor.cancel(session);
   });
 }
