@@ -14,6 +14,7 @@ import {
 import { abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses } from "./cliSupervisor.js";
 import { validateBridgeConfig, parseModelPreference } from "./config.js";
 import { BridgeDb } from "./db.js";
+import { ACP_PROVIDER_DEFAULT, getAcpSessionConfigOption, isAcpSessionConfigValueStale } from "./acp/sessionConfig.js";
 import {
   resolveAntigravityConversationId, extractAntigravityConversationId,
   readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
@@ -60,7 +61,39 @@ export function extractPromptText(message: TelegramMessage): string | null {
   return text;
 }
 
+function isAcpConfigKind(kind: string): boolean {
+  return kind === "codex" || kind === "claude";
+}
+
 export function buildModelKeyboard(kind: string, modelPreference: string[], currentModel?: string | null): any {
+  if (isAcpConfigKind(kind)) {
+    const option = getAcpSessionConfigOption(kind, "model");
+    const currentIsAdvertised = Boolean(
+      currentModel
+      && currentModel !== ACP_PROVIDER_DEFAULT
+      && option?.options?.some((candidate) => candidate.value === currentModel)
+      && !isAcpSessionConfigValueStale(kind, "model", currentModel),
+    );
+    const selected = currentIsAdvertised
+      ? currentModel
+      : typeof option?.currentValue === "string"
+        ? option.currentValue
+        : null;
+    const modelButtons = (option?.options ?? []).map((candidate) => [{
+      text: selected === candidate.value ? `✓ ${candidate.name ?? candidate.value}` : (candidate.name ?? candidate.value),
+      callback_data: `model:${kind}:${candidate.value}`,
+    }]);
+    return {
+      inline_keyboard: [
+        ...modelButtons,
+        [{
+          text: currentModel === ACP_PROVIDER_DEFAULT ? "✓ Use provider default" : "Use provider default",
+          callback_data: `model:${kind}:reset`,
+        }],
+      ],
+    };
+  }
+
   const modelButtons = modelPreference.map((m) => {
     const text = currentModel === m ? `✓ ${m}` : m;
     return [{ text, callback_data: `model:${kind}:${m}` }];
@@ -75,6 +108,42 @@ export function buildModelKeyboard(kind: string, modelPreference: string[], curr
 
 export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; config: BridgeConfig }): string {
   const bot = config.bots[kind as "codex" | "antigravity" | "claude" | "grok" | "cursor"];
+  if (isAcpConfigKind(kind)) {
+    const option = getAcpSessionConfigOption(kind, "model");
+    const saved = db.getSetting(kind);
+    if (!option) {
+      return [
+        `[${kind} model settings]`,
+        "",
+        `Current: ${saved === ACP_PROVIDER_DEFAULT ? "provider default" : "provider-controlled"}`,
+        "Available: waiting for a live ACP session to advertise model options",
+      ].join("\n");
+    }
+    const advertised = option.options ?? [];
+    const savedAdvertised = Boolean(
+      saved
+      && saved !== ACP_PROVIDER_DEFAULT
+      && advertised.some((candidate) => candidate.value === saved)
+      && !isAcpSessionConfigValueStale(kind, "model", saved),
+    );
+    const current = saved === ACP_PROVIDER_DEFAULT
+      ? "provider default"
+      : savedAdvertised
+        ? saved!
+        : typeof option.currentValue === "string"
+          ? option.currentValue
+          : "provider default";
+    const available = advertised.length > 0
+      ? advertised.map((candidate) => candidate.name && candidate.name !== candidate.value
+        ? `${candidate.name} (${candidate.value})`
+        : candidate.value).join(", ")
+      : "provider-controlled";
+    const stale = saved && saved !== ACP_PROVIDER_DEFAULT && !savedAdvertised
+      ? `\nStored override ${saved} is no longer advertised and is ignored.`
+      : "";
+    return `[${kind} model settings]\n\nCurrent: ${current}\nAvailable: ${available}${stale}\n\nSelect a model below:`;
+  }
+
   const current = db.getSetting(kind) || bot.modelPreference[0] || "default";
   const available = bot.modelPreference.length > 0 ? bot.modelPreference.join(", ") : "none configured";
   return `[${kind} model settings]\n\nCurrent: ${current}\nAvailable: ${available}\n\nSelect a model below:`;
