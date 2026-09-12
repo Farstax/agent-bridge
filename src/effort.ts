@@ -5,6 +5,7 @@
  * NEIGHBORS: src/cli.ts, src/commands.ts, src/engine.ts
  */
 
+import { ACP_PROVIDER_DEFAULT, getAcpSessionConfigOption } from "./acp/sessionConfig.js";
 import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 
@@ -21,6 +22,8 @@ const ENV_KEYS: Record<BotKind, string> = {
   grok: "GROK_EFFORT",
   cursor: "CURSOR_EFFORT",
 };
+
+const ACP_EFFORT_KINDS = new Set<BotKind>(["codex", "claude"]);
 
 const AGY_GEMINI_EFFORT_VARIANTS: Readonly<Record<string, readonly AgyEffortVariant[]>> = {
   "gemini-3.8-flash": ["low", "medium", "high"],
@@ -44,14 +47,50 @@ export function normalizeEffort(value: string | null | undefined): EffortLevel {
 }
 
 export function resolveDefaultEffort(kind: BotKind, env: NodeJS.ProcessEnv = process.env): EffortLevel {
+  if (ACP_EFFORT_KINDS.has(kind)) {
+    const advertised = getAcpSessionConfigOption(kind, "thought_level")?.currentValue;
+    if (typeof advertised === "string" && isEffortLevel(advertised)) return advertised;
+    const configured = env[ENV_KEYS[kind]]?.trim().toLowerCase();
+    if (isEffortLevel(configured)) return configured;
+  }
   return normalizeEffort(env[ENV_KEYS[kind]]);
 }
 
-export function resolveEffort(kind: BotKind, db: Pick<BridgeDb, "getSetting">, env: NodeJS.ProcessEnv = process.env): EffortLevel {
-  return normalizeEffort(db.getSetting(effortSettingKey(kind)) || resolveDefaultEffort(kind, env));
+export function resolveEffort(
+  kind: BotKind,
+  db: Pick<BridgeDb, "getSetting">,
+  env: NodeJS.ProcessEnv = process.env,
+): EffortLevel | null {
+  const saved = db.getSetting(effortSettingKey(kind));
+  if (ACP_EFFORT_KINDS.has(kind)) {
+    if (saved === ACP_PROVIDER_DEFAULT) return null;
+    if (isEffortLevel(saved)) return saved;
+    const configured = env[ENV_KEYS[kind]]?.trim().toLowerCase();
+    return isEffortLevel(configured) ? configured : null;
+  }
+  return normalizeEffort(saved || resolveDefaultEffort(kind, env));
 }
 
-export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel) {
+export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel | null) {
+  if (ACP_EFFORT_KINDS.has(kind)) {
+    const option = getAcpSessionConfigOption(kind, "thought_level");
+    const levels = (option?.options ?? []).map((candidate) => candidate.value).filter(isEffortLevel);
+    const providerCurrent = typeof option?.currentValue === "string" && isEffortLevel(option.currentValue)
+      ? option.currentValue
+      : null;
+    const selected = currentEffort ?? providerCurrent;
+    return {
+      inline_keyboard: [
+        ...(levels.length > 0
+          ? [levels.map((level) => ({
+              text: level === selected ? `✓ ${level}` : level,
+              callback_data: `effort:${kind}:${level}`,
+            }))]
+          : []),
+        [{ text: "Use provider default", callback_data: `effort:${kind}:reset` }],
+      ],
+    };
+  }
   return {
     inline_keyboard: [
       EFFORT_LEVELS.map((level) => ({
@@ -63,16 +102,30 @@ export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel) {
   };
 }
 
-export function buildEffortText(kind: BotKind, currentEffort: EffortLevel): string {
+export function buildEffortText(kind: BotKind, currentEffort: EffortLevel | null): string {
+  if (ACP_EFFORT_KINDS.has(kind)) {
+    const option = getAcpSessionConfigOption(kind, "thought_level");
+    if (!option) {
+      return [
+        `Effort for ${kind}: provider-controlled`,
+        "The live ACP session has not advertised a reasoning selector yet.",
+      ].join("\n");
+    }
+    const providerCurrent = typeof option.currentValue === "string" ? option.currentValue : "provider default";
+    return [
+      `Effort for ${kind}: ${currentEffort ?? providerCurrent}`,
+      "Default: provider-controlled",
+      option.description ?? "Available values come from the active ACP agent.",
+    ].join("\n");
+  }
+
   const support =
-    kind === "codex" ? "Codex maps effort to model_reasoning_effort." :
-    kind === "claude" ? "Claude maps effort through its ACP session configuration." :
     kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
     kind === "cursor" ? "Cursor effort is unsupported by the qualified headless contract; this setting is recorded for parity only." :
     "A separate Agy effort CLI flag is unsupported; Agent Bridge maps effort to the selected Gemini model variant. Low/medium/high map directly; xhigh/max use high.";
 
   return [
-    `Effort for ${kind}: ${currentEffort}`,
+    `Effort for ${kind}: ${currentEffort ?? DEFAULT_EFFORT_LEVEL}`,
     `Default: ${DEFAULT_EFFORT_LEVEL}`,
     support,
   ].join("\n");
