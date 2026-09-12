@@ -10,6 +10,7 @@ import {
   hasAcpProviderDefaultIntent,
   isAcpProviderDefaultSelected,
 } from "./acp/sessionConfig.js";
+import { buildAcpTelegramConfigCallbackData } from "./acp/telegramConfigCallback.js";
 import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 
@@ -47,22 +48,9 @@ function isBridgeEffortLevel(value: string | null | undefined): value is BridgeE
   return !!value && (EFFORT_LEVELS as readonly string[]).includes(value);
 }
 
-function isAdvertisedAcpEffortValue(value: string | null | undefined): value is string {
-  if (!value) return false;
-  for (const kind of ACP_EFFORT_KINDS) {
-    const option = getAcpSessionConfigOption(kind, "thought_level");
-    if (option?.options?.some((candidate) => candidate.value === value)) return true;
-  }
-  return false;
-}
-
-/**
- * True for Bridge-native effort levels or an opaque thought-level value that a
- * live ACP provider actually advertised. This keeps Telegram callback
- * validation provider-authoritative without inventing ACP values in Bridge.
- */
+/** Native Bridge effort validation. ACP values are validated by their live catalogue. */
 export function isEffortLevel(value: string | null | undefined): value is EffortLevel {
-  return isBridgeEffortLevel(value) || isAdvertisedAcpEffortValue(value);
+  return isBridgeEffortLevel(value);
 }
 
 export function effortSettingKey(kind: BotKind): string {
@@ -81,8 +69,8 @@ export function resolveDefaultEffort(kind: BotKind, env: NodeJS.ProcessEnv = pro
     const configured = env[ENV_KEYS[kind]]?.trim();
     if (isBridgeEffortLevel(configured)) return configured;
     // Reset is an out-of-band provider-default action. Before a live snapshot
-    // exists, use a known-valid local sentinel only to pass callback validation;
-    // the persisted reset marker makes the subsequent ACP request omit effort.
+    // exists, use a known-valid local sentinel only for presentation; the
+    // persisted reset marker makes the subsequent ACP request omit effort.
     return DEFAULT_EFFORT_LEVEL;
   }
   return normalizeEffort(env[ENV_KEYS[kind]]);
@@ -122,12 +110,12 @@ export function buildEffortKeyboard(
               text: candidate.value === selected
                 ? `✓ ${candidate.name ?? candidate.value}`
                 : candidate.name ?? candidate.value,
-              callback_data: `effort:${kind}:${candidate.value}`,
+              callback_data: buildAcpTelegramConfigCallbackData(kind, "thought_level", candidate.value),
             }))]
           : []),
         [{
           text: providerDefaultSelected ? "✓ Use provider default" : "Use provider default",
-          callback_data: `effort:${kind}:reset`,
+          callback_data: buildAcpTelegramConfigCallbackData(kind, "thought_level", null),
         }],
       ],
     };
