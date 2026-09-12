@@ -376,8 +376,14 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }
 
     if (!acpSessionId) throw new Error("ACP session id missing after session setup");
-    latestConfigOptions = setupState.configOptions ?? [];
-    const applied = await applySessionSettings(agent, acpSessionId, setupState, input);
+    // A load/resume may replay authoritative config_option_update notifications
+    // while returning no configOptions of its own. Preserve that projected
+    // catalogue unless the setup response explicitly supplied a replacement.
+    if (setupState.configOptions != null) latestConfigOptions = setupState.configOptions;
+    const effectiveSetupState = setupState.configOptions != null
+      ? setupState
+      : { ...setupState, configOptions: latestConfigOptions };
+    const applied = await applySessionSettings(agent, acpSessionId, effectiveSetupState, input);
     latestConfigOptions = applied.configOptions;
 
     const blocks = promptBlocks(input.prompt);

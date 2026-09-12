@@ -166,6 +166,59 @@ describe("negotiated ACP session configuration", () => {
     expect(getAcpSessionConfigOption("claude", "thought_level")).toBeNull();
   });
 
+it("uses config replayed during session/load when the load response omits configOptions", async () => {
+  const calls: Array<[string, string]> = [];
+  const agent = acp.agent({ name: "load-config-replay-fixture" })
+    .onRequest(acp.methods.agent.initialize, async () => ({
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: { loadSession: true },
+    }))
+    .onRequest(acp.methods.agent.session.load, async (ctx) => {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "config_option_update",
+          configOptions,
+        } as any,
+      });
+      return {} as any;
+    })
+    .onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => {
+      calls.push([ctx.params.configId, String(ctx.params.value)]);
+      return {
+        configOptions: configOptions.map((option) =>
+          option.id === ctx.params.configId
+            ? { ...option, currentValue: String(ctx.params.value) }
+            : option,
+        ),
+      } as any;
+    })
+    .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "loaded" } },
+      });
+      return { stopReason: "end_turn" };
+    });
+
+  const result = await runAcpTurn({
+    peer: agent,
+    cwd: process.cwd(),
+    conversationId: "bridge-load-replay",
+    runId: "run-load-replay",
+    existingAcpSessionId: "existing-acp-session",
+    prompt: "again",
+    executionMode: "safe",
+    sessionConfig: [{ category: "model", explicitValue: "opus" }],
+  });
+
+  expect(result.sessionMode).toBe("load");
+  expect(calls).toEqual([["model-selector", "opus"]]);
+  expect(result.configOptions).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: "model-selector", currentValue: "opus" }),
+  ]));
+});
+
   it("sends the literal default ACP value but sends nothing for Bridge provider-default policy", async () => {
     const calls: Array<[string, string]> = [];
     const agent = acp.agent({ name: "default-collision-fixture" })
