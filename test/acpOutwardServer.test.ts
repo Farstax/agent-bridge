@@ -47,13 +47,14 @@ type RunningOutwardAcp = {
   stderr: () => string;
 };
 
-function providerEnv(providerStore: string): NodeJS.ProcessEnv {
+function providerEnv(providerStore: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     BRIDGE_PROVIDER_LOCK: "codex",
     INTERACTIVE_CLI_CHAIN: "codex",
     CODEX_ACP_COMMAND: process.execPath,
     CODEX_ACP_ARGS: `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`,
     FAKE_ACP_STORE: providerStore,
+    ...extra,
   };
 }
 
@@ -521,6 +522,72 @@ describe("outward ACP stdio boundary", () => {
     } finally {
       if (first) await stopProcess(first);
       if (second) await stopProcess(second);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves inward provider permission requests under Bridge policy without ever exposing them to the outward client", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-permission-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let server: RunningOutwardAcp | null = null;
+    try {
+      // No CODEX_EXECUTION_MODE/BRIDGE_EXECUTION_MODE override -> defaults to
+      // "safe", so the fake provider's non-read/search/think permission
+      // request must be denied by Bridge policy, not by the outward client
+      // (which is never asked at all).
+      server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, { FAKE_ACP_PERMISSION_ON: "ESCALATE" }));
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+
+      const turn = await promptSession(server, 3, outwardSessionId, "ESCALATE the edit");
+      expect(turn.response).toMatchObject({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } });
+
+      // The permission negotiation happens entirely on the inward Bridge<->provider
+      // pipe; every message that actually crosses the outward stdio boundary is
+      // a plain session/update notification, never a permission request/response.
+      expect(turn.notifications.every((notification) => notification.method === "session/update")).toBe(true);
+      expect(turn.notifications.some((notification) => notification.method === acp.methods.client.session.requestPermission)).toBe(false);
+
+      await stopProcess(server);
+      server = null;
+    } finally {
+      if (server) await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("honors server-configured trusted execution mode for inward permission requests, still never exposed outward", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-permission-trusted-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let server: RunningOutwardAcp | null = null;
+    try {
+      // The outward client has no field anywhere in session/new or
+      // session/prompt to request trusted execution -- this is a
+      // server-side/env-configured Bridge policy, not a client choice.
+      server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, {
+        FAKE_ACP_PERMISSION_ON: "ESCALATE",
+        CODEX_EXECUTION_MODE: "trusted",
+      }));
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+
+      const turn = await promptSession(server, 3, outwardSessionId, "ESCALATE the edit");
+      expect(turn.response).toMatchObject({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } });
+      expect(turn.notifications.every((notification) => notification.method === "session/update")).toBe(true);
+      expect(turn.notifications.some((notification) => notification.method === acp.methods.client.session.requestPermission)).toBe(false);
+
+      await stopProcess(server);
+      server = null;
+    } finally {
+      if (server) await stopProcess(server);
       rmSync(root, { recursive: true, force: true });
     }
   });
