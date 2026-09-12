@@ -182,13 +182,10 @@ export function acpSessionConfigIntents(
 
   const forceThoughtDefault = hasAcpProviderDefaultIntent(providerId, "thought_level");
   const thoughtPreference = forceThoughtDefault ? [] : acpThoughtLevelPreference(providerId, env);
-  const effortIsOperatorPreference = Boolean(
-    request.effort && thoughtPreference.length > 0 && thoughtPreference[0] === request.effort,
-  );
   if (forceThoughtDefault || request.effort || thoughtPreference.length > 0) {
     intents.push({
       category: "thought_level",
-      explicitValue: effortIsOperatorPreference ? null : request.effort,
+      explicitValue: request.effort,
       preferredValues: thoughtPreference,
       ...(forceThoughtDefault ? { useProviderDefault: true } : {}),
     });
