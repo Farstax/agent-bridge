@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { ACP_PROVIDER_DEFAULT } from "../acp/sessionConfig.js";
+import { ACP_PROVIDER_DEFAULT, setAcpProviderDefaultIntent } from "../acp/sessionConfig.js";
 import { normalizeAgyModelFamily } from "../effort.js";
 
 type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
@@ -29,6 +29,10 @@ export class SettingsRepository {
     const storedValue = value === null && ACP_SELECTION_KEYS.has(key)
       ? ACP_PROVIDER_DEFAULT
       : value;
+    if (key === "effort:codex" || key === "effort:claude") {
+      const providerId = key.slice("effort:".length);
+      setAcpProviderDefaultIntent(providerId, "thought_level", storedValue === ACP_PROVIDER_DEFAULT);
+    }
     this.db
       .prepare(
         `INSERT INTO settings (key, value) VALUES (?, ?)
