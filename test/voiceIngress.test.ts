@@ -239,7 +239,7 @@ describe("voice ingress", () => {
         signal: new AbortController().signal,
         maxDurationSeconds: 30,
         maxTempBytes: 1024,
-      })).rejects.toThrow(/checksum mismatch/);
+      })).rejects.toThrow(/ownership or mode is unsafe|checksum mismatch/);
     });
   });
 

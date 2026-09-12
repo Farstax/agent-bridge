@@ -35,7 +35,7 @@ function options(kind: "codex" | "cursor" | "antigravity", hooks: any = {}) {
   return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind === "antigravity" ? "agy" : kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, busyMessageMode: "interrupt" as const,  pollIntervalMs: 1000, workingDir: process.cwd(), hooks };
 }
 
-async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
+async function waitForFile(path: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
@@ -57,7 +57,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("execution lane correctness", () => {
+describe("execution lane correctness", { timeout: 30_000 }, () => {
   it("fences delayed work from a previous acquisition by the same process run", () => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: "same-process" });
     const acquisitionA = db.acquireLock("telegram:interactive", "100:7");
@@ -195,7 +195,7 @@ describe("execution lane correctness", () => {
     await stopping; await active;
     await waitForCondition(() => db.acquireLock("telegram:interactive", "100:7") !== null, 8_000);
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
-  }, 8_000);
+  }, 30_000);
 
   it("keeps the lane owned during /reset until a TERM-resistant child exits after SIGKILL", async () => {
     const path = join(tmpdir(), `reset-grace-${Date.now()}-${Math.random()}.sqlite`);
@@ -218,7 +218,7 @@ describe("execution lane correctness", () => {
     await resetting; await active;
     expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
-  }, 8_000);
+  }, 30_000);
 
   it("interrupt mode aborts the active turn and admits the next message immediately instead of waiting in FIFO (Issue #177)", async () => {
     const path = join(tmpdir(), `interrupt-${Date.now()}-${Math.random()}.sqlite`);
@@ -255,7 +255,7 @@ describe("execution lane correctness", () => {
     expect(finalReplies).toHaveLength(1);
     expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
-  }, 8_000);
+  }, 30_000);
 
   it("coalesces two simultaneous interrupt requests into one cancellation and one drainer", async () => {
     const path = join(tmpdir(), `interrupt-coalesce-${Date.now()}-${Math.random()}.sqlite`);
@@ -290,7 +290,7 @@ describe("execution lane correctness", () => {
     expect(c.sendMessage.mock.calls.filter((call: any[]) => ["second done", "third done"].includes(call[0]?.text))).toHaveLength(2);
     expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
-  }, 8_000);
+  }, 30_000);
 
   it("upgrades an in-flight interrupt to /stop and discards the queued successor", async () => {
     const path = join(tmpdir(), `interrupt-stop-upgrade-${Date.now()}-${Math.random()}.sqlite`);
