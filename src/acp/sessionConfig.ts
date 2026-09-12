@@ -46,6 +46,24 @@ export function acpProviderDefaultSettingKey(providerId: string, category: strin
   return `$acp:provider-default:${providerId}:${category}`;
 }
 
+const providerDefaultIntents = new Set<string>();
+const providerDefaultIntentKey = (providerId: string, category: string) => `${providerId}:${category}`;
+
+/** In-process mirror of the separately persisted Bridge policy marker. Never an ACP option value. */
+export function setAcpProviderDefaultIntent(
+  providerId: string,
+  category: string,
+  enabled: boolean,
+): void {
+  const key = providerDefaultIntentKey(providerId, category);
+  if (enabled) providerDefaultIntents.add(key);
+  else providerDefaultIntents.delete(key);
+}
+
+export function hasAcpProviderDefaultIntent(providerId: string, category: string): boolean {
+  return providerDefaultIntents.has(providerDefaultIntentKey(providerId, category));
+}
+
 export function isAcpProviderDefaultSelected(
   db: { getSetting(key: string): string | null },
   providerId: string,
@@ -143,34 +161,34 @@ export function acpSessionConfigIntents(
   request: {
     readonly model: string | null;
     readonly modelRequired?: boolean;
-    readonly modelUseProviderDefault?: boolean;
     readonly effort: string | null;
-    readonly effortUseProviderDefault?: boolean;
   },
   env: Record<string, string | undefined>,
 ): readonly AcpSessionConfigIntent[] {
   const intents: AcpSessionConfigIntent[] = [];
-  const modelPreference = request.modelUseProviderDefault ? [] : acpModelPreference(providerId, env);
-  if (request.modelUseProviderDefault || request.model || modelPreference.length > 0) {
+  const forceModelDefault = hasAcpProviderDefaultIntent(providerId, "model");
+  const modelPreference = forceModelDefault ? [] : acpModelPreference(providerId, env);
+  if (forceModelDefault || request.model || modelPreference.length > 0) {
     intents.push({
       category: "model",
       explicitValue: request.model,
       preferredValues: modelPreference,
-      ...(request.modelUseProviderDefault ? { useProviderDefault: true } : {}),
+      ...(forceModelDefault ? { useProviderDefault: true } : {}),
       ...(request.modelRequired ? { required: true } : {}),
     });
   }
 
-  const thoughtPreference = request.effortUseProviderDefault ? [] : acpThoughtLevelPreference(providerId, env);
+  const forceThoughtDefault = hasAcpProviderDefaultIntent(providerId, "thought_level");
+  const thoughtPreference = forceThoughtDefault ? [] : acpThoughtLevelPreference(providerId, env);
   const effortIsOperatorPreference = Boolean(
     request.effort && thoughtPreference.length > 0 && thoughtPreference[0] === request.effort,
   );
-  if (request.effortUseProviderDefault || request.effort || thoughtPreference.length > 0) {
+  if (forceThoughtDefault || request.effort || thoughtPreference.length > 0) {
     intents.push({
       category: "thought_level",
       explicitValue: effortIsOperatorPreference ? null : request.effort,
       preferredValues: thoughtPreference,
-      ...(request.effortUseProviderDefault ? { useProviderDefault: true } : {}),
+      ...(forceThoughtDefault ? { useProviderDefault: true } : {}),
     });
   }
   return intents;
