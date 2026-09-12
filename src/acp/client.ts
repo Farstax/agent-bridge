@@ -157,15 +157,14 @@ async function applySessionSettings(
 }
 
 /**
- * Text is always baseline-supported. Every other ContentBlock type is
- * gated by the agent's negotiated promptCapabilities (InitializeResponse) —
- * fail closed with a precise error before dispatch rather than silently
- * dropping an attachment the agent never agreed to accept.
+ * Text and resource links are baseline-supported by ACP v1. Media and embedded
+ * resources are gated by negotiated promptCapabilities — fail closed with a
+ * precise error before dispatch rather than silently dropping unsupported input.
  */
 function assertPromptCapabilities(blocks: readonly ContentBlock[], init: InitializeResponse): void {
   const caps = init.agentCapabilities?.promptCapabilities;
   for (const block of blocks) {
-    if (block.type === "text") continue;
+    if (block.type === "text" || block.type === "resource_link") continue;
     if (block.type === "image" && caps?.image) continue;
     if (block.type === "audio" && caps?.audio) continue;
     if (block.type === "resource" && caps?.embeddedContext) continue;
@@ -328,10 +327,25 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     const blocks = promptBlocks(input.prompt);
     assertPromptCapabilities(blocks, initialize);
 
+    if (input.signal?.aborted || input.abortRequested?.()) {
+      remember({ kind: "stop", channel: "live", stopReason: "cancelled" });
+      return {
+        conversationId: input.conversationId,
+        runId: input.runId,
+        acpSessionId,
+        sessionMode,
+        stopReason: "cancelled",
+        liveText: liveDeliveryText(updates, acpSessionId) || liveEmitted,
+        events,
+        updates,
+        contextUsage: contextUsageFrom(updates, acpSessionId),
+        initialize,
+      };
+    }
+
     const cancel = () => {
       void agent.notify(acp.methods.agent.session.cancel, { sessionId: acpSessionId });
     };
-    if (input.signal?.aborted || input.abortRequested?.()) cancel();
     input.signal?.addEventListener("abort", cancel, { once: true });
 
     const promptResponse = await agent.request(acp.methods.agent.session.prompt, {
