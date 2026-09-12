@@ -26,6 +26,13 @@ describe("canonical production schema contract", () => {
     }
   });
 
+  it("derives outward ACP persistence only for the interactive database role", () => {
+    expect(canonicalSchemaTablesForRole("interactive")).toContain("outward_acp_sessions");
+    expect(canonicalSchemaTablesForRole("shared")).not.toContain("outward_acp_sessions");
+    expect(canonicalSchemaTablesForRole("discord")).not.toContain("outward_acp_sessions");
+    expect(canonicalSchemaTablesForRole("health")).not.toContain("outward_acp_sessions");
+  });
+
   it("keeps unmanaged tables outside the canonical contract", () => {
     expect(canonicalSchemaTablesForRole("health")).not.toContain("unmanaged_table");
   });
