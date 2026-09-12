@@ -269,18 +269,21 @@ describe("outward ACP prompt execution", () => {
     }
   });
 
-  it("fails closed for unknown sessions and non-text prompt blocks", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-invalid-"));
+  it("accepts mandatory resource_link prompt blocks while failing closed for unadvertised media", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-prompt-content-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
     try {
       const sessions = new OutwardAcpSessionRepository(db.raw);
       sessions.create({ sessionId: "known", conversationId: "acp:known", cwd: root });
       let executions = 0;
+      let capturedPrompt = "";
       const promptExecutor = {
-        async execute(): Promise<acp.PromptResponse> {
+        async execute(input: { prompt: string }): Promise<acp.PromptResponse> {
           executions += 1;
+          capturedPrompt = input.prompt;
           return { stopReason: "end_turn" };
         },
+        async cancel(): Promise<void> {},
       };
       const client = acp.client({ name: "outward-test-client" });
       const app = createOutwardAcpAgent({ sessions, promptExecutor });
@@ -290,11 +293,70 @@ describe("outward ACP prompt execution", () => {
         prompt: [{ type: "text", text: "hi" }],
       }))).rejects.toMatchObject({ code: -32602 });
 
+      const resource = await client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
+        sessionId: "known",
+        prompt: [
+          { type: "text", text: "Read this resource." },
+          {
+            type: "resource_link",
+            name: "workspace notes",
+            uri: "file:///workspace/notes.md",
+            mimeType: "text/markdown",
+          },
+        ],
+      }));
+      expect(resource.stopReason).toBe("end_turn");
+      expect(executions).toBe(1);
+      expect(capturedPrompt).toContain("Read this resource.");
+      expect(capturedPrompt).toContain("[ACP resource_link]");
+      expect(capturedPrompt).toContain("file:///workspace/notes.md");
+      expect(capturedPrompt).toContain("workspace notes");
+
       await expect(client.connectWith(app, (agent) => agent.request(acp.methods.agent.session.prompt, {
         sessionId: "known",
         prompt: [{ type: "image", data: "AA==", mimeType: "image/png" }],
       }))).rejects.toMatchObject({ code: -32602 });
-      expect(executions).toBe(0);
+      expect(executions).toBe(1);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("settles an already-aborted request as a user cancellation without starting the provider", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-pre-cancel-"));
+    const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
+    try {
+      const session = new OutwardAcpSessionRepository(db.raw).create({
+        sessionId: "outward-pre-cancel",
+        conversationId: "acp:pre-cancel",
+        cwd: root,
+      });
+      let executed = false;
+      const executor = new BridgeOutwardAcpPromptExecutor({
+        db,
+        provider: "codex",
+        runId: () => "run-pre-cancel",
+        createEngine: () => ({
+          executeSurfaceNeutralTurn: async () => {
+            executed = true;
+            return { text: "must not run", sessionId: null, stopReason: "end_turn" };
+          },
+        }),
+      });
+      const controller = new AbortController();
+      controller.abort();
+
+      const response = await executor.execute({
+        session,
+        prompt: "cancelled before dispatch",
+        signal: controller.signal,
+        onUpdate: () => undefined,
+      });
+
+      expect(response.stopReason).toBe("cancelled");
+      expect(executed).toBe(false);
+      expect(db.getRun("run-pre-cancel")?.status).toBe("cancelled");
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -341,6 +403,7 @@ describe("outward ACP prompt execution", () => {
       await expect(promptExecutor.execute({
         session,
         prompt: "hi",
+        signal: new AbortController().signal,
         onUpdate: () => undefined,
       })).rejects.toMatchObject({ code: -32001 });
       expect(executed).toBe(false);
