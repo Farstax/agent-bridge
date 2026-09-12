@@ -206,6 +206,22 @@ async function promptSession(
   return readThroughResponse(process, id);
 }
 
+async function loadSession(
+  process: RunningOutwardAcp,
+  id: number,
+  sessionId: string,
+  cwd: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ response: JsonRpcResponse; notifications: JsonRpcNotification[] }> {
+  process.child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    method: "session/load",
+    params: { sessionId, cwd, mcpServers: [], ...extra },
+  })}\n`);
+  return readThroughResponse(process, id);
+}
+
 function cancelSession(process: RunningOutwardAcp, sessionId: string): void {
   process.child.stdin.write(`${JSON.stringify({
     jsonrpc: "2.0",
@@ -267,7 +283,7 @@ describe("outward ACP stdio boundary", () => {
         id: 1,
         result: {
           protocolVersion: acp.PROTOCOL_VERSION,
-          agentCapabilities: { loadSession: false },
+          agentCapabilities: { loadSession: true },
           agentInfo: { name: "agent-bridge" },
         },
       });
@@ -430,6 +446,78 @@ describe("outward ACP stdio boundary", () => {
         WHERE chat_id = ? AND status = 'done'
       `).get(conversationId)).toEqual({ count: 2 });
       persisted.close();
+    } finally {
+      if (first) await stopProcess(first);
+      if (second) await stopProcess(second);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replays durable history on session/load without creating a new Run or leaking provider identity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-load-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    const env = providerEnv(providerStore);
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let first: RunningOutwardAcp | null = null;
+    let second: RunningOutwardAcp | null = null;
+    try {
+      first = startOutwardAcpProcess(dbPath, env);
+      await initialize(first, 1);
+      const created = await newSession(first, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+      const conversationId = conversationIdForSession(dbPath, outwardSessionId);
+
+      await promptSession(first, 3, outwardSessionId, "LOAD first wire prompt");
+      await stopProcess(first);
+      first = null;
+
+      const runCountBefore = openDb(dbPath, { databaseRole: "interactive" });
+      const before = runCountBefore.raw.prepare(`
+        SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ? AND status = 'done'
+      `).get(conversationId) as { count: number };
+      runCountBefore.close();
+      expect(before.count).toBe(1);
+
+      second = startOutwardAcpProcess(dbPath, env);
+      await initialize(second, 4);
+
+      const badCwd = await loadSession(second, 5, outwardSessionId, join(root, "wrong-workspace"));
+      expect(badCwd.response).toMatchObject({
+        jsonrpc: "2.0",
+        id: 5,
+        error: { code: -32602, data: { field: "cwd" } },
+      });
+
+      const unknownSession = await loadSession(second, 6, "not-a-real-session", root);
+      expect(unknownSession.response).toMatchObject({
+        jsonrpc: "2.0",
+        id: 6,
+        error: { code: -32602, data: { field: "sessionId" } },
+      });
+
+      const loaded = await loadSession(second, 7, outwardSessionId, root);
+      expect(loaded.response).toMatchObject({ jsonrpc: "2.0", id: 7, result: {} });
+      const replayUpdates = loaded.notifications.filter((notification) => notification.method === "session/update");
+      expect(replayUpdates.every((notification) => notification.params?.sessionId === outwardSessionId)).toBe(true);
+      expect(JSON.stringify(replayUpdates)).toContain("LOAD first wire prompt");
+      expect(JSON.stringify(replayUpdates)).not.toMatch(/codex-session|acpSessionId/);
+
+      const runCountAfterLoad = openDb(dbPath, { databaseRole: "interactive" });
+      const afterLoad = runCountAfterLoad.raw.prepare(`
+        SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?
+      `).get(conversationId) as { count: number };
+      runCountAfterLoad.close();
+      expect(afterLoad.count).toBe(1);
+
+      const secondTurn = await promptSession(second, 8, outwardSessionId, "LOAD second wire prompt");
+      expect(secondTurn.response).toMatchObject({ jsonrpc: "2.0", id: 8, result: { stopReason: "end_turn" } });
+      const secondUpdates = secondTurn.notifications.filter((notification) => notification.method === "session/update");
+      expect(JSON.stringify(secondUpdates)).not.toContain("LOAD first wire prompt");
+
+      await stopProcess(second);
+      second = null;
     } finally {
       if (first) await stopProcess(first);
       if (second) await stopProcess(second);

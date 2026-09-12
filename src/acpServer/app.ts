@@ -8,19 +8,51 @@ import type {
 } from "../repositories/outwardAcpSessionRepository.js";
 import type { OutwardAcpPromptExecutor } from "./execution.js";
 import {
-  BRIDGE_ACP_AGENT_CAPABILITIES,
+  bridgeAgentCapabilities,
   BRIDGE_ACP_AGENT_INFO,
   bridgeAgentProtocolVersion,
 } from "./capabilities.js";
 
+export interface OutwardAcpHistoryTurn {
+  readonly role: "user" | "assistant";
+  readonly text: string;
+}
+
 export interface OutwardAcpSessionStore {
   create(session: NewOutwardAcpSession): unknown;
   get?(sessionId: string): OutwardAcpSessionRecord | null;
+  /** Durable per-conversation transcript for `session/load` replay, oldest first. */
+  history?(conversationId: string): ReadonlyArray<OutwardAcpHistoryTurn>;
 }
 
 export interface OutwardAcpAgentOptions {
   sessions?: OutwardAcpSessionStore;
   promptExecutor?: OutwardAcpPromptExecutor;
+}
+
+function assertConservativeSessionParams(params: { cwd: string; additionalDirectories?: string[]; mcpServers: unknown[] }): void {
+  if (!isAbsolute(params.cwd)) {
+    throw acp.RequestError.invalidParams({ field: "cwd" }, "session cwd must be an absolute path");
+  }
+  if ((params.additionalDirectories?.length ?? 0) > 0) {
+    throw acp.RequestError.invalidParams(
+      { field: "additionalDirectories" },
+      "outward additional directories are not supported",
+    );
+  }
+  if (params.mcpServers.length > 0) {
+    throw acp.RequestError.invalidParams({ field: "mcpServers" }, "outward MCP servers are not supported");
+  }
+}
+
+function replayUpdate(sessionId: string, turn: OutwardAcpHistoryTurn): acp.SessionNotification {
+  return {
+    sessionId,
+    update: {
+      sessionUpdate: turn.role === "user" ? "user_message_chunk" : "agent_message_chunk",
+      content: { type: "text", text: turn.text },
+    },
+  };
 }
 
 function promptText(prompt: readonly acp.ContentBlock[]): string {
@@ -42,39 +74,41 @@ function promptText(prompt: readonly acp.ContentBlock[]): string {
  * otherwise stay absent and fail closed through ACP method-not-found handling.
  */
 export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): AgentApp {
+  const sessions = options.sessions;
+  const supportsLoad = Boolean(sessions?.get && sessions?.history);
   let app = acp.agent({ name: "agent-bridge" }).onRequest(acp.methods.agent.initialize, () => ({
     protocolVersion: bridgeAgentProtocolVersion(),
-    agentCapabilities: BRIDGE_ACP_AGENT_CAPABILITIES,
+    agentCapabilities: bridgeAgentCapabilities({ loadSession: supportsLoad }),
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
   }));
-  const sessions = options.sessions;
   if (!sessions) return app;
 
   app = app.onRequest(acp.methods.agent.session.new, (ctx) => {
-    if (!isAbsolute(ctx.params.cwd)) {
-      throw acp.RequestError.invalidParams(
-        { field: "cwd" },
-        "session cwd must be an absolute path",
-      );
-    }
-    if ((ctx.params.additionalDirectories?.length ?? 0) > 0) {
-      throw acp.RequestError.invalidParams(
-        { field: "additionalDirectories" },
-        "outward additional directories are not supported",
-      );
-    }
-    if (ctx.params.mcpServers.length > 0) {
-      throw acp.RequestError.invalidParams(
-        { field: "mcpServers" },
-        "outward MCP servers are not supported",
-      );
-    }
-
+    assertConservativeSessionParams(ctx.params);
     const sessionId = randomUUID();
     const conversationId = `acp:${randomUUID()}`;
     sessions.create({ sessionId, conversationId, cwd: ctx.params.cwd });
     return { sessionId };
   });
+
+  if (supportsLoad) {
+    const getSessionForLoad = sessions.get!.bind(sessions);
+    const history = sessions.history!.bind(sessions);
+    app = app.onRequest(acp.methods.agent.session.load, async (ctx) => {
+      assertConservativeSessionParams(ctx.params);
+      const session = getSessionForLoad(ctx.params.sessionId);
+      if (!session) {
+        throw acp.RequestError.invalidParams({ field: "sessionId" }, "unknown outward ACP session");
+      }
+      if (session.cwd !== ctx.params.cwd) {
+        throw acp.RequestError.invalidParams({ field: "cwd" }, "session cwd does not match the loaded session");
+      }
+      for (const turn of history(session.conversationId)) {
+        await ctx.client.notify(acp.methods.client.session.update, replayUpdate(session.sessionId, turn));
+      }
+      return {};
+    });
+  }
 
   if (!options.promptExecutor || !sessions.get) return app;
   const promptExecutor = options.promptExecutor;

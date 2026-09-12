@@ -260,11 +260,23 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         collect,
       });
 
+      const cancelled = active.cancelRequested || result.stopReason === "cancelled";
       db.runWithLockFence(lane, () => {
         persistProviderSession(db, input.session.conversationId, provider, result.sessionId, runId);
+        // Durable transcript for `session/load` replay only — mirrors the
+        // generic addConvTurn seam Telegram/Discord already use, so a
+        // cancelled/partial turn (with no authoritative final text) never
+        // enters replay history, matching Bridge's final-answer authority.
+        if (!cancelled && result.text) {
+          db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
+            surfaceIdentity: OUTWARD_ACP_SURFACE,
+          });
+          db.addConvTurn(input.session.conversationId, "assistant", result.text, provider, {
+            surfaceIdentity: OUTWARD_ACP_SURFACE,
+          });
+        }
       });
 
-      const cancelled = active.cancelRequested || result.stopReason === "cancelled";
       if (!cancelled && result.text) {
         enqueueUpdate({
           sessionUpdate: "agent_message_chunk",

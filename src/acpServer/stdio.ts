@@ -4,11 +4,14 @@ import * as acp from "@agentclientprotocol/sdk";
 import { Readable, Writable } from "node:stream";
 import { openProductionDb } from "../db.js";
 import { OutwardAcpSessionRepository } from "../repositories/outwardAcpSessionRepository.js";
-import { createOutwardAcpAgent } from "./app.js";
+import { createOutwardAcpAgent, type OutwardAcpSessionStore } from "./app.js";
 import {
+  OUTWARD_ACP_SURFACE,
   type BridgeOutwardAcpPromptExecutor,
   createProductionOutwardAcpPromptExecutor,
 } from "./execution.js";
+
+const OUTWARD_ACP_HISTORY_LIMIT = 200;
 
 // stdout is the ACP wire. Bridge/provider diagnostics must never corrupt NDJSON.
 console.log = (...args: unknown[]) => console.error(...args);
@@ -26,7 +29,17 @@ const db = openProductionDb(dbPath, {
 
 let promptExecutor: BridgeOutwardAcpPromptExecutor | null = null;
 try {
-  const sessions = new OutwardAcpSessionRepository(db.raw);
+  const sessionRepo = new OutwardAcpSessionRepository(db.raw);
+  const sessions: OutwardAcpSessionStore = {
+    create: (session) => sessionRepo.create(session),
+    get: (sessionId) => sessionRepo.get(sessionId),
+    history: (conversationId) => db.getRecentConvTurns(
+      conversationId,
+      OUTWARD_ACP_HISTORY_LIMIT,
+      undefined,
+      OUTWARD_ACP_SURFACE,
+    ).map((turn) => ({ role: turn.role as "user" | "assistant", text: turn.text })),
+  };
   promptExecutor = createProductionOutwardAcpPromptExecutor(db, dbPath);
   const stream = acp.ndJsonStream(
     Writable.toWeb(process.stdout),
