@@ -91,7 +91,7 @@ describe("Claude ACP provider", () => {
       modeId: "default",
       config: [
         { category: "model", explicitValue: null, preferredValues: ["sonnet", "opus"] },
-        { category: "thought_level", explicitValue: null, preferredValues: ["xhigh"] },
+        { category: "thought_level", explicitValue: "xhigh", preferredValues: ["xhigh"] },
       ],
       meta: {
         disableBuiltInTools: true,
