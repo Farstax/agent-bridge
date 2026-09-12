@@ -100,7 +100,7 @@ export class SettingsRepository {
   setLastUpdateId(bot: BotKind, updateId: number): void {
     this.db
       .prepare(
-        `INSERT INTO bridge_state (chat_id, last_update_id) VALUES (?, 1)
+        `INSERT INTO bridge_state (chat_id, last_update_id) VALUES (?, ?)
          ON CONFLICT (chat_id) DO UPDATE SET
            last_update_id = MAX(last_update_id, excluded.last_update_id)`
       )
