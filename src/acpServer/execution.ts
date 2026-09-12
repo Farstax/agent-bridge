@@ -1,6 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
-import { abortExecutionAndWait } from "../cli.js";
+import { abortCliProcess } from "../cli.js";
 import { loadBotsConfig, resolveExecutionMode } from "../config.js";
 import type { BridgeDb } from "../db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "../engine.js";
@@ -16,6 +16,7 @@ import type { BotKind, BridgeConfig, CliResult } from "../types.js";
 export const OUTWARD_ACP_SURFACE = "acp:outward";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
 const OUTWARD_ACP_BUSY_ERROR = -32002;
+const CANCELLATION_SWEEP_MS = 10;
 
 type OutwardUpdate = acp.SessionNotification["update"];
 type RunCancelledEvent = Extract<BridgeEvent, { type: "run.cancelled" }>;
@@ -24,6 +25,7 @@ type ActiveOutwardExecution = {
   readonly session: OutwardAcpSessionRecord;
   cancelRequested: boolean;
   cancelPromise: Promise<void> | null;
+  settled: boolean;
   readonly done: Promise<void>;
   readonly finishDone: () => void;
 };
@@ -125,6 +127,13 @@ function cancelledEvent(
   });
 }
 
+function sweepDelay(done: Promise<void>): Promise<void> {
+  return Promise.race([
+    done,
+    new Promise<void>((resolve) => setTimeout(resolve, CANCELLATION_SWEEP_MS)),
+  ]);
+}
+
 export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor {
   private readonly active = new Map<string, ActiveOutwardExecution>();
 
@@ -142,7 +151,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       coordinator.markResetting(lane);
       coordinator.markAborted(lane);
       try {
-        await abortExecutionAndWait(lane);
+        // Cancellation can arrive before BridgeEngine has registered its CLI
+        // lifecycle or child. Keep asserting the abort until the owning outer
+        // Run settles so neither a later lifecycle nor a later child can miss it.
+        while (!record.settled) {
+          abortCliProcess(lane);
+          if (record.settled) break;
+          await sweepDelay(record.done);
+        }
       } finally {
         coordinator.clearAborted(lane);
         coordinator.clearResetting(lane);
@@ -190,6 +206,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         session: input.session,
         cancelRequested: input.signal.aborted,
         cancelPromise: null,
+        settled: false,
         done,
         finishDone,
       };
@@ -301,7 +318,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         this.active.delete(input.session.conversationId);
       }
       db.unlock(lane);
-      active?.finishDone();
+      if (active) {
+        active.settled = true;
+        active.finishDone();
+      }
     }
   }
 }
