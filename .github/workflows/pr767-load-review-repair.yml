@@ -95,6 +95,13 @@ jobs:
           if 'uses config replayed during session/load when the load response omits configOptions' not in text:
               text = text.replace(anchor, regression + anchor, 1)
           test.write_text(text)
+
+          runtime_test = Path('test/claudeAcpRuntime.test.ts')
+          text = runtime_test.read_text()
+          old = '        { category: "thought_level", explicitValue: null, preferredValues: ["xhigh"] },'
+          new = '        { category: "thought_level", explicitValue: "xhigh", preferredValues: ["xhigh"] },'
+          assert old in text, 'Claude ACP effort expectation changed unexpectedly'
+          runtime_test.write_text(text.replace(old, new, 1))
           PY
       - name: Focused verification
         run: npx vitest run test/acpSessionConfig.test.ts test/claudeAcpRuntime.test.ts
@@ -103,6 +110,6 @@ jobs:
           rm .github/workflows/pr767-load-review-repair.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/acp/client.ts test/acpSessionConfig.test.ts .github/workflows/pr767-load-review-repair.yml
+          git add src/acp/client.ts test/acpSessionConfig.test.ts test/claudeAcpRuntime.test.ts .github/workflows/pr767-load-review-repair.yml
           git commit -m "fix: preserve ACP config replay on load"
           git push origin HEAD:feature/763-acp-session-config
