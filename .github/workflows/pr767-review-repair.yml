@@ -1,0 +1,78 @@
+name: PR 767 review repair
+
+on:
+  push:
+    branches: [feature/763-acp-session-config]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/763-acp-session-config
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.15.0
+          cache: npm
+      - run: npm ci
+      - name: Apply review repair
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          effort = Path('src/effort.ts')
+          text = effort.read_text()
+          old = '''    if (saved?.trim()) return saved.trim();\n    const configured = env[ENV_KEYS[kind]]?.trim();\n    return configured || null;'''
+          new = '''    // ACP request effort is explicit persisted user state only. Operator env\n    // preference is applied separately during live ACP negotiation.\n    return saved?.trim() || null;'''
+          assert old in text, 'resolveEffort ACP block changed unexpectedly'
+          effort.write_text(text.replace(old, new, 1))
+
+          session = Path('src/acp/sessionConfig.ts')
+          text = session.read_text()
+          old = '''  const effortIsOperatorPreference = Boolean(\n    request.effort && thoughtPreference.length > 0 && thoughtPreference[0] === request.effort,\n  );\n'''
+          assert old in text, 'effort source heuristic changed unexpectedly'
+          text = text.replace(old, '', 1)
+          old = '      explicitValue: effortIsOperatorPreference ? null : request.effort,'
+          new = '      explicitValue: request.effort,'
+          assert old in text, 'effort explicitValue line changed unexpectedly'
+          session.write_text(text.replace(old, new, 1))
+
+          test = Path('test/acpSessionConfig.test.ts')
+          text = test.read_text()
+          import_anchor = 'import { runAcpTurn } from "../src/acp/client.js";\n'
+          import_line = 'import { buildAcpTelegramConfigCallbackData } from "../src/acp/telegramConfigCallback.js";\n'
+          assert import_anchor in text, 'test import anchor changed unexpectedly'
+          if import_line not in text:
+              text = text.replace(import_anchor, import_anchor + import_line, 1)
+
+          anchor = '''  it("stales unsupported explicit user values and leaves the provider default untouched", () => {'''
+          regression = '''  it("keeps explicit user effort stronger than an equal operator preference", () => {\n    const persistedDb = {\n      getSetting(key: string) {\n        return key === "effort:claude" ? "high" : null;\n      },\n    } as any;\n    const emptyDb = { getSetting: () => null } as any;\n\n    expect(resolveEffort("claude", persistedDb, { CLAUDE_EFFORT: "high" } as any)).toBe("high");\n    expect(resolveEffort("claude", emptyDb, { CLAUDE_EFFORT: "high" } as any)).toBeNull();\n    expect(acpSessionConfigIntents("claude", { model: null, effort: "high" }, {\n      CLAUDE_EFFORT: "high",\n    })).toEqual([{\n      category: "thought_level",\n      explicitValue: "high",\n      preferredValues: ["high"],\n    }]);\n    expect(acpSessionConfigIntents("claude", { model: null, effort: null }, {\n      CLAUDE_EFFORT: "high",\n    })).toEqual([{\n      category: "thought_level",\n      explicitValue: null,\n      preferredValues: ["high"],\n    }]);\n  });\n\n'''
+          assert anchor in text, 'regression insertion anchor changed unexpectedly'
+          if 'keeps explicit user effort stronger than an equal operator preference' not in text:
+              text = text.replace(anchor, regression + anchor, 1)
+
+          replacements = {
+            '{ text: "✓ Default", callback_data: "model:claude:default" },': '{ text: "✓ Default", callback_data: buildAcpTelegramConfigCallbackData("claude", "model", "default") },',
+            '{ text: "Use provider default", callback_data: "model:claude:reset" },': '{ text: "Use provider default", callback_data: buildAcpTelegramConfigCallbackData("claude", "model", null) },',
+            '{ text: "✓ Use provider default", callback_data: "effort:claude:reset" },': '{ text: "✓ Use provider default", callback_data: buildAcpTelegramConfigCallbackData("claude", "thought_level", null) },',
+          }
+          for old, new in replacements.items():
+              assert old in text, f'test expectation changed unexpectedly: {old}'
+              text = text.replace(old, new, 1)
+          test.write_text(text)
+          PY
+      - name: Focused verification
+        run: npx vitest run test/acpSessionConfig.test.ts test/acpOpaqueEffort.test.ts test/acpTelegramConfigCallback.test.ts
+      - name: Commit repair and remove temporary workflow
+        run: |
+          rm .github/workflows/pr767-review-repair.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/effort.ts src/acp/sessionConfig.ts test/acpSessionConfig.test.ts .github/workflows/pr767-review-repair.yml
+          git commit -m "fix: preserve ACP effort override authority"
+          git push origin HEAD:feature/763-acp-session-config
