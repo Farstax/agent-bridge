@@ -84,9 +84,9 @@ export function resolveEffort(
   const saved = db.getSetting(effortSettingKey(kind));
   if (ACP_EFFORT_KINDS.has(kind)) {
     if (isAcpProviderDefaultSelected(db, kind, "thought_level")) return null;
-    if (saved?.trim()) return saved.trim();
-    const configured = env[ENV_KEYS[kind]]?.trim();
-    return configured || null;
+    // ACP request effort is explicit persisted user state only. Operator env
+    // preference is applied separately during live ACP negotiation.
+    return saved?.trim() || null;
   }
   return normalizeEffort(saved || resolveDefaultEffort(kind, env));
 }

@@ -1,6 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
+import { buildAcpTelegramConfigCallbackData } from "../src/acp/telegramConfigCallback.js";
 import {
   acpProviderDefaultSettingKey,
   acpSessionConfigIntents,
@@ -74,6 +75,32 @@ describe("negotiated ACP session configuration", () => {
     ])).toEqual({ selections: [], stale: [] });
     expect(acpSessionConfigIntents("claude", { model: null, effort: null }, {})).toEqual([]);
     expect(acpSessionConfigIntents("codex", { model: null, effort: null }, {})).toEqual([]);
+  });
+
+  it("keeps explicit user effort stronger than an equal operator preference", () => {
+    const persistedDb = {
+      getSetting(key: string) {
+        return key === "effort:claude" ? "high" : null;
+      },
+    } as any;
+    const emptyDb = { getSetting: () => null } as any;
+
+    expect(resolveEffort("claude", persistedDb, { CLAUDE_EFFORT: "high" } as any)).toBe("high");
+    expect(resolveEffort("claude", emptyDb, { CLAUDE_EFFORT: "high" } as any)).toBeNull();
+    expect(acpSessionConfigIntents("claude", { model: null, effort: "high" }, {
+      CLAUDE_EFFORT: "high",
+    })).toEqual([{
+      category: "thought_level",
+      explicitValue: "high",
+      preferredValues: ["high"],
+    }]);
+    expect(acpSessionConfigIntents("claude", { model: null, effort: null }, {
+      CLAUDE_EFFORT: "high",
+    })).toEqual([{
+      category: "thought_level",
+      explicitValue: null,
+      preferredValues: ["high"],
+    }]);
   });
 
   it("stales unsupported explicit user values and leaves the provider default untouched", () => {
@@ -291,10 +318,10 @@ describe("ACP Telegram controls", () => {
 
     const keyboard = buildModelKeyboard("claude", [], "default", false);
     expect(keyboard.inline_keyboard).toContainEqual([
-      { text: "✓ Default", callback_data: "model:claude:default" },
+      { text: "✓ Default", callback_data: buildAcpTelegramConfigCallbackData("claude", "model", "default") },
     ]);
     expect(keyboard.inline_keyboard.at(-1)).toEqual([
-      { text: "Use provider default", callback_data: "model:claude:reset" },
+      { text: "Use provider default", callback_data: buildAcpTelegramConfigCallbackData("claude", "model", null) },
     ]);
   });
 
@@ -315,7 +342,7 @@ describe("ACP Telegram controls", () => {
     expect(hasAcpProviderDefaultIntent("claude", "thought_level")).toBe(true);
     expect(buildEffortText("claude", null, true)).toContain("provider default (high)");
     expect(buildEffortKeyboard("claude", null, true).inline_keyboard.at(-1)).toEqual([
-      { text: "✓ Use provider default", callback_data: "effort:claude:reset" },
+      { text: "✓ Use provider default", callback_data: buildAcpTelegramConfigCallbackData("claude", "thought_level", null) },
     ]);
     setAcpProviderDefaultIntent("claude", "thought_level", false);
   });
