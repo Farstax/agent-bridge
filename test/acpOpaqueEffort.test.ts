@@ -11,6 +11,7 @@ import {
   resolveDefaultEffort,
   resolveEffort,
 } from "../src/effort.js";
+import { buildAcpTelegramConfigCallbackData } from "../src/acp/telegramConfigCallback.js";
 
 describe("ACP-native effort values", () => {
   afterEach(() => {
@@ -33,14 +34,23 @@ describe("ACP-native effort values", () => {
       ],
     }]);
 
-    expect(isEffortLevel("default")).toBe(true);
-    expect(isEffortLevel("adaptive")).toBe(true);
+    // ACP values stay provider-owned; the generic Bridge validator must not
+    // accept them merely because another live ACP snapshot advertised them.
+    expect(isEffortLevel("default")).toBe(false);
+    expect(isEffortLevel("adaptive")).toBe(false);
 
     const keyboard = buildEffortKeyboard("claude", "adaptive");
     expect(keyboard.inline_keyboard.flat()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ callback_data: "effort:claude:default" }),
-      expect.objectContaining({ callback_data: "effort:claude:adaptive", text: "✓ Adaptive" }),
-      expect.objectContaining({ callback_data: "effort:claude:reset" }),
+      expect.objectContaining({
+        callback_data: buildAcpTelegramConfigCallbackData("claude", "thought_level", "default"),
+      }),
+      expect.objectContaining({
+        callback_data: buildAcpTelegramConfigCallbackData("claude", "thought_level", "adaptive"),
+        text: "✓ Adaptive",
+      }),
+      expect.objectContaining({
+        callback_data: buildAcpTelegramConfigCallbackData("claude", "thought_level", null),
+      }),
     ]));
 
     expect(buildEffortText("claude", "adaptive")).toContain("Adaptive (adaptive)");
