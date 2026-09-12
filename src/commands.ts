@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { BridgeConfig, BotKind } from "./types.js";
 import type { BridgeDb } from "./db.js";
 import { buildModelKeyboard, buildModelsText } from "./bridge.js";
+import { isAcpProviderDefaultSelected } from "./acp/sessionConfig.js";
 import { listLocalCatalog } from "./skills.js";
 import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js";
 import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
@@ -226,19 +227,21 @@ export function handleCommand(
 
   if (text === "/models") {
     const bot = config.bots[kind];
+    const providerDefaultSelected = isAcpProviderDefaultSelected(db, kind, "model");
     return {
       kind: "keyboard_message",
       text: buildModelsText(kind, { db, config }),
-      reply_markup: buildModelKeyboard(kind, bot.modelPreference, db.getSetting(kind)),
+      reply_markup: buildModelKeyboard(kind, bot.modelPreference, db.getSetting(kind), providerDefaultSelected),
     };
   }
 
   if (text === "/effort") {
     const current = resolveEffort(kind, db);
+    const providerDefaultSelected = isAcpProviderDefaultSelected(db, kind, "thought_level");
     return {
       kind: "keyboard_message",
-      text: buildEffortText(kind, current),
-      reply_markup: buildEffortKeyboard(kind, current),
+      text: buildEffortText(kind, current, providerDefaultSelected),
+      reply_markup: buildEffortKeyboard(kind, current, providerDefaultSelected),
     };
   }
 
