@@ -125,6 +125,41 @@ export function acpThoughtLevelPreference(
   return raw?.trim() ? [raw.trim()] : [];
 }
 
+/** Build provider-neutral semantic intents. No ACP config id or model translation lives here. */
+export function acpSessionConfigIntents(
+  providerId: string,
+  request: {
+    readonly model: string | null;
+    readonly modelRequired?: boolean;
+    readonly effort: string | null;
+  },
+  env: Record<string, string | undefined>,
+): readonly AcpSessionConfigIntent[] {
+  const intents: AcpSessionConfigIntent[] = [];
+  const modelPreference = acpModelPreference(providerId, env);
+  if (request.model || modelPreference.length > 0) {
+    intents.push({
+      category: "model",
+      explicitValue: request.model,
+      preferredValues: modelPreference,
+      ...(request.modelRequired ? { required: true } : {}),
+    });
+  }
+
+  const thoughtPreference = acpThoughtLevelPreference(providerId, env);
+  const effortIsOperatorPreference = Boolean(
+    request.effort && thoughtPreference.length > 0 && thoughtPreference[0] === request.effort,
+  );
+  if (request.effort || thoughtPreference.length > 0) {
+    intents.push({
+      category: "thought_level",
+      explicitValue: effortIsOperatorPreference ? null : request.effort,
+      preferredValues: thoughtPreference,
+    });
+  }
+  return intents;
+}
+
 const snapshots = new Map<string, readonly AcpSessionConfigOptionSnapshot[]>();
 const staleValues = new Map<string, readonly AcpStaleSessionConfigValue[]>();
 
