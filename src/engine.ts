@@ -46,6 +46,7 @@ import { buildModelKeyboard, buildModelsText, getCliWorkingDir } from "./bridge.
 import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible } from "./commands.js";
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel, type EffortLevel } from "./effort.js";
+import { resolveAcpTelegramConfigCallback } from "./acp/telegramConfigCallback.js";
 import { getCodexUsageText } from "./codexUsage.js";
 import { clearHandoffRequired, isProviderFallbackHandoffRequired } from "./handoffState.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
@@ -1910,6 +1911,60 @@ export class BridgeEngine {
     if (!isAgentKind(this.kind) || !this.opts.fullConfig) return;
 
     const data = String(callbackQuery?.data || "");
+    const acpSelection = resolveAcpTelegramConfigCallback(data);
+    if (acpSelection) {
+      if (acpSelection.providerId !== this.kind) return;
+      const messageId = callbackQuery.message?.message_id;
+      const chatId = callbackQuery.message?.chat?.id;
+      const threadId = callbackQuery.message?.message_thread_id;
+      if (!chatId || !messageId) return;
+      if (!acpSelection.useProviderDefault && acpSelection.value === null) {
+        await this.client.answerCallbackQuery({
+          callback_query_id: callbackQuery.id,
+          text: "That provider option is no longer available. Open the settings again.",
+        });
+        return;
+      }
+
+      if (acpSelection.category === "thought_level") {
+        const next = acpSelection.useProviderDefault ? null : acpSelection.value!;
+        this.db.setSetting(effortSettingKey(this.kind), next);
+        const displayEffort = next ?? resolveDefaultEffort(this.kind);
+        await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
+        await this.client.editMessageText({
+          chat_id: chatId,
+          message_id: messageId,
+          text: buildEffortText(this.kind, displayEffort, acpSelection.useProviderDefault),
+          reply_markup: buildEffortKeyboard(this.kind, displayEffort, acpSelection.useProviderDefault),
+        });
+        await this.sendText(chatId, {
+          text: `✓ Effort set to ${acpSelection.useProviderDefault ? "provider default" : next}`,
+          message_thread_id: threadId,
+        });
+        return;
+      }
+
+      const next = acpSelection.useProviderDefault ? null : acpSelection.value!;
+      this.db.setSetting(this.kind, next);
+      await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
+      await this.client.editMessageText({
+        chat_id: chatId,
+        message_id: messageId,
+        text: buildModelsText(this.kind, { db: this.db, config: this.opts.fullConfig }),
+        reply_markup: buildModelKeyboard(
+          this.kind,
+          this.opts.botConfig.modelPreference,
+          next,
+          acpSelection.useProviderDefault,
+        ),
+      });
+      await this.sendText(chatId, {
+        text: `✓ Model set to ${acpSelection.useProviderDefault ? "provider default" : next}`,
+        message_thread_id: threadId,
+      });
+      return;
+    }
+
     const [action, targetKind, ...rest] = data.split(":");
     if (action === "queue_mode") {
       const value = targetKind.trim();
@@ -1938,6 +1993,16 @@ export class BridgeEngine {
     const chatId = callbackQuery.message?.chat?.id;
     const threadId = callbackQuery.message?.message_thread_id;
     if (!chatId || !messageId) return;
+
+    // ACP-backed providers accept only the bounded token callbacks above. Raw
+    // legacy callbacks could contain invented or stale provider-owned values.
+    if (this.kind === "codex" || this.kind === "claude") {
+      await this.client.answerCallbackQuery({
+        callback_query_id: callbackQuery.id,
+        text: "This settings button has expired. Open the settings again.",
+      });
+      return;
+    }
 
     if (action === "effort") {
       const next = value === "reset" ? resolveDefaultEffort(this.kind) : value;

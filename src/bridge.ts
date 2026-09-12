@@ -15,6 +15,13 @@ import { abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses } from ".
 import { validateBridgeConfig, parseModelPreference } from "./config.js";
 import { BridgeDb } from "./db.js";
 import {
+  getAcpSessionConfigOption,
+  hasAcpProviderDefaultIntent,
+  isAcpProviderDefaultSelected,
+  isAcpSessionConfigValueStale,
+} from "./acp/sessionConfig.js";
+import { buildAcpTelegramConfigCallbackData } from "./acp/telegramConfigCallback.js";
+import {
   resolveAntigravityConversationId, extractAntigravityConversationId,
   readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
   setAntigravityModel, ensureAntigravityStateDirs, toAntigravityModelLabel,
@@ -60,7 +67,45 @@ export function extractPromptText(message: TelegramMessage): string | null {
   return text;
 }
 
-export function buildModelKeyboard(kind: string, modelPreference: string[], currentModel?: string | null): any {
+function isAcpConfigKind(kind: string): boolean {
+  return kind === "codex" || kind === "claude";
+}
+
+export function buildModelKeyboard(
+  kind: string,
+  modelPreference: string[],
+  currentModel?: string | null,
+  providerDefaultSelected = isAcpConfigKind(kind) && hasAcpProviderDefaultIntent(kind, "model"),
+): any {
+  if (isAcpConfigKind(kind)) {
+    const option = getAcpSessionConfigOption(kind, "model");
+    const currentIsAdvertised = Boolean(
+      currentModel
+      && option?.options?.some((candidate) => candidate.value === currentModel)
+      && !isAcpSessionConfigValueStale(kind, "model", currentModel),
+    );
+    const selected = providerDefaultSelected
+      ? null
+      : currentIsAdvertised
+        ? currentModel
+        : typeof option?.currentValue === "string"
+          ? option.currentValue
+          : null;
+    const modelButtons = (option?.options ?? []).map((candidate) => [{
+      text: selected === candidate.value ? `✓ ${candidate.name ?? candidate.value}` : (candidate.name ?? candidate.value),
+      callback_data: buildAcpTelegramConfigCallbackData(kind, "model", candidate.value),
+    }]);
+    return {
+      inline_keyboard: [
+        ...modelButtons,
+        [{
+          text: providerDefaultSelected ? "✓ Use provider default" : "Use provider default",
+          callback_data: buildAcpTelegramConfigCallbackData(kind, "model", null),
+        }],
+      ],
+    };
+  }
+
   const modelButtons = modelPreference.map((m) => {
     const text = currentModel === m ? `✓ ${m}` : m;
     return [{ text, callback_data: `model:${kind}:${m}` }];
@@ -75,6 +120,57 @@ export function buildModelKeyboard(kind: string, modelPreference: string[], curr
 
 export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; config: BridgeConfig }): string {
   const bot = config.bots[kind as "codex" | "antigravity" | "claude" | "grok" | "cursor"];
+  if (isAcpConfigKind(kind)) {
+    const option = getAcpSessionConfigOption(kind, "model");
+    const saved = db.getSetting(kind);
+    const providerDefaultSelected = isAcpProviderDefaultSelected(db, kind, "model");
+    if (!option) {
+      return [
+        `[${kind} model settings]`,
+        "",
+        `Current: ${providerDefaultSelected ? "provider default" : "provider-controlled"}`,
+        "Available: waiting for a live ACP session to advertise model options",
+      ].join("\n");
+    }
+    const advertised = option.options ?? [];
+    const savedAdvertised = Boolean(
+      saved
+      && advertised.some((candidate) => candidate.value === saved)
+      && !isAcpSessionConfigValueStale(kind, "model", saved),
+    );
+    const current = providerDefaultSelected
+      ? `provider default${typeof option.currentValue === "string" ? ` (${option.currentValue})` : ""}`
+      : savedAdvertised
+        ? saved!
+        : typeof option.currentValue === "string"
+          ? option.currentValue
+          : "provider default";
+    const available = advertised.length > 0
+      ? [
+          "Available:",
+          ...advertised.map((candidate) => {
+            const label = candidate.name && candidate.name !== candidate.value
+              ? `${candidate.name} (${candidate.value})`
+              : candidate.value;
+            return `- ${candidate.description ? `${label}: ${candidate.description}` : label}`;
+          }),
+        ].join("\n")
+      : "Available: provider-controlled";
+    const stale = saved && !savedAdvertised && !providerDefaultSelected
+      ? `\nStored override ${saved} is no longer advertised and is ignored.`
+      : "";
+    return [
+      `[${kind} model settings]`,
+      "",
+      `Current: ${current}`,
+      ...(option.description ? [`${option.name ?? "Model"}: ${option.description}`] : []),
+      available,
+      ...(stale ? [stale.trim()] : []),
+      "",
+      "Select a model below:",
+    ].join("\n");
+  }
+
   const current = db.getSetting(kind) || bot.modelPreference[0] || "default";
   const available = bot.modelPreference.length > 0 ? bot.modelPreference.join(", ") : "none configured";
   return `[${kind} model settings]\n\nCurrent: ${current}\nAvailable: ${available}\n\nSelect a model below:`;

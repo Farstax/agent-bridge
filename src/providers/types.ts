@@ -40,6 +40,11 @@ export interface ProviderInvocationRequest {
   sessionId: string | null;
   command: string;
   model: string | null;
+  /**
+   * ACP-only: this model is a required caller target (for example an Advisor
+   * provider:model target), not a stale-tolerant interactive user override.
+   */
+  modelRequired?: boolean;
   executionMode: "safe" | "trusted";
   outputFormat: "json" | "stream-json" | "streaming-json" | null;
   soulContext: string | null;
