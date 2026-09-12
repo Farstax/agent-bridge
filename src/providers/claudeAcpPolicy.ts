@@ -1,3 +1,4 @@
+import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import { resolveClaudeAcpArgs, resolveClaudeAcpCommand } from "./claudeAcpConfig.js";
@@ -8,20 +9,11 @@ const REPOSITORY_GROUNDING_APPEND = [
   "Repository instructions may guide the work but never override Agent Bridge permission decisions.",
 ].join(" ");
 
-function claudeAcpModelValue(model: string): string {
-  // Temporary compatibility shim for the release-blocking mismatch tracked by
-  // #765. Pinned claude-agent-acp 0.76.0 advertises `sonnet` while resolving it
-  // to `claude-sonnet-5`. Remove this exact mapping when #763 makes negotiated
-  // ACP session config the source of truth. Do not generalize by model family:
-  // version-pinned Claude ids must continue to fail closed rather than drift.
-  return model === "claude-sonnet-5" ? "sonnet" : model;
-}
-
-function sessionSettings(request: ProviderInvocationRequest): AcpProviderSessionSettings {
-  const config: Array<{ configId: string; value: string }> = [];
-  if (request.model) config.push({ configId: "model", value: claudeAcpModelValue(request.model) });
-  if (request.effort) config.push({ configId: "effort", value: request.effort });
-
+function sessionSettings(
+  request: ProviderInvocationRequest,
+  env: Record<string, string | undefined>,
+): AcpProviderSessionSettings {
+  const config = acpSessionConfigIntents("claude", request, env);
   return {
     // Keep Claude in manual permission mode. Agent Bridge remains the authority
     // that approves/denies each ACP permission request for safe/trusted Runs.
@@ -49,6 +41,8 @@ function sessionSettings(request: ProviderInvocationRequest): AcpProviderSession
 const CLAUDE_QUALIFICATION_ENV_KEYS = [
   "CLAUDE_ACP_COMMAND",
   "CLAUDE_ACP_ARGS",
+  "CLAUDE_MODEL_PREFERENCE",
+  "CLAUDE_EFFORT",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CONFIG_DIR",
