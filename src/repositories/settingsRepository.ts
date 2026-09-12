@@ -1,18 +1,51 @@
 import Database from "better-sqlite3";
+import {
+  acpProviderDefaultSettingKey,
+  setAcpProviderDefaultIntent,
+} from "../acp/sessionConfig.js";
 import { normalizeAgyModelFamily } from "../effort.js";
 
 type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
+type AcpSelection = { providerId: "codex" | "claude"; category: "model" | "thought_level" };
+
 const pollingKey = (bot: string) => `$polling:${bot}`;
+
+function acpSelectionForKey(key: string): AcpSelection | null {
+  if (key === "codex" || key === "claude") return { providerId: key, category: "model" };
+  if (key === "effort:codex") return { providerId: "codex", category: "thought_level" };
+  if (key === "effort:claude") return { providerId: "claude", category: "thought_level" };
+  return null;
+}
 
 export class SettingsRepository {
   constructor(private readonly db: Database.Database) {}
 
-  getSetting(key: string): string | null {
+  private readRaw(key: string): string | null {
     const row = this.db
       .prepare(`SELECT value FROM settings WHERE key = ?`)
       .get(key) as { value: string | null } | undefined;
-    const value = row?.value ?? null;
+    return row?.value ?? null;
+  }
+
+  private writeRaw(key: string, value: string | null): void {
+    this.db
+      .prepare(
+        `INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value`
+      )
+      .run(key, value);
+  }
+
+  getSetting(key: string): string | null {
+    const value = this.readRaw(key);
+    const acpSelection = acpSelectionForKey(key);
+    if (acpSelection) {
+      const providerDefault = this.readRaw(
+        acpProviderDefaultSettingKey(acpSelection.providerId, acpSelection.category),
+      ) === "1";
+      setAcpProviderDefaultIntent(acpSelection.providerId, acpSelection.category, providerDefault);
+    }
     // Compatibility seam for model overrides saved before Antigravity model
     // family and effort were separated. Keep the stored row non-destructive,
     // but expose the family-level value to every runtime/UI/fallback caller.
@@ -20,12 +53,21 @@ export class SettingsRepository {
   }
 
   setSetting(key: string, value: string | null): void {
-    this.db
-      .prepare(
-        `INSERT INTO settings (key, value) VALUES (?, ?)
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value`
-      )
-      .run(key, value);
+    const acpSelection = acpSelectionForKey(key);
+    if (acpSelection) {
+      // "Use provider default" is Bridge policy, persisted separately from the
+      // opaque ACP value namespace. A real advertised value named "default"
+      // remains an ordinary provider value and is written unchanged here.
+      const useProviderDefault = value === null;
+      this.writeRaw(key, value);
+      this.writeRaw(
+        acpProviderDefaultSettingKey(acpSelection.providerId, acpSelection.category),
+        useProviderDefault ? "1" : null,
+      );
+      setAcpProviderDefaultIntent(acpSelection.providerId, acpSelection.category, useProviderDefault);
+      return;
+    }
+    this.writeRaw(key, value);
   }
 
   getChatRepo(chatId: string): string | null {

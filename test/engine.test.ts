@@ -1522,31 +1522,44 @@ describe("BridgeEngine", () => {
 
     it("sends callback confirmation messages to the callback's source thread", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        {
-          surfaceIdentity: "test",
-          kind: "codex",
-          botConfig: { command: "codex", modelPreference: ["gpt-5.5"] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          pollIntervalMs: 1000, workingDir: process.cwd(),
-          fullConfig: makeFullConfig(dbPath),
-        },
-        db,
-        client,
-        {},
-      );
+      const { replaceAcpSessionConfigSnapshot, clearAcpSessionConfigSnapshot } = await import("../src/acp/sessionConfig.js");
+      const { buildAcpTelegramConfigCallbackData } = await import("../src/acp/telegramConfigCallback.js");
+      replaceAcpSessionConfigSnapshot("codex", [{
+        id: "model",
+        category: "model",
+        type: "select",
+        currentValue: "gpt-5.5",
+        options: [{ value: "gpt-5.5", name: "GPT-5.5" }],
+      }]);
+      try {
+        const client = makeMockClient();
+        const engine = new BridgeEngine(
+          {
+            surfaceIdentity: "test",
+            kind: "codex",
+            botConfig: { command: "codex", modelPreference: ["gpt-5.5"] },
+            allowedUserIds: new Set(["42"]),
+            executionMode: "safe",
+            pollIntervalMs: 1000, workingDir: process.cwd(),
+            fullConfig: makeFullConfig(dbPath),
+          },
+          db,
+          client,
+          {},
+        );
 
-      await engine.handleCallback({
-        id: "cb-1",
-        from: { id: 42, first_name: "Test" },
-        message: { message_id: 123, chat: { id: 100, type: "supergroup" }, message_thread_id: 7 },
-        data: "model:codex:gpt-5.5",
-      });
+        await engine.handleCallback({
+          id: "cb-1",
+          from: { id: 42, first_name: "Test" },
+          message: { message_id: 123, chat: { id: 100, type: "supergroup" }, message_thread_id: 7 },
+          data: buildAcpTelegramConfigCallbackData("codex", "model", "gpt-5.5"),
+        });
 
-      const confirmation = client.sendMessage.mock.calls.find((call: any[]) => call[0]?.text?.includes("Model set"));
-      expect(confirmation?.[0]).toMatchObject({ chat_id: 100, message_thread_id: 7 });
+        const confirmation = client.sendMessage.mock.calls.find((call: any[]) => call[0]?.text?.includes("Model set"));
+        expect(confirmation?.[0]).toMatchObject({ chat_id: 100, message_thread_id: 7 });
+      } finally {
+        clearAcpSessionConfigSnapshot("codex");
+      }
     });
   });
 

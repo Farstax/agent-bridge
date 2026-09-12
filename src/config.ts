@@ -48,9 +48,10 @@ export function parseAntigravityModelPreference(raw: string | undefined): string
 }
 
 /**
- * Build the three bot configs from env. Tokens are omitted by default because
- * interactive surfaces construct engines around one surface token. Callers
- * that validate configured per-provider tokens may opt in with withTokens.
+ * Build bot runtime configs from env. ACP model preferences intentionally do
+ * not populate BotConfig.modelPreference: that array is the legacy/native
+ * execution catalogue and fallback list. Claude/Codex preference policy is
+ * consumed only after their ACP sessions advertise configOptions.
  */
 export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): Record<BotKind, BotConfig> {
   const token = (v: string | undefined) => (opts.withTokens ? v : undefined);
@@ -58,7 +59,7 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     codex: {
       token: token(env.TELEGRAM_BOT_TOKEN_CODEX),
       command: resolveCodexAcpCommand(env),
-      modelPreference: parseModelPreference(env.CODEX_MODEL_PREFERENCE),
+      modelPreference: [],
     },
     antigravity: {
       token: token(env.TELEGRAM_BOT_TOKEN_ANTIGRAVITY || env.TELEGRAM_BOT_TOKEN_GEMINI),
@@ -68,7 +69,7 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     claude: {
       token: token(env.TELEGRAM_BOT_TOKEN_CLAUDE),
       command: resolveClaudeAcpCommand(env),
-      modelPreference: parseModelPreference(env.CLAUDE_MODEL_PREFERENCE),
+      modelPreference: [],
     },
     grok: {
       token: token(env.TELEGRAM_BOT_TOKEN_GROK),
