@@ -63,14 +63,14 @@ describe("Claude ACP provider", () => {
   });
 
   it("keeps Bridge permission authority in Claude manual mode for safe and trusted Runs", () => {
-    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }))).toMatchObject({
+    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {})).toMatchObject({
       modeId: "default",
       meta: {
         systemPrompt: { append: expect.any(String) },
         claudeCode: { options: { settingSources: [] } },
       },
     });
-    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }))).toMatchObject({
+    expect(claudeAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {})).toMatchObject({
       modeId: "default",
       meta: {
         systemPrompt: { append: expect.any(String) },
@@ -79,16 +79,19 @@ describe("Claude ACP provider", () => {
     });
   });
 
-  it("maps model and effort through standard ACP config and enables only proven strict tool-free metadata", () => {
+  it("expresses model and effort as semantic ACP intents without provider-id translation", () => {
     expect(claudeAcpPolicy.sessionSettings?.(request({
-      model: "claude-sonnet-5",
+      model: null,
       effort: "xhigh",
       toolMode: "none",
-    }))).toEqual({
+    }), {
+      CLAUDE_MODEL_PREFERENCE: "sonnet,opus",
+      CLAUDE_EFFORT: "xhigh",
+    })).toEqual({
       modeId: "default",
       config: [
-        { configId: "model", value: "sonnet" },
-        { configId: "effort", value: "xhigh" },
+        { category: "model", explicitValue: null, preferredValues: ["sonnet", "opus"] },
+        { category: "thought_level", explicitValue: null, preferredValues: ["xhigh"] },
       ],
       meta: {
         disableBuiltInTools: true,
@@ -102,20 +105,20 @@ describe("Claude ACP provider", () => {
         },
       },
     });
-    expect(claudeAcpPolicy.sessionSettings?.(request({ model: "sonnet" }))?.config).toEqual([
-      { configId: "model", value: "sonnet" },
+    expect(claudeAcpPolicy.sessionSettings?.(request({ model: "sonnet" }), {})?.config).toEqual([
+      { category: "model", explicitValue: "sonnet", preferredValues: [] },
     ]);
-    expect(claudeAcpPolicy.sessionSettings?.(request({ model: "claude-opus-4-8" }))?.config).toEqual([
-      { configId: "model", value: "claude-opus-4-8" },
+    expect(claudeAcpPolicy.sessionSettings?.(request({ model: "claude-sonnet-5" }), {})?.config).toEqual([
+      { category: "model", explicitValue: "claude-sonnet-5", preferredValues: [] },
     ]);
-    expect(claudeAcpPolicy.sessionSettings?.(request()).meta).toEqual({
+    expect(claudeAcpPolicy.sessionSettings?.(request(), {}).meta).toEqual({
       systemPrompt: { append: expect.any(String) },
       claudeCode: { options: { settingSources: [] } },
     });
     expect(supportsToolFreeMode("claude")).toBe(true);
   });
 
-  it("negotiates mode/config, forwards session metadata, and re-reads effort choices after model change", async () => {
+  it("negotiates opaque config ids/values and re-reads reasoning choices after model change", async () => {
     const calls: Array<{ kind: string; value: unknown }> = [];
     const sessions = new Set<string>();
     const agent = acp.agent({ name: "claude-policy-fixture" })
@@ -137,8 +140,9 @@ describe("Claude ACP provider", () => {
           },
           configOptions: [
             {
-              id: "model",
+              id: "model-selector",
               name: "Model",
+              category: "model",
               type: "select",
               currentValue: "claude-a",
               options: [
@@ -147,8 +151,9 @@ describe("Claude ACP provider", () => {
               ],
             },
             {
-              id: "effort",
+              id: "reasoning",
               name: "Effort",
+              category: "thought_level",
               type: "select",
               currentValue: "low",
               options: [{ value: "low", name: "Low" }],
@@ -162,12 +167,13 @@ describe("Claude ACP provider", () => {
       })
       .onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => {
         calls.push({ kind: ctx.params.configId, value: ctx.params.value });
-        if (ctx.params.configId === "model") {
+        if (ctx.params.configId === "model-selector") {
           return {
             configOptions: [
               {
-                id: "model",
+                id: "model-selector",
                 name: "Model",
+                category: "model",
                 type: "select",
                 currentValue: ctx.params.value,
                 options: [
@@ -176,8 +182,9 @@ describe("Claude ACP provider", () => {
                 ],
               },
               {
-                id: "effort",
+                id: "reasoning",
                 name: "Effort",
+                category: "thought_level",
                 type: "select",
                 currentValue: "high",
                 options: [
@@ -188,7 +195,32 @@ describe("Claude ACP provider", () => {
             ],
           };
         }
-        return { configOptions: [] };
+        return {
+          configOptions: [
+            {
+              id: "model-selector",
+              name: "Model",
+              category: "model",
+              type: "select",
+              currentValue: "claude-b",
+              options: [
+                { value: "claude-a", name: "Claude A" },
+                { value: "claude-b", name: "Claude B" },
+              ],
+            },
+            {
+              id: "reasoning",
+              name: "Effort",
+              category: "thought_level",
+              type: "select",
+              currentValue: ctx.params.value,
+              options: [
+                { value: "high", name: "High" },
+                { value: "xhigh", name: "Extra high" },
+              ],
+            },
+          ],
+        };
       })
       .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
         expect(sessions.has(ctx.params.sessionId)).toBe(true);
@@ -206,7 +238,7 @@ describe("Claude ACP provider", () => {
       model: "claude-b",
       effort: "xhigh",
       toolMode: "none",
-    }));
+    }), {});
     const result = await runAcpTurn({
       peer: agent,
       cwd: process.cwd(),
@@ -221,19 +253,23 @@ describe("Claude ACP provider", () => {
     });
 
     expect(result.liveText).toBe("configured");
-    expect(calls.map((call) => call.kind)).toEqual(["new-meta", "mode", "model", "effort"]);
+    expect(calls.map((call) => call.kind)).toEqual(["new-meta", "mode", "model-selector", "reasoning"]);
     expect(calls[0]?.value).toEqual(expect.objectContaining({
       disableBuiltInTools: true,
       claudeCode: { options: expect.objectContaining({ settingSources: [] }) },
     }));
     expect(calls.slice(1)).toEqual([
       { kind: "mode", value: "default" },
-      { kind: "model", value: "claude-b" },
-      { kind: "effort", value: "xhigh" },
+      { kind: "model-selector", value: "claude-b" },
+      { kind: "reasoning", value: "xhigh" },
     ]);
+    expect(result.configOptions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "model-selector", currentValue: "claude-b" }),
+      expect.objectContaining({ id: "reasoning", currentValue: "xhigh" }),
+    ]));
   });
 
-  it("fails closed instead of silently ignoring an unadvertised requested config value", async () => {
+  it("fails closed instead of silently ignoring an unadvertised exact config value", async () => {
     const agent = acp.agent({ name: "config-fixture" })
       .onRequest(acp.methods.agent.initialize, async () => ({
         protocolVersion: acp.PROTOCOL_VERSION,
@@ -248,6 +284,7 @@ describe("Claude ACP provider", () => {
         configOptions: [{
           id: "model",
           name: "Model",
+          category: "model",
           type: "select",
           currentValue: "claude-a",
           options: [{ value: "claude-a", name: "Claude A" }],
