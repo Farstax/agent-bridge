@@ -1,0 +1,188 @@
+name: PR 767 callback repair
+
+on:
+  push:
+    branches:
+      - feature/763-acp-session-config
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/763-acp-session-config
+          fetch-depth: 0
+      - name: Apply scoped engine repair
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/engine.ts")
+          text = path.read_text()
+          import_anchor = 'import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel, type EffortLevel } from "./effort.js";\n'
+          import_line = 'import { resolveAcpTelegramConfigCallback } from "./acp/telegramConfigCallback.js";\n'
+          if import_line not in text:
+              if import_anchor not in text:
+                  raise SystemExit("engine import anchor missing")
+              text = text.replace(import_anchor, import_anchor + import_line, 1)
+
+          start = text.index("  async handleCallback(callbackQuery: TelegramCallbackQuery, providedChatKey?: string): Promise<void> {")
+          end = text.index("\n  async sendText(", start)
+          replacement = '''  async handleCallback(callbackQuery: TelegramCallbackQuery, providedChatKey?: string): Promise<void> {
+    const fromId = callbackQuery?.from?.id;
+    if (!this.opts.allowedUserIds.has(String(fromId))) return;
+    if (!isAgentKind(this.kind) || !this.opts.fullConfig) return;
+
+    const data = String(callbackQuery?.data || "");
+    const acpSelection = resolveAcpTelegramConfigCallback(data);
+    if (acpSelection) {
+      if (acpSelection.providerId !== this.kind) return;
+      const messageId = callbackQuery.message?.message_id;
+      const chatId = callbackQuery.message?.chat?.id;
+      const threadId = callbackQuery.message?.message_thread_id;
+      if (!chatId || !messageId) return;
+      if (!acpSelection.useProviderDefault && acpSelection.value === null) {
+        await this.client.answerCallbackQuery({
+          callback_query_id: callbackQuery.id,
+          text: "That provider option is no longer available. Open the settings again.",
+        });
+        return;
+      }
+
+      if (acpSelection.category === "thought_level") {
+        const next = acpSelection.useProviderDefault ? null : acpSelection.value!;
+        this.db.setSetting(effortSettingKey(this.kind), next);
+        const displayEffort = next ?? resolveDefaultEffort(this.kind);
+        await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
+        await this.client.editMessageText({
+          chat_id: chatId,
+          message_id: messageId,
+          text: buildEffortText(this.kind, displayEffort, acpSelection.useProviderDefault),
+          reply_markup: buildEffortKeyboard(this.kind, displayEffort, acpSelection.useProviderDefault),
+        });
+        await this.sendText(chatId, {
+          text: `✓ Effort set to ${acpSelection.useProviderDefault ? "provider default" : next}`,
+          message_thread_id: threadId,
+        });
+        return;
+      }
+
+      const next = acpSelection.useProviderDefault ? null : acpSelection.value!;
+      this.db.setSetting(this.kind, next);
+      await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
+      await this.client.editMessageText({
+        chat_id: chatId,
+        message_id: messageId,
+        text: buildModelsText(this.kind, { db: this.db, config: this.opts.fullConfig }),
+        reply_markup: buildModelKeyboard(
+          this.kind,
+          this.opts.botConfig.modelPreference,
+          next,
+          acpSelection.useProviderDefault,
+        ),
+      });
+      await this.sendText(chatId, {
+        text: `✓ Model set to ${acpSelection.useProviderDefault ? "provider default" : next}`,
+        message_thread_id: threadId,
+      });
+      return;
+    }
+
+    const [action, targetKind, ...rest] = data.split(":");
+    if (action === "queue_mode") {
+      const value = targetKind.trim();
+      const chatId = callbackQuery.message?.chat?.id;
+      const messageId = callbackQuery.message?.message_id;
+      const chatType = callbackQuery.message?.chat?.type ?? "private";
+      const threadId = callbackQuery.message?.message_thread_id;
+      if (!chatId || !messageId || !["augment", "interrupt", "queue", "reset"].includes(value)) return;
+      const chatKey = providedChatKey ?? topicChatKey(chatId, chatType, threadId);
+      this.db.setSetting(busyMessageModeSettingKey(this.surfaceIdentity, chatKey), value === "reset" ? null : value);
+      const effective = this._busyMessageMode(chatKey);
+      await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id, text: `Busy-message mode: ${effective}` });
+      await this.client.editMessageText({
+        chat_id: chatId,
+        message_id: messageId,
+        text: `Busy-message mode: ${effective}. This applies to new messages while this lane is busy.`,
+        reply_markup: buildBusyMessageModeKeyboard(effective),
+      });
+      await this.sendText(chatId, { text: `✓ Busy-message mode set to ${effective}`, message_thread_id: threadId });
+      return;
+    }
+    if (!["model", "effort"].includes(action) || targetKind !== this.kind) return;
+
+    const value = rest.join(":").trim();
+    const messageId = callbackQuery.message?.message_id;
+    const chatId = callbackQuery.message?.chat?.id;
+    const threadId = callbackQuery.message?.message_thread_id;
+    if (!chatId || !messageId) return;
+
+    // ACP-backed providers accept only the bounded token callbacks above. Raw
+    // legacy callbacks could contain invented or stale provider-owned values.
+    if (this.kind === "codex" || this.kind === "claude") {
+      await this.client.answerCallbackQuery({
+        callback_query_id: callbackQuery.id,
+        text: "This settings button has expired. Open the settings again.",
+      });
+      return;
+    }
+
+    if (action === "effort") {
+      const next = value === "reset" ? resolveDefaultEffort(this.kind) : value;
+      if (!isEffortLevel(next)) {
+        await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id, text: "Unsupported effort" });
+        return;
+      }
+      this.db.setSetting(effortSettingKey(this.kind), value === "reset" ? null : next);
+      await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
+      await this.client.editMessageText({
+        chat_id: chatId,
+        message_id: messageId,
+        text: buildEffortText(this.kind, next),
+        reply_markup: buildEffortKeyboard(this.kind, next),
+      });
+      await this.sendText(chatId, { text: `✓ Effort set to ${next}`, message_thread_id: threadId });
+      return;
+    }
+
+    if (value === "reset") {
+      this.db.setSetting(this.kind, null);
+      if (this.kind === "antigravity") setAntigravityModel(null);
+      await this.client.answerCallbackQuery({
+        callback_query_id: callbackQuery.id,
+        text: `${this.kind} reset to default`,
+      });
+      await this.client.editMessageText({
+        chat_id: chatId,
+        message_id: messageId,
+        text: buildModelsText(this.kind, { db: this.db, config: this.opts.fullConfig }),
+        reply_markup: buildModelKeyboard(this.kind, this.opts.botConfig.modelPreference, null),
+      });
+      return;
+    }
+
+    this.db.setSetting(this.kind, value);
+    if (this.kind === "antigravity") setAntigravityModel(value);
+    await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
+    await this.client.editMessageText({
+      chat_id: chatId,
+      message_id: messageId,
+      text: buildModelsText(this.kind, { db: this.db, config: this.opts.fullConfig }),
+      reply_markup: buildModelKeyboard(this.kind, this.opts.botConfig.modelPreference, value),
+    });
+    await this.sendText(chatId, { text: `✓ Model set to ${value}`, message_thread_id: threadId });
+  }
+'''
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text)
+          Path(".github/workflows/pr767-callback-repair.yml").unlink()
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/engine.ts .github/workflows/pr767-callback-repair.yml
+          git commit -m "fix: validate ACP Telegram selections at live boundary"
+          git push origin HEAD:feature/763-acp-session-config
