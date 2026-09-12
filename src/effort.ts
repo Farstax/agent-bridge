@@ -5,7 +5,11 @@
  * NEIGHBORS: src/cli.ts, src/commands.ts, src/engine.ts
  */
 
-import { getAcpSessionConfigOption, isAcpProviderDefaultSelected } from "./acp/sessionConfig.js";
+import {
+  getAcpSessionConfigOption,
+  hasAcpProviderDefaultIntent,
+  isAcpProviderDefaultSelected,
+} from "./acp/sessionConfig.js";
 import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 
@@ -74,7 +78,7 @@ export function resolveEffort(
 export function buildEffortKeyboard(
   kind: BotKind,
   currentEffort: EffortLevel | null,
-  providerDefaultSelected = false,
+  providerDefaultSelected = ACP_EFFORT_KINDS.has(kind) && hasAcpProviderDefaultIntent(kind, "thought_level"),
 ) {
   if (ACP_EFFORT_KINDS.has(kind)) {
     const option = getAcpSessionConfigOption(kind, "thought_level");
@@ -114,7 +118,7 @@ export function buildEffortKeyboard(
 export function buildEffortText(
   kind: BotKind,
   currentEffort: EffortLevel | null,
-  providerDefaultSelected = false,
+  providerDefaultSelected = ACP_EFFORT_KINDS.has(kind) && hasAcpProviderDefaultIntent(kind, "thought_level"),
 ): string {
   if (ACP_EFFORT_KINDS.has(kind)) {
     const option = getAcpSessionConfigOption(kind, "thought_level");
