@@ -125,6 +125,24 @@ export function acpThoughtLevelPreference(
   return raw?.trim() ? [raw.trim()] : [];
 }
 
+const providerDefaultIntents = new Set<string>();
+const providerDefaultIntentKey = (providerId: string, category: string) => `${providerId}:${category}`;
+
+/** Remember an explicit "Use provider default" choice that otherwise becomes null at legacy call boundaries. */
+export function setAcpProviderDefaultIntent(
+  providerId: string,
+  category: string,
+  enabled: boolean,
+): void {
+  const key = providerDefaultIntentKey(providerId, category);
+  if (enabled) providerDefaultIntents.add(key);
+  else providerDefaultIntents.delete(key);
+}
+
+export function hasAcpProviderDefaultIntent(providerId: string, category: string): boolean {
+  return providerDefaultIntents.has(providerDefaultIntentKey(providerId, category));
+}
+
 /** Build provider-neutral semantic intents. No ACP config id or model translation lives here. */
 export function acpSessionConfigIntents(
   providerId: string,
@@ -146,14 +164,19 @@ export function acpSessionConfigIntents(
     });
   }
 
-  const thoughtPreference = acpThoughtLevelPreference(providerId, env);
+  const forceThoughtDefault = hasAcpProviderDefaultIntent(providerId, "thought_level");
+  const thoughtPreference = forceThoughtDefault ? [] : acpThoughtLevelPreference(providerId, env);
   const effortIsOperatorPreference = Boolean(
     request.effort && thoughtPreference.length > 0 && thoughtPreference[0] === request.effort,
   );
-  if (request.effort || thoughtPreference.length > 0) {
+  if (forceThoughtDefault || request.effort || thoughtPreference.length > 0) {
     intents.push({
       category: "thought_level",
-      explicitValue: effortIsOperatorPreference ? null : request.effort,
+      explicitValue: forceThoughtDefault
+        ? ACP_PROVIDER_DEFAULT
+        : effortIsOperatorPreference
+          ? null
+          : request.effort,
       preferredValues: thoughtPreference,
     });
   }
