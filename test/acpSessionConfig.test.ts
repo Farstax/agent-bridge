@@ -2,7 +2,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
 import {
-  ACP_PROVIDER_DEFAULT,
+  acpProviderDefaultSettingKey,
   acpSessionConfigIntents,
   clearAcpSessionConfigSnapshot,
   getAcpSessionConfigOption,
@@ -24,6 +24,7 @@ const configOptions = [
     type: "select",
     currentValue: "sonnet",
     options: [
+      { value: "default", name: "Default", description: "Provider-selected" },
       { value: "sonnet", name: "Sonnet", description: "Fast" },
       { value: "opus", name: "Opus", description: "Deep" },
     ],
@@ -56,6 +57,15 @@ describe("negotiated ACP session configuration", () => {
     });
   });
 
+  it("treats an advertised literal default as an opaque ACP value", () => {
+    expect(planAcpSessionConfig(configOptions, [
+      { category: "model", explicitValue: "default", preferredValues: ["opus"] },
+    ])).toEqual({
+      selections: [{ configId: "model-selector", value: "default", category: "model" }],
+      stale: [],
+    });
+  });
+
   it("uses provider defaults when no override or matching preference exists", () => {
     expect(planAcpSessionConfig(configOptions, [])).toEqual({ selections: [], stale: [] });
     expect(planAcpSessionConfig(configOptions, [
@@ -81,9 +91,9 @@ describe("negotiated ACP session configuration", () => {
     ])).toThrow(/does not support value/);
   });
 
-  it("lets an explicit provider-default choice suppress operator preferences", () => {
+  it("keeps explicit provider-default policy out of the ACP value namespace", () => {
     expect(planAcpSessionConfig(configOptions, [
-      { category: "model", explicitValue: ACP_PROVIDER_DEFAULT, preferredValues: ["opus"] },
+      { category: "model", explicitValue: "default", preferredValues: ["opus"], useProviderDefault: true },
     ])).toEqual({ selections: [], stale: [] });
 
     setAcpProviderDefaultIntent("claude", "thought_level", true);
@@ -91,8 +101,9 @@ describe("negotiated ACP session configuration", () => {
       CLAUDE_EFFORT: "high",
     })).toEqual([{
       category: "thought_level",
-      explicitValue: ACP_PROVIDER_DEFAULT,
+      explicitValue: null,
       preferredValues: [],
+      useProviderDefault: true,
     }]);
     setAcpProviderDefaultIntent("claude", "thought_level", false);
   });
@@ -109,10 +120,11 @@ describe("negotiated ACP session configuration", () => {
     expect(getAcpSessionConfigOption("claude", "model")).toMatchObject({
       id: "model-selector",
       currentValue: "sonnet",
-      options: [
+      options: expect.arrayContaining([
+        { value: "default", name: "Default", description: "Provider-selected" },
         { value: "sonnet", name: "Sonnet", description: "Fast" },
         { value: "opus", name: "Opus", description: "Deep" },
-      ],
+      ]),
     });
 
     replaceAcpSessionConfigSnapshot("claude", [{
@@ -125,6 +137,55 @@ describe("negotiated ACP session configuration", () => {
       options: [{ value: "opus", name: "Opus", description: "Deep" }],
     });
     expect(getAcpSessionConfigOption("claude", "thought_level")).toBeNull();
+  });
+
+  it("sends the literal default ACP value but sends nothing for Bridge provider-default policy", async () => {
+    const calls: Array<[string, string]> = [];
+    const agent = acp.agent({ name: "default-collision-fixture" })
+      .onRequest(acp.methods.agent.initialize, async () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: { loadSession: false },
+      }))
+      .onRequest(acp.methods.agent.session.new, async () => ({
+        sessionId: "session-default",
+        configOptions: [{ ...configOptions[0], currentValue: "opus" }],
+      }))
+      .onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => {
+        calls.push([ctx.params.configId, String(ctx.params.value)]);
+        return { configOptions: [{ ...configOptions[0], currentValue: String(ctx.params.value) }] };
+      })
+      .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+        await ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } },
+        });
+        return { stopReason: "end_turn" };
+      });
+
+    await runAcpTurn({
+      peer: agent,
+      cwd: process.cwd(),
+      conversationId: "bridge-default-value",
+      runId: "run-default-value",
+      existingAcpSessionId: null,
+      prompt: "hello",
+      executionMode: "safe",
+      sessionConfig: [{ category: "model", explicitValue: "default" }],
+    });
+    expect(calls).toEqual([["model-selector", "default"]]);
+
+    calls.length = 0;
+    await runAcpTurn({
+      peer: agent,
+      cwd: process.cwd(),
+      conversationId: "bridge-provider-default",
+      runId: "run-provider-default",
+      existingAcpSessionId: null,
+      prompt: "hello",
+      executionMode: "safe",
+      sessionConfig: [{ category: "model", useProviderDefault: true }],
+    });
+    expect(calls).toEqual([]);
   });
 
   it("replaces dependent config after set_config_option and consumes agent config updates", async () => {
@@ -201,10 +262,6 @@ describe("negotiated ACP session configuration", () => {
       ["reasoning", "xhigh"],
     ]);
     expect(first.liveText).toBe("done");
-    expect(first.configOptions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "model-selector", currentValue: "sonnet" }),
-      expect.objectContaining({ id: "reasoning", currentValue: "xhigh" }),
-    ]));
 
     calls.length = 0;
     const resumed = await runAcpTurn({
@@ -223,21 +280,21 @@ describe("negotiated ACP session configuration", () => {
 });
 
 describe("ACP Telegram controls", () => {
-  it("renders /models from advertised labels/descriptions and persists opaque values", () => {
+  it("renders /models from advertised labels/descriptions and keeps literal default selectable", () => {
     replaceAcpSessionConfigSnapshot("claude", configOptions);
     const config = { bots: loadBotsConfig({}) } as any;
-    const db = { getSetting: (key: string) => key === "claude" ? "opus" : null } as any;
+    const db = { getSetting: (key: string) => key === "claude" ? "default" : null } as any;
 
     const text = buildModelsText("claude", { db, config });
-    expect(text).toContain("Current: opus");
-    expect(text).toContain("Sonnet (sonnet): Fast");
-    expect(text).toContain("Opus (opus): Deep");
+    expect(text).toContain("Current: default");
+    expect(text).toContain("Default (default): Provider-selected");
 
-    const keyboard = buildModelKeyboard("claude", [], "opus");
-    expect(keyboard.inline_keyboard).toEqual([
-      [{ text: "Sonnet", callback_data: "model:claude:sonnet" }],
-      [{ text: "✓ Opus", callback_data: "model:claude:opus" }],
-      [{ text: "Use provider default", callback_data: "model:claude:reset" }],
+    const keyboard = buildModelKeyboard("claude", [], "default", false);
+    expect(keyboard.inline_keyboard).toContainEqual([
+      { text: "✓ Default", callback_data: "model:claude:default" },
+    ]);
+    expect(keyboard.inline_keyboard.at(-1)).toEqual([
+      { text: "Use provider default", callback_data: "model:claude:reset" },
     ]);
   });
 
@@ -246,21 +303,18 @@ describe("ACP Telegram controls", () => {
     const config = { bots: loadBotsConfig({}) } as any;
     const db = { getSetting: () => null } as any;
     expect(buildModelsText("codex", { db, config })).toContain("provider-controlled");
-    expect(buildModelKeyboard("codex", [], null).inline_keyboard).toEqual([
-      [{ text: "Use provider default", callback_data: "model:codex:reset" }],
-    ]);
   });
 
   it("renders /effort from advertised thought_level options and honours provider-default reset", () => {
     replaceAcpSessionConfigSnapshot("claude", configOptions);
     setAcpProviderDefaultIntent("claude", "thought_level", true);
-    expect(resolveEffort("claude", { getSetting: () => ACP_PROVIDER_DEFAULT } as any, {
-      CLAUDE_EFFORT: "low",
-    } as any)).toBeNull();
+    const marker = acpProviderDefaultSettingKey("claude", "thought_level");
+    expect(resolveEffort("claude", {
+      getSetting: (key: string) => key === marker ? "1" : null,
+    } as any, { CLAUDE_EFFORT: "low" } as any)).toBeNull();
     expect(hasAcpProviderDefaultIntent("claude", "thought_level")).toBe(true);
-    expect(buildEffortText("claude", null)).toContain("provider default (high)");
-    expect(buildEffortText("claude", null)).toContain("High (high): Deeper");
-    expect(buildEffortKeyboard("claude", null).inline_keyboard.at(-1)).toEqual([
+    expect(buildEffortText("claude", null, true)).toContain("provider default (high)");
+    expect(buildEffortKeyboard("claude", null, true).inline_keyboard.at(-1)).toEqual([
       { text: "✓ Use provider default", callback_data: "effort:claude:reset" },
     ]);
     setAcpProviderDefaultIntent("claude", "thought_level", false);
