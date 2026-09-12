@@ -4,7 +4,8 @@ import { extname } from "node:path";
 import { createHash } from "node:crypto";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
 import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
-import type { AcpRetainedEvent, AcpSessionConfigValue, AcpTurnResult } from "../acp/client.js";
+import type { AcpRetainedEvent, AcpSessionConfigRequest, AcpTurnResult } from "../acp/client.js";
+import { replaceAcpSessionConfigSnapshot } from "../acp/sessionConfig.js";
 import { isAbortRequested, runSupervisedStdioSession } from "../cliSupervisor.js";
 import { cleanOutputDir } from "../fileOutput.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
@@ -46,7 +47,7 @@ export interface AcpActivityProjector {
 export interface AcpProviderSessionSettings {
   readonly meta?: Readonly<Record<string, unknown>>;
   readonly modeId?: string;
-  readonly config?: readonly AcpSessionConfigValue[];
+  readonly config?: readonly AcpSessionConfigRequest[];
 }
 
 /**
@@ -76,7 +77,10 @@ export interface AcpProviderPolicy {
     env: Record<string, string | undefined>,
   ) => Record<string, string>;
   /** Standard ACP session metadata/mode/config selected from Bridge provider policy. */
-  readonly sessionSettings?: (request: ProviderInvocationRequest) => AcpProviderSessionSettings;
+  readonly sessionSettings?: (
+    request: ProviderInvocationRequest,
+    env: Record<string, string | undefined>,
+  ) => AcpProviderSessionSettings;
   /** Runtime-affecting env keys that qualification must compare with the active process. */
   readonly qualificationEnvKeys?: readonly string[];
   /** Standard ACP authenticate method selected from workspace-local policy. */
@@ -437,7 +441,7 @@ export async function runResolvedAcpProviderTurn(
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
   const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
-  const sessionSettings = policy.sessionSettings?.(request);
+  const sessionSettings = policy.sessionSettings?.(request, effectiveEnv);
   const contextEnv = { ...(options.contextEnv ?? {}), ...providerEnv };
   const redactionEnv = { ...process.env, ...contextEnv };
   const secretValues = getProviderApiKeySecretValues(redactionEnv);
@@ -508,6 +512,7 @@ export async function runResolvedAcpProviderTurn(
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);
+  replaceAcpSessionConfigSnapshot(providerId, result.configOptions, result.staleSessionConfig);
   const parsed = acpTurnResultToCliResult(providerId, result, policy);
   if (parsed.stopReason === "cancelled" && request.outputDir) {
     try {
