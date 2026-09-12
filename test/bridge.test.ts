@@ -440,7 +440,7 @@ describe("model keyboard", () => {
   const prefs = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
   it("includes one button per model in the preference list", () => {
-    const kb = buildModelKeyboard("codex", prefs);
+    const kb = buildModelKeyboard("antigravity", prefs);
     const allButtons = kb.inline_keyboard.flat();
     for (const model of prefs) {
       expect(allButtons.some((b: any) => b.text === model)).toBe(true);
@@ -448,25 +448,25 @@ describe("model keyboard", () => {
   });
 
   it("each model button carries the correct callback_data", () => {
-    const kb = buildModelKeyboard("codex", prefs);
+    const kb = buildModelKeyboard("antigravity", prefs);
     const allButtons = kb.inline_keyboard.flat();
     for (const model of prefs) {
       const btn = allButtons.find((b: any) => b.text === model);
-      expect(btn?.callback_data).toBe(`model:codex:${model}`);
+      expect(btn?.callback_data).toBe(`model:antigravity:${model}`);
     }
   });
 
   it("includes a Reset to Default button", () => {
-    const kb = buildModelKeyboard("codex", prefs);
+    const kb = buildModelKeyboard("antigravity", prefs);
     const allButtons = kb.inline_keyboard.flat();
-    expect(allButtons.some((b: any) => b.callback_data === "model:codex:reset")).toBe(true);
+    expect(allButtons.some((b: any) => b.callback_data === "model:antigravity:reset")).toBe(true);
   });
 
   it("returns an empty keyboard when preference list is empty", () => {
-    const kb = buildModelKeyboard("codex", []);
+    const kb = buildModelKeyboard("antigravity", []);
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "gpt-5.5")).toBe(false);
-    expect(allButtons.some((b: any) => b.callback_data === "model:codex:reset")).toBe(true);
+    expect(allButtons.some((b: any) => b.callback_data === "model:antigravity:reset")).toBe(true);
   });
 });
 
@@ -501,8 +501,8 @@ describe("/models command returns keyboard_message", () => {
       config: makeConfig(["gpt-5.5", "gpt-5.4"]),
     }) as any;
     const allButtons = result.reply_markup.inline_keyboard.flat();
-    expect(allButtons.some((b: any) => b.text === "gpt-5.5")).toBe(true);
-    expect(allButtons.some((b: any) => b.text === "gpt-5.4")).toBe(true);
+    expect(allButtons.some((b: any) => b.text === "gpt-5.5")).toBe(false);
+    expect(allButtons.some((b: any) => b.text === "gpt-5.4")).toBe(false);
   });
 
   it("keyboard_message includes text describing current model", () => {
@@ -511,7 +511,7 @@ describe("/models command returns keyboard_message", () => {
       chatId: "1",
       config: makeConfig(["gpt-5.5", "gpt-5.4"]),
     }) as any;
-    expect(result.text).toContain("gpt-5.4");
+    expect(result.text).toContain("provider-controlled");
   });
 });
 
@@ -530,15 +530,15 @@ describe("/effort command returns keyboard_message", () => {
     },
   } as any;
 
-  it("returns an effort keyboard with medium default", () => {
+  it("returns a provider-controlled effort keyboard before ACP advertisement", () => {
     const result = handleCommand("codex", "/effort", {
       db: { getSetting: () => null } as any,
       chatId: "1",
       config,
     }) as any;
     expect(result.kind).toBe("keyboard_message");
-    expect(result.text).toContain("medium");
-    expect(result.reply_markup.inline_keyboard.flat().some((b: any) => b.callback_data === "effort:codex:high")).toBe(true);
+    expect(result.text).toContain("provider-controlled");
+    expect(result.reply_markup.inline_keyboard.flat().some((b: any) => b.callback_data === "effort:codex:high")).toBe(false);
   });
 
   it("makes Agy unsupported status explicit", () => {
@@ -627,27 +627,27 @@ describe("model keyboard current model indicator", () => {
   const prefs = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
   it("marks the active model button with a checkmark", () => {
-    const kb = buildModelKeyboard("codex", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("antigravity", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.4")).toBe(true);
   });
 
   it("does not mark non-active models with a checkmark", () => {
-    const kb = buildModelKeyboard("codex", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("antigravity", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.5")).toBe(false);
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.4-mini")).toBe(false);
   });
 
   it("active button still has correct callback_data", () => {
-    const kb = buildModelKeyboard("codex", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("antigravity", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     const btn = allButtons.find((b: any) => b.text === "✓ gpt-5.4");
-    expect(btn?.callback_data).toBe("model:codex:gpt-5.4");
+    expect(btn?.callback_data).toBe("model:antigravity:gpt-5.4");
   });
 
   it("shows no checkmark when currentModel is null", () => {
-    const kb = buildModelKeyboard("codex", prefs, null);
+    const kb = buildModelKeyboard("antigravity", prefs, null);
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.every((b: any) => !b.text.startsWith("✓"))).toBe(true);
   });
