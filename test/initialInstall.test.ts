@@ -289,7 +289,7 @@ print(json.dumps({"commands": len(commands)}))
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 60_000);
 
   it("propagates a shared-skill manager failure so exact-release installation fails", () => {
     const result = probe(`

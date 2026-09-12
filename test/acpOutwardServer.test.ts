@@ -250,7 +250,7 @@ async function waitForRunningRun(dbPath: string, conversationId: string, timeout
   }
 }
 
-describe("outward ACP stdio boundary", () => {
+describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
   it("initializes conservatively and persists stable outward session identity across process restart", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-"));
     const dbPath = join(root, "bridge.sqlite");

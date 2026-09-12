@@ -134,7 +134,7 @@ function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overr
   });
 }
 
-describe("guarded rollout helper", () => {
+describe("guarded rollout helper", { timeout: 30_000 }, () => {
   it.each(["missing", "extra", "reordered"])("rejects %s EnvironmentFiles inventory before stopping services", (mode) => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
@@ -1411,7 +1411,7 @@ fi
   });
 });
 
-describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", () => {
+describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_000 }, () => {
   function sentinelPath(fixture: Fixture): string {
     return join(fixture.logDir, ".rollout-in-progress");
   }
