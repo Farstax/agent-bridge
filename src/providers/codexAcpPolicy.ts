@@ -1,8 +1,9 @@
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import type { AcpTurnResult } from "../acp/client.js";
+import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpObservedUpdate } from "../acp/replay.js";
 import type { ProviderInvocationRequest } from "./types.js";
-import type { AcpProviderPolicy } from "./acpRuntime.js";
+import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
 import { createCodexAcpAnswerPreview } from "./codexAcpAnswerPreview.js";
 import { createCodexAcpRunActivityProjector } from "./codexAcpRunActivity.js";
@@ -23,11 +24,9 @@ export function initialAgentMode(request: Pick<ProviderInvocationRequest, "execu
   return "read-only";
 }
 
-export function codexAcpConfig(request: Pick<ProviderInvocationRequest, "model" | "effort">): Record<string, unknown> {
-  const config: Record<string, unknown> = {};
-  if (request.model) config.model = request.model;
-  if (request.effort) config.model_reasoning_effort = request.effort;
-  return config;
+/** @deprecated Model/effort configuration is negotiated through ACP session config options. */
+export function codexAcpConfig(_request: Pick<ProviderInvocationRequest, "model" | "effort">): Record<string, unknown> {
+  return {};
 }
 
 /** Codex ACP reads CODEX_API_KEY only during authenticate({ methodId: "api-key" }). */
@@ -38,6 +37,14 @@ export function codexAcpChildAuthEnv(
     return { DEFAULT_AUTH_REQUEST: JSON.stringify({ methodId: "api-key" }) };
   }
   return {};
+}
+
+function sessionSettings(
+  request: ProviderInvocationRequest,
+  env: Record<string, string | undefined>,
+): AcpProviderSessionSettings {
+  const config = acpSessionConfigIntents("codex", request, env);
+  return config.length > 0 ? { config } : {};
 }
 
 type CodexAgentMessageChunk =
@@ -113,6 +120,8 @@ export function selectCodexAcpAnswer(result: AcpTurnResult): { text: string; mis
 const CODEX_QUALIFICATION_ENV_KEYS = [
   "CODEX_ACP_COMMAND",
   "CODEX_ACP_ARGS",
+  "CODEX_MODEL_PREFERENCE",
+  "CODEX_EFFORT",
   "CODEX_API_KEY",
   "OPENAI_API_KEY",
   "DEFAULT_AUTH_REQUEST",
@@ -136,12 +145,11 @@ export const codexAcpPolicy: AcpProviderPolicy = {
   qualificationEnvKeys: CODEX_QUALIFICATION_ENV_KEYS,
   createActivityProjector: createCodexAcpRunActivityProjector,
   buildChildEnv(request, env) {
-    const config = codexAcpConfig(request);
     return {
       ...codexAcpChildAuthEnv(env),
       INITIAL_AGENT_MODE: initialAgentMode(request),
-      ...(Object.keys(config).length > 0 ? { CODEX_CONFIG: JSON.stringify(config) } : {}),
     };
   },
+  sessionSettings,
   selectAnswer: selectCodexAcpAnswer,
 };
