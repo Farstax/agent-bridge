@@ -1,11 +1,9 @@
 import Database from "better-sqlite3";
-import { ACP_PROVIDER_DEFAULT, setAcpProviderDefaultIntent } from "../acp/sessionConfig.js";
 import { normalizeAgyModelFamily } from "../effort.js";
 
 type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
 const pollingKey = (bot: string) => `$polling:${bot}`;
-const ACP_SELECTION_KEYS = new Set(["codex", "claude", "effort:codex", "effort:claude"]);
 
 export class SettingsRepository {
   constructor(private readonly db: Database.Database) {}
@@ -22,23 +20,12 @@ export class SettingsRepository {
   }
 
   setSetting(key: string, value: string | null): void {
-    // For ACP selections, null from the Telegram "reset" action is not the
-    // same as never having chosen anything: it means the user explicitly wants
-    // the agent's own default, which must outrank optional operator preference
-    // env policy. Persist that intent without inventing a provider model id.
-    const storedValue = value === null && ACP_SELECTION_KEYS.has(key)
-      ? ACP_PROVIDER_DEFAULT
-      : value;
-    if (key === "effort:codex" || key === "effort:claude") {
-      const providerId = key.slice("effort:".length);
-      setAcpProviderDefaultIntent(providerId, "thought_level", storedValue === ACP_PROVIDER_DEFAULT);
-    }
     this.db
       .prepare(
         `INSERT INTO settings (key, value) VALUES (?, ?)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`
       )
-      .run(key, storedValue);
+      .run(key, value);
   }
 
   getChatRepo(chatId: string): string | null {
