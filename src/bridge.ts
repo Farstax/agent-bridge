@@ -20,6 +20,7 @@ import {
   isAcpProviderDefaultSelected,
   isAcpSessionConfigValueStale,
 } from "./acp/sessionConfig.js";
+import { buildAcpTelegramConfigCallbackData } from "./acp/telegramConfigCallback.js";
 import {
   resolveAntigravityConversationId, extractAntigravityConversationId,
   readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
@@ -92,14 +93,14 @@ export function buildModelKeyboard(
           : null;
     const modelButtons = (option?.options ?? []).map((candidate) => [{
       text: selected === candidate.value ? `✓ ${candidate.name ?? candidate.value}` : (candidate.name ?? candidate.value),
-      callback_data: `model:${kind}:${candidate.value}`,
+      callback_data: buildAcpTelegramConfigCallbackData(kind, "model", candidate.value),
     }]);
     return {
       inline_keyboard: [
         ...modelButtons,
         [{
           text: providerDefaultSelected ? "✓ Use provider default" : "Use provider default",
-          callback_data: `model:${kind}:reset`,
+          callback_data: buildAcpTelegramConfigCallbackData(kind, "model", null),
         }],
       ],
     };
