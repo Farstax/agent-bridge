@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BridgeDb } from "../src/db.js";
 import { executionLaneCoordinator } from "../src/executionLaneCoordinator.js";
 
 const LANE = JSON.stringify(["telegram:interactive", "100"]);
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("execution lane coordinator ownership", () => {
   it("shares one coordinator for the same database and surface", () => {
@@ -44,5 +48,20 @@ describe("execution lane coordinator ownership", () => {
     expect(coordinator.isAborted(LANE)).toBe(false);
     expect(coordinator.isResetting(LANE)).toBe(false);
     expect(coordinator.hasAugmentedTask(LANE)).toBe(false);
+  });
+
+  it("stops durable recovery when the canonical drainer takes ownership", async () => {
+    vi.useFakeTimers();
+    const db = {} as BridgeDb;
+    const coordinator = executionLaneCoordinator(db, "telegram:interactive");
+    const attempt = vi.fn().mockResolvedValue(false);
+
+    coordinator.scheduleRecovery(LANE, 100, attempt);
+    coordinator.setDrainer(LANE, { promise: Promise.resolve() });
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(attempt).not.toHaveBeenCalled();
+    coordinator.clearDrainer(LANE);
   });
 });
