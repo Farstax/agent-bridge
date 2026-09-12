@@ -28,20 +28,8 @@ jobs:
 
           client = Path('src/acp/client.ts')
           text = client.read_text()
-          old = '''    latestConfigOptions = setupState.configOptions ?? [];
-          const applied = await applySessionSettings(agent, acpSessionId, setupState, input);
-          latestConfigOptions = applied.configOptions;'''
-          old = old.replace('\n          ', '\n    ')
-          new = '''    // A load/resume may replay authoritative config_option_update notifications
-          // while returning no configOptions of its own. Preserve that projected
-          // catalogue unless the setup response explicitly supplied a replacement.
-          if (setupState.configOptions != null) latestConfigOptions = setupState.configOptions;
-          const effectiveSetupState = setupState.configOptions != null
-            ? setupState
-            : { ...setupState, configOptions: latestConfigOptions };
-          const applied = await applySessionSettings(agent, acpSessionId, effectiveSetupState, input);
-          latestConfigOptions = applied.configOptions;'''
-          new = new.replace('\n          ', '\n    ').replace('\n            ', '\n      ')
+          old = "    latestConfigOptions = setupState.configOptions ?? [];\n    const applied = await applySessionSettings(agent, acpSessionId, setupState, input);\n    latestConfigOptions = applied.configOptions;"
+          new = "    // A load/resume may replay authoritative config_option_update notifications\n    // while returning no configOptions of its own. Preserve that projected\n    // catalogue unless the setup response explicitly supplied a replacement.\n    if (setupState.configOptions != null) latestConfigOptions = setupState.configOptions;\n    const effectiveSetupState = setupState.configOptions != null\n      ? setupState\n      : { ...setupState, configOptions: latestConfigOptions };\n    const applied = await applySessionSettings(agent, acpSessionId, effectiveSetupState, input);\n    latestConfigOptions = applied.configOptions;"
           assert old in text, 'ACP setup-state block changed unexpectedly'
           client.write_text(text.replace(old, new, 1))
 
