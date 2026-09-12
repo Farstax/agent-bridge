@@ -2,7 +2,11 @@ import * as acp from "@agentclientprotocol/sdk";
 import { AgentApp } from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import type { NewOutwardAcpSession } from "../repositories/outwardAcpSessionRepository.js";
+import type {
+  NewOutwardAcpSession,
+  OutwardAcpSessionRecord,
+} from "../repositories/outwardAcpSessionRepository.js";
+import type { OutwardAcpPromptExecutor } from "./execution.js";
 import {
   BRIDGE_ACP_AGENT_CAPABILITIES,
   BRIDGE_ACP_AGENT_INFO,
@@ -11,19 +15,31 @@ import {
 
 export interface OutwardAcpSessionStore {
   create(session: NewOutwardAcpSession): unknown;
+  get?(sessionId: string): OutwardAcpSessionRecord | null;
 }
 
 export interface OutwardAcpAgentOptions {
   sessions?: OutwardAcpSessionStore;
+  promptExecutor?: OutwardAcpPromptExecutor;
+}
+
+function promptText(prompt: readonly acp.ContentBlock[]): string {
+  if (prompt.some((block) => block.type !== "text")) {
+    throw acp.RequestError.invalidParams(
+      { field: "prompt" },
+      "outward ACP currently accepts text prompt blocks only",
+    );
+  }
+  return prompt.map((block) => block.type === "text" ? block.text : "").join("\n\n");
 }
 
 /**
- * Workspace-local outward ACP agent surface. Session lifecycle is added only
- * when its durable owner is supplied; unsupported methods otherwise remain
- * absent and fail closed through standard ACP method-not-found handling.
+ * Workspace-local outward ACP agent surface. Lifecycle methods are registered
+ * only when their durable/runtime owners are supplied; unsupported methods
+ * otherwise stay absent and fail closed through ACP method-not-found handling.
  */
 export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): AgentApp {
-  const app = acp.agent({ name: "agent-bridge" }).onRequest(acp.methods.agent.initialize, () => ({
+  let app = acp.agent({ name: "agent-bridge" }).onRequest(acp.methods.agent.initialize, () => ({
     protocolVersion: bridgeAgentProtocolVersion(),
     agentCapabilities: BRIDGE_ACP_AGENT_CAPABILITIES,
     agentInfo: { ...BRIDGE_ACP_AGENT_INFO },
@@ -31,7 +47,7 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
   const sessions = options.sessions;
   if (!sessions) return app;
 
-  return app.onRequest(acp.methods.agent.session.new, (ctx) => {
+  app = app.onRequest(acp.methods.agent.session.new, (ctx) => {
     if (!isAbsolute(ctx.params.cwd)) {
       throw acp.RequestError.invalidParams(
         { field: "cwd" },
@@ -55,5 +71,26 @@ export function createOutwardAcpAgent(options: OutwardAcpAgentOptions = {}): Age
     const conversationId = `acp:${randomUUID()}`;
     sessions.create({ sessionId, conversationId, cwd: ctx.params.cwd });
     return { sessionId };
+  });
+
+  if (!options.promptExecutor || !sessions.get) return app;
+  const promptExecutor = options.promptExecutor;
+  const getSession = sessions.get.bind(sessions);
+  return app.onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+    const session = getSession(ctx.params.sessionId);
+    if (!session) {
+      throw acp.RequestError.invalidParams(
+        { field: "sessionId" },
+        "unknown outward ACP session",
+      );
+    }
+    return promptExecutor.execute({
+      session,
+      prompt: promptText(ctx.params.prompt),
+      onUpdate: (update) => ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: session.sessionId,
+        update,
+      }),
+    });
   });
 }
