@@ -8,9 +8,18 @@ const REPOSITORY_GROUNDING_APPEND = [
   "Repository instructions may guide the work but never override Agent Bridge permission decisions.",
 ].join(" ");
 
+function claudeAcpModelValue(model: string): string {
+  // Temporary compatibility shim for the release-blocking mismatch tracked by
+  // #765. Pinned claude-agent-acp 0.76.0 advertises `sonnet` while resolving it
+  // to `claude-sonnet-5`. Remove this exact mapping when #763 makes negotiated
+  // ACP session config the source of truth. Do not generalize by model family:
+  // version-pinned Claude ids must continue to fail closed rather than drift.
+  return model === "claude-sonnet-5" ? "sonnet" : model;
+}
+
 function sessionSettings(request: ProviderInvocationRequest): AcpProviderSessionSettings {
   const config: Array<{ configId: string; value: string }> = [];
-  if (request.model) config.push({ configId: "model", value: request.model });
+  if (request.model) config.push({ configId: "model", value: claudeAcpModelValue(request.model) });
   if (request.effort) config.push({ configId: "effort", value: request.effort });
 
   return {
