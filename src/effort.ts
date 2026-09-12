@@ -79,7 +79,11 @@ export function resolveDefaultEffort(kind: BotKind, env: NodeJS.ProcessEnv = pro
     const advertised = getAcpSessionConfigOption(kind, "thought_level")?.currentValue;
     if (typeof advertised === "string" && advertised.trim()) return advertised;
     const configured = env[ENV_KEYS[kind]]?.trim();
-    if (configured) return configured;
+    if (isBridgeEffortLevel(configured)) return configured;
+    // Reset is an out-of-band provider-default action. Before a live snapshot
+    // exists, use a known-valid local sentinel only to pass callback validation;
+    // the persisted reset marker makes the subsequent ACP request omit effort.
+    return DEFAULT_EFFORT_LEVEL;
   }
   return normalizeEffort(env[ENV_KEYS[kind]]);
 }
