@@ -114,7 +114,10 @@ export class ExecutionLaneCoordinator {
   }
 
   getDrainer(lane: string): LaneDrainer | undefined { return this.laneDrainers.get(lane); }
-  setDrainer(lane: string, drainer: LaneDrainer): void { this.laneDrainers.set(lane, drainer); }
+  setDrainer(lane: string, drainer: LaneDrainer): void {
+    this.clearRecovery(lane);
+    this.laneDrainers.set(lane, drainer);
+  }
   clearDrainer(lane: string, expected?: LaneDrainer): void {
     if (!expected || this.laneDrainers.get(lane) === expected) this.laneDrainers.delete(lane);
   }
@@ -164,6 +167,13 @@ export class ExecutionLaneCoordinator {
     };
 
     arm();
+  }
+
+  clearRecovery(lane: string): void {
+    const state = this.laneRecoveries.get(lane);
+    if (!state) return;
+    if (state.timer) clearTimeout(state.timer);
+    this.laneRecoveries.delete(lane);
   }
 
   getFinalDelivery(lane: string): FinalDeliveryPhase | undefined { return this.finalDeliveryPhases.get(lane); }
