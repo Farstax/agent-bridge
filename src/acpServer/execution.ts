@@ -1,30 +1,43 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
+import { abortExecutionAndWait } from "../cli.js";
+import { loadBotsConfig, resolveExecutionMode } from "../config.js";
 import type { BridgeDb } from "../db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "../engine.js";
 import { EventStore } from "../events/store.js";
 import { type as eventType, type BridgeEvent, type RunCompletedEvent } from "../events/types.js";
+import { executionLaneCoordinator } from "../executionLaneCoordinator.js";
 import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../platform.js";
-import { loadBotsConfig, resolveExecutionMode } from "../config.js";
 import { interactiveChainKinds, parseCliChain } from "../providers/selection.js";
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
-import type { BotKind, BridgeConfig, CliResult } from "../types.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
+import type { BotKind, BridgeConfig, CliResult } from "../types.js";
 
 export const OUTWARD_ACP_SURFACE = "acp:outward";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
 const OUTWARD_ACP_BUSY_ERROR = -32002;
 
 type OutwardUpdate = acp.SessionNotification["update"];
+type RunCancelledEvent = Extract<BridgeEvent, { type: "run.cancelled" }>;
+
+type ActiveOutwardExecution = {
+  readonly session: OutwardAcpSessionRecord;
+  cancelRequested: boolean;
+  cancelPromise: Promise<void> | null;
+  readonly done: Promise<void>;
+  readonly finishDone: () => void;
+};
 
 export interface OutwardAcpPromptExecutionInput {
   session: OutwardAcpSessionRecord;
   prompt: string;
+  signal: AbortSignal;
   onUpdate: (update: OutwardUpdate) => void | Promise<void>;
 }
 
 export interface OutwardAcpPromptExecutor {
   execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse>;
+  cancel(session: OutwardAcpSessionRecord): Promise<void>;
 }
 
 export type OutwardAcpExecutionEngine = Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
@@ -45,6 +58,10 @@ type RetainedSessionUpdate = {
     update?: unknown;
   };
 };
+
+function executionLane(conversationId: string): string {
+  return JSON.stringify([OUTWARD_ACP_SURFACE, conversationId]);
+}
 
 function isBridgeAuthoritativeTextUpdate(update: OutwardUpdate): boolean {
   return update.sessionUpdate === "agent_message_chunk"
@@ -93,8 +110,60 @@ function failedEvent(runId: string, provider: BotKind, session: OutwardAcpSessio
   });
 }
 
+function cancelledEvent(
+  runId: string,
+  provider: BotKind,
+  session: OutwardAcpSessionRecord,
+  reason: "user" | "provider",
+): RunCancelledEvent {
+  return eventType.runCancelled({
+    runId,
+    bot: provider,
+    chatId: session.sessionId,
+    chatKey: session.conversationId,
+    reason,
+  });
+}
+
 export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor {
+  private readonly active = new Map<string, ActiveOutwardExecution>();
+
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
+
+  async cancel(session: OutwardAcpSessionRecord): Promise<void> {
+    const record = this.active.get(session.conversationId);
+    if (!record) return;
+    record.cancelRequested = true;
+    if (record.cancelPromise) return record.cancelPromise;
+
+    const lane = executionLane(session.conversationId);
+    const coordinator = executionLaneCoordinator(this.options.db, OUTWARD_ACP_SURFACE);
+    const operation = (async () => {
+      coordinator.markResetting(lane);
+      coordinator.markAborted(lane);
+      try {
+        await abortExecutionAndWait(lane);
+      } finally {
+        coordinator.clearAborted(lane);
+        coordinator.clearResetting(lane);
+      }
+    })();
+    record.cancelPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (record.cancelPromise === operation) record.cancelPromise = null;
+    }
+  }
+
+  /** Cancel all active requests and wait until their outer Run persistence settles. */
+  async shutdown(): Promise<void> {
+    const records = [...this.active.values()];
+    await Promise.all(records.map(async (record) => {
+      await this.cancel(record.session);
+      await record.done;
+    }));
+  }
 
   async execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
     const { db, provider } = this.options;
@@ -109,16 +178,44 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
 
     const runId = this.options.runId?.() ?? randomUUID();
     let eventStore: EventStore | null = null;
+    let active: ActiveOutwardExecution | null = null;
+    let signalAbort: (() => void) | null = null;
     try {
       db.insertRun(runId, input.session.conversationId, provider);
       eventStore = new EventStore(db, runId);
+
+      let finishDone!: () => void;
+      const done = new Promise<void>((resolve) => { finishDone = resolve; });
+      active = {
+        session: input.session,
+        cancelRequested: input.signal.aborted,
+        cancelPromise: null,
+        done,
+        finishDone,
+      };
+      this.active.set(input.session.conversationId, active);
+      signalAbort = () => {
+        void this.cancel(input.session).catch(() => {
+          console.warn("[acp:outward] cancellation cleanup failed");
+        });
+      };
+      if (!input.signal.aborted) input.signal.addEventListener("abort", signalAbort, { once: true });
+
+      if (active.cancelRequested) {
+        eventStore.collect(cancelledEvent(runId, provider, input.session, "user"));
+        eventStore.finalize();
+        return { stopReason: "cancelled" };
+      }
+
       let completed: RunCompletedEvent | null = null;
+      let providerCancelled: RunCancelledEvent | null = null;
       let updateChain = Promise.resolve();
       const enqueueUpdate = (update: OutwardUpdate): void => {
         updateChain = updateChain.then(() => input.onUpdate(update));
       };
       const collect = (event: BridgeEvent): void => {
         if (event.type === "run.completed") completed = event;
+        else if (event.type === "run.cancelled") providerCancelled = event;
         else eventStore!.collect(event);
         const update = liveRootProviderUpdate(event);
         if (update) enqueueUpdate(update);
@@ -150,7 +247,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         persistProviderSession(db, input.session.conversationId, provider, result.sessionId, runId);
       });
 
-      if (result.stopReason !== "cancelled" && result.text) {
+      const cancelled = active.cancelRequested || result.stopReason === "cancelled";
+      if (!cancelled && result.text) {
         enqueueUpdate({
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: result.text },
@@ -158,18 +256,14 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       }
       await updateChain;
 
-      if (completed) {
-        eventStore.queueCompleted(completed);
-      } else if (result.stopReason === "cancelled") {
+      if (cancelled) {
         if (db.getRun(runId)?.status === "running") {
-          eventStore.collect(eventType.runCancelled({
-            runId,
-            bot: provider,
-            chatId: input.session.sessionId,
-            chatKey: input.session.conversationId,
-            reason: "provider",
-          }));
+          eventStore.collect(active.cancelRequested
+            ? cancelledEvent(runId, provider, input.session, "user")
+            : providerCancelled ?? cancelledEvent(runId, provider, input.session, "provider"));
         }
+      } else if (completed) {
+        eventStore.queueCompleted(completed);
       } else {
         eventStore.queueCompleted(eventType.runCompleted({
           runId,
@@ -182,8 +276,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         }));
       }
       eventStore.finalize();
-      return { stopReason: normalizeStopReason(result.stopReason) };
+      return { stopReason: cancelled ? "cancelled" : normalizeStopReason(result.stopReason) };
     } catch (error) {
+      if (active?.cancelRequested) {
+        if (eventStore && db.getRun(runId)?.status === "running") {
+          eventStore.collect(cancelledEvent(runId, provider, input.session, "user"));
+          eventStore.finalize();
+        }
+        return { stopReason: "cancelled" };
+      }
       if (eventStore && db.getRun(runId)?.status === "running") {
         eventStore.collect(failedEvent(runId, provider, input.session));
         eventStore.finalize();
@@ -195,7 +296,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         { sessionId: input.session.sessionId, runId },
       );
     } finally {
+      if (signalAbort) input.signal.removeEventListener("abort", signalAbort);
+      if (active && this.active.get(input.session.conversationId) === active) {
+        this.active.delete(input.session.conversationId);
+      }
       db.unlock(lane);
+      active?.finishDone();
     }
   }
 }
