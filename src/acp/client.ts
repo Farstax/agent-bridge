@@ -394,6 +394,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         liveText: liveDeliveryText(updates, acpSessionId) || liveEmitted,
         events,
         updates,
+        configOptions: latestConfigOptions,
+        staleSessionConfig: applied.stale,
         contextUsage: contextUsageFrom(updates, acpSessionId),
         initialize,
       };
