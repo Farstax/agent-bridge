@@ -273,19 +273,6 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   };
 
   const clientApp = acp.client({ name: "agent-bridge" })
-    .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
-      const response = mapAcpPermissionRequest(ctx.params, {
-        executionMode: input.executionMode,
-        abortRequested: Boolean(input.abortRequested?.() || input.signal?.aborted),
-      });
-      remember({
-        kind: "permission",
-        channel: "live",
-        permissionRequest: ctx.params,
-        permissionResponse: response,
-      });
-      return response;
-    })
     .onNotification(acp.methods.client.session.update, (ctx) => {
       const observed = gate.observe(ctx.params);
       updates.push(observed);
@@ -316,6 +303,19 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return;
       liveEmitted += payload.content.text;
       input.onLiveText?.(payload.content.text);
+    })
+    .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
+      const response = mapAcpPermissionRequest(ctx.params, {
+        executionMode: input.executionMode,
+        abortRequested: Boolean(input.abortRequested?.() || input.signal?.aborted),
+      });
+      remember({
+        kind: "permission",
+        channel: "live",
+        permissionRequest: ctx.params,
+        permissionResponse: response,
+      });
+      return response;
     });
 
   const execute = async (agent: ClientContext): Promise<AcpTurnResult> => {
