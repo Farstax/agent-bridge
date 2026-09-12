@@ -14,7 +14,7 @@ import {
 import { abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses } from "./cliSupervisor.js";
 import { validateBridgeConfig, parseModelPreference } from "./config.js";
 import { BridgeDb } from "./db.js";
-import { ACP_PROVIDER_DEFAULT, getAcpSessionConfigOption, isAcpSessionConfigValueStale } from "./acp/sessionConfig.js";
+import { getAcpSessionConfigOption, isAcpProviderDefaultSelected, isAcpSessionConfigValueStale } from "./acp/sessionConfig.js";
 import {
   resolveAntigravityConversationId, extractAntigravityConversationId,
   readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
@@ -65,17 +65,20 @@ function isAcpConfigKind(kind: string): boolean {
   return kind === "codex" || kind === "claude";
 }
 
-export function buildModelKeyboard(kind: string, modelPreference: string[], currentModel?: string | null): any {
+export function buildModelKeyboard(
+  kind: string,
+  modelPreference: string[],
+  currentModel?: string | null,
+  providerDefaultSelected = false,
+): any {
   if (isAcpConfigKind(kind)) {
     const option = getAcpSessionConfigOption(kind, "model");
-    const providerDefault = currentModel === ACP_PROVIDER_DEFAULT;
     const currentIsAdvertised = Boolean(
       currentModel
-      && !providerDefault
       && option?.options?.some((candidate) => candidate.value === currentModel)
       && !isAcpSessionConfigValueStale(kind, "model", currentModel),
     );
-    const selected = providerDefault
+    const selected = providerDefaultSelected
       ? null
       : currentIsAdvertised
         ? currentModel
@@ -90,7 +93,7 @@ export function buildModelKeyboard(kind: string, modelPreference: string[], curr
       inline_keyboard: [
         ...modelButtons,
         [{
-          text: providerDefault ? "✓ Use provider default" : "Use provider default",
+          text: providerDefaultSelected ? "✓ Use provider default" : "Use provider default",
           callback_data: `model:${kind}:reset`,
         }],
       ],
@@ -114,22 +117,22 @@ export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; co
   if (isAcpConfigKind(kind)) {
     const option = getAcpSessionConfigOption(kind, "model");
     const saved = db.getSetting(kind);
+    const providerDefaultSelected = isAcpProviderDefaultSelected(db, kind, "model");
     if (!option) {
       return [
         `[${kind} model settings]`,
         "",
-        `Current: ${saved === ACP_PROVIDER_DEFAULT ? "provider default" : "provider-controlled"}`,
+        `Current: ${providerDefaultSelected ? "provider default" : "provider-controlled"}`,
         "Available: waiting for a live ACP session to advertise model options",
       ].join("\n");
     }
     const advertised = option.options ?? [];
     const savedAdvertised = Boolean(
       saved
-      && saved !== ACP_PROVIDER_DEFAULT
       && advertised.some((candidate) => candidate.value === saved)
       && !isAcpSessionConfigValueStale(kind, "model", saved),
     );
-    const current = saved === ACP_PROVIDER_DEFAULT
+    const current = providerDefaultSelected
       ? `provider default${typeof option.currentValue === "string" ? ` (${option.currentValue})` : ""}`
       : savedAdvertised
         ? saved!
@@ -147,7 +150,7 @@ export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; co
           }),
         ].join("\n")
       : "Available: provider-controlled";
-    const stale = saved && saved !== ACP_PROVIDER_DEFAULT && !savedAdvertised
+    const stale = saved && !savedAdvertised && !providerDefaultSelected
       ? `\nStored override ${saved} is no longer advertised and is ignored.`
       : "";
     return [
