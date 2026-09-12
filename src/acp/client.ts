@@ -17,13 +17,22 @@ import { Readable, Writable } from "node:stream";
 import { bridgeInitializeRequest } from "./capabilities.js";
 import { mapAcpPermissionRequest } from "./permissions.js";
 import { AcpReplayGate, liveDeliveryText, type AcpObservedUpdate } from "./replay.js";
+import {
+  planAcpSessionConfig,
+  type AcpSessionConfigIntent,
+  type AcpSessionConfigOptionSnapshot,
+  type AcpStaleSessionConfigValue,
+} from "./sessionConfig.js";
 
 export type AcpSessionMode = "fresh" | "load" | "resume";
 
+/** Legacy/exact ACP config request retained for callers that already own an opaque config id/value. */
 export interface AcpSessionConfigValue {
   readonly configId: string;
   readonly value: string;
 }
+
+export type AcpSessionConfigRequest = AcpSessionConfigValue | AcpSessionConfigIntent;
 
 export interface AcpRetainedEvent {
   readonly kind: "session_update" | "permission" | "stop";
@@ -49,8 +58,12 @@ export interface AcpTurnInput {
   readonly sessionMeta?: Readonly<Record<string, unknown>>;
   /** Requested standard ACP session mode. Applied only when the agent advertises it. */
   readonly sessionModeId?: string;
-  /** Requested standard ACP session configuration, applied in order. */
-  readonly sessionConfig?: readonly AcpSessionConfigValue[];
+  /**
+   * Standard ACP session configuration. Semantic intents resolve only against
+   * agent-advertised categories/options; exact configId/value requests remain
+   * available for already-negotiated callers.
+   */
+  readonly sessionConfig?: readonly AcpSessionConfigRequest[];
   /** Standard ACP authentication method selected by provider/workspace policy. */
   readonly authenticateMethodId?: string;
   readonly abortRequested?: () => boolean;
@@ -76,6 +89,10 @@ export interface AcpTurnResult {
   readonly liveText: string;
   readonly events: readonly AcpRetainedEvent[];
   readonly updates: readonly AcpObservedUpdate[];
+  /** Final complete config state after set_config_option responses and live config updates. */
+  readonly configOptions: readonly AcpSessionConfigOptionSnapshot[];
+  /** Non-required user selections that disappeared from the live agent catalog. */
+  readonly staleSessionConfig: readonly AcpStaleSessionConfigValue[];
   /** Actual turn/prompt token consumption, only when the agent supplies PromptResponse.usage. */
   readonly usage?: Usage;
   readonly contextUsage?: AcpContextUsage;
@@ -87,15 +104,9 @@ type SessionModeState = {
   readonly availableModes?: readonly { readonly id: string }[];
 };
 
-type SessionConfigOptionState = {
-  readonly id: string;
-  readonly currentValue?: unknown;
-  readonly options?: readonly { readonly value: string }[];
-};
-
 type SessionSetupState = {
   readonly modes?: SessionModeState | null;
-  readonly configOptions?: readonly SessionConfigOptionState[] | null;
+  readonly configOptions?: readonly AcpSessionConfigOptionSnapshot[] | null;
 };
 
 function promptBlocks(prompt: AcpTurnInput["prompt"]): ContentBlock[] {
@@ -115,12 +126,19 @@ function sessionSetupState(value: unknown): SessionSetupState {
   return value && typeof value === "object" ? value as SessionSetupState : {};
 }
 
+function isSemanticConfigRequest(value: AcpSessionConfigRequest): value is AcpSessionConfigIntent {
+  return "category" in value;
+}
+
 async function applySessionSettings(
   agent: ClientContext,
   sessionId: string,
   state: SessionSetupState,
   input: Pick<AcpTurnInput, "sessionModeId" | "sessionConfig">,
-): Promise<void> {
+): Promise<{
+  configOptions: readonly AcpSessionConfigOptionSnapshot[];
+  stale: readonly AcpStaleSessionConfigValue[];
+}> {
   if (input.sessionModeId) {
     const modes = state.modes;
     if (!modes?.availableModes?.some((mode) => mode.id === input.sessionModeId)) {
@@ -134,9 +152,29 @@ async function applySessionSettings(
     }
   }
 
-  let configOptions = state.configOptions ?? undefined;
+  let configOptions = state.configOptions ?? [];
+  const stale: AcpStaleSessionConfigValue[] = [];
   for (const requested of input.sessionConfig ?? []) {
-    const option = configOptions?.find((candidate) => candidate.id === requested.configId);
+    if (isSemanticConfigRequest(requested)) {
+      const plan = planAcpSessionConfig(configOptions, [requested]);
+      stale.push(...plan.stale);
+      for (const selection of plan.selections) {
+        const option = configOptions.find((candidate) => candidate.id === selection.configId);
+        if (option?.currentValue === selection.value) continue;
+        const updated = await agent.request(acp.methods.agent.session.setConfigOption, {
+          sessionId,
+          configId: selection.configId,
+          value: selection.value,
+        });
+        const next = sessionSetupState(updated).configOptions;
+        // ACP returns the complete configuration set after every change. Replace,
+        // never merge, so dependent selectors cannot leave stale local state.
+        if (next) configOptions = next;
+      }
+      continue;
+    }
+
+    const option = configOptions.find((candidate) => candidate.id === requested.configId);
     if (!option) {
       throw new Error(`ACP agent did not advertise session config option "${requested.configId}"`);
     }
@@ -154,6 +192,7 @@ async function applySessionSettings(
     const next = sessionSetupState(updated).configOptions;
     if (next) configOptions = next;
   }
+  return { configOptions, stale };
 }
 
 /**
@@ -216,6 +255,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   const updates: AcpObservedUpdate[] = [];
   const events: AcpRetainedEvent[] = [];
   let liveEmitted = "";
+  let latestConfigOptions: readonly AcpSessionConfigOptionSnapshot[] = [];
   // Set by execute() before any notification/permission request can arrive
   // for the corresponding parent session, so remember() can tag child events
   // with their owning root turn while notification.sessionId remains the
@@ -255,6 +295,20 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         channel: observed.channel,
         notification: observed.notification,
       });
+      const update = observed.notification.update as unknown as {
+        sessionUpdate?: string;
+        configOptions?: readonly AcpSessionConfigOptionSnapshot[];
+      };
+      if (
+        currentAcpSessionId
+        && observed.notification.sessionId === currentAcpSessionId
+        && update.sessionUpdate === "config_option_update"
+        && update.configOptions
+      ) {
+        // Agent-originated changes carry the complete list too. Treat them as
+        // authoritative even if they arrive while loading/replaying a session.
+        latestConfigOptions = update.configOptions;
+      }
       if (observed.channel !== "live") return;
       // Native subagent output is retained for structured lifecycle/activity,
       // but only the parent/root ACP session may feed human-facing live text.
@@ -323,7 +377,9 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }
 
     if (!acpSessionId) throw new Error("ACP session id missing after session setup");
-    await applySessionSettings(agent, acpSessionId, setupState, input);
+    latestConfigOptions = setupState.configOptions ?? [];
+    const applied = await applySessionSettings(agent, acpSessionId, setupState, input);
+    latestConfigOptions = applied.configOptions;
 
     const blocks = promptBlocks(input.prompt);
     assertPromptCapabilities(blocks, initialize);
@@ -351,6 +407,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       liveText,
       events,
       updates,
+      configOptions: latestConfigOptions,
+      staleSessionConfig: applied.stale,
       usage: usageFrom(promptResponse),
       contextUsage: contextUsageFrom(updates, acpSessionId),
       initialize,
