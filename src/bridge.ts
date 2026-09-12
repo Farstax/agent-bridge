@@ -14,7 +14,12 @@ import {
 import { abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses } from "./cliSupervisor.js";
 import { validateBridgeConfig, parseModelPreference } from "./config.js";
 import { BridgeDb } from "./db.js";
-import { getAcpSessionConfigOption, isAcpProviderDefaultSelected, isAcpSessionConfigValueStale } from "./acp/sessionConfig.js";
+import {
+  getAcpSessionConfigOption,
+  hasAcpProviderDefaultIntent,
+  isAcpProviderDefaultSelected,
+  isAcpSessionConfigValueStale,
+} from "./acp/sessionConfig.js";
 import {
   resolveAntigravityConversationId, extractAntigravityConversationId,
   readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
@@ -69,7 +74,7 @@ export function buildModelKeyboard(
   kind: string,
   modelPreference: string[],
   currentModel?: string | null,
-  providerDefaultSelected = false,
+  providerDefaultSelected = isAcpConfigKind(kind) && hasAcpProviderDefaultIntent(kind, "model"),
 ): any {
   if (isAcpConfigKind(kind)) {
     const option = getAcpSessionConfigOption(kind, "model");
