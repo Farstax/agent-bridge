@@ -1,6 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { randomUUID } from "node:crypto";
-import { abortCliProcess } from "../cli.js";
+import { abortCliProcessAndWait } from "../cli.js";
 import { loadBotsConfig, resolveExecutionMode } from "../config.js";
 import type { BridgeDb } from "../db.js";
 import { BridgeEngine, type SurfaceNeutralTurnInput } from "../engine.js";
@@ -155,7 +155,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         // lifecycle or child. Keep asserting the abort until the owning outer
         // Run settles so neither a later lifecycle nor a later child can miss it.
         while (!record.settled) {
-          abortCliProcess(lane);
+          await abortCliProcessAndWait(lane);
           if (record.settled) break;
           await sweepDelay(record.done);
         }
