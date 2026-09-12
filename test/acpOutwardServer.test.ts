@@ -58,6 +58,24 @@ function providerEnv(providerStore: string, extra: NodeJS.ProcessEnv = {}): Node
   };
 }
 
+/**
+ * Two-provider unlocked chain, both processes backed by the same generic
+ * fake ACP agent fixture. Sessions in FAKE_ACP_STORE are keyed by each
+ * attempt's own randomly generated fake-provider session id, so codex and
+ * claude attempts safely share one store file without colliding.
+ */
+function fallbackProviderEnv(store: string): NodeJS.ProcessEnv {
+  const tsxCli = join(process.cwd(), "node_modules/tsx/dist/cli.mjs");
+  return {
+    INTERACTIVE_CLI_CHAIN: "codex,claude",
+    CODEX_ACP_COMMAND: process.execPath,
+    CODEX_ACP_ARGS: `${tsxCli} ${fakeAgent}`,
+    CLAUDE_ACP_COMMAND: process.execPath,
+    CLAUDE_ACP_ARGS: `${tsxCli} ${fakeAgent}`,
+    FAKE_ACP_STORE: store,
+  };
+}
+
 function startOutwardAcpProcess(dbPath: string, extraEnv: NodeJS.ProcessEnv = {}): RunningOutwardAcp {
   const child = spawn(process.execPath, ["--import", "tsx", "src/acpServer/stdio.ts"], {
     cwd: process.cwd(),
@@ -452,7 +470,7 @@ describe("outward ACP stdio boundary", () => {
       if (second) await stopProcess(second);
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it("replays durable history on session/load without creating a new Run or leaking provider identity", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-load-"));
@@ -524,7 +542,7 @@ describe("outward ACP stdio boundary", () => {
       if (second) await stopProcess(second);
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it("resolves inward provider permission requests under Bridge policy without ever exposing them to the outward client", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-permission-"));
@@ -558,7 +576,7 @@ describe("outward ACP stdio boundary", () => {
       if (server) await stopProcess(server);
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   it("honors server-configured trusted execution mode for inward permission requests, still never exposed outward", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-permission-trusted-"));
@@ -590,7 +608,72 @@ describe("outward ACP stdio boundary", () => {
       if (server) await stopProcess(server);
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
+
+  it("keeps the outward session stable when the inward provider falls back to a different provider mid-conversation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-fallback-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    const failOnceMarker = join(root, "fail-once-marker");
+    let server: RunningOutwardAcp | null = null;
+    try {
+      // No BRIDGE_PROVIDER_LOCK -> unlocked chain "codex,claude": Bridge, not
+      // the outward server, owns provider selection/fallback via the same
+      // generic ProviderFallbackChain/router Telegram and autonomy use.
+      server = startOutwardAcpProcess(dbPath, {
+        ...fallbackProviderEnv(providerStore),
+        FAKE_ACP_FAIL_ONCE_MARKER: failOnceMarker,
+      });
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+      const conversationId = conversationIdForSession(dbPath, outwardSessionId);
+
+      const firstTurn = await promptSession(server, 3, outwardSessionId, "hello there");
+      expect(firstTurn.response).toMatchObject({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } });
+
+      const beforeFallback = openDb(dbPath, { databaseRole: "interactive" });
+      expect(beforeFallback.getAcpSessionBinding(conversationId, "codex")).not.toBeNull();
+      expect(beforeFallback.getAcpSessionBinding(conversationId, "claude")).toBeNull();
+      beforeFallback.close();
+
+      // codex's fake provider throws a usage-limit-classified error on this
+      // first attempt only; Bridge's existing capacity-exhaustion routing
+      // must fall back to claude within this single outward turn, invisibly
+      // to the outward client.
+      const fallbackTurn = await promptSession(server, 4, outwardSessionId, "FAIL_ONCE_THEN_SUCCEED");
+      expect(fallbackTurn.response).toMatchObject({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } });
+      const fallbackUpdates = fallbackTurn.notifications.filter((notification) => notification.method === "session/update");
+      expect(fallbackUpdates.every((notification) => notification.params?.sessionId === outwardSessionId)).toBe(true);
+      // Only the stable outward session id ever crosses the boundary --
+      // never a provider-native session id or the word "claude"/"codex".
+      expect(JSON.stringify(fallbackUpdates)).not.toMatch(/claude|codex/i);
+
+      const afterFallback = openDb(dbPath, { databaseRole: "interactive" });
+      expect(afterFallback.getAcpSessionBinding(conversationId, "claude")).not.toBeNull();
+      const runs = afterFallback.raw.prepare(`
+        SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ? AND status = 'done'
+      `).get(conversationId) as { count: number };
+      // Exactly one durable Run per outward turn -- the abandoned codex
+      // attempt inside the fallback turn must not leave a second completed
+      // Run, and the fallback turn's Run must not be missing either.
+      expect(runs.count).toBe(2);
+      afterFallback.close();
+
+      // The router keeps its fallback position for the rest of this process:
+      // a third turn should go straight to claude, not retry exhausted codex.
+      const thirdTurn = await promptSession(server, 5, outwardSessionId, "sticks with the fallback provider");
+      expect(thirdTurn.response).toMatchObject({ jsonrpc: "2.0", id: 5, result: { stopReason: "end_turn" } });
+
+      await stopProcess(server);
+      server = null;
+    } finally {
+      if (server) await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
 
   it("routes session/cancel through Bridge execution ownership and settles the Run as cancelled", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-cancel-"));

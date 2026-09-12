@@ -11,6 +11,7 @@ import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../platform.j
 import { interactiveChainKinds, parseCliChain } from "../providers/selection.js";
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
+import { createSurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
 import type { BotKind, BridgeConfig, CliResult } from "../types.js";
 
 export const OUTWARD_ACP_SURFACE = "acp:outward";
@@ -46,8 +47,9 @@ export type OutwardAcpExecutionEngine = Pick<BridgeEngine, "executeSurfaceNeutra
 
 export interface BridgeOutwardAcpPromptExecutorOptions {
   db: BridgeDb;
-  provider: BotKind;
-  createEngine: (session: OutwardAcpSessionRecord) => OutwardAcpExecutionEngine;
+  /** Ordered fallback chain; [0] is the initial/head provider for a fresh session. */
+  providerChain: readonly BotKind[];
+  createEngine: (session: OutwardAcpSessionRecord, attemptProvider: BotKind) => OutwardAcpExecutionEngine;
   runId?: () => string;
 }
 
@@ -136,8 +138,27 @@ function sweepDelay(done: Promise<void>): Promise<void> {
 
 export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor {
   private readonly active = new Map<string, ActiveOutwardExecution>();
+  // One router per conversation, reused across turns so that a fallback
+  // chosen on an earlier turn stays the active provider on later turns
+  // (matches Telegram's per-chat ProviderFallbackChain lifetime) rather than
+  // silently retrying an already-exhausted head provider every turn.
+  private readonly routers = new Map<string, OutwardAcpExecutionEngine>();
 
   constructor(private readonly options: BridgeOutwardAcpPromptExecutorOptions) {}
+
+  private routerFor(session: OutwardAcpSessionRecord): OutwardAcpExecutionEngine {
+    const existing = this.routers.get(session.conversationId);
+    if (existing) return existing;
+    const { db, providerChain, createEngine } = this.options;
+    const router = createSurfaceNeutralProviderRouter({
+      db,
+      initialProvider: providerChain[0],
+      providerChain,
+      engineForProvider: (attemptProvider) => createEngine(session, attemptProvider),
+    });
+    this.routers.set(session.conversationId, router);
+    return router;
+  }
 
   async cancel(session: OutwardAcpSessionRecord): Promise<void> {
     const record = this.active.get(session.conversationId);
@@ -182,7 +203,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
   }
 
   async execute(input: OutwardAcpPromptExecutionInput): Promise<acp.PromptResponse> {
-    const { db, provider } = this.options;
+    const { db, providerChain } = this.options;
+    const provider = providerChain[0];
     const lane = db.acquireLock(OUTWARD_ACP_SURFACE, input.session.conversationId);
     if (!lane) {
       throw new acp.RequestError(
@@ -248,10 +270,12 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         acquisitionId: lane.acquisitionId,
       };
 
-      const providerSessionId = lookupProviderSession(db, input.session.conversationId, provider);
-      const result: CliResult = await this.options.createEngine(input.session).executeSurfaceNeutralTurn({
+      const result: CliResult = await this.routerFor(input.session).executeSurfaceNeutralTurn({
         prompt: input.prompt,
-        sessionId: providerSessionId,
+        // Resolved per-attempt by createEngine's wrapper for whichever
+        // provider the fallback router is actually trying this attempt --
+        // fallback providers have their own distinct provider-session binding.
+        sessionId: null,
         chatId: input.session.sessionId,
         chatKey: input.session.conversationId,
         laneHandle: lane,
@@ -261,17 +285,22 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       });
 
       const cancelled = active.cancelRequested || result.stopReason === "cancelled";
+      // The router may have fallen back to a different provider mid-turn;
+      // attribute persistence to whichever provider actually produced the
+      // terminal event, not the (possibly abandoned) head provider.
+      const terminalBot = (event: { bot: BotKind } | null): BotKind | undefined => event?.bot;
+      const actualProvider: BotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? provider;
       db.runWithLockFence(lane, () => {
-        persistProviderSession(db, input.session.conversationId, provider, result.sessionId, runId);
+        persistProviderSession(db, input.session.conversationId, actualProvider, result.sessionId, runId);
         // Durable transcript for `session/load` replay only — mirrors the
         // generic addConvTurn seam Telegram/Discord already use, so a
         // cancelled/partial turn (with no authoritative final text) never
         // enters replay history, matching Bridge's final-answer authority.
         if (!cancelled && result.text) {
-          db.addConvTurn(input.session.conversationId, "user", input.prompt, provider, {
+          db.addConvTurn(input.session.conversationId, "user", input.prompt, actualProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
-          db.addConvTurn(input.session.conversationId, "assistant", result.text, provider, {
+          db.addConvTurn(input.session.conversationId, "assistant", result.text, actualProvider, {
             surfaceIdentity: OUTWARD_ACP_SURFACE,
           });
         }
@@ -288,15 +317,15 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       if (cancelled) {
         if (db.getRun(runId)?.status === "running") {
           eventStore.collect(active.cancelRequested
-            ? cancelledEvent(runId, provider, input.session, "user")
-            : providerCancelled ?? cancelledEvent(runId, provider, input.session, "provider"));
+            ? cancelledEvent(runId, actualProvider, input.session, "user")
+            : providerCancelled ?? cancelledEvent(runId, actualProvider, input.session, "provider"));
         }
       } else if (completed) {
         eventStore.queueCompleted(completed);
       } else {
         eventStore.queueCompleted(eventType.runCompleted({
           runId,
-          bot: provider,
+          bot: actualProvider,
           chatId: input.session.sessionId,
           chatKey: input.session.conversationId,
           text: result.text,
@@ -352,21 +381,25 @@ const NO_DELIVERY_PLATFORM: MessagingPlatform = {
   async sendPhoto() {},
 };
 
-function configuredProvider(env: NodeJS.ProcessEnv): BotKind {
+/**
+ * Ordered inward provider chain for outward ACP execution. A provider lock
+ * (dedicated single-provider systemd unit) yields a single-entry chain --
+ * the router still works, it just never has anywhere to fall back to.
+ */
+function configuredProviderChain(env: NodeJS.ProcessEnv): readonly BotKind[] {
   const allowed = interactiveChainKinds() as BotKind[];
   const locked = env.BRIDGE_PROVIDER_LOCK?.trim();
   if (locked) {
     if (!allowed.includes(locked as BotKind)) {
       throw new Error(`unsupported outward ACP provider lock: ${locked}`);
     }
-    return locked as BotKind;
+    return [locked as BotKind];
   }
   const fallback = (["codex", "claude", "grok", "antigravity", "cursor"] as BotKind[])
     .filter((kind) => allowed.includes(kind));
   const chain = parseCliChain(env.INTERACTIVE_CLI_CHAIN, { allowed, fallback });
-  const provider = chain[0];
-  if (!provider) throw new Error("no interactive provider is configured for outward ACP");
-  return provider;
+  if (chain.length === 0) throw new Error("no interactive provider is configured for outward ACP");
+  return chain;
 }
 
 export function createProductionOutwardAcpPromptExecutor(
@@ -374,32 +407,44 @@ export function createProductionOutwardAcpPromptExecutor(
   dbPath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): BridgeOutwardAcpPromptExecutor {
-  const provider = configuredProvider(env);
+  const providerChain = configuredProviderChain(env);
   const bots = loadBotsConfig(env);
   const allowedUserIds = new Set<string>();
-  const executionMode = resolveExecutionMode(provider, env);
-  const fullConfig: BridgeConfig = {
-    allowedUserIds,
-    serviceEnvFile: env.BRIDGE_ENV_FILE ?? null,
-    serviceKind: provider,
-    pollIntervalMs: 1000,
-    executionMode,
-    dbPath,
-    bots,
-  };
   return new BridgeOutwardAcpPromptExecutor({
     db,
-    provider,
-    createEngine: (session) => new BridgeEngine({
-      kind: provider,
-      surfaceIdentity: OUTWARD_ACP_SURFACE,
-      executionKind: provider,
-      botConfig: bots[provider],
-      allowedUserIds,
-      executionMode,
-      pollIntervalMs: 1000,
-      workingDir: session.cwd,
-      fullConfig,
-    }, db, NO_DELIVERY_PLATFORM),
+    providerChain,
+    createEngine: (session, attemptProvider) => {
+      const executionMode = resolveExecutionMode(attemptProvider, env);
+      const fullConfig: BridgeConfig = {
+        allowedUserIds,
+        serviceEnvFile: env.BRIDGE_ENV_FILE ?? null,
+        serviceKind: attemptProvider,
+        pollIntervalMs: 1000,
+        executionMode,
+        dbPath,
+        bots,
+      };
+      const engine = new BridgeEngine({
+        kind: attemptProvider,
+        surfaceIdentity: OUTWARD_ACP_SURFACE,
+        executionKind: attemptProvider,
+        botConfig: bots[attemptProvider],
+        allowedUserIds,
+        executionMode,
+        pollIntervalMs: 1000,
+        workingDir: session.cwd,
+        fullConfig,
+      }, db, NO_DELIVERY_PLATFORM);
+      return {
+        // Each fallback candidate has its own distinct provider-session
+        // binding (acp_session_bindings keyed by provider); resolve it fresh
+        // per attempt rather than trusting whatever sessionId the router
+        // forwards for a different provider's turn input.
+        executeSurfaceNeutralTurn: (turnInput) => engine.executeSurfaceNeutralTurn({
+          ...turnInput,
+          sessionId: lookupProviderSession(db, session.conversationId, attemptProvider),
+        }),
+      };
+    },
   });
 }

@@ -27,7 +27,7 @@ describe("outward ACP prompt execution", () => {
       });
       const promptExecutor = new BridgeOutwardAcpPromptExecutor({
         db,
-        provider: "codex",
+        providerChain: ["codex"] as const,
         runId: () => "run-1",
         createEngine: () => ({
           executeSurfaceNeutralTurn: async (input) => {
@@ -207,7 +207,7 @@ describe("outward ACP prompt execution", () => {
       const session = sessions.create({ sessionId: "outward-cancel", conversationId: "acp:cancel", cwd: root });
       const promptExecutor = new BridgeOutwardAcpPromptExecutor({
         db,
-        provider: "codex",
+        providerChain: ["codex"] as const,
         runId: () => "run-cancel",
         createEngine: () => ({
           executeSurfaceNeutralTurn: async (input) => {
@@ -335,7 +335,7 @@ describe("outward ACP prompt execution", () => {
       let executed = false;
       const executor = new BridgeOutwardAcpPromptExecutor({
         db,
-        provider: "codex",
+        providerChain: ["codex"] as const,
         runId: () => "run-pre-cancel",
         createEngine: () => ({
           executeSurfaceNeutralTurn: async () => {
@@ -390,7 +390,7 @@ describe("outward ACP prompt execution", () => {
       let executed = false;
       const promptExecutor = new BridgeOutwardAcpPromptExecutor({
         db,
-        provider: "codex",
+        providerChain: ["codex"] as const,
         runId: () => "duplicate-run",
         createEngine: () => ({
           executeSurfaceNeutralTurn: async () => {
