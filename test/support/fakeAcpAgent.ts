@@ -28,6 +28,16 @@ function persistSessions(sessions: Map<string, FakeSession>): void {
   writeFileSync(path, JSON.stringify([...sessions.entries()].map(([id, session]) => [id, { history: session.history }])));
 }
 
+function effortConfigOption(currentValue: string): acp.SessionConfigOption {
+  return {
+    id: "effort",
+    name: "Effort",
+    type: "select",
+    currentValue,
+    options: ["low", "medium", "high", "xhigh", "max"].map((value) => ({ value, name: value })),
+  };
+}
+
 function restoreSessions(): Map<string, FakeSession> {
   const path = process.env.FAKE_ACP_STORE;
   const sessions = new Map<string, FakeSession>();
@@ -75,6 +85,10 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
             { id: "agent-full-access", name: "Full Access" },
           ],
         },
+        // Advertised so Bridge's per-provider effort session config (real
+        // claude-acp requires this) can be applied against this fixture
+        // regardless of which provider identity is driving it.
+        configOptions: [effortConfigOption("medium")],
       };
     })
     .onRequest(acp.methods.agent.session.load, async (ctx) => {
@@ -97,11 +111,15 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
             { id: "agent-full-access", name: "Full Access" },
           ],
         },
+        configOptions: [effortConfigOption("medium")],
       };
     })
     .onRequest(acp.methods.agent.session.setMode, async () => {
       return {};
     })
+    .onRequest(acp.methods.agent.session.setConfigOption, async (ctx) => ({
+      configOptions: [effortConfigOption(ctx.params.value)],
+    }))
     .onRequest(acp.methods.agent.session.resume, async (ctx) => {
       // ACP v1: session/resume never replays previous messages, unlike
       // session/load. get() proves the session exists; nothing is emitted.
@@ -136,6 +154,24 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           additionalDetails: `credential=${process.env.CODEX_API_KEY ?? "none"}`,
           codexErrorInfo: "usageLimitExceeded",
         });
+      }
+
+      // Deterministic single-shot capacity-exhaustion trigger for exercising
+      // Bridge's own provider fallback across two distinct spawned processes,
+      // independent of provider identity (this fixture has none): the first
+      // process to see this prompt text throws a fallback-eligible error and
+      // leaves a marker; every later process (a different attempt/provider)
+      // finds the marker and proceeds normally.
+      if (text.includes("FAIL_ONCE_THEN_SUCCEED")) {
+        const marker = process.env.FAKE_ACP_FAIL_ONCE_MARKER;
+        if (!marker) throw new Error("FAKE_ACP_FAIL_ONCE_MARKER is required for FAIL_ONCE_THEN_SUCCEED");
+        if (!existsSync(marker)) {
+          writeFileSync(marker, "1");
+          throw acp.RequestError.internalError({
+            message: "usage limit reached",
+            codexErrorInfo: "usageLimitExceeded",
+          });
+        }
       }
 
       if (text.includes("CANCEL_WITH_OUTPUT")) {
