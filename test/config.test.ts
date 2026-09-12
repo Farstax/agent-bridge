@@ -3,11 +3,15 @@ import { readFileSync } from "node:fs";
 import { loadBotsConfig, validateTokenUniqueness, resolveExecutionMode, resolveBusyMessageMode, validateBusyMessageModeEnv } from "../src/config.js";
 
 describe("loadBotsConfig", () => {
-  it("documents the current Claude model fallback chain in the example environment", () => {
-    const example = readFileSync(new URL("../.env.claude.example", import.meta.url), "utf8");
-    expect(example).toContain(
-      "CLAUDE_MODEL_PREFERENCE=claude-sonnet-5,claude-opus-5,claude-opus-4-8,claude-haiku-4-5,claude-fable-5",
-    );
+  it("documents ACP model/effort env as optional preference policy, not capability truth", () => {
+    const claudeExample = readFileSync(new URL("../.env.claude.example", import.meta.url), "utf8");
+    expect(claudeExample).toContain("# CLAUDE_MODEL_PREFERENCE=sonnet,opus,haiku");
+    expect(claudeExample).toContain("opaque model options advertised by");
+    expect(claudeExample).toContain("# CLAUDE_EFFORT=medium");
+
+    const codexExample = readFileSync(new URL("../.env.codex.example", import.meta.url), "utf8");
+    expect(codexExample).toContain("# CODEX_MODEL_PREFERENCE=<opaque-model-value>,<opaque-model-value>");
+    expect(codexExample).toContain("# CODEX_EFFORT=medium");
   });
 
   it("builds all supported bot configs with defaults from an empty env", () => {
@@ -15,20 +19,25 @@ describe("loadBotsConfig", () => {
     expect(Object.keys(bots).sort()).toEqual(["antigravity", "claude", "codex", "cursor", "grok"]);
     expect(bots.codex.command).toContain("node_modules/.bin/codex-acp");
     expect(bots.claude.command).toContain("node_modules/.bin/claude-agent-acp");
+    expect(bots.codex.modelPreference).toEqual([]);
+    expect(bots.claude.modelPreference).toEqual([]);
     expect(bots.antigravity.command).toBe("agy");
     expect(bots.grok.command).toBe("grok");
     expect(bots.cursor.command).toBe("cursor-agent");
   });
 
-  it("respects env overrides for commands and model preferences", () => {
+  it("keeps ACP preference env out of the legacy static model catalogue", () => {
     const bots = loadBotsConfig({
       CODEX_ACP_COMMAND: "/opt/bin/codex-acp",
       CLAUDE_ACP_COMMAND: "/opt/bin/claude-agent-acp",
-      REMOVED_PROVIDER_MODEL_PREFERENCE: "a,b",
+      CODEX_MODEL_PREFERENCE: "opaque-a,opaque-b",
+      CLAUDE_MODEL_PREFERENCE: "sonnet,opus",
       ANTIGRAVITY_MODEL_PREFERENCE: "m1, m2 ,m3",
     });
     expect(bots.codex.command).toBe("/opt/bin/codex-acp");
     expect(bots.claude.command).toBe("/opt/bin/claude-agent-acp");
+    expect(bots.codex.modelPreference).toEqual([]);
+    expect(bots.claude.modelPreference).toEqual([]);
     expect(bots.antigravity.modelPreference).toEqual(["m1", "m2", "m3"]);
   });
 
