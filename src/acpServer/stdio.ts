@@ -5,7 +5,10 @@ import { Readable, Writable } from "node:stream";
 import { openProductionDb } from "../db.js";
 import { OutwardAcpSessionRepository } from "../repositories/outwardAcpSessionRepository.js";
 import { createOutwardAcpAgent } from "./app.js";
-import { createProductionOutwardAcpPromptExecutor } from "./execution.js";
+import {
+  type BridgeOutwardAcpPromptExecutor,
+  createProductionOutwardAcpPromptExecutor,
+} from "./execution.js";
 
 // stdout is the ACP wire. Bridge/provider diagnostics must never corrupt NDJSON.
 console.log = (...args: unknown[]) => console.error(...args);
@@ -21,9 +24,10 @@ const db = openProductionDb(dbPath, {
   databaseRole: "interactive",
 });
 
+let promptExecutor: BridgeOutwardAcpPromptExecutor | null = null;
 try {
   const sessions = new OutwardAcpSessionRepository(db.raw);
-  const promptExecutor = createProductionOutwardAcpPromptExecutor(db, dbPath);
+  promptExecutor = createProductionOutwardAcpPromptExecutor(db, dbPath);
   const stream = acp.ndJsonStream(
     Writable.toWeb(process.stdout),
     Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
@@ -31,5 +35,9 @@ try {
   const connection = createOutwardAcpAgent({ sessions, promptExecutor }).connect(stream);
   await connection.closed;
 } finally {
-  db.close();
+  try {
+    await promptExecutor?.shutdown();
+  } finally {
+    db.close();
+  }
 }
