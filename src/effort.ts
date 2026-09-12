@@ -5,12 +5,7 @@
  * NEIGHBORS: src/cli.ts, src/commands.ts, src/engine.ts
  */
 
-import {
-  ACP_PROVIDER_DEFAULT,
-  getAcpSessionConfigOption,
-  hasAcpProviderDefaultIntent,
-  setAcpProviderDefaultIntent,
-} from "./acp/sessionConfig.js";
+import { getAcpSessionConfigOption, isAcpProviderDefaultSelected } from "./acp/sessionConfig.js";
 import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 
@@ -68,9 +63,7 @@ export function resolveEffort(
 ): EffortLevel | null {
   const saved = db.getSetting(effortSettingKey(kind));
   if (ACP_EFFORT_KINDS.has(kind)) {
-    const providerDefault = saved === ACP_PROVIDER_DEFAULT;
-    setAcpProviderDefaultIntent(kind, "thought_level", providerDefault);
-    if (providerDefault) return null;
+    if (isAcpProviderDefaultSelected(db, kind, "thought_level")) return null;
     if (isEffortLevel(saved)) return saved;
     const configured = env[ENV_KEYS[kind]]?.trim().toLowerCase();
     return isEffortLevel(configured) ? configured : null;
@@ -78,15 +71,18 @@ export function resolveEffort(
   return normalizeEffort(saved || resolveDefaultEffort(kind, env));
 }
 
-export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel | null) {
+export function buildEffortKeyboard(
+  kind: BotKind,
+  currentEffort: EffortLevel | null,
+  providerDefaultSelected = false,
+) {
   if (ACP_EFFORT_KINDS.has(kind)) {
     const option = getAcpSessionConfigOption(kind, "thought_level");
     const candidates = (option?.options ?? []).filter((candidate) => isEffortLevel(candidate.value));
     const providerCurrent = typeof option?.currentValue === "string" && isEffortLevel(option.currentValue)
       ? option.currentValue
       : null;
-    const providerDefault = hasAcpProviderDefaultIntent(kind, "thought_level");
-    const selected = providerDefault ? null : currentEffort ?? providerCurrent;
+    const selected = providerDefaultSelected ? null : currentEffort ?? providerCurrent;
     return {
       inline_keyboard: [
         ...(candidates.length > 0
@@ -98,7 +94,7 @@ export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel | 
             }))]
           : []),
         [{
-          text: providerDefault ? "✓ Use provider default" : "Use provider default",
+          text: providerDefaultSelected ? "✓ Use provider default" : "Use provider default",
           callback_data: `effort:${kind}:reset`,
         }],
       ],
@@ -115,7 +111,11 @@ export function buildEffortKeyboard(kind: BotKind, currentEffort: EffortLevel | 
   };
 }
 
-export function buildEffortText(kind: BotKind, currentEffort: EffortLevel | null): string {
+export function buildEffortText(
+  kind: BotKind,
+  currentEffort: EffortLevel | null,
+  providerDefaultSelected = false,
+): string {
   if (ACP_EFFORT_KINDS.has(kind)) {
     const option = getAcpSessionConfigOption(kind, "thought_level");
     if (!option) {
@@ -124,7 +124,6 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel | null
         "The live ACP session has not advertised a reasoning selector yet.",
       ].join("\n");
     }
-    const providerDefault = hasAcpProviderDefaultIntent(kind, "thought_level");
     const providerCurrent = typeof option.currentValue === "string" ? option.currentValue : "provider default";
     const available = (option.options ?? [])
       .filter((candidate) => isEffortLevel(candidate.value))
@@ -135,7 +134,7 @@ export function buildEffortText(kind: BotKind, currentEffort: EffortLevel | null
         return candidate.description ? `${label}: ${candidate.description}` : label;
       });
     return [
-      `Effort for ${kind}: ${providerDefault ? `provider default (${providerCurrent})` : currentEffort ?? providerCurrent}`,
+      `Effort for ${kind}: ${providerDefaultSelected ? `provider default (${providerCurrent})` : currentEffort ?? providerCurrent}`,
       "Default: provider-controlled",
       option.description ?? "Available values come from the active ACP agent.",
       ...(available.length > 0 ? ["Available:", ...available.map((value) => `- ${value}`)] : []),
