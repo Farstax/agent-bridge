@@ -68,17 +68,20 @@ function isAcpConfigKind(kind: string): boolean {
 export function buildModelKeyboard(kind: string, modelPreference: string[], currentModel?: string | null): any {
   if (isAcpConfigKind(kind)) {
     const option = getAcpSessionConfigOption(kind, "model");
+    const providerDefault = currentModel === ACP_PROVIDER_DEFAULT;
     const currentIsAdvertised = Boolean(
       currentModel
-      && currentModel !== ACP_PROVIDER_DEFAULT
+      && !providerDefault
       && option?.options?.some((candidate) => candidate.value === currentModel)
       && !isAcpSessionConfigValueStale(kind, "model", currentModel),
     );
-    const selected = currentIsAdvertised
-      ? currentModel
-      : typeof option?.currentValue === "string"
-        ? option.currentValue
-        : null;
+    const selected = providerDefault
+      ? null
+      : currentIsAdvertised
+        ? currentModel
+        : typeof option?.currentValue === "string"
+          ? option.currentValue
+          : null;
     const modelButtons = (option?.options ?? []).map((candidate) => [{
       text: selected === candidate.value ? `✓ ${candidate.name ?? candidate.value}` : (candidate.name ?? candidate.value),
       callback_data: `model:${kind}:${candidate.value}`,
@@ -87,7 +90,7 @@ export function buildModelKeyboard(kind: string, modelPreference: string[], curr
       inline_keyboard: [
         ...modelButtons,
         [{
-          text: currentModel === ACP_PROVIDER_DEFAULT ? "✓ Use provider default" : "Use provider default",
+          text: providerDefault ? "✓ Use provider default" : "Use provider default",
           callback_data: `model:${kind}:reset`,
         }],
       ],
@@ -127,21 +130,36 @@ export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; co
       && !isAcpSessionConfigValueStale(kind, "model", saved),
     );
     const current = saved === ACP_PROVIDER_DEFAULT
-      ? "provider default"
+      ? `provider default${typeof option.currentValue === "string" ? ` (${option.currentValue})` : ""}`
       : savedAdvertised
         ? saved!
         : typeof option.currentValue === "string"
           ? option.currentValue
           : "provider default";
     const available = advertised.length > 0
-      ? advertised.map((candidate) => candidate.name && candidate.name !== candidate.value
-        ? `${candidate.name} (${candidate.value})`
-        : candidate.value).join(", ")
-      : "provider-controlled";
+      ? [
+          "Available:",
+          ...advertised.map((candidate) => {
+            const label = candidate.name && candidate.name !== candidate.value
+              ? `${candidate.name} (${candidate.value})`
+              : candidate.value;
+            return `- ${candidate.description ? `${label}: ${candidate.description}` : label}`;
+          }),
+        ].join("\n")
+      : "Available: provider-controlled";
     const stale = saved && saved !== ACP_PROVIDER_DEFAULT && !savedAdvertised
       ? `\nStored override ${saved} is no longer advertised and is ignored.`
       : "";
-    return `[${kind} model settings]\n\nCurrent: ${current}\nAvailable: ${available}${stale}\n\nSelect a model below:`;
+    return [
+      `[${kind} model settings]`,
+      "",
+      `Current: ${current}`,
+      ...(option.description ? [`${option.name ?? "Model"}: ${option.description}`] : []),
+      available,
+      ...(stale ? [stale.trim()] : []),
+      "",
+      "Select a model below:",
+    ].join("\n");
   }
 
   const current = db.getSetting(kind) || bot.modelPreference[0] || "default";
