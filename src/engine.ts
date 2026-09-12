@@ -1351,17 +1351,14 @@ export class BridgeEngine {
     acpRequest: {
       prompt: string;
       sessionId: string | null;
-      command: string;
       model: string | null;
       executionMode: "safe" | "trusted";
-      outputFormat: "json";
       soulContext: string | null;
       includeResponseContract?: boolean;
       attachments: string[];
       outputDir: string | null;
       effort: EffortLevel | null;
       toolMode?: "default" | "none";
-      nativeCompletion: true;
     },
     identities: { conversationId: string; runId: string },
   ): Promise<{ stdout: string; parsed: CliResult | null }> {
