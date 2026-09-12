@@ -47,13 +47,32 @@ type RunningOutwardAcp = {
   stderr: () => string;
 };
 
-function providerEnv(providerStore: string): NodeJS.ProcessEnv {
+function providerEnv(providerStore: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     BRIDGE_PROVIDER_LOCK: "codex",
     INTERACTIVE_CLI_CHAIN: "codex",
     CODEX_ACP_COMMAND: process.execPath,
     CODEX_ACP_ARGS: `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`,
     FAKE_ACP_STORE: providerStore,
+    ...extra,
+  };
+}
+
+/**
+ * Two-provider unlocked chain, both processes backed by the same generic
+ * fake ACP agent fixture. Sessions in FAKE_ACP_STORE are keyed by each
+ * attempt's own randomly generated fake-provider session id, so codex and
+ * claude attempts safely share one store file without colliding.
+ */
+function fallbackProviderEnv(store: string): NodeJS.ProcessEnv {
+  const tsxCli = join(process.cwd(), "node_modules/tsx/dist/cli.mjs");
+  return {
+    INTERACTIVE_CLI_CHAIN: "codex,claude",
+    CODEX_ACP_COMMAND: process.execPath,
+    CODEX_ACP_ARGS: `${tsxCli} ${fakeAgent}`,
+    CLAUDE_ACP_COMMAND: process.execPath,
+    CLAUDE_ACP_ARGS: `${tsxCli} ${fakeAgent}`,
+    FAKE_ACP_STORE: store,
   };
 }
 
@@ -206,6 +225,22 @@ async function promptSession(
   return readThroughResponse(process, id);
 }
 
+async function loadSession(
+  process: RunningOutwardAcp,
+  id: number,
+  sessionId: string,
+  cwd: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ response: JsonRpcResponse; notifications: JsonRpcNotification[] }> {
+  process.child.stdin.write(`${JSON.stringify({
+    jsonrpc: "2.0",
+    id,
+    method: "session/load",
+    params: { sessionId, cwd, mcpServers: [], ...extra },
+  })}\n`);
+  return readThroughResponse(process, id);
+}
+
 function cancelSession(process: RunningOutwardAcp, sessionId: string): void {
   process.child.stdin.write(`${JSON.stringify({
     jsonrpc: "2.0",
@@ -267,7 +302,7 @@ describe("outward ACP stdio boundary", () => {
         id: 1,
         result: {
           protocolVersion: acp.PROTOCOL_VERSION,
-          agentCapabilities: { loadSession: false },
+          agentCapabilities: { loadSession: true },
           agentInfo: { name: "agent-bridge" },
         },
       });
@@ -435,7 +470,210 @@ describe("outward ACP stdio boundary", () => {
       if (second) await stopProcess(second);
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15000);
+
+  it("replays durable history on session/load without creating a new Run or leaking provider identity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-load-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    const env = providerEnv(providerStore);
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let first: RunningOutwardAcp | null = null;
+    let second: RunningOutwardAcp | null = null;
+    try {
+      first = startOutwardAcpProcess(dbPath, env);
+      await initialize(first, 1);
+      const created = await newSession(first, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+      const conversationId = conversationIdForSession(dbPath, outwardSessionId);
+
+      await promptSession(first, 3, outwardSessionId, "LOAD first wire prompt");
+      await stopProcess(first);
+      first = null;
+
+      const runCountBefore = openDb(dbPath, { databaseRole: "interactive" });
+      const before = runCountBefore.raw.prepare(`
+        SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ? AND status = 'done'
+      `).get(conversationId) as { count: number };
+      runCountBefore.close();
+      expect(before.count).toBe(1);
+
+      second = startOutwardAcpProcess(dbPath, env);
+      await initialize(second, 4);
+
+      const badCwd = await loadSession(second, 5, outwardSessionId, join(root, "wrong-workspace"));
+      expect(badCwd.response).toMatchObject({
+        jsonrpc: "2.0",
+        id: 5,
+        error: { code: -32602, data: { field: "cwd" } },
+      });
+
+      const unknownSession = await loadSession(second, 6, "not-a-real-session", root);
+      expect(unknownSession.response).toMatchObject({
+        jsonrpc: "2.0",
+        id: 6,
+        error: { code: -32602, data: { field: "sessionId" } },
+      });
+
+      const loaded = await loadSession(second, 7, outwardSessionId, root);
+      expect(loaded.response).toMatchObject({ jsonrpc: "2.0", id: 7, result: {} });
+      const replayUpdates = loaded.notifications.filter((notification) => notification.method === "session/update");
+      expect(replayUpdates.every((notification) => notification.params?.sessionId === outwardSessionId)).toBe(true);
+      expect(JSON.stringify(replayUpdates)).toContain("LOAD first wire prompt");
+      expect(JSON.stringify(replayUpdates)).not.toMatch(/codex-session|acpSessionId/);
+
+      const runCountAfterLoad = openDb(dbPath, { databaseRole: "interactive" });
+      const afterLoad = runCountAfterLoad.raw.prepare(`
+        SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ?
+      `).get(conversationId) as { count: number };
+      runCountAfterLoad.close();
+      expect(afterLoad.count).toBe(1);
+
+      const secondTurn = await promptSession(second, 8, outwardSessionId, "LOAD second wire prompt");
+      expect(secondTurn.response).toMatchObject({ jsonrpc: "2.0", id: 8, result: { stopReason: "end_turn" } });
+      const secondUpdates = secondTurn.notifications.filter((notification) => notification.method === "session/update");
+      expect(JSON.stringify(secondUpdates)).not.toContain("LOAD first wire prompt");
+
+      await stopProcess(second);
+      second = null;
+    } finally {
+      if (first) await stopProcess(first);
+      if (second) await stopProcess(second);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("resolves inward provider permission requests under Bridge policy without ever exposing them to the outward client", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-permission-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let server: RunningOutwardAcp | null = null;
+    try {
+      // No CODEX_EXECUTION_MODE/BRIDGE_EXECUTION_MODE override -> defaults to
+      // "safe", so the fake provider's non-read/search/think permission
+      // request must be denied by Bridge policy, not by the outward client
+      // (which is never asked at all).
+      server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, { FAKE_ACP_PERMISSION_ON: "ESCALATE" }));
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+
+      const turn = await promptSession(server, 3, outwardSessionId, "ESCALATE the edit");
+      expect(turn.response).toMatchObject({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } });
+
+      // The permission negotiation happens entirely on the inward Bridge<->provider
+      // pipe; every message that actually crosses the outward stdio boundary is
+      // a plain session/update notification, never a permission request/response.
+      expect(turn.notifications.every((notification) => notification.method === "session/update")).toBe(true);
+      expect(turn.notifications.some((notification) => notification.method === acp.methods.client.session.requestPermission)).toBe(false);
+
+      await stopProcess(server);
+      server = null;
+    } finally {
+      if (server) await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("honors server-configured trusted execution mode for inward permission requests, still never exposed outward", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-permission-trusted-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    let server: RunningOutwardAcp | null = null;
+    try {
+      // The outward client has no field anywhere in session/new or
+      // session/prompt to request trusted execution -- this is a
+      // server-side/env-configured Bridge policy, not a client choice.
+      server = startOutwardAcpProcess(dbPath, providerEnv(providerStore, {
+        FAKE_ACP_PERMISSION_ON: "ESCALATE",
+        CODEX_EXECUTION_MODE: "trusted",
+      }));
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+
+      const turn = await promptSession(server, 3, outwardSessionId, "ESCALATE the edit");
+      expect(turn.response).toMatchObject({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } });
+      expect(turn.notifications.every((notification) => notification.method === "session/update")).toBe(true);
+      expect(turn.notifications.some((notification) => notification.method === acp.methods.client.session.requestPermission)).toBe(false);
+
+      await stopProcess(server);
+      server = null;
+    } finally {
+      if (server) await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("keeps the outward session stable when the inward provider falls back to a different provider mid-conversation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-fallback-"));
+    const dbPath = join(root, "bridge.sqlite");
+    const providerStore = join(root, "provider-sessions.json");
+    openDb(dbPath, { databaseRole: "interactive" }).close();
+
+    const failOnceMarker = join(root, "fail-once-marker");
+    let server: RunningOutwardAcp | null = null;
+    try {
+      // No BRIDGE_PROVIDER_LOCK -> unlocked chain "codex,claude": Bridge, not
+      // the outward server, owns provider selection/fallback via the same
+      // generic ProviderFallbackChain/router Telegram and autonomy use.
+      server = startOutwardAcpProcess(dbPath, {
+        ...fallbackProviderEnv(providerStore),
+        FAKE_ACP_FAIL_ONCE_MARKER: failOnceMarker,
+      });
+      await initialize(server, 1);
+      const created = await newSession(server, 2, root);
+      const outwardSessionId = created.result?.sessionId!;
+      const conversationId = conversationIdForSession(dbPath, outwardSessionId);
+
+      const firstTurn = await promptSession(server, 3, outwardSessionId, "hello there");
+      expect(firstTurn.response).toMatchObject({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } });
+
+      const beforeFallback = openDb(dbPath, { databaseRole: "interactive" });
+      expect(beforeFallback.getAcpSessionBinding(conversationId, "codex")).not.toBeNull();
+      expect(beforeFallback.getAcpSessionBinding(conversationId, "claude")).toBeNull();
+      beforeFallback.close();
+
+      // codex's fake provider throws a usage-limit-classified error on this
+      // first attempt only; Bridge's existing capacity-exhaustion routing
+      // must fall back to claude within this single outward turn, invisibly
+      // to the outward client.
+      const fallbackTurn = await promptSession(server, 4, outwardSessionId, "FAIL_ONCE_THEN_SUCCEED");
+      expect(fallbackTurn.response).toMatchObject({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } });
+      const fallbackUpdates = fallbackTurn.notifications.filter((notification) => notification.method === "session/update");
+      expect(fallbackUpdates.every((notification) => notification.params?.sessionId === outwardSessionId)).toBe(true);
+      // Only the stable outward session id ever crosses the boundary --
+      // never a provider-native session id or the word "claude"/"codex".
+      expect(JSON.stringify(fallbackUpdates)).not.toMatch(/claude|codex/i);
+
+      const afterFallback = openDb(dbPath, { databaseRole: "interactive" });
+      expect(afterFallback.getAcpSessionBinding(conversationId, "claude")).not.toBeNull();
+      const runs = afterFallback.raw.prepare(`
+        SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ? AND status = 'done'
+      `).get(conversationId) as { count: number };
+      // Exactly one durable Run per outward turn -- the abandoned codex
+      // attempt inside the fallback turn must not leave a second completed
+      // Run, and the fallback turn's Run must not be missing either.
+      expect(runs.count).toBe(2);
+      afterFallback.close();
+
+      // The router keeps its fallback position for the rest of this process:
+      // a third turn should go straight to claude, not retry exhausted codex.
+      const thirdTurn = await promptSession(server, 5, outwardSessionId, "sticks with the fallback provider");
+      expect(thirdTurn.response).toMatchObject({ jsonrpc: "2.0", id: 5, result: { stopReason: "end_turn" } });
+
+      await stopProcess(server);
+      server = null;
+    } finally {
+      if (server) await stopProcess(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15000);
 
   it("routes session/cancel through Bridge execution ownership and settles the Run as cancelled", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-acp-cancel-"));

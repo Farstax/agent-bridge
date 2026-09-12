@@ -33,7 +33,7 @@ describe("outward ACP cancellation ownership", () => {
 
       const executor = new BridgeOutwardAcpPromptExecutor({
         db,
-        provider: "codex",
+        providerChain: ["codex"] as const,
         runId: () => "run-cancel-race",
         createEngine: () => ({
           executeSurfaceNeutralTurn: async (input) => {
