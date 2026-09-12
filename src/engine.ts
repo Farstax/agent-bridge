@@ -69,6 +69,7 @@ import {
   type LaneDrainer,
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
+import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
 
 export interface HookContext {
   chatId: number | string;
@@ -195,7 +196,6 @@ export class BridgeEngine {
   private readonly exec: ExecFns;
   private queuedMessageHandler?: (message: PendingMessage) => Promise<ExecutionOutcome>;
   private readonly queueRecoveryTimers = new Map<string, NodeJS.Timeout>();
-  private readonly startupQueueRecoveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly laneCoordinator: ExecutionLaneCoordinator;
   private readonly seenInteractiveMessageKeys = new Set<string>();
 
@@ -301,7 +301,7 @@ export class BridgeEngine {
         await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
         return;
       }
-      this._scheduleStartupQueueRecovery(chatKey);
+      this._scheduleDurableQueueRecovery(chatKey);
     }));
   }
 
@@ -312,7 +312,7 @@ export class BridgeEngine {
       await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
       return true;
     }
-    this._scheduleStartupQueueRecovery(chatKey);
+    this._scheduleDurableQueueRecovery(chatKey);
     return true;
   }
 
@@ -623,6 +623,7 @@ export class BridgeEngine {
         return "failed";
       }
       if (admission.kind === "queued") {
+        this._scheduleDurableQueueRecovery(chatKey);
         const busyMode = honorBusyMode ? this._busyMessageMode(chatKey) : "queue";
         if (busyMode === "interrupt" || busyMode === "augment") {
           if (busyMode === "interrupt") {
@@ -1077,28 +1078,33 @@ export class BridgeEngine {
     this.queueRecoveryTimers.set(chatKey, timer);
   }
 
-  private _scheduleStartupQueueRecovery(chatKey: string): void {
-    if (this.startupQueueRecoveryTimers.has(chatKey)) return;
-    const timer = setTimeout(() => {
-      this.startupQueueRecoveryTimers.delete(chatKey);
-      if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return;
-      const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
-      if (!handle) {
-        this._scheduleStartupQueueRecovery(chatKey);
-        return;
-      }
-      void this._drainQueueAndUnlock(
-        handle,
-        undefined,
-        0,
-        false,
-        this.opts.busyMessageMode === "augment",
-      ).catch((error) => {
-        console.error(`[${this.kind}] startup queue recovery failed chatKey=${chatKey}`, error);
-      });
-    }, this.db.lockHeartbeatMs);
-    timer.unref();
-    this.startupQueueRecoveryTimers.set(chatKey, timer);
+  private _scheduleDurableQueueRecovery(chatKey: string): void {
+    scheduleDurableQueueRecovery(
+      this.db,
+      this.surfaceIdentity,
+      chatKey,
+      this.db.lockHeartbeatMs,
+      async () => {
+        if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return true;
+        const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
+        if (!handle) return false;
+        try {
+          await this._drainQueueAndUnlock(
+            handle,
+            undefined,
+            0,
+            false,
+            this.opts.busyMessageMode === "augment",
+          );
+        } catch (error) {
+          console.error(`[${this.kind}] durable queue recovery failed chatKey=${chatKey}`, error);
+        }
+        // Durable lease recovery owns liveness only until this process acquires
+        // the fenced lane. Provider/drainer failures remain governed by the
+        // existing bounded short-retry policy above.
+        return true;
+      },
+    );
   }
 
   async executeClaimedMessage(next: PendingMessage): Promise<ExecutionOutcome> {
