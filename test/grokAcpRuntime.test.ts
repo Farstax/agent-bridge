@@ -38,7 +38,7 @@ describe("Grok ACP provider", () => {
     expect(resolveProviderRuntime("grok", { BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge" })).toEqual(expect.objectContaining({
       providerId: "grok",
       transport: "acp-stdio",
-      executable: "/opt/agent-bridge/node_modules/.bin/grok",
+      executable: "grok",
       args: ["agent", "stdio"],
       versionArgs: ["--version"],
       runtimeIdentity: expect.stringMatching(/^acp:grok-build@1\.0\.30:[a-f0-9]{64}$/),
@@ -54,7 +54,7 @@ describe("Grok ACP provider", () => {
       model: null,
     });
     expect(invocation).toEqual({
-      command: expect.stringMatching(/node_modules\/\.bin\/grok$/),
+      command: "grok",
       args: ["agent", "stdio"],
       nativeSessionMode: "fresh",
       prompt: "hello",

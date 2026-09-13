@@ -18,11 +18,11 @@ describe("grok provider registration", () => {
 
   it("resolves the bundled Grok ACP executable instead of a native headless command", () => {
     expect(resolveProviderExecutable("grok", { BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge" }))
-      .toBe("/opt/agent-bridge/node_modules/.bin/grok");
+      .toBe("grok");
     expect(resolveProviderExecutable("grok", { GROK_ACP_COMMAND: "/opt/xai/bin/grok" }))
       .toBe("/opt/xai/bin/grok");
     expect(loadBotsConfig({ BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge" }).grok.command)
-      .toBe("/opt/agent-bridge/node_modules/.bin/grok");
+      .toBe("grok");
     expect(loadBotsConfig({ GROK_ACP_COMMAND: "/usr/local/bin/grok" }).grok.command)
       .toBe("/usr/local/bin/grok");
   });

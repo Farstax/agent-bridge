@@ -1,17 +1,10 @@
-import { join } from "node:path";
-import { resolveBridgeProjectDir } from "./acpConfig.js";
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 
-export function bundledGrokAcpCommand(
-  env: Record<string, string | undefined> = process.env,
-): string {
-  return join(resolveBridgeProjectDir(env), "node_modules", ".bin", "grok");
-}
-
+/** Official grok-build ACP server is the Grok CLI over `agent stdio`, not a bundled adapter package. */
 export function resolveGrokAcpCommand(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  return env.GROK_ACP_COMMAND?.trim() || bundledGrokAcpCommand(env);
+  return env.GROK_ACP_COMMAND?.trim() || "grok";
 }
 
 export function resolveGrokAcpArgs(
