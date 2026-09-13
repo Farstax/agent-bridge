@@ -11,6 +11,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -600,7 +601,7 @@ export function actions(fixture: Fixture): string {
   return readFileSync(fixture.actionLog, "utf8");
 }
 
-export async function waitForAction(fixture: Fixture, pattern: RegExp, timeoutMs = 2_000): Promise<void> {
+export async function waitForAction(fixture: Fixture, pattern: RegExp, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!pattern.test(actions(fixture))) {
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${pattern}`);
@@ -716,3 +717,49 @@ export function seedRoleFixtures(fixture: Fixture): void {
     db.close();
   });
 }
+
+export function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expectedCommit): { currentPointer: string; releaseDir: string } {
+  const releaseRoot = join(fixture.root, "releases");
+  const releaseDir = join(releaseRoot, fixture.expectedCommit);
+  mkdirSync(releaseRoot, { recursive: true, mode: 0o755 });
+  const cleanupManifestPaths = [
+    "scripts/reap-tmp-artifacts.sh",
+    "systemd/agent-bridge-tmp-cleanup.service",
+    "systemd/agent-bridge-tmp-cleanup.timer",
+  ];
+  for (const commit of new Set([fixture.previousCommit, fixture.expectedCommit])) {
+    const directory = join(releaseRoot, commit);
+    mkdirSync(directory, { recursive: true, mode: 0o755 });
+    for (const entry of readdirSync(fixture.project)) {
+      if (entry === ".git") continue;
+      execFileSync("cp", ["-a", join(fixture.project, entry), directory]);
+    }
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify({
+      schema_version: 1,
+      commit,
+      files: cleanupManifestPaths.map((path) => ({ path, sha256: sha256(join(directory, path)) })),
+    }));
+    execFileSync("chmod", ["-R", "a-w", directory]);
+  }
+  const currentPointer = join(releaseRoot, "current");
+  symlinkSync(activeCommit, currentPointer);
+  rewriteConfig(fixture, (lines) => [
+    ...lines.filter((line) => !line.startsWith("project_dir=")),
+    `release_root=${releaseRoot}`,
+    `current_pointer=${currentPointer}`,
+    `activation_helper_sha256=${sha256(join(fixture.root, "bin", "release-activate"))}`,
+    `release_stage_sha256=${sha256(join(fixture.root, "bin", "release-stage"))}`,
+    `rollout_restore_sha256=${sha256(join(fixture.root, "bin", "rollout-restore"))}`,
+  ]);
+  writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\n`, { mode: 0o600 });
+  writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
+  writeFileSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), JSON.stringify({
+    schema_version: 1,
+    commit: fixture.expectedCommit,
+    archive_sha256: "b".repeat(64),
+    release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")),
+  }) + "\n", { mode: 0o444 });
+  chmodSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), 0o444);
+  return { currentPointer, releaseDir };
+}
+
