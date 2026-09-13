@@ -68,8 +68,7 @@ function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expect
       commit,
       files: cleanupManifestPaths.map((path) => ({ path, sha256: sha256(join(directory, path)) })),
     }));
-    execFileSync("find", [directory, "-type", "f", "-exec", "chmod", "a-w", "{}", "+"]);
-    execFileSync("find", [directory, "-type", "d", "-exec", "chmod", "a-w", "{}", "+"]);
+    execFileSync("chmod", ["-R", "a-w", directory]);
   }
   const currentPointer = join(releaseRoot, "current");
   symlinkSync(activeCommit, currentPointer);

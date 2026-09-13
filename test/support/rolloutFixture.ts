@@ -416,33 +416,20 @@ if [ "\${FAKE_NO_JOURNAL_ENTRIES:-}" = 1 ]; then echo '-- No entries --'; fi
 `);
 }
 
-export function createFixture(options: { pending?: number; unknownSchema?: boolean; missingDb?: boolean; initiallyStopped?: boolean } = {}): Fixture {
-  const root = mkdtempSync(join(tmpdir(), "agent-bridge-rollout-"));
-  roots.push(root);
-  const project = join(root, "project");
-  const dbDir = join(root, "databases");
-  const backupDir = join(root, "backups");
-  const logDir = join(root, "logs");
-  const actionLog = join(root, "actions.log");
-  const stateFile = join(root, "active-units");
-  const lockFile = join(root, "run", "lock", "agent-bridge-rollout.lock");
-  const configFile = join(root, "etc", "agent-bridge", "rollout.conf");
-  const envDir = join(root, "etc", "default");
-  const systemdDir = join(root, "etc", "systemd", "system");
-  const cgroupRoot = join(root, "sys", "fs", "cgroup");
+interface SharedTemplate {
+  templateDir: string;
+  expectedCommit: string;
+  previousCommit: string;
+}
+
+let sharedTemplate: SharedTemplate | null = null;
+
+function getSharedTemplate(): SharedTemplate {
+  if (sharedTemplate) return sharedTemplate;
+  const templateRoot = mkdtempSync(join(tmpdir(), "agent-bridge-fixture-template-"));
+  const project = join(templateRoot, "project");
   mkdirSync(join(project, "scripts"), { recursive: true });
-  mkdirSync(dbDir, { recursive: true, mode: 0o700 });
   mkdirSync(join(project, "systemd"), { recursive: true });
-  mkdirSync(join(root, "etc", "agent-bridge"), { recursive: true });
-  mkdirSync(envDir, { recursive: true });
-  mkdirSync(systemdDir, { recursive: true });
-  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-  mkdirSync(logDir, { recursive: true, mode: 0o700 });
-  for (const unit of units) {
-    const cgroup = join(cgroupRoot, "agent-bridge-test", unit);
-    mkdirSync(cgroup, { recursive: true });
-    writeFileSync(join(cgroup, "cgroup.procs"), "");
-  }
   symlinkSync(sourceDir, join(project, "src"));
   symlinkSync(nodeModules, join(project, "node_modules"));
   if (existsSync(migrationScript)) copyFileSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
@@ -462,22 +449,78 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   execFileSync("git", ["-C", project, "commit", "-qm", "fixture (previous release)"]);
   execFileSync("git", ["-C", project, "branch", "-M", "main"]);
   const previousCommit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  // A second, genuinely distinct commit — expectedCommit is always the
-  // target a rollout migrates to; previousCommit is always what "revert to
-  // previous code" (§9) actually checks out. Never the same SHA, so a
-  // rollback drill can't accidentally pass by comparing a value to itself.
   writeFileSync(join(project, "RELEASE_MARKER"), "target release\n");
   execFileSync("git", ["-C", project, "add", "RELEASE_MARKER"]);
   execFileSync("git", ["-C", project, "commit", "-qm", "fixture (target release)"]);
   const expectedCommit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  sharedTemplate = { templateDir: project, expectedCommit, previousCommit };
+  process.on("exit", () => {
+    try {
+      execFileSync("chmod", ["-R", "u+w", templateRoot], { stdio: "ignore" });
+      rmSync(templateRoot, { recursive: true, force: true });
+    } catch {}
+  });
+  return sharedTemplate;
+}
+
+let emptyLegacyDbTemplate: string | null = null;
+
+function getEmptyLegacyDbTemplate(): string {
+  if (emptyLegacyDbTemplate) return emptyLegacyDbTemplate;
+  const dir = mkdtempSync(join(tmpdir(), "agent-bridge-legacy-db-template-"));
+  const templatePath = join(dir, "empty-legacy.sqlite");
+  createLegacyDb(templatePath, 0);
+  emptyLegacyDbTemplate = templatePath;
+  process.on("exit", () => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  });
+  return emptyLegacyDbTemplate;
+}
+
+export function createFixture(options: { pending?: number; unknownSchema?: boolean; missingDb?: boolean; initiallyStopped?: boolean } = {}): Fixture {
+  const root = mkdtempSync(join(tmpdir(), "agent-bridge-rollout-"));
+  roots.push(root);
+  const project = join(root, "project");
+  const dbDir = join(root, "databases");
+  const backupDir = join(root, "backups");
+  const logDir = join(root, "logs");
+  const actionLog = join(root, "actions.log");
+  const stateFile = join(root, "active-units");
+  const lockFile = join(root, "run", "lock", "agent-bridge-rollout.lock");
+  const configFile = join(root, "etc", "agent-bridge", "rollout.conf");
+  const envDir = join(root, "etc", "default");
+  const systemdDir = join(root, "etc", "systemd", "system");
+  const cgroupRoot = join(root, "sys", "fs", "cgroup");
+  mkdirSync(dbDir, { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, "etc", "agent-bridge"), { recursive: true });
+  mkdirSync(envDir, { recursive: true });
+  mkdirSync(systemdDir, { recursive: true });
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  for (const unit of units) {
+    const cgroup = join(cgroupRoot, "agent-bridge-test", unit);
+    mkdirSync(cgroup, { recursive: true });
+    writeFileSync(join(cgroup, "cgroup.procs"), "");
+  }
+
+  const template = getSharedTemplate();
+  execFileSync("cp", ["-a", `${template.templateDir}/.`, project]);
+  const expectedCommit = template.expectedCommit;
+  const previousCommit = template.previousCommit;
 
   const dbPaths = Array.from({ length: 4 }, (_, index) => join(dbDir, `bridge-${index}.sqlite`));
+  const emptyTemplate = getEmptyLegacyDbTemplate();
   for (const [index, path] of dbPaths.entries()) {
     if (options.unknownSchema && index === 0) {
       mkdirSync(dirname(path), { recursive: true });
       const db = new Database(path); db.exec("CREATE TABLE unknown_schema(value TEXT)"); db.close();
     } else if (!(options.missingDb && index === 0)) {
-      createLegacyDb(path, index === 0 ? options.pending ?? 0 : 0);
+      const pending = index === 0 ? (options.pending ?? 0) : 0;
+      if (pending === 0) {
+        copyFileSync(emptyTemplate, path);
+      } else {
+        createLegacyDb(path, pending);
+      }
     }
   }
 
