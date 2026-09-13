@@ -13,11 +13,12 @@ export interface GrokAvailabilityOptions {
   verifyApiKey?: () => boolean;
 }
 
-export function resolveGrokAuthPaths(homeDir: string = homedir()): string[] {
-  return [
-    join(homeDir, ".grok", "auth.json"),
-    join(homeDir, ".config", "grok", "auth.json"),
-  ];
+export function resolveGrokAuthPaths(
+  homeDir: string = homedir(),
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  const grokHome = env.GROK_HOME?.trim() || join(homeDir, ".grok");
+  return [join(grokHome, "auth.json")];
 }
 
 export function isGrokAuthenticated(options: GrokAvailabilityOptions = {}): boolean {
@@ -25,9 +26,10 @@ export function isGrokAuthenticated(options: GrokAvailabilityOptions = {}): bool
   const exists = options.exists ?? existsSync;
   const env = options.env ?? process.env;
 
-  // Grok Build gives an active account session precedence over XAI_API_KEY.
-  // Preserve that provider-owned account path unchanged when it exists.
-  if (resolveGrokAuthPaths(homeDir).some(exists)) return true;
+  // The selected Grok ACP runtime consumes ~/.grok/auth.json (or GROK_HOME).
+  // Keep account auth authoritative over an optional API key, but do not claim
+  // readiness from legacy auth paths the selected runtime does not consume.
+  if (resolveGrokAuthPaths(homeDir, env).some(exists)) return true;
   if (!isProviderApiKeyConfigured("grok", env)) return false;
   return options.verifyApiKey?.() ?? isProviderApiKeyVerified("grok", env);
 }
