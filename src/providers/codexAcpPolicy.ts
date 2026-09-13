@@ -39,11 +39,18 @@ export function codexAcpChildAuthEnv(
   return {};
 }
 
+function splitPreference(raw: string | undefined): string[] {
+  return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
+}
+
 function sessionSettings(
   request: ProviderInvocationRequest,
   env: Record<string, string | undefined>,
 ): AcpProviderSessionSettings {
-  const config = acpSessionConfigIntents("codex", request, env);
+  const config = acpSessionConfigIntents("codex", request, {
+    model: splitPreference(env.CODEX_MODEL_PREFERENCE),
+    thoughtLevel: env.CODEX_EFFORT?.trim() ? [env.CODEX_EFFORT.trim()] : [],
+  });
   return config.length > 0 ? { config } : {};
 }
 
