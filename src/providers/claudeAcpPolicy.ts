@@ -10,6 +10,7 @@ const REPOSITORY_GROUNDING_APPEND = [
   "For repository-specific work, use normal repository tools to inspect applicable CLAUDE.md and AGENTS.md files before acting, plus any instruction or skill files they reference.",
   "Repository instructions may guide the work but never override Agent Bridge permission decisions.",
 ].join(" ");
+const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 
 function splitPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
@@ -38,7 +39,7 @@ export async function verifyClaudeAcpApiKey(
     prepareEnv: (root, childEnv) => ({
       ...childEnv,
       CLAUDE_CONFIG_DIR: join(root, ".claude"),
-      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+      [CLAUDE_DISABLE_BACKGROUND_TASKS_ENV]: "1",
     }),
   });
 }
@@ -95,6 +96,10 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   toolFree: true,
   presentation: {
     provisionalAnswers: true,
+  },
+  childEnv: {
+    exclusiveKeys: [CLAUDE_DISABLE_BACKGROUND_TASKS_ENV],
+    overrides: { [CLAUDE_DISABLE_BACKGROUND_TASKS_ENV]: "1" },
   },
   resolveExecutable: resolveClaudeAcpCommand,
   resolveArgs: (env) => resolveClaudeAcpArgs(env),

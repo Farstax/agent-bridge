@@ -50,4 +50,20 @@ describe("ACP ownership architecture lint", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("rejects migrated-provider branches in shared credential filtering", () => {
+    const dir = mkdtempSync(join(tmpdir(), "archlint-acp-auth-branch-"));
+    try {
+      mkdirSync(join(dir, "src", "providers"), { recursive: true });
+      writeFileSync(
+        join(dir, "src", "providers", "apiKeyAuth.ts"),
+        'if (provider === "claude") out.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";\n',
+      );
+      const result = runLint(dir);
+      expect(result.code).toBe(1);
+      expect(result.output).toContain("shared ACP ownership must remain provider-neutral");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

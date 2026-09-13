@@ -43,6 +43,8 @@ The provider adapter owns provider invocation and native terminal-completion pro
 supervision, execution locks, Run correlation, cancellation, fallback, and
 delivery safety.
 
-ACP v1 is the future provider-runtime communication contract. Agent Bridge
-still owns durable identity, routing, fencing, and delivery; ACP owns agent
-communication; the provider agent owns reasoning and tools. See [ACP.md](../ACP.md).
+ACP v1 is the canonical inward provider-runtime communication contract for
+migrated providers. Agent Bridge still owns durable identity, routing, fencing,
+and delivery; ACP owns agent communication; the provider agent owns reasoning
+and tools. See [ACP.md](../ACP.md). Provider-native runtime modules remain only
+for providers whose ACP migration is not complete.

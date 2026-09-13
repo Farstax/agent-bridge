@@ -13,6 +13,11 @@ describe("migrated ACP provider ownership", () => {
     const source = readFileSync("src/cli.ts", "utf8");
     expect(source).not.toContain("codexAcpRuntime");
     expect(source).not.toMatch(/bot\s*===\s*["'](?:codex|claude)["']/);
+    expect(source).not.toContain("nativeCompletion");
+    expect(source).not.toContain("void sessionMode");
+
+    const types = readFileSync("src/providers/types.ts", "utf8");
+    expect(types).not.toContain("nativeCompletion");
   });
 
   it("keeps shared ACP session planning free of migrated-provider branches", () => {

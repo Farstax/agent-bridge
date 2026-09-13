@@ -173,7 +173,6 @@ export function buildQualificationInvocation({
     effort: null,
     homeDir,
     toolMode,
-    nativeCompletion: true,
   });
 }
 

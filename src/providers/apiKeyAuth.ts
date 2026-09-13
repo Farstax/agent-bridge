@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
-import { getAcpProviderPolicy } from "./registry.js";
+import { applyProviderChildEnvPolicy, getAcpProviderPolicy } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -71,7 +71,6 @@ const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ProviderId, ReadonlySet<
   grok: new Set(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
   cursor: new Set(["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"]),
 };
-const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const PROBE_TIMEOUT_MS = 15_000;
 export const PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS = 30_000;
 const verificationCache = new Map<string, boolean>();
@@ -148,9 +147,7 @@ export function filterProviderCredentialEnv(
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   if (!bot) {
-    const out = { ...env };
-    delete out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV];
-    return out;
+    return applyProviderChildEnvPolicy(null, env);
   }
   const provider: ProviderId = bot === "antigravity" ? "agy" : bot;
   const allowed = PROVIDER_ALLOWED_SECRET_ENV_KEYS[provider];
@@ -165,11 +162,7 @@ export function filterProviderCredentialEnv(
     }),
   );
 
-  // Retain the existing Claude SDK background-work fence until its dedicated
-  // ownership issue is retired; ACP migration must not broaden run authority.
-  if (provider === "claude") out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV] = "1";
-  else delete out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV];
-  return out;
+  return applyProviderChildEnvPolicy(provider, out);
 }
 
 export function redactProviderApiKeySecrets(text: string, env: Env = process.env): string {

@@ -93,6 +93,19 @@ export function getAcpProviderPolicy(id: ProviderId): AcpProviderPolicy | null {
   return ACP_POLICIES[id] ?? null;
 }
 
+/** Apply provider-owned exclusive environment metadata without shared provider-name branches. */
+export function applyProviderChildEnvPolicy(
+  id: ProviderId | null,
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const policy of Object.values(ACP_POLICIES)) {
+    for (const key of policy?.childEnv?.exclusiveKeys ?? []) delete out[key];
+  }
+  Object.assign(out, id ? ACP_POLICIES[id]?.childEnv?.overrides : undefined);
+  return out;
+}
+
 export function supportsToolFreeMode(bot: string): boolean {
   const id = providerIdForBotName(bot);
   if (!id) return false;

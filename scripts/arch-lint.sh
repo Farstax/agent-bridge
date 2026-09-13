@@ -98,8 +98,10 @@ check_acp_ownership_file() {
 }
 
 check_acp_ownership_file "$TARGET_DIR/acp/sessionConfig.ts" '_MODEL_PREFERENCE|_EFFORT|providerId\.toUpperCase'
-check_acp_ownership_file "$TARGET_DIR/providers/apiKeyAuth.ts" 'CodexAcpApiKeyProbeExecutor|codexAcpProbe|claudeAcpProbe|getAcpProviderApiKeyProbe'
+check_acp_ownership_file "$TARGET_DIR/providers/apiKeyAuth.ts" 'CodexAcpApiKeyProbeExecutor|codexAcpProbe|claudeAcpProbe|getAcpProviderApiKeyProbe|provider.*(===|!==).*(codex|claude)|CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'
 check_acp_ownership_file "$TARGET_DIR/providers/registry.ts" 'ACP_API_KEY_PROBES|getAcpProviderApiKeyProbe'
+check_acp_ownership_file "$TARGET_DIR/cli.ts" 'nativeCompletion|void sessionMode'
+check_acp_ownership_file "$TARGET_DIR/providers/types.ts" 'nativeCompletion'
 
 for obsolete_acp_module in \
   "$TARGET_DIR/providers/codexAcpRuntime.ts" \

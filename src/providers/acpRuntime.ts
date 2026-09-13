@@ -66,6 +66,11 @@ export interface AcpProviderPolicy {
       secrets: readonly string[],
     ) => AcpAnswerPreview;
   };
+  /** Provider-owned child environment policy applied by the shared supervisor path. */
+  readonly childEnv?: {
+    readonly exclusiveKeys?: readonly string[];
+    readonly overrides?: Readonly<Record<string, string>>;
+  };
   /** Optional installed-command resolver when Bridge does not invoke the Registry launcher directly. */
   readonly resolveExecutable?: (env: Record<string, string | undefined>) => string;
   readonly resolveArgs?: (

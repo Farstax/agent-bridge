@@ -35,7 +35,7 @@ export type ChainCliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor
 
 // Issue #135 Phase 3B — provider runtime invocation/parsing boundary.
 // Shared request/result shapes for provider runtime modules. Deliberately narrower than
-// buildCliInvocation()'s full parameter set: no bot/sessionMode/logFile/
+// buildCliInvocation()'s full parameter set: no bot/logFile/
 // homeDir, since only antigravity uses logFile/homeDir and bot is already
 // implied by which runtime module is called.
 export interface ProviderInvocationRequest {
@@ -56,8 +56,6 @@ export interface ProviderInvocationRequest {
   outputDir: string | null;
   effort: import("../effort.js").EffortLevel | null;
   toolMode: "default" | "none";
-  /** Keep provider-owned native background/task work inside this CLI turn until terminal completion. */
-  nativeCompletion?: boolean;
 }
 
 export interface ProviderInvocation {
