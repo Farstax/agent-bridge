@@ -121,15 +121,12 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
 }
 
 function seedFreshExecutionContract(
-  bot: string,
   prompt: string,
   sessionId: string | null,
-  attachments: string[],
   includeResponseContract: boolean,
 ): string {
   if (includeResponseContract) return prompt;
-  const startsFresh = !sessionId || (bot === "codex" && attachments.length > 0);
-  if (startsFresh) return wrapPromptContext(prompt, null, false, true);
+  if (!sessionId) return wrapPromptContext(prompt, null, false, true);
   return prompt.startsWith("/") ? `User request:\n${prompt}` : prompt;
 }
 
@@ -176,7 +173,7 @@ export function buildCliInvocation({
     throw new Error(`Tool-free mode is not supported for ${bot}`);
   }
 
-  const providerPrompt = seedFreshExecutionContract(bot, prompt, sessionId, attachments, includeResponseContract);
+  const providerPrompt = seedFreshExecutionContract(prompt, sessionId, includeResponseContract);
   const providerId = providerIdForBotName(bot);
   if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
     return buildAcpProviderInvocation(providerId, {
@@ -221,8 +218,6 @@ export function buildCliInvocation({
 }
 
 export { validateBridgeConfig } from "./config.js";
-/** Backwards-compatible test/import alias; execution dispatch no longer depends on it. */
-export { runTurn as runCodexAcpTurn } from "./providers/codexAcpRuntime.js";
 
 /** Run a built invocation on the matching transport. ACP stdio is never oneshot-parsed. */
 export async function runProviderInvocation(
