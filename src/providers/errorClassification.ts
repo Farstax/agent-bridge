@@ -1,5 +1,7 @@
 import { PROVIDER_IDS, type ProviderErrorClassification, type ProviderId } from "./types.js";
 
+export const CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER =
+  "another Claude Code process is refreshing it or exited mid-refresh";
 const CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN = /another Claude Code process is refreshing it or exited mid-refresh/i;
 
 const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
@@ -112,7 +114,7 @@ function errorMessage(error: Error | string): string {
 
 /** Provider-owned OAuth refresh remains in Claude; Bridge only recognizes this exact retryable contention shape. */
 export function isClaudeOAuthRefreshContention(error: Error | string): boolean {
-  return CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN.test(errorMessage(error));
+  return errorMessage(error).toLowerCase().includes(CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER.toLowerCase());
 }
 
 /**
