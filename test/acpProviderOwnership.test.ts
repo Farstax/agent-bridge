@@ -9,6 +9,12 @@ describe("migrated ACP provider ownership", () => {
     expect(existsSync("src/providers/acpAuthProbe.ts")).toBe(true);
   });
 
+  it("keeps migrated-provider compatibility dispatch out of the shared CLI", () => {
+    const source = readFileSync("src/cli.ts", "utf8");
+    expect(source).not.toContain("codexAcpRuntime");
+    expect(source).not.toMatch(/bot\s*===\s*["'](?:codex|claude)["']/);
+  });
+
   it("keeps shared ACP session planning free of migrated-provider branches", () => {
     const source = readFileSync("src/acp/sessionConfig.ts", "utf8");
     expect(source).not.toMatch(/providerId\s*===\s*["'](?:codex|claude)["']/);
@@ -24,6 +30,12 @@ describe("migrated ACP provider ownership", () => {
     const verification = source.slice(start, end);
     expect(verification).toContain("getAcpProviderApiKeyProbe(provider)");
     expect(verification).not.toMatch(/\b(?:codex|claude)\b/);
+  });
+
+  it("keeps shared qualification diagnostics provider-neutral", () => {
+    const source = readFileSync("src/providers/qualification.ts", "utf8");
+    expect(source).toContain("providerErrorInfo=");
+    expect(source).not.toContain("`codexErrorInfo=");
   });
 
   it("does not make Claude configuration depend on a Codex module", () => {
