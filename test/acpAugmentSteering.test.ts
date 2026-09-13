@@ -120,15 +120,22 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     // can no longer safely trust this handle for a further round.
     const completeSpy = vi.spyOn(db, "completePendingMsgs").mockReturnValueOnce(false);
 
-    const mockRunProviderInvocation = vi.fn().mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
-      opts.onSteerReady?.(async (prompt: string) => {
-        steerCalls.push(prompt);
-        return { outcome: "injected" };
-      });
-      firstStarted.release();
-      await firstGate.promise;
-      return { text: "first final", sessionId: "first-session" };
-    });
+    const mockRunProviderInvocation = vi.fn()
+      .mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
+        opts.onSteerReady?.(async (prompt: string) => {
+          steerCalls.push(prompt);
+          return { outcome: "injected" };
+        });
+        firstStarted.release();
+        await firstGate.promise;
+        return { text: "first final", sessionId: "first-session" };
+      })
+      // A lost lease also means the original turn's own row can no longer
+      // be trusted/completed normally, so the lane's own recovery may
+      // legitimately restart it once — that is a separate, correct,
+      // pre-existing path this test isn't targeting. Only guard against it
+      // crashing the test with an unmocked call.
+      .mockResolvedValue({ text: "recovered", sessionId: "recovered-session" });
 
     const engine = new BridgeEngine(
       options(),
@@ -150,6 +157,21 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     // valid, or silently mask the lease loss).
     expect(steerCalls).toEqual(["second request"]);
     expect(completeSpy).toHaveBeenCalledTimes(1);
+
+    // The real invariant: the already-injected content must not merely be
+    // left alone by THIS call — it must be durably unrecoverable, so an
+    // entirely independent later recovery pass (a fresh lock acquisition,
+    // exactly what claimPendingMsgs's own stale-claim requeue step exists
+    // to serve) can never pick it back up and execute it a second time.
+    // (The original turn's own row may legitimately still be recoverable —
+    // that's the separate, correct restart-after-abort path, not this bug.)
+    const recoveryHandle = db.acquireLock("telegram:interactive", "100:7");
+    expect(recoveryHandle).not.toBeNull();
+    if (recoveryHandle) {
+      const recovered = db.claimPendingMsgs(recoveryHandle);
+      expect(recovered.some((row) => row.prompt.includes("second request"))).toBe(false);
+      db.unlock(recoveryHandle);
+    }
 
     db.close();
     rmSync(dbPath, { force: true });
