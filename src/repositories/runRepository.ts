@@ -35,6 +35,13 @@ export class RunRepository {
       .get(runId);
   }
 
+  updateRunningRunBot(runId: string, bot: string): boolean {
+    const { changes } = this.db
+      .prepare(`UPDATE bridge_runs SET bot = ? WHERE run_id = ? AND status = 'running'`)
+      .run(bot, runId);
+    return changes === 1;
+  }
+
   /**
    * All three terminal writers are compare-and-swapped on status = 'running'
    * (the same guard reconcileOrphanedRun already used below for its own

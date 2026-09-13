@@ -218,6 +218,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     let eventStore: EventStore | null = null;
     let active: ActiveOutwardExecution | null = null;
     let signalAbort: (() => void) | null = null;
+    let activeProvider: BotKind = provider;
     try {
       db.insertRun(runId, input.session.conversationId, provider);
       eventStore = new EventStore(db, runId);
@@ -253,6 +254,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
         updateChain = updateChain.then(() => input.onUpdate(update));
       };
       const collect = (event: BridgeEvent): void => {
+        if (event.type === "run.started") activeProvider = event.bot;
         if (event.type === "run.completed") completed = event;
         else if (event.type === "run.cancelled") providerCancelled = event;
         else eventStore!.collect(event);
@@ -287,9 +289,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       const cancelled = active.cancelRequested || result.stopReason === "cancelled";
       // The router may have fallen back to a different provider mid-turn;
       // attribute persistence to whichever provider actually produced the
-      // terminal event, not the (possibly abandoned) head provider.
+      // terminal event, or at minimum the latest surviving run.started event.
       const terminalBot = (event: { bot: BotKind } | null): BotKind | undefined => event?.bot;
-      const actualProvider: BotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? provider;
+      const actualProvider: BotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? activeProvider;
       db.runWithLockFence(lane, () => {
         persistProviderSession(db, input.session.conversationId, actualProvider, result.sessionId, runId);
         // Durable transcript for `session/load` replay only — mirrors the
@@ -338,13 +340,13 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     } catch (error) {
       if (active?.cancelRequested) {
         if (eventStore && db.getRun(runId)?.status === "running") {
-          eventStore.collect(cancelledEvent(runId, provider, input.session, "user"));
+          eventStore.collect(cancelledEvent(runId, activeProvider, input.session, "user"));
           eventStore.finalize();
         }
         return { stopReason: "cancelled" };
       }
       if (eventStore && db.getRun(runId)?.status === "running") {
-        eventStore.collect(failedEvent(runId, provider, input.session));
+        eventStore.collect(failedEvent(runId, activeProvider, input.session));
         eventStore.finalize();
       }
       if (error instanceof acp.RequestError) throw error;

@@ -1,4 +1,5 @@
 import type { BridgeDb } from "../db.js";
+import { RunRepository } from "../repositories/runRepository.js";
 import { finalizeRunTelemetry } from "../runTelemetry.js";
 import type { BridgeEvent } from "./types.js";
 
@@ -138,7 +139,14 @@ export class EventStore {
   // together, and in-memory flags are only ever set after the transaction
   // itself has committed, so they can never drift from durable state.
   private _persistRunStart(e: Extract<BridgeEvent, { type: "run.started" }>): void {
-    if (this.runInserted) return;
+    if (this.runInserted) {
+      const run = this.db.getRun(e.runId);
+      if (run?.status === "running" && run.bot !== e.bot) {
+        const updated = new RunRepository(this.db.raw).updateRunningRunBot(e.runId, e.bot);
+        if (!updated) throw new Error("running Run provider attribution update rejected");
+      }
+      return;
+    }
     const seq = this.seq + 1;
     this.db.raw.transaction(() => {
       this.db.insertRun(e.runId, e.chatKey, e.bot);
