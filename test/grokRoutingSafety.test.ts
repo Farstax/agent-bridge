@@ -91,6 +91,9 @@ describe("Grok routing safety", () => {
     expect(resolveGrokAuthPaths("/home/bridge", { GROK_HOME: "/srv/grok-state" })).toEqual([
       "/srv/grok-state/auth.json",
     ]);
+    expect(resolveGrokAuthPaths("/home/bridge", { GROK_AUTH_PATH: "/run/secrets/grok-auth.json" })).toEqual([
+      "/run/secrets/grok-auth.json",
+    ]);
     expect(resolveGrokAuthPaths("/home/bridge", {})).not.toContain(
       "/home/bridge/.config/grok/auth.json",
     );
