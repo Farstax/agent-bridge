@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
@@ -7,6 +9,12 @@ import type { ProviderInvocationRequest } from "./types.js";
 
 function splitPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
+}
+
+function hasGrokCachedAccountAuth(env: Record<string, string | undefined>): boolean {
+  const home = env.HOME?.trim() || homedir();
+  const grokHome = env.GROK_HOME?.trim() || join(home, ".grok");
+  return existsSync(join(grokHome, "auth.json"));
 }
 
 /** Provider-owned authentication preparation; shared auth only dispatches the selected capability. */
@@ -67,9 +75,11 @@ export const grokAcpPolicy: AcpProviderPolicy = {
   resolveExecutable: resolveGrokAcpCommand,
   resolveArgs: (env, entry) => resolveGrokAcpArgs(env, entry),
   qualificationEnvKeys: GROK_QUALIFICATION_ENV_KEYS,
-  authenticateMethodId: (env) => (env.XAI_API_KEY?.trim() || env.GROK_CODE_XAI_API_KEY?.trim()
-    ? undefined
-    : "cached_token"),
+  // Grok account auth is deliberately authoritative when present. A configured
+  // optional API key is not proof of usable key auth and must not suppress the
+  // cached-token handshake; the supervisor independently verifies candidate
+  // keys before exposing them to the provider child.
+  authenticateMethodId: (env) => (hasGrokCachedAccountAuth(env) ? "cached_token" : undefined),
   verifyApiKey: verifyGrokAcpApiKey,
   sessionSettings,
 };
