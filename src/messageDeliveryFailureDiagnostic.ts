@@ -1,5 +1,6 @@
 import { type as bridgeEventType, type BotKind, type RunDiagnosticEvent } from "./events/types.js";
 import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
+import { hasAcpFailureDiagnostic } from "./providers/acpFailureDiagnostic.js";
 import {
   classifyProviderError,
   isFallbackEligibleProviderError,
@@ -75,7 +76,7 @@ export function buildMessageDeliveryFailureDiagnostic({
   boundary: RunDiagnosticEvent["boundary"];
   env?: NodeJS.ProcessEnv;
 }): RunDiagnosticEvent | null {
-  if (!runId) return null;
+  if (!runId || hasAcpFailureDiagnostic(error)) return null;
   const bot = botKindForKind(kind);
   const providerId = providerIdForKind(kind);
   if (!bot || !providerId) return null;
