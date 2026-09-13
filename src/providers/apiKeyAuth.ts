@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
-import { runAcpApiKeyProbe, runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
+import { getAcpProviderApiKeyProbe } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -101,7 +101,11 @@ export type CodexAcpApiKeyProbeExecutor = AcpApiKeyProbeExecutor;
 export interface VerifyProviderApiKeyOptions {
   env?: Env;
   execFile?: ProviderApiKeyProbeExecutor;
+  /** Generic test seam for ACP-backed providers. Production uses registered provider policy. */
+  acpProbe?: AcpApiKeyProbeExecutor;
+  /** @deprecated Use acpProbe. Retained only for source compatibility during subtraction. */
   codexAcpProbe?: CodexAcpApiKeyProbeExecutor;
+  /** @deprecated Use acpProbe. Retained only for source compatibility during subtraction. */
   claudeAcpProbe?: AcpApiKeyProbeExecutor;
   useCache?: boolean;
 }
@@ -289,35 +293,7 @@ const defaultProbeExecutor: ProviderApiKeyProbeExecutor = (command, args, option
     });
   });
 
-async function runClaudeAcpApiKeyProbe(env: Env): Promise<void> {
-  const runtime = resolveProviderRuntime("claude", env);
-  if (runtime.transport !== "acp-stdio") {
-    throw new Error("Claude selected runtime is not ACP stdio");
-  }
-  await runAcpApiKeyProbe({
-    label: "Claude",
-    command: runtime.executable,
-    args: runtime.args,
-    env: buildProbeEnv("claude", env),
-    sessionMeta: {
-      disableBuiltInTools: true,
-      claudeCode: {
-        options: {
-          tools: [],
-          mcpServers: {},
-          settingSources: [],
-        },
-      },
-    },
-    prepareEnv: (root, childEnv) => ({
-      ...childEnv,
-      CLAUDE_CONFIG_DIR: join(root, ".claude"),
-      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
-    }),
-  });
-}
-
-async function runProbe(
+async function runNativeProbe(
   provider: ProviderId,
   env: Env,
   execute: ProviderApiKeyProbeExecutor,
@@ -377,6 +353,14 @@ async function runProbe(
   }
 }
 
+function injectedAcpProbe(
+  provider: ProviderId,
+  options: VerifyProviderApiKeyOptions,
+): AcpApiKeyProbeExecutor | undefined {
+  if (options.acpProbe) return options.acpProbe;
+  return (options as unknown as Record<string, AcpApiKeyProbeExecutor | undefined>)[`${provider}AcpProbe`];
+}
+
 export async function verifyProviderApiKey(
   provider: ProviderId,
   options: VerifyProviderApiKeyOptions = {},
@@ -400,12 +384,11 @@ export async function verifyProviderApiKey(
   const verification = (async () => {
     let verified = false;
     try {
-      if (provider === "codex") {
-        await (options.codexAcpProbe ?? runCodexAcpApiKeyProbe)(buildProbeEnv(provider, env));
-      } else if (provider === "claude") {
-        await (options.claudeAcpProbe ?? runClaudeAcpApiKeyProbe)(buildProbeEnv(provider, env));
+      const acpProbe = getAcpProviderApiKeyProbe(provider);
+      if (acpProbe) {
+        await (injectedAcpProbe(provider, options) ?? acpProbe)(buildProbeEnv(provider, env));
       } else {
-        await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
+        await runNativeProbe(provider, env, options.execFile ?? defaultProbeExecutor);
       }
       verified = true;
     } catch {
