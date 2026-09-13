@@ -191,12 +191,13 @@ function getSharedMigrationArtifact(): SharedMigrationArtifact {
   cpSync("scripts/rollout-db.ts", join(artifactRoot, "scripts", "rollout-db.ts"));
   cpSync("scripts/rollout-db-impl.ts", join(artifactRoot, "scripts", "rollout-db-impl.ts"));
   const nm = join(artifactRoot, "node_modules");
-  mkdirSync(nm);
-  for (const mod of ["better-sqlite3", "bindings", "file-uri-to-path", "tsx", "esbuild", "@esbuild", "get-tsconfig"]) {
-    const src = join("node_modules", mod);
-    if (existsSync(src)) {
-      cpSync(src, join(nm, mod), { recursive: true, dereference: true });
-    }
+  // Match production release staging (`cp -a`). Node's dereference copy
+  // rewrites Grok's relative bin/grok into an escaped absolute symlink.
+  // Provider native packages are not required to run rollout-db; leaving
+  // them in the fixture SHA-256s hundreds of megabytes per test.
+  execFileSync("cp", ["-a", "node_modules", nm]);
+  for (const pkg of ["@xai-official", "@anthropic-ai", "@openai"]) {
+    rmSync(join(nm, pkg), { recursive: true, force: true });
   }
   rmSync(join(nm, ".bin"), { recursive: true, force: true });
   mkdirSync(join(nm, ".bin"));
