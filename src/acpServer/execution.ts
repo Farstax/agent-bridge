@@ -397,7 +397,7 @@ function configuredProviderChain(env: NodeJS.ProcessEnv): readonly BotKind[] {
     }
     return [locked as BotKind];
   }
-  const fallback = (["codex", "claude", "grok", "antigravity", "cursor"] as BotKind[])
+  const fallback = (["codex", "claude", "antigravity", "grok", "cursor"] as BotKind[])
     .filter((kind) => allowed.includes(kind));
   const chain = parseCliChain(env.INTERACTIVE_CLI_CHAIN, { allowed, fallback });
   if (chain.length === 0) throw new Error("no interactive provider is configured for outward ACP");

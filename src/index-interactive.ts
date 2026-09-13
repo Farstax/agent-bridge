@@ -68,7 +68,7 @@ loadInteractiveEnvFile();
 const supportedCliKinds = interactiveChainKinds();
 const configuredCliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
-  { allowed: supportedCliKinds, fallback: ["codex", "claude", "grok", "antigravity", "cursor"] },
+  { allowed: supportedCliKinds, fallback: ["codex", "claude", "antigravity", "grok", "cursor"] },
 );
 const runtimePolicy = resolveTelegramRuntimePolicy(process.env, supportedCliKinds);
 const { providerLock, token } = runtimePolicy;
