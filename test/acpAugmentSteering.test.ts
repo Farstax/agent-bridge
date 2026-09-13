@@ -106,6 +106,114 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     rmSync(dbPath, { force: true });
   }, 8_000);
 
+  it("stops steering further rounds, without falsely reporting full success, if the execution lease is lost mid-loop", async () => {
+    const dbPath = join(tmpdir(), `acp-steer-lease-lost-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(dbPath);
+    const c = client();
+    const firstStarted = signal();
+    const firstGate = signal();
+    const steerCalls: string[] = [];
+
+    // Simulates losing execution-lease ownership between claiming this
+    // round's rows and completing them (e.g. a heartbeat failure): the
+    // round's own injection already happened at the provider, but Bridge
+    // can no longer safely trust this handle for a further round.
+    const completeSpy = vi.spyOn(db, "completePendingMsgs").mockReturnValueOnce(false);
+
+    const mockRunProviderInvocation = vi.fn().mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
+      opts.onSteerReady?.(async (prompt: string) => {
+        steerCalls.push(prompt);
+        return { outcome: "injected" };
+      });
+      firstStarted.release();
+      await firstGate.promise;
+      return { text: "first final", sessionId: "first-session" };
+    });
+
+    const engine = new BridgeEngine(
+      options(),
+      db,
+      c,
+      { runProviderInvocation: mockRunProviderInvocation },
+    );
+
+    const first = engine.handleMessages([message("first request")]);
+    await firstStarted.promise;
+    const second = engine.handleMessages([message("second request")]);
+    await waitForCondition(() => steerCalls.length > 0);
+    firstGate.release();
+    await Promise.all([first, second]);
+
+    // Exactly one round attempted: the failed completion must stop the
+    // loop rather than looping again (which would re-claim/re-steer
+    // whatever else was queued against a handle that may no longer be
+    // valid, or silently mask the lease loss).
+    expect(steerCalls).toEqual(["second request"]);
+    expect(completeSpy).toHaveBeenCalledTimes(1);
+
+    db.close();
+    rmSync(dbPath, { force: true });
+  }, 8_000);
+
+  it("steers multiple rapid augments in arrival order into the same live turn, never restarting", async () => {
+    const dbPath = join(tmpdir(), `acp-steer-multi-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(dbPath);
+    const c = client();
+    const firstStarted = signal();
+    const firstGate = signal();
+    const firstSteerEntered = signal();
+    const firstSteerGate = signal();
+    const steerCalls: string[] = [];
+
+    const mockRunProviderInvocation = vi.fn().mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
+      let steerCallCount = 0;
+      opts.onSteerReady?.(async (prompt: string) => {
+        steerCalls.push(prompt);
+        steerCallCount += 1;
+        if (steerCallCount === 1) {
+          // Hold the first steer RPC open so a second augment can arrive
+          // and durably queue itself while it's still in flight.
+          firstSteerEntered.release();
+          await firstSteerGate.promise;
+        }
+        return { outcome: "injected" };
+      });
+      firstStarted.release();
+      await firstGate.promise;
+      return { text: "first final", sessionId: "first-session" };
+    });
+
+    const engine = new BridgeEngine(
+      options(),
+      db,
+      c,
+      { runProviderInvocation: mockRunProviderInvocation },
+    );
+
+    const first = engine.handleMessages([message("first request")]);
+    await firstStarted.promise;
+    const second = engine.handleMessages([message("second request")]);
+    await firstSteerEntered.promise;
+    // Third message arrives while the first augment's steering RPC is still
+    // in flight. Before the fix, _cancelLane's dedup just returns the
+    // existing in-flight promise and never re-attempts steering for this
+    // one — it would sit queued until the turn finishes naturally instead
+    // of being steered in arrival order like "second request" was.
+    const third = engine.handleMessages([message("third request")]);
+    await waitForCondition(() => db.pendingMsgCount("telegram:interactive", "100:7") >= 3);
+    firstSteerGate.release();
+    firstGate.release();
+    await Promise.all([first, second, third]);
+
+    expect(steerCalls).toEqual(["second request", "third request"]);
+    expect(mockRunProviderInvocation).toHaveBeenCalledTimes(1);
+    expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
+
+    db.close();
+    rmSync(dbPath, { force: true });
+  }, 8_000);
+
   it("falls back to cancel+restart, without losing or duplicating the message, when the steering RPC itself throws", async () => {
     const dbPath = join(tmpdir(), `acp-steer-error-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
@@ -151,7 +259,7 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     rmSync(dbPath, { force: true });
   }, 8_000);
 
-  it("falls back to cancel+restart, loudly, when steering returns startedNewTurn despite the promptRequired opt-in", async () => {
+  it("never resubmits the same content when steering returns startedNewTurn — fences the lane instead of falling back to cancel+restart", async () => {
     const dbPath = join(tmpdir(), `acp-steer-anomaly-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);
     const c = client();
@@ -160,17 +268,21 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     const steerCalls: string[] = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const mockRunProviderInvocation = vi.fn()
-      .mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
-        opts.onSteerReady?.(async (prompt: string) => {
-          steerCalls.push(prompt);
-          return { outcome: "startedNewTurn" };
-        });
-        firstStarted.release();
-        await firstGate.promise;
-        return { text: "first final", sessionId: "first-session" };
-      })
-      .mockResolvedValueOnce({ text: "second final", sessionId: "second-session" });
+    // Only one implementation queued: if the fix regresses back to
+    // "fall back to cancel+restart", a second invocation would resubmit the
+    // same content the provider may have already started acting on — the
+    // exact duplicate-side-effect risk #748 was blocked on for Codex. A
+    // second call here has no mock response and the test times out/throws,
+    // making that regression fail loudly rather than silently pass.
+    const mockRunProviderInvocation = vi.fn().mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
+      opts.onSteerReady?.(async (prompt: string) => {
+        steerCalls.push(prompt);
+        return { outcome: "startedNewTurn" };
+      });
+      firstStarted.release();
+      await firstGate.promise;
+      return { text: "first final", sessionId: "first-session" };
+    });
 
     const engine = new BridgeEngine(
       options(),
@@ -187,8 +299,13 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     await Promise.all([first, second]);
 
     expect(steerCalls).toEqual(["second request"]);
-    expect(mockRunProviderInvocation).toHaveBeenCalledTimes(2);
+    // Fail closed: never resubmit content the provider may have already
+    // started acting on in a detached, Bridge-unowned turn.
+    expect(mockRunProviderInvocation).toHaveBeenCalledTimes(1);
+    // Not silently lost either — discarded (not left stuck forever), and
+    // the anomaly is surfaced loudly so it's not a silent drop.
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
+    expect((engine as any).laneCoordinator.cancellationCount()).toBe(0);
     expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("startedNewTurn"))).toBe(true);
 
     errorSpy.mockRestore();
