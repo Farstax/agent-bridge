@@ -32,8 +32,8 @@ async function defaultWait(delayMs: number, abortRequested: () => boolean): Prom
 
 /**
  * Retry exactly one Claude ACP attempt when Claude itself reports the shared
- * OAuth-refresh lock race. The callback runs only after the wait/cancellation
- * fence and immediately before attempt two, so successorStarted is factual.
+ * OAuth-refresh lock race. The decision callback fires exactly once for the
+ * failed first attempt and says whether attempt two really starts.
  */
 export async function runWithAcpTransientRetry<T>(
   providerId: ProviderId,
@@ -41,7 +41,7 @@ export async function runWithAcpTransientRetry<T>(
   options: {
     abortRequested: () => boolean;
     wait?: AcpTransientRetryWait;
-    onRetryStarted?: (error: Error) => void | Promise<void>;
+    onRetryDecision?: (error: Error, successorStarted: boolean) => void | Promise<void>;
   },
 ): Promise<T> {
   try {
@@ -49,10 +49,21 @@ export async function runWithAcpTransientRetry<T>(
   } catch (error) {
     const normalized = error instanceof Error ? error : new Error(String(error));
     if (providerId !== "claude" || !isClaudeOAuthRefreshContention(normalized)) throw error;
-    if (options.abortRequested()) throw new AcpTransientRetryCancelledError();
-    await (options.wait ?? defaultWait)(CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS, options.abortRequested);
-    if (options.abortRequested()) throw new AcpTransientRetryCancelledError();
-    await options.onRetryStarted?.(normalized);
+    if (options.abortRequested()) {
+      await options.onRetryDecision?.(normalized, false);
+      throw new AcpTransientRetryCancelledError();
+    }
+    try {
+      await (options.wait ?? defaultWait)(CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS, options.abortRequested);
+    } catch (waitError) {
+      await options.onRetryDecision?.(normalized, false);
+      throw waitError;
+    }
+    if (options.abortRequested()) {
+      await options.onRetryDecision?.(normalized, false);
+      throw new AcpTransientRetryCancelledError();
+    }
+    await options.onRetryDecision?.(normalized, true);
     return operation();
   }
 }
