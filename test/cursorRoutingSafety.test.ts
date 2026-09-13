@@ -109,13 +109,13 @@ describe("Cursor routing safety", () => {
     withCursorEnvironment(() => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(
-        ["codex", "claude", "grok", "antigravity", "cursor"],
+        ["codex", "claude", "antigravity", "grok", "cursor"],
         db,
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
       expect(chain.advance("chat:1")).toBe("claude");
-      expect(chain.advance("chat:1")).toBe("grok");
       expect(chain.advance("chat:1")).toBe("antigravity");
+      expect(chain.advance("chat:1")).toBe("grok");
       expect(chain.advance("chat:1")).toBe("cursor");
       expect(chain.isChainExhausted("chat:1")).toBe(true);
     });
@@ -153,7 +153,7 @@ describe("Cursor routing safety", () => {
   it("places Cursor last on both default interactive fallback chains", () => {
     const interactive = readFileSync(join(repoRoot, "src/index-interactive.ts"), "utf8");
     const discord = readFileSync(join(repoRoot, "src/index-discord-interactive.ts"), "utf8");
-    const expected = /fallback:\s*\["codex",\s*"claude",\s*"grok",\s*"antigravity",\s*"cursor"\]/;
+    const expected = /fallback:\s*\["codex",\s*"claude",\s*"antigravity",\s*"grok",\s*"cursor"\]/;
     expect(interactive).toMatch(expected);
     expect(discord).toMatch(expected);
   });

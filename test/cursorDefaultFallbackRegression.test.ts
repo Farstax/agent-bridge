@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { interactiveChainKinds, parseCliChain } from "../src/providers/selection.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const expectedChain = ["codex", "claude", "grok", "antigravity", "cursor"] as const;
+const expectedChain = ["codex", "claude", "antigravity", "grok", "cursor"] as const;
 
 function read(pathname: string): string {
   return fs.readFileSync(path.join(root, pathname), "utf8");

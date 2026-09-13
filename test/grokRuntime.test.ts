@@ -57,23 +57,23 @@ describe("grok provider registration", () => {
     expect(loadBotsConfig({ GROK_COMMAND: "/usr/local/bin/grok" }).grok.command).toBe("/usr/local/bin/grok");
   });
 
-  it("supports the production default fallback with Grok ahead of Antigravity", () => {
-    const fallback = ["codex", "claude", "grok", "antigravity"] as const;
+  it("supports the production default fallback with Antigravity ahead of Grok", () => {
+    const fallback = ["codex", "claude", "antigravity", "grok"] as const;
     expect(parseCliChain(undefined, {
       allowed: interactiveChainKinds(),
       fallback,
-    })).toEqual(["codex", "claude", "grok", "antigravity"]);
+    })).toEqual(["codex", "claude", "antigravity", "grok"]);
     expect(interactiveChainKinds()).toContain("grok");
   });
 
   it("still honors explicit INTERACTIVE_CLI_CHAIN overrides", () => {
     expect(parseCliChain("grok", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "grok", "antigravity"],
+      fallback: ["codex", "claude", "antigravity", "grok"],
     })).toEqual(["grok"]);
     expect(parseCliChain("codex,grok", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "grok", "antigravity"],
+      fallback: ["codex", "claude", "antigravity", "grok"],
     })).toEqual(["codex", "grok"]);
   });
 });
