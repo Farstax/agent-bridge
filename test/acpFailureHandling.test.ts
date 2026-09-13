@@ -1,6 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
+import { detectClaudeAcpTurnError } from "../src/providers/claudeAcpPolicy.js";
 import {
   classifyProviderError,
   isClaudeOAuthRefreshContention,
@@ -9,6 +10,9 @@ import {
   CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS,
   runWithAcpTransientRetry,
 } from "../src/providers/acpTransientRetry.js";
+
+const refreshContention =
+  "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.";
 
 function systemErrorAgent(diagnostic: string): acp.AgentApp {
   return acp.agent({ name: "system-error-agent" })
@@ -88,20 +92,32 @@ describe("ACP provider failure handling", () => {
     expect(classifyProviderError("codex", thrown as Error)).toMatchObject({ kind: "unknown" });
   });
 
-  it("classifies Claude OAuth refresh contention as transient", () => {
-    const error = new Error(
-      "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
-    );
-    expect(isClaudeOAuthRefreshContention(error)).toBe(true);
-    expect(classifyProviderError("claude", error)).toMatchObject({ kind: "transient" });
+  it("classifies Claude OAuth refresh contention as transient in direct and structured error shapes", () => {
+    const direct = new Error(refreshContention);
+    const structured = Object.assign(new Error("Internal error"), {
+      data: { message: refreshContention },
+    });
+
+    for (const error of [direct, structured]) {
+      expect(isClaudeOAuthRefreshContention(error)).toBe(true);
+      expect(classifyProviderError("claude", error)).toMatchObject({ kind: "transient" });
+    }
+  });
+
+  it("converts Claude's in-band synthetic refresh message into a retryable execution error", () => {
+    const error = detectClaudeAcpTurnError({
+      liveText: refreshContention,
+    } as any);
+    expect(error).toBeInstanceOf(Error);
+    expect(isClaudeOAuthRefreshContention(error!)).toBe(true);
+
+    expect(detectClaudeAcpTurnError({ liveText: "ordinary Claude answer" } as any)).toBeNull();
   });
 
   it("retries Claude OAuth refresh contention once after a bounded delay", async () => {
     const wait = vi.fn(async () => {});
     const operation = vi.fn()
-      .mockRejectedValueOnce(new Error(
-        "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
-      ))
+      .mockRejectedValueOnce(new Error(refreshContention))
       .mockResolvedValueOnce("ok");
 
     await expect(runWithAcpTransientRetry("claude", operation, {
@@ -123,9 +139,7 @@ describe("ACP provider failure handling", () => {
     expect(unrelated).toHaveBeenCalledTimes(1);
 
     let abort = false;
-    const operation = vi.fn().mockRejectedValue(new Error(
-      "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
-    ));
+    const operation = vi.fn().mockRejectedValue(new Error(refreshContention));
     const wait = vi.fn(async (_delay: number, _abortRequested: () => boolean) => {
       abort = true;
     });
