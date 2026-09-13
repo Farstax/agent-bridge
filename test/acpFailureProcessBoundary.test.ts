@@ -99,9 +99,13 @@ describe("ACP failure process boundary", () => {
         type: "run.diagnostic",
         runId: "run-system-error-process",
         bot: "codex",
+        provider: "codex",
         chatKey: "chat-system-error-process:86",
         threadId: "86",
         boundary: "provider_execution",
+        executionSurface: "acp",
+        attempt: 1,
+        successorStarted: false,
         classification: "capacity_exhausted",
         fallbackEligible: true,
       });
