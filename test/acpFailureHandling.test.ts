@@ -1,7 +1,10 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { runAcpTurn } from "../src/acp/client.js";
-import { detectClaudeAcpTurnError } from "../src/providers/claudeAcpPolicy.js";
+import {
+  createClaudeAcpAnswerPreview,
+  detectClaudeAcpTurnError,
+} from "../src/providers/claudeAcpPolicy.js";
 import {
   classifyProviderError,
   isClaudeOAuthRefreshContention,
@@ -38,6 +41,22 @@ function systemErrorAgent(diagnostic: string): acp.AgentApp {
       });
       return { stopReason: "end_turn" };
     });
+}
+
+function claudeMessageEvent(text: string): any {
+  return {
+    kind: "session_update",
+    channel: "live",
+    acpSessionId: "claude-session",
+    sessionMode: "fresh",
+    notification: {
+      sessionId: "claude-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text },
+      },
+    },
+  };
 }
 
 describe("ACP provider failure handling", () => {
@@ -112,6 +131,21 @@ describe("ACP provider failure handling", () => {
     expect(isClaudeOAuthRefreshContention(error!)).toBe(true);
 
     expect(detectClaudeAcpTurnError({ liveText: "ordinary Claude answer" } as any)).toBeNull();
+  });
+
+  it("keeps Claude refresh contention out of provisional answer previews, including split chunks", () => {
+    const chunks: string[] = [];
+    const preview = createClaudeAcpAnswerPreview((text) => chunks.push(text), []);
+    preview.observe(claudeMessageEvent("Failed to refresh OAuth token: another Claude Code process is "));
+    preview.observe(claudeMessageEvent("refreshing it or exited mid-refresh. This is usually transient."));
+    preview.finish("end_turn");
+    expect(chunks).toEqual([]);
+
+    const ordinary: string[] = [];
+    const normalPreview = createClaudeAcpAnswerPreview((text) => ordinary.push(text), []);
+    normalPreview.observe(claudeMessageEvent("Final answer"));
+    normalPreview.finish("end_turn");
+    expect(ordinary.join("")).toBe("Final answer");
   });
 
   it("retries Claude OAuth refresh contention once after a bounded delay", async () => {
