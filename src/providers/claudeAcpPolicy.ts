@@ -1,7 +1,9 @@
 import { join } from "node:path";
+import type { AcpTurnResult } from "../acp/client.js";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
+import { isClaudeOAuthRefreshContention } from "./errorClassification.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import { resolveClaudeAcpArgs, resolveClaudeAcpCommand } from "./claudeAcpConfig.js";
 
@@ -76,6 +78,16 @@ function sessionSettings(
   };
 }
 
+/**
+ * Claude Code can surface its OAuth-refresh lock race as a synthetic assistant
+ * message with a normal ACP terminal result. Convert only that exact provider
+ * diagnostic into an execution error so the shared bounded retry can own it.
+ */
+export function detectClaudeAcpTurnError(result: AcpTurnResult): Error | null {
+  const text = result.liveText.trim();
+  return isClaudeOAuthRefreshContention(text) ? new Error(text) : null;
+}
+
 const CLAUDE_QUALIFICATION_ENV_KEYS = [
   "CLAUDE_ACP_COMMAND",
   "CLAUDE_ACP_ARGS",
@@ -106,4 +118,5 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   qualificationEnvKeys: CLAUDE_QUALIFICATION_ENV_KEYS,
   verifyApiKey: verifyClaudeAcpApiKey,
   sessionSettings,
+  detectTurnError: detectClaudeAcpTurnError,
 };
