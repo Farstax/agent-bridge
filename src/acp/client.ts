@@ -25,6 +25,19 @@ import {
 } from "./sessionConfig.js";
 
 export type AcpSessionMode = "fresh" | "load" | "resume";
+const ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS = 2_000;
+
+export class AcpSystemError extends Error {
+  readonly data: { readonly acpSystemError: true; readonly message: string };
+
+  constructor(diagnostic: string) {
+    const bounded = diagnostic.trim().slice(0, ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS)
+      || "ACP session reported a system error";
+    super(bounded);
+    this.name = "AcpSystemError";
+    this.data = { acpSystemError: true, message: bounded };
+  }
+}
 
 /** Legacy/exact ACP config request retained for callers that already own an opaque config id/value. */
 export interface AcpSessionConfigValue {
@@ -39,6 +52,8 @@ export interface AcpRetainedEvent {
   readonly channel: "replay" | "live";
   readonly notification?: SessionNotification;
   readonly stopReason?: StopReason;
+  /** Retain protocol evidence while preventing error text from becoming provisional answer UI. */
+  readonly presentationSuppressed?: boolean;
   /** What the agent asked for and what Bridge decided, not merely that a permission event happened. */
   readonly permissionRequest?: RequestPermissionRequest;
   readonly permissionResponse?: RequestPermissionResponse;
@@ -187,6 +202,43 @@ function isSemanticConfigRequest(value: AcpSessionConfigRequest): value is AcpSe
   return "category" in value;
 }
 
+function systemErrorUpdate(notification: SessionNotification): boolean {
+  const update = notification.update as unknown as {
+    sessionUpdate?: string;
+    threadStatus?: { type?: string };
+    _meta?: {
+      codex?: { threadStatus?: { type?: string } };
+      threadStatus?: { type?: string };
+    };
+  };
+  if (update.sessionUpdate !== "session_info_update") return false;
+  const threadStatusType = update.threadStatus?.type
+    ?? update._meta?.codex?.threadStatus?.type
+    ?? update._meta?.threadStatus?.type;
+  return threadStatusType === "systemError";
+}
+
+function systemErrorDiagnostic(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): string | null {
+  let seen = false;
+  let diagnostic = "";
+  for (const observed of updates) {
+    if (observed.channel !== "live" || observed.notification.sessionId !== sessionId) continue;
+    if (systemErrorUpdate(observed.notification)) {
+      seen = true;
+      continue;
+    }
+    if (!seen) continue;
+    const update = observed.notification.update;
+    if (update.sessionUpdate !== "agent_message_chunk" || update.content.type !== "text") continue;
+    diagnostic += update.content.text;
+    if (diagnostic.length >= ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS) break;
+  }
+  return seen ? diagnostic.slice(0, ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS) : null;
+}
+
 async function applySessionSettings(
   agent: ClientContext,
   sessionId: string,
@@ -318,6 +370,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   // actual root/child protocol session id.
   let currentAcpSessionId: string | undefined;
   let currentSessionMode: AcpSessionMode | undefined;
+  let rootSystemErrorSeen = false;
 
   const remember = (event: AcpRetainedEvent) => {
     const tagged: AcpRetainedEvent = {
@@ -330,13 +383,25 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   };
 
   const clientApp = acp.client({ name: "agent-bridge" })
-    .onNotification(acp.methods.client.session.update, (ctx) => {
-      const observed = gate.observe(ctx.params);
+    .onNotification(
+      acp.methods.client.session.update,
+      { parse: (params) => params as SessionNotification },
+      (ctx) => {
+        const observed = gate.observe(ctx.params);
       updates.push(observed);
+      const isRootLive = observed.channel === "live"
+        && Boolean(currentAcpSessionId)
+        && observed.notification.sessionId === currentAcpSessionId;
+      if (isRootLive && systemErrorUpdate(observed.notification)) rootSystemErrorSeen = true;
+      const payload = observed.notification.update;
+      const suppressPresentation = isRootLive
+        && rootSystemErrorSeen
+        && payload.sessionUpdate === "agent_message_chunk";
       remember({
         kind: "session_update",
         channel: observed.channel,
         notification: observed.notification,
+        ...(suppressPresentation ? { presentationSuppressed: true } : {}),
       });
       const update = observed.notification.update as unknown as {
         sessionUpdate?: string;
@@ -352,11 +417,9 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         // authoritative even if they arrive while loading/replaying a session.
         latestConfigOptions = update.configOptions;
       }
-      if (observed.channel !== "live") return;
+      if (!isRootLive || suppressPresentation) return;
       // Native subagent output is retained for structured lifecycle/activity,
       // but only the parent/root ACP session may feed human-facing live text.
-      if (!currentAcpSessionId || observed.notification.sessionId !== currentAcpSessionId) return;
-      const payload = observed.notification.update;
       if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return;
       liveEmitted += payload.content.text;
       input.onLiveText?.(payload.content.text);
@@ -480,6 +543,14 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }, input.signal ? { cancellationSignal: input.signal } : undefined);
 
     remember({ kind: "stop", channel: "live", stopReason: promptResponse.stopReason });
+
+    // Cancellation/fencing wins over provider status. Otherwise an ACP agent
+    // that reports a systemError in-band must fail before answer selection so
+    // diagnostic text cannot be promoted to an authoritative final answer.
+    if (promptResponse.stopReason !== "cancelled") {
+      const diagnostic = systemErrorDiagnostic(updates, acpSessionId);
+      if (diagnostic !== null) throw new AcpSystemError(diagnostic);
+    }
 
     const liveText = liveDeliveryText(updates, acpSessionId) || liveEmitted;
     return {

@@ -20,6 +20,8 @@ import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 import type { ProviderId, ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
+import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
+import { buildAcpFailureDiagnosticEvent } from "./acpFailureDiagnostic.js";
 import {
   getAcpProviderPolicy,
   getProviderAdapter,
@@ -96,7 +98,7 @@ export interface AcpProviderPolicy {
   ) => AcpProviderSessionSettings;
   /** Runtime-affecting env keys that qualification must compare with the active process. */
   readonly qualificationEnvKeys?: readonly string[];
-  /** Standard ACP authenticate method selected from workspace-local policy. */
+  /** Standard ACP authentication method selected from workspace-local policy. */
   readonly authenticateMethodId?: (
     env: Record<string, string | undefined>,
   ) => string | undefined;
@@ -106,6 +108,8 @@ export interface AcpProviderPolicy {
   ) => Promise<void>;
   /** Provider extension for structured run activity; generic ACP lifecycle remains here. */
   readonly createActivityProjector?: () => AcpActivityProjector;
+  /** Provider-specific in-band failure recognition when ACP itself returns a normal terminal response. */
+  readonly detectTurnError?: (result: AcpTurnResult) => Error | null;
   readonly selectAnswer?: (
     result: AcpTurnResult,
   ) => { text: string; missingDescription: string };
@@ -436,6 +440,7 @@ function createStandardAnswerPreview(
   const redactor = createStreamingSecretRedactor(secrets);
   return {
     observe(event): void {
+      if (event.presentationSuppressed) return;
       if (event.kind !== "session_update" || event.channel !== "live" || !event.notification) return;
       if (event.acpSessionId && event.notification.sessionId !== event.acpSessionId) return;
       const update = event.notification.update;
@@ -481,9 +486,9 @@ export async function runResolvedAcpProviderTurn(
   const chatId = options.chatId;
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
-  let result: AcpTurnResult;
-  try {
-    result = await runSupervisedStdioSession(
+  const abortRequested = () => chatId != null && isAbortRequested(chatId);
+  const runTurn = async (): Promise<AcpTurnResult> => {
+    const turn = await runSupervisedStdioSession(
       runtime.executable,
       [...runtime.args],
       cwd,
@@ -503,7 +508,7 @@ export async function runResolvedAcpProviderTurn(
         sessionModeId: sessionSettings?.modeId,
         sessionConfig: sessionSettings?.config,
         authenticateMethodId: policy.authenticateMethodId?.(effectiveEnv),
-        abortRequested: () => chatId != null && isAbortRequested(chatId),
+        abortRequested,
         signal: io.signal,
         onSteerReady: policy.steeringSupported ? options.onSteerReady : undefined,
         onLiveText: options.onProgress
@@ -532,8 +537,44 @@ export async function runResolvedAcpProviderTurn(
           : undefined,
       }),
     );
+    const providerError = policy.detectTurnError?.(turn);
+    if (providerError) throw providerError;
+    return turn;
+  };
+
+  let result: AcpTurnResult;
+  let currentAttempt = 1;
+  let priorAttemptRecorded = false;
+  try {
+    result = await runWithAcpTransientRetry(providerId as ProviderId, runTurn, {
+      abortRequested,
+      onRetryDecision: (error, successorStarted) => {
+        priorAttemptRecorded = true;
+        if (eventContext && onEvent) {
+          const redacted = redactAcpFailure(error, redactionEnv);
+          onEvent(buildAcpFailureDiagnosticEvent(
+            providerId as ProviderId,
+            redacted,
+            eventContext,
+            redactionEnv,
+            { attempt: 1, successorStarted, retryEligible: true },
+          ));
+        }
+        if (successorStarted) currentAttempt = 2;
+      },
+    });
   } catch (error) {
-    throw redactAcpFailure(error, redactionEnv);
+    const redacted = redactAcpFailure(error, redactionEnv);
+    if (eventContext && onEvent && !(priorAttemptRecorded && currentAttempt === 1)) {
+      onEvent(buildAcpFailureDiagnosticEvent(
+        providerId as ProviderId,
+        redacted,
+        eventContext,
+        redactionEnv,
+        { attempt: currentAttempt, successorStarted: false, retryEligible: false },
+      ));
+    }
+    throw redacted;
   }
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);

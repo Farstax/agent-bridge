@@ -1,5 +1,9 @@
 import { PROVIDER_IDS, type ProviderErrorClassification, type ProviderId } from "./types.js";
 
+export const CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER =
+  "another Claude Code process is refreshing it or exited mid-refresh";
+const CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN = /another Claude Code process is refreshing it or exited mid-refresh/i;
+
 const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
   codex: [
     /MODEL_CAPACITY_EXHAUSTED/,
@@ -74,6 +78,7 @@ const MODEL_UNAVAILABLE_PATTERNS: readonly RegExp[] = [
 ];
 
 const TRANSIENT_PATTERNS: readonly RegExp[] = [
+  CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN,
   /ECONNRESET|ECONNREFUSED|EPIPE/i,
   /socket hang up/i,
   /temporar(?:y|ily)/i,
@@ -89,6 +94,27 @@ const FATAL_PATTERNS: readonly RegExp[] = [
 
 function matchReason(message: string, patterns: readonly RegExp[]): string | null {
   return patterns.find(pattern => pattern.test(message))?.source ?? null;
+}
+
+/**
+ * Include a structured provider message when present so exact provider-owned
+ * retry conditions can be recognized even if the ACP transport wraps them in
+ * a generic top-level RequestError such as "Internal error".
+ */
+function errorMessage(error: Error | string): string {
+  if (typeof error === "string") return error;
+  const data = (error as { data?: unknown }).data;
+  const nested = data && typeof data === "object"
+    ? (data as { message?: unknown }).message
+    : undefined;
+  return [error.message, typeof nested === "string" ? nested : null]
+    .filter((part): part is string => Boolean(part))
+    .join("\n");
+}
+
+/** Provider-owned OAuth refresh remains in Claude; Bridge only recognizes this exact retryable contention shape. */
+export function isClaudeOAuthRefreshContention(error: Error | string): boolean {
+  return errorMessage(error).toLowerCase().includes(CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER.toLowerCase());
 }
 
 /**
@@ -157,9 +183,15 @@ export function classifyProviderError(providerId: ProviderId, error: Error | str
     if (structured) return structured;
   }
 
-  // Only Codex ACP populates `error.data`; folding it into the searched text
-  // for every other provider would let incidental words in the nested Codex
-  // message accidentally match an unrelated provider's patterns.
+  // Claude's refresh-contention diagnostic is a narrow provider-owned
+  // transient condition and may be nested under a generic ACP RequestError.
+  if (providerId === "claude" && isClaudeOAuthRefreshContention(error)) {
+    return { kind: "transient", reason: CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN.source };
+  }
+
+  // Only Codex ACP generally populates provider classification in `error.data`;
+  // fold it into pattern search there while keeping other providers scoped to
+  // their top-level message except for the explicit Claude contention case above.
   const message = providerId === "codex" && data
     ? [typeof error === "string" ? error : error.message, data.message, data.additionalDetails]
       .filter((part): part is string => Boolean(part))
@@ -195,3 +227,12 @@ export function classifyAnyProviderError(error: Error | string): ProviderErrorCl
 export function isFallbackEligibleProviderError(classification: ProviderErrorClassification): boolean {
   return classification.kind === "capacity_exhausted" || classification.kind === "model_unavailable";
 }
+
+export function isRetryEligibleProviderError(
+  providerId: ProviderId,
+  error: Error | string,
+  attempt = 1,
+): boolean {
+  return attempt === 1 && providerId === "claude" && isClaudeOAuthRefreshContention(error);
+}
+

@@ -43,6 +43,7 @@ export function createCodexAcpAnswerPreview(
 
   return {
     observe(event): void {
+      if (event.presentationSuppressed) return;
       if (event.kind !== "session_update" || event.channel !== "live" || !event.notification) return;
       // Production retained events are tagged with the parent/root ACP session.
       // Native child notifications keep their own notification.sessionId and

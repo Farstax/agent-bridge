@@ -41,6 +41,25 @@ export interface RunFailedEvent extends BridgeEventBase {
   category?: "cli" | "timeout" | "transport" | "render" | "unknown";
 }
 
+/**
+ * Reducer-inert, bounded diagnostic evidence for an execution/delivery failure.
+ * This captures the failed attempt itself, including whether a successor was
+ * actually started, without changing terminal Run authority or user output.
+ */
+export interface RunDiagnosticEvent extends BridgeEventBase {
+  type: "run.diagnostic";
+  boundary: "provider_execution" | "final_delivery_authority" | "final_delivery";
+  provider: BotKind;
+  executionSurface: "acp" | "message_delivery";
+  attempt: number;
+  successorStarted: boolean;
+  retryEligible: boolean;
+  errorName: string;
+  message: string;
+  classification: "capacity_exhausted" | "model_unavailable" | "auth_required" | "transient" | "fatal" | "unknown";
+  fallbackEligible: boolean;
+}
+
 export interface RunCancelledEvent extends BridgeEventBase {
   type: "run.cancelled";
   reason: "user" | "shutdown" | "timeout" | "provider";
@@ -69,6 +88,7 @@ export type BridgeEvent =
   | TextDeltaEvent
   | RunCompletedEvent
   | RunFailedEvent
+  | RunDiagnosticEvent
   | RunCancelledEvent
   | AcpEventObservedEvent;
 
@@ -136,6 +156,39 @@ export const type = {
     threadId?: string;
   }): RunFailedEvent {
     return { ...base(fields), type: "run.failed", error: fields.error, category: fields.category };
+  },
+
+  runDiagnostic(fields: {
+    runId: string;
+    bot: BotKind;
+    chatId: string;
+    chatKey: string;
+    boundary: RunDiagnosticEvent["boundary"];
+    provider: BotKind;
+    executionSurface: RunDiagnosticEvent["executionSurface"];
+    attempt: number;
+    successorStarted: boolean;
+    retryEligible: boolean;
+    errorName: string;
+    message: string;
+    classification: RunDiagnosticEvent["classification"];
+    fallbackEligible: boolean;
+    threadId?: string;
+  }): RunDiagnosticEvent {
+    return {
+      ...base(fields),
+      type: "run.diagnostic",
+      boundary: fields.boundary,
+      provider: fields.provider,
+      executionSurface: fields.executionSurface,
+      attempt: fields.attempt,
+      successorStarted: fields.successorStarted,
+      retryEligible: fields.retryEligible,
+      errorName: fields.errorName,
+      message: fields.message,
+      classification: fields.classification,
+      fallbackEligible: fields.fallbackEligible,
+    };
   },
 
   runCancelled(fields: {

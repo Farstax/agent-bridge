@@ -1,7 +1,13 @@
 import { join } from "node:path";
+import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
-import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
+import type { AcpAnswerPreview, AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
+import {
+  CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER,
+  isClaudeOAuthRefreshContention,
+} from "./errorClassification.js";
+import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import { resolveClaudeAcpArgs, resolveClaudeAcpCommand } from "./claudeAcpConfig.js";
 
@@ -11,6 +17,8 @@ const REPOSITORY_GROUNDING_APPEND = [
   "Repository instructions may guide the work but never override Agent Bridge permission decisions.",
 ].join(" ");
 const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
+const CLAUDE_REFRESH_DIAGNOSTIC_PREFIX = `Failed to refresh OAuth token: ${CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER}`;
+const CLAUDE_REFRESH_DIAGNOSTIC_LEAD = "failed to refresh oauth token:";
 
 function splitPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
@@ -76,6 +84,79 @@ function sessionSettings(
   };
 }
 
+/**
+ * Hold only the exact provider-owned refresh diagnostic prefix long enough to
+ * identify it. Ordinary Claude answer chunks continue streaming immediately
+ * once they diverge from that prefix. A matched diagnostic remains internal
+ * evidence and never becomes a transient assistant answer during retry delay.
+ */
+export function createClaudeAcpAnswerPreview(
+  onAnswerDelta: (text: string) => void,
+  secrets: readonly string[],
+): AcpAnswerPreview {
+  const redactor = createStreamingSecretRedactor(secrets);
+  let pending = "";
+  let normalAnswer = false;
+  let suppressTurn = false;
+  const target = CLAUDE_REFRESH_DIAGNOSTIC_PREFIX.toLowerCase();
+
+  const emit = (text: string): void => {
+    const safe = redactor.push(text);
+    if (safe) onAnswerDelta(safe);
+  };
+
+  const observeText = (text: string): void => {
+    if (suppressTurn) return;
+    if (normalAnswer) {
+      emit(text);
+      return;
+    }
+    pending += text;
+    const candidate = pending.trimStart().toLowerCase();
+    if (candidate === target || candidate.startsWith(target)) {
+      suppressTurn = true;
+      pending = "";
+      return;
+    }
+    if (target.startsWith(candidate)) return;
+    normalAnswer = true;
+    emit(pending);
+    pending = "";
+  };
+
+  return {
+    observe(event: AcpRetainedEvent): void {
+      if (event.presentationSuppressed || event.kind !== "session_update" || event.channel !== "live" || !event.notification) return;
+      if (event.acpSessionId && event.notification.sessionId !== event.acpSessionId) return;
+      const update = event.notification.update;
+      if (update.sessionUpdate !== "agent_message_chunk" || update.content.type !== "text") return;
+      observeText(update.content.text);
+    },
+    finish(stopReason: string): void {
+      if (stopReason === "cancelled" || suppressTurn) return;
+      if (!normalAnswer && pending) {
+        normalAnswer = true;
+        emit(pending);
+        pending = "";
+      }
+      const safe = redactor.flush();
+      if (safe) onAnswerDelta(safe);
+    },
+  };
+}
+
+/**
+ * Claude Code can surface its OAuth-refresh lock race as a synthetic assistant
+ * message with a normal ACP terminal result. Convert only a diagnostic-shaped
+ * message that starts with Claude's refresh error into a retryable execution
+ * error; ordinary answers that merely discuss the phrase remain answers.
+ */
+export function detectClaudeAcpTurnError(result: AcpTurnResult): Error | null {
+  const text = result.liveText.trim();
+  if (!text.toLowerCase().startsWith(CLAUDE_REFRESH_DIAGNOSTIC_LEAD)) return null;
+  return isClaudeOAuthRefreshContention(text) ? new Error(text) : null;
+}
+
 const CLAUDE_QUALIFICATION_ENV_KEYS = [
   "CLAUDE_ACP_COMMAND",
   "CLAUDE_ACP_ARGS",
@@ -102,6 +183,7 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   steeringSupported: true,
   presentation: {
     provisionalAnswers: true,
+    createPreview: createClaudeAcpAnswerPreview,
   },
   childEnv: {
     exclusiveKeys: [CLAUDE_DISABLE_BACKGROUND_TASKS_ENV],
@@ -112,4 +194,5 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   qualificationEnvKeys: CLAUDE_QUALIFICATION_ENV_KEYS,
   verifyApiKey: verifyClaudeAcpApiKey,
   sessionSettings,
+  detectTurnError: detectClaudeAcpTurnError,
 };

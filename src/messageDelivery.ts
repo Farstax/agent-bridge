@@ -7,6 +7,7 @@ import { type as eventType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
 import { reduce as reduceEvents } from "./events/reducer.js";
 import { runViewToTelegramText } from "./events/telegramAdapter.js";
+import { buildMessageDeliveryFailureDiagnostic } from "./messageDeliveryFailureDiagnostic.js";
 import {
   documentFallbackEnabled,
   routeNativeLayout,
@@ -641,6 +642,7 @@ export async function sendMessageWithProgress({
 
   let finalDeliveryPreparationFailed = false;
   let finalDeliveryCompleted = false;
+  let executionCompleted = false;
   try {
     let result: any;
     if (typeof execution === "function") {
@@ -648,6 +650,7 @@ export async function sendMessageWithProgress({
     } else {
       result = await execution;
     }
+    executionCompleted = true;
 
     const finalText = result?.text || currentText || "";
     const cliResult = result == null
@@ -686,6 +689,19 @@ export async function sendMessageWithProgress({
     return cliResult;
   } catch (err: any) {
     clearInterval(typingInterval);
+    const diagnostic = buildMessageDeliveryFailureDiagnostic({
+      kind,
+      chatId,
+      body,
+      runId,
+      error: err,
+      boundary: !executionCompleted
+        ? "provider_execution"
+        : finalDeliveryPreparationFailed
+          ? "final_delivery_authority"
+          : "final_delivery",
+    });
+    if (diagnostic) onEvent?.(diagnostic);
     if (!finalDeliveryCompleted) await discardAnswerPreview();
     if (isAborted?.()) {
       await beginProgressCleanup();

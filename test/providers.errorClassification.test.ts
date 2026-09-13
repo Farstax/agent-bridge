@@ -4,6 +4,7 @@ import {
   classifyAnyProviderError,
   classifyProviderError,
   isFallbackEligibleProviderError,
+  isRetryEligibleProviderError,
 } from "../src/providers/errorClassification.js";
 import { isProviderFallbackEligibleError } from "../src/providers/fallbackEligibility.js";
 import { getNextFallbackModel, isCapacityExhaustedError } from "../src/cli.js";
@@ -68,6 +69,16 @@ describe("provider error classification", () => {
     expect(isFallbackEligibleProviderError(classifyAnyProviderError(new Error("MODEL_CAPACITY_EXHAUSTED")))).toBe(true);
     expect(isFallbackEligibleProviderError(classifyAnyProviderError(new Error("Error: unknown model minimax-m2.5")))).toBe(true);
     expect(isProviderFallbackEligibleError(new Error("MODEL_CAPACITY_EXHAUSTED"))).toBe(true);
+  });
+
+  it("marks Claude OAuth refresh contention retry-eligible only on the first attempt", () => {
+    const refreshContention = new Error(
+      "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
+    );
+    expect(isRetryEligibleProviderError("claude", refreshContention, 1)).toBe(true);
+    expect(isRetryEligibleProviderError("claude", refreshContention, 2)).toBe(false);
+    expect(isRetryEligibleProviderError("codex", refreshContention, 1)).toBe(false);
+    expect(isRetryEligibleProviderError("claude", new Error("Authentication required: please log in"), 1)).toBe(false);
   });
 
   describe("ACP Codex structured error.data", () => {
