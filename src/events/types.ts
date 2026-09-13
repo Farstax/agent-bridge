@@ -41,6 +41,21 @@ export interface RunFailedEvent extends BridgeEventBase {
   category?: "cli" | "timeout" | "transport" | "render" | "unknown";
 }
 
+/**
+ * Reducer-inert, bounded diagnostic evidence for an execution/delivery failure.
+ * The user-facing surface may still show only a generic safe error. Later
+ * run.started/terminal events reveal whether fallback/handoff produced a
+ * successor attempt; this event preserves the failed attempt's own cause.
+ */
+export interface RunDiagnosticEvent extends BridgeEventBase {
+  type: "run.diagnostic";
+  boundary: "provider_execution" | "final_delivery_authority" | "final_delivery";
+  errorName: string;
+  message: string;
+  classification: "capacity_exhausted" | "model_unavailable" | "auth_required" | "transient" | "fatal" | "unknown";
+  fallbackEligible: boolean;
+}
+
 export interface RunCancelledEvent extends BridgeEventBase {
   type: "run.cancelled";
   reason: "user" | "shutdown" | "timeout" | "provider";
@@ -69,6 +84,7 @@ export type BridgeEvent =
   | TextDeltaEvent
   | RunCompletedEvent
   | RunFailedEvent
+  | RunDiagnosticEvent
   | RunCancelledEvent
   | AcpEventObservedEvent;
 
@@ -136,6 +152,29 @@ export const type = {
     threadId?: string;
   }): RunFailedEvent {
     return { ...base(fields), type: "run.failed", error: fields.error, category: fields.category };
+  },
+
+  runDiagnostic(fields: {
+    runId: string;
+    bot: BotKind;
+    chatId: string;
+    chatKey: string;
+    boundary: RunDiagnosticEvent["boundary"];
+    errorName: string;
+    message: string;
+    classification: RunDiagnosticEvent["classification"];
+    fallbackEligible: boolean;
+    threadId?: string;
+  }): RunDiagnosticEvent {
+    return {
+      ...base(fields),
+      type: "run.diagnostic",
+      boundary: fields.boundary,
+      errorName: fields.errorName,
+      message: fields.message,
+      classification: fields.classification,
+      fallbackEligible: fields.fallbackEligible,
+    };
   },
 
   runCancelled(fields: {
