@@ -32,7 +32,7 @@ describe("ACP failure diagnostics", () => {
     expect(diagnostic.message).toContain("bridge orchestration exploded");
     expect(diagnostic.message).toContain("provider handoff failed");
     expect(diagnostic.message).not.toContain("secret-diagnostic-key");
-    expect(diagnostic.message).toContain("[REDACTED]");
+    expect(diagnostic.message).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
   });
 
   it("records capacity classification and fallback eligibility", () => {
