@@ -87,7 +87,7 @@ cli_command_version() {
   case "${command}" in
     claude) configured="${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" ;;
     codex) configured="${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" ;;
-    grok) configured="${GROK_ACP_COMMAND:-grok}" ;;
+    grok) configured="${GROK_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/grok}" ;;
     agy) configured="${ANTIGRAVITY_COMMAND:-}" ;;
   esac
   if [[ -n "${configured}" ]]; then
@@ -334,8 +334,8 @@ if [[ "${1:-}" != "--skip-cli-install" ]]; then
     run_as_target_user "${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" --version >/dev/null
   fi
 
-  if command -v "${GROK_ACP_COMMAND:-grok}" >/dev/null 2>&1 || [[ -x "${GROK_ACP_COMMAND:-}" ]]; then
-    run_as_target_user "${GROK_ACP_COMMAND:-grok}" --version >/dev/null
+  if [[ -x "${GROK_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/grok}" ]]; then
+    run_as_target_user "${GROK_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/grok}" --version >/dev/null
   fi
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" && "${AGENT_BRIDGE_SKILLS}" != "none" && "${AGENT_BRIDGE_SKILLS}" != "skip" ]]; then
   install_shared_skills

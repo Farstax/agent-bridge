@@ -28,6 +28,7 @@ import {
 } from "./providers/antigravityRuntime.js";
 import { isCursorRouteable } from "./providers/cursorAvailability.js";
 import { isGrokRouteable } from "./providers/grokAvailability.js";
+import { isAcpBackedBot } from "./providers/registry.js";
 import { normalizeCliArgs } from "./cliArgNormalization.js";
 import { classifyAnyProviderError, classifyProviderError, isFallbackEligibleProviderError } from "./providers/errorClassification.js";
 
@@ -68,7 +69,7 @@ export function extractPromptText(message: TelegramMessage): string | null {
 }
 
 function isAcpConfigKind(kind: string): boolean {
-  return kind === "codex" || kind === "claude";
+  return isAcpBackedBot(kind);
 }
 
 export function buildModelKeyboard(

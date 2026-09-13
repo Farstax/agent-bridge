@@ -22,7 +22,7 @@ describe("loadBotsConfig", () => {
     expect(bots.codex.modelPreference).toEqual([]);
     expect(bots.claude.modelPreference).toEqual([]);
     expect(bots.antigravity.command).toBe("agy");
-    expect(bots.grok.command).toBe("grok");
+    expect(bots.grok.command).toContain("node_modules/.bin/grok");
     expect(bots.cursor.command).toBe("cursor-agent");
   });
 

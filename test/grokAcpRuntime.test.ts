@@ -5,7 +5,7 @@ import { runAcpTurn } from "../src/acp/client.js";
 import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import { grokAcpPolicy } from "../src/providers/grokAcpPolicy.js";
-import { getAcpProviderPolicy, supportsToolFreeMode } from "../src/providers/registry.js";
+import { getAcpProviderPolicy, isAcpBackedBot, supportsToolFreeMode } from "../src/providers/registry.js";
 import type { ProviderInvocationRequest } from "../src/providers/types.js";
 
 function request(overrides: Partial<ProviderInvocationRequest> = {}): ProviderInvocationRequest {
@@ -38,7 +38,7 @@ describe("Grok ACP provider", () => {
     expect(resolveProviderRuntime("grok", { BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge" })).toEqual(expect.objectContaining({
       providerId: "grok",
       transport: "acp-stdio",
-      executable: "grok",
+      executable: "/opt/agent-bridge/node_modules/.bin/grok",
       args: ["agent", "stdio"],
       versionArgs: ["--version"],
       runtimeIdentity: expect.stringMatching(/^acp:grok-build@1\.0\.30:[a-f0-9]{64}$/),
@@ -54,7 +54,7 @@ describe("Grok ACP provider", () => {
       model: null,
     });
     expect(invocation).toEqual({
-      command: "grok",
+      command: expect.stringMatching(/node_modules\/\.bin\/grok$/),
       args: ["agent", "stdio"],
       nativeSessionMode: "fresh",
       prompt: "hello",
@@ -90,6 +90,8 @@ describe("Grok ACP provider", () => {
       { category: "model", explicitValue: "grok-4.5", preferredValues: [] },
     ]);
     expect(supportsToolFreeMode("grok")).toBe(false);
+    expect(isAcpBackedBot("grok")).toBe(true);
+    expect(isAcpBackedBot("cursor")).toBe(false);
     expect(grokAcpPolicy.steeringSupported).toBe(false);
     expect(grokAcpPolicy.authenticateMethodId?.({})).toBe("cached_token");
     expect(grokAcpPolicy.authenticateMethodId?.({ XAI_API_KEY: "xai-test" })).toBeUndefined();

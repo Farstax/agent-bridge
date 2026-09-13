@@ -206,7 +206,7 @@ prompt DISCORD_ALLOWED_USER_IDS       "Discord allowed user IDs (leave blank to 
 prompt DISCORD_GUILD_ID               "Discord guild ID (optional, leave blank for global commands)"
 prompt CODEX_ACP_COMMAND   "Codex ACP command"   "${REPO_DIR}/node_modules/.bin/codex-acp"
 prompt CLAUDE_ACP_COMMAND  "Claude ACP command"  "${REPO_DIR}/node_modules/.bin/claude-agent-acp"
-prompt GROK_ACP_COMMAND    "Grok ACP command"    "$(command -v grok 2>/dev/null || echo grok)"
+prompt GROK_ACP_COMMAND    "Grok ACP command"    "${REPO_DIR}/node_modules/.bin/grok"
 prompt ANTIGRAVITY_COMMAND "Antigravity command" "$(command -v agy    2>/dev/null || true)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""

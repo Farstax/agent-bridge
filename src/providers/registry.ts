@@ -91,6 +91,12 @@ export function getAcpProviderPolicy(id: ProviderId): AcpProviderPolicy | null {
   return ACP_POLICIES[id] ?? null;
 }
 
+/** Bot kinds that execute through the shared ACP runtime. */
+export function isAcpBackedBot(bot: string): boolean {
+  const id = providerIdForBotName(bot);
+  return id != null && getAcpProviderPolicy(id) != null;
+}
+
 /** Apply provider-owned exclusive environment metadata without shared provider-name branches. */
 export function applyProviderChildEnvPolicy(
   id: ProviderId | null,
