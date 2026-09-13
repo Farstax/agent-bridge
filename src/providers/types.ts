@@ -16,13 +16,15 @@ export interface ProviderCapabilities {
   readonly toolFree: boolean;
 }
 
-
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly displayName: string;
-  readonly executable: string;
-  readonly versionArgs: readonly string[];
-  readonly defaultArgs: readonly string[];
+  /** Native-only process identity used by legacy/native launch owners. */
+  readonly executable?: string;
+  /** Native-only version argv. ACP versions come from the resolved release-locked runtime. */
+  readonly versionArgs?: readonly string[];
+  /** Native-only default argv. ACP launch args come from the resolved release-locked runtime. */
+  readonly defaultArgs?: readonly string[];
   readonly capabilities: ProviderCapabilities;
   readonly processWatch?: import("../types.js").CliProcessWatch;
 }
