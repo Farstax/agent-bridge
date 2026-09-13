@@ -376,12 +376,16 @@ if [ "\${1:-}" = --user ]; then shift 2; fi
 if [ "\${1:-}" = -- ]; then shift; fi
 phase=""
 for arg in "$@"; do case "$arg" in inspect|checkpoint|backup|migrate|validate) phase="$arg";; esac; done
+cmd=("$@")
+if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/rollout-db.ts ]]; then
+  cmd=("\${cmd[0]}" "${fixture.root}/rollout-db-bundled.mjs" "\${cmd[@]:3}")
+fi
 if [ -n "\${FAKE_FAIL_PHASE:-}" ] && [ "\${FAKE_FAIL_PHASE:-}" = "$phase" ]; then
-  "$@"
+  "\${cmd[@]}"
   if [ -n "\${FAKE_CORRUPT_DB:-}" ]; then printf 'corrupt' > "$FAKE_CORRUPT_DB"; fi
   exit 70
 fi
-exec "$@"
+exec "\${cmd[@]}"
 `);
   executable(join(bin, "journalctl"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -418,6 +422,7 @@ if [ "\${FAKE_NO_JOURNAL_ENTRIES:-}" = 1 ]; then echo '-- No entries --'; fi
 
 interface SharedTemplate {
   templateDir: string;
+  bundledRolloutDb: string;
   expectedCommit: string;
   previousCommit: string;
 }
@@ -453,7 +458,18 @@ function getSharedTemplate(): SharedTemplate {
   execFileSync("git", ["-C", project, "add", "RELEASE_MARKER"]);
   execFileSync("git", ["-C", project, "commit", "-qm", "fixture (target release)"]);
   const expectedCommit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  sharedTemplate = { templateDir: project, expectedCommit, previousCommit };
+  symlinkSync(nodeModules, join(templateRoot, "node_modules"));
+  const bundledRolloutDb = join(templateRoot, "rollout-db-bundled.mjs");
+  execFileSync("./node_modules/.bin/esbuild", [
+    join(project, "scripts", "rollout-db.ts"),
+    "--bundle",
+    "--platform=node",
+    "--format=esm",
+    "--packages=external",
+    `--outfile=${bundledRolloutDb}`,
+  ]);
+
+  sharedTemplate = { templateDir: project, bundledRolloutDb, expectedCommit, previousCommit };
   process.on("exit", () => {
     try {
       execFileSync("chmod", ["-R", "u+w", templateRoot], { stdio: "ignore" });
@@ -507,6 +523,8 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   execFileSync("cp", ["-a", `${template.templateDir}/.`, project]);
   const expectedCommit = template.expectedCommit;
   const previousCommit = template.previousCommit;
+  symlinkSync(nodeModules, join(root, "node_modules"));
+  symlinkSync(template.bundledRolloutDb, join(root, "rollout-db-bundled.mjs"));
 
   const dbPaths = Array.from({ length: 4 }, (_, index) => join(dbDir, `bridge-${index}.sqlite`));
   const emptyTemplate = getEmptyLegacyDbTemplate();
