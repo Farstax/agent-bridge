@@ -1,5 +1,5 @@
 import type { CliOptions } from "../types.js";
-import { type as bridgeEventType, type RunDiagnosticEvent } from "../events/types.js";
+import { type as bridgeEventType, type BotKind, type RunDiagnosticEvent } from "../events/types.js";
 import { redactProviderApiKeySecrets } from "./apiKeyAuth.js";
 import {
   classifyProviderError,
@@ -17,6 +17,10 @@ type ErrorWithData = Error & {
 
 function normalizeError(error: unknown): ErrorWithData {
   return error instanceof Error ? error as ErrorWithData : new Error(String(error));
+}
+
+function botKindForProvider(providerId: ProviderId): BotKind {
+  return providerId === "agy" ? "antigravity" : providerId;
 }
 
 function structuredProviderMessage(error: ErrorWithData): string | null {
@@ -46,16 +50,13 @@ function boundedDiagnosticMessage(error: ErrorWithData, env: NodeJS.ProcessEnv):
   return redactProviderApiKeySecrets(bounded, env);
 }
 
-/**
- * Durable, reducer-inert evidence for one failed ACP provider attempt. This is
- * deliberately separate from user presentation: Telegram/Discord may still
- * show only a safe generic error while inspection retains the concrete cause.
- */
+/** Durable, reducer-inert evidence for one failed ACP provider attempt. */
 export function buildAcpFailureDiagnosticEvent(
   providerId: ProviderId,
   error: unknown,
   eventContext: NonNullable<CliOptions["eventContext"]>,
   env: NodeJS.ProcessEnv,
+  attemptState: { attempt?: number; successorStarted?: boolean } = {},
 ): RunDiagnosticEvent {
   const normalized = normalizeError(error);
   const classification = classifyProviderError(providerId, normalized);
@@ -66,6 +67,10 @@ export function buildAcpFailureDiagnosticEvent(
     chatKey: eventContext.chatKey,
     threadId: eventContext.threadId,
     boundary: "provider_execution",
+    provider: botKindForProvider(providerId),
+    executionSurface: "acp",
+    attempt: attemptState.attempt ?? 1,
+    successorStarted: attemptState.successorStarted ?? false,
     errorName: normalized.name,
     message: boundedDiagnosticMessage(normalized, env),
     classification: classification.kind,
