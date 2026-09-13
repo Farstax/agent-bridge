@@ -42,22 +42,22 @@ describe("cursor provider registration", () => {
 
   it("stays opt-in and is absent from the production default interactive fallback", () => {
     expect(interactiveChainKinds()).toContain("cursor");
-    const productionDefault = ["codex", "claude", "grok", "antigravity"] as const;
+    const productionDefault = ["codex", "claude", "antigravity", "grok"] as const;
     expect(productionDefault).not.toContain("cursor");
     expect(parseCliChain(undefined, {
       allowed: interactiveChainKinds(),
       fallback: productionDefault,
-    })).toEqual(["codex", "claude", "grok", "antigravity"]);
+    })).toEqual(["codex", "claude", "antigravity", "grok"]);
   });
 
   it("is selectable only through an explicit chain override", () => {
     expect(parseCliChain("cursor", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "grok", "antigravity"],
+      fallback: ["codex", "claude", "antigravity", "grok"],
     })).toEqual(["cursor"]);
     expect(parseCliChain("codex,cursor", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "grok", "antigravity"],
+      fallback: ["codex", "claude", "antigravity", "grok"],
     })).toEqual(["codex", "cursor"]);
   });
 
