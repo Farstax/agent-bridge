@@ -31,10 +31,6 @@ export interface AcpSessionConfigPreferences {
   readonly thoughtLevel?: readonly string[];
 }
 
-type AcpSessionConfigPreferenceInput =
-  | AcpSessionConfigPreferences
-  | Readonly<Record<string, string | undefined>>;
-
 export interface AcpSessionConfigSelection {
   readonly configId: string;
   readonly value: string;
@@ -139,28 +135,6 @@ export function planAcpSessionConfig(
   return { selections, stale };
 }
 
-function splitPreference(raw: string | undefined): string[] {
-  return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
-}
-
-function normalizePreferences(
-  providerId: string,
-  input: AcpSessionConfigPreferenceInput,
-): AcpSessionConfigPreferences {
-  const direct = input as AcpSessionConfigPreferences;
-  if (Array.isArray(direct.model) || Array.isArray(direct.thoughtLevel)) return direct;
-
-  // Backwards-compatible generic convention for direct planner callers. Runtime
-  // policy owns these environment lookups; the shared planner has no provider-name branches.
-  const env = input as Readonly<Record<string, string | undefined>>;
-  const prefix = providerId.toUpperCase();
-  const effort = env[`${prefix}_EFFORT`]?.trim();
-  return {
-    model: splitPreference(env[`${prefix}_MODEL_PREFERENCE`]),
-    thoughtLevel: effort ? [effort] : [],
-  };
-}
-
 /** Build provider-neutral semantic intents from policy-owned preference data. */
 export function acpSessionConfigIntents(
   providerId: string,
@@ -169,9 +143,8 @@ export function acpSessionConfigIntents(
     readonly modelRequired?: boolean;
     readonly effort: string | null;
   },
-  preferenceInput: AcpSessionConfigPreferenceInput = {},
+  preferences: AcpSessionConfigPreferences = {},
 ): readonly AcpSessionConfigIntent[] {
-  const preferences = normalizePreferences(providerId, preferenceInput);
   const intents: AcpSessionConfigIntent[] = [];
   // Required caller targets (notably Advisor provider:model) are explicit
   // authority and must not be shadowed by the interactive user's default choice.

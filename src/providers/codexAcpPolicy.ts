@@ -171,6 +171,7 @@ export const codexAcpPolicy: AcpProviderPolicy = {
   resolveExecutable: resolveCodexAcpCommand,
   resolveArgs: (env) => resolveCodexAcpArgs(env),
   qualificationEnvKeys: CODEX_QUALIFICATION_ENV_KEYS,
+  verifyApiKey: verifyCodexAcpApiKey,
   createActivityProjector: createCodexAcpRunActivityProjector,
   buildChildEnv(request, env) {
     return {

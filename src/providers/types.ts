@@ -13,7 +13,8 @@ export interface ProviderCapabilities {
   readonly interactive: boolean;
   readonly fallbackTarget: boolean;
   /** Supports buildCliInvocation's toolMode: "none" (tool-free mode). */
-  readonly toolFree: boolean;
+  /** Native-only capability; migrated ACP providers own this in AcpProviderPolicy. */
+  readonly toolFree?: boolean;
 }
 
 export interface ProviderAdapter {

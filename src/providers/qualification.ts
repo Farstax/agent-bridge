@@ -20,7 +20,6 @@ export const PROVIDER_CONTRACT_VERSION = 6;
 /** Qualification uses the resolved runtime capability rather than provider-name branches. */
 function qualificationToolMode(
   providerId: ProviderId,
-  _adapter: { capabilities: { toolFree: boolean } },
   env: QualificationEnv,
 ): "default" | "none" {
   return resolveProviderRuntime(providerId, env).toolFree ? "none" : "default";
@@ -526,7 +525,7 @@ async function executeNativeQualificationCheck({
     sessionId,
     executionMode,
     homeDir,
-    toolMode: qualificationToolMode(providerId, adapter, runtimeEnv),
+    toolMode: qualificationToolMode(providerId, runtimeEnv),
   });
 
   if (sessionId && invocation.nativeSessionMode !== "resume") {
@@ -556,7 +555,7 @@ async function executeNativeQualificationCheck({
           attachments: [],
           outputDir: null,
           effort: null,
-          toolMode: qualificationToolMode(providerId, adapter, runtimeEnv),
+          toolMode: qualificationToolMode(providerId, runtimeEnv),
         },
         { conversationId: `qualify:${providerId}`, runId: randomUUID() },
       );

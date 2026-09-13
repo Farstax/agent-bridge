@@ -28,10 +28,23 @@ describe("migrated ACP provider ownership", () => {
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const verification = source.slice(start, end);
-    expect(verification).toContain("getAcpProviderApiKeyProbe(provider)");
+    expect(verification).toContain("getAcpProviderPolicy(provider)?.verifyApiKey");
     expect(verification).not.toMatch(/\b(?:codex|claude)\b/);
     expect(source).not.toMatch(/(?:codex|claude)AcpProbe/);
     expect(source).not.toContain("CodexAcpApiKeyProbeExecutor");
+
+    const registry = readFileSync("src/providers/registry.ts", "utf8");
+    expect(registry).not.toContain("ACP_API_KEY_PROBES");
+    expect(registry).not.toContain("getAcpProviderApiKeyProbe");
+  });
+
+  it("keeps migrated capability authority in ACP policy only", () => {
+    const registry = readFileSync("src/providers/registry.ts", "utf8");
+    const migratedAdapters = registry.slice(
+      registry.indexOf("codex:"),
+      registry.indexOf("agy:"),
+    );
+    expect(migratedAdapters).not.toContain("toolFree");
   });
 
   it("keeps shared qualification diagnostics provider-neutral", () => {

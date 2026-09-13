@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
-import { getAcpProviderApiKeyProbe } from "./registry.js";
+import { getAcpProviderPolicy } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -25,30 +25,27 @@ export interface ProviderApiKeyAuthCapability {
   readonly notes: string;
 }
 
-export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAuthCapability>> = {
+type ProviderApiKeyAuthDefinition = Omit<ProviderApiKeyAuthCapability, "verification">;
+
+export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAuthDefinition>> = {
   codex: {
     envVar: "CODEX_API_KEY",
-    verification: "bounded_acp_turn",
     notes: "Codex verifies through the managed ACP adapter's authenticate + bounded prompt path.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
-    verification: "bounded_acp_turn",
     notes: "Claude verifies the key through the selected managed ACP adapter with an isolated bounded prompt.",
   },
   agy: {
     envVar: "GEMINI_API_KEY",
-    verification: "bounded_native_turn",
     notes: "Agy requires modelProvider=gemini while the key is used; Bridge applies that setting only around the run.",
   },
   grok: {
     envVar: "XAI_API_KEY",
-    verification: "bounded_native_turn",
     notes: "Grok Build supports XAI_API_KEY for headless use; Bridge verifies it without account state.",
   },
   cursor: {
     envVar: "CURSOR_API_KEY",
-    verification: "bounded_native_turn",
     notes: "Cursor Agent supports CURSOR_API_KEY for headless automation.",
   },
 };
@@ -110,7 +107,13 @@ export interface VerifyProviderApiKeyOptions {
 
 export function getProviderApiKeyCapability(provider: string): ProviderApiKeyAuthCapability | null {
   if (!Object.prototype.hasOwnProperty.call(PROVIDER_API_KEY_AUTH, provider)) return null;
-  return PROVIDER_API_KEY_AUTH[provider as ProviderId];
+  const providerId = provider as ProviderId;
+  return {
+    ...PROVIDER_API_KEY_AUTH[providerId],
+    verification: getAcpProviderPolicy(providerId)?.verifyApiKey
+      ? "bounded_acp_turn"
+      : "bounded_native_turn",
+  };
 }
 
 export function getConfiguredProviderApiKey(provider: ProviderId, env: Env = process.env): string | null {
@@ -374,7 +377,7 @@ export async function verifyProviderApiKey(
   const verification = (async () => {
     let verified = false;
     try {
-      const acpProbe = getAcpProviderApiKeyProbe(provider);
+      const acpProbe = getAcpProviderPolicy(provider)?.verifyApiKey;
       if (acpProbe) {
         const probeEnv = buildProbeEnv(provider, env);
         if (options.acpProbe) await options.acpProbe(provider, probeEnv);

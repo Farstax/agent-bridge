@@ -33,7 +33,7 @@ describe("provider registry", () => {
     expect(adapter.defaultArgs).toBeUndefined();
     expect(adapter.versionArgs).toBeUndefined();
     expect(adapter.capabilities.interactive).toBe(true);
-    expect(adapter.capabilities.toolFree).toBe(false);
+    expect(adapter.capabilities.toolFree).toBeUndefined();
   });
 
   it("returns the claude adapter", () => {
@@ -43,6 +43,7 @@ describe("provider registry", () => {
     expect(adapter.executable).toBeUndefined();
     expect(adapter.defaultArgs).toBeUndefined();
     expect(adapter.versionArgs).toBeUndefined();
+    expect(adapter.capabilities.toolFree).toBeUndefined();
   });
 
   it("returns the agy adapter", () => {

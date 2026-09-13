@@ -99,5 +99,6 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   resolveExecutable: resolveClaudeAcpCommand,
   resolveArgs: (env) => resolveClaudeAcpArgs(env),
   qualificationEnvKeys: CLAUDE_QUALIFICATION_ENV_KEYS,
+  verifyApiKey: verifyClaudeAcpApiKey,
   sessionSettings,
 };

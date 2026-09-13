@@ -87,6 +87,10 @@ export interface AcpProviderPolicy {
   readonly authenticateMethodId?: (
     env: Record<string, string | undefined>,
   ) => string | undefined;
+  /** Provider-owned bounded API-key verification through the selected ACP adapter. */
+  readonly verifyApiKey?: (
+    env: Record<string, string | undefined>,
+  ) => Promise<void>;
   /** Provider extension for structured run activity; generic ACP lifecycle remains here. */
   readonly createActivityProjector?: () => AcpActivityProjector;
   readonly selectAnswer?: (
@@ -220,7 +224,12 @@ export function resolveProviderRuntime(
     });
   }
   const adapter = getProviderAdapter(providerId);
-  if (!adapter.executable || !adapter.versionArgs || !adapter.defaultArgs) {
+  if (
+    !adapter.executable
+    || !adapter.versionArgs
+    || !adapter.defaultArgs
+    || adapter.capabilities.toolFree === undefined
+  ) {
     throw new Error(`Native provider ${providerId} is missing launch metadata`);
   }
   return {
