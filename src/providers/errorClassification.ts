@@ -1,5 +1,7 @@
 import { PROVIDER_IDS, type ProviderErrorClassification, type ProviderId } from "./types.js";
 
+const CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN = /another Claude Code process is refreshing it or exited mid-refresh/i;
+
 const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
   codex: [
     /MODEL_CAPACITY_EXHAUSTED/,
@@ -74,6 +76,7 @@ const MODEL_UNAVAILABLE_PATTERNS: readonly RegExp[] = [
 ];
 
 const TRANSIENT_PATTERNS: readonly RegExp[] = [
+  CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN,
   /ECONNRESET|ECONNREFUSED|EPIPE/i,
   /socket hang up/i,
   /temporar(?:y|ily)/i,
@@ -89,6 +92,15 @@ const FATAL_PATTERNS: readonly RegExp[] = [
 
 function matchReason(message: string, patterns: readonly RegExp[]): string | null {
   return patterns.find(pattern => pattern.test(message))?.source ?? null;
+}
+
+function errorMessage(error: Error | string): string {
+  return typeof error === "string" ? error : error.message;
+}
+
+/** Provider-owned OAuth refresh remains in Claude; Bridge only recognizes this exact retryable contention shape. */
+export function isClaudeOAuthRefreshContention(error: Error | string): boolean {
+  return CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN.test(errorMessage(error));
 }
 
 /**
