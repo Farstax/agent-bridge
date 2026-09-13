@@ -63,7 +63,8 @@ export async function runWithAcpTransientRetry<T>(
       await options.onRetryDecision?.(normalized, false);
       throw new AcpTransientRetryCancelledError();
     }
+    const successor = operation();
     await options.onRetryDecision?.(normalized, true);
-    return operation();
+    return successor;
   }
 }
