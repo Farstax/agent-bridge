@@ -90,7 +90,7 @@ export interface AcpProviderPolicy {
   ) => AcpProviderSessionSettings;
   /** Runtime-affecting env keys that qualification must compare with the active process. */
   readonly qualificationEnvKeys?: readonly string[];
-  /** Standard ACP authenticate method selected from workspace-local policy. */
+  /** Standard ACP authentication method selected from workspace-local policy. */
   readonly authenticateMethodId?: (
     env: Record<string, string | undefined>,
   ) => string | undefined;
@@ -534,16 +534,35 @@ export async function runResolvedAcpProviderTurn(
   };
 
   let result: AcpTurnResult;
+  let currentAttempt = 1;
+  let priorAttemptRecorded = false;
   try {
-    result = await runWithAcpTransientRetry(providerId as ProviderId, runTurn, { abortRequested });
+    result = await runWithAcpTransientRetry(providerId as ProviderId, runTurn, {
+      abortRequested,
+      onRetryDecision: (error, successorStarted) => {
+        priorAttemptRecorded = true;
+        if (eventContext && onEvent) {
+          const redacted = redactAcpFailure(error, redactionEnv);
+          onEvent(buildAcpFailureDiagnosticEvent(
+            providerId as ProviderId,
+            redacted,
+            eventContext,
+            redactionEnv,
+            { attempt: 1, successorStarted },
+          ));
+        }
+        if (successorStarted) currentAttempt = 2;
+      },
+    });
   } catch (error) {
     const redacted = redactAcpFailure(error, redactionEnv);
-    if (eventContext && onEvent) {
+    if (eventContext && onEvent && !(priorAttemptRecorded && currentAttempt === 1)) {
       onEvent(buildAcpFailureDiagnosticEvent(
         providerId as ProviderId,
         redacted,
         eventContext,
         redactionEnv,
+        { attempt: currentAttempt, successorStarted: false },
       ));
     }
     throw redacted;
