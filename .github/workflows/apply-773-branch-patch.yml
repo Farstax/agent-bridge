@@ -32,3 +32,4 @@ jobs:
           git add -A
           git commit -m "fix: replace sticky context suppression with invocation modes (#773)"
           git push origin HEAD:fix/773-explicit-context-modes
+# focused verification rerun
