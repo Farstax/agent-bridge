@@ -227,3 +227,12 @@ export function classifyAnyProviderError(error: Error | string): ProviderErrorCl
 export function isFallbackEligibleProviderError(classification: ProviderErrorClassification): boolean {
   return classification.kind === "capacity_exhausted" || classification.kind === "model_unavailable";
 }
+
+export function isRetryEligibleProviderError(
+  providerId: ProviderId,
+  error: Error | string,
+  attempt = 1,
+): boolean {
+  return attempt === 1 && providerId === "claude" && isClaudeOAuthRefreshContention(error);
+}
+

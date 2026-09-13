@@ -53,6 +53,7 @@ export interface RunDiagnosticEvent extends BridgeEventBase {
   executionSurface: "acp" | "message_delivery";
   attempt: number;
   successorStarted: boolean;
+  retryEligible: boolean;
   errorName: string;
   message: string;
   classification: "capacity_exhausted" | "model_unavailable" | "auth_required" | "transient" | "fatal" | "unknown";
@@ -167,6 +168,7 @@ export const type = {
     executionSurface: RunDiagnosticEvent["executionSurface"];
     attempt: number;
     successorStarted: boolean;
+    retryEligible: boolean;
     errorName: string;
     message: string;
     classification: RunDiagnosticEvent["classification"];
@@ -181,6 +183,7 @@ export const type = {
       executionSurface: fields.executionSurface,
       attempt: fields.attempt,
       successorStarted: fields.successorStarted,
+      retryEligible: fields.retryEligible,
       errorName: fields.errorName,
       message: fields.message,
       classification: fields.classification,

@@ -4,6 +4,7 @@ import { redactProviderApiKeySecrets } from "./apiKeyAuth.js";
 import {
   classifyProviderError,
   isFallbackEligibleProviderError,
+  isRetryEligibleProviderError,
 } from "./errorClassification.js";
 import type { ProviderId } from "./types.js";
 
@@ -61,11 +62,14 @@ export function buildAcpFailureDiagnosticEvent(
   error: unknown,
   eventContext: NonNullable<CliOptions["eventContext"]>,
   env: NodeJS.ProcessEnv,
-  attemptState: { attempt?: number; successorStarted?: boolean } = {},
+  attemptState: { attempt?: number; successorStarted?: boolean; retryEligible?: boolean } = {},
 ): RunDiagnosticEvent {
   const normalized = normalizeError(error);
   if (error && typeof error === "object") diagnosedAcpFailures.add(error as object);
   const classification = classifyProviderError(providerId, normalized);
+  const attempt = attemptState.attempt ?? 1;
+  const retryEligible = attemptState.retryEligible
+    ?? isRetryEligibleProviderError(providerId, normalized, attempt);
   return bridgeEventType.runDiagnostic({
     runId: eventContext.runId,
     bot: eventContext.bot,
@@ -75,8 +79,9 @@ export function buildAcpFailureDiagnosticEvent(
     boundary: "provider_execution",
     provider: botKindForProvider(providerId),
     executionSurface: "acp",
-    attempt: attemptState.attempt ?? 1,
+    attempt,
     successorStarted: attemptState.successorStarted ?? false,
+    retryEligible,
     errorName: normalized.name,
     message: boundedDiagnosticMessage(normalized, env),
     classification: classification.kind,

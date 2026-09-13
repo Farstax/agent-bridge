@@ -30,6 +30,7 @@ describe("ACP failure diagnostics", () => {
       executionSurface: "acp",
       attempt: 1,
       successorStarted: false,
+      retryEligible: false,
       classification: "unknown",
       fallbackEligible: false,
     });
@@ -53,6 +54,25 @@ describe("ACP failure diagnostics", () => {
       executionSurface: "acp",
       attempt: 1,
       successorStarted: true,
+      retryEligible: true,
+      classification: "transient",
+      fallbackEligible: false,
+    });
+
+    const cancelledDiagnostic = buildAcpFailureDiagnosticEvent(
+      "claude",
+      new Error("Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh."),
+      { ...eventContext, bot: "claude" },
+      {},
+      { attempt: 1, successorStarted: false },
+    );
+
+    expect(cancelledDiagnostic).toMatchObject({
+      provider: "claude",
+      executionSurface: "acp",
+      attempt: 1,
+      successorStarted: false,
+      retryEligible: true,
       classification: "transient",
       fallbackEligible: false,
     });
@@ -70,6 +90,7 @@ describe("ACP failure diagnostics", () => {
       type: "run.diagnostic",
       classification: "capacity_exhausted",
       fallbackEligible: true,
+      retryEligible: false,
     });
   });
 

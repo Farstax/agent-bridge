@@ -53,6 +53,7 @@ describe("interactive failure diagnostics", () => {
         executionSurface: "message_delivery",
         attempt: 1,
         successorStarted: false,
+        retryEligible: false,
         classification: "unknown",
         fallbackEligible: false,
       });

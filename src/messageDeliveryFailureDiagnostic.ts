@@ -97,6 +97,7 @@ export function buildMessageDeliveryFailureDiagnostic({
     executionSurface: "message_delivery",
     attempt: 1,
     successorStarted: false,
+    retryEligible: false,
     errorName: normalized.name,
     message: boundedDiagnosticMessage(normalized, env),
     classification: classification.kind,

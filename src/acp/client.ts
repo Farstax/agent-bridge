@@ -149,8 +149,16 @@ function systemErrorUpdate(notification: SessionNotification): boolean {
   const update = notification.update as unknown as {
     sessionUpdate?: string;
     threadStatus?: { type?: string };
+    _meta?: {
+      codex?: { threadStatus?: { type?: string } };
+      threadStatus?: { type?: string };
+    };
   };
-  return update.sessionUpdate === "session_info_update" && update.threadStatus?.type === "systemError";
+  if (update.sessionUpdate !== "session_info_update") return false;
+  const threadStatusType = update.threadStatus?.type
+    ?? update._meta?.codex?.threadStatus?.type
+    ?? update._meta?.threadStatus?.type;
+  return threadStatusType === "systemError";
 }
 
 function systemErrorDiagnostic(
@@ -318,8 +326,11 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   };
 
   const clientApp = acp.client({ name: "agent-bridge" })
-    .onNotification(acp.methods.client.session.update, (ctx) => {
-      const observed = gate.observe(ctx.params);
+    .onNotification(
+      acp.methods.client.session.update,
+      { parse: (params) => params as SessionNotification },
+      (ctx) => {
+        const observed = gate.observe(ctx.params);
       updates.push(observed);
       const isRootLive = observed.channel === "live"
         && Boolean(currentAcpSessionId)

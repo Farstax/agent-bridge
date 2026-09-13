@@ -548,7 +548,7 @@ export async function runResolvedAcpProviderTurn(
             redacted,
             eventContext,
             redactionEnv,
-            { attempt: 1, successorStarted },
+            { attempt: 1, successorStarted, retryEligible: true },
           ));
         }
         if (successorStarted) currentAttempt = 2;
@@ -562,7 +562,7 @@ export async function runResolvedAcpProviderTurn(
         redacted,
         eventContext,
         redactionEnv,
-        { attempt: currentAttempt, successorStarted: false },
+        { attempt: currentAttempt, successorStarted: false, retryEligible: false },
       ));
     }
     throw redacted;

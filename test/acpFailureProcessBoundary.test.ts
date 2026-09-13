@@ -106,6 +106,7 @@ describe("ACP failure process boundary", () => {
         executionSurface: "acp",
         attempt: 1,
         successorStarted: false,
+        retryEligible: false,
         classification: "capacity_exhausted",
         fallbackEligible: true,
       });
