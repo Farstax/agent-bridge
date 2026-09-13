@@ -18,6 +18,7 @@ const REPOSITORY_GROUNDING_APPEND = [
 ].join(" ");
 const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const CLAUDE_REFRESH_DIAGNOSTIC_PREFIX = `Failed to refresh OAuth token: ${CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER}`;
+const CLAUDE_REFRESH_DIAGNOSTIC_LEAD = "failed to refresh oauth token:";
 
 function splitPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
@@ -112,12 +113,12 @@ export function createClaudeAcpAnswerPreview(
     }
     pending += text;
     const candidate = pending.trimStart().toLowerCase();
-    if (target.startsWith(candidate)) return;
-    if (candidate.startsWith(target)) {
+    if (candidate === target || candidate.startsWith(target)) {
       suppressTurn = true;
       pending = "";
       return;
     }
+    if (target.startsWith(candidate)) return;
     normalAnswer = true;
     emit(pending);
     pending = "";
@@ -146,11 +147,13 @@ export function createClaudeAcpAnswerPreview(
 
 /**
  * Claude Code can surface its OAuth-refresh lock race as a synthetic assistant
- * message with a normal ACP terminal result. Convert only that exact provider
- * diagnostic into an execution error so the shared bounded retry can own it.
+ * message with a normal ACP terminal result. Convert only a diagnostic-shaped
+ * message that starts with Claude's refresh error into a retryable execution
+ * error; ordinary answers that merely discuss the phrase remain answers.
  */
 export function detectClaudeAcpTurnError(result: AcpTurnResult): Error | null {
   const text = result.liveText.trim();
+  if (!text.toLowerCase().startsWith(CLAUDE_REFRESH_DIAGNOSTIC_LEAD)) return null;
   return isClaudeOAuthRefreshContention(text) ? new Error(text) : null;
 }
 
