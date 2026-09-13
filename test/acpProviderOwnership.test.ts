@@ -30,6 +30,8 @@ describe("migrated ACP provider ownership", () => {
     const verification = source.slice(start, end);
     expect(verification).toContain("getAcpProviderApiKeyProbe(provider)");
     expect(verification).not.toMatch(/\b(?:codex|claude)\b/);
+    expect(source).not.toMatch(/(?:codex|claude)AcpProbe/);
+    expect(source).not.toContain("CodexAcpApiKeyProbeExecutor");
   });
 
   it("keeps shared qualification diagnostics provider-neutral", () => {

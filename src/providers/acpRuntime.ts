@@ -220,6 +220,9 @@ export function resolveProviderRuntime(
     });
   }
   const adapter = getProviderAdapter(providerId);
+  if (!adapter.executable || !adapter.versionArgs || !adapter.defaultArgs) {
+    throw new Error(`Native provider ${providerId} is missing launch metadata`);
+  }
   return {
     providerId,
     transport: "oneshot",

@@ -26,11 +26,6 @@ export function initialAgentMode(request: Pick<ProviderInvocationRequest, "execu
   return "read-only";
 }
 
-/** @deprecated Model/effort configuration is negotiated through ACP session config options. */
-export function codexAcpConfig(_request: Pick<ProviderInvocationRequest, "model" | "effort">): Record<string, unknown> {
-  return {};
-}
-
 /** Codex ACP reads CODEX_API_KEY only during authenticate({ methodId: "api-key" }). */
 export function codexAcpChildAuthEnv(
   env: Record<string, string | undefined> = process.env,

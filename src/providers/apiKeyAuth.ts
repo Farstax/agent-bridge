@@ -95,18 +95,16 @@ export type ProviderApiKeyProbeExecutor = (
   options: ProbeExecOptions,
 ) => Promise<unknown>;
 
-export type AcpApiKeyProbeExecutor = (env: NodeJS.ProcessEnv) => Promise<void>;
-export type CodexAcpApiKeyProbeExecutor = AcpApiKeyProbeExecutor;
+export type AcpApiKeyProbeExecutor = (
+  provider: ProviderId,
+  env: NodeJS.ProcessEnv,
+) => Promise<void>;
 
 export interface VerifyProviderApiKeyOptions {
   env?: Env;
   execFile?: ProviderApiKeyProbeExecutor;
   /** Generic test seam for ACP-backed providers. Production uses registered provider policy. */
   acpProbe?: AcpApiKeyProbeExecutor;
-  /** @deprecated Use acpProbe. Retained only for source compatibility during subtraction. */
-  codexAcpProbe?: CodexAcpApiKeyProbeExecutor;
-  /** @deprecated Use acpProbe. Retained only for source compatibility during subtraction. */
-  claudeAcpProbe?: AcpApiKeyProbeExecutor;
   useCache?: boolean;
 }
 
@@ -353,14 +351,6 @@ async function runNativeProbe(
   }
 }
 
-function injectedAcpProbe(
-  provider: ProviderId,
-  options: VerifyProviderApiKeyOptions,
-): AcpApiKeyProbeExecutor | undefined {
-  if (options.acpProbe) return options.acpProbe;
-  return (options as unknown as Record<string, AcpApiKeyProbeExecutor | undefined>)[`${provider}AcpProbe`];
-}
-
 export async function verifyProviderApiKey(
   provider: ProviderId,
   options: VerifyProviderApiKeyOptions = {},
@@ -386,7 +376,9 @@ export async function verifyProviderApiKey(
     try {
       const acpProbe = getAcpProviderApiKeyProbe(provider);
       if (acpProbe) {
-        await (injectedAcpProbe(provider, options) ?? acpProbe)(buildProbeEnv(provider, env));
+        const probeEnv = buildProbeEnv(provider, env);
+        if (options.acpProbe) await options.acpProbe(provider, probeEnv);
+        else await acpProbe(probeEnv);
       } else {
         await runNativeProbe(provider, env, options.execFile ?? defaultProbeExecutor);
       }

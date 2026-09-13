@@ -9,7 +9,7 @@ import {
   isProviderApiKeyVerified,
   verifyProviderApiKey,
 } from "../src/providers/apiKeyAuth.js";
-import { runCodexAcpApiKeyProbe } from "../src/providers/codexAcpAuthProbe.js";
+import { verifyCodexAcpApiKey } from "../src/providers/codexAcpPolicy.js";
 import { qualifyProvider } from "../src/providers/qualification.js";
 
 const savedCommand = process.env.CODEX_ACP_COMMAND;
@@ -42,7 +42,7 @@ describe("Codex ACP auth boundary", () => {
     await expect(verifyProviderApiKey("codex", {
       env,
       execFile: legacyProbe,
-      codexAcpProbe: acpProbe,
+      acpProbe: async (_provider, candidateEnv) => acpProbe(candidateEnv),
     })).resolves.toBe(true);
     expect(acpProbe).toHaveBeenCalledTimes(1);
     expect(legacyProbe).not.toHaveBeenCalled();
@@ -57,7 +57,10 @@ describe("Codex ACP auth boundary", () => {
     };
     const acpProbe = vi.fn(async () => { throw new Error("authentication failed"); });
 
-    await expect(verifyProviderApiKey("codex", { env, codexAcpProbe: acpProbe })).resolves.toBe(false);
+    await expect(verifyProviderApiKey("codex", {
+      env,
+      acpProbe: async (_provider, candidateEnv) => acpProbe(candidateEnv),
+    })).resolves.toBe(false);
     expect(isProviderApiKeyVerified("codex", env)).toBe(false);
     expect(filterProviderCredentialEnv("codex", env).CODEX_API_KEY).toBeUndefined();
   });
@@ -70,8 +73,8 @@ describe("Codex ACP auth boundary", () => {
       CODEX_ACP_ARGS: `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`,
     };
 
-    await expect(runCodexAcpApiKeyProbe({ ...baseEnv, CODEX_API_KEY: "valid-acp-key" })).resolves.toBeUndefined();
-    await expect(runCodexAcpApiKeyProbe({ ...baseEnv, CODEX_API_KEY: "bad-acp-key" })).rejects.toThrow();
+    await expect(verifyCodexAcpApiKey({ ...baseEnv, CODEX_API_KEY: "valid-acp-key" })).resolves.toBeUndefined();
+    await expect(verifyCodexAcpApiKey({ ...baseEnv, CODEX_API_KEY: "bad-acp-key" })).rejects.toThrow();
   }, 15_000);
 });
 

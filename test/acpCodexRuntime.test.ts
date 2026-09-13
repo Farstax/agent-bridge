@@ -558,7 +558,7 @@ describe("Codex ACP supervised stdio turn", () => {
     const apiKey = "codex-acp-secret-do-not-leak";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
-    await verifyProviderApiKey("codex", { env: { ...process.env, CODEX_API_KEY: apiKey }, codexAcpProbe: async () => undefined });
+    await verifyProviderApiKey("codex", { env: { ...process.env, CODEX_API_KEY: apiKey }, acpProbe: async () => undefined });
     const progress: string[] = [];
     try {
       const result = await runTurn({
@@ -582,7 +582,7 @@ describe("Codex ACP supervised stdio turn", () => {
     const apiKey = "codex-acp-error-secret-do-not-leak";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
-    await verifyProviderApiKey("codex", { env: { ...process.env, CODEX_API_KEY: apiKey }, codexAcpProbe: async () => undefined });
+    await verifyProviderApiKey("codex", { env: { ...process.env, CODEX_API_KEY: apiKey }, acpProbe: async () => undefined });
     try {
       let caught: (Error & { data?: { additionalDetails?: string } }) | undefined;
       try {
