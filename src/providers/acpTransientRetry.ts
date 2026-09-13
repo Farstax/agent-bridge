@@ -32,9 +32,8 @@ async function defaultWait(delayMs: number, abortRequested: () => boolean): Prom
 
 /**
  * Retry exactly one Claude ACP attempt when Claude itself reports the shared
- * OAuth-refresh lock race. The delay follows Claude's own "retry in a minute"
- * guidance, while polling Bridge cancellation so /stop remains authoritative.
- * Other transient/network/auth failures are never retried here.
+ * OAuth-refresh lock race. The callback runs only after the wait/cancellation
+ * fence and immediately before attempt two, so successorStarted is factual.
  */
 export async function runWithAcpTransientRetry<T>(
   providerId: ProviderId,
@@ -42,6 +41,7 @@ export async function runWithAcpTransientRetry<T>(
   options: {
     abortRequested: () => boolean;
     wait?: AcpTransientRetryWait;
+    onRetryStarted?: (error: Error) => void | Promise<void>;
   },
 ): Promise<T> {
   try {
@@ -52,6 +52,7 @@ export async function runWithAcpTransientRetry<T>(
     if (options.abortRequested()) throw new AcpTransientRetryCancelledError();
     await (options.wait ?? defaultWait)(CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS, options.abortRequested);
     if (options.abortRequested()) throw new AcpTransientRetryCancelledError();
+    await options.onRetryStarted?.(normalized);
     return operation();
   }
 }
