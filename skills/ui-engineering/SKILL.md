@@ -34,6 +34,10 @@ Do not invent a bespoke UI pattern when a suitable approved pattern already exis
 
 External sources are inputs, not design authority. Review copied code for licensing, dependencies, accessibility, security, and unnecessary complexity before integrating it.
 
+### Motion reference
+
+For motion, transitions, and micro-interactions, `https://transitions.dev/` is an approved external reference when local patterns do not already answer the need. Use it to inform transition behavior and interaction feedback, then adapt the result to repository-owned motion conventions, accessibility and reduced-motion requirements, dependencies, and visual language. Do not add an animation stack merely to preserve an example's implementation.
+
 ## Browser path
 
 - Prefer a provider-native browser surface only when that exact headless Agent Bridge path has been qualified.
