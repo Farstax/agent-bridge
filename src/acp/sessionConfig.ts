@@ -26,6 +26,11 @@ export interface AcpSessionConfigIntent {
   readonly required?: boolean;
 }
 
+export interface AcpSessionConfigPreferences {
+  readonly model?: readonly string[];
+  readonly thoughtLevel?: readonly string[];
+}
+
 export interface AcpSessionConfigSelection {
   readonly configId: string;
   readonly value: string;
@@ -130,32 +135,7 @@ export function planAcpSessionConfig(
   return { selections, stale };
 }
 
-function splitPreference(raw: string | undefined): string[] {
-  return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
-}
-
-export function acpModelPreference(
-  providerId: string,
-  env: Record<string, string | undefined>,
-): readonly string[] {
-  if (providerId === "claude") return splitPreference(env.CLAUDE_MODEL_PREFERENCE);
-  if (providerId === "codex") return splitPreference(env.CODEX_MODEL_PREFERENCE);
-  return [];
-}
-
-export function acpThoughtLevelPreference(
-  providerId: string,
-  env: Record<string, string | undefined>,
-): readonly string[] {
-  const raw = providerId === "claude"
-    ? env.CLAUDE_EFFORT
-    : providerId === "codex"
-      ? env.CODEX_EFFORT
-      : undefined;
-  return raw?.trim() ? [raw.trim()] : [];
-}
-
-/** Build provider-neutral semantic intents. No ACP config id or model translation lives here. */
+/** Build provider-neutral semantic intents from policy-owned preference data. */
 export function acpSessionConfigIntents(
   providerId: string,
   request: {
@@ -163,13 +143,13 @@ export function acpSessionConfigIntents(
     readonly modelRequired?: boolean;
     readonly effort: string | null;
   },
-  env: Record<string, string | undefined>,
+  preferences: AcpSessionConfigPreferences = {},
 ): readonly AcpSessionConfigIntent[] {
   const intents: AcpSessionConfigIntent[] = [];
   // Required caller targets (notably Advisor provider:model) are explicit
   // authority and must not be shadowed by the interactive user's default choice.
   const forceModelDefault = !request.modelRequired && hasAcpProviderDefaultIntent(providerId, "model");
-  const modelPreference = forceModelDefault ? [] : acpModelPreference(providerId, env);
+  const modelPreference = forceModelDefault ? [] : preferences.model ?? [];
   if (forceModelDefault || request.model || modelPreference.length > 0) {
     intents.push({
       category: "model",
@@ -181,7 +161,7 @@ export function acpSessionConfigIntents(
   }
 
   const forceThoughtDefault = hasAcpProviderDefaultIntent(providerId, "thought_level");
-  const thoughtPreference = forceThoughtDefault ? [] : acpThoughtLevelPreference(providerId, env);
+  const thoughtPreference = forceThoughtDefault ? [] : preferences.thoughtLevel ?? [];
   if (forceThoughtDefault || request.effort || thoughtPreference.length > 0) {
     intents.push({
       category: "thought_level",
