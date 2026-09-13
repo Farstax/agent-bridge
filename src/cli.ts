@@ -121,15 +121,12 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
 }
 
 function seedFreshExecutionContract(
-  bot: string,
   prompt: string,
   sessionId: string | null,
-  attachments: string[],
   includeResponseContract: boolean,
 ): string {
   if (includeResponseContract) return prompt;
-  const startsFresh = !sessionId || (bot === "codex" && attachments.length > 0);
-  if (startsFresh) return wrapPromptContext(prompt, null, false, true);
+  if (!sessionId) return wrapPromptContext(prompt, null, false, true);
   return prompt.startsWith("/") ? `User request:\n${prompt}` : prompt;
 }
 
@@ -138,7 +135,6 @@ export function buildCliInvocation({
   bot,
   prompt,
   sessionId,
-  sessionMode = "resume",
   command,
   model,
   executionMode = "safe",
@@ -151,12 +147,10 @@ export function buildCliInvocation({
   effort = null,
   homeDir = homedir(),
   toolMode = "default",
-  nativeCompletion = false,
 }: {
   bot: string;
   prompt: string;
   sessionId: string | null;
-  sessionMode?: "resume" | "session-id";
   command: string;
   model: string | null;
   executionMode?: "safe" | "trusted";
@@ -169,14 +163,12 @@ export function buildCliInvocation({
   effort?: EffortLevel | null;
   homeDir?: string;
   toolMode?: "default" | "none";
-  nativeCompletion?: boolean;
 }): ProviderInvocation {
-  void sessionMode;
   if (toolMode === "none" && !supportsToolFreeMode(bot)) {
     throw new Error(`Tool-free mode is not supported for ${bot}`);
   }
 
-  const providerPrompt = seedFreshExecutionContract(bot, prompt, sessionId, attachments, includeResponseContract);
+  const providerPrompt = seedFreshExecutionContract(prompt, sessionId, includeResponseContract);
   const providerId = providerIdForBotName(bot);
   if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
     return buildAcpProviderInvocation(providerId, {
@@ -192,23 +184,22 @@ export function buildCliInvocation({
       outputDir,
       effort,
       toolMode,
-      nativeCompletion,
     });
   }
   if (bot === "grok") {
     return grokRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
     });
   }
   if (bot === "cursor") {
     return cursorRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion,
+      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
     });
   }
   if (bot === "antigravity") {
     const resolvedModel = resolveAgyModelForEffort(model, effort);
     const invocation = antigravityRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model: resolvedModel, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, nativeCompletion, logFile, homeDir,
+      prompt: providerPrompt, sessionId, command, model: resolvedModel, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, logFile, homeDir,
     });
     antigravityInvocationMetadata.set(invocation.args, {
       homeDir,
@@ -221,8 +212,6 @@ export function buildCliInvocation({
 }
 
 export { validateBridgeConfig } from "./config.js";
-/** Backwards-compatible test/import alias; execution dispatch no longer depends on it. */
-export { runTurn as runCodexAcpTurn } from "./providers/codexAcpRuntime.js";
 
 /** Run a built invocation on the matching transport. ACP stdio is never oneshot-parsed. */
 export async function runProviderInvocation(
@@ -558,7 +547,6 @@ async function recoverProviderUncertainCompletion(
     effort: effortFromArgs(args),
     homeDir: provider === "antigravity" ? agyMetadata?.homeDir ?? homedir() : homedir(),
     toolMode: providerToolMode(provider, args),
-    nativeCompletion: provider === "antigravity" && Boolean(optionValue(args, "--print")?.startsWith("/goal ")),
   });
 
   try {

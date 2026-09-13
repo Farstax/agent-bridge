@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
-import { runAcpApiKeyProbe, runCodexAcpApiKeyProbe } from "./codexAcpAuthProbe.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
+import { applyProviderChildEnvPolicy, getAcpProviderPolicy } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -25,30 +25,27 @@ export interface ProviderApiKeyAuthCapability {
   readonly notes: string;
 }
 
-export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAuthCapability>> = {
+type ProviderApiKeyAuthDefinition = Omit<ProviderApiKeyAuthCapability, "verification">;
+
+export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAuthDefinition>> = {
   codex: {
     envVar: "CODEX_API_KEY",
-    verification: "bounded_acp_turn",
     notes: "Codex verifies through the managed ACP adapter's authenticate + bounded prompt path.",
   },
   claude: {
     envVar: "ANTHROPIC_API_KEY",
-    verification: "bounded_acp_turn",
     notes: "Claude verifies the key through the selected managed ACP adapter with an isolated bounded prompt.",
   },
   agy: {
     envVar: "GEMINI_API_KEY",
-    verification: "bounded_native_turn",
     notes: "Agy requires modelProvider=gemini while the key is used; Bridge applies that setting only around the run.",
   },
   grok: {
     envVar: "XAI_API_KEY",
-    verification: "bounded_native_turn",
     notes: "Grok Build supports XAI_API_KEY for headless use; Bridge verifies it without account state.",
   },
   cursor: {
     envVar: "CURSOR_API_KEY",
-    verification: "bounded_native_turn",
     notes: "Cursor Agent supports CURSOR_API_KEY for headless automation.",
   },
 };
@@ -74,7 +71,6 @@ const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ProviderId, ReadonlySet<
   grok: new Set(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
   cursor: new Set(["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"]),
 };
-const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const PROBE_TIMEOUT_MS = 15_000;
 export const PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS = 30_000;
 const verificationCache = new Map<string, boolean>();
@@ -95,20 +91,28 @@ export type ProviderApiKeyProbeExecutor = (
   options: ProbeExecOptions,
 ) => Promise<unknown>;
 
-export type AcpApiKeyProbeExecutor = (env: NodeJS.ProcessEnv) => Promise<void>;
-export type CodexAcpApiKeyProbeExecutor = AcpApiKeyProbeExecutor;
+export type AcpApiKeyProbeExecutor = (
+  provider: ProviderId,
+  env: NodeJS.ProcessEnv,
+) => Promise<void>;
 
 export interface VerifyProviderApiKeyOptions {
   env?: Env;
   execFile?: ProviderApiKeyProbeExecutor;
-  codexAcpProbe?: CodexAcpApiKeyProbeExecutor;
-  claudeAcpProbe?: AcpApiKeyProbeExecutor;
+  /** Generic test seam for ACP-backed providers. Production uses registered provider policy. */
+  acpProbe?: AcpApiKeyProbeExecutor;
   useCache?: boolean;
 }
 
 export function getProviderApiKeyCapability(provider: string): ProviderApiKeyAuthCapability | null {
   if (!Object.prototype.hasOwnProperty.call(PROVIDER_API_KEY_AUTH, provider)) return null;
-  return PROVIDER_API_KEY_AUTH[provider as ProviderId];
+  const providerId = provider as ProviderId;
+  return {
+    ...PROVIDER_API_KEY_AUTH[providerId],
+    verification: getAcpProviderPolicy(providerId)?.verifyApiKey
+      ? "bounded_acp_turn"
+      : "bounded_native_turn",
+  };
 }
 
 export function getConfiguredProviderApiKey(provider: ProviderId, env: Env = process.env): string | null {
@@ -143,9 +147,7 @@ export function filterProviderCredentialEnv(
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   if (!bot) {
-    const out = { ...env };
-    delete out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV];
-    return out;
+    return applyProviderChildEnvPolicy(null, env);
   }
   const provider: ProviderId = bot === "antigravity" ? "agy" : bot;
   const allowed = PROVIDER_ALLOWED_SECRET_ENV_KEYS[provider];
@@ -160,11 +162,7 @@ export function filterProviderCredentialEnv(
     }),
   );
 
-  // Retain the existing Claude SDK background-work fence until its dedicated
-  // ownership issue is retired; ACP migration must not broaden run authority.
-  if (provider === "claude") out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV] = "1";
-  else delete out[CLAUDE_DISABLE_BACKGROUND_TASKS_ENV];
-  return out;
+  return applyProviderChildEnvPolicy(provider, out);
 }
 
 export function redactProviderApiKeySecrets(text: string, env: Env = process.env): string {
@@ -289,35 +287,7 @@ const defaultProbeExecutor: ProviderApiKeyProbeExecutor = (command, args, option
     });
   });
 
-async function runClaudeAcpApiKeyProbe(env: Env): Promise<void> {
-  const runtime = resolveProviderRuntime("claude", env);
-  if (runtime.transport !== "acp-stdio") {
-    throw new Error("Claude selected runtime is not ACP stdio");
-  }
-  await runAcpApiKeyProbe({
-    label: "Claude",
-    command: runtime.executable,
-    args: runtime.args,
-    env: buildProbeEnv("claude", env),
-    sessionMeta: {
-      disableBuiltInTools: true,
-      claudeCode: {
-        options: {
-          tools: [],
-          mcpServers: {},
-          settingSources: [],
-        },
-      },
-    },
-    prepareEnv: (root, childEnv) => ({
-      ...childEnv,
-      CLAUDE_CONFIG_DIR: join(root, ".claude"),
-      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
-    }),
-  });
-}
-
-async function runProbe(
+async function runNativeProbe(
   provider: ProviderId,
   env: Env,
   execute: ProviderApiKeyProbeExecutor,
@@ -400,12 +370,13 @@ export async function verifyProviderApiKey(
   const verification = (async () => {
     let verified = false;
     try {
-      if (provider === "codex") {
-        await (options.codexAcpProbe ?? runCodexAcpApiKeyProbe)(buildProbeEnv(provider, env));
-      } else if (provider === "claude") {
-        await (options.claudeAcpProbe ?? runClaudeAcpApiKeyProbe)(buildProbeEnv(provider, env));
+      const acpProbe = getAcpProviderPolicy(provider)?.verifyApiKey;
+      if (acpProbe) {
+        const probeEnv = buildProbeEnv(provider, env);
+        if (options.acpProbe) await options.acpProbe(provider, probeEnv);
+        else await acpProbe(probeEnv);
       } else {
-        await runProbe(provider, env, options.execFile ?? defaultProbeExecutor);
+        await runNativeProbe(provider, env, options.execFile ?? defaultProbeExecutor);
       }
       verified = true;
     } catch {

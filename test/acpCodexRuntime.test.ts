@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import { buildCliInvocation, runProviderInvocation } from "../src/cli.js";
-import { runTurn, codexAcpChildAuthEnv, toCliResult, initialAgentMode } from "../src/providers/codexAcpRuntime.js";
+import { acpTurnResultToCliResult, runAcpProviderTurn } from "../src/providers/acpRuntime.js";
+import { codexAcpChildAuthEnv, codexAcpPolicy, initialAgentMode } from "../src/providers/codexAcpPolicy.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
 import { abortCliProcess, isChildRunning } from "../src/cliSupervisor.js";
 import { liveDeliveryText } from "../src/acp/index.js";
@@ -17,6 +18,16 @@ import {
 import { verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
 
 const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
+
+const runTurn = (
+  request: Parameters<typeof runAcpProviderTurn>[1],
+  cwd: string,
+  options: Parameters<typeof runAcpProviderTurn>[3],
+  identities: Parameters<typeof runAcpProviderTurn>[4],
+) => runAcpProviderTurn("codex", request, cwd, options, identities);
+
+const toCliResult = (result: Parameters<typeof acpTurnResultToCliResult>[1]) =>
+  acpTurnResultToCliResult("codex", result, codexAcpPolicy);
 
 describe("Codex ACP provisional answer classification", () => {
   function event({
@@ -178,11 +189,6 @@ describe("Codex ACP invocation", () => {
 });
 
 describe("Codex ACP phase-aware final delivery", () => {
-  // Real Codex ACP notifications carry the phase tag on the update payload
-  // itself (`notification.update._meta.codex.phase`, via ACP's ContentChunk
-  // `_meta`) — not on the SessionNotification envelope
-  // (`notification._meta`), which ACP reserves for its own extensibility
-  // metadata and is a structurally distinct field.
   function fixture(
     updates: Array<{ channel: "live" | "replay"; phase?: "commentary" | "final_answer" | "bogus"; omitMeta?: boolean; text: string }>,
     stopReason = "end_turn",
@@ -252,25 +258,19 @@ describe("Codex ACP phase-aware final delivery", () => {
   });
 
   it("fails closed when update._meta.codex is a malformed scalar", () => {
-    const malformed = fixture([
-      { channel: "live", text: "commentary that must not be promoted" },
-    ]) as any;
+    const malformed = fixture([{ channel: "live", text: "commentary that must not be promoted" }]) as any;
     malformed.updates[0].notification.update._meta = { codex: "malformed" };
     expect(() => toCliResult(malformed)).toThrow(/final_answer/);
   });
 
   it("fails closed when update._meta.codex is explicitly null", () => {
-    const malformed = fixture([
-      { channel: "live", text: "commentary that must not be promoted" },
-    ]) as any;
+    const malformed = fixture([{ channel: "live", text: "commentary that must not be promoted" }]) as any;
     malformed.updates[0].notification.update._meta = { codex: null };
     expect(() => toCliResult(malformed)).toThrow(/final_answer/);
   });
 
   it("fails closed when Codex phase metadata is misplaced on the notification envelope", () => {
-    const malformed = fixture([
-      { channel: "live", text: "commentary that must not be promoted" },
-    ]) as any;
+    const malformed = fixture([{ channel: "live", text: "commentary that must not be promoted" }]) as any;
     malformed.updates[0].notification._meta = { codex: { phase: "commentary" } };
     expect(() => toCliResult(malformed)).toThrow(/final_answer/);
   });
@@ -300,9 +300,7 @@ describe("Codex ACP phase-aware final delivery", () => {
   });
 
   it("propagates a non-cancelled stopReason onto the CliResult", () => {
-    const result = toCliResult(fixture([
-      { channel: "live", text: "hi" },
-    ], "max_tokens"));
+    const result = toCliResult(fixture([{ channel: "live", text: "hi" }], "max_tokens"));
     expect(result.stopReason).toBe("max_tokens");
   });
 });
@@ -325,12 +323,7 @@ describe("Codex ACP authority mapping", () => {
 describe("ACP session persistence", () => {
   it("round-trips the mapping through SQLite and a reopened database", () => {
     const db = openDb(":memory:");
-    db.putAcpSessionBinding({
-      conversationId: "conv-1",
-      providerId: "codex",
-      acpSessionId: "acp-zzz",
-      runId: "run-1",
-    });
+    db.putAcpSessionBinding({ conversationId: "conv-1", providerId: "codex", acpSessionId: "acp-zzz", runId: "run-1" });
     expect(db.getAcpSessionBinding("conv-1", "codex")?.acpSessionId).toBe("acp-zzz");
     expect(db.getAcpSessionBinding("conv-1", "codex")?.conversationId).toBe("conv-1");
     expect(db.getAcpSessionBinding("conv-1", "codex")?.runId).toBe("run-1");
@@ -345,19 +338,10 @@ describe("ACP session persistence", () => {
     const dbPath = join(storeDir, "bridge.sqlite");
     try {
       const first = openDb(dbPath);
-      first.putAcpSessionBinding({
-        conversationId: "conv-stale-1",
-        providerId: "codex",
-        acpSessionId: "acp-stale-sess",
-        runId: "run-1",
-      });
-      first.raw.prepare(
-        `UPDATE acp_session_bindings SET updated_at = datetime('now', '-8 days') WHERE conversation_id = ?`,
-      ).run("conv-stale-1");
+      first.putAcpSessionBinding({ conversationId: "conv-stale-1", providerId: "codex", acpSessionId: "acp-stale-sess", runId: "run-1" });
+      first.raw.prepare(`UPDATE acp_session_bindings SET updated_at = datetime('now', '-8 days') WHERE conversation_id = ?`).run("conv-stale-1");
       first.close();
-
       const second = openDb(dbPath);
-      // Stale native-resume pointer is gone; the next turn starts fresh.
       expect(second.getAcpSessionBinding("conv-stale-1", "codex")).toBeNull();
       second.close();
     } finally {
@@ -370,14 +354,8 @@ describe("ACP session persistence", () => {
     const dbPath = join(storeDir, "bridge.sqlite");
     try {
       const first = openDb(dbPath);
-      first.putAcpSessionBinding({
-        conversationId: "conv-fresh-1",
-        providerId: "codex",
-        acpSessionId: "acp-fresh-sess",
-        runId: "run-1",
-      });
+      first.putAcpSessionBinding({ conversationId: "conv-fresh-1", providerId: "codex", acpSessionId: "acp-fresh-sess", runId: "run-1" });
       first.close();
-
       const second = openDb(dbPath);
       expect(second.getAcpSessionBinding("conv-fresh-1", "codex")?.acpSessionId).toBe("acp-fresh-sess");
       second.close();
@@ -388,12 +366,7 @@ describe("ACP session persistence", () => {
 
   it("refuses to persist an ACP session id that equals the Bridge conversation id", () => {
     const db = openDb(":memory:");
-    expect(() => db.putAcpSessionBinding({
-      conversationId: "conv-1",
-      providerId: "codex",
-      acpSessionId: "conv-1",
-      runId: "run-1",
-    })).toThrow(/must not equal/);
+    expect(() => db.putAcpSessionBinding({ conversationId: "conv-1", providerId: "codex", acpSessionId: "conv-1", runId: "run-1" })).toThrow(/must not equal/);
     db.close();
   });
 
@@ -419,9 +392,7 @@ describe("ACP session persistence", () => {
     expect(isInvalidProviderSessionError("ACP agent does not support resume or load for an existing session")).toBe(true);
     expect(isInvalidProviderSessionError("No conversation found with session ID: abc")).toBe(true);
     expect(isInvalidProviderSessionError("CLI exited with code 1")).toBe(false);
-    const wrapped = Object.assign(new Error("Internal error"), {
-      data: { details: "thread not found" },
-    });
+    const wrapped = Object.assign(new Error("Internal error"), { data: { details: "thread not found" } });
     expect(isInvalidProviderSessionError(wrapped)).toBe(true);
     expect(isInvalidProviderSessionError(new Error("Internal error"))).toBe(false);
   });
@@ -436,55 +407,25 @@ describe("Codex ACP supervised stdio turn", () => {
     const storeDir = mkdtempSync(join(tmpdir(), "fake-acp-store-"));
     process.env.FAKE_ACP_STORE = join(storeDir, "sessions.json");
     try {
-    const first = await runTurn({
-      prompt: "first",
-      sessionId: null,
-      command: "codex-acp",
-      model: null,
-      executionMode: "trusted",
-      outputFormat: "json",
-      soulContext: null,
-      attachments: [],
-      outputDir: null,
-      effort: null,
-      toolMode: "default",
-    }, process.cwd(), {
-      timeoutMs: 5_000,
-      idleTimeoutMs: 5_000,
-      chatId: `acp-test-${Date.now()}`,
-    }, { conversationId: "conv-bridge-1", runId: "run-1" });
+      const first = await runTurn({
+        prompt: "first", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: `acp-test-${Date.now()}` }, { conversationId: "conv-bridge-1", runId: "run-1" });
+      expect(first.text).toContain("User request:\nfirst");
+      expect(first.sessionId).toMatch(/^acp-/);
+      expect(first.sessionId).not.toBe("conv-bridge-1");
+      expect(first.telemetry?.outputTokens).toBe(8);
 
-    expect(first.text).toContain("User request:\nfirst");
-    expect(first.sessionId).toMatch(/^acp-/);
-    expect(first.sessionId).not.toBe("conv-bridge-1");
-    expect(first.telemetry?.outputTokens).toBe(8);
-
-    const second = await runTurn({
-      prompt: "second",
-      sessionId: first.sessionId,
-      command: "codex-acp",
-      model: null,
-      executionMode: "trusted",
-      outputFormat: "json",
-      soulContext: null,
-      attachments: [],
-      outputDir: null,
-      effort: null,
-      toolMode: "default",
-    }, process.cwd(), {
-      timeoutMs: 5_000,
-      idleTimeoutMs: 5_000,
-      chatId: `acp-test-${Date.now()}-2`,
-    }, { conversationId: "conv-bridge-1", runId: "run-2" });
-
-    expect(second.text).toContain("User request:\nsecond");
-    expect(second.text).not.toMatch(/User request:\nfirst/);
-    expect(liveDeliveryText([])).toBe("");
+      const second = await runTurn({
+        prompt: "second", sessionId: first.sessionId, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: `acp-test-${Date.now()}-2` }, { conversationId: "conv-bridge-1", runId: "run-2" });
+      expect(second.text).toContain("User request:\nsecond");
+      expect(second.text).not.toMatch(/User request:\nfirst/);
+      expect(liveDeliveryText([])).toBe("");
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
       delete process.env.FAKE_ACP_STORE;
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -502,63 +443,34 @@ describe("Codex ACP supervised stdio turn", () => {
     try {
       const firstStore = new EventStore(db);
       const first = await runTurn({
-        prompt: "first",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
+        prompt: "first", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
       }, process.cwd(), {
-        timeoutMs: 5_000,
-        idleTimeoutMs: 5_000,
-        chatId: "acp-events-1",
+        timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: "acp-events-1",
         eventContext: { runId: "run-events-1", bot: "codex", chatId: "acp-events-1", chatKey: "acp-events-1" },
         onEvent: (e) => firstStore.collect(e),
       }, { conversationId: "conv-events-1", runId: "run-events-1" });
-
       const secondStore = new EventStore(db);
       const second = await runTurn({
-        prompt: "second",
-        sessionId: first.sessionId,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
+        prompt: "second", sessionId: first.sessionId, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
       }, process.cwd(), {
-        timeoutMs: 5_000,
-        idleTimeoutMs: 5_000,
-        chatId: "acp-events-2",
+        timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: "acp-events-2",
         eventContext: { runId: "run-events-2", bot: "codex", chatId: "acp-events-2", chatKey: "acp-events-2" },
         onEvent: (e) => secondStore.collect(e),
       }, { conversationId: "conv-events-1", runId: "run-events-2" });
-
       const secondEvents = db.getEventsForRun("run-events-2").filter((e) => e.type === "acp.event");
-      // One durable row per ACP event, not one aggregate at turn completion.
       expect(secondEvents.length).toBeGreaterThan(1);
       const retained = secondEvents.map((e) => JSON.parse(e.payload_json));
       for (const r of retained) expect(r.sessionMode).toBe("load");
       expect(retained.some((r) => r.event.kind === "session_update" && r.event.notification?.update?.sessionUpdate === "tool_call")).toBe(true);
-      expect(retained.some((r) =>
-        r.event.channel === "replay" && r.event.notification?.update?.sessionUpdate === "agent_message_chunk")).toBe(true);
-      // Telegram/Discord delivery only ever reads live agent_message_chunk text off `second.text`, never this event.
+      expect(retained.some((r) => r.event.channel === "replay" && r.event.notification?.update?.sessionUpdate === "agent_message_chunk")).toBe(true);
       expect(second.text).toContain("User request:\nsecond");
       expect(second.text).not.toMatch(/User request:\nfirst/);
     } finally {
       db.close();
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
       delete process.env.FAKE_ACP_STORE;
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -577,40 +489,23 @@ describe("Codex ACP supervised stdio turn", () => {
     try {
       const store = new EventStore(db);
       await runTurn({
-        prompt: "first",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
+        prompt: "first", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
       }, process.cwd(), {
-        timeoutMs: 5_000,
-        idleTimeoutMs: 5_000,
-        chatId: "acp-secret-1",
-        contextEnv: { CODEX_API_KEY: "sk-test-secret-value" },
+        timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: "acp-secret-1", contextEnv: { CODEX_API_KEY: "sk-test-secret-value" },
         eventContext: { runId: "run-secret-1", bot: "codex", chatId: "acp-secret-1", chatKey: "acp-secret-1" },
         onEvent: (e) => store.collect(e),
       }, { conversationId: "conv-secret-1", runId: "run-secret-1" });
-
       const events = db.getEventsForRun("run-secret-1").filter((e) => e.type === "acp.event");
       expect(events.length).toBeGreaterThan(0);
-      for (const row of events) {
-        expect(row.payload_json).not.toContain("sk-test-secret-value");
-      }
+      for (const row of events) expect(row.payload_json).not.toContain("sk-test-secret-value");
       const toolCallRow = events.find((e) => e.payload_json.includes("rawInput"));
       expect(toolCallRow).toBeDefined();
       expect(toolCallRow!.payload_json).toContain("REDACTED_PROVIDER_CREDENTIAL");
     } finally {
       db.close();
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
       delete process.env.FAKE_ACP_STORE;
       delete process.env.FAKE_ACP_SECRET_PROBE;
       rmSync(storeDir, { recursive: true, force: true });
@@ -625,31 +520,16 @@ describe("Codex ACP supervised stdio turn", () => {
     const chatId = `acp-stop-${Date.now()}`;
     try {
       const hung = runTurn({
-        prompt: "HANG",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
-      }, process.cwd(), {
-        timeoutMs: 8_000,
-        idleTimeoutMs: 8_000,
-        chatId,
-      }, { conversationId: "conv-stop", runId: "run-stop" });
+        prompt: "HANG", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 8_000, idleTimeoutMs: 8_000, chatId }, { conversationId: "conv-stop", runId: "run-stop" });
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(abortCliProcess(chatId)).toBe(true);
       await hung.catch(() => undefined);
       expect(isChildRunning(chatId)).toBe(false);
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 
@@ -660,31 +540,15 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     try {
       const result = await runTurn({
-        prompt: "hello-soul",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: "SOUL_MARKER_FOR_ACP",
-        includeResponseContract: true,
-        attachments: [],
-        outputDir: "/tmp/bridge-acp-out",
-        effort: null,
-        toolMode: "default",
-      }, process.cwd(), {
-        timeoutMs: 5_000,
-        idleTimeoutMs: 5_000,
-        chatId: `acp-soul-${Date.now()}`,
-      }, { conversationId: "conv-soul", runId: "run-soul" });
+        prompt: "hello-soul", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: "SOUL_MARKER_FOR_ACP", includeResponseContract: true, attachments: [], outputDir: "/tmp/bridge-acp-out", effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: `acp-soul-${Date.now()}` }, { conversationId: "conv-soul", runId: "run-soul" });
       expect(result.text).toContain("SOUL_MARKER_FOR_ACP");
       expect(result.text).toContain("/tmp/bridge-acp-out");
       expect(result.text).toContain("hello-soul");
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 
@@ -694,39 +558,21 @@ describe("Codex ACP supervised stdio turn", () => {
     const apiKey = "codex-acp-secret-do-not-leak";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
-    await verifyProviderApiKey("codex", {
-      env: { ...process.env, CODEX_API_KEY: apiKey },
-      codexAcpProbe: async () => undefined,
-    });
+    await verifyProviderApiKey("codex", { env: { ...process.env, CODEX_API_KEY: apiKey }, acpProbe: async () => undefined });
     const progress: string[] = [];
     try {
       const result = await runTurn({
-        prompt: `echo ${apiKey}`,
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
+        prompt: `echo ${apiKey}`, sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
       }, process.cwd(), {
-        timeoutMs: 5_000,
-        idleTimeoutMs: 5_000,
-        chatId: `acp-redact-${Date.now()}`,
-        contextEnv: { CODEX_API_KEY: apiKey },
-        onProgress: (chunk) => progress.push(chunk),
+        timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: `acp-redact-${Date.now()}`, contextEnv: { CODEX_API_KEY: apiKey }, onProgress: (chunk) => progress.push(chunk),
       }, { conversationId: "conv-redact", runId: "run-redact" });
       expect(result.text).not.toContain(apiKey);
       expect(result.text).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
       expect(progress.join("")).not.toContain(apiKey);
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 
@@ -736,31 +582,14 @@ describe("Codex ACP supervised stdio turn", () => {
     const apiKey = "codex-acp-error-secret-do-not-leak";
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
-    await verifyProviderApiKey("codex", {
-      env: { ...process.env, CODEX_API_KEY: apiKey },
-      codexAcpProbe: async () => undefined,
-    });
+    await verifyProviderApiKey("codex", { env: { ...process.env, CODEX_API_KEY: apiKey }, acpProbe: async () => undefined });
     try {
       let caught: (Error & { data?: { additionalDetails?: string } }) | undefined;
       try {
         await runTurn({
-          prompt: "THROW_CREDENTIAL_ERROR",
-          sessionId: null,
-          command: "codex-acp",
-          model: null,
-          executionMode: "trusted",
-          outputFormat: "json",
-          soulContext: null,
-          attachments: [],
-          outputDir: null,
-          effort: null,
-          toolMode: "default",
-        }, process.cwd(), {
-          timeoutMs: 5_000,
-          idleTimeoutMs: 5_000,
-          chatId: `acp-error-redact-${Date.now()}`,
-          contextEnv: { CODEX_API_KEY: apiKey },
-        }, { conversationId: "conv-error-redact", runId: "run-error-redact" });
+          prompt: "THROW_CREDENTIAL_ERROR", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+          soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+        }, process.cwd(), { timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: `acp-error-redact-${Date.now()}`, contextEnv: { CODEX_API_KEY: apiKey } }, { conversationId: "conv-error-redact", runId: "run-error-redact" });
       } catch (error) {
         caught = error as Error & { data?: { additionalDetails?: string } };
       }
@@ -770,10 +599,8 @@ describe("Codex ACP supervised stdio turn", () => {
       expect(JSON.stringify(caught?.data ?? {})).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
       expect(caught?.data?.additionalDetails).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 
@@ -784,27 +611,12 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     try {
       await expect(runTurn({
-        prompt: "HANG",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
-      }, process.cwd(), {
-        timeoutMs: 200,
-        idleTimeoutMs: 200,
-        chatId: `acp-timeout-${Date.now()}`,
-      }, { conversationId: "conv-timeout", runId: "run-timeout" })).rejects.toThrow(/timeout/i);
+        prompt: "HANG", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 200, idleTimeoutMs: 200, chatId: `acp-timeout-${Date.now()}` }, { conversationId: "conv-timeout", runId: "run-timeout" })).rejects.toThrow(/timeout/i);
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 
@@ -815,27 +627,12 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = "-e process.exit(1)";
     try {
       await expect(runTurn({
-        prompt: "hello",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
-      }, process.cwd(), {
-        timeoutMs: 3_000,
-        idleTimeoutMs: 3_000,
-        chatId: `acp-dead-${Date.now()}`,
-      }, { conversationId: "conv-dead", runId: "run-dead" })).rejects.toThrow();
+        prompt: "hello", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 3_000, idleTimeoutMs: 3_000, chatId: `acp-dead-${Date.now()}` }, { conversationId: "conv-dead", runId: "run-dead" })).rejects.toThrow();
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 
@@ -845,37 +642,12 @@ describe("Codex ACP supervised stdio turn", () => {
     const startedAt = Date.now();
     try {
       await expect(runTurn({
-        prompt: "hello",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
-      }, process.cwd(), {
-        timeoutMs: 8_000,
-        idleTimeoutMs: 8_000,
-        chatId: `acp-missing-${Date.now()}`,
-      }, { conversationId: "conv-missing", runId: "run-missing" }))
-        // codexAcpRuntime.runTurn() has no fallback path to legacy codex
-        // exec, so calling it directly and observing any rejection already
-        // proves "no silent fallback". Which async path first observes the
-        // spawn failure — the child "error" event, the ACP SDK's own
-        // closed-stream detection, or a downstream EPIPE from a dead stdin
-        // pipe — is scheduler-dependent and varies by environment; all are
-        // legitimate fail-closed outcomes, so the exact message is not the
-        // invariant under test here.
-        .rejects.toThrow();
-      // A missing adapter is a spawn-time failure, not a hard/idle timeout —
-      // it must not silently wait out the full timeout window either.
+        prompt: "hello", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 8_000, idleTimeoutMs: 8_000, chatId: `acp-missing-${Date.now()}` }, { conversationId: "conv-missing", runId: "run-missing" })).rejects.toThrow();
       expect(Date.now() - startedAt).toBeLessThan(4_000);
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
     }
   }, 15_000);
 
@@ -886,27 +658,12 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_ARGS = "-e console.log('not-json')";
     try {
       await expect(runTurn({
-        prompt: "hello",
-        sessionId: null,
-        command: "codex-acp",
-        model: null,
-        executionMode: "trusted",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
-      }, process.cwd(), {
-        timeoutMs: 3_000,
-        idleTimeoutMs: 3_000,
-        chatId: `acp-malformed-${Date.now()}`,
-      }, { conversationId: "conv-malformed", runId: "run-malformed" })).rejects.toThrow();
+        prompt: "hello", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 3_000, idleTimeoutMs: 3_000, chatId: `acp-malformed-${Date.now()}` }, { conversationId: "conv-malformed", runId: "run-malformed" })).rejects.toThrow();
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 
@@ -916,38 +673,19 @@ describe("Codex ACP supervised stdio turn", () => {
     process.env.CODEX_ACP_COMMAND = process.execPath;
     process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
     try {
-      const invocation = buildCliInvocation({
-        bot: "codex",
-        prompt: "qualify",
-        sessionId: null,
-        command: "codex",
-      });
+      const invocation = buildCliInvocation({ bot: "codex", prompt: "qualify", sessionId: null, command: "codex" });
       expect(invocation.transport).toBe("acp-stdio");
       const result = await runProviderInvocation("codex", invocation, process.cwd(), {
-        timeoutMs: 5_000,
-        idleTimeoutMs: 5_000,
-        bot: "codex",
-        chatId: `acp-qualify-${Date.now()}`,
+        timeoutMs: 5_000, idleTimeoutMs: 5_000, bot: "codex", chatId: `acp-qualify-${Date.now()}`,
       }, {
-        prompt: "qualify",
-        sessionId: null,
-        command: invocation.command,
-        model: null,
-        executionMode: "safe",
-        outputFormat: "json",
-        soulContext: null,
-        attachments: [],
-        outputDir: null,
-        effort: null,
-        toolMode: "default",
+        prompt: "qualify", sessionId: null, command: invocation.command, model: null, executionMode: "safe", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
       });
       expect(result.text).toContain("User request:\nqualify");
       expect(result.sessionId).toMatch(/^acp-/);
     } finally {
-      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;
-      else process.env.CODEX_ACP_COMMAND = previousCommand;
-      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS;
-      else process.env.CODEX_ACP_ARGS = previousArgs;
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
     }
   }, 15_000);
 });

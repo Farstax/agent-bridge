@@ -66,6 +66,11 @@ export interface AcpProviderPolicy {
       secrets: readonly string[],
     ) => AcpAnswerPreview;
   };
+  /** Provider-owned child environment policy applied by the shared supervisor path. */
+  readonly childEnv?: {
+    readonly exclusiveKeys?: readonly string[];
+    readonly overrides?: Readonly<Record<string, string>>;
+  };
   /** Optional installed-command resolver when Bridge does not invoke the Registry launcher directly. */
   readonly resolveExecutable?: (env: Record<string, string | undefined>) => string;
   readonly resolveArgs?: (
@@ -87,6 +92,10 @@ export interface AcpProviderPolicy {
   readonly authenticateMethodId?: (
     env: Record<string, string | undefined>,
   ) => string | undefined;
+  /** Provider-owned bounded API-key verification through the selected ACP adapter. */
+  readonly verifyApiKey?: (
+    env: Record<string, string | undefined>,
+  ) => Promise<void>;
   /** Provider extension for structured run activity; generic ACP lifecycle remains here. */
   readonly createActivityProjector?: () => AcpActivityProjector;
   readonly selectAnswer?: (
@@ -220,6 +229,14 @@ export function resolveProviderRuntime(
     });
   }
   const adapter = getProviderAdapter(providerId);
+  if (
+    !adapter.executable
+    || !adapter.versionArgs
+    || !adapter.defaultArgs
+    || adapter.capabilities.toolFree === undefined
+  ) {
+    throw new Error(`Native provider ${providerId} is missing launch metadata`);
+  }
   return {
     providerId,
     transport: "oneshot",

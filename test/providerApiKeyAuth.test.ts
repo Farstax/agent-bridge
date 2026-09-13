@@ -79,7 +79,7 @@ describe("provider API-key authentication", () => {
     await expect(verifyProviderApiKey("claude", {
       env,
       useCache: false,
-      claudeAcpProbe: async (candidateEnv) => { probeEnv = candidateEnv; },
+      acpProbe: async (_provider, candidateEnv) => { probeEnv = candidateEnv; },
       execFile: async () => { throw new Error("native Claude probe must not execute"); },
     })).resolves.toBe(true);
     expect(probeEnv).not.toBeNull();
@@ -102,16 +102,16 @@ describe("provider API-key authentication", () => {
     await expect(verifyProviderApiKey("claude", {
       env,
       useCache: false,
-      claudeAcpProbe: async () => { throw new Error("authentication required"); },
+      acpProbe: async () => { throw new Error("authentication required"); },
     })).resolves.toBe(false);
     expect(isProviderApiKeyVerified("claude", env)).toBe(false);
   });
 
   it("does not probe when the key is missing or blank", async () => {
     let calls = 0;
-    const claudeAcpProbe = async () => { calls += 1; };
-    await expect(verifyProviderApiKey("claude", { env: {}, claudeAcpProbe, useCache: false })).resolves.toBe(false);
-    await expect(verifyProviderApiKey("claude", { env: { ANTHROPIC_API_KEY: "   " }, claudeAcpProbe, useCache: false })).resolves.toBe(false);
+    const acpProbe = async () => { calls += 1; };
+    await expect(verifyProviderApiKey("claude", { env: {}, acpProbe, useCache: false })).resolves.toBe(false);
+    await expect(verifyProviderApiKey("claude", { env: { ANTHROPIC_API_KEY: "   " }, acpProbe, useCache: false })).resolves.toBe(false);
     expect(calls).toBe(0);
   });
 
@@ -146,7 +146,7 @@ describe("provider API-key authentication", () => {
 
     await expect(verifyProviderApiKey("codex", {
       env,
-      codexAcpProbe: async () => undefined,
+      acpProbe: async () => undefined,
     })).resolves.toBe(true);
     const after = filterProviderCredentialEnv("codex", env);
     expect(after.CODEX_API_KEY).toBe("codex-candidate");
@@ -173,19 +173,14 @@ describe("provider API-key authentication", () => {
     const started: string[] = [];
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const codexAcpProbe = async () => {
-      started.push("codex-acp-probe");
-      await gate;
-    };
-    const claudeAcpProbe = async () => {
-      started.push("claude-acp-probe");
+    const acpProbe = async (provider: ProviderId) => {
+      started.push(`${provider}-acp-probe`);
       await gate;
     };
 
     const verification = verifyConfiguredProviderApiKeys({
       env,
-      claudeAcpProbe,
-      codexAcpProbe,
+      acpProbe,
       useCache: false,
     });
     await Promise.resolve();

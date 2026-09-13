@@ -19,11 +19,11 @@ describe("interactive API-key startup", () => {
       ANTHROPIC_API_KEY: "claude-startup-key",
     };
     let calls = 0;
-    const claudeAcpProbe: AcpApiKeyProbeExecutor = async () => {
+    const acpProbe: AcpApiKeyProbeExecutor = async () => {
       calls += 1;
     };
 
-    await prepareInteractiveCliAuth(env, { claudeAcpProbe });
+    await prepareInteractiveCliAuth(env, { acpProbe });
     const available = getAvailableCliKinds({
       homeDir: "/home/tester",
       env,
@@ -49,11 +49,11 @@ describe("interactive API-key startup", () => {
         BRIDGE_ENV_FILE: "  custom.env  ",
       };
       let calls = 0;
-      const claudeAcpProbe: AcpApiKeyProbeExecutor = async () => {
+      const acpProbe: AcpApiKeyProbeExecutor = async () => {
         calls += 1;
       };
 
-      await prepareInteractiveCliAuthStartup({ env, cwd, claudeAcpProbe });
+      await prepareInteractiveCliAuthStartup({ env, cwd, acpProbe });
       const available = getAvailableCliKinds({
         homeDir: "/home/tester",
         env,

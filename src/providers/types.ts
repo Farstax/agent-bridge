@@ -13,16 +13,19 @@ export interface ProviderCapabilities {
   readonly interactive: boolean;
   readonly fallbackTarget: boolean;
   /** Supports buildCliInvocation's toolMode: "none" (tool-free mode). */
-  readonly toolFree: boolean;
+  /** Native-only capability; migrated ACP providers own this in AcpProviderPolicy. */
+  readonly toolFree?: boolean;
 }
-
 
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly displayName: string;
-  readonly executable: string;
-  readonly versionArgs: readonly string[];
-  readonly defaultArgs: readonly string[];
+  /** Native-only process identity used by legacy/native launch owners. */
+  readonly executable?: string;
+  /** Native-only version argv. ACP versions come from the resolved release-locked runtime. */
+  readonly versionArgs?: readonly string[];
+  /** Native-only default argv. ACP launch args come from the resolved release-locked runtime. */
+  readonly defaultArgs?: readonly string[];
   readonly capabilities: ProviderCapabilities;
   readonly processWatch?: import("../types.js").CliProcessWatch;
 }
@@ -32,7 +35,7 @@ export type ChainCliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor
 
 // Issue #135 Phase 3B — provider runtime invocation/parsing boundary.
 // Shared request/result shapes for provider runtime modules. Deliberately narrower than
-// buildCliInvocation()'s full parameter set: no bot/sessionMode/logFile/
+// buildCliInvocation()'s full parameter set: no bot/logFile/
 // homeDir, since only antigravity uses logFile/homeDir and bot is already
 // implied by which runtime module is called.
 export interface ProviderInvocationRequest {
@@ -53,8 +56,6 @@ export interface ProviderInvocationRequest {
   outputDir: string | null;
   effort: import("../effort.js").EffortLevel | null;
   toolMode: "default" | "none";
-  /** Keep provider-owned native background/task work inside this CLI turn until terminal completion. */
-  nativeCompletion?: boolean;
 }
 
 export interface ProviderInvocation {

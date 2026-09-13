@@ -2,7 +2,11 @@ import * as acp from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 import { runAcpTurn, type AcpRetainedEvent, type AcpTurnResult } from "../src/acp/client.js";
 import { createCodexAcpAnswerPreview } from "../src/providers/codexAcpAnswerPreview.js";
-import { toCliResult } from "../src/providers/codexAcpRuntime.js";
+import { acpTurnResultToCliResult } from "../src/providers/acpRuntime.js";
+import { codexAcpPolicy } from "../src/providers/codexAcpPolicy.js";
+
+const toCliResult = (result: AcpTurnResult) =>
+  acpTurnResultToCliResult("codex", result, codexAcpPolicy);
 
 function createForeignSessionAgent(): acp.AgentApp {
   return acp.agent({ name: "foreign-session-test-agent" })

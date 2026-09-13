@@ -1,9 +1,11 @@
+import { join } from "node:path";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
 import type { AcpTurnResult } from "../acp/client.js";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpObservedUpdate } from "../acp/replay.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
+import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
 import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
 import { createCodexAcpAnswerPreview } from "./codexAcpAnswerPreview.js";
 import { createCodexAcpRunActivityProjector } from "./codexAcpRunActivity.js";
@@ -24,11 +26,6 @@ export function initialAgentMode(request: Pick<ProviderInvocationRequest, "execu
   return "read-only";
 }
 
-/** @deprecated Model/effort configuration is negotiated through ACP session config options. */
-export function codexAcpConfig(_request: Pick<ProviderInvocationRequest, "model" | "effort">): Record<string, unknown> {
-  return {};
-}
-
 /** Codex ACP reads CODEX_API_KEY only during authenticate({ methodId: "api-key" }). */
 export function codexAcpChildAuthEnv(
   env: Record<string, string | undefined> = process.env,
@@ -39,11 +36,42 @@ export function codexAcpChildAuthEnv(
   return {};
 }
 
+/** Provider-owned authentication preparation; shared auth only dispatches the selected capability. */
+export async function verifyCodexAcpApiKey(
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  if (!env.CODEX_API_KEY?.trim()) throw new Error("CODEX_API_KEY is not configured");
+  await runAcpApiKeyProbe({
+    label: "Codex",
+    command: resolveCodexAcpCommand(env),
+    args: resolveCodexAcpArgs(env),
+    env: { ...env },
+    authenticateMethodId: "api-key",
+    prepareEnv: (root, childEnv) => {
+      const prepared: NodeJS.ProcessEnv = {
+        ...childEnv,
+        CODEX_HOME: join(root, ".codex"),
+        NO_BROWSER: "1",
+        INITIAL_AGENT_MODE: "agent",
+      };
+      delete prepared.DEFAULT_AUTH_REQUEST;
+      return prepared;
+    },
+  });
+}
+
+function splitPreference(raw: string | undefined): string[] {
+  return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
+}
+
 function sessionSettings(
   request: ProviderInvocationRequest,
   env: Record<string, string | undefined>,
 ): AcpProviderSessionSettings {
-  const config = acpSessionConfigIntents("codex", request, env);
+  const config = acpSessionConfigIntents("codex", request, {
+    model: splitPreference(env.CODEX_MODEL_PREFERENCE),
+    thoughtLevel: env.CODEX_EFFORT?.trim() ? [env.CODEX_EFFORT.trim()] : [],
+  });
   return config.length > 0 ? { config } : {};
 }
 
@@ -143,6 +171,7 @@ export const codexAcpPolicy: AcpProviderPolicy = {
   resolveExecutable: resolveCodexAcpCommand,
   resolveArgs: (env) => resolveCodexAcpArgs(env),
   qualificationEnvKeys: CODEX_QUALIFICATION_ENV_KEYS,
+  verifyApiKey: verifyCodexAcpApiKey,
   createActivityProjector: createCodexAcpRunActivityProjector,
   buildChildEnv(request, env) {
     return {

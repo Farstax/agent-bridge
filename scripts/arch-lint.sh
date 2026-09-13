@@ -82,6 +82,42 @@ if [ -n "$worker_violations" ]; then
   exit 1
 fi
 
+# Migrated ACP provider ownership: shared session/auth modules must not recover
+# provider-specific compatibility contracts, and deleted provider runtime/auth
+# facades must not return. Provider differences belong in AcpProviderPolicy.
+acp_ownership_violations=""
+check_acp_ownership_file() {
+  local path="$1"
+  local pattern="$2"
+  [ -f "$path" ] || return 0
+  local matches
+  matches=$(grep -nE "$pattern" "$path" || true)
+  if [ -n "$matches" ]; then
+    acp_ownership_violations+="${path}:${matches}"$'\n'
+  fi
+}
+
+check_acp_ownership_file "$TARGET_DIR/acp/sessionConfig.ts" '_MODEL_PREFERENCE|_EFFORT|providerId\.toUpperCase'
+check_acp_ownership_file "$TARGET_DIR/providers/apiKeyAuth.ts" 'CodexAcpApiKeyProbeExecutor|codexAcpProbe|claudeAcpProbe|getAcpProviderApiKeyProbe|provider.*(===|!==).*(codex|claude)|CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'
+check_acp_ownership_file "$TARGET_DIR/providers/registry.ts" 'ACP_API_KEY_PROBES|getAcpProviderApiKeyProbe'
+check_acp_ownership_file "$TARGET_DIR/cli.ts" 'nativeCompletion|void sessionMode'
+check_acp_ownership_file "$TARGET_DIR/providers/types.ts" 'nativeCompletion'
+
+for obsolete_acp_module in \
+  "$TARGET_DIR/providers/codexAcpRuntime.ts" \
+  "$TARGET_DIR/providers/codexAcpAuthProbe.ts"
+do
+  if [ -e "$obsolete_acp_module" ]; then
+    acp_ownership_violations+="${obsolete_acp_module}"$'\n'
+  fi
+done
+
+if [ -n "$acp_ownership_violations" ]; then
+  echo "arch-lint: shared ACP ownership must remain provider-neutral" >&2
+  printf '%s' "$acp_ownership_violations" >&2
+  exit 1
+fi
+
 # Advisor/conversation SQL ownership guard (Phase 4B, issue #135): the
 # advisor_calls/advisor_attempts/conversation_turns/conversation_summaries
 # tables must only be referenced from their owning repository, the legacy

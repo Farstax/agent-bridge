@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   acpProviderIdForBotName,
+  resolveProviderRuntime,
   supportsProvisionalAnswers,
 } from "../src/providers/acpRuntime.js";
 import {
@@ -28,17 +29,21 @@ describe("provider registry", () => {
     const adapter = getProviderAdapter("codex");
     expect(adapter.id).toBe("codex");
     expect(adapter.displayName).toBe("Codex");
-    expect(adapter.executable).toBe("codex-acp");
-    expect(adapter.defaultArgs).toEqual([]);
+    expect(adapter.executable).toBeUndefined();
+    expect(adapter.defaultArgs).toBeUndefined();
+    expect(adapter.versionArgs).toBeUndefined();
     expect(adapter.capabilities.interactive).toBe(true);
-    expect(adapter.capabilities.toolFree).toBe(false);
+    expect(adapter.capabilities.toolFree).toBeUndefined();
   });
 
   it("returns the claude adapter", () => {
     const adapter = getProviderAdapter("claude");
     expect(adapter.id).toBe("claude");
     expect(adapter.displayName).toBe("Claude Code");
-    expect(adapter.executable).toBe("claude");
+    expect(adapter.executable).toBeUndefined();
+    expect(adapter.defaultArgs).toBeUndefined();
+    expect(adapter.versionArgs).toBeUndefined();
+    expect(adapter.capabilities.toolFree).toBeUndefined();
   });
 
   it("returns the agy adapter", () => {
@@ -46,6 +51,36 @@ describe("provider registry", () => {
     expect(adapter.id).toBe("agy");
     expect(adapter.displayName).toBe("Antigravity");
     expect(adapter.executable).toBe("agy");
+    expect(adapter.defaultArgs).toEqual(["--print"]);
+    expect(adapter.versionArgs).toEqual(["--version"]);
+  });
+
+  it("retains native launch metadata for unmigrated Grok and Cursor", () => {
+    expect(getProviderAdapter("grok")).toMatchObject({
+      executable: "grok",
+      versionArgs: ["--version"],
+      defaultArgs: ["-p", "--output-format", "streaming-json"],
+    });
+    expect(getProviderAdapter("cursor")).toMatchObject({
+      executable: "cursor-agent",
+      versionArgs: ["--version"],
+      defaultArgs: ["-p", "--output-format", "json"],
+    });
+    expect(resolveProviderRuntime("agy", { ANTIGRAVITY_COMMAND: "/native/agy" })).toMatchObject({
+      transport: "oneshot",
+      executable: "/native/agy",
+      args: ["--print"],
+    });
+    expect(resolveProviderRuntime("grok", { GROK_COMMAND: "/native/grok" })).toMatchObject({
+      transport: "oneshot",
+      executable: "/native/grok",
+      args: ["-p", "--output-format", "streaming-json"],
+    });
+    expect(resolveProviderRuntime("cursor", { CURSOR_COMMAND: "/native/cursor" })).toMatchObject({
+      transport: "oneshot",
+      executable: "/native/cursor",
+      args: ["-p", "--output-format", "json"],
+    });
   });
 
   it("validates known provider ids", () => {

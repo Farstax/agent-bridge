@@ -1380,7 +1380,6 @@ export class BridgeEngine {
         outputDir: acpRequest.outputDir,
         effort: acpRequest.effort,
         toolMode: acpRequest.toolMode ?? "default",
-        nativeCompletion: true,
       }, identities);
       registerProviderOutput(identities.runId, executionKind, parsed.text);
       captureParsedProviderOutput(executionKind, parsed.text, parsed.telemetry);
@@ -1454,7 +1453,6 @@ export class BridgeEngine {
       includeResponseContract: promptForCli.includeResponseContract,
       attachments,
       outputDir: outDir,
-      nativeCompletion: true,
     });
     try {
       let stdout: string;
@@ -1628,7 +1626,6 @@ export class BridgeEngine {
       model,
       prompt,
       sessionId: null,
-      sessionMode: "resume",
       executionMode: this.opts.executionMode,
       outputFormat: executionKind === "antigravity"
         ? "stream-json"
@@ -1640,7 +1637,6 @@ export class BridgeEngine {
       includeResponseContract,
       outputDir: outDir,
       attachments,
-      nativeCompletion: true,
     });
 
     try {
@@ -1805,7 +1801,6 @@ export class BridgeEngine {
       effort: resolveEffort(executionKind, this.db),
       prompt: fallbackPromptForCli.prompt,
       sessionId: null,
-      sessionMode: "resume",
       executionMode: this.opts.executionMode,
       outputFormat: executionKind === "antigravity"
         ? "stream-json"
@@ -1817,7 +1812,6 @@ export class BridgeEngine {
       includeResponseContract: fallbackPromptForCli.includeResponseContract,
       outputDir: outDir,
       attachments,
-      nativeCompletion: true,
     });
     try {
       const fallbackCwd = this._workingDir(executionKind);

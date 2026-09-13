@@ -21,7 +21,7 @@ acp.agent({ name: "failing-acp-qualification-agent" })
     sessionId: `acp-${randomUUID()}`,
   }))
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
-    // The Bridge auth probe (codexAcpAuthProbe.ts) sends this exact bounded
+    // The generic Bridge ACP auth probe sends this exact bounded
     // prompt before qualification's own fresh_prompt turn. It must succeed so
     // CODEX_API_KEY verification passes and the credential actually reaches
     // this fixture's env for the qualification turn below to redact.

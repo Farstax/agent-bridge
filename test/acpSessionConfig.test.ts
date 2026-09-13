@@ -88,14 +88,14 @@ describe("negotiated ACP session configuration", () => {
     expect(resolveEffort("claude", persistedDb, { CLAUDE_EFFORT: "high" } as any)).toBe("high");
     expect(resolveEffort("claude", emptyDb, { CLAUDE_EFFORT: "high" } as any)).toBeNull();
     expect(acpSessionConfigIntents("claude", { model: null, effort: "high" }, {
-      CLAUDE_EFFORT: "high",
+      thoughtLevel: ["high"],
     })).toEqual([{
       category: "thought_level",
       explicitValue: "high",
       preferredValues: ["high"],
     }]);
     expect(acpSessionConfigIntents("claude", { model: null, effort: null }, {
-      CLAUDE_EFFORT: "high",
+      thoughtLevel: ["high"],
     })).toEqual([{
       category: "thought_level",
       explicitValue: null,
@@ -125,7 +125,7 @@ describe("negotiated ACP session configuration", () => {
 
     setAcpProviderDefaultIntent("claude", "thought_level", true);
     expect(acpSessionConfigIntents("claude", { model: null, effort: null }, {
-      CLAUDE_EFFORT: "high",
+      thoughtLevel: ["high"],
     })).toEqual([{
       category: "thought_level",
       explicitValue: null,

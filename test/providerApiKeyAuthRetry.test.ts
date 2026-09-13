@@ -20,22 +20,22 @@ describe("provider API-key verification retry", () => {
       ANTHROPIC_API_KEY: "claude-retry-key",
     };
     let calls = 0;
-    const claudeAcpProbe: AcpApiKeyProbeExecutor = async () => {
+    const acpProbe: AcpApiKeyProbeExecutor = async () => {
       calls += 1;
       if (calls === 1) throw new Error("transient provider failure");
     };
 
-    await expect(verifyProviderApiKey("claude", { env, claudeAcpProbe })).resolves.toBe(false);
+    await expect(verifyProviderApiKey("claude", { env, acpProbe })).resolves.toBe(false);
     expect(isProviderApiKeyVerified("claude", env)).toBe(false);
 
-    await expect(verifyProviderApiKey("claude", { env, claudeAcpProbe })).resolves.toBe(false);
+    await expect(verifyProviderApiKey("claude", { env, acpProbe })).resolves.toBe(false);
     expect(calls).toBe(1);
 
     vi.advanceTimersByTime(PROVIDER_API_KEY_NEGATIVE_CACHE_TTL_MS + 1);
-    await expect(verifyProviderApiKey("claude", { env, claudeAcpProbe })).resolves.toBe(true);
+    await expect(verifyProviderApiKey("claude", { env, acpProbe })).resolves.toBe(true);
     expect(isProviderApiKeyVerified("claude", env)).toBe(true);
 
-    await expect(verifyProviderApiKey("claude", { env, claudeAcpProbe })).resolves.toBe(true);
+    await expect(verifyProviderApiKey("claude", { env, acpProbe })).resolves.toBe(true);
     expect(calls).toBe(2);
   });
 });

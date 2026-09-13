@@ -14,25 +14,17 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
     id: "codex",
     displayName: "Codex",
-    executable: "codex-acp",
-    versionArgs: ["--version"],
-    defaultArgs: [],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
-      toolFree: false,
     },
   },
   claude: {
     id: "claude",
     displayName: "Claude Code",
-    executable: "claude",
-    versionArgs: ["--version"],
-    defaultArgs: [],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
-      toolFree: true,
     },
   },
   agy: {
@@ -101,17 +93,30 @@ export function getAcpProviderPolicy(id: ProviderId): AcpProviderPolicy | null {
   return ACP_POLICIES[id] ?? null;
 }
 
+/** Apply provider-owned exclusive environment metadata without shared provider-name branches. */
+export function applyProviderChildEnvPolicy(
+  id: ProviderId | null,
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const out = { ...env };
+  for (const policy of Object.values(ACP_POLICIES)) {
+    for (const key of policy?.childEnv?.exclusiveKeys ?? []) delete out[key];
+  }
+  Object.assign(out, id ? ACP_POLICIES[id]?.childEnv?.overrides : undefined);
+  return out;
+}
+
 export function supportsToolFreeMode(bot: string): boolean {
   const id = providerIdForBotName(bot);
   if (!id) return false;
-  return getAcpProviderPolicy(id)?.toolFree ?? ADAPTERS[id].capabilities.toolFree;
+  return getAcpProviderPolicy(id)?.toolFree ?? ADAPTERS[id].capabilities.toolFree ?? false;
 }
 
 export function getProcessWatchForCommand(command: string): ProviderAdapter["processWatch"] {
   const executable = basename(command).toLowerCase();
   const commandText = command.toLowerCase();
   const adapter = getProviderAdapters().find((candidate) =>
-    candidate.processWatch && (
+    candidate.processWatch && candidate.executable && (
       candidate.executable === executable
       || commandText.includes(candidate.executable)
       || (candidate.id === "agy" && commandText.includes("antigravity"))

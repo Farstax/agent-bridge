@@ -32,7 +32,7 @@ describe("provider credential redaction", () => {
   it("keeps split API keys out of logs, events, progress, and failures", async () => {
     const apiKey = "provider-secret-572-do-not-leak";
     const env = { ANTHROPIC_API_KEY: apiKey };
-    await verifyProviderApiKey("claude", { env, claudeAcpProbe: async () => undefined });
+    await verifyProviderApiKey("claude", { env, acpProbe: async () => undefined });
 
     const logs: string[] = [];
     const events: BridgeEvent[] = [];
@@ -79,7 +79,7 @@ describe("provider credential redaction", () => {
       ANTHROPIC_API_KEY: "claude-secret-572",
       CODEX_API_KEY: "codex-secret-572",
     };
-    await verifyProviderApiKey("claude", { env, claudeAcpProbe: async () => undefined });
+    await verifyProviderApiKey("claude", { env, acpProbe: async () => undefined });
 
     const script = [
       'const text=JSON.stringify({claude:Boolean(process.env.ANTHROPIC_API_KEY),codex:Boolean(process.env.CODEX_API_KEY)});',

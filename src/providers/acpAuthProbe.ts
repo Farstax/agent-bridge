@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
-import { resolveCodexAcpArgs, resolveCodexAcpCommand } from "./codexAcpConfig.js";
 
 const ACP_AUTH_PROBE_TIMEOUT_MS = 15_000;
 const ACP_AUTH_PROBE_PROMPT = "Reply with exactly OK.";
@@ -115,33 +114,4 @@ export async function runAcpApiKeyProbe(options: AcpApiKeyProbeOptions): Promise
     killProcessGroup(child);
     rmSync(root, { recursive: true, force: true });
   }
-}
-
-/**
- * Verify CODEX_API_KEY through the selected Codex ACP adapter itself. This is
- * deliberately independent of the removed native Codex runtime.
- */
-export async function runCodexAcpApiKeyProbe(
-  env: Record<string, string | undefined>,
-): Promise<void> {
-  if (!env.CODEX_API_KEY?.trim()) throw new Error("CODEX_API_KEY is not configured");
-  await runAcpApiKeyProbe({
-    label: "Codex",
-    command: resolveCodexAcpCommand(env),
-    args: resolveCodexAcpArgs(env),
-    env: { ...env },
-    authenticateMethodId: "api-key",
-    prepareEnv: (root, childEnv) => {
-      const prepared: NodeJS.ProcessEnv = {
-        ...childEnv,
-        CODEX_HOME: join(root, ".codex"),
-        NO_BROWSER: "1",
-        INITIAL_AGENT_MODE: "agent",
-      };
-      // The probe authenticates explicitly. A caller-provided default request
-      // must not create a second, implicit auth path inside session/new.
-      delete prepared.DEFAULT_AUTH_REQUEST;
-      return prepared;
-    },
-  });
 }

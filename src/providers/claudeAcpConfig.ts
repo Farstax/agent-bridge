@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { resolveBridgeProjectDir } from "./codexAcpConfig.js";
+import { resolveBridgeProjectDir } from "./acpConfig.js";
 
 export function bundledClaudeAcpCommand(
   env: Record<string, string | undefined> = process.env,

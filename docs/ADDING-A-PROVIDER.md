@@ -1,18 +1,26 @@
-# Adding a CLI provider
+# Adding a provider
 
-Agent Bridge coordinates native coding-agent CLIs. A provider integration should preserve that boundary: the provider owns native reasoning, tools, sessions, and provider-specific protocol; Agent Bridge owns durable Run identity, routing/fallback, process lifecycle, cancellation/fencing, delivery, and other cross-provider safety concerns.
+Agent Bridge uses ACP v1 as the canonical inward provider contract. The
+provider owns reasoning, tools, and native session state; ACP owns agent
+communication; Agent Bridge owns durable Run identity, routing/fallback,
+process lifecycle, cancellation/fencing, delivery, and other cross-provider
+safety concerns.
 
-This guide describes the current integration path. It intentionally does **not** introduce a plugin framework or make provider addition a one-file operation.
+The normal onboarding unit is a Registry identity plus release pin and a small
+policy entry. A provider-specific runtime/parser is only for a provider that
+has not adopted ACP; do not create one for a Registry-listed ACP agent.
 
 ## Decide the integration depth first
 
 Keep three concerns separate:
 
-1. **Provider CLI contract** — Agent Bridge can describe the provider, construct an invocation, execute it through the shared supervisor, parse the result, classify important failures, and test the observable contract.
+1. **ACP contract** — the Registry-listed agent is release-pinned and qualified through the shared ACP runtime.
 2. **Ordinary Bridge routing and surfaces** — the provider can actually be selected by normal Runs, configured by Bridge, participate in fallback, and optionally receive a dedicated provider-locked service or surface.
-3. **Managed lifecycle** — Agent Bridge installation/upgrade tooling installs, pins, authenticates, checks, or automatically qualifies the CLI.
+3. **Managed lifecycle** — Agent Bridge installation/upgrade tooling installs, pins, authenticates, checks, or qualifies the selected agent distribution.
 
-An integration can start with the CLI contract without making Agent Bridge manage installation or creating a dedicated service. However, a provider that should participate in ordinary Bridge Runs must also be represented in the current closed Bridge routing/configuration types.
+A provider that should participate in ordinary Bridge Runs must be represented
+in the current closed Bridge routing/configuration types. Installation and a
+dedicated service remain separate product decisions.
 
 ## Architecture boundaries
 
@@ -20,51 +28,51 @@ An integration can start with the CLI contract without making Agent Bridge manag
 Bridge Run / routing
         |
         v
-src/cli.ts
-  common orchestration + explicit provider dispatch
+release-locked ACP Registry entry
+        +
+src/providers/<provider>AcpPolicy.ts
+  provider-specific auth/authority/config/presentation only
         |
-        +--> src/providers/<provider>Runtime.ts
-        |      provider-specific argv/stdin and output parsing
+        v
+src/providers/acpRuntime.ts + src/acp/
+  generic launch/session/replay/cancel/result plumbing
         |
         v
 src/cliSupervisor.ts
-  shared spawn / env / lock / timeout / cancellation / redaction / settlement
-        |
-        v
-native provider executable
+  shared process supervision and fencing
 ```
 
-`src/cliSupervisor.ts` is the authoritative child-process lifecycle. New providers should normally use it unchanged. Provider command construction, result parsing, session protocol, and provider-specific completion semantics belong in the provider runtime, not the supervisor.
-
-ACP v1 is the future provider-runtime protocol. See [ACP.md](ACP.md) for the
-ownership split, session-identity mapping, and the parallel Codex ACP path.
-Do not add a proprietary protocol wrapper around ACP, and do not parse
-provider-native events inside `src/acp/`. Future ACP-native providers should
-prefer launch metadata plus qualification over a bespoke parser/runtime.
+`src/providers/acpRuntime.ts` and `src/acp/` are the authoritative ACP lifecycle.
+`src/cliSupervisor.ts` remains the authoritative child-process lifecycle. Use
+both unchanged for an ordinary ACP provider. See [ACP.md](ACP.md) for the full
+ownership and session-identity contract.
 
 The shared provider contracts live in `src/providers/types.ts`:
 
 - `PROVIDER_IDS` / `ProviderId` — canonical provider identity;
-- `ProviderAdapter` — executable/version metadata, capabilities, and optional process watch;
-- `ProviderCapabilities` — cross-provider capability metadata;
+- `ProviderAdapter` — presentation/routing metadata, plus native launch metadata only for non-ACP providers;
+- `ProviderCapabilities` — routing capabilities, plus native-only capabilities where applicable;
 - `ProviderInvocationRequest` — common inputs to provider invocation builders;
-- `ProviderInvocation` — command, arguments/stdin, and native session mode returned by a provider runtime.
+- `ProviderInvocation` — the shared process invocation shape used by ACP and remaining native providers.
 
-`ProviderAdapter` is currently metadata-oriented. Invocation construction and output parsing are not registered polymorphically; `src/cli.ts` explicitly dispatches to provider runtime modules.
+For ACP providers, distribution/version/launch authority comes from the
+release-locked Registry entry and `AcpProviderPolicy`, not duplicated adapter
+fields or `src/cli.ts` branches.
 
 ## 1. Add provider identity and registry metadata
 
 Add the canonical provider identifier to `PROVIDER_IDS` in `src/providers/types.ts`; `ProviderId` is derived from that list.
 
-Add the corresponding entry to `src/providers/registry.ts` with:
+Add the corresponding presentation/routing entry to `src/providers/registry.ts` with:
 
 - `id`;
 - `displayName`;
-- default executable;
-- `versionArgs`;
-- `defaultArgs` where applicable;
-- `interactive`, `fallbackTarget`, and `toolFree` capabilities;
-- `processWatch` only when the provider exposes a provider-specific process failure signal that ordinary process settlement cannot represent.
+- `interactive` and `fallbackTarget` capabilities.
+
+Do not add `executable`, `versionArgs`, `defaultArgs`, or native `toolFree`
+metadata for an ACP provider. Those facts come from its locked Registry entry
+and ACP policy. Native-only metadata remains required for an explicitly
+non-ACP provider.
 
 Keep capabilities factual and deterministic. Do not infer them from model responses.
 
@@ -72,60 +80,50 @@ If Bridge-facing vocabulary differs from the canonical provider ID, update the m
 
 Adding a `ProviderId` also widens exhaustive provider records. Inspect compiler failures and existing `Record<ProviderId, ...>` structures rather than adding a default branch that hides missing provider behavior. One current example is `CAPACITY_PATTERNS` in `src/providers/errorClassification.ts`.
 
-## 2. Add the provider runtime
+## 2. Lock the ACP distribution and add policy only where needed
 
-For an ACP provider, add Registry metadata and a narrow policy beside `src/providers/acpRuntime.ts`. Do not add a provider-specific ACP lifecycle. Native providers can follow modules such as `grokRuntime.ts`.
+Add the provider-to-agent mapping and exact qualified distribution/version to
+the release-owned ACP Registry lock. Then register an `AcpProviderPolicy` in
+`src/providers/registry.ts`.
 
-The normal boundary is:
+The smallest policy contains only identity and presentation:
 
 ```ts
-import type { CliResult } from "../types.js";
-import type {
-  ProviderInvocation,
-  ProviderInvocationRequest,
-} from "./types.js";
-
-export function buildInvocation(
-  request: ProviderInvocationRequest,
-): ProviderInvocation {
-  return {
-    command: request.command,
-    args: [/* provider-native arguments */],
-    nativeSessionMode: request.sessionId ? "resume" : "fresh",
-  };
-}
-
-export function parseResult(stdout: string): CliResult {
-  // Validate the provider's real observable output contract and fail closed
-  // on malformed or contradictory terminal evidence.
-  throw new Error("implement provider parser");
-}
+export const exampleAcpPolicy: AcpProviderPolicy = {
+  providerId: "example",
+  registryAgentId: "example-agent",
+  presentation: { provisionalAnswers: false },
+};
 ```
 
-The provider runtime owns applicable behavior such as:
+Add hooks only for differences ACP or the Registry cannot standardize enough,
+such as auth preparation, Bridge authority/mode mapping, session configuration,
+credential-safe child environment policy, error classification, or
+presentation. Qualification must exercise the exact release-selected runtime.
 
-- prompt placement and response-contract wrapping requirements;
-- structured-output flags;
-- model and effort flags;
-- safe versus trusted execution flags;
-- fresh versus resumed session arguments;
+If the agent is absent from the public Registry, a release may provide a narrow
+launch override that still feeds `acpRuntime.ts`. Do not create a parallel
+extension or mutable-latest resolution path.
+
+## 3. Native fallback for a provider without ACP
+
+Use this path only when the provider has not migrated to ACP and its migration
+issue explicitly leaves native execution in scope. Add native launch metadata
+to `ProviderAdapter`, implement a focused `<provider>Runtime.ts` for
+argv/stdin/result parsing, and wire its build/parse dispatch through
+`src/cli.ts`.
+
+The native runtime may own:
+
+- prompt placement and structured-output flags;
+- model, effort, permission, and fresh/resume argv;
 - attachment support or explicit rejection;
 - provider-native completion/session evidence;
-- parsing structured output and terminal events;
-- rejecting malformed or contradictory successful output.
+- strict parsing of machine-readable terminal output.
 
-Prefer a machine-readable native output mode when the CLI provides one. Do not spawn the process from the provider runtime. Return a `ProviderInvocation`; shared process execution remains in `cliSupervisor.ts`.
-
-## 3. Wire invocation and parsing through `src/cli.ts`
-
-Import the runtime into `src/cli.ts` and extend both explicit dispatch points:
-
-- `buildCliInvocation()` calls the provider's `buildInvocation()`;
-- `parseCliResult()` calls the provider's `parseResult()`.
-
-Keep `runCli()` / `runCliAsync()` on the shared `runSupervisedProcess()` path.
-
-The explicit dispatch is current architecture. Do not turn a provider-addition change into a plugin-system refactor unless a separate accepted change establishes concrete duplication or failure evidence that justifies it.
+Do not put process supervision in the provider module. Keep it on
+`cliSupervisor.ts`, and remove the native metadata/runtime/dispatch when that
+provider later completes ACP migration and its rollback window closes.
 
 ## 4. Make it routeable through ordinary Bridge Runs when required
 
@@ -246,15 +244,13 @@ src/providers/types.ts
   + ProviderId
 
 src/providers/registry.ts
-  + executable/version/capability metadata
+  + presentation/routing metadata
 
-src/providers/exampleRuntime.ts
-  + buildInvocation(request)
-  + parseResult(stdout)
+release-owned ACP Registry lock
+  + exact agent distribution/version
 
-src/cli.ts
-  + invocation dispatch
-  + parse dispatch
+src/providers/exampleAcpPolicy.ts (only when defaults are insufficient)
+  + auth/authority/config/environment/presentation policy
 
 src/providers/errorClassification.ts
   + exhaustive provider classification entry
@@ -286,12 +282,13 @@ fallback-chain membership
 
 Before opening the PR:
 
-- [ ] Confirm the native CLI exposes a usable headless/non-interactive contract.
-- [ ] Add `ProviderId` and registry metadata/capabilities.
+- [ ] Confirm the agent exposes the required ACP v1 contract.
+- [ ] Add `ProviderId` and presentation/routing metadata.
+- [ ] Lock the exact qualified ACP Registry distribution/version.
+- [ ] Add only the ACP policy hooks the provider actually needs.
 - [ ] Resolve exhaustive `ProviderId` records, including error classification.
-- [ ] Add a provider runtime with invocation construction and fail-closed parsing.
-- [ ] Wire invocation and parsing through `src/cli.ts`.
 - [ ] Keep execution on the shared `cliSupervisor.ts` path.
+- [ ] For an explicitly non-ACP provider only, add native launch metadata, a fail-closed runtime/parser, and `src/cli.ts` dispatch.
 - [ ] If routeable, add `BotKind`, Bridge config, routing/provider-lock mappings, and exhaustive `BotKind` records.
 - [ ] Add a dedicated surface/service only when independently required.
 - [ ] Define authoritative authentication/readiness evidence.

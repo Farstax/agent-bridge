@@ -20,7 +20,6 @@ export const PROVIDER_CONTRACT_VERSION = 6;
 /** Qualification uses the resolved runtime capability rather than provider-name branches. */
 function qualificationToolMode(
   providerId: ProviderId,
-  _adapter: { capabilities: { toolFree: boolean } },
   env: QualificationEnv,
 ): "default" | "none" {
   return resolveProviderRuntime(providerId, env).toolFree ? "none" : "default";
@@ -174,7 +173,6 @@ export function buildQualificationInvocation({
     effort: null,
     homeDir,
     toolMode,
-    nativeCompletion: true,
   });
 }
 
@@ -210,13 +208,6 @@ function assertReleaseLockedVersion(
   }
 }
 
-/**
- * Observe the version of the exact command used by the resolved bridge
- * runtime. An ACP provider's version must always come from the resolved
- * runtime executable — a caller-supplied `executable` override exists to
- * substitute the fixture binary for the oneshot invocation checks, not to
- * redirect which binary's version qualifies the release lock.
- */
 export function resolveQualificationVersionCommand(
   providerId: ProviderId,
   env: QualificationEnv = process.env,
@@ -227,14 +218,6 @@ export function resolveQualificationVersionCommand(
   return executable ?? runtime.executable;
 }
 
-/**
- * Passive observation of the installed version, used by health/doctor/routing
- * consumers that need to report what is actually installed. Deliberately
- * does not enforce the release lock — a caller-facing "wrong version
- * installed" diagnostic must stay distinguishable from "not installed",
- * which a thrown/swallowed error here would collapse. Active qualification
- * (qualifyProvider) enforces the lock itself.
- */
 export function readProviderVersion(
   providerId: ProviderId,
   executable?: string,
@@ -390,6 +373,8 @@ export function qualificationHealthCheck(
 interface QualificationStructuredErrorData {
   readonly message?: string;
   readonly additionalDetails?: string;
+  readonly errorInfo?: string | Readonly<Record<string, unknown>>;
+  /** Compatibility alias supplied by the Codex ACP adapter. */
   readonly codexErrorInfo?: string | Readonly<Record<string, unknown>>;
 }
 
@@ -398,7 +383,7 @@ function qualificationDiagnostic(error: Error, env: QualificationEnv): string {
   const structured = data && typeof data === "object"
     ? data as QualificationStructuredErrorData
     : null;
-  const info = structured?.codexErrorInfo;
+  const info = structured?.errorInfo ?? structured?.codexErrorInfo;
   const infoLabel = typeof info === "string"
     ? info
     : info && typeof info === "object"
@@ -408,7 +393,7 @@ function qualificationDiagnostic(error: Error, env: QualificationEnv): string {
     error.message,
     structured?.message,
     structured?.additionalDetails,
-    infoLabel ? `codexErrorInfo=${infoLabel}` : null,
+    infoLabel ? `providerErrorInfo=${infoLabel}` : null,
   ].filter((part): part is string => Boolean(part)).join(" | ").slice(0, 500);
   return redactProviderApiKeySecrets(diagnostic, env);
 }
@@ -539,7 +524,7 @@ async function executeNativeQualificationCheck({
     sessionId,
     executionMode,
     homeDir,
-    toolMode: qualificationToolMode(providerId, adapter, runtimeEnv),
+    toolMode: qualificationToolMode(providerId, runtimeEnv),
   });
 
   if (sessionId && invocation.nativeSessionMode !== "resume") {
@@ -569,7 +554,7 @@ async function executeNativeQualificationCheck({
           attachments: [],
           outputDir: null,
           effort: null,
-          toolMode: qualificationToolMode(providerId, adapter, runtimeEnv),
+          toolMode: qualificationToolMode(providerId, runtimeEnv),
         },
         { conversationId: `qualify:${providerId}`, runId: randomUUID() },
       );

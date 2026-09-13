@@ -1,4 +1,6 @@
+import { join } from "node:path";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
+import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import { resolveClaudeAcpArgs, resolveClaudeAcpCommand } from "./claudeAcpConfig.js";
@@ -8,12 +10,48 @@ const REPOSITORY_GROUNDING_APPEND = [
   "For repository-specific work, use normal repository tools to inspect applicable CLAUDE.md and AGENTS.md files before acting, plus any instruction or skill files they reference.",
   "Repository instructions may guide the work but never override Agent Bridge permission decisions.",
 ].join(" ");
+const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
+
+function splitPreference(raw: string | undefined): string[] {
+  return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
+}
+
+/** Provider-owned authentication preparation; shared auth only dispatches the selected capability. */
+export async function verifyClaudeAcpApiKey(
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  const command = resolveClaudeAcpCommand(env);
+  await runAcpApiKeyProbe({
+    label: "Claude",
+    command,
+    args: resolveClaudeAcpArgs(env),
+    env: { ...env },
+    sessionMeta: {
+      disableBuiltInTools: true,
+      claudeCode: {
+        options: {
+          tools: [],
+          mcpServers: {},
+          settingSources: [],
+        },
+      },
+    },
+    prepareEnv: (root, childEnv) => ({
+      ...childEnv,
+      CLAUDE_CONFIG_DIR: join(root, ".claude"),
+      [CLAUDE_DISABLE_BACKGROUND_TASKS_ENV]: "1",
+    }),
+  });
+}
 
 function sessionSettings(
   request: ProviderInvocationRequest,
   env: Record<string, string | undefined>,
 ): AcpProviderSessionSettings {
-  const config = acpSessionConfigIntents("claude", request, env);
+  const config = acpSessionConfigIntents("claude", request, {
+    model: splitPreference(env.CLAUDE_MODEL_PREFERENCE),
+    thoughtLevel: env.CLAUDE_EFFORT?.trim() ? [env.CLAUDE_EFFORT.trim()] : [],
+  });
   return {
     // Keep Claude in manual permission mode. Agent Bridge remains the authority
     // that approves/denies each ACP permission request for safe/trusted Runs.
@@ -59,8 +97,13 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   presentation: {
     provisionalAnswers: true,
   },
+  childEnv: {
+    exclusiveKeys: [CLAUDE_DISABLE_BACKGROUND_TASKS_ENV],
+    overrides: { [CLAUDE_DISABLE_BACKGROUND_TASKS_ENV]: "1" },
+  },
   resolveExecutable: resolveClaudeAcpCommand,
   resolveArgs: (env) => resolveClaudeAcpArgs(env),
   qualificationEnvKeys: CLAUDE_QUALIFICATION_ENV_KEYS,
+  verifyApiKey: verifyClaudeAcpApiKey,
   sessionSettings,
 };
