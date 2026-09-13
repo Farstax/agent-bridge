@@ -170,6 +170,57 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
       .toThrow(/manifest database schema identity mismatch/);
   });
 
+interface SharedMigrationArtifact {
+  archive: string;
+  runtimeRoot: string;
+  builderCommit: string;
+}
+
+let sharedMigrationArtifact: SharedMigrationArtifact | null = null;
+
+function getSharedMigrationArtifact(): SharedMigrationArtifact {
+  if (sharedMigrationArtifact) return sharedMigrationArtifact;
+  const root = mkdtempSync(join(tmpdir(), "agent-bridge-shared-migration-artifact-"));
+  const artifactRoot = join(root, "artifact");
+  mkdirSync(artifactRoot, { recursive: true });
+  cpSync("package-lock.json", join(artifactRoot, "package-lock.json"));
+  writeFileSync(join(artifactRoot, "package.json"), JSON.stringify({ type: "module", dependencies: { tsx: "^4.21.0" } }));
+  cpSync("tsconfig.json", join(artifactRoot, "tsconfig.json"));
+  cpSync("src", join(artifactRoot, "src"), { recursive: true });
+  mkdirSync(join(artifactRoot, "scripts"), { recursive: true });
+  cpSync("scripts/rollout-db.ts", join(artifactRoot, "scripts", "rollout-db.ts"));
+  cpSync("scripts/rollout-db-impl.ts", join(artifactRoot, "scripts", "rollout-db-impl.ts"));
+  const nm = join(artifactRoot, "node_modules");
+  mkdirSync(nm);
+  for (const mod of ["better-sqlite3", "bindings", "file-uri-to-path", "tsx", "esbuild", "@esbuild", "get-tsconfig"]) {
+    const src = join("node_modules", mod);
+    if (existsSync(src)) {
+      cpSync(src, join(nm, mod), { recursive: true, dereference: true });
+    }
+  }
+  rmSync(join(nm, ".bin"), { recursive: true, force: true });
+  mkdirSync(join(nm, ".bin"));
+  cpSync("node_modules/tsx/dist/cli.mjs", join(nm, ".bin", "tsx"));
+  writeFileSync(join(artifactRoot, "runtime-marker"), "runtime\n");
+  const builderCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const manifest = buildReleaseManifest({
+    root: artifactRoot, commit: "a".repeat(40), tree: "b".repeat(40), nodeVersion: "v24.15.0",
+    platform: "linux", arch: "x64", builderCommit, builderWorkflowRun: "123",
+    builderWorkflowHead: builderCommit, databaseSchemaVersion: CURRENT_SCHEMA_VERSION,
+  });
+  writeFileSync(join(artifactRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  const archive = join(root, "artifact.tar.gz");
+  execFileSync("tar", ["-czf", archive, "-C", artifactRoot, "."]);
+  const runtimeRoot = join(root, "runtime");
+  mkdirSync(runtimeRoot);
+  execFileSync("tar", ["-xzf", archive, "-C", runtimeRoot]);
+  sharedMigrationArtifact = { archive, runtimeRoot, builderCommit };
+  process.on("exit", () => {
+    try { rmSync(root, { recursive: true, force: true }); } catch {}
+  });
+  return sharedMigrationArtifact;
+}
+
   it("migrates a copied schema-3 fixture with the target runtime before validating schema 7", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-schema-migration-offline-test-"));
     const fixture = join(root, "schema3.sqlite");
@@ -191,32 +242,7 @@ module.safe_extract(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
       VALUES ('discord', 'chat:claimed', 'service-claimed', 'run-claimed', 'acq-claimed', '2026-07-27T00:00:00Z', '2026-07-27T01:00:00Z');
     `);
     database.close();
-    const artifactRoot = join(root, "artifact");
-    mkdirSync(artifactRoot, { recursive: true });
-    cpSync("package-lock.json", join(artifactRoot, "package-lock.json"));
-    writeFileSync(join(artifactRoot, "package.json"), JSON.stringify({ type: "module", dependencies: { tsx: "^4.21.0" } }));
-    cpSync("tsconfig.json", join(artifactRoot, "tsconfig.json"));
-    cpSync("src", join(artifactRoot, "src"), { recursive: true });
-    mkdirSync(join(artifactRoot, "scripts"), { recursive: true });
-    cpSync("scripts/rollout-db.ts", join(artifactRoot, "scripts", "rollout-db.ts"));
-    cpSync("scripts/rollout-db-impl.ts", join(artifactRoot, "scripts", "rollout-db-impl.ts"));
-    cpSync("node_modules", join(artifactRoot, "node_modules"), { recursive: true, dereference: true });
-    rmSync(join(artifactRoot, "node_modules", ".bin"), { recursive: true, force: true });
-    mkdirSync(join(artifactRoot, "node_modules", ".bin"));
-    cpSync("node_modules/tsx/dist/cli.mjs", join(artifactRoot, "node_modules", ".bin", "tsx"));
-    writeFileSync(join(artifactRoot, "runtime-marker"), "runtime\n");
-    const builderCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const manifest = buildReleaseManifest({
-      root: artifactRoot, commit: "a".repeat(40), tree: "b".repeat(40), nodeVersion: "v24.15.0",
-      platform: "linux", arch: "x64", builderCommit, builderWorkflowRun: "123",
-      builderWorkflowHead: builderCommit, databaseSchemaVersion: CURRENT_SCHEMA_VERSION,
-    });
-    writeFileSync(join(artifactRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-    const archive = join(root, "artifact.tar.gz");
-    execFileSync("tar", ["-czf", archive, "-C", artifactRoot, "."]);
-    const runtimeRoot = join(root, "runtime");
-    mkdirSync(runtimeRoot);
-    execFileSync("tar", ["-xzf", archive, "-C", runtimeRoot]);
+    const { archive, runtimeRoot, builderCommit } = getSharedMigrationArtifact();
     const output = join(root, "evidence.json");
     const helperHash = execFileSync("sha256sum", ["scripts/rollout-agent-bridge.sh"], { encoding: "utf8" }).split(" ")[0];
     const evidence = JSON.parse(execFileSync("python3", [
