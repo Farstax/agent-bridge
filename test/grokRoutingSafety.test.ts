@@ -133,7 +133,7 @@ describe("Grok routing safety", () => {
       const chain = new ProviderFallbackChain(["codex", "grok"], db);
       chain.setActiveCli("channel:1", "grok");
       expect(getUserCliPreference(db, "channel:1")).toBe("codex");
-      expect(chain.getActiveCli("chat:1")).toBe("codex");
+      expect(chain.getActiveCli("channel:1")).toBe("codex");
     });
   });
 
