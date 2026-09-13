@@ -9,6 +9,7 @@ import type { ProviderId } from "./types.js";
 
 const ACP_FAILURE_DIAGNOSTIC_MAX_CHARS = 1_200;
 const ACP_FAILURE_CAUSE_DEPTH = 3;
+const diagnosedAcpFailures = new WeakSet<object>();
 
 type ErrorWithData = Error & {
   readonly cause?: unknown;
@@ -17,6 +18,10 @@ type ErrorWithData = Error & {
 
 function normalizeError(error: unknown): ErrorWithData {
   return error instanceof Error ? error as ErrorWithData : new Error(String(error));
+}
+
+export function hasAcpFailureDiagnostic(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && diagnosedAcpFailures.has(error as object));
 }
 
 function botKindForProvider(providerId: ProviderId): BotKind {
@@ -59,6 +64,7 @@ export function buildAcpFailureDiagnosticEvent(
   attemptState: { attempt?: number; successorStarted?: boolean } = {},
 ): RunDiagnosticEvent {
   const normalized = normalizeError(error);
+  if (error && typeof error === "object") diagnosedAcpFailures.add(error as object);
   const classification = classifyProviderError(providerId, normalized);
   return bridgeEventType.runDiagnostic({
     runId: eventContext.runId,
