@@ -9,9 +9,10 @@ import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBo
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { clearProviderApiKeyVerificationCache, verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
+import { resolveGrokAuthPaths } from "../src/providers/grokAvailability.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 
-// Routing now requires a bounded native probe rather than trusting a non-empty
+// Routing now requires a bounded ACP probe rather than trusting a non-empty
 // XAI_API_KEY. Every test below shares the literal "test-key" value, so prime
 // the verification cache once for that fingerprint instead of re-probing per test.
 beforeAll(async () => {
@@ -83,6 +84,18 @@ function writeFailedGrokQualification(evidencePath: string): void {
 }
 
 describe("Grok routing safety", () => {
+  it("binds account readiness to the auth path consumed by the ACP runtime", () => {
+    expect(resolveGrokAuthPaths("/home/bridge", {})).toEqual([
+      "/home/bridge/.grok/auth.json",
+    ]);
+    expect(resolveGrokAuthPaths("/home/bridge", { GROK_HOME: "/srv/grok-state" })).toEqual([
+      "/srv/grok-state/auth.json",
+    ]);
+    expect(resolveGrokAuthPaths("/home/bridge", {})).not.toContain(
+      "/home/bridge/.config/grok/auth.json",
+    );
+  });
+
   it("allows authenticated Grok through fallback without qualification evidence", () => {
     withGrokEnvironment(() => {
       const db = openDb(":memory:");
@@ -120,7 +133,7 @@ describe("Grok routing safety", () => {
       const chain = new ProviderFallbackChain(["codex", "grok"], db);
       chain.setActiveCli("channel:1", "grok");
       expect(getUserCliPreference(db, "channel:1")).toBe("codex");
-      expect(chain.getActiveCli("channel:1")).toBe("codex");
+      expect(chain.getActiveCli("chat:1")).toBe("codex");
     });
   });
 
