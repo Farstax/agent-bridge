@@ -1,5 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
-import { lstatSync, readlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildCliInvocation, parseCliResult } from "../src/cli.js";
@@ -107,8 +108,35 @@ describe("Grok ACP provider", () => {
     expect(isAcpBackedBot("grok")).toBe(true);
     expect(isAcpBackedBot("cursor")).toBe(false);
     expect(grokAcpPolicy.steeringSupported).toBe(false);
-    expect(grokAcpPolicy.authenticateMethodId?.({})).toBe("cached_token");
-    expect(grokAcpPolicy.authenticateMethodId?.({ XAI_API_KEY: "xai-test" })).toBeUndefined();
+  });
+
+  it("keeps cached account auth authoritative over an optional API key", () => {
+    const root = mkdtempSync(join(tmpdir(), "grok-acp-auth-precedence-"));
+    const grokHome = join(root, ".grok");
+    mkdirSync(grokHome, { recursive: true });
+    writeFileSync(join(grokHome, "auth.json"), "{}\n", "utf8");
+    try {
+      expect(grokAcpPolicy.authenticateMethodId?.({
+        HOME: root,
+        XAI_API_KEY: "optional-unverified-key",
+      })).toBe("cached_token");
+
+      const customHome = join(root, "custom-grok");
+      mkdirSync(customHome, { recursive: true });
+      writeFileSync(join(customHome, "auth.json"), "{}\n", "utf8");
+      expect(grokAcpPolicy.authenticateMethodId?.({
+        HOME: join(root, "missing-home"),
+        GROK_HOME: customHome,
+        XAI_API_KEY: "optional-unverified-key",
+      })).toBe("cached_token");
+
+      expect(grokAcpPolicy.authenticateMethodId?.({
+        HOME: join(root, "missing-home"),
+        XAI_API_KEY: "verified-or-provider-native-key",
+      })).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("persists Grok provider-default as ACP policy so env preference is not applied", () => {
