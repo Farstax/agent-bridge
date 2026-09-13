@@ -21,6 +21,7 @@ import type { ProviderId, ProviderInvocation, ProviderInvocationRequest } from "
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
 import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
+import { buildAcpFailureDiagnosticEvent } from "./acpFailureDiagnostic.js";
 import {
   getAcpProviderPolicy,
   getProviderAdapter,
@@ -529,7 +530,16 @@ export async function runResolvedAcpProviderTurn(
   try {
     result = await runWithAcpTransientRetry(providerId as ProviderId, runTurn, { abortRequested });
   } catch (error) {
-    throw redactAcpFailure(error, redactionEnv);
+    const redacted = redactAcpFailure(error, redactionEnv);
+    if (eventContext && onEvent) {
+      onEvent(buildAcpFailureDiagnosticEvent(
+        providerId as ProviderId,
+        redacted,
+        eventContext,
+        redactionEnv,
+      ));
+    }
+    throw redacted;
   }
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
