@@ -100,6 +100,8 @@ export interface AcpProviderPolicy {
   ) => Promise<void>;
   /** Provider extension for structured run activity; generic ACP lifecycle remains here. */
   readonly createActivityProjector?: () => AcpActivityProjector;
+  /** Provider-specific in-band failure recognition when ACP itself returns a normal terminal response. */
+  readonly detectTurnError?: (result: AcpTurnResult) => Error | null;
   readonly selectAnswer?: (
     result: AcpTurnResult,
   ) => { text: string; missingDescription: string };
@@ -477,54 +479,59 @@ export async function runResolvedAcpProviderTurn(
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
   const abortRequested = () => chatId != null && isAbortRequested(chatId);
-  const runTurn = () => runSupervisedStdioSession(
-    runtime.executable,
-    [...runtime.args],
-    cwd,
-    { ...options, contextEnv, bot: options.bot ?? providerBotKind(providerId) },
-    async (io) => runAcpTurn({
-      stream: nodeStdioStream(
-        io.stdin as import("node:stream").Writable,
-        io.stdout as import("node:stream").Readable,
-      ),
+  const runTurn = async (): Promise<AcpTurnResult> => {
+    const turn = await runSupervisedStdioSession(
+      runtime.executable,
+      [...runtime.args],
       cwd,
-      conversationId: identities.conversationId,
-      runId: identities.runId,
-      existingAcpSessionId: request.sessionId,
-      prompt: promptBlocks(request),
-      executionMode: request.executionMode,
-      sessionMeta: sessionSettings?.meta,
-      sessionModeId: sessionSettings?.modeId,
-      sessionConfig: sessionSettings?.config,
-      authenticateMethodId: policy.authenticateMethodId?.(effectiveEnv),
-      abortRequested,
-      signal: io.signal,
-      onLiveText: options.onProgress
-        ? (text) => {
-          const safe = liveRedactor.push(text);
-          if (safe) options.onProgress?.(safe);
-        }
-        : undefined,
-      onEvent: answerPreview || activityProjector || (eventContext && onEvent)
-        ? (event) => {
-          const runActivity = activityProjector?.observe(event);
-          if (runActivity) options.onProgress?.activity?.(runActivity);
-          answerPreview?.observe(event);
-          if (!eventContext || !onEvent || !event.sessionMode) return;
-          onEvent(bridgeEventType.acpEvent({
-            runId: eventContext.runId,
-            bot: eventContext.bot,
-            chatId: eventContext.chatId,
-            chatKey: eventContext.chatKey,
-            threadId: eventContext.threadId,
-            sessionId: event.acpSessionId ?? null,
-            sessionMode: event.sessionMode,
-            event: redactAcpEventCredentials(event, redactionEnv),
-          }));
-        }
-        : undefined,
-    }),
-  );
+      { ...options, contextEnv, bot: options.bot ?? providerBotKind(providerId) },
+      async (io) => runAcpTurn({
+        stream: nodeStdioStream(
+          io.stdin as import("node:stream").Writable,
+          io.stdout as import("node:stream").Readable,
+        ),
+        cwd,
+        conversationId: identities.conversationId,
+        runId: identities.runId,
+        existingAcpSessionId: request.sessionId,
+        prompt: promptBlocks(request),
+        executionMode: request.executionMode,
+        sessionMeta: sessionSettings?.meta,
+        sessionModeId: sessionSettings?.modeId,
+        sessionConfig: sessionSettings?.config,
+        authenticateMethodId: policy.authenticateMethodId?.(effectiveEnv),
+        abortRequested,
+        signal: io.signal,
+        onLiveText: options.onProgress
+          ? (text) => {
+            const safe = liveRedactor.push(text);
+            if (safe) options.onProgress?.(safe);
+          }
+          : undefined,
+        onEvent: answerPreview || activityProjector || (eventContext && onEvent)
+          ? (event) => {
+            const runActivity = activityProjector?.observe(event);
+            if (runActivity) options.onProgress?.activity?.(runActivity);
+            answerPreview?.observe(event);
+            if (!eventContext || !onEvent || !event.sessionMode) return;
+            onEvent(bridgeEventType.acpEvent({
+              runId: eventContext.runId,
+              bot: eventContext.bot,
+              chatId: eventContext.chatId,
+              chatKey: eventContext.chatKey,
+              threadId: eventContext.threadId,
+              sessionId: event.acpSessionId ?? null,
+              sessionMode: event.sessionMode,
+              event: redactAcpEventCredentials(event, redactionEnv),
+            }));
+          }
+          : undefined,
+      }),
+    );
+    const providerError = policy.detectTurnError?.(turn);
+    if (providerError) throw providerError;
+    return turn;
+  };
 
   let result: AcpTurnResult;
   try {
