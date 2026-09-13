@@ -11,6 +11,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -376,12 +377,16 @@ if [ "\${1:-}" = --user ]; then shift 2; fi
 if [ "\${1:-}" = -- ]; then shift; fi
 phase=""
 for arg in "$@"; do case "$arg" in inspect|checkpoint|backup|migrate|validate) phase="$arg";; esac; done
+cmd=("$@")
+if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/rollout-db.ts ]]; then
+  cmd=("\${cmd[0]}" "${fixture.root}/rollout-db-bundled.mjs" "\${cmd[@]:3}")
+fi
 if [ -n "\${FAKE_FAIL_PHASE:-}" ] && [ "\${FAKE_FAIL_PHASE:-}" = "$phase" ]; then
-  "$@"
+  "\${cmd[@]}"
   if [ -n "\${FAKE_CORRUPT_DB:-}" ]; then printf 'corrupt' > "$FAKE_CORRUPT_DB"; fi
   exit 70
 fi
-exec "$@"
+exec "\${cmd[@]}"
 `);
   executable(join(bin, "journalctl"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -416,33 +421,21 @@ if [ "\${FAKE_NO_JOURNAL_ENTRIES:-}" = 1 ]; then echo '-- No entries --'; fi
 `);
 }
 
-export function createFixture(options: { pending?: number; unknownSchema?: boolean; missingDb?: boolean; initiallyStopped?: boolean } = {}): Fixture {
-  const root = mkdtempSync(join(tmpdir(), "agent-bridge-rollout-"));
-  roots.push(root);
-  const project = join(root, "project");
-  const dbDir = join(root, "databases");
-  const backupDir = join(root, "backups");
-  const logDir = join(root, "logs");
-  const actionLog = join(root, "actions.log");
-  const stateFile = join(root, "active-units");
-  const lockFile = join(root, "run", "lock", "agent-bridge-rollout.lock");
-  const configFile = join(root, "etc", "agent-bridge", "rollout.conf");
-  const envDir = join(root, "etc", "default");
-  const systemdDir = join(root, "etc", "systemd", "system");
-  const cgroupRoot = join(root, "sys", "fs", "cgroup");
+interface SharedTemplate {
+  templateDir: string;
+  bundledRolloutDb: string;
+  expectedCommit: string;
+  previousCommit: string;
+}
+
+let sharedTemplate: SharedTemplate | null = null;
+
+function getSharedTemplate(): SharedTemplate {
+  if (sharedTemplate) return sharedTemplate;
+  const templateRoot = mkdtempSync(join(tmpdir(), "agent-bridge-fixture-template-"));
+  const project = join(templateRoot, "project");
   mkdirSync(join(project, "scripts"), { recursive: true });
-  mkdirSync(dbDir, { recursive: true, mode: 0o700 });
   mkdirSync(join(project, "systemd"), { recursive: true });
-  mkdirSync(join(root, "etc", "agent-bridge"), { recursive: true });
-  mkdirSync(envDir, { recursive: true });
-  mkdirSync(systemdDir, { recursive: true });
-  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-  mkdirSync(logDir, { recursive: true, mode: 0o700 });
-  for (const unit of units) {
-    const cgroup = join(cgroupRoot, "agent-bridge-test", unit);
-    mkdirSync(cgroup, { recursive: true });
-    writeFileSync(join(cgroup, "cgroup.procs"), "");
-  }
   symlinkSync(sourceDir, join(project, "src"));
   symlinkSync(nodeModules, join(project, "node_modules"));
   if (existsSync(migrationScript)) copyFileSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
@@ -462,22 +455,91 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   execFileSync("git", ["-C", project, "commit", "-qm", "fixture (previous release)"]);
   execFileSync("git", ["-C", project, "branch", "-M", "main"]);
   const previousCommit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-  // A second, genuinely distinct commit — expectedCommit is always the
-  // target a rollout migrates to; previousCommit is always what "revert to
-  // previous code" (§9) actually checks out. Never the same SHA, so a
-  // rollback drill can't accidentally pass by comparing a value to itself.
   writeFileSync(join(project, "RELEASE_MARKER"), "target release\n");
   execFileSync("git", ["-C", project, "add", "RELEASE_MARKER"]);
   execFileSync("git", ["-C", project, "commit", "-qm", "fixture (target release)"]);
   const expectedCommit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  symlinkSync(nodeModules, join(templateRoot, "node_modules"));
+  const bundledRolloutDb = join(templateRoot, "rollout-db-bundled.mjs");
+  execFileSync("./node_modules/.bin/esbuild", [
+    join(project, "scripts", "rollout-db.ts"),
+    "--bundle",
+    "--platform=node",
+    "--format=esm",
+    "--packages=external",
+    `--outfile=${bundledRolloutDb}`,
+  ]);
+
+  sharedTemplate = { templateDir: project, bundledRolloutDb, expectedCommit, previousCommit };
+  process.on("exit", () => {
+    try {
+      execFileSync("chmod", ["-R", "u+w", templateRoot], { stdio: "ignore" });
+      rmSync(templateRoot, { recursive: true, force: true });
+    } catch {}
+  });
+  return sharedTemplate;
+}
+
+let emptyLegacyDbTemplate: string | null = null;
+
+function getEmptyLegacyDbTemplate(): string {
+  if (emptyLegacyDbTemplate) return emptyLegacyDbTemplate;
+  const dir = mkdtempSync(join(tmpdir(), "agent-bridge-legacy-db-template-"));
+  const templatePath = join(dir, "empty-legacy.sqlite");
+  createLegacyDb(templatePath, 0);
+  emptyLegacyDbTemplate = templatePath;
+  process.on("exit", () => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  });
+  return emptyLegacyDbTemplate;
+}
+
+export function createFixture(options: { pending?: number; unknownSchema?: boolean; missingDb?: boolean; initiallyStopped?: boolean } = {}): Fixture {
+  const root = mkdtempSync(join(tmpdir(), "agent-bridge-rollout-"));
+  roots.push(root);
+  const project = join(root, "project");
+  const dbDir = join(root, "databases");
+  const backupDir = join(root, "backups");
+  const logDir = join(root, "logs");
+  const actionLog = join(root, "actions.log");
+  const stateFile = join(root, "active-units");
+  const lockFile = join(root, "run", "lock", "agent-bridge-rollout.lock");
+  const configFile = join(root, "etc", "agent-bridge", "rollout.conf");
+  const envDir = join(root, "etc", "default");
+  const systemdDir = join(root, "etc", "systemd", "system");
+  const cgroupRoot = join(root, "sys", "fs", "cgroup");
+  mkdirSync(dbDir, { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, "etc", "agent-bridge"), { recursive: true });
+  mkdirSync(envDir, { recursive: true });
+  mkdirSync(systemdDir, { recursive: true });
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  for (const unit of units) {
+    const cgroup = join(cgroupRoot, "agent-bridge-test", unit);
+    mkdirSync(cgroup, { recursive: true });
+    writeFileSync(join(cgroup, "cgroup.procs"), "");
+  }
+
+  const template = getSharedTemplate();
+  execFileSync("cp", ["-a", `${template.templateDir}/.`, project]);
+  const expectedCommit = template.expectedCommit;
+  const previousCommit = template.previousCommit;
+  symlinkSync(nodeModules, join(root, "node_modules"));
+  symlinkSync(template.bundledRolloutDb, join(root, "rollout-db-bundled.mjs"));
 
   const dbPaths = Array.from({ length: 4 }, (_, index) => join(dbDir, `bridge-${index}.sqlite`));
+  const emptyTemplate = getEmptyLegacyDbTemplate();
   for (const [index, path] of dbPaths.entries()) {
     if (options.unknownSchema && index === 0) {
       mkdirSync(dirname(path), { recursive: true });
       const db = new Database(path); db.exec("CREATE TABLE unknown_schema(value TEXT)"); db.close();
     } else if (!(options.missingDb && index === 0)) {
-      createLegacyDb(path, index === 0 ? options.pending ?? 0 : 0);
+      const pending = index === 0 ? (options.pending ?? 0) : 0;
+      if (pending === 0) {
+        copyFileSync(emptyTemplate, path);
+      } else {
+        createLegacyDb(path, pending);
+      }
     }
   }
 
@@ -539,7 +601,7 @@ export function actions(fixture: Fixture): string {
   return readFileSync(fixture.actionLog, "utf8");
 }
 
-export async function waitForAction(fixture: Fixture, pattern: RegExp, timeoutMs = 2_000): Promise<void> {
+export async function waitForAction(fixture: Fixture, pattern: RegExp, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!pattern.test(actions(fixture))) {
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${pattern}`);
@@ -655,3 +717,49 @@ export function seedRoleFixtures(fixture: Fixture): void {
     db.close();
   });
 }
+
+export function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture.expectedCommit): { currentPointer: string; releaseDir: string } {
+  const releaseRoot = join(fixture.root, "releases");
+  const releaseDir = join(releaseRoot, fixture.expectedCommit);
+  mkdirSync(releaseRoot, { recursive: true, mode: 0o755 });
+  const cleanupManifestPaths = [
+    "scripts/reap-tmp-artifacts.sh",
+    "systemd/agent-bridge-tmp-cleanup.service",
+    "systemd/agent-bridge-tmp-cleanup.timer",
+  ];
+  for (const commit of new Set([fixture.previousCommit, fixture.expectedCommit])) {
+    const directory = join(releaseRoot, commit);
+    mkdirSync(directory, { recursive: true, mode: 0o755 });
+    for (const entry of readdirSync(fixture.project)) {
+      if (entry === ".git") continue;
+      execFileSync("cp", ["-a", join(fixture.project, entry), directory]);
+    }
+    writeFileSync(join(directory, "manifest.json"), JSON.stringify({
+      schema_version: 1,
+      commit,
+      files: cleanupManifestPaths.map((path) => ({ path, sha256: sha256(join(directory, path)) })),
+    }));
+    execFileSync("chmod", ["-R", "a-w", directory]);
+  }
+  const currentPointer = join(releaseRoot, "current");
+  symlinkSync(activeCommit, currentPointer);
+  rewriteConfig(fixture, (lines) => [
+    ...lines.filter((line) => !line.startsWith("project_dir=")),
+    `release_root=${releaseRoot}`,
+    `current_pointer=${currentPointer}`,
+    `activation_helper_sha256=${sha256(join(fixture.root, "bin", "release-activate"))}`,
+    `release_stage_sha256=${sha256(join(fixture.root, "bin", "release-stage"))}`,
+    `rollout_restore_sha256=${sha256(join(fixture.root, "bin", "rollout-restore"))}`,
+  ]);
+  writeFileSync(join(fixture.envDir, "agent-bridge-shared"), `DB_PATH=${fixture.dbPaths[0]}\n`, { mode: 0o600 });
+  writeFileSync(join(fixture.envDir, "agent-bridge-release"), `BRIDGE_CURRENT_RELEASE_DIR=${currentPointer}\n`, { mode: 0o600 });
+  writeFileSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), JSON.stringify({
+    schema_version: 1,
+    commit: fixture.expectedCommit,
+    archive_sha256: "b".repeat(64),
+    release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")),
+  }) + "\n", { mode: 0o444 });
+  chmodSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), 0o444);
+  return { currentPointer, releaseDir };
+}
+

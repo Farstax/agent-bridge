@@ -15,8 +15,7 @@ import { applyHealthSchemaMigration } from "../src/db/healthSchemaMigration.js";
 import { applyEventReceiptsMigration } from "../src/db/eventReceiptsMigration.js";
 import { applyAutonomousGoalsMigration } from "../src/db/autonomousGoalsMigration.js";
 
-const migrationScript = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
-const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
+import { getBundledRolloutDb } from "./support/rolloutDbBundled.js";
 const roots: string[] = [];
 
 function createVersion8Database(): string {
@@ -49,7 +48,7 @@ function createVersion8Database(): string {
 function runRollout(mode: "inspect" | "reconcile" | "migrate" | "validate", path: string): {
   databases: Array<{ schemaVersion: number; schema: string; tables: string[] }>;
 } {
-  const args = ["--import", "tsx", migrationScript, mode, "--db", path, "--evidence", "-"];
+  const args = [getBundledRolloutDb(), mode, "--db", path, "--evidence", "-"];
   if (mode === "reconcile") args.push("--reason", "schema-9 regression test");
   return JSON.parse(execFileSync(process.execPath, args, { encoding: "utf8" })) as {
     databases: Array<{ schemaVersion: number; schema: string; tables: string[] }>;

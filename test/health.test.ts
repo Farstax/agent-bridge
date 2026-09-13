@@ -29,16 +29,6 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execFileSync: (command: string, args: string[], options: any) => {
-      if (args.includes("--version")) {
-        const mockedList = (globalThis as any).__mockExecSync?.("npm list -g --depth=0 --json");
-        const installed = mockedList ? JSON.parse(String(mockedList)).dependencies ?? {} : {};
-        if (command.includes("claude")) return "@agentclientprotocol/claude-agent-acp 0.76.0";
-        if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
-        if (command === "agy") return "1.0.10";
-      }
-      return actual.execFileSync(command, args, options);
-    },
     execSync: (cmd: string, options: any) => {
       if ((globalThis as any).__mockExecSync) {
         const res = (globalThis as any).__mockExecSync(cmd, options);
@@ -48,8 +38,8 @@ vi.mock("node:child_process", async (importOriginal) => {
         return JSON.stringify({
           dependencies: {
             "@anthropic-ai/claude-code": { version: "2.1.185" },
-            "@openai/codex": { version: "0.141.0" }
-          }
+            "@openai/codex": { version: "0.141.0" },
+          },
         });
       }
       if (cmd.includes("npm view @anthropic-ai/claude-code version") && !cmd.includes("versions")) {
@@ -58,22 +48,50 @@ vi.mock("node:child_process", async (importOriginal) => {
       if (cmd.includes("npm view @openai/codex version") && !cmd.includes("versions")) {
         return "0.141.0";
       }
+      if (cmd.includes("npm view") && cmd.includes("versions")) {
+        return "[]";
+      }
       if (cmd.includes("agy --version")) {
         return "1.0.10";
       }
-      return actual.execSync(cmd, options);
+      if (cmd.includes("ps -eo pid,pcpu,comm")) {
+        return "PID %CPU COMMAND\n1 0.1 node";
+      }
+      if (cmd.includes("ps -eo state")) {
+        return "STAT\nS\nS\n";
+      }
+      if (cmd.includes("systemctl is-active ufw")) {
+        return "active";
+      }
+      if (cmd.includes("systemctl list-units --state=failed")) {
+        return "";
+      }
+      if (cmd.includes("systemctl show") && cmd.includes("NRestarts")) {
+        return "NRestarts=0\n";
+      }
+      if (cmd.includes("cat /proc/self/limits")) {
+        return "Max open files            1024                 1024                 files\n";
+      }
+      if (cmd.includes("apt-check")) {
+        return "0;0";
+      }
+      throw new Error(`Unexpected unmocked execSync in health.test.ts: ${cmd}`);
     },
     execFileSync: (command: string, args: readonly string[], options: any) => {
       if ((globalThis as any).__mockExecFileSync) {
         const res = (globalThis as any).__mockExecFileSync(command, args, options);
         if (res !== undefined) return res;
       }
-      if (args.includes("--version")) {
-        if (command.includes("claude")) return "Claude Code 2.1.185";
+      if (args && args.includes("--version")) {
+        if (command.includes("codex-acp")) return "@agentclientprotocol/codex-acp 1.10.0";
+        if (command.includes("claude")) return "@agentclientprotocol/claude-agent-acp 0.76.0";
         if (command.includes("codex")) return "codex 0.141.0";
         if (command.includes("agy")) return "agy 1.0.10";
+        if (command.includes("grok")) return "grok 1.0.0";
+        if (command.includes("cursor")) return "cursor 1.0.0";
+        return `${command} 1.0.0`;
       }
-      return actual.execFileSync(command, args, options);
+      throw new Error(`Unexpected unmocked execFileSync in health.test.ts: ${command} ${(args || []).join(" ")}`);
     },
   };
 });

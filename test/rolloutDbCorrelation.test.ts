@@ -6,8 +6,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
-const rolloutDb = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
+import { getBundledRolloutDb } from "./support/rolloutDbBundled.js";
 
 function createDatabase(path: string): void {
   const db = new Database(path);
@@ -26,7 +25,7 @@ function createDatabase(path: string): void {
 }
 
 function inspect(path: string, output: string): void {
-  execFileSync(process.execPath, [tsx, rolloutDb, "inspect", "--db", path, "--evidence", output], { encoding: "utf8" });
+  execFileSync(process.execPath, [getBundledRolloutDb(), "inspect", "--db", path, "--evidence", output], { encoding: "utf8" });
 }
 
 describe("rollout database durable identity correlation", () => {

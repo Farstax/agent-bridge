@@ -917,7 +917,17 @@ export class BridgeDb {
     };
   }
 
+  private readonly closeHooks: Array<() => void> = [];
+
+  onClose(hook: () => void): void {
+    this.closeHooks.push(hook);
+  }
+
   close(): void {
+    for (const hook of this.closeHooks) {
+      try { hook(); } catch {}
+    }
+    this.closeHooks.length = 0;
     this.raw.close();
   }
 }

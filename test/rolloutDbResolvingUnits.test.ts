@@ -12,8 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 // the same unit/env resolution rollout-agent-bridge.sh already performs and
 // passed in as evidence input rather than re-derived inside rollout-db.ts.
 
-const migrationScript = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
-const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
+import { getBundledRolloutDb } from "./support/rolloutDbBundled.js";
 
 const dirs: string[] = [];
 
@@ -47,7 +46,7 @@ function createCurrentDb(path: string): void {
 
 function runInspect(args: string[]): { status: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync(process.execPath, [tsxCli, migrationScript, "inspect", ...args], { encoding: "utf8" });
+    const stdout = execFileSync(process.execPath, [getBundledRolloutDb(), "inspect", ...args], { encoding: "utf8" });
     return { status: 0, stdout, stderr: "" };
   } catch (err: any) {
     return { status: err.status ?? 1, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };

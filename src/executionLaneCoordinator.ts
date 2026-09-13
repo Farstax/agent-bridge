@@ -232,6 +232,12 @@ export class ExecutionLaneCoordinator {
   markResetting(lane: string): void { this.resettingChats.add(lane); }
   clearResetting(lane: string): void { this.resettingChats.delete(lane); }
   isResetting(lane: string): boolean { return this.resettingChats.has(lane); }
+
+  dispose(): void {
+    for (const lane of [...this.laneRecoveries.keys()]) {
+      this.clearRecovery(lane);
+    }
+  }
 }
 
 const coordinatorByDb = new WeakMap<BridgeDb, Map<string, ExecutionLaneCoordinator>>();
@@ -241,6 +247,12 @@ export function executionLaneCoordinator(db: BridgeDb, surfaceIdentity: string):
   if (!bySurface) {
     bySurface = new Map<string, ExecutionLaneCoordinator>();
     coordinatorByDb.set(db, bySurface);
+    (db as any).onClose?.(() => {
+      for (const coordinator of bySurface!.values()) {
+        coordinator.dispose();
+      }
+      coordinatorByDb.delete(db);
+    });
   }
 
   let coordinator = bySurface.get(surfaceIdentity);
