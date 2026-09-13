@@ -22,6 +22,7 @@ import {
   getNextFallbackModel,
   abortCliProcess,
   abortExecutionAndWait,
+  getActiveLaneHandle,
   beginExecutionLifecycle,
   completeExecutionLifecycle,
   toUserMessage,
@@ -650,6 +651,9 @@ export class BridgeEngine {
       const persisted = this.db.claimNextPendingMsg(laneHandle);
       if (!persisted) throw new Error("failed to persist and claim active augmented task");
       activePendingIds.push(persisted.id);
+      const activeLane = this._executionLane(chatKey);
+      const existingTask = this.laneCoordinator.getAugmentedTask(activeLane);
+      if (existingTask) this.laneCoordinator.setAugmentedTask(activeLane, { ...existingTask, activeRowIds: [persisted.id] });
     }
 
     const executionLane = this._executionLane(chatKey);
@@ -880,6 +884,89 @@ export class BridgeEngine {
     }
   }
 
+  /**
+   * Issue #748: when a live ACP turn advertised and was qualified for
+   * mid-turn steering, inject the augmenting message into it directly
+   * instead of the existing kill+restart+coalesce dance. Returns true only
+   * when steering actually delivered the message (`outcome: "injected"`) —
+   * the caller must fall through to the existing fallback for every other
+   * outcome, including a failed or errored steering attempt. Only ever
+   * called for `record.mode === "augment"` with no final-delivery phase
+   * active, matching the one case the existing cancel path itself defers
+   * for un-steered augments.
+   */
+  private async _trySteerAugment(executionLane: string, record: LaneCancellation): Promise<boolean> {
+    const steer = this.laneCoordinator.getSteerHandle(executionLane);
+    const augmentedTask = this.laneCoordinator.getAugmentedTask(executionLane);
+    if (!steer || !augmentedTask) return false;
+    const handle = getActiveLaneHandle(executionLane);
+    if (!handle) return false;
+
+    // claimPendingMsgs also returns rows already self-claimed under this
+    // exact handle — including the currently running turn's own prompt row
+    // (augmentedTask.activeRowIds). Steering never kills the live turn, so
+    // only the newly queued augmenting message(s) get injected; the running
+    // turn already has its own prompt as live context and completes/claims
+    // its own row through its own normal path, not this one.
+    const activeIds = new Set(augmentedTask.activeRowIds ?? []);
+    const allClaimed = this.db.claimPendingMsgs(handle);
+    const augmentingRows = allClaimed.filter((row) => !activeIds.has(row.id));
+    if (augmentingRows.length === 0) return false;
+    const attachments = augmentingRows.flatMap((row) => row.attachments);
+    if (attachments.length > 0) {
+      // Steering only carries text today; a pending attachment needs the
+      // full session/invocation pipeline, so defer to the existing fallback
+      // rather than silently dropping a file the user attached.
+      for (const row of augmentingRows) this.db.releasePendingClaim(handle, row.id);
+      return false;
+    }
+    const mergedPrompt = augmentingRows.map((row) => row.prompt).join("\n\n");
+
+    if (record.mode !== "augment") {
+      // Escalated to interrupt/stop before the steering request was even
+      // sent. Never send it — fall straight back to the existing cancel path.
+      for (const row of augmentingRows) this.db.releasePendingClaim(handle, row.id);
+      return false;
+    }
+
+    let outcome: { outcome: string } | null = null;
+    try {
+      outcome = await steer(mergedPrompt);
+    } catch (error) {
+      console.warn(`[${this.kind}] ACP steering request failed on lane ${executionLane}, falling back to cancel+restart`, error);
+    }
+
+    if (record.mode !== "augment") {
+      // A stop/interrupt escalated while the steering RPC was in flight.
+      // The message may already be irreversibly live in the turn if it
+      // returned "injected" — that can't be undone — but Bridge must still
+      // honor the escalation's kill/discard semantics instead of treating
+      // this as a completed, self-contained augment: fall through to the
+      // existing cancel path so the escalation actually takes effect.
+      for (const row of augmentingRows) this.db.releasePendingClaim(handle, row.id);
+      return false;
+    }
+
+    if (outcome?.outcome === "injected") {
+      this.db.completePendingMsgs(handle, augmentingRows.map((row) => row.id));
+      this._deleteQueuedAttachments(attachments);
+      // The original turn is still live and still owns augmentedTask's own
+      // bookkeeping (activeRowIds) for its own eventual completion — only
+      // the cancellation attempt this steering attempt was servicing clears.
+      this.laneCoordinator.clearCancellation(executionLane, record);
+      return true;
+    }
+
+    if (outcome && outcome.outcome !== "promptRequired") {
+      // "startedNewTurn": the agent violated the promptRequired opt-in and
+      // already started a detached turn Bridge does not own. Not trustworthy
+      // as a safe outcome — surface it loudly and still fall back below.
+      console.error(`[${this.kind}] ACP steering returned "${outcome.outcome}" despite the promptRequired opt-in on lane ${executionLane}; falling back to cancel+restart`);
+    }
+    for (const row of augmentingRows) this.db.releasePendingClaim(handle, row.id);
+    return false;
+  }
+
   private _cancelLane(chatKey: string, mode: "augment" | "interrupt" | "stop"): Promise<void> {
     const executionLane = this._executionLane(chatKey);
     const existing = this.laneCoordinator.getCancellation(executionLane);
@@ -897,6 +984,9 @@ export class BridgeEngine {
 
     const operation = (async () => {
       const finalDelivery = this.laneCoordinator.getFinalDelivery(executionLane);
+      if (record.mode === "augment" && !finalDelivery && await this._trySteerAugment(executionLane, record)) {
+        return;
+      }
       if (finalDelivery && record.mode === "augment") {
         await finalDelivery.promise;
         if (record.mode === "augment") return;
@@ -1113,7 +1203,11 @@ export class BridgeEngine {
     if (!next.laneHandle) throw new Error("claimed message requires its acquisition handle");
     const chatKey = next.chatKey;
     if (this.opts.busyMessageMode === "augment") {
-      this.laneCoordinator.setAugmentedTask(this._executionLane(chatKey), { prompt: next.prompt, attachments: [...next.attachments] });
+      this.laneCoordinator.setAugmentedTask(this._executionLane(chatKey), {
+        prompt: next.prompt,
+        attachments: [...next.attachments],
+        activeRowIds: next.pendingIds ?? [next.id],
+      });
     }
     const hookCtx: HookContext = { chatId: next.chatId, chatKey, threadId: next.threadId ?? undefined, userId: next.userId ?? undefined };
     return this._executeAndSend(
@@ -1454,6 +1548,7 @@ export class BridgeEngine {
       attachments,
       outputDir: outDir,
     });
+    const executionLane = this._executionLane(chatKey);
     try {
       let stdout: string;
       let parsedAcp: CliResult | null = null;
@@ -1468,11 +1563,12 @@ export class BridgeEngine {
             onProgress,
             onProviderOutputChunk: (body as { onProviderOutputChunk?: (chunk: string) => void }).onProviderOutputChunk,
             onAnswerDelta: (body as { onAnswerDelta?: (text: string) => void }).onAnswerDelta,
-            chatId: this._executionLane(chatKey),
+            chatId: executionLane,
             stdin: invocation.stdin,
             contextEnv: promptForCli.contextEnv,
             eventContext,
             onEvent: collect ?? undefined,
+            onSteerReady: (steer) => this.laneCoordinator.setSteerHandle(executionLane, steer),
           },
           {
             prompt: invocation.prompt ?? promptForCli.prompt,
@@ -1490,6 +1586,7 @@ export class BridgeEngine {
         stdout = invoked.stdout;
         parsedAcp = invoked.parsed;
       } finally {
+        this.laneCoordinator.clearSteerHandle(executionLane);
         (body as { onProviderOutputFinished?: () => void }).onProviderOutputFinished?.();
       }
 

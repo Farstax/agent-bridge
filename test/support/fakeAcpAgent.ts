@@ -20,6 +20,21 @@ export interface FakeAcpAgentOptions {
   usageUpdateOnly?: boolean;
   /** Negotiated agentCapabilities.promptCapabilities. Omitted fields default to unsupported. */
   promptCapabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean };
+  /**
+   * Advertise the ACP steering extension (`InitializeResponse._meta.steering.supported`)
+   * and implement `_session/steering` per the wire protocol: injects into a
+   * pending prompt (`outcome: "injected"`), or honors the host's opt-in idle
+   * fallback (`_meta.steering.idleBehavior === "promptRequired"`) by returning
+   * `{ outcome: "promptRequired", reason: "noRunningTurn" }` without starting
+   * any work when the session has no in-flight prompt.
+   */
+  steeringSupported?: boolean;
+}
+
+interface SteerRequestShape {
+  sessionId: string;
+  prompt: Array<{ type: string; text?: string }>;
+  _meta?: { steering?: { idleBehavior?: "promptRequired" } } | null;
 }
 
 function persistSessions(sessions: Map<string, FakeSession>): void {
@@ -56,7 +71,7 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
     return session;
   };
 
-  return acp.agent({ name: "fake-acp-agent" })
+  const fake = acp.agent({ name: "fake-acp-agent" })
     .onRequest(acp.methods.agent.initialize, async () => {
       if (options.initializeError) throw options.initializeError;
       return {
@@ -69,6 +84,7 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
           },
           ...(options.promptCapabilities ? { promptCapabilities: options.promptCapabilities } : {}),
         },
+        ...(options.steeringSupported ? { _meta: { steering: { supported: true } } } : {}),
       };
     })
     .onRequest(acp.methods.agent.session.new, async () => {
@@ -262,6 +278,34 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
     .onNotification(acp.methods.agent.session.cancel, (ctx) => {
       sessions.get(ctx.params.sessionId)?.pending?.abort();
     });
+
+  if (options.steeringSupported) {
+    fake.onRequest(
+      "_session/steering",
+      (raw) => raw as SteerRequestShape,
+      async (ctx) => {
+        const session = get(ctx.params.sessionId);
+        const idleBehavior = ctx.params._meta?.steering?.idleBehavior;
+        if (!session.pending || session.pending.signal.aborted) {
+          if (idleBehavior === "promptRequired") {
+            return { outcome: "promptRequired", reason: "noRunningTurn" };
+          }
+          return { outcome: "startedNewTurn" };
+        }
+        const text = ctx.params.prompt.map((block) => block.type === "text" ? block.text ?? "" : "").join("");
+        await ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `steered:${text}` },
+          },
+        });
+        return { outcome: "injected" };
+      },
+    );
+  }
+
+  return fake;
 }
 
 export function startFakeAcpStdioServer(): void {

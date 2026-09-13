@@ -72,7 +72,35 @@ export interface AcpTurnInput {
   readonly peer?: AgentApp;
   readonly onLiveText?: (text: string) => void;
   readonly onEvent?: (event: AcpRetainedEvent) => void;
+  /**
+   * Called once, synchronously before the turn's `session/prompt` request is
+   * sent, with a live steering handle — but only when the connected agent
+   * advertised `_meta.steering.supported` on `initialize`. Callers (Bridge's
+   * augment policy) use the handle to inject a follow-up message into this
+   * exact in-flight turn instead of cancelling/restarting it. Never invoked
+   * for an agent that does not advertise support.
+   */
+  readonly onSteerReady?: (steer: AcpSteerFn) => void;
 }
+
+/**
+ * Outcome of the ACP steering extension's `_session/steering` request.
+ * `injected` means the message was delivered into the still-running turn.
+ * `promptRequired` (returned only when the request opts in via
+ * `_meta.steering.idleBehavior: "promptRequired"`) means the turn had already
+ * settled — the agent did no work, and the caller keeps ownership of the
+ * message and must resubmit it through a normal `session/prompt`.
+ * `startedNewTurn` is the legacy non-opt-in idle behavior; Bridge always opts
+ * in, so seeing it here indicates the agent started a detached turn Bridge
+ * does not own and callers must treat this as a hard failure, not a silent
+ * fallback.
+ */
+export type AcpSteerOutcome =
+  | { readonly outcome: "injected" }
+  | { readonly outcome: "promptRequired"; readonly reason: "noRunningTurn" }
+  | { readonly outcome: "startedNewTurn" };
+
+export type AcpSteerFn = (prompt: AcpTurnInput["prompt"]) => Promise<AcpSteerOutcome>;
 
 /** ACP v1 context-window usage: tokens currently in context vs the window size. Not per-turn consumption. */
 export interface AcpContextUsage {
@@ -120,6 +148,35 @@ function agentSupportsResume(init: InitializeResponse): boolean {
 
 function agentSupportsLoad(init: InitializeResponse): boolean {
   return Boolean(init.agentCapabilities?.loadSession);
+}
+
+/**
+ * Resolves live-turn steering support from the agent's own InitializeResponse
+ * `_meta.steering.supported` flag (the ACP steering extension contract), never
+ * from a provider-name check. Fails closed on any missing/malformed shape.
+ */
+export function agentSupportsSteering(init: InitializeResponse): boolean {
+  const meta = init._meta;
+  if (!meta || typeof meta !== "object") return false;
+  const steering = (meta as Record<string, unknown>).steering;
+  if (!steering || typeof steering !== "object") return false;
+  return (steering as Record<string, unknown>).supported === true;
+}
+
+/** Custom (extension) request method name per the ACP steering wire protocol. */
+const STEER_METHOD = "_session/steering";
+
+/**
+ * Sends `_session/steering`, always opting into the host-owned idle fallback
+ * (`idleBehavior: "promptRequired"`) so an idle session returns `promptRequired`
+ * instead of silently starting a detached turn Bridge would not own.
+ */
+function steerAcpSession(agent: ClientContext, sessionId: string, prompt: AcpTurnInput["prompt"]): Promise<AcpSteerOutcome> {
+  return agent.request<AcpSteerOutcome>(STEER_METHOD, {
+    sessionId,
+    prompt: promptBlocks(prompt),
+    _meta: { steering: { idleBehavior: "promptRequired" } },
+  });
 }
 
 function sessionSetupState(value: unknown): SessionSetupState {
@@ -411,6 +468,11 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       void agent.notify(acp.methods.agent.session.cancel, { sessionId: acpSessionId });
     };
     input.signal?.addEventListener("abort", cancel, { once: true });
+
+    if (input.onSteerReady && agentSupportsSteering(initialize)) {
+      const sessionIdForSteering = acpSessionId;
+      input.onSteerReady((prompt) => steerAcpSession(agent, sessionIdForSteering, prompt));
+    }
 
     const promptResponse = await agent.request(acp.methods.agent.session.prompt, {
       sessionId: acpSessionId,

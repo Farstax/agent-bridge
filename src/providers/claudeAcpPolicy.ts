@@ -94,6 +94,12 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   providerId: "claude",
   registryAgentId: "claude-acp",
   toolFree: true,
+  // Issue #748: claude-agent-acp@0.76.0 carries the host-owned idle fallback
+  // (upstream fix agentclientprotocol/claude-agent-acp#919) — on an idle
+  // session with `idleBehavior: "promptRequired"` it returns `promptRequired`
+  // without starting any detached work, so Bridge safely keeps ownership of
+  // the message on the natural-completion race. Qualified for Claude only.
+  steeringSupported: true,
   presentation: {
     provisionalAnswers: true,
   },

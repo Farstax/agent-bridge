@@ -20,6 +20,14 @@ export interface PreProviderIngressScope {
 export interface AugmentedTask {
   prompt: string;
   attachments: string[];
+  /**
+   * Pending-message row id(s) already claimed for THIS task's own prompt
+   * (not the augmenting message). Steering must exclude these from whatever
+   * it claims next — claimPendingMsgs also returns self-claimed rows, and
+   * the active task's own row is completed by its own normal execution
+   * path, not by the augment that raced it.
+   */
+  activeRowIds?: number[];
 }
 
 export interface LaneDrainer {
@@ -32,6 +40,17 @@ export interface FinalDeliveryPhase {
 }
 
 export type LaneRecoveryAttempt = () => Promise<boolean>;
+
+/**
+ * Live ACP steering handle for one lane's currently in-flight provider turn.
+ * Set only while a steering-capable turn is running, and only for the exact
+ * (chatKey, chatId) lane that owns it; cleared unconditionally when that turn
+ * ends so a stale handle can never outlive its turn. Kept intentionally
+ * untyped against the ACP outcome shape here (`{ outcome: string; [key:
+ * string]: unknown }`) so this module — shared across provider engines —
+ * does not depend on the ACP client module.
+ */
+export type LaneSteerHandle = (prompt: string) => Promise<{ outcome: string; [key: string]: unknown }>;
 
 type LaneRecoveryState = {
   attempt: LaneRecoveryAttempt;
@@ -49,6 +68,7 @@ export class ExecutionLaneCoordinator {
   private readonly finalDeliveryPhases = new Map<string, FinalDeliveryPhase>();
   private readonly activeAugmentedTasks = new Map<string, AugmentedTask>();
   private readonly transferredAugmentedLanes = new Set<string>();
+  private readonly steerHandles = new Map<string, LaneSteerHandle>();
   private readonly abortedChats = new Set<string>();
   private readonly resettingChats = new Set<string>();
 
@@ -184,6 +204,7 @@ export class ExecutionLaneCoordinator {
   }
 
   setAugmentedTask(lane: string, task: AugmentedTask): void { this.activeAugmentedTasks.set(lane, task); }
+  getAugmentedTask(lane: string): AugmentedTask | undefined { return this.activeAugmentedTasks.get(lane); }
   hasAugmentedTask(lane: string): boolean { return this.activeAugmentedTasks.has(lane); }
   clearAugmentedTask(lane: string): void { this.activeAugmentedTasks.delete(lane); }
   augmentedTaskCount(): number { return this.activeAugmentedTasks.size; }
@@ -191,6 +212,10 @@ export class ExecutionLaneCoordinator {
   markAugmentTransferred(lane: string): void { this.transferredAugmentedLanes.add(lane); }
   isAugmentTransferred(lane: string): boolean { return this.transferredAugmentedLanes.has(lane); }
   clearAugmentTransferred(lane: string): void { this.transferredAugmentedLanes.delete(lane); }
+
+  getSteerHandle(lane: string): LaneSteerHandle | undefined { return this.steerHandles.get(lane); }
+  setSteerHandle(lane: string, handle: LaneSteerHandle): void { this.steerHandles.set(lane, handle); }
+  clearSteerHandle(lane: string): void { this.steerHandles.delete(lane); }
 
   // markAborted is also used by the non-stop "augment"/"interrupt" busy-mode
   // coalescing paths (see BridgeEngine._cancelLane), where it must NOT tear

@@ -59,6 +59,14 @@ export interface AcpProviderPolicy {
   readonly providerId: string;
   readonly registryAgentId: string;
   readonly toolFree?: boolean;
+  /**
+   * Bridge-owned qualification gate for ACP mid-turn steering (issue #748):
+   * a live agent may advertise `_meta.steering.supported`, but Bridge only
+   * exposes a steering handle when this provider has been separately
+   * qualified against a safe host-owned idle contract. Runtime advertisement
+   * alone is never sufficient.
+   */
+  readonly steeringSupported?: boolean;
   readonly presentation: {
     readonly provisionalAnswers: boolean;
     readonly createPreview?: (
@@ -497,6 +505,7 @@ export async function runResolvedAcpProviderTurn(
         authenticateMethodId: policy.authenticateMethodId?.(effectiveEnv),
         abortRequested: () => chatId != null && isAbortRequested(chatId),
         signal: io.signal,
+        onSteerReady: policy.steeringSupported ? options.onSteerReady : undefined,
         onLiveText: options.onProgress
           ? (text) => {
             const safe = liveRedactor.push(text);

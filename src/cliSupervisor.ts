@@ -252,6 +252,17 @@ export function isChildRunning(chatId: string | number): boolean {
   return !!active?.child;
 }
 
+/**
+ * Non-destructive lookup of the lane's currently owned execution lock handle,
+ * for callers (ACP steering) that need to claim/complete pending-message rows
+ * against a still-live turn without aborting it. Unlike
+ * {@link abortExecutionAndWait}, this never kills the process or waits for
+ * lifecycle completion.
+ */
+export function getActiveLaneHandle(chatId: string | number): ExecutionLaneHandle | null {
+  return activeExecutions.get(chatId)?.lifecycleHandle ?? null;
+}
+
 export async function abortExecutionAndWait(chatId: number | string): Promise<ExecutionLaneHandle | null> {
   const active = activeExecutions.get(chatId);
   if (!active) return null;
