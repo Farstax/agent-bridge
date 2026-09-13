@@ -1,8 +1,8 @@
 # ACP provider-runtime boundary
 
-Agent Bridge uses Agent Client Protocol (ACP) v1 as the future
-provider-runtime contract. This is not a second agent runtime and not a
-proprietary wrapper around ACP.
+Agent Bridge uses Agent Client Protocol (ACP) v1 as the canonical inward
+provider-runtime contract for providers that have completed ACP migration.
+This is not a second agent runtime and not a proprietary wrapper around ACP.
 
 Pinned SDK: `@agentclientprotocol/sdk@1.4.0` (stable ACP v1 entry point).
 Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
@@ -36,6 +36,26 @@ successful use) rather than creation time. A binding untouched for seven
 days is cleared on the next database open; only the stale native-resume
 pointer goes away, Bridge conversation identity is untouched, and the next
 turn starts a fresh ACP session automatically.
+
+## Canonical ACP provider onboarding
+
+A straightforward Registry-listed ACP provider should require only:
+
+1. an Agent Bridge provider id;
+2. an ACP Registry agent id and exact release-locked qualified distribution/version;
+3. small provider policy hooks only for genuine auth, authority, configuration,
+   error, or presentation differences; and
+4. provider qualification.
+
+It should not require a provider-specific runtime, parser, session, doctor,
+qualification, or messaging module. Runtime lifecycle, replay, cancellation,
+completion, telemetry, redaction, supervision, and session mapping belong to
+the shared ACP path.
+
+If an ACP agent is absent from the public Registry, a release may own a narrow
+launch override, but it must feed the same generic ACP runtime rather than
+creating a parallel provider-extension system. Mutable Registry latest is
+never resolved during an ordinary Run.
 
 ## Codex runtime
 
@@ -118,7 +138,7 @@ Codex ACP additionally tags `agent_message_chunk` updates with
 payload itself (`notification.update._meta`, via ACP's `ContentChunk`) — not
 on the `SessionNotification` envelope (`notification._meta`), which is a
 structurally distinct field ACP reserves for its own extensibility metadata.
-That interpretation is Codex-specific and lives in `codexAcpRuntime.ts`, not
+That interpretation is Codex-specific and lives in `codexAcpPolicy.ts`, not
 the generic ACP core: commentary remains available as live intermediate
 progress, but the authoritative delivered answer excludes it, along with any
 chunk with a missing or unrecognized phase value once a turn has shown any
@@ -152,7 +172,7 @@ rather than silently dropping the attachment.
 
 Codex ACP's `read-only` agent mode is not equivalent to strict tool-free execution: it still permits read/search/think-style tools and only
 restricts mutation/network authority. The pinned adapter has no config knob
-that guarantees genuinely tool-free execution, so `buildInvocation` fails
+that guarantees genuinely tool-free execution, so Codex provider policy fails
 closed (`CodexAcpToolFreeUnsupportedError`) for `toolMode: "none"` rather than
 silently weakening Advisor's tool-free contract to read-only.
 
@@ -163,7 +183,6 @@ sources, clears MCP servers, and enables strict MCP configuration.
 ## Non-goals
 
 - Remote HTTP/WebSocket ACP transport
-- Farstax outward ACP exposure
 - Migrating Agy, Cursor, or Grok in this phase
 - Changing Telegram/Discord presentation to show tool calls or plans
 - Remote interactive authentication UI. Provider API-key authentication uses
