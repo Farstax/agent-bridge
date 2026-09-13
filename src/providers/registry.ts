@@ -7,8 +7,8 @@ import {
 } from "./types.js";
 import type { AcpProviderPolicy } from "./acpRuntime.js";
 import { createPlannerStallWatch } from "./antigravityRuntime.js";
-import { claudeAcpPolicy } from "./claudeAcpPolicy.js";
-import { codexAcpPolicy } from "./codexAcpPolicy.js";
+import { claudeAcpPolicy, verifyClaudeAcpApiKey } from "./claudeAcpPolicy.js";
+import { codexAcpPolicy, verifyCodexAcpApiKey } from "./codexAcpPolicy.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
@@ -80,6 +80,16 @@ const ACP_POLICIES: Readonly<Partial<Record<ProviderId, AcpProviderPolicy>>> = {
   claude: claudeAcpPolicy,
 };
 
+export type AcpProviderApiKeyProbe = (
+  env: Record<string, string | undefined>,
+) => Promise<void>;
+
+/** Authentication preparation is provider policy; shared auth orchestration only selects it. */
+const ACP_API_KEY_PROBES: Readonly<Partial<Record<ProviderId, AcpProviderApiKeyProbe>>> = {
+  codex: verifyCodexAcpApiKey,
+  claude: verifyClaudeAcpApiKey,
+};
+
 /**
  * buildCliInvocation() uses CLI-kind vocabulary ("antigravity"), while the
  * provider registry uses "agy". Keep the vocabulary conversion in one place.
@@ -99,6 +109,10 @@ export function providerIdForBotName(bot: string): ProviderId | null {
 
 export function getAcpProviderPolicy(id: ProviderId): AcpProviderPolicy | null {
   return ACP_POLICIES[id] ?? null;
+}
+
+export function getAcpProviderApiKeyProbe(id: ProviderId): AcpProviderApiKeyProbe | null {
+  return ACP_API_KEY_PROBES[id] ?? null;
 }
 
 export function supportsToolFreeMode(bot: string): boolean {
