@@ -130,6 +130,14 @@ describe("Grok ACP provider", () => {
         XAI_API_KEY: "optional-unverified-key",
       })).toBe("cached_token");
 
+      const explicitAuthPath = join(root, "explicit-auth.json");
+      writeFileSync(explicitAuthPath, "{}\n", "utf8");
+      expect(grokAcpPolicy.authenticateMethodId?.({
+        HOME: join(root, "missing-home"),
+        GROK_AUTH_PATH: explicitAuthPath,
+        XAI_API_KEY: "optional-unverified-key",
+      })).toBe("cached_token");
+
       expect(grokAcpPolicy.authenticateMethodId?.({
         HOME: join(root, "missing-home"),
         XAI_API_KEY: "verified-or-provider-native-key",
