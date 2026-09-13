@@ -122,6 +122,19 @@ function agentSupportsLoad(init: InitializeResponse): boolean {
   return Boolean(init.agentCapabilities?.loadSession);
 }
 
+/**
+ * Resolves live-turn steering support from the agent's own InitializeResponse
+ * `_meta.steering.supported` flag (the ACP steering extension contract), never
+ * from a provider-name check. Fails closed on any missing/malformed shape.
+ */
+export function agentSupportsSteering(init: InitializeResponse): boolean {
+  const meta = init._meta;
+  if (!meta || typeof meta !== "object") return false;
+  const steering = (meta as Record<string, unknown>).steering;
+  if (!steering || typeof steering !== "object") return false;
+  return (steering as Record<string, unknown>).supported === true;
+}
+
 function sessionSetupState(value: unknown): SessionSetupState {
   return value && typeof value === "object" ? value as SessionSetupState : {};
 }
