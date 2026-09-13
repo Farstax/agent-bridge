@@ -17,6 +17,8 @@ export function resolveGrokAuthPaths(
   homeDir: string = homedir(),
   env: Record<string, string | undefined> = process.env,
 ): string[] {
+  const explicitAuthPath = env.GROK_AUTH_PATH?.trim();
+  if (explicitAuthPath) return [explicitAuthPath];
   const grokHome = env.GROK_HOME?.trim() || join(homeDir, ".grok");
   return [join(grokHome, "auth.json")];
 }
@@ -26,9 +28,10 @@ export function isGrokAuthenticated(options: GrokAvailabilityOptions = {}): bool
   const exists = options.exists ?? existsSync;
   const env = options.env ?? process.env;
 
-  // The selected Grok ACP runtime consumes ~/.grok/auth.json (or GROK_HOME).
-  // Keep account auth authoritative over an optional API key, but do not claim
-  // readiness from legacy auth paths the selected runtime does not consume.
+  // The selected Grok ACP runtime consumes GROK_AUTH_PATH when explicitly set,
+  // otherwise GROK_HOME/auth.json (default ~/.grok/auth.json). Keep account auth
+  // authoritative over an optional API key, but do not claim readiness from
+  // legacy paths the selected runtime does not consume.
   if (resolveGrokAuthPaths(homeDir, env).some(exists)) return true;
   if (!isProviderApiKeyConfigured("grok", env)) return false;
   return options.verifyApiKey?.() ?? isProviderApiKeyVerified("grok", env);
