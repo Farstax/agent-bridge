@@ -16,6 +16,7 @@ import {
 
 const refreshContention =
   "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.";
+const refreshContentionWithoutPeriod = refreshContention.slice(0, -1);
 
 function systemErrorAgent(diagnostic: string): acp.AgentApp {
   return acp.agent({ name: "system-error-agent" })
@@ -123,7 +124,7 @@ describe("ACP provider failure handling", () => {
     }
   });
 
-  it("converts Claude's in-band synthetic refresh message into a retryable execution error", () => {
+  it("converts only a diagnostic-shaped Claude refresh message into a retryable execution error", () => {
     const error = detectClaudeAcpTurnError({
       liveText: refreshContention,
     } as any);
@@ -131,15 +132,26 @@ describe("ACP provider failure handling", () => {
     expect(isClaudeOAuthRefreshContention(error!)).toBe(true);
 
     expect(detectClaudeAcpTurnError({ liveText: "ordinary Claude answer" } as any)).toBeNull();
+    expect(detectClaudeAcpTurnError({
+      liveText: `I can explain this message: ${refreshContention}`,
+    } as any)).toBeNull();
   });
 
-  it("keeps Claude refresh contention out of provisional answer previews, including split chunks", () => {
-    const chunks: string[] = [];
-    const preview = createClaudeAcpAnswerPreview((text) => chunks.push(text), []);
-    preview.observe(claudeMessageEvent("Failed to refresh OAuth token: another Claude Code process is "));
-    preview.observe(claudeMessageEvent("refreshing it or exited mid-refresh. This is usually transient."));
-    preview.finish("end_turn");
-    expect(chunks).toEqual([]);
+  it("keeps exact and split Claude refresh contention out of provisional answer previews", () => {
+    for (const diagnostic of [refreshContention, refreshContentionWithoutPeriod]) {
+      const chunks: string[] = [];
+      const preview = createClaudeAcpAnswerPreview((text) => chunks.push(text), []);
+      preview.observe(claudeMessageEvent(diagnostic));
+      preview.finish("end_turn");
+      expect(chunks).toEqual([]);
+    }
+
+    const splitChunks: string[] = [];
+    const splitPreview = createClaudeAcpAnswerPreview((text) => splitChunks.push(text), []);
+    splitPreview.observe(claudeMessageEvent("Failed to refresh OAuth token: another Claude Code process is "));
+    splitPreview.observe(claudeMessageEvent("refreshing it or exited mid-refresh. This is usually transient."));
+    splitPreview.finish("end_turn");
+    expect(splitChunks).toEqual([]);
 
     const ordinary: string[] = [];
     const normalPreview = createClaudeAcpAnswerPreview((text) => ordinary.push(text), []);
@@ -148,8 +160,9 @@ describe("ACP provider failure handling", () => {
     expect(ordinary.join("")).toBe("Final answer");
   });
 
-  it("retries Claude OAuth refresh contention once after a bounded delay", async () => {
+  it("retries Claude OAuth refresh contention once and records that the successor actually starts", async () => {
     const wait = vi.fn(async () => {});
+    const decision = vi.fn(async () => {});
     const operation = vi.fn()
       .mockRejectedValueOnce(new Error(refreshContention))
       .mockResolvedValueOnce("ok");
@@ -157,14 +170,18 @@ describe("ACP provider failure handling", () => {
     await expect(runWithAcpTransientRetry("claude", operation, {
       wait,
       abortRequested: () => false,
+      onRetryDecision: decision,
     })).resolves.toBe("ok");
 
     expect(operation).toHaveBeenCalledTimes(2);
     expect(wait).toHaveBeenCalledTimes(1);
     expect(wait).toHaveBeenCalledWith(CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS, expect.any(Function));
+    expect(decision).toHaveBeenCalledTimes(1);
+    expect(decision.mock.calls[0][1]).toBe(true);
+    expect(decision.mock.calls[0][0]).toBeInstanceOf(Error);
   });
 
-  it("does not retry unrelated Claude failures or retry after cancellation wins", async () => {
+  it("does not retry unrelated Claude failures and records when cancellation prevents a successor", async () => {
     const unrelated = vi.fn().mockRejectedValue(new Error("Authentication required: please log in"));
     await expect(runWithAcpTransientRetry("claude", unrelated, {
       wait: vi.fn(async () => {}),
@@ -177,10 +194,14 @@ describe("ACP provider failure handling", () => {
     const wait = vi.fn(async (_delay: number, _abortRequested: () => boolean) => {
       abort = true;
     });
+    const decision = vi.fn(async () => {});
     await expect(runWithAcpTransientRetry("claude", operation, {
       wait,
       abortRequested: () => abort,
+      onRetryDecision: decision,
     })).rejects.toThrow(/cancelled before transient retry/i);
     expect(operation).toHaveBeenCalledTimes(1);
+    expect(decision).toHaveBeenCalledTimes(1);
+    expect(decision.mock.calls[0][1]).toBe(false);
   });
 });
