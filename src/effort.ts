@@ -164,7 +164,6 @@ export function buildEffortText(
   }
 
   const support =
-    kind === "grok" ? "Grok maps effort to the native headless --effort flag." :
     kind === "cursor" ? "Cursor effort is unsupported by the qualified headless contract; this setting is recorded for parity only." :
     "A separate Agy effort CLI flag is unsupported; Agent Bridge maps effort to the selected Gemini model variant. Low/medium/high map directly; xhigh/max use high.";
 
