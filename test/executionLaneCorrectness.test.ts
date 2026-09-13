@@ -11,6 +11,8 @@ import { ProviderFallbackChain } from "../src/providerFallback.js";
 import * as fileOutput from "../src/fileOutput.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
+process.env.AGENT_BRIDGE_KILL_GRACE_MS = "100";
+
 function message(text: string, threadId: number) {
   return { message_id: Math.random(), chat: { id: 100, type: "private" }, from: { id: 42, first_name: "T" }, message_thread_id: threadId, text } as any;
 }
@@ -1011,7 +1013,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       },
     }), db, client(), { runCli });
     await engine.recoverPendingQueues();
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await waitForCondition(() => runCli.mock.calls.length === 1 && db.pendingMsgCount("telegram:interactive", "100:7") === 0, 4_000);
     expect(runCli).toHaveBeenCalledOnce();
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     db.close(); rmSync(path, { force: true });

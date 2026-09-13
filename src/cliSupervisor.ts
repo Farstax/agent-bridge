@@ -73,6 +73,15 @@ function buildChildEnv(extraEnv?: Record<string, string>, advisorChild = false):
   return advisorChild ? buildAdvisorChildEnv(merged) : merged;
 }
 
+function defaultKillGraceMs(): number {
+  const envVal = process.env.AGENT_BRIDGE_KILL_GRACE_MS;
+  if (envVal) {
+    const parsed = parseInt(envVal, 10);
+    if (!Number.isNaN(parsed) && parsed >= 0) return parsed;
+  }
+  return 5_000;
+}
+
 const KILL_GRACE_MS = 5_000;
 const GROUP_EXIT_POLL_INTERVAL_MS = 25;
 const GROUP_EXIT_POLL_BOUND_MS = 1_000;
@@ -92,7 +101,7 @@ export function resolveSupervisorTimeouts(options: Pick<CliOptions, "timeoutMs" 
   };
 }
 
-function killChildTree(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Promise<void> {
+function killChildTree(child: ChildProcess, graceMs: number = defaultKillGraceMs()): Promise<void> {
   const pid = child.pid;
   const signal = (sig: NodeJS.Signals) => {
     if (pid) {
@@ -136,7 +145,7 @@ export class CliTimeoutError extends Error {
   }
 }
 
-function killChild(child: ChildProcess, graceMs: number = KILL_GRACE_MS): Promise<void> {
+function killChild(child: ChildProcess, graceMs: number = defaultKillGraceMs()): Promise<void> {
   abortedChildren.add(child);
   return killChildTree(child, graceMs);
 }
@@ -151,8 +160,14 @@ function deregisterProcess(chatId: number | string, child: ChildProcess): void {
 
 function registerProcess(chatId: number | string, child: ChildProcess): void {
   const active = activeExecutions.get(chatId);
-  if (active) active.child = child;
-  else activeExecutions.set(chatId, { child, abortRequested: false, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null, stdioAbort: null });
+  if (active) {
+    active.child = child;
+    if (active.abortRequested) {
+      void killChild(child);
+    }
+  } else {
+    activeExecutions.set(chatId, { child, abortRequested: false, lifecycleToken: null, lifecycleHandle: null, lifecycleDone: null, finishLifecycle: null, stdioAbort: null });
+  }
 }
 
 export function beginExecutionLifecycle(chatId: number | string, handle: ExecutionLaneHandle): string {
@@ -338,7 +353,7 @@ export async function runSupervisedProcess(
   onProgress?: (text: string) => void,
 ): Promise<{ stdout: string }> {
   const { timeoutMs, idleTimeoutMs } = resolveSupervisorTimeouts(options);
-  const killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
+  const killGraceMs = options.killGraceMs ?? defaultKillGraceMs();
   const onEvent = options.onEvent;
   const evtCtx = options.eventContext;
   const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
@@ -387,6 +402,10 @@ export async function runSupervisedProcess(
   };
 
   return new Promise((resolve, reject) => {
+    if (options.chatId != null && activeExecutions.get(options.chatId)?.abortRequested) {
+      reject(new Error(`Execution already aborted for chatId=${String(options.chatId)}`));
+      return;
+    }
     const normalizedArgs = normalizeCliArgs(command, args);
     const spawnInvocation = buildWorkspaceLockedInvocation(command, normalizedArgs, cwd, {
       bypassWorkspaceLock: options.bypassWorkspaceLock,
@@ -574,7 +593,7 @@ export async function runSupervisedStdioSession<T>(
   session: (io: SupervisedStdio) => Promise<T>,
 ): Promise<T> {
   const { timeoutMs, idleTimeoutMs } = resolveSupervisorTimeouts(options);
-  const killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
+  const killGraceMs = options.killGraceMs ?? defaultKillGraceMs();
   const redactionEnv = buildChildEnv(options.contextEnv, options.advisorChild);
   const providerId: ProviderId | null = options.bot
     ? options.bot === "antigravity" ? "agy" : options.bot
@@ -589,6 +608,9 @@ export async function runSupervisedStdioSession<T>(
   const redact = (text: string): string => redactProviderApiKeySecrets(text, redactionEnv);
   const stderrRedactor = createStreamingSecretRedactor(getProviderApiKeySecretValues(redactionEnv));
   const stdioAbort = new AbortController();
+  if (options.chatId != null && activeExecutions.get(options.chatId)?.abortRequested) {
+    throw new Error(`Execution already aborted for chatId=${String(options.chatId)}`);
+  }
   const normalizedArgs = normalizeCliArgs(command, args);
   const spawnInvocation = buildWorkspaceLockedInvocation(command, normalizedArgs, cwd, {
     bypassWorkspaceLock: options.bypassWorkspaceLock,
