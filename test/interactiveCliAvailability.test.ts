@@ -123,7 +123,6 @@ describe("interactive CLI availability filtering", () => {
 
     expect(paths.grok).toEqual([
       "/home/tester/.grok/auth.json",
-      "/home/tester/.config/grok/auth.json",
     ]);
     expect(available).toEqual(new Set<CliKind>(["grok"]));
     expect(getSelectableCliKinds()).not.toContain("grok");
