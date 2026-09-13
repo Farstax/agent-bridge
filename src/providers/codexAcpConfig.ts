@@ -1,13 +1,5 @@
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-export function resolveBridgeProjectDir(
-  env: Record<string, string | undefined> = process.env,
-): string {
-  const configured = env.BRIDGE_CURRENT_RELEASE_DIR?.trim();
-  if (configured) return configured;
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-}
+import { join } from "node:path";
+import { resolveBridgeProjectDir } from "./acpConfig.js";
 
 export function bundledCodexAcpCommand(
   env: Record<string, string | undefined> = process.env,
