@@ -96,9 +96,11 @@ if [ "$1" = --version ]; then
   exit 0
 fi
 `, qualificationLog);
-      fakeProvider(grok, `
-if [ "$1" = --version ]; then echo 'grok 1.2.3'; exit 0; fi
-`, qualificationLog);
+      script(grok, `
+printf '%s\\n' "$0 $*" >> "${qualificationLog}"
+if [ "\${1:-}" = --version ]; then echo 'grok 1.0.30'; exit 0; fi
+exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
+`);
       fakeProvider(cursor, `
 if [ "$1" = --version ]; then echo 'cursor-agent 1.2.3'; exit 0; fi
 `, qualificationLog);
@@ -150,7 +152,8 @@ exit 97
           FAKE_ACP_STORE: join(root, "codex-acp-sessions.json"),
           FAKE_ACP_RESUME: "1",
           ANTIGRAVITY_COMMAND: agy,
-          GROK_COMMAND: grok,
+          GROK_ACP_COMMAND: grok,
+          GROK_ACP_ARGS: "",
           CURSOR_COMMAND: cursor,
           AGENT_BRIDGE_COMMIT: "a".repeat(40),
           AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH: qualificationEvidence,

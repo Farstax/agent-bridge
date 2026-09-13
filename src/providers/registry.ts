@@ -9,6 +9,7 @@ import type { AcpProviderPolicy } from "./acpRuntime.js";
 import { createPlannerStallWatch } from "./antigravityRuntime.js";
 import { claudeAcpPolicy } from "./claudeAcpPolicy.js";
 import { codexAcpPolicy } from "./codexAcpPolicy.js";
+import { grokAcpPolicy } from "./grokAcpPolicy.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
@@ -43,13 +44,9 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   grok: {
     id: "grok",
     displayName: "Grok Build",
-    executable: "grok",
-    versionArgs: ["--version"],
-    defaultArgs: ["-p", "--output-format", "streaming-json"],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
-      toolFree: false,
     },
   },
   cursor: {
@@ -70,6 +67,7 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
 const ACP_POLICIES: Readonly<Partial<Record<ProviderId, AcpProviderPolicy>>> = {
   codex: codexAcpPolicy,
   claude: claudeAcpPolicy,
+  grok: grokAcpPolicy,
 };
 
 /**

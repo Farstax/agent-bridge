@@ -55,12 +55,12 @@ describe("provider registry", () => {
     expect(adapter.versionArgs).toEqual(["--version"]);
   });
 
-  it("retains native launch metadata for unmigrated Grok and Cursor", () => {
+  it("retains native launch metadata for unmigrated Cursor and Agy", () => {
     expect(getProviderAdapter("grok")).toMatchObject({
-      executable: "grok",
-      versionArgs: ["--version"],
-      defaultArgs: ["-p", "--output-format", "streaming-json"],
+      id: "grok",
+      displayName: "Grok Build",
     });
+    expect(getProviderAdapter("grok").executable).toBeUndefined();
     expect(getProviderAdapter("cursor")).toMatchObject({
       executable: "cursor-agent",
       versionArgs: ["--version"],
@@ -71,10 +71,13 @@ describe("provider registry", () => {
       executable: "/native/agy",
       args: ["--print"],
     });
-    expect(resolveProviderRuntime("grok", { GROK_COMMAND: "/native/grok" })).toMatchObject({
-      transport: "oneshot",
-      executable: "/native/grok",
-      args: ["-p", "--output-format", "streaming-json"],
+    expect(resolveProviderRuntime("grok", {
+      GROK_ACP_COMMAND: "/opt/xai/bin/grok",
+      GROK_ACP_ARGS: "agent stdio",
+    })).toMatchObject({
+      transport: "acp-stdio",
+      executable: "/opt/xai/bin/grok",
+      args: ["agent", "stdio"],
     });
     expect(resolveProviderRuntime("cursor", { CURSOR_COMMAND: "/native/cursor" })).toMatchObject({
       transport: "oneshot",

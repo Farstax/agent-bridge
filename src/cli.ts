@@ -16,7 +16,6 @@ import {
   resolveProviderRuntime,
   runAcpProviderTurn,
 } from "./providers/acpRuntime.js";
-import * as grokRuntime from "./providers/grokRuntime.js";
 import * as cursorRuntime from "./providers/cursorRuntime.js";
 import * as antigravityRuntime from "./providers/antigravityRuntime.js";
 import { extractAntigravityRunTelemetry } from "./providers/antigravityTelemetry.js";
@@ -81,17 +80,15 @@ import { wrapPromptContext } from "./promptWrapping.js";
 import {
   AntigravityUncertainCompletionError,
   CursorUncertainCompletionError,
-  GrokUncertainCompletionError,
   isAntigravityUncertainCompletionFailureMessage,
   isCursorUncertainCompletionFailureMessage,
-  isGrokUncertainCompletionFailureMessage,
 } from "./cliSuccessfulExitValidation.js";
 import { type as evtType } from "./events/types.js";
 import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
 
 const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
 
-type RecoverableProvider = "antigravity" | "grok" | "cursor";
+type RecoverableProvider = "antigravity" | "cursor";
 
 export {
   getExecutionProcessState,
@@ -188,11 +185,6 @@ export function buildCliInvocation({
       toolMode,
     });
   }
-  if (bot === "grok") {
-    return grokRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
-    });
-  }
   if (bot === "cursor") {
     return cursorRuntime.buildInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
@@ -275,8 +267,6 @@ export function parseCliResult({
   const providerId = providerIdForBotName(bot);
   if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
     throw new Error(`${bot} uses ACP structured results and is not parsed as native CLI output`);
-  } else if (bot === "grok") {
-    result = grokRuntime.parseResult(stdout);
   } else if (bot === "cursor") {
     result = cursorRuntime.parseResult(stdout);
   } else if (bot === "antigravity") {
@@ -338,7 +328,7 @@ function eventChatKey(options: CliOptions): string | undefined {
 }
 
 function providerRecoveryPrompt(provider: RecoverableProvider): string {
-  const name = provider === "antigravity" ? "Agy" : provider === "grok" ? "Grok" : "Cursor";
+  const name = provider === "antigravity" ? "Agy" : "Cursor";
   return [
     "Agent Bridge detected that the immediately preceding turn ended with uncertain completion.",
     `Reconcile the current ${name} session state for that preceding user request.`,
@@ -384,12 +374,6 @@ function serializeProviderResult(
       result: { conversation_id: result.sessionId, status: "SUCCESS", response: result.text },
     }) + "\n";
   }
-  if (provider === "grok") {
-    return [
-      JSON.stringify({ type: "text", data: result.text }),
-      JSON.stringify({ type: "end", sessionId: result.sessionId, stopReason: "end_turn" }),
-    ].join("\n") + "\n";
-  }
   return JSON.stringify({
     type: "result",
     subtype: "success",
@@ -400,7 +384,7 @@ function serializeProviderResult(
 }
 
 function incompleteProviderText(provider: RecoverableProvider): string {
-  const name = provider === "antigravity" ? "Agy" : provider === "grok" ? "Grok" : "Cursor";
+  const name = provider === "antigravity" ? "Agy" : "Cursor";
   return `${name} stopped before confirming completion. Some work may have been applied, but completion could not be verified.`;
 }
 
@@ -450,7 +434,6 @@ function finishRecoveryCancelled(options: CliOptions): { stdout: string } {
 
 type NonClaudeUncertainCompletionError =
   | AntigravityUncertainCompletionError
-  | GrokUncertainCompletionError
   | CursorUncertainCompletionError;
 
 function uncertainSessionId(error: NonClaudeUncertainCompletionError): string | null {
@@ -470,7 +453,6 @@ function providerExecutionMode(
   args: string[],
 ): "safe" | "trusted" {
   if (provider === "antigravity") return args.includes("--dangerously-skip-permissions") ? "trusted" : "safe";
-  if (provider === "grok") return args.includes("--always-approve") ? "trusted" : "safe";
   return optionValue(args, "--sandbox") === "disabled" ? "trusted" : "safe";
 }
 
@@ -485,13 +467,12 @@ function providerToolMode(
 function providerOutputFormat(
   provider: RecoverableProvider,
 ): ProviderInvocationRequest["outputFormat"] {
-  if (provider === "cursor") return "stream-json";
-  if (provider === "grok") return "streaming-json";
+  void provider;
   return "stream-json";
 }
 
 function isRecoverableProvider(provider: string | undefined): provider is RecoverableProvider {
-  return provider === "antigravity" || provider === "grok" || provider === "cursor";
+  return provider === "antigravity" || provider === "cursor";
 }
 
 function isNonClaudeUncertainCompletion(
@@ -499,13 +480,11 @@ function isNonClaudeUncertainCompletion(
   error: unknown,
 ): error is NonClaudeUncertainCompletionError {
   return (provider === "antigravity" && error instanceof AntigravityUncertainCompletionError)
-    || (provider === "grok" && error instanceof GrokUncertainCompletionError)
     || (provider === "cursor" && error instanceof CursorUncertainCompletionError);
 }
 
 function isProviderUncertainCompletionFailureMessage(provider: string | undefined, message: string): boolean {
   if (provider === "antigravity") return isAntigravityUncertainCompletionFailureMessage(message);
-  if (provider === "grok") return isGrokUncertainCompletionFailureMessage(message);
   if (provider === "cursor") return isCursorUncertainCompletionFailureMessage(message);
   return false;
 }

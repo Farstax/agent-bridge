@@ -27,7 +27,7 @@ describe("source setup", () => {
     ]);
 
     const providers = detectInteractiveProviders({
-      env: { CODEX_ACP_COMMAND: "codex-acp", CLAUDE_ACP_COMMAND: "claude-agent-acp" },
+      env: { CODEX_ACP_COMMAND: "codex-acp", CLAUDE_ACP_COMMAND: "claude-agent-acp", GROK_ACP_COMMAND: "grok" },
       resolvePath: (command) => installed.get(command) ?? null,
     });
 
@@ -41,7 +41,7 @@ describe("source setup", () => {
     expect(providers.map((provider) => provider.commandEnv)).toEqual([
       "CODEX_ACP_COMMAND",
       "CLAUDE_ACP_COMMAND",
-      "GROK_COMMAND",
+      "GROK_ACP_COMMAND",
       "ANTIGRAVITY_COMMAND",
       "CURSOR_COMMAND",
     ]);

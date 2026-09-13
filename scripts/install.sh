@@ -91,6 +91,7 @@ seed_from_env_file() {
                TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
               ANTIGRAVITY_COMMAND CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS \
               CODEX_ACP_COMMAND CODEX_ACP_ARGS \
+              GROK_ACP_COMMAND GROK_ACP_ARGS \
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
               BRIDGE_EXECUTION_MODE POLL_INTERVAL_MS FETCH_TIMEOUT_MS \
@@ -205,6 +206,7 @@ prompt DISCORD_ALLOWED_USER_IDS       "Discord allowed user IDs (leave blank to 
 prompt DISCORD_GUILD_ID               "Discord guild ID (optional, leave blank for global commands)"
 prompt CODEX_ACP_COMMAND   "Codex ACP command"   "${REPO_DIR}/node_modules/.bin/codex-acp"
 prompt CLAUDE_ACP_COMMAND  "Claude ACP command"  "${REPO_DIR}/node_modules/.bin/claude-agent-acp"
+prompt GROK_ACP_COMMAND    "Grok ACP command"    "${REPO_DIR}/node_modules/.bin/grok"
 prompt ANTIGRAVITY_COMMAND "Antigravity command" "$(command -v agy    2>/dev/null || true)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""
@@ -310,6 +312,7 @@ fi
 
 ensure_var CODEX_ACP_COMMAND   "Codex ACP command"
 ensure_var CLAUDE_ACP_COMMAND  "Claude ACP command"
+ensure_var GROK_ACP_COMMAND    "Grok ACP command"
 ensure_var ANTIGRAVITY_COMMAND "Antigravity command"
 
 # Write local .env.* files from examples (machine-specific values substituted in)
@@ -356,6 +359,7 @@ _write_shared_defaults() {
     [[ -n "${CODEX_ACP_COMMAND:-}" ]] && echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     [[ -n "${CLAUDE_ACP_COMMAND:-}" ]] && echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
+    [[ -n "${GROK_ACP_COMMAND:-}" ]] && echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
     [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
     echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
     echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
@@ -425,6 +429,7 @@ _write_interactive_defaults() {
     echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,antigravity,grok,cursor}"
     echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
     echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
+    echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
     echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
@@ -453,6 +458,7 @@ _write_discord_defaults() {
       echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,antigravity,grok,cursor}"
       echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
       echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
+    echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
       echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
       [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"

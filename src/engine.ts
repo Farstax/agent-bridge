@@ -1587,11 +1587,7 @@ export class BridgeEngine {
       prompt: promptForCli.prompt,
       sessionId,
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity"
-        ? "stream-json"
-        : executionKind === "grok"
-          ? "streaming-json"
-          : "json",
+      outputFormat: executionKind === "antigravity" ? "stream-json" : "json",
       logFile,
       soulContext: promptForCli.soulContext,
       includeResponseContract: promptForCli.includeResponseContract,
@@ -1774,11 +1770,7 @@ export class BridgeEngine {
       prompt,
       sessionId: null,
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity"
-        ? "stream-json"
-        : executionKind === "grok"
-          ? "streaming-json"
-          : "json",
+      outputFormat: executionKind === "antigravity" ? "stream-json" : "json",
       logFile: retryLogFile,
       soulContext,
       includeResponseContract,
@@ -1949,11 +1941,7 @@ export class BridgeEngine {
       prompt: fallbackPromptForCli.prompt,
       sessionId: null,
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity"
-        ? "stream-json"
-        : executionKind === "grok"
-          ? "streaming-json"
-          : "json",
+      outputFormat: executionKind === "antigravity" ? "stream-json" : "json",
       logFile: fallbackLogFile,
       soulContext: fallbackPromptForCli.soulContext,
       includeResponseContract: fallbackPromptForCli.includeResponseContract,

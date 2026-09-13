@@ -36,6 +36,7 @@
     "@agentclientprotocol/claude-agent-acp": "0.76.0",
     "@agentclientprotocol/codex-acp": "1.10.0",
     "@agentclientprotocol/sdk": "1.4.0",
+    "@xai-official/grok": "1.0.30",
     "better-sqlite3": "^12.9.0",
     "dotenv": "^17.2.3",
     "tsx": "^4.21.0",

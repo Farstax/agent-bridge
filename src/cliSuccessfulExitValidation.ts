@@ -8,11 +8,9 @@
 
 import type { CliOptions } from "./types.js";
 import { parseAntigravityStreamJsonResult } from "./providers/antigravityRuntime.js";
-import { parseResult as parseGrokResult } from "./providers/grokRuntime.js";
 import { parseResult as parseCursorResult } from "./providers/cursorRuntime.js";
 
 const AGY_UNCERTAIN_COMPLETION = "Agy completion could not be verified from structured output";
-const GROK_UNCERTAIN_COMPLETION = "Grok completion could not be verified from structured output";
 const CURSOR_UNCERTAIN_COMPLETION = "Cursor completion could not be verified from structured output";
 const AGY_CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -22,16 +20,6 @@ export class AntigravityUncertainCompletionError extends Error {
   constructor(sessionId: string | null) {
     super(AGY_UNCERTAIN_COMPLETION);
     this.name = "AntigravityUncertainCompletionError";
-    this.sessionId = sessionId;
-  }
-}
-
-export class GrokUncertainCompletionError extends Error {
-  readonly sessionId: string | null;
-
-  constructor(sessionId: string | null) {
-    super(GROK_UNCERTAIN_COMPLETION);
-    this.name = "GrokUncertainCompletionError";
     this.sessionId = sessionId;
   }
 }
@@ -48,10 +36,6 @@ export class CursorUncertainCompletionError extends Error {
 
 export function isAntigravityUncertainCompletionFailureMessage(message: string): boolean {
   return message === AGY_UNCERTAIN_COMPLETION;
-}
-
-export function isGrokUncertainCompletionFailureMessage(message: string): boolean {
-  return message === GROK_UNCERTAIN_COMPLETION;
 }
 
 export function isCursorUncertainCompletionFailureMessage(message: string): boolean {
@@ -98,24 +82,6 @@ function extractCursorSessionId(stdout: string): string | null {
   return null;
 }
 
-function inspectGrok(stdout: string): {
-  sessionId: string | null;
-  sawExplicitFailure: boolean;
-} {
-  let sessionId: string | null = null;
-  let sawExplicitFailure = false;
-  for (const record of parseObjectLines(stdout)) {
-    if (record.type === "error" || record.type === "max_turns_reached") sawExplicitFailure = true;
-    if (record.type !== "end") continue;
-    if (typeof record.sessionId === "string" && record.sessionId.trim()) sessionId = record.sessionId;
-    const reason = typeof record.stopReason === "string"
-      ? record.stopReason.trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/-/g, "_").toLowerCase()
-      : "";
-    if (reason && reason !== "end_turn" && reason !== "success") sawExplicitFailure = true;
-  }
-  return { sessionId, sawExplicitFailure };
-}
-
 function cursorHasExplicitFailure(stdout: string): boolean {
   return parseObjectLines(stdout).some((record) =>
     record.type === "result" && (record.is_error === true || record.subtype === "error")
@@ -141,19 +107,6 @@ function validateAgySuccessfulExit(output: Readonly<{ stdout: string; stderr: st
   }
 }
 
-function validateGrokSuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
-  try {
-    parseGrokResult(output.stdout);
-    return null;
-  } catch (error) {
-    const inspection = inspectGrok(output.stdout);
-    if (inspection.sawExplicitFailure) {
-      return error instanceof Error ? error : new Error("Grok reported an error");
-    }
-    return new GrokUncertainCompletionError(inspection.sessionId);
-  }
-}
-
 function validateCursorSuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
   try {
     parseCursorResult(output.stdout);
@@ -169,7 +122,6 @@ export function validateSuccessfulCliExit(
   output: Readonly<{ stdout: string; stderr: string }>,
 ): Error | null {
   if (bot === "antigravity") return validateAgySuccessfulExit(output);
-  if (bot === "grok") return validateGrokSuccessfulExit(output);
   if (bot === "cursor") return validateCursorSuccessfulExit(output);
   return null;
 }

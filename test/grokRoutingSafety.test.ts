@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,13 +8,18 @@ import { openDb } from "../src/db.js";
 import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { clearProviderApiKeyVerificationCache, verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
+import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 
 // Routing now requires a bounded native probe rather than trusting a non-empty
 // XAI_API_KEY. Every test below shares the literal "test-key" value, so prime
 // the verification cache once for that fingerprint instead of re-probing per test.
 beforeAll(async () => {
-  await verifyProviderApiKey("grok", { env: { XAI_API_KEY: "test-key" }, execFile: async () => undefined });
+  await verifyProviderApiKey("grok", {
+    env: { XAI_API_KEY: "test-key" },
+    acpProbe: async () => undefined,
+    execFile: async () => { throw new Error("native Grok probe must not execute"); },
+  });
 });
 afterAll(() => {
   clearProviderApiKeyVerificationCache();
@@ -24,17 +29,21 @@ function withGrokEnvironment<T>(run: (root: string, evidencePath: string) => T):
   const root = mkdtempSync(join(tmpdir(), "grok-routing-safety-"));
   const evidencePath = join(root, "qualification.json");
   const executable = join(root, "grok");
-  writeFileSync(executable, "#!/bin/sh\necho 'grok 1.0.5'\n", "utf8");
+  writeFileSync(executable, "#!/bin/sh\necho 'grok 1.0.30'\n", "utf8");
   chmodSync(executable, 0o755);
 
   const previous = {
     evidencePath: process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH,
-    command: process.env.GROK_COMMAND,
+    command: process.env.GROK_ACP_COMMAND,
     apiKey: process.env.XAI_API_KEY,
     executionMode: process.env.GROK_EXECUTION_MODE,
+    home: process.env.HOME,
   };
+  mkdirSync(join(root, ".grok"), { recursive: true });
+  writeFileSync(join(root, ".grok", "auth.json"), "{}\n");
+  process.env.HOME = root;
   process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = evidencePath;
-  process.env.GROK_COMMAND = executable;
+  process.env.GROK_ACP_COMMAND = executable;
   process.env.XAI_API_KEY = "test-key";
   delete process.env.GROK_EXECUTION_MODE;
 
@@ -43,20 +52,22 @@ function withGrokEnvironment<T>(run: (root: string, evidencePath: string) => T):
   } finally {
     if (previous.evidencePath === undefined) delete process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH;
     else process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = previous.evidencePath;
-    if (previous.command === undefined) delete process.env.GROK_COMMAND;
-    else process.env.GROK_COMMAND = previous.command;
+    if (previous.command === undefined) delete process.env.GROK_ACP_COMMAND;
+    else process.env.GROK_ACP_COMMAND = previous.command;
     if (previous.apiKey === undefined) delete process.env.XAI_API_KEY;
     else process.env.XAI_API_KEY = previous.apiKey;
     if (previous.executionMode === undefined) delete process.env.GROK_EXECUTION_MODE;
     else process.env.GROK_EXECUTION_MODE = previous.executionMode;
+    if (previous.home === undefined) delete process.env.HOME;
+    else process.env.HOME = previous.home;
   }
 }
 
 function writeFailedGrokQualification(evidencePath: string): void {
   writeQualificationRecord({
     provider: "grok",
-    executionRuntime: "native:grok",
-    providerVersion: "1.0.5",
+    executionRuntime: resolveProviderRuntime("grok").runtimeIdentity,
+    providerVersion: "1.0.30",
     previousVersion: null,
     bridgeCommit: "e".repeat(40),
     contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -142,7 +153,9 @@ describe("managed Grok execution mode", () => {
         executionMode: "trusted",
         includeResponseContract: false,
       });
-      expect(invocation.args).toContain("--always-approve");
+      expect(invocation.transport).toBe("acp-stdio");
+      expect(invocation.args).toEqual(["agent", "stdio"]);
+      expect(invocation.args).not.toContain("--always-approve");
     } finally {
       if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = previousNodeEnv;
@@ -151,7 +164,7 @@ describe("managed Grok execution mode", () => {
     }
   });
 
-  it("lets safe mode suppress trusted execution", () => {
+  it("lets safe mode keep the shared ACP launch without native auto-approval flags", () => {
     const invocation = buildCliInvocation({
       bot: "grok",
       prompt: "test",
@@ -160,10 +173,12 @@ describe("managed Grok execution mode", () => {
       executionMode: "safe",
       includeResponseContract: false,
     });
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.args).toEqual(["agent", "stdio"]);
     expect(invocation.args).not.toContain("--always-approve");
   });
 
-  it("allows explicit Grok trusted mode", () => {
+  it("keeps trusted Grok on ACP stdio so Bridge permission mapping owns authority", () => {
     const invocation = buildCliInvocation({
       bot: "grok",
       prompt: "test",
@@ -172,7 +187,9 @@ describe("managed Grok execution mode", () => {
       executionMode: "trusted",
       includeResponseContract: false,
     });
-    expect(invocation.args).toContain("--always-approve");
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.args).toEqual(["agent", "stdio"]);
+    expect(invocation.args).not.toContain("--always-approve");
   });
 
   it("does not override the shared execution mode in managed interactive units", () => {

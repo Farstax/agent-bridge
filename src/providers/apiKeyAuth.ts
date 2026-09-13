@@ -320,15 +320,6 @@ async function runNativeProbe(
       ], common);
       return;
     }
-    if (provider === "grok") {
-      await execute(command, [
-        "-p",
-        "Reply with exactly OK.",
-        "--output-format",
-        "streaming-json",
-      ], { ...common, env: { ...childEnv, GROK_HOME: join(probeHome, ".grok") } });
-      return;
-    }
     if (provider === "cursor") {
       await execute(command, [
         "-p",

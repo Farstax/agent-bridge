@@ -24,7 +24,8 @@ describe("managed Grok provider installation", () => {
 env = {
   "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
   "INTERACTIVE_CLI_CHAIN": "grok",
-  "GROK_COMMAND": "/home/agentbridge/.grok/bin/grok",
+  "GROK_ACP_COMMAND": "/home/agentbridge/.grok/bin/grok",
+  "GROK_ACP_ARGS": "agent stdio",
   "GROK_MODEL_PREFERENCE": "grok-build",
   "GROK_EFFORT": "high",
   "GROK_PROJECT_DIR": "/srv/workspace",
@@ -52,7 +53,8 @@ print(json.dumps({"service": list(interactive), "values": values}))
     expect(result.values).toMatchObject({
       TELEGRAM_BOT_TOKEN_INTERACTIVE: "interactive-token",
       INTERACTIVE_CLI_CHAIN: "grok",
-      GROK_COMMAND: "/home/agentbridge/.grok/bin/grok",
+      GROK_ACP_COMMAND: "/home/agentbridge/.grok/bin/grok",
+      GROK_ACP_ARGS: "agent stdio",
       GROK_MODEL_PREFERENCE: "grok-build",
       GROK_EFFORT: "high",
       GROK_PROJECT_DIR: "/srv/workspace",
