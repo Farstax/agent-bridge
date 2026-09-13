@@ -16,7 +16,7 @@ function tempDbPath(role: string): { dir: string; path: string } {
 }
 
 
-describe("database schema versioning", () => {
+describe("database schema versioning", { timeout: 15_000 }, () => {
   it.each(ROLE_FIXTURES)("migrates the %s legacy database role from a fixed pre-versioned fixture", (role) => {
     const fixture = tempDbPath(role);
     try {

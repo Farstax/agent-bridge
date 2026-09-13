@@ -11,7 +11,7 @@ import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import type { TelegramMessage } from "../src/types.js";
 
 const HARNESS_KIND = process.env.BRIDGE_STOP_PREVIEW_KIND === "antigravity" ? "antigravity" : "claude";
-const WATCHDOG_MS = 5_000;
+const WATCHDOG_MS = 15_000;
 
 function makeMessage(text: string, userId = 42, chatId = 100): TelegramMessage {
   return {

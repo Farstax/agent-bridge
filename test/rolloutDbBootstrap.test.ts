@@ -19,8 +19,7 @@ import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
 // invocation — never a loop over several, so success/failure is an
 // unambiguous, atomic outcome for the whole process.
 
-const migrationScript = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
-const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
+import { getBundledRolloutDb } from "./support/rolloutDbBundled.js";
 
 const dirs: string[] = [];
 
@@ -36,7 +35,7 @@ function bootstrapArgs(path: string, role = "interactive"): string[] {
 
 function runBootstrap(args: string[], env: Record<string, string> = {}): { status: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync(process.execPath, [tsxCli, migrationScript, "bootstrap", ...args], {
+    const stdout = execFileSync(process.execPath, [getBundledRolloutDb(), "bootstrap", ...args], {
       encoding: "utf8",
       env: { ...process.env, ...env },
     });
@@ -48,7 +47,7 @@ function runBootstrap(args: string[], env: Record<string, string> = {}): { statu
 
 function runProvenanceCheck(path: string, role: string, installationId: string): { status: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync(process.execPath, [tsxCli, migrationScript, "verify-provenance", "--db", path, "--role", role, "--installation-id", installationId], {
+    const stdout = execFileSync(process.execPath, [getBundledRolloutDb(), "verify-provenance", "--db", path, "--role", role, "--installation-id", installationId], {
       encoding: "utf8",
       env: { ...process.env },
     });
@@ -376,7 +375,7 @@ describe("rollout-db.ts bootstrap", () => {
     const dbPath = join(dir, "bridge.sqlite");
     const pauseFile = join(dir, ".pause-signal");
     const child = spawn(process.execPath, [
-      tsxCli, migrationScript, "bootstrap",
+      getBundledRolloutDb(), "bootstrap",
       ...bootstrapArgs(dbPath),
     ], {
       env: {
@@ -419,7 +418,7 @@ describe("rollout-db.ts bootstrap", () => {
     const dbPath = join(dir, "bridge.sqlite");
     const pauseFile = join(dir, ".pause-signal");
     const child = spawn(process.execPath, [
-      tsxCli, migrationScript, "bootstrap",
+      getBundledRolloutDb(), "bootstrap",
       ...bootstrapArgs(dbPath),
     ], {
       env: {
@@ -462,7 +461,7 @@ describe("rollout-db.ts bootstrap", () => {
     const dbPath = join(dir, "bridge.sqlite");
     const pauseFile = join(dir, ".pause-signal");
     const child = spawn(process.execPath, [
-      tsxCli, migrationScript, "bootstrap",
+      getBundledRolloutDb(), "bootstrap",
       ...bootstrapArgs(dbPath),
     ], {
       env: {
@@ -517,7 +516,7 @@ describe("rollout-db.ts bootstrap", () => {
     const dbPath = join(dir, "bridge.sqlite");
     const pauseFile = join(dir, ".pause-signal");
     const child = spawn(process.execPath, [
-      tsxCli, migrationScript, "bootstrap",
+      getBundledRolloutDb(), "bootstrap",
       ...bootstrapArgs(dbPath),
     ], {
       env: {
@@ -628,7 +627,7 @@ describe("rollout-db.ts bootstrap", () => {
 describe("rollout-db.ts bootstrap post-publication signal checkpoints (round 5)", () => {
   async function runWithPause(dbPath: string, checkpoint: string, pauseFile: string) {
     return spawn(process.execPath, [
-      tsxCli, migrationScript, "bootstrap",
+      getBundledRolloutDb(), "bootstrap",
       ...bootstrapArgs(dbPath),
     ], {
       env: {
@@ -684,7 +683,7 @@ describe("rollout-db.ts bootstrap post-publication signal checkpoints (round 5)"
     const dbPath = join(dir, "bridge.sqlite");
     const pauseFile = join(dir, ".pause-signal");
     const child = spawn(process.execPath, [
-      tsxCli, migrationScript, "bootstrap",
+      getBundledRolloutDb(), "bootstrap",
       ...bootstrapArgs(dbPath),
       "--evidence", join(dir, "evidence.json"),
     ], {
@@ -732,7 +731,7 @@ describe("rollout-db.ts ordinary modes never bootstrap", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
     try {
-      execFileSync(process.execPath, [tsxCli, migrationScript, "inspect", "--db", dbPath], { encoding: "utf8" });
+      execFileSync(process.execPath, [getBundledRolloutDb(), "inspect", "--db", dbPath], { encoding: "utf8" });
       expect.fail("expected inspect to fail on a missing database");
     } catch (err: any) {
       expect(err.status).not.toBe(0);
@@ -744,7 +743,7 @@ describe("rollout-db.ts ordinary modes never bootstrap", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
     try {
-      execFileSync(process.execPath, [tsxCli, migrationScript, "validate", "--db", dbPath], { encoding: "utf8" });
+      execFileSync(process.execPath, [getBundledRolloutDb(), "validate", "--db", dbPath], { encoding: "utf8" });
       expect.fail("expected validate to fail on a missing database");
     } catch (err: any) {
       expect(err.status).not.toBe(0);
@@ -756,7 +755,7 @@ describe("rollout-db.ts ordinary modes never bootstrap", () => {
     const dir = tempDir();
     const dbPath = join(dir, "bridge.sqlite");
     try {
-      execFileSync(process.execPath, [tsxCli, migrationScript, "bootstrapp", "--db", dbPath, "--role", "interactive", "--confirm-new-role", dbPath], { encoding: "utf8" });
+      execFileSync(process.execPath, [getBundledRolloutDb(), "bootstrapp", "--db", dbPath, "--role", "interactive", "--confirm-new-role", dbPath], { encoding: "utf8" });
       expect.fail("expected an unrecognized mode to fail");
     } catch (err: any) {
       expect(err.status).not.toBe(0);
