@@ -1,4 +1,6 @@
+import { join } from "node:path";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
+import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import { resolveClaudeAcpArgs, resolveClaudeAcpCommand } from "./claudeAcpConfig.js";
@@ -11,6 +13,34 @@ const REPOSITORY_GROUNDING_APPEND = [
 
 function splitPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
+}
+
+/** Provider-owned authentication preparation; shared auth only dispatches the selected capability. */
+export async function verifyClaudeAcpApiKey(
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  const command = resolveClaudeAcpCommand(env);
+  await runAcpApiKeyProbe({
+    label: "Claude",
+    command,
+    args: resolveClaudeAcpArgs(env),
+    env: { ...env },
+    sessionMeta: {
+      disableBuiltInTools: true,
+      claudeCode: {
+        options: {
+          tools: [],
+          mcpServers: {},
+          settingSources: [],
+        },
+      },
+    },
+    prepareEnv: (root, childEnv) => ({
+      ...childEnv,
+      CLAUDE_CONFIG_DIR: join(root, ".claude"),
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+    }),
+  });
 }
 
 function sessionSettings(
