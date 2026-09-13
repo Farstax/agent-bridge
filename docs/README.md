@@ -12,7 +12,6 @@ Use current product and operating contracts first. Historical implementation wor
 - [Guarded rollout](GUARDED-ROLLOUT.md)
 - [Safe restart](SAFE-RESTART.md)
 - [Soul configuration](soul.md)
-- [Soul templates](soul-templates.md)
 - [Research](research/) — unresolved or still-current evidence only
 - [Archive](archive/) — durable historical decisions that remain useful
 

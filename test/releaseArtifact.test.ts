@@ -250,7 +250,7 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('cp -a skills/. "$root/skills/"');
     expect(workflow).not.toContain('cp -a skills "$root/skills/"');
     expect(workflow).toContain('tsconfig.json');
-    expect(workflow).toContain('SOUL.md');
+    expect(workflow).not.toContain('SOUL.md');
     for (const entrypoint of [...REQUIRED_ENTRYPOINTS, "scripts/rollout-db.ts", "scripts/rollout-db-impl.ts"]) {
       expect(readFileSync(join(process.cwd(), entrypoint), "utf8")).not.toHaveLength(0);
     }

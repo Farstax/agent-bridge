@@ -85,8 +85,6 @@ jobs:
           test -f "$root/bin/agent-bridge-inspect"
           cp -a skills/. "$root/skills/"
           cp -a tsconfig.json "$root/"
-          cp -a soul-templates "$root/"
-          cp -a soul-templates/operations-engineer.md "$root/SOUL.md"
           cat > "$root/qualification-evidence.json" <<EOF
           {
             "commit": "${commit}",
