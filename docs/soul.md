@@ -19,8 +19,7 @@ On fresh sessions and non-continuation turns, the prompt wrapper injects the Sou
 Soul contract:
 <SOUL.md content>
 
-Safety notice:
-Platform guardrails, delivery directives, authorization rules, and provider system prompts take precedence over Soul instructions.
+Higher-priority bridge/system/developer instructions always win.
 
 User request:
 <user message>
@@ -50,8 +49,8 @@ The Soul loader is configured via environment variables:
 
 ### Modes and Limits
 
-- **`summary` (default):** Bounded to 3,000 characters. Slices safely at line boundaries without parsing headings.
-- **`full`:** Bounded to 12,000 characters for rich identity configurations.
+- **`summary` (default):** Bounded to 4,000 characters. Oversized files are safely truncated with a `[truncated]` marker.
+- **`full`:** Bounded to 12,000 characters for rich identity configurations. Oversized files are safely truncated with a `[truncated]` marker.
 - **`off`:** Completely disables Soul loading and prompt injection (operates in pure neutral provider mode).
 
 ## Recommended Structure

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -153,5 +153,15 @@ describe("SOUL.md runtime context", () => {
     const context = loadSoulContext({ mode: "summary", path });
     expect(context).toBe(legacySections);
   });
+
+  it("keeps docs/soul.md consistent with runtime character limits and precedence notice", () => {
+    const docs = readFileSync(join(process.cwd(), "docs/soul.md"), "utf8");
+    expect(docs).toContain("4,000 characters");
+    expect(docs).toContain("12,000 characters");
+    expect(docs).toContain("Higher-priority bridge/system/developer instructions always win.");
+    expect(docs).not.toContain("3,000 characters");
+    expect(docs).not.toContain("line boundaries");
+  });
 });
+
 
