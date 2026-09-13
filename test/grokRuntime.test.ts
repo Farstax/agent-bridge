@@ -58,22 +58,23 @@ describe("grok provider registration", () => {
   });
 
   it("supports the production default fallback with Antigravity ahead of Grok", () => {
-    const fallback = ["codex", "claude", "antigravity", "grok"] as const;
+    const fallback = ["codex", "claude", "antigravity", "grok", "cursor"] as const;
     expect(parseCliChain(undefined, {
       allowed: interactiveChainKinds(),
       fallback,
-    })).toEqual(["codex", "claude", "antigravity", "grok"]);
+    })).toEqual(["codex", "claude", "antigravity", "grok", "cursor"]);
     expect(interactiveChainKinds()).toContain("grok");
   });
 
   it("still honors explicit INTERACTIVE_CLI_CHAIN overrides", () => {
+    const defaultChain = ["codex", "claude", "antigravity", "grok", "cursor"] as const;
     expect(parseCliChain("grok", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity", "grok"],
+      fallback: defaultChain,
     })).toEqual(["grok"]);
     expect(parseCliChain("codex,grok", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity", "grok"],
+      fallback: defaultChain,
     })).toEqual(["codex", "grok"]);
   });
 });

@@ -40,25 +40,31 @@ describe("cursor provider registration", () => {
     ]);
   });
 
-  it("stays opt-in and is absent from the production default interactive fallback", () => {
+  it("participates in the production default interactive fallback as the final target", () => {
     expect(interactiveChainKinds()).toContain("cursor");
-    const productionDefault = ["codex", "claude", "antigravity", "grok"] as const;
-    expect(productionDefault).not.toContain("cursor");
+    const productionDefault = ["codex", "claude", "antigravity", "grok", "cursor"] as const;
+    expect(productionDefault).toContain("cursor");
+    expect(productionDefault.at(-1)).toBe("cursor");
     expect(parseCliChain(undefined, {
       allowed: interactiveChainKinds(),
       fallback: productionDefault,
-    })).toEqual(["codex", "claude", "antigravity", "grok"]);
+    })).toEqual(["codex", "claude", "antigravity", "grok", "cursor"]);
   });
 
-  it("is selectable only through an explicit chain override", () => {
+  it("still honors explicit INTERACTIVE_CLI_CHAIN overrides", () => {
+    const defaultChain = ["codex", "claude", "antigravity", "grok", "cursor"] as const;
     expect(parseCliChain("cursor", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity", "grok"],
+      fallback: defaultChain,
     })).toEqual(["cursor"]);
     expect(parseCliChain("codex,cursor", {
       allowed: interactiveChainKinds(),
-      fallback: ["codex", "claude", "antigravity", "grok"],
+      fallback: defaultChain,
     })).toEqual(["codex", "cursor"]);
+    expect(parseCliChain("claude,antigravity", {
+      allowed: interactiveChainKinds(),
+      fallback: defaultChain,
+    })).toEqual(["claude", "antigravity"]);
   });
 
   it("uses shared safe|trusted execution-mode resolution", () => {

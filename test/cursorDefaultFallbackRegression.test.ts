@@ -53,4 +53,11 @@ describe("Cursor default fallback policy", () => {
       fallback: expectedChain,
     })).toEqual(["claude", "cursor"]);
   });
+
+  it("ensures cursorRuntime tests do not assert that Cursor is absent or opt-in only", () => {
+    const runtimeTests = read("test/cursorRuntime.test.ts");
+    expect(runtimeTests).not.toMatch(/absent from the production default/i);
+    expect(runtimeTests).not.toMatch(/selectable only through an explicit/i);
+    expect(runtimeTests).not.toMatch(/expect\(productionDefault\)\.not\.toContain\("cursor"\)/);
+  });
 });
