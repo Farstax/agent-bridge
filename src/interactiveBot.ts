@@ -353,7 +353,6 @@ export function applyManualCliSwitchHandoff(db: BridgeDb, chatKey: string, newCl
   db.raw.transaction(() => {
     prepareCliHandoff(db, chatKey, newCli, "manual_switch");
     setUserCliPreference(db, chatKey, newCli);
-    db.setSetting(`ctx_suppress:${chatKey}`, null);
   })();
 }
 

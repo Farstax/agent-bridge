@@ -107,6 +107,8 @@ type StagedCliResult = CliResult & {
   nativeSessionMode?: "fresh" | "resume";
 };
 
+type InvocationContextMode = "fresh" | "resume" | "fresh_without_history";
+
 const MAX_QUEUE_RECOVERY_ATTEMPTS = 3;
 
 class LostExecutionLeaseError extends Error {
@@ -391,7 +393,6 @@ export class BridgeEngine {
           resetHandle = await abortExecutionAndWait(executionLane);
           const pending = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
           for (const queued of pending) { this._deleteQueuedAttachments(queued.attachments); this.db.deletePendingMsg(queued.id); }
-          this.db.setSetting(`ctx_suppress:${chatKey}`, "1");
         }
         const commandResponse = handleCommand(this.kind, commandText, { db: this.db, chatId: chatKey, config: this._effectiveConfig(), surfaceIdentity: this.surfaceIdentity, defaultBusyMessageMode: this.opts.busyMessageMode ?? "augment" });
         if (commandResponse) {
@@ -1198,13 +1199,14 @@ export class BridgeEngine {
     }
   }
 
-  private _shouldInjectContext(chatKey: string, nativeSessionMode: "fresh" | "resume"): boolean {
-    if (this.db.getSetting(`ctx_suppress:${chatKey}`)) return false;
-    return nativeSessionMode === "fresh";
+  private _contextMode(chatKey: string, nativeSessionMode: "fresh" | "resume"): InvocationContextMode {
+    if (nativeSessionMode === "resume") return "resume";
+    const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
+    return status.turnCount > 0 ? "fresh" : "fresh_without_history";
   }
 
-  private _buildRecentContextPrompt(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume"): string {
-    if (!this._shouldInjectContext(chatKey, nativeSessionMode)) return prompt;
+  private _buildRecentContextPrompt(chatKey: string, prompt: string, contextMode: InvocationContextMode): string {
+    if (contextMode !== "fresh") return prompt;
     const ctx = this.db.buildConvContext(chatKey, ENGINE_CONTEXT_MAX_CHARS, this.surfaceIdentity);
     return ctx ? `${ctx}${prompt}` : prompt;
   }
@@ -1260,25 +1262,26 @@ export class BridgeEngine {
   }
 
   private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
-    const shouldInject = this._shouldInjectContext(chatKey, nativeSessionMode);
-    const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, nativeSessionMode);
+    const contextMode = this._contextMode(chatKey, nativeSessionMode);
+    const includeFreshContext = contextMode !== "resume";
+    const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
     const access = this._buildContextAccess(chatKey);
     const workspacePrompt = this.opts.workspaceContext === undefined
-      ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: shouldInject })
-      : (shouldInject && this.opts.workspaceContext
+      ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: includeFreshContext })
+      : (includeFreshContext && this.opts.workspaceContext
           ? `[Managed workspace context]\n${this.opts.workspaceContext}\n\n${contextPrompt}`
           : contextPrompt);
     const fallbackPrompt = nativeSessionMode === "fresh" && isAgentKind(this.kind) && isProviderFallbackHandoffRequired(this.db, chatKey, this.kind)
       ? prependProviderFallbackContinuation(workspacePrompt)
       : workspacePrompt;
-    const handoffPrompt = shouldInject ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
-    const soulContext = shouldInject ? this.opts.soulContext ?? null : null;
-    if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: shouldInject };
+    const handoffPrompt = includeFreshContext ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
+    const soulContext = includeFreshContext ? this.opts.soulContext ?? null : null;
+    if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: includeFreshContext };
     return {
-      prompt: shouldInject ? `${access.prompt}${handoffPrompt}` : handoffPrompt,
+      prompt: includeFreshContext ? `${access.prompt}${handoffPrompt}` : handoffPrompt,
       contextEnv: access.env,
       soulContext,
-      includeResponseContract: shouldInject,
+      includeResponseContract: includeFreshContext,
     };
   }
 

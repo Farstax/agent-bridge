@@ -906,7 +906,6 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const attachment = join(uploadDir, `queued-attachment-${Date.now()}.txt`);
     writeFileSync(attachment, "durable attachment");
     const db = openDb(path);
-    db.setSetting("ctx_suppress:100:7", "1");
     db.enqueueMsg("telegram:interactive", "100:7", {
       prompt: "oldest after restart", chatId: 100, threadId: 7, chatType: "private", attachments: [attachment],
     });
@@ -928,7 +927,6 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
   it("persists a downloaded busy-lane attachment and delivers it after the lane becomes free", async () => {
     const path = join(tmpdir(), `busy-attachment-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
-    db.setSetting("ctx_suppress:100:7", "1");
     const blockingHandle = db.acquireLock("telegram:interactive", "100:7")!;
     const c = client();
     c.getFilePath = vi.fn().mockResolvedValue("documents/queued.txt");
@@ -964,7 +962,6 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
   it("retries the oldest row before later arrivals after a queue handoff failure", async () => {
     const path = join(tmpdir(), `handoff-retry-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
-    db.setSetting("ctx_suppress:100:7", "1");
     db.enqueueMsg("telegram:interactive", "100:7", { prompt: "oldest", chatId: 100, threadId: 7, chatType: "private" });
     const order: string[] = [];
     let failOnce = true;
@@ -991,7 +988,6 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
   it("automatically resumes durable queued work on startup without a new message", async () => {
     const path = join(tmpdir(), `startup-recovery-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
-    db.setSetting("ctx_suppress:100:7", "1");
     db.enqueueMsg("telegram:interactive", "100:7", { prompt: "recover on startup", chatId: 100, threadId: 7, chatType: "private" });
     const runCli = vi.fn().mockResolvedValue(cursorResult("recovered"));
     const engine = new BridgeEngine(options("cursor"), db, client(), { runCli });
@@ -1004,7 +1000,6 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
   it("automatically retries a transient queue-router failure without a new message", async () => {
     const path = join(tmpdir(), `router-retry-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
-    db.setSetting("ctx_suppress:100:7", "1");
     db.enqueueMsg("telegram:interactive", "100:7", { prompt: "retry automatically", chatId: 100, threadId: 7, chatType: "private" });
     const runCli = vi.fn().mockResolvedValue(cursorResult("recovered"));
     let failOnce = true;

@@ -345,35 +345,6 @@ describe("BridgeEngine", () => {
       expect(isHandoffRequired(db, "100", "cursor")).toBe(true);
     });
 
-    it("handoff flag is only consumed on a turn where context was actually injected", async () => {
-      const { BridgeEngine } = await import("../src/engine.js");
-      db.addConvTurn("100", "user", MARKER);
-      db.setSession("100", "cursor", "session-continuing");
-      db.setSetting("ctx_suppress:100", "1");
-      markHandoffRequired(db, "100", "cursor", "manual_switch");
-
-      const capturedPrompts: string[] = [];
-      const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-        capturedPrompts.push(args[1]);
-        return JSON.stringify({ type: "result", result: "ok", session_id: "fresh-after-suppression" });
-      });
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "cursor", botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCli },
-      );
-
-      await engine.handleMessages([makeMessage("suppressed turn")]);
-      expect(capturedPrompts[0]).not.toContain(MARKER);
-      expect(isHandoffRequired(db, "100", "cursor")).toBe(true);
-
-      db.setSetting("ctx_suppress:100", null);
-      db.setSession("100", "cursor", null);
-      await engine.handleMessages([makeMessage("now it should inject")]);
-      expect(capturedPrompts[1]).toContain(MARKER);
-      expect(isHandoffRequired(db, "100", "cursor")).toBe(false);
-    });
-
     it("keeps Agent Bridge context env available under handoff_once even when the prompt preamble is suppressed", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
@@ -1987,7 +1958,7 @@ describe("BridgeEngine", () => {
       expect(db.getSession("200", "cursor")).toBe("other-session");
     });
 
-    it("suppresses context injection on the prompt following a reset", async () => {
+    it("re-seeds baseline fresh-session context after reset without restoring deleted history", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
       db.addConvTurn("100", "user", "prior context");
@@ -2007,6 +1978,7 @@ describe("BridgeEngine", () => {
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
           soulContext: "Identity: Weaver",
+          workspaceContext: "Role: Farstax control-plane agent",
         },
         db,
         client,
@@ -2017,8 +1989,11 @@ describe("BridgeEngine", () => {
       await engine.handleMessages([makeMessage("hello after reset")]);
       expect(capturedPrompt).not.toContain("prior context");
       expect(capturedPrompt).not.toContain("Current objective:");
-      expect(capturedPrompt).not.toContain("Soul contract:");
-      expect(capturedPrompt).not.toContain("Active model:");
+      expect(capturedPrompt).toContain("[Managed workspace context]");
+      expect(capturedPrompt).toContain("Role: Farstax control-plane agent");
+      expect(capturedPrompt).toContain("Soul contract:");
+      expect(capturedPrompt).toContain("Active model: claude-primary");
+      expect(capturedPrompt).toContain("Response contract:");
       expect(capturedPrompt).toContain("hello after reset");
     });
   });
