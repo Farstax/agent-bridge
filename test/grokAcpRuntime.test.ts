@@ -6,6 +6,12 @@ import { buildCliInvocation, parseCliResult } from "../src/cli.js";
 import { runAcpTurn } from "../src/acp/client.js";
 import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
+import {
+  acpProviderDefaultSettingKey,
+  hasAcpProviderDefaultIntent,
+  setAcpProviderDefaultIntent,
+} from "../src/acp/sessionConfig.js";
+import { openDb } from "../src/db.js";
 import { grokAcpPolicy } from "../src/providers/grokAcpPolicy.js";
 import { getAcpProviderPolicy, isAcpBackedBot, supportsToolFreeMode } from "../src/providers/registry.js";
 import type { ProviderInvocationRequest } from "../src/providers/types.js";
@@ -103,6 +109,27 @@ describe("Grok ACP provider", () => {
     expect(grokAcpPolicy.steeringSupported).toBe(false);
     expect(grokAcpPolicy.authenticateMethodId?.({})).toBe("cached_token");
     expect(grokAcpPolicy.authenticateMethodId?.({ XAI_API_KEY: "xai-test" })).toBeUndefined();
+  });
+
+  it("persists Grok provider-default as ACP policy so env preference is not applied", () => {
+    setAcpProviderDefaultIntent("grok", "model", false);
+    setAcpProviderDefaultIntent("grok", "thought_level", false);
+    const db = openDb(":memory:");
+    db.setSetting("grok", null);
+    db.setSetting("effort:grok", null);
+    expect(db.getSetting(acpProviderDefaultSettingKey("grok", "model"))).toBe("1");
+    expect(db.getSetting(acpProviderDefaultSettingKey("grok", "thought_level"))).toBe("1");
+    expect(hasAcpProviderDefaultIntent("grok", "model")).toBe(true);
+    expect(hasAcpProviderDefaultIntent("grok", "thought_level")).toBe(true);
+    expect(grokAcpPolicy.sessionSettings?.(request({ model: null, effort: null }), {
+      GROK_MODEL_PREFERENCE: "grok-4.6,grok-4.5",
+      GROK_EFFORT: "high",
+    })).toEqual({
+      config: [
+        { category: "model", explicitValue: null, preferredValues: [], useProviderDefault: true },
+        { category: "thought_level", explicitValue: null, preferredValues: [], useProviderDefault: true },
+      ],
+    });
   });
 
   it("rejects tool-free mode until a Grok ACP contract is proven", () => {

@@ -31,7 +31,7 @@ import {
 } from "./cli.js";
 import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
-import { supportsToolFreeMode } from "./providers/registry.js";
+import { isAcpBackedBot, supportsToolFreeMode } from "./providers/registry.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
@@ -2134,7 +2134,7 @@ export class BridgeEngine {
 
     // ACP-backed providers accept only the bounded token callbacks above. Raw
     // legacy callbacks could contain invented or stale provider-owned values.
-    if (this.kind === "codex" || this.kind === "claude") {
+    if (isAcpBackedBot(this.kind)) {
       await this.client.answerCallbackQuery({
         callback_query_id: callbackQuery.id,
         text: "This settings button has expired. Open the settings again.",
