@@ -1,4 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
+import { lstatSync, readlinkSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildCliInvocation, parseCliResult } from "../src/cli.js";
 import { runAcpTurn } from "../src/acp/client.js";
@@ -60,6 +62,12 @@ describe("Grok ACP provider", () => {
       prompt: "hello",
       transport: "acp-stdio",
     });
+  });
+
+  it("keeps the bundled Grok bin symlink relative so release artifacts stay self-contained", () => {
+    const link = join(process.cwd(), "node_modules", "@xai-official", "grok", "bin", "grok");
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link).startsWith("/")).toBe(false);
   });
 
   it("honors GROK_ACP_COMMAND and empty GROK_ACP_ARGS overrides", () => {
