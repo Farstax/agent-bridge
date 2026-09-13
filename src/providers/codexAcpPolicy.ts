@@ -136,6 +136,14 @@ export const codexAcpPolicy: AcpProviderPolicy = {
   providerId: "codex",
   registryAgentId: "codex-acp",
   toolFree: false,
+  // Issue #748: steeringSupported intentionally omitted. The pinned
+  // codex-acp@1.10.0 can race natural turn completion and return
+  // `startedNewTurn` after already starting a detached provider turn, which
+  // violates exactly-once/host-owned-settlement. Do not enable until a
+  // released Codex adapter carries an equivalent host-owned idle fallback
+  // (agentclientprotocol/codex-acp#441), even if a future runtime advertises
+  // `_meta.steering.supported` — this policy gate is independent of that.
+  steeringSupported: false,
   presentation: {
     provisionalAnswers: true,
     createPreview: createCodexAcpAnswerPreview,

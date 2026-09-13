@@ -7,6 +7,7 @@
  */
 
 import type { ProgressReporter } from "./runActivity.js";
+import type { AcpSteerFn } from "./acp/client.js";
 
 export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
@@ -151,6 +152,12 @@ export interface CliOptions {
    * set this for a normal writable execution.
    */
   bypassWorkspaceLock?: boolean;
+  /**
+   * Live ACP steering handle registration, forwarded from the shared ACP
+   * boundary only when the connected agent advertises steering support AND
+   * the provider's policy opts in (issue #748). Never invoked otherwise.
+   */
+  onSteerReady?: (steer: AcpSteerFn) => void;
 }
 
 export interface CliProcessWatchContext {

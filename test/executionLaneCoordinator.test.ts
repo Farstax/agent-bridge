@@ -50,6 +50,21 @@ describe("execution lane coordinator ownership", () => {
     expect(coordinator.hasAugmentedTask(LANE)).toBe(false);
   });
 
+  it("owns a live steering handle scoped per lane, cleared when the turn ends", () => {
+    const db = {} as BridgeDb;
+    const coordinator = executionLaneCoordinator(db, "telegram:interactive");
+    const sharedView = executionLaneCoordinator(db, "telegram:interactive");
+    const steer = vi.fn().mockResolvedValue({ outcome: "injected" });
+
+    expect(coordinator.getSteerHandle(LANE)).toBeUndefined();
+
+    coordinator.setSteerHandle(LANE, steer);
+    expect(sharedView.getSteerHandle(LANE)).toBe(steer);
+
+    coordinator.clearSteerHandle(LANE);
+    expect(sharedView.getSteerHandle(LANE)).toBeUndefined();
+  });
+
   it("stops durable recovery when the canonical drainer takes ownership", async () => {
     vi.useFakeTimers();
     const db = {} as BridgeDb;
