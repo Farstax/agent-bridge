@@ -106,6 +106,55 @@ describe("ACP steering as the augment primitive (issue #748)", () => {
     rmSync(dbPath, { force: true });
   }, 8_000);
 
+  it("stops steering further rounds, without falsely reporting full success, if the execution lease is lost mid-loop", async () => {
+    const dbPath = join(tmpdir(), `acp-steer-lease-lost-${Date.now()}-${Math.random()}.sqlite`);
+    const db = openDb(dbPath);
+    const c = client();
+    const firstStarted = signal();
+    const firstGate = signal();
+    const steerCalls: string[] = [];
+
+    // Simulates losing execution-lease ownership between claiming this
+    // round's rows and completing them (e.g. a heartbeat failure): the
+    // round's own injection already happened at the provider, but Bridge
+    // can no longer safely trust this handle for a further round.
+    const completeSpy = vi.spyOn(db, "completePendingMsgs").mockReturnValueOnce(false);
+
+    const mockRunProviderInvocation = vi.fn().mockImplementationOnce(async (_bot: string, _invocation: any, _cwd: string, opts: any) => {
+      opts.onSteerReady?.(async (prompt: string) => {
+        steerCalls.push(prompt);
+        return { outcome: "injected" };
+      });
+      firstStarted.release();
+      await firstGate.promise;
+      return { text: "first final", sessionId: "first-session" };
+    });
+
+    const engine = new BridgeEngine(
+      options(),
+      db,
+      c,
+      { runProviderInvocation: mockRunProviderInvocation },
+    );
+
+    const first = engine.handleMessages([message("first request")]);
+    await firstStarted.promise;
+    const second = engine.handleMessages([message("second request")]);
+    await waitForCondition(() => steerCalls.length > 0);
+    firstGate.release();
+    await Promise.all([first, second]);
+
+    // Exactly one round attempted: the failed completion must stop the
+    // loop rather than looping again (which would re-claim/re-steer
+    // whatever else was queued against a handle that may no longer be
+    // valid, or silently mask the lease loss).
+    expect(steerCalls).toEqual(["second request"]);
+    expect(completeSpy).toHaveBeenCalledTimes(1);
+
+    db.close();
+    rmSync(dbPath, { force: true });
+  }, 8_000);
+
   it("steers multiple rapid augments in arrival order into the same live turn, never restarting", async () => {
     const dbPath = join(tmpdir(), `acp-steer-multi-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(dbPath);

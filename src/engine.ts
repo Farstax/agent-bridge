@@ -969,7 +969,16 @@ export class BridgeEngine {
       }
 
       if (outcome?.outcome === "injected") {
-        this.db.completePendingMsgs(handle, augmentingRows.map((row) => row.id));
+        if (!this.db.completePendingMsgs(handle, augmentingRows.map((row) => row.id))) {
+          // Lease lost between claiming and completing this round: the
+          // content was already delivered to the live turn (irreversible),
+          // but this handle can no longer be trusted for a further round —
+          // looping again could re-claim and re-steer this same
+          // still-"claimed" row, or any other, against a stale lease. Stop;
+          // existing stale-claim recovery owns cleanup from here.
+          console.error(`[${this.kind}] ACP steering completed a round but lost the execution lease on lane ${executionLane}; stopping further steering for this call`);
+          return false;
+        }
         this._deleteQueuedAttachments(attachments);
         injectedAtLeastOnce = true;
         continue;
