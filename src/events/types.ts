@@ -43,13 +43,16 @@ export interface RunFailedEvent extends BridgeEventBase {
 
 /**
  * Reducer-inert, bounded diagnostic evidence for an execution/delivery failure.
- * The user-facing surface may still show only a generic safe error. Later
- * run.started/terminal events reveal whether fallback/handoff produced a
- * successor attempt; this event preserves the failed attempt's own cause.
+ * This captures the failed attempt itself, including whether a successor was
+ * actually started, without changing terminal Run authority or user output.
  */
 export interface RunDiagnosticEvent extends BridgeEventBase {
   type: "run.diagnostic";
   boundary: "provider_execution" | "final_delivery_authority" | "final_delivery";
+  provider: BotKind;
+  executionSurface: "acp" | "message_delivery";
+  attempt: number;
+  successorStarted: boolean;
   errorName: string;
   message: string;
   classification: "capacity_exhausted" | "model_unavailable" | "auth_required" | "transient" | "fatal" | "unknown";
@@ -160,6 +163,10 @@ export const type = {
     chatId: string;
     chatKey: string;
     boundary: RunDiagnosticEvent["boundary"];
+    provider: BotKind;
+    executionSurface: RunDiagnosticEvent["executionSurface"];
+    attempt: number;
+    successorStarted: boolean;
     errorName: string;
     message: string;
     classification: RunDiagnosticEvent["classification"];
@@ -170,6 +177,10 @@ export const type = {
       ...base(fields),
       type: "run.diagnostic",
       boundary: fields.boundary,
+      provider: fields.provider,
+      executionSurface: fields.executionSurface,
+      attempt: fields.attempt,
+      successorStarted: fields.successorStarted,
       errorName: fields.errorName,
       message: fields.message,
       classification: fields.classification,
