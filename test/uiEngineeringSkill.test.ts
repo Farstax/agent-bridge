@@ -16,6 +16,11 @@ describe("ui engineering skill", () => {
     expect(skill).toMatch(/local primitive/i);
   });
 
+  it("names the approved motion reference", () => {
+    expect(skill).toContain("https://transitions.dev/");
+    expect(skill).toMatch(/motion|transitions|micro-interactions/i);
+  });
+
   it("keeps rendered responsive verification as the completion boundary", () => {
     expect(skill).toMatch(/mobile\/desktop/i);
     expect(skill).toMatch(/rendered visual state/i);
