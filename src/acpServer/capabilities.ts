@@ -1,15 +1,14 @@
 import { PROTOCOL_VERSION, type AgentCapabilities, type Implementation } from "@agentclientprotocol/sdk";
 
 /**
- * Capabilities Agent Bridge truthfully guarantees as an outward ACP agent
- * today. Session lifecycle (`session/new`, `session/prompt`, etc.) is not
- * implemented yet, so this advertises no prompt/MCP/load-session support
- * rather than promising a capability the current outward contract cannot
- * satisfy.
+ * Capabilities Agent Bridge truthfully guarantees as an outward ACP agent.
+ * `loadSession` reflects whether the durable session store handed to
+ * `createOutwardAcpAgent` actually supports history replay, rather than
+ * promising a capability the current wiring cannot satisfy.
  */
-export const BRIDGE_ACP_AGENT_CAPABILITIES: AgentCapabilities = {
-  loadSession: false,
-};
+export function bridgeAgentCapabilities(options: { loadSession: boolean }): AgentCapabilities {
+  return { loadSession: options.loadSession };
+}
 
 export const BRIDGE_ACP_AGENT_INFO: Implementation = {
   name: "agent-bridge",
