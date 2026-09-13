@@ -14,9 +14,6 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
     id: "codex",
     displayName: "Codex",
-    executable: "codex-acp",
-    versionArgs: ["--version"],
-    defaultArgs: [],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
@@ -26,9 +23,6 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   claude: {
     id: "claude",
     displayName: "Claude Code",
-    executable: "claude",
-    versionArgs: ["--version"],
-    defaultArgs: [],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
@@ -125,7 +119,7 @@ export function getProcessWatchForCommand(command: string): ProviderAdapter["pro
   const executable = basename(command).toLowerCase();
   const commandText = command.toLowerCase();
   const adapter = getProviderAdapters().find((candidate) =>
-    candidate.processWatch && (
+    candidate.processWatch && candidate.executable && (
       candidate.executable === executable
       || commandText.includes(candidate.executable)
       || (candidate.id === "agy" && commandText.includes("antigravity"))
