@@ -11,10 +11,16 @@ function splitPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
 }
 
-function hasGrokCachedAccountAuth(env: Record<string, string | undefined>): boolean {
+function grokAuthPath(env: Record<string, string | undefined>): string {
+  const explicit = env.GROK_AUTH_PATH?.trim();
+  if (explicit) return explicit;
   const home = env.HOME?.trim() || homedir();
   const grokHome = env.GROK_HOME?.trim() || join(home, ".grok");
-  return existsSync(join(grokHome, "auth.json"));
+  return join(grokHome, "auth.json");
+}
+
+function hasGrokCachedAccountAuth(env: Record<string, string | undefined>): boolean {
+  return existsSync(grokAuthPath(env));
 }
 
 /** Provider-owned authentication preparation; shared auth only dispatches the selected capability. */
@@ -58,6 +64,7 @@ const GROK_QUALIFICATION_ENV_KEYS = [
   "XAI_API_KEY",
   "GROK_CODE_XAI_API_KEY",
   "GROK_HOME",
+  "GROK_AUTH_PATH",
   "BRIDGE_CURRENT_RELEASE_DIR",
 ] as const;
 
