@@ -971,12 +971,21 @@ export class BridgeEngine {
       if (outcome?.outcome === "injected") {
         if (!this.db.completePendingMsgs(handle, augmentingRows.map((row) => row.id))) {
           // Lease lost between claiming and completing this round: the
-          // content was already delivered to the live turn (irreversible),
-          // but this handle can no longer be trusted for a further round —
-          // looping again could re-claim and re-steer this same
-          // still-"claimed" row, or any other, against a stale lease. Stop;
-          // existing stale-claim recovery owns cleanup from here.
-          console.error(`[${this.kind}] ACP steering completed a round but lost the execution lease on lane ${executionLane}; stopping further steering for this call`);
+          // content was already delivered to the live turn (irreversible).
+          // completePendingMsgs's ownership-gated DELETE failed, but the
+          // row(s) MUST NOT be left behind: claimPendingMsgs/claimNextPendingMsg
+          // themselves requeue a stale-claimed row back to 'queued' on the
+          // very next call from anyone (this process's own stale-claim
+          // recovery, or a completely different one) — which would execute
+          // already-delivered content a second time. Delete unconditionally,
+          // by id, independent of claim ownership: it is exactly-once
+          // delivered already and must never become independently claimable
+          // again, regardless of who currently holds the lock. Also stop
+          // looping — this handle can no longer be trusted for a further
+          // round.
+          console.error(`[${this.kind}] ACP steering completed a round but lost the execution lease on lane ${executionLane}; deleting the delivered row(s) directly so stale-claim recovery cannot re-execute them, then stopping further steering for this call`);
+          for (const row of augmentingRows) this.db.deletePendingMsg(row.id);
+          this._deleteQueuedAttachments(attachments);
           return false;
         }
         this._deleteQueuedAttachments(attachments);
