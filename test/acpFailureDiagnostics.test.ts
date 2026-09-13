@@ -22,10 +22,14 @@ describe("ACP failure diagnostics", () => {
       type: "run.diagnostic",
       runId: "run-diag",
       bot: "codex",
+      provider: "codex",
       chatId: "-1003852297592",
       chatKey: "-1003852297592:86",
       threadId: "86",
       boundary: "provider_execution",
+      executionSurface: "acp",
+      attempt: 1,
+      successorStarted: false,
       classification: "unknown",
       fallbackEligible: false,
     });
@@ -33,6 +37,25 @@ describe("ACP failure diagnostics", () => {
     expect(diagnostic.message).toContain("provider handoff failed");
     expect(diagnostic.message).not.toContain("secret-diagnostic-key");
     expect(diagnostic.message).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
+  });
+
+  it("records retry attempt state explicitly", () => {
+    const diagnostic = buildAcpFailureDiagnosticEvent(
+      "claude",
+      new Error("Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh."),
+      { ...eventContext, bot: "claude" },
+      {},
+      { attempt: 1, successorStarted: true },
+    );
+
+    expect(diagnostic).toMatchObject({
+      provider: "claude",
+      executionSurface: "acp",
+      attempt: 1,
+      successorStarted: true,
+      classification: "transient",
+      fallbackEligible: false,
+    });
   });
 
   it("records capacity classification and fallback eligibility", () => {
