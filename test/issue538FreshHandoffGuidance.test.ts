@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 import type { TelegramMessage } from "../src/types.js";
 
 const HISTORY_MARKER = "issue-538-older-turn";
@@ -40,7 +41,7 @@ function makeEngine(db: ReturnType<typeof openDb>, dbPath: string, runCli: Retur
       sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
       sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
     } as any,
-    { runCli },
+    acpEngineExec(runCli),
   );
 }
 
@@ -65,7 +66,7 @@ describe("Issue #538 fresh-session handoff guidance", () => {
     let capturedPrompt = "";
     const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
       capturedPrompt = args[1];
-      return JSON.stringify({ type: "result", result: "ok", session_id: "issue-538-session" });
+      return [JSON.stringify({ type: "text", data: "ok" }), JSON.stringify({ type: "end", sessionId: "issue-538-session", stopReason: "end_turn" })].join("\n") + "\n";
     });
 
     await makeEngine(db, dbPath, runCli).handleMessages([makeMessage("continue the work")]);
@@ -81,7 +82,7 @@ describe("Issue #538 fresh-session handoff guidance", () => {
     let capturedPrompt = "";
     const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
       capturedPrompt = args[1];
-      return JSON.stringify({ type: "result", result: "ok", session_id: "issue-538-new-session" });
+      return [JSON.stringify({ type: "text", data: "ok" }), JSON.stringify({ type: "end", sessionId: "issue-538-new-session", stopReason: "end_turn" })].join("\n") + "\n";
     });
 
     await makeEngine(db, dbPath, runCli).handleMessages([makeMessage("start new work")]);
@@ -93,11 +94,16 @@ describe("Issue #538 fresh-session handoff guidance", () => {
 
   it("does not repeat the handoff guidance on an ordinary resumed native turn", async () => {
     db.addConvTurn("100", "user", HISTORY_MARKER);
-    db.setSession("100", "cursor", "existing-session");
+    db.putAcpSessionBinding({
+      conversationId: "100",
+      providerId: "cursor",
+      acpSessionId: "existing-session",
+      runId: null,
+    });
     let capturedPrompt = "";
     const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
       capturedPrompt = args[1];
-      return JSON.stringify({ type: "result", result: "ok", session_id: "existing-session" });
+      return [JSON.stringify({ type: "text", data: "ok" }), JSON.stringify({ type: "end", sessionId: "existing-session", stopReason: "end_turn" })].join("\n") + "\n";
     });
 
     await makeEngine(db, dbPath, runCli).handleMessages([makeMessage("ordinary continuation")]);

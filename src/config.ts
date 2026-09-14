@@ -12,6 +12,7 @@ import { resolveAgyAcpCommand } from "./providers/agyAcpConfig.js";
 import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import { resolveClaudeAcpCommand } from "./providers/claudeAcpConfig.js";
 import { resolveGrokAcpCommand } from "./providers/grokAcpConfig.js";
+import { resolveCursorAcpCommand } from "./providers/cursorAcpConfig.js";
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -52,7 +53,7 @@ export function parseAntigravityModelPreference(raw: string | undefined): string
 /**
  * Build bot runtime configs from env. ACP model preferences intentionally do
  * not populate BotConfig.modelPreference: that array is the legacy/native
- * execution catalogue and fallback list. Claude/Codex/Grok/Agy preference policy is
+ * execution catalogue and fallback list. Claude/Codex/Grok/Agy/Cursor preference policy is
  * consumed only after their ACP sessions advertise configOptions.
  */
 export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): Record<BotKind, BotConfig> {
@@ -80,8 +81,8 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     },
     cursor: {
       token: token(env.TELEGRAM_BOT_TOKEN_CURSOR),
-      command: env.CURSOR_COMMAND || "cursor-agent",
-      modelPreference: parseModelPreference(env.CURSOR_MODEL_PREFERENCE),
+      command: resolveCursorAcpCommand(env),
+      modelPreference: [],
     },
   };
 }

@@ -15,9 +15,9 @@ import {
 } from "../src/providers/apiKeyAuth.js";
 import type { ProviderId } from "../src/providers/types.js";
 
-const nativeProviderCases: Array<{ provider: ProviderId; envVar: string; commandEnv: string }> = [
-  { provider: "cursor", envVar: "CURSOR_API_KEY", commandEnv: "CURSOR_COMMAND" },
-];
+// Every provider is ACP-backed now; no native-CLI provider remains to
+// exercise the bounded native probe path.
+const nativeProviderCases: Array<{ provider: ProviderId; envVar: string; commandEnv: string }> = [];
 
 const tempDirs: string[] = [];
 
@@ -32,6 +32,7 @@ describe("provider API-key authentication", () => {
     expect(getProviderApiKeyCapability("cursor")?.envVar).toBe("CURSOR_API_KEY");
     expect(getProviderApiKeyCapability("claude")?.verification).toBe("bounded_acp_turn");
     expect(getProviderApiKeyCapability("grok")?.verification).toBe("bounded_acp_turn");
+    expect(getProviderApiKeyCapability("cursor")?.verification).toBe("bounded_acp_turn");
     expect(getProviderApiKeyCapability("future-provider")).toBeNull();
   });
 
@@ -115,6 +116,26 @@ describe("provider API-key authentication", () => {
     expect(probeEnv!.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
+  it("verifies Cursor through the selected ACP probe and isolates unrelated credentials", async () => {
+    const env = {
+      CURSOR_API_KEY: "cursor-acp-secret",
+      CURSOR_ACP_COMMAND: "must-not-be-used",
+      TELEGRAM_BOT_TOKEN_CURSOR: "telegram-secret",
+      ANTHROPIC_API_KEY: "unrelated-claude-secret",
+    };
+    let probeEnv: NodeJS.ProcessEnv | null = null;
+    await expect(verifyProviderApiKey("cursor", {
+      env,
+      useCache: false,
+      acpProbe: async (_provider, candidateEnv) => { probeEnv = candidateEnv; },
+      execFile: async () => { throw new Error("native Cursor probe must not execute"); },
+    })).resolves.toBe(true);
+    expect(probeEnv).not.toBeNull();
+    expect(probeEnv!.CURSOR_API_KEY).toBe("cursor-acp-secret");
+    expect(probeEnv!.TELEGRAM_BOT_TOKEN_CURSOR).toBeUndefined();
+    expect(probeEnv!.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
   it("does not treat a non-empty ANTHROPIC_API_KEY as proof when the ACP adapter rejects it", async () => {
     const env = { ANTHROPIC_API_KEY: "invalid-claude-572" };
     await expect(verifyProviderApiKey("claude", {
@@ -135,19 +156,19 @@ describe("provider API-key authentication", () => {
 
   it("caches successful verification for the exact key fingerprint", async () => {
     let calls = 0;
-    const execFile: ProviderApiKeyProbeExecutor = async () => {
+    const acpProbe = async () => {
       calls += 1;
     };
     const env = { CURSOR_API_KEY: "cursor-cache-key" };
 
-    await expect(verifyProviderApiKey("cursor", { env, execFile })).resolves.toBe(true);
-    await expect(verifyProviderApiKey("cursor", { env, execFile })).resolves.toBe(true);
+    await expect(verifyProviderApiKey("cursor", { env, acpProbe })).resolves.toBe(true);
+    await expect(verifyProviderApiKey("cursor", { env, acpProbe })).resolves.toBe(true);
     expect(calls).toBe(1);
     expect(isProviderApiKeyVerified("cursor", env)).toBe(true);
 
     const changedEnv = { CURSOR_API_KEY: "cursor-cache-key-2" };
     expect(isProviderApiKeyVerified("cursor", changedEnv)).toBe(false);
-    await expect(verifyProviderApiKey("cursor", { env: changedEnv, execFile })).resolves.toBe(true);
+    await expect(verifyProviderApiKey("cursor", { env: changedEnv, acpProbe })).resolves.toBe(true);
     expect(calls).toBe(2);
   });
 

@@ -7,7 +7,9 @@ import { getCliWorkingDir } from "../src/bridge.js";
 import { openDb } from "../src/db.js";
 import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import { isCursorRouteable } from "../src/providers/cursorAvailability.js";
+import { CURSOR_ACP_VERSION } from "../src/providers/cursorAcpConfig.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -21,17 +23,17 @@ if [ "$1" = "status" ]; then
   echo '{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true}'
   exit 0
 fi
-echo '2026.08.11-e8db854'
+echo '${CURSOR_ACP_VERSION}'
 `, "utf8");
   chmodSync(executable, 0o755);
 
   const previous = {
     evidencePath: process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH,
-    command: process.env.CURSOR_COMMAND,
+    command: process.env.CURSOR_ACP_COMMAND,
     apiKey: process.env.CURSOR_API_KEY,
   };
   process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = evidencePath;
-  process.env.CURSOR_COMMAND = executable;
+  process.env.CURSOR_ACP_COMMAND = executable;
   delete process.env.CURSOR_API_KEY;
 
   try {
@@ -39,8 +41,8 @@ echo '2026.08.11-e8db854'
   } finally {
     if (previous.evidencePath === undefined) delete process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH;
     else process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = previous.evidencePath;
-    if (previous.command === undefined) delete process.env.CURSOR_COMMAND;
-    else process.env.CURSOR_COMMAND = previous.command;
+    if (previous.command === undefined) delete process.env.CURSOR_ACP_COMMAND;
+    else process.env.CURSOR_ACP_COMMAND = previous.command;
     if (previous.apiKey === undefined) delete process.env.CURSOR_API_KEY;
     else process.env.CURSOR_API_KEY = previous.apiKey;
   }
@@ -49,12 +51,12 @@ echo '2026.08.11-e8db854'
 function writeFailedCursorQualification(evidencePath: string): void {
   writeQualificationRecord({
     provider: "cursor",
-    executionRuntime: "native:cursor",
-    providerVersion: "2026.08.11-e8db854",
+    executionRuntime: resolveProviderRuntime("cursor").runtimeIdentity,
+    providerVersion: CURSOR_ACP_VERSION,
     previousVersion: null,
     bridgeCommit: "e".repeat(40),
     contractVersion: PROVIDER_CONTRACT_VERSION,
-    qualifiedAt: "2026-08-24T12:00:00.000Z",
+    qualifiedAt: "2026-09-13T12:00:00.000Z",
     environment: "test",
     overall: "fail",
     checks: [
@@ -69,7 +71,7 @@ describe("Cursor routing safety", () => {
   it("skips Cursor when only CURSOR_API_KEY is present and status is unavailable", () => {
     const previous = {
       evidencePath: process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH,
-      command: process.env.CURSOR_COMMAND,
+      command: process.env.CURSOR_ACP_COMMAND,
       apiKey: process.env.CURSOR_API_KEY,
     };
     const root = mkdtempSync(join(tmpdir(), "cursor-api-key-only-"));
@@ -78,7 +80,7 @@ describe("Cursor routing safety", () => {
     writeFileSync(executable, "#!/bin/sh\nexit 1\n", "utf8");
     chmodSync(executable, 0o755);
     process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = evidencePath;
-    process.env.CURSOR_COMMAND = executable;
+    process.env.CURSOR_ACP_COMMAND = executable;
     process.env.CURSOR_API_KEY = "not-supported";
     try {
       const db = openDb(":memory:");
@@ -88,8 +90,8 @@ describe("Cursor routing safety", () => {
     } finally {
       if (previous.evidencePath === undefined) delete process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH;
       else process.env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH = previous.evidencePath;
-      if (previous.command === undefined) delete process.env.CURSOR_COMMAND;
-      else process.env.CURSOR_COMMAND = previous.command;
+      if (previous.command === undefined) delete process.env.CURSOR_ACP_COMMAND;
+      else process.env.CURSOR_ACP_COMMAND = previous.command;
       if (previous.apiKey === undefined) delete process.env.CURSOR_API_KEY;
       else process.env.CURSOR_API_KEY = previous.apiKey;
     }
@@ -99,6 +101,7 @@ describe("Cursor routing safety", () => {
     withCursorEnvironment(() => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(["codex", "cursor", "antigravity"], db);
+      expect(isCursorRouteable({ readVersion: () => CURSOR_ACP_VERSION })).toBe(true);
       expect(chain.getActiveCli("chat:1")).toBe("codex");
       expect(chain.advance("chat:1")).toBe("cursor");
       expect(chain.getChain()).toEqual(["codex", "cursor", "antigravity"]);

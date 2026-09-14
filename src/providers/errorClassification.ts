@@ -52,6 +52,7 @@ const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
     /hit your (?:session |usage )?limit/i,
     /usage limit/i,
     /rate limit/i,
+    /Upgrade your plan to continue/i,
   ],
 };
 
@@ -243,4 +244,3 @@ export function isRetryEligibleProviderError(
 ): boolean {
   return attempt === 1 && providerId === "claude" && isClaudeOAuthRefreshContention(error);
 }
-

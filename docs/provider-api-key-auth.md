@@ -8,7 +8,7 @@ Agent Bridge supports provider-owned API-key authentication without creating a s
 | Claude | `ANTHROPIC_API_KEY` | bounded selected `claude-acp` adapter turn | verification uses the same release-locked ACP runtime as ordinary Claude Runs with isolated account state |
 | Agy / Antigravity | `GEMINI_API_KEY` | bounded Agy print-mode turn | requires `modelProvider: "gemini"`; Bridge scopes that setting to the run and restores the prior value |
 | Grok Build | `XAI_API_KEY` | bounded `grok -p` turn | stored account session remains the provider-preferred route when present |
-| Cursor Agent | `CURSOR_API_KEY` | bounded `cursor-agent -p` turn | account sessions continue to use native status detection |
+| Cursor Agent | `CURSOR_API_KEY` | bounded selected Cursor ACP turn | account sessions continue to use native status detection |
 
 The matrix is an exhaustive `Record<ProviderId, ...>` in `src/providers/apiKeyAuth.ts`. Adding a new provider therefore fails type-check until its API-key capability is classified.
 
@@ -44,4 +44,4 @@ Agent Bridge OSS does not persist provider API keys and exposes no app-facing se
 - Claude: `ANTHROPIC_API_KEY` is supplied to the official `claude-acp` adapter and verified by an isolated ACP session/prompt using the exact selected release runtime.
 - Agy: Antigravity CLI 1.1.13 added `GEMINI_API_KEY` direct API support with `modelProvider: "gemini"`.
 - Grok Build: xAI documents `XAI_API_KEY` for headless operation and account-session precedence over the environment fallback.
-- Cursor: Cursor documents `CURSOR_API_KEY` for headless/CI authentication.
+- Cursor: `CURSOR_API_KEY` is verified through the selected Cursor ACP adapter; account sessions continue to use `cursor-agent status`.

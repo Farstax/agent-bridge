@@ -346,7 +346,7 @@ describe("model keyboard", () => {
   const prefs = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
   it("includes one button per model in the preference list", () => {
-    const kb = buildModelKeyboard("cursor", prefs);
+    const kb = buildModelKeyboard("legacy-native", prefs);
     const allButtons = kb.inline_keyboard.flat();
     for (const model of prefs) {
       expect(allButtons.some((b: any) => b.text === model)).toBe(true);
@@ -354,25 +354,25 @@ describe("model keyboard", () => {
   });
 
   it("each model button carries the correct callback_data", () => {
-    const kb = buildModelKeyboard("cursor", prefs);
+    const kb = buildModelKeyboard("legacy-native", prefs);
     const allButtons = kb.inline_keyboard.flat();
     for (const model of prefs) {
       const btn = allButtons.find((b: any) => b.text === model);
-      expect(btn?.callback_data).toBe(`model:cursor:${model}`);
+      expect(btn?.callback_data).toBe(`model:legacy-native:${model}`);
     }
   });
 
   it("includes a Reset to Default button", () => {
-    const kb = buildModelKeyboard("cursor", prefs);
+    const kb = buildModelKeyboard("legacy-native", prefs);
     const allButtons = kb.inline_keyboard.flat();
-    expect(allButtons.some((b: any) => b.callback_data === "model:cursor:reset")).toBe(true);
+    expect(allButtons.some((b: any) => b.callback_data === "model:legacy-native:reset")).toBe(true);
   });
 
   it("returns an empty keyboard when preference list is empty", () => {
-    const kb = buildModelKeyboard("cursor", []);
+    const kb = buildModelKeyboard("legacy-native", []);
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "gpt-5.5")).toBe(false);
-    expect(allButtons.some((b: any) => b.callback_data === "model:cursor:reset")).toBe(true);
+    expect(allButtons.some((b: any) => b.callback_data === "model:legacy-native:reset")).toBe(true);
   });
 });
 
@@ -533,27 +533,27 @@ describe("model keyboard current model indicator", () => {
   const prefs = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
   it("marks the active model button with a checkmark", () => {
-    const kb = buildModelKeyboard("cursor", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("legacy-native", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.4")).toBe(true);
   });
 
   it("does not mark non-active models with a checkmark", () => {
-    const kb = buildModelKeyboard("cursor", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("legacy-native", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.5")).toBe(false);
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.4-mini")).toBe(false);
   });
 
   it("active button still has correct callback_data", () => {
-    const kb = buildModelKeyboard("cursor", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("legacy-native", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     const btn = allButtons.find((b: any) => b.text === "✓ gpt-5.4");
-    expect(btn?.callback_data).toBe("model:cursor:gpt-5.4");
+    expect(btn?.callback_data).toBe("model:legacy-native:gpt-5.4");
   });
 
   it("shows no checkmark when currentModel is null", () => {
-    const kb = buildModelKeyboard("cursor", prefs, null);
+    const kb = buildModelKeyboard("legacy-native", prefs, null);
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.every((b: any) => !b.text.startsWith("✓"))).toBe(true);
   });

@@ -4,6 +4,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 import {
   buildScheduledInteractiveTurn,
   claimScheduledRoutineOccurrence,
@@ -74,11 +75,7 @@ async function executeScheduledTurn(
   intendedAt: string,
   occurrenceKey: string,
 ) {
-  const runCli = vi.fn().mockResolvedValue(JSON.stringify({
-    type: "result",
-    result: "ROUTINE_TEST_OK",
-    session_id: "scheduled-session",
-  }));
+  const runCli = vi.fn().mockResolvedValue([JSON.stringify({ type: "text", data: "ROUTINE_TEST_OK" }), JSON.stringify({ type: "end", sessionId: "scheduled-session", stopReason: "end_turn" })].join("\n") + "\n");
   const engine = new BridgeEngine({
     surfaceIdentity: routine.surfaceIdentity,
     kind: "cursor",
@@ -86,7 +83,7 @@ async function executeScheduledTurn(
     allowedUserIds: new Set(["42"]),
     executionMode: "safe",
     pollIntervalMs: 1000, workingDir: process.cwd(),
-  }, db, mockClient(), { runCli });
+  }, db, mockClient(), acpEngineExec(runCli));
   await engine.handleInteractiveTurn(buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey));
 }
 

@@ -36,6 +36,7 @@ export interface AvailableCliOptions {
   failedProviders?: ReadonlySet<ProviderId>;
   env?: Record<string, string | undefined>;
   readCursorStatus?: () => CursorStatusSnapshot;
+  readCursorVersion?: () => string;
   verifyApiKey?: (provider: ProviderId) => boolean;
 }
 
@@ -136,6 +137,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
     env,
     failedProviders,
     readStatus: options.readCursorStatus,
+    readVersion: options.readCursorVersion,
     verifyApiKey: () => verifyApiKey("cursor"),
   })) available.add("cursor");
 

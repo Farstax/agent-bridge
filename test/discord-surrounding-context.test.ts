@@ -144,12 +144,9 @@ describe("Discord passive surrounding context", () => {
       pollIntervalMs: 1000, workingDir: process.cwd(),
       hooks: { onCommand },
     }, database, client, {
-      runCliAsync: vi.fn(async (_command, args) => {
-        providerArgs.push([...args]);
-        return {
-          text: JSON.stringify({ type: "result", subtype: "success", result: "done", session_id: "session-before" }),
-          sessionId: "session-before",
-        };
+      runProviderInvocation: vi.fn(async (_bot, _invocation, _cwd, _options, request) => {
+        providerArgs.push([request.prompt]);
+        return { text: "done", sessionId: "session-before", stopReason: "end_turn" };
       }) as any,
     });
     database.setSession("channel-1", "cursor", "session-before");

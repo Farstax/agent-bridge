@@ -16,43 +16,6 @@ function script(path: string, content: string): void {
   chmodSync(path, 0o755);
 }
 
-function fakeProvider(path: string, versionBody: string, invocationLog: string): void {
-  script(path, `
-printf '%s\\n' "$0 $*" >> "${invocationLog}"
-${versionBody}
-response="native protocol response"
-if [ -f src/repositoryGroundingFixture.ts ] && [ -f AGENTS.md ]; then
-  fact="$(grep -o 'AGENT_BRIDGE_GROUNDING_FACT_[A-Za-z0-9]*' src/repositoryGroundingFixture.ts | head -n1)"
-  marker="$(grep -o 'AGENT_BRIDGE_GROUNDING_INSTRUCTION_[A-Za-z0-9]*' AGENTS.md | head -n1)"
-  response="$fact $marker"
-fi
-session="11111111-2222-3333-4444-555555555555"
-case "$(basename "$0")" in
-  codex)
-    printf '%s\\n' "{\\"type\\":\\"thread.started\\",\\"thread_id\\":\\"$session\\"}"
-    printf '%s\\n' "{\\"type\\":\\"item.completed\\",\\"item\\":{\\"type\\":\\"agent_message\\",\\"text\\":\\"$response\\"}}"
-    ;;
-  claude)
-    printf '%s\\n' "{\\"result\\":\\"$response\\",\\"session_id\\":\\"$session\\"}"
-    ;;
-  agy)
-    printf '%s\\n' "{\\"event\\":\\"result\\",\\"result\\":{\\"conversation_id\\":\\"$session\\",\\"status\\":\\"SUCCESS\\",\\"response\\":\\"$response\\"}}"
-    ;;
-  grok)
-    printf '%s\\n' "{\\"type\\":\\"text\\",\\"data\\":\\"$response\\"}"
-    printf '%s\\n' "{\\"type\\":\\"end\\",\\"sessionId\\":\\"$session\\",\\"stopReason\\":\\"end_turn\\"}"
-    ;;
-  cursor-agent|cursor)
-    printf '%s\\n' "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"$response\\",\\"session_id\\":\\"$session\\"}"
-    ;;
-  *)
-    echo "unsupported fake provider" >&2
-    exit 99
-    ;;
-esac
-`);
-}
-
 describe("full CLI update qualification", () => {
   it("uses only fixture provider CLIs and fixture qualification state", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-full-update-qualification-"));
@@ -99,9 +62,11 @@ printf '%s\\n' "$0 $*" >> "${qualificationLog}"
 if [ "\${1:-}" = --version ]; then echo 'grok 1.0.30'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
-      fakeProvider(cursor, `
-if [ "$1" = --version ]; then echo 'cursor-agent 1.2.3'; exit 0; fi
-`, qualificationLog);
+      script(cursor, `
+printf '%s\\n' "$0 $*" >> "${qualificationLog}"
+if [ "\${1:-}" = --version ]; then echo '2026.09.08-6caf4ff'; exit 0; fi
+exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
+`);
 
       script(join(root, "npm"), `
 if [ "$1" = list ]; then
@@ -149,7 +114,8 @@ exit 97
           AGY_ACP_COMMAND: agy,
           GROK_ACP_COMMAND: grok,
           GROK_ACP_ARGS: "",
-          CURSOR_COMMAND: cursor,
+          CURSOR_ACP_COMMAND: cursor,
+          CURSOR_ACP_ARGS: "",
           AGENT_BRIDGE_COMMIT: "a".repeat(40),
           AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH: qualificationEvidence,
           AGENT_BRIDGE_SKILLS: "skip",
@@ -177,6 +143,7 @@ exit 97
         claude: { overall: "pass", providerVersion: "0.76.0" },
         codex: { overall: "pass", providerVersion: "1.10.0" },
         agy: { overall: "pass", providerVersion: "1.1.1" },
+        cursor: { overall: "pass", providerVersion: "2026.09.08-6caf4ff" },
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

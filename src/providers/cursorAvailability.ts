@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadBotsConfig } from "../config.js";
+import { assertCursorAcpVersion, readCursorAcpVersion, resolveCursorAcpCommand } from "./cursorAcpConfig.js";
 import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./apiKeyAuth.js";
 import { getQualificationFailedProviders } from "./qualificationStatus.js";
 import type { ProviderId } from "./types.js";
@@ -17,6 +18,7 @@ export interface CursorAvailabilityOptions {
   failedProviders?: ReadonlySet<ProviderId>;
   command?: string;
   readStatus?: () => CursorStatusSnapshot;
+  readVersion?: () => string;
   verifyApiKey?: () => boolean;
 }
 
@@ -82,6 +84,13 @@ export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): 
  */
 export function isCursorRouteable(options: CursorAvailabilityOptions = {}): boolean {
   if (!isCursorAuthenticated(options)) return false;
+  const env = options.env ?? process.env;
+  const command = options.command ?? resolveCursorAcpCommand(env);
+  try {
+    assertCursorAcpVersion(command, options.readVersion ?? (() => readCursorAcpVersion(command)));
+  } catch {
+    return false;
+  }
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
   return !failedProviders.has("cursor");
 }

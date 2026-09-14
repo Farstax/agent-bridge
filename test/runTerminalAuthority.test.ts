@@ -6,6 +6,7 @@ import { openDb } from "../src/db.js";
 import { EventStore } from "../src/events/store.js";
 import { type as eventType } from "../src/events/types.js";
 import { BridgeEngine } from "../src/engine.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 import {
   acceptRunIngressRequest,
   executeRunIngressRequest,
@@ -171,7 +172,7 @@ describe("durable Run terminal authority", () => {
       options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd, model: null }));
       options.onEvent?.(eventType.runCompleted({ ...ctx, text: "finished work", sessionId: null }));
       await paused;
-      return { text: JSON.stringify({ type: "result", result: "finished work", session_id: "s-1" }) };
+      return { text: [JSON.stringify({ type: "text", data: "finished work" }), JSON.stringify({ type: "end", sessionId: "s-1", stopReason: "end_turn" })].join("\n") + "\n" };
     });
     const engine = new BridgeEngine({
       surfaceIdentity: "test",
@@ -180,7 +181,7 @@ describe("durable Run terminal authority", () => {
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       pollIntervalMs: 1000, workingDir: process.cwd(),
-    }, runA, client, { runCliAsync });
+    }, runA, client, acpEngineExec(runCliAsync));
 
     const active = engine.handleMessages([makeMessage("finish this")]);
     await vi.waitFor(() => {
@@ -217,7 +218,7 @@ describe("durable Run terminal authority", () => {
       }
       options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd, model: "claude-fallback" }));
       options.onEvent?.(eventType.runCompleted({ ...ctx, text: "fallback answer", sessionId: "s-2" }));
-      return { text: JSON.stringify({ type: "result", result: "fallback answer", session_id: "s-2" }) };
+      return { text: [JSON.stringify({ type: "text", data: "fallback answer" }), JSON.stringify({ type: "end", sessionId: "s-2", stopReason: "end_turn" })].join("\n") + "\n" };
     });
     const engine = new BridgeEngine({
       surfaceIdentity: "test",
@@ -226,7 +227,7 @@ describe("durable Run terminal authority", () => {
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       pollIntervalMs: 1000, workingDir: process.cwd(),
-    }, db, client, { runCliAsync });
+    }, db, client, acpEngineExec(runCliAsync));
 
     await engine.handleMessages([makeMessage("need fallback")]);
 

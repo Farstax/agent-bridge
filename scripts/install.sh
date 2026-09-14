@@ -89,10 +89,11 @@ seed_from_env_file() {
   for key in BRIDGE_ROOT_DIR BRIDGE_PROJECT_DIR BRIDGE_CURRENT_RELEASE_DIR \
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
                TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
-              AGY_ACP_COMMAND ANTIGRAVITY_ACP_COMMAND AGY_ACP_ARGS ANTIGRAVITY_ACP_ARGS \
+              AGY_ACP_COMMAND AGY_ACP_ARGS \
               CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS \
               CODEX_ACP_COMMAND CODEX_ACP_ARGS \
               GROK_ACP_COMMAND GROK_ACP_ARGS \
+              CURSOR_ACP_COMMAND CURSOR_ACP_ARGS \
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
               AGENT_BRIDGE_SKILLS AGENT_BRIDGE_SKILL_LINK_MODE \
               BRIDGE_EXECUTION_MODE POLL_INTERVAL_MS FETCH_TIMEOUT_MS \
@@ -209,6 +210,7 @@ prompt CODEX_ACP_COMMAND   "Codex ACP command"   "${REPO_DIR}/node_modules/.bin/
 prompt CLAUDE_ACP_COMMAND  "Claude ACP command"  "${REPO_DIR}/node_modules/.bin/claude-agent-acp"
 prompt GROK_ACP_COMMAND "Grok ACP command" "${REPO_DIR}/node_modules/.bin/grok"
 prompt AGY_ACP_COMMAND "Agy ACP command" "$(command -v agy_acp_server.par 2>/dev/null || true)"
+prompt CURSOR_ACP_COMMAND "Cursor ACP command" "$(command -v cursor-agent 2>/dev/null || echo cursor-agent)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""
 prompt CLAUDE_PROJECT_DIR      "Claude working directory (blank = BRIDGE_PROJECT_DIR)"      ""
@@ -298,6 +300,7 @@ ensure_target_user
 if [[ "${SKIP_CLI_INSTALL}" != "1" ]]; then
   (cd "${REPO_DIR}" && npm install)
   AGY_ACP_COMMAND="${AGY_ACP_COMMAND:-$(resolve_binary agy_acp_server.par)}"
+  CURSOR_ACP_COMMAND="${CURSOR_ACP_COMMAND:-$(resolve_binary cursor-agent)}"
   install_shared_skills
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" ]]; then
   install_shared_skills
@@ -307,6 +310,7 @@ ensure_var CODEX_ACP_COMMAND   "Codex ACP command"
 ensure_var CLAUDE_ACP_COMMAND  "Claude ACP command"
 ensure_var GROK_ACP_COMMAND "Grok ACP command"
 ensure_var AGY_ACP_COMMAND  "Agy ACP command"
+ensure_var CURSOR_ACP_COMMAND "Cursor ACP command"
 
 # Write local .env.* files from examples (machine-specific values substituted in)
 echo "Writing local env files..."
@@ -356,6 +360,8 @@ _write_shared_defaults() {
     [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
     [[ -n "${AGY_ACP_COMMAND:-}" ]] && echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND}"
     [[ -n "${AGY_ACP_ARGS:-}" ]] && echo "AGY_ACP_ARGS=${AGY_ACP_ARGS}"
+    [[ -n "${CURSOR_ACP_COMMAND:-}" ]] && echo "CURSOR_ACP_COMMAND=${CURSOR_ACP_COMMAND}"
+    [[ -n "${CURSOR_ACP_ARGS:-}" ]] && echo "CURSOR_ACP_ARGS=${CURSOR_ACP_ARGS}"
     echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
     echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
     echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
@@ -428,8 +434,10 @@ _write_interactive_defaults() {
     echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
     echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
     echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND:-agy_acp_server.par}"
+    echo "CURSOR_ACP_COMMAND=${CURSOR_ACP_COMMAND:-cursor-agent}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
+    [[ -n "${CURSOR_ACP_ARGS:-}" ]] && echo "CURSOR_ACP_ARGS=${CURSOR_ACP_ARGS}"
     echo "DB_PATH=${DB_PATH:-${BRIDGE_ROOT_DIR}/runtime/agent-bridge/interactive/bridge.sqlite}"
     true
   } | sudo tee "${dest}" > /dev/null
@@ -457,8 +465,10 @@ _write_discord_defaults() {
       echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
       echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
       echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND:-agy_acp_server.par}"
+      echo "CURSOR_ACP_COMMAND=${CURSOR_ACP_COMMAND:-cursor-agent}"
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
       [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
+      [[ -n "${CURSOR_ACP_ARGS:-}" ]] && echo "CURSOR_ACP_ARGS=${CURSOR_ACP_ARGS}"
       echo "BRIDGE_EXECUTION_MODE=${BRIDGE_EXECUTION_MODE:-trusted}"
     fi
     true

@@ -13,6 +13,23 @@ import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 process.env.AGENT_BRIDGE_KILL_GRACE_MS = "100";
 
+/**
+ * Cursor is ACP-transport now -- its session state routes through
+ * db.putAcpSessionBinding/getAcpSessionBinding, not the classic
+ * db.setSession/getSession(chatKey, kind) native-CLI session pointer.
+ */
+function setCursorSession(database: ReturnType<typeof openDb>, chatKey: string, sessionId: string | null): void {
+  if (sessionId === null) {
+    database.clearAcpSessionBinding(chatKey, "cursor");
+    return;
+  }
+  database.putAcpSessionBinding({ conversationId: chatKey, providerId: "cursor", acpSessionId: sessionId, runId: null });
+}
+
+function getCursorSession(database: ReturnType<typeof openDb>, chatKey: string): string | null {
+  return database.getAcpSessionBinding(chatKey, "cursor")?.acpSessionId ?? null;
+}
+
 function message(text: string, threadId: number) {
   return { message_id: Math.random(), chat: { id: 100, type: "private" }, from: { id: 42, first_name: "T" }, message_thread_id: threadId, text } as any;
 }
@@ -29,7 +46,47 @@ function cursorResult(text: string, sessionId = "cursor-session"): string {
   return JSON.stringify({ type: "result", result: text, session_id: sessionId });
 }
 
-function options(kind: "codex" | "cursor" | "antigravity", hooks: any = {}) {
+function parseMockStdout(stdout: string): { text: string; sessionId: string | null } {
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (typeof record.result === "string" && record.result.trim()) {
+        const sessionId = typeof record.session_id === "string" ? record.session_id : null;
+        return { text: record.result.trim(), sessionId };
+      }
+    } catch {
+      /* keep scanning */
+    }
+  }
+  return { text: stdout.trim(), sessionId: null };
+}
+
+/**
+ * Adapts a classic runCli-style mock (spawns a fake CLI, returns raw stdout)
+ * into a runProviderInvocation-compatible executor for ACP-transport
+ * providers (Cursor). Only valid for providers whose fixture stdout is
+ * "cursor-agent -p ... --output-format json"-shaped, i.e. cursorResult()'s
+ * `{ type: "result", result: <string>, session_id }` -- Agy's ACP tests use
+ * runProviderInvocation directly instead, since its equivalent native-era
+ * fixture shape nested a non-string result payload.
+ */
+function cliExec(runCliOrExec: any = {}) {
+  const exec = typeof runCliOrExec === "function" ? { runCli: runCliOrExec } : { ...runCliOrExec };
+  const run = exec.runCli;
+  return {
+    ...exec,
+    runProviderInvocation: exec.runProviderInvocation ?? (async (_bot: string, invocation: any, cwd: string, options: any, request: any) => {
+      const args = ["-p", request.prompt, "--output-format", "json"];
+      if (request.sessionId) args.push("--resume", request.sessionId);
+      const raw = await run(invocation.command, args, cwd, options);
+      const stdout = typeof raw === "string" ? raw : raw?.text ?? "";
+      return parseMockStdout(stdout);
+    }),
+  };
+}
+
+function options(kind: "codex" | "cursor" | "antigravity" | "grok", hooks: any = {}) {
   return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind === "antigravity" ? "agy" : kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, busyMessageMode: "interrupt" as const,  pollIntervalMs: 1000, workingDir: process.cwd(), hooks };
 }
 
@@ -141,8 +198,8 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
         }),
       }),
       busyMessageMode: "queue",
-    }, db, c, { runCli: codexRun });
-    const claude = new BridgeEngine({ ...options("cursor"), busyMessageMode: "queue" }, db, c, { runCli: claudeRun });
+    }, db, c, cliExec(codexRun));
+    const claude = new BridgeEngine({ ...options("cursor"), busyMessageMode: "queue" }, db, c, cliExec(claudeRun));
     engines.codex = codex; engines.cursor = claude;
     const active = codex.handleMessages([message("first", 7)]);
     await new Promise((r) => setTimeout(r, 20));
@@ -159,7 +216,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const path = join(tmpdir(), `busy-lane-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
     const c = client();
-    const engine = new BridgeEngine(options("cursor"), db, c, { runCli: vi.fn().mockResolvedValue('{"type":"result","result":"topic eight done","session_id":"s8"}') });
+    const engine = new BridgeEngine(options("cursor"), db, c, cliExec(vi.fn().mockResolvedValue(cursorResult("topic eight done", "s8"))));
     db.addConvTurn("100", "user", "quarantined flat history");
     db.addConvTurn("100:7", "user", "topic seven"); db.addConvTurn("100:8", "user", "topic eight");
     db.acquireLock("telegram:interactive", "100:7");
@@ -177,14 +234,14 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const childReady = join(tmpdir(), `stop-grace-ready-${Date.now()}-${Math.random()}`);
     const db = openDb(path);
     const c = client();
-    const engine = new BridgeEngine(options("cursor"), db, c, {
+    const engine = new BridgeEngine(options("cursor"), db, c, cliExec({
       runCli: (_command, _args, cwd, cliOptions) => runCli(
         process.execPath,
         ["-e", "process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", childReady],
         cwd,
         cliOptions,
       ),
-    });
+    }));
     const active = engine.handleMessages([message("long run", 7)]);
     await waitForFile(childReady);
     const stopping = engine.handleUpdate({ update_id: 2, message: message("/stop", 7) });
@@ -200,14 +257,14 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const childReady = join(tmpdir(), `reset-grace-ready-${Date.now()}-${Math.random()}`);
     const db = openDb(path);
     const c = client();
-    const engine = new BridgeEngine(options("cursor"), db, c, {
+    const engine = new BridgeEngine(options("cursor"), db, c, cliExec({
       runCli: (_command, _args, cwd, cliOptions) => runCli(
         process.execPath,
         ["-e", "process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", childReady],
         cwd,
         cliOptions,
       ),
-    });
+    }));
     const active = engine.handleMessages([message("long reset run", 7)]);
     await waitForFile(childReady);
     const resetting = engine.handleMessages([message("/reset", 7)]);
@@ -224,7 +281,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(path);
     const c = client();
     const secondTurnRun = vi.fn().mockResolvedValue('{"type":"result","result":"second turn done","session_id":"s2"}');
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
           process.execPath,
@@ -233,7 +290,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
           cliOptions,
         ))
         .mockImplementationOnce(secondTurnRun),
-    });
+    }));
     const startedAt = Date.now();
     const first = engine.handleMessages([message("long first turn", 7)]);
     await waitForFile(childReady);
@@ -246,7 +303,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     expect(elapsedMs).toBeLessThan(3_000);
     expect(secondTurnRun).toHaveBeenCalledOnce();
     // The killed first turn must never commit a session — only the second turn's session lands.
-    expect(db.getSession("100:7", "cursor")).toBe("s2");
+    expect(getCursorSession(db, "100:7")).toBe("s2");
     // Exactly one assistant reply was delivered (the second turn's) — the interrupted
     // first turn must not send a committed final response.
     const finalReplies = c.sendMessage.mock.calls.filter((call: any[]) => call[0].text === "second turn done");
@@ -262,7 +319,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const c = client();
     const secondRun = vi.fn().mockResolvedValue('{"type":"result","result":"second done","session_id":"s2"}');
     const thirdRun = vi.fn().mockResolvedValue('{"type":"result","result":"third done","session_id":"s3"}');
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
           process.execPath,
@@ -272,7 +329,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
         ))
         .mockImplementationOnce(secondRun)
         .mockImplementationOnce(thirdRun),
-    });
+    }));
 
     const first = engine.handleMessages([message("long first turn", 7)]);
     await waitForFile(childReady);
@@ -284,7 +341,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
 
     expect(secondRun).toHaveBeenCalledOnce();
     expect(thirdRun).toHaveBeenCalledOnce();
-    expect(db.getSession("100:7", "cursor")).toBe("s3");
+    expect(getCursorSession(db, "100:7")).toBe("s3");
     expect(c.sendMessage.mock.calls.filter((call: any[]) => ["second done", "third done"].includes(call[0]?.text))).toHaveLength(2);
     expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
@@ -296,14 +353,14 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(path);
     const c = client();
     const successorRun = vi.fn().mockResolvedValue('{"result":"must be discarded","session_id":"bad"}');
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, cliExec({
       runCli: vi.fn().mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
         process.execPath,
         ["-e", "process.on('SIGTERM',()=>{}); require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", childReady],
         cwd,
         cliOptions,
       )).mockImplementationOnce(successorRun),
-    });
+    }));
 
     const first = engine.handleMessages([message("long first turn", 7)]);
     await waitForFile(childReady);
@@ -315,7 +372,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
 
     expect(successorRun).not.toHaveBeenCalled();
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
-    expect(db.getSession("100:7", "cursor")).toBeNull();
+    expect(getCursorSession(db, "100:7")).toBeNull();
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
   }, 12_000);
 
@@ -326,7 +383,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(path);
     const c = client();
     const newestRun = vi.fn().mockResolvedValue('{"type":"result","result":"newest done","session_id":"newest"}');
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
           process.execPath,
@@ -341,7 +398,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
           cliOptions,
         ))
         .mockImplementationOnce(newestRun),
-    });
+    }));
 
     const first = engine.handleMessages([message("long first turn", 7)]);
     await waitForFile(firstReady);
@@ -352,7 +409,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     await Promise.all([first, successor, newest]);
 
     expect(newestRun).toHaveBeenCalledOnce();
-    expect(db.getSession("100:7", "cursor")).toBe("newest");
+    expect(getCursorSession(db, "100:7")).toBe("newest");
     expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === "newest done")).toHaveLength(1);
     db.close(); rmSync(path, { force: true }); rmSync(firstReady, { force: true }); rmSync(successorReady, { force: true });
   }, 18_000);
@@ -364,7 +421,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(path);
     const c = client();
     const successorRun = vi.fn();
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
           process.execPath,
@@ -379,7 +436,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
           cliOptions,
         ))
         .mockImplementationOnce(successorRun),
-    });
+    }));
 
     const first = engine.handleMessages([message("long first turn", 7)]);
     await waitForFile(firstReady);
@@ -392,7 +449,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
 
     expect(successorRun).not.toHaveBeenCalled();
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
-    expect(db.getSession("100:7", "cursor")).toBeNull();
+    expect(getCursorSession(db, "100:7")).toBeNull();
     db.close(); rmSync(path, { force: true }); rmSync(firstReady, { force: true }); rmSync(successorReady, { force: true });
   }, 18_000);
 
@@ -402,7 +459,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(path);
     const c = client();
     const afterStop = vi.fn().mockResolvedValue('{"type":"result","result":"after stop","session_id":"after-stop"}');
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "interrupt" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
           process.execPath,
@@ -411,7 +468,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
           cliOptions,
         ))
         .mockImplementationOnce(afterStop),
-    });
+    }));
 
     const first = engine.handleMessages([message("long first turn", 7)]);
     await waitForFile(childReady);
@@ -422,7 +479,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     await Promise.all([first, stopping, next]);
 
     expect(afterStop).toHaveBeenCalledOnce();
-    expect(db.getSession("100:7", "cursor")).toBe("after-stop");
+    expect(getCursorSession(db, "100:7")).toBe("after-stop");
     expect(c.sendMessage.mock.calls.filter((call: any[]) => call[0]?.text === "after stop")).toHaveLength(1);
     expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
@@ -436,7 +493,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const engine = new BridgeEngine({
       surfaceIdentity: "telegram:interactive", kind: "codex", botConfig: { command: "codex", modelPreference: ["gpt-5.6-luna"] },
       allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
-    }, db, c, { runCli });
+    }, db, c, cliExec({ runCli }));
     try {
       await engine.handleMessages([message("/btw inspect without changing anything", 7)]);
       expect(runCli).not.toHaveBeenCalled();
@@ -462,7 +519,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const engine = new BridgeEngine({
       surfaceIdentity: "telegram:interactive", kind: "antigravity", botConfig: { command: "agy", modelPreference: ["gemini-3.5-flash-high"] },
       allowedUserIds: new Set(["42"]), executionMode: "safe",  pollIntervalMs: 1000, workingDir: process.cwd(),
-    }, db, c, { runCli });
+    }, db, c, cliExec({ runCli }));
 
     try {
       await engine.handleMessages([message("/btw inspect without changing anything", 7)]);
@@ -484,7 +541,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     process.env.CURSOR_CLI_TIMEOUT_MS = "300";
     process.env.CURSOR_CLI_IDLE_TIMEOUT_MS = "0";
     const secondRun = vi.fn().mockResolvedValue("should never run");
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "queue" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "queue" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
           process.execPath,
@@ -493,7 +550,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
           cliOptions,
         ))
         .mockImplementationOnce(secondRun),
-    });
+    }));
     try {
       const first = engine.handleMessages([message("times out", 7)]);
       await new Promise((r) => setTimeout(r, 50));
@@ -504,7 +561,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       expect(secondRun).not.toHaveBeenCalled();
       expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
       // No session was committed by the timed-out turn.
-      expect(db.getSession("100:7", "cursor")).toBeNull();
+      expect(getCursorSession(db, "100:7")).toBeNull();
       // The lane is released, not stuck.
       expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
     } finally {
@@ -525,9 +582,9 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       cliOptions,
     ));
     const secondRun = vi.fn().mockResolvedValue(cursorResult("second done"));
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "queue" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "queue" }, db, c, cliExec({
       runCli: vi.fn().mockImplementationOnce(codexRun).mockImplementationOnce(secondRun),
-    });
+    }));
     const first = engine.handleMessages([message("first", 7)]);
     await new Promise((r) => setTimeout(r, 20));
     const second = engine.handleMessages([message("second", 7)]);
@@ -566,7 +623,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     )).mockResolvedValueOnce('{"type":"result","result":"augmented result","session_id":"augmented-session"}');
     const engine = new BridgeEngine({
       ...options("cursor", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }), busyMessageMode: "augment",
-    }, db, c, { runCli: mockRunCli });
+    }, db, c, cliExec(mockRunCli));
     const first = engine.handleMessages([message("original request", 7)]);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(db.dequeueMsgs("telegram:interactive", "100:7").map((row) => row.prompt)).toContain("original request");
@@ -615,12 +672,12 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(path);
     const c = client();
     const finalRun = vi.fn().mockResolvedValue('{"type":"result","result":"augmented final","session_id":"augmented-final"}');
-    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "augment" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "augment" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(process.execPath, ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", firstReady], cwd, cliOptions))
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(process.execPath, ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", successorReady], cwd, cliOptions))
         .mockImplementationOnce(finalRun),
-    });
+    }));
 
     const first = engine.handleMessages([message("original successor", 7)]);
     await waitForFile(firstReady);
@@ -647,7 +704,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
         hookCalls += 1;
         if (hookCalls === 1) await delayedFinalisation;
       },
-    }), db, c, { runCli });
+    }), db, c, cliExec({ runCli }));
 
     const oldRun = engine.handleMessages([message("old request", 7)]);
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -663,7 +720,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
 
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0].text === "old result")).toBe(false);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0].text === "new result")).toBe(true);
-    expect(db.getSession("100:7", "cursor")).not.toBe("old result");
+    expect(getCursorSession(db, "100:7")).not.toBe("old result");
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     db.close();
   });
@@ -681,7 +738,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       ["assistant", "previous answer"],
     ] as const;
     for (const [role, text] of oldTurns) db.addConvTurn(chatKey, role, text, "cursor");
-    db.setSession(chatKey, "cursor", oldSession);
+    setCursorSession(db, chatKey, oldSession);
     const turnsBefore = db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }));
     let releaseFinalisation!: () => void;
     let finalisationEntered!: () => void;
@@ -691,7 +748,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       result: `cancelled ${mode} result`,
       session_id: nextSession,
     });
-    const nextRun = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "next result", session_id: "after-cancel" }));
+    const nextRun = vi.fn().mockResolvedValue(cursorResult("next result", "after-cancel"));
     const hooks = {
       onAfterExecute: async (prompt: string) => {
         if (prompt === `cancelled ${mode}`) {
@@ -700,10 +757,10 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
         }
       },
     };
-    const engine = new BridgeEngine({ ...options("cursor", hooks), busyMessageMode: "interrupt" }, db, c, {
+    const engine = new BridgeEngine({ ...options("cursor", hooks), busyMessageMode: "interrupt" }, db, c, cliExec({
       runCli: vi.fn().mockResolvedValueOnce(cancelledResult).mockImplementationOnce(nextRun),
       runCliAsync: vi.fn().mockResolvedValueOnce({ text: cancelledResult }).mockImplementationOnce(async () => ({ text: await nextRun() })),
-    });
+    }));
 
     const cancelled = engine.handleMessages([message(`cancelled ${mode}`, 7)]);
     await entered;
@@ -712,13 +769,13 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     releaseFinalisation();
     await Promise.all([cancelled, stopping]);
 
-    expect(db.getSession(chatKey, "cursor")).toBe(oldSession);
+    expect(getCursorSession(db, chatKey)).toBe(oldSession);
     expect(db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }))).toEqual(turnsBefore);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text?.includes(`cancelled ${mode} result`))).toBe(false);
 
     await engine.handleMessages([message("resume after cancellation", 7)]);
     expect(nextRun).toHaveBeenCalled();
-    expect(db.getSession(chatKey, "cursor")).toBe("after-cancel");
+    expect(getCursorSession(db, chatKey)).toBe("after-cancel");
     db.close();
   });
 
@@ -738,12 +795,12 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       }
       return { ok: true, result: { message_id: 1 } };
     });
-    db.setSession("100:7", "cursor", "previous-session");
-    const result = JSON.stringify({ type: "result", result: `delivery winner ${mode}`, session_id: "delivered-session" });
-    const engine = new BridgeEngine({ ...options("cursor") }, db, c, {
+    setCursorSession(db, "100:7", "previous-session");
+    const result = cursorResult(`delivery winner ${mode}`, "delivered-session");
+    const engine = new BridgeEngine({ ...options("cursor") }, db, c, cliExec({
       runCli: vi.fn().mockResolvedValue(result),
       runCliAsync: vi.fn().mockResolvedValue({ text: result }),
-    });
+    }));
 
     const execution = engine.handleMessages([message(`delivery ${mode}`, 7)]);
     await entered;
@@ -758,7 +815,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     await waitForCondition(() => !(engine as any).laneCoordinator.hasCancellation(executionLane));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(db.getSession("100:7", "cursor")).toBe("previous-session");
+    expect(getCursorSession(db, "100:7")).toBe("previous-session");
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === `delivery winner ${mode}`)).toBe(true);
     db.close();
   });
@@ -798,15 +855,15 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       return { ok: true, result: { message_id: 1 } };
     });
     const executed: string[] = [];
-    const firstResult = JSON.stringify({ type: "result", result: `first final ${mode}`, session_id: "first-final" });
-    const secondResult = JSON.stringify({ type: "result", result: `second turn ${mode}`, session_id: "second-turn" });
+    const firstResult = cursorResult(`first final ${mode}`, "first-final");
+    const secondResult = cursorResult(`second turn ${mode}`, "second-turn");
     const engine = new BridgeEngine({
       ...options("cursor"), busyMessageMode: "augment",
       hooks: { onAfterExecute: async (prompt: string) => { executed.push(prompt); } },
-    }, db, c, {
+    }, db, c, cliExec({
       runCli: vi.fn().mockResolvedValueOnce(firstResult).mockResolvedValueOnce(secondResult),
       runCliAsync: vi.fn().mockResolvedValueOnce({ text: firstResult }).mockResolvedValueOnce({ text: secondResult }),
-    });
+    }));
 
     const execution = engine.handleMessages([message(`first request ${mode}`, 7)]);
     await entered;
@@ -824,7 +881,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(":memory:", { serviceId: "telegram:interactive", runId: "upload-cancel" });
     const c = client();
     const chatKey = "100:7";
-    db.setSession(chatKey, "cursor", "previous-session");
+    setCursorSession(db, chatKey, "previous-session");
     db.addConvTurn(chatKey, "user", "previous request", "cursor");
     db.addConvTurn(chatKey, "assistant", "previous answer", "cursor");
     const turnsBefore = db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }));
@@ -836,11 +893,11 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       uploadEntered();
       await uploadBarrier;
     });
-    const firstResult = JSON.stringify({ type: "result", result: "cancelled during upload", session_id: "cancelled-session" });
-    const nextRun = vi.fn().mockResolvedValue({ text: JSON.stringify({ type: "result", result: "resumed", session_id: "resumed-session" }) });
-    const engine = new BridgeEngine({ ...options("cursor"), }, db, c, {
-      runCliAsync: vi.fn().mockResolvedValueOnce({ text: firstResult }).mockImplementationOnce(nextRun),
-    });
+    const firstResult = cursorResult("cancelled during upload", "cancelled-session");
+    const nextRun = vi.fn().mockResolvedValue(cursorResult("resumed", "resumed-session"));
+    const engine = new BridgeEngine({ ...options("cursor"), }, db, c, cliExec({
+      runCli: vi.fn().mockResolvedValueOnce(firstResult).mockImplementationOnce(nextRun),
+    }));
 
     const execution = engine.handleMessages([message("first upload turn", 7)]);
     await uploadStarted;
@@ -850,7 +907,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     await Promise.all([execution, stopping]);
 
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "cancelled during upload")).toBe(false);
-    expect(db.getSession(chatKey, "cursor")).toBe("previous-session");
+    expect(getCursorSession(db, chatKey)).toBe("previous-session");
     expect(db.getRecentConvTurns(chatKey, 100).map(({ role, text, cli }) => ({ role, text, cli }))).toEqual(turnsBefore);
     const runs = db.raw.prepare("SELECT run_id, status FROM bridge_runs").all() as Array<{ run_id: string; status: string }>;
     expect(runs.every((run) => run.status !== "done")).toBe(true);
@@ -859,7 +916,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     uploadSpy.mockResolvedValue(undefined);
     await engine.handleMessages([message("resume after upload cancellation", 7)]);
     expect(nextRun).toHaveBeenCalled();
-    expect(db.getSession(chatKey, "cursor")).toBe("resumed-session");
+    expect(getCursorSession(db, chatKey)).toBe("resumed-session");
     db.close();
   });
 
@@ -890,7 +947,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const claimed = runA.claimNextPendingMsg(handleA)!;
     let resume!: (value: string) => void;
     const paused = new Promise<string>((resolve) => { resume = resolve; });
-    const engine = new BridgeEngine(options("cursor"), runA, client(), { runCli: () => paused });
+    const engine = new BridgeEngine(options("cursor"), runA, client(), cliExec(() => paused));
     const execution = engine.executeClaimedMessage({ ...claimed, laneHandle: handleA });
     await new Promise((r) => setTimeout(r, 20)); now += 101;
     expect(runB.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
@@ -976,13 +1033,13 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
         if (failOnce) { failOnce = false; throw new Error("router unavailable"); }
         return engine.executeClaimedMessage(queued);
       },
-    }), db, client(), {
+    }), db, client(), cliExec({
       runCli: vi.fn().mockImplementation(async (_command: string, args: string[]) => {
         const prompt = String(args[1]);
         order.push(prompt.includes("oldest") ? "oldest" : prompt.includes("arrival one") ? "one" : "two");
         return cursorResult("ok");
       }),
-    });
+    }));
     await engine.handleMessages([message("arrival one", 7)]);
     expect(order).toEqual([]);
     await engine.handleMessages([message("arrival two", 7)]);
@@ -995,7 +1052,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const db = openDb(path);
     db.enqueueMsg("telegram:interactive", "100:7", { prompt: "recover on startup", chatId: 100, threadId: 7, chatType: "private" });
     const runCli = vi.fn().mockResolvedValue(cursorResult("recovered"));
-    const engine = new BridgeEngine(options("cursor"), db, client(), { runCli });
+    const engine = new BridgeEngine(options("cursor"), db, client(), cliExec({ runCli }));
     await engine.recoverPendingQueues();
     expect(runCli).toHaveBeenCalledOnce();
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
@@ -1014,7 +1071,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
         if (failOnce) { failOnce = false; throw new Error("transient router failure"); }
         return engine.executeClaimedMessage(queued);
       },
-    }), db, client(), { runCli });
+    }), db, client(), cliExec({ runCli }));
     await engine.recoverPendingQueues();
     await waitForCondition(() => runCli.mock.calls.length === 1 && db.pendingMsgCount("telegram:interactive", "100:7") === 0, 4_000);
     expect(runCli).toHaveBeenCalledOnce();
@@ -1034,9 +1091,9 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       expect(runB.acquireLock(handle.surface, handle.chatKey)).not.toBeNull();
       return original(handle, operation);
     };
-    const engine = new BridgeEngine(options("cursor"), runA, c, {
+    const engine = new BridgeEngine(options("cursor"), runA, c, cliExec({
       runCli: vi.fn().mockResolvedValue(JSON.stringify({ result: "parsed but fenced", session_id: "must-not-store" })),
-    });
+    }));
     await engine.handleMessages([message("race commit", 7)]);
     expect(runB.getSession("100:7", "cursor")).toBeNull();
     expect(runB.getRecentConvTurns("100:7", 10)).toHaveLength(0);
@@ -1051,7 +1108,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const runB = openDb(path, { serviceId: "telegram:interactive", runId: "b", lockLeaseMs: 100, clock: () => now });
     const c = client(); let resume!: (value: string) => void;
     const paused = new Promise<string>((resolve) => { resume = resolve; });
-    const engineA = new BridgeEngine(options("cursor"), runA, c, { runCli: () => paused });
+    const engineA = new BridgeEngine(options("cursor"), runA, c, cliExec(() => paused));
     const active = engineA.handleMessages([message("old run", 7)]);
     await new Promise((r) => setTimeout(r, 20)); now += 101;
     const handleB = runB.acquireLock("telegram:interactive", "100:7")!;

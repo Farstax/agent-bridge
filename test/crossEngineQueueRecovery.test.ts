@@ -9,6 +9,7 @@ import {
 } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 
 const SURFACE = "telegram:interactive";
 
@@ -27,7 +28,7 @@ function makeMockClient() {
 }
 
 function makeEngine(
-  kind: "codex" | "cursor",
+  kind: "codex" | "grok",
   db: ReturnType<typeof openDb>,
   client: ReturnType<typeof makeMockClient>,
   runCli: ReturnType<typeof vi.fn>,
@@ -44,7 +45,7 @@ function makeEngine(
     },
     db,
     client,
-    { runCli: runCli as any },
+    acpEngineExec(runCli as any),
   );
 }
 
@@ -61,11 +62,14 @@ function update(messageId: number, text: string) {
 }
 
 function claudeResult(text: string, sessionId: string) {
-  return JSON.stringify({ type: "result", session_id: sessionId, result: text });
+  return [
+    JSON.stringify({ type: "text", data: text }),
+    JSON.stringify({ type: "end", sessionId, stopReason: "end_turn" }),
+  ].join("\n") + "\n";
 }
 
 function wireInteractiveQueue(
-  engines: Record<"codex" | "cursor", BridgeEngine>,
+  engines: Record<"codex" | "grok", BridgeEngine>,
   deps: any,
 ) {
   for (const engine of Object.values(engines)) {
@@ -92,11 +96,11 @@ describe("cross-engine queue recovery", () => {
       .mockResolvedValueOnce(claudeResult("live", "session-live"));
     const engines = {
       codex: makeEngine("codex", db, client, recoveryRun),
-      cursor: makeEngine("cursor", db, client, preferredRun),
+      grok: makeEngine("grok", db, client, preferredRun),
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "cursor"], db, () => true),
+      fallbackChain: new ProviderFallbackChain(["codex", "grok"], db, () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -104,7 +108,7 @@ describe("cross-engine queue recovery", () => {
     wireInteractiveQueue(engines, deps);
 
     try {
-      setUserCliPreference(db, "100", "cursor");
+      setUserCliPreference(db, "100", "grok");
       db.enqueueMsg(SURFACE, "100", {
         prompt: "recovered work",
         chatId: 100,
@@ -143,11 +147,11 @@ describe("cross-engine queue recovery", () => {
       .mockResolvedValueOnce(claudeResult("combined successor", "session-successor"));
     const engines = {
       codex: makeEngine("codex", db, client, recoveryRun),
-      cursor: makeEngine("cursor", db, client, preferredRun),
+      grok: makeEngine("grok", db, client, preferredRun),
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "cursor"], db, () => true),
+      fallbackChain: new ProviderFallbackChain(["codex", "grok"], db, () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -155,7 +159,7 @@ describe("cross-engine queue recovery", () => {
     wireInteractiveQueue(engines, deps);
 
     try {
-      setUserCliPreference(db, "100", "cursor");
+      setUserCliPreference(db, "100", "grok");
       db.enqueueMsg(SURFACE, "100", {
         prompt: "recovered work",
         chatId: 100,

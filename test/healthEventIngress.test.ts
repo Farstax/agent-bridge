@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 import { BridgeEngine } from "../src/engine.js";
 import {
   acceptHealthOpsEvent,
@@ -271,7 +272,7 @@ function makeMockClient() {
 }
 
 function cursorResult(text: string, sessionId: string | null): string {
-  return JSON.stringify({ type: "result", subtype: "success", result: text, session_id: sessionId ?? "cursor-health-session" });
+  return [JSON.stringify({ type: "text", data: text }), JSON.stringify({ type: "end", sessionId: sessionId ?? "cursor-health-session", stopReason: "end_turn" })].join("\n") + "\n";
 }
 
 function makeEngine(
@@ -291,7 +292,7 @@ function makeEngine(
     },
     db,
     client,
-    { runCliAsync },
+    acpEngineExec(runCliAsync),
   );
   return { engine, client };
 }

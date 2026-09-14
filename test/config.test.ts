@@ -25,6 +25,7 @@ describe("loadBotsConfig", () => {
     expect(bots.antigravity.modelPreference).toEqual([]);
     expect(bots.grok.command).toContain("node_modules/.bin/grok");
     expect(bots.cursor.command).toBe("cursor-agent");
+    expect(bots.cursor.modelPreference).toEqual([]);
   });
 
   it("keeps ACP preference env out of the legacy static model catalogue", () => {
@@ -33,6 +34,7 @@ describe("loadBotsConfig", () => {
       CLAUDE_ACP_COMMAND: "/opt/bin/claude-agent-acp",
       CODEX_MODEL_PREFERENCE: "opaque-a,opaque-b",
       CLAUDE_MODEL_PREFERENCE: "sonnet,opus",
+      CURSOR_MODEL_PREFERENCE: "composer-2.5,auto",
       ANTIGRAVITY_MODEL_PREFERENCE: "m1, m2 ,m3",
       AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par",
     });
@@ -42,6 +44,7 @@ describe("loadBotsConfig", () => {
     expect(bots.claude.modelPreference).toEqual([]);
     expect(bots.antigravity.command).toBe("/opt/agy/agy_acp_server.par");
     expect(bots.antigravity.modelPreference).toEqual([]);
+    expect(bots.cursor.modelPreference).toEqual([]);
   });
 
   it("honours legacy GEMINI token fallbacks for antigravity without native command fallback", () => {

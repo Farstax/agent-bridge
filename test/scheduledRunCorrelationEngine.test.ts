@@ -10,6 +10,7 @@ import {
   setUserCliPreference,
 } from "../src/interactiveBot.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 import {
   buildScheduledInteractiveTurn,
   claimScheduledRoutineOccurrence,
@@ -83,11 +84,7 @@ describe("authoritative scheduled Run correlation", () => {
       expect(claimScheduledRoutineOccurrence(db, routine.id, intendedAt)).toBe(true);
       const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
 
-      const runCli = vi.fn().mockResolvedValue(JSON.stringify({
-        type: "result",
-        result: "ROUTINE_TEST_OK",
-        session_id: "scheduled-session",
-      }));
+      const runCli = vi.fn().mockResolvedValue([JSON.stringify({ type: "text", data: "ROUTINE_TEST_OK" }), JSON.stringify({ type: "end", sessionId: "scheduled-session", stopReason: "end_turn" })].join("\n") + "\n");
       const engine = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
         kind: "cursor",
@@ -95,7 +92,7 @@ describe("authoritative scheduled Run correlation", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, mockClient(), { runCli });
+      }, db, mockClient(), acpEngineExec(runCli));
 
       const turn = buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey);
       await engine.handleInteractiveTurn(turn);
@@ -136,7 +133,7 @@ describe("authoritative scheduled Run correlation", () => {
         executionMode: "safe",
         pollIntervalMs: 1000, workingDir: process.cwd(),
         hooks: { onCapacityExhausted: async (chatKey) => { exhaustedChats.add(chatKey); } },
-      }, db, mockClient(), { runCli: claudeCli });
+      }, db, mockClient(), acpEngineExec(claudeCli));
       const codex = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
         kind: "antigravity",
@@ -225,7 +222,7 @@ describe("authoritative scheduled Run correlation", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, mockClient(), { runCli });
+      }, db, mockClient(), acpEngineExec(runCli));
 
       await engine.handleInteractiveTurn(buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey));
 

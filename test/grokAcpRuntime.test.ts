@@ -106,7 +106,6 @@ describe("Grok ACP provider", () => {
     ]);
     expect(supportsToolFreeMode("grok")).toBe(false);
     expect(isAcpBackedBot("grok")).toBe(true);
-    expect(isAcpBackedBot("cursor")).toBe(false);
     expect(grokAcpPolicy.steeringSupported).toBe(false);
   });
 

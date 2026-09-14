@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 import type { TelegramMessage } from "../src/types.js";
 import { withPassiveSurroundingContext } from "../src/workspaceContext.js";
 
@@ -58,7 +59,7 @@ describe("provider-native context lifecycle", () => {
       const capturedPrompts: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
         capturedPrompts.push(args[1]);
-        return JSON.stringify({ type: "result", result: "ok", session_id: "native-session-706" });
+        return [JSON.stringify({ type: "text", data: "ok" }), JSON.stringify({ type: "end", sessionId: "native-session-706", stopReason: "end_turn" })].join("\n") + "\n";
       });
       const engine = new BridgeEngine({
         surfaceIdentity: "test",
@@ -67,7 +68,7 @@ describe("provider-native context lifecycle", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, database, makeMockClient(), { runCli });
+      }, database, makeMockClient(), acpEngineExec(runCli));
 
       await withPassiveSurroundingContext([
         { actorId: "guest", actorLabel: "Guest", messageId: "prior-1", text: "fresh passive evidence" },

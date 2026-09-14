@@ -73,14 +73,8 @@ describe("ACP-native effort values", () => {
     expect(isEffortLevel(resolveDefaultEffort("claude", { CLAUDE_EFFORT: "future-provider-value" }))).toBe(true);
   });
 
-  it("does not broaden native Bridge effort normalization", () => {
-    const db = {
-      getSetting(key: string) {
-        if (key === "effort:cursor") return "future-provider-value";
-        return null;
-      },
-    };
-
-    expect(resolveEffort("cursor", db)).toBe("medium");
-  });
+  // Every real BotKind (codex, claude, antigravity, grok, cursor) is
+  // ACP-backed now that Cursor has migrated -- resolveEffort's non-ACP
+  // "native Bridge effort normalization" branch is unreachable in
+  // production and has no BotKind left to exercise it through.
 });

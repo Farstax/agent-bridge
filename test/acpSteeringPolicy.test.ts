@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { claudeAcpPolicy } from "../src/providers/claudeAcpPolicy.js";
 import { codexAcpPolicy } from "../src/providers/codexAcpPolicy.js";
+import { cursorAcpPolicy } from "../src/providers/cursorAcpPolicy.js";
 
 describe("ACP steering qualification gate (issue #748)", () => {
   it("qualifies Claude for steering (claude-agent-acp@0.76.0 carries the host-owned promptRequired fallback)", () => {
@@ -9,5 +10,9 @@ describe("ACP steering qualification gate (issue #748)", () => {
 
   it("does not qualify Codex, independent of what a live agent advertises (codex-acp#441 unreleased)", () => {
     expect(codexAcpPolicy.steeringSupported).not.toBe(true);
+  });
+
+  it("does not qualify Cursor ACP for steering until independently proven for #748", () => {
+    expect(cursorAcpPolicy.steeringSupported).toBe(false);
   });
 });

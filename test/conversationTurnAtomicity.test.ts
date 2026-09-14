@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import type { TelegramMessage } from "../src/types.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 
 function makeMessage(text: string, userId = 42, chatId = 100): TelegramMessage {
   return {
@@ -60,21 +61,19 @@ describe("conversation-turn post-delivery atomicity", () => {
   it("rolls back the user turn when the assistant turn insert fails, without double-delivering after the answer", async () => {
     const { BridgeEngine } = await import("../src/engine.js");
     const client = makeMockClient();
-    const runCli = vi.fn().mockResolvedValue(JSON.stringify({
-      type: "result", result: "the real answer", session_id: "cursor-session",
-    }));
+    const runCli = vi.fn().mockResolvedValue([JSON.stringify({ type: "text", data: "the real answer" }), JSON.stringify({ type: "end", sessionId: "cursor-session", stopReason: "end_turn" })].join("\n") + "\n");
     const engine = new BridgeEngine(
       {
         surfaceIdentity: "test",
-        kind: "cursor",
-        botConfig: { command: "cursor", modelPreference: [] },
+        kind: "grok",
+        botConfig: { command: "grok", modelPreference: [] },
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         pollIntervalMs: 1000, workingDir: process.cwd(),
       },
       db,
       client,
-      { runCli },
+      acpEngineExec(runCli),
     );
 
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

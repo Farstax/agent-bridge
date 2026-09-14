@@ -114,7 +114,6 @@ describe("Agy ACP provider", () => {
     expect(supportsToolFreeMode("agy")).toBe(true);
     expect(isAcpBackedBot("antigravity")).toBe(true);
     expect(isAcpBackedBot("agy")).toBe(true);
-    expect(isAcpBackedBot("cursor")).toBe(false);
     expect(agyAcpPolicy.steeringSupported).toBe(false);
   });
 

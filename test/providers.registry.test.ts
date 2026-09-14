@@ -56,17 +56,17 @@ describe("provider registry", () => {
     expect(adapter.capabilities.toolFree).toBeUndefined();
   });
 
-  it("retains native launch metadata for unmigrated Cursor and Agy", () => {
+  it("resolves ACP launch metadata for every migrated provider generically, not from provider-name branches", () => {
     expect(getProviderAdapter("grok")).toMatchObject({
       id: "grok",
       displayName: "Grok Build",
     });
     expect(getProviderAdapter("grok").executable).toBeUndefined();
     expect(getProviderAdapter("cursor")).toMatchObject({
-      executable: "cursor-agent",
-      versionArgs: ["--version"],
-      defaultArgs: ["-p", "--output-format", "json"],
+      id: "cursor",
+      displayName: "Cursor",
     });
+    expect(getProviderAdapter("cursor").executable).toBeUndefined();
     expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" })).toMatchObject({
       transport: "acp-stdio",
       executable: "/opt/agy/agy_acp_server.par",
@@ -80,10 +80,13 @@ describe("provider registry", () => {
       executable: "/opt/xai/bin/grok",
       args: ["agent", "stdio"],
     });
-    expect(resolveProviderRuntime("cursor", { CURSOR_COMMAND: "/native/cursor" })).toMatchObject({
-      transport: "oneshot",
-      executable: "/native/cursor",
-      args: ["-p", "--output-format", "json"],
+    expect(resolveProviderRuntime("cursor", {
+      CURSOR_ACP_COMMAND: "/opt/cursor/bin/cursor-agent",
+      CURSOR_ACP_ARGS: "acp",
+    })).toMatchObject({
+      transport: "acp-stdio",
+      executable: "/opt/cursor/bin/cursor-agent",
+      args: ["acp"],
     });
   });
 
@@ -120,6 +123,7 @@ describe("provider registry", () => {
     expect(supportsProvisionalAnswers("codex")).toBe(true);
     expect(supportsProvisionalAnswers("claude")).toBe(true);
     expect(supportsProvisionalAnswers("antigravity")).toBe(true);
+    expect(supportsProvisionalAnswers("cursor")).toBe(true);
     expect(supportsProvisionalAnswers("not-a-bot-kind")).toBe(false);
   });
 
@@ -127,6 +131,7 @@ describe("provider registry", () => {
     expect(acpProviderIdForBotName("codex")).toBe("codex");
     expect(acpProviderIdForBotName("claude")).toBe("claude");
     expect(acpProviderIdForBotName("antigravity")).toBe("agy");
+    expect(acpProviderIdForBotName("cursor")).toBe("cursor");
     expect(acpProviderIdForBotName("not-a-bot-kind")).toBeNull();
   });
 

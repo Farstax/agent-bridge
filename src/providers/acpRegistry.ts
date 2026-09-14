@@ -1,4 +1,5 @@
 import type { ProviderId } from "./types.js";
+import { CURSOR_ACP_VERSION } from "./cursorAcpConfig.js";
 
 /**
  * ACP Registry v1 entry shape used as the upstream distribution contract.
@@ -125,6 +126,50 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
         "windows-aarch64": {
           archive: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-arm64.zip",
           cmd: "./agy_acp_server.exe",
+        },
+      },
+    },
+  },
+  cursor: {
+    id: "cursor",
+    name: "Cursor",
+    version: CURSOR_ACP_VERSION,
+    description: "Cursor's coding agent",
+    website: "https://cursor.com/docs/cli/acp",
+    authors: ["Cursor"],
+    license: "proprietary",
+    license_url: "https://cursor.com/terms-of-service",
+    distribution: {
+      binary: {
+        "darwin-aarch64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/arm64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "darwin-x86_64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/x64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "linux-aarch64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/arm64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "linux-x86_64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/x64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "windows-aarch64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/arm64/agent-cli-package.zip",
+          cmd: "./dist-package\\cursor-agent.cmd",
+          args: ["acp"],
+        },
+        "windows-x86_64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/x64/agent-cli-package.zip",
+          cmd: "./dist-package\\cursor-agent.cmd",
+          args: ["acp"],
         },
       },
     },

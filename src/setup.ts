@@ -19,7 +19,7 @@ const PROVIDER_COMMAND_ENV: Record<ProviderId, string> = {
   claude: "CLAUDE_ACP_COMMAND",
   agy: "AGY_ACP_COMMAND",
   grok: "GROK_ACP_COMMAND",
-  cursor: "CURSOR_COMMAND",
+  cursor: "CURSOR_ACP_COMMAND",
 };
 
 const DEFAULT_CHAIN_ORDER: readonly ChainCliKind[] = [
