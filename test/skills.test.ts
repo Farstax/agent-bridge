@@ -80,6 +80,25 @@ describe("shared skills catalog", () => {
     expect(() => listLocalCatalog(repoRoot)).toThrow(/name does not match folder/i);
   });
 
+  it("parses standard YAML folded descriptions and inline comments", () => {
+    const repoRoot = makeHome();
+    const skillDir = join(repoRoot, "skills", "portable-skill");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), [
+      "---",
+      "name: portable-skill",
+      "description: > # folded YAML description",
+      "  First line of the description.",
+      "  Second line of the description.",
+      "---",
+      "",
+      "# Portable skill",
+      "",
+    ].join("\n"));
+
+    expect(listLocalCatalog(repoRoot)[0]?.description).toBe("First line of the description. Second line of the description.\n");
+  });
+
   it("keeps the bundled catalog in install defaults and retires the alias from upgrade defaults", () => {
     const installScript = readFileSync("scripts/install.sh", "utf8");
     for (const name of listLocalCatalog().map((entry) => entry.name)) {
