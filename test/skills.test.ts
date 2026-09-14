@@ -50,24 +50,22 @@ describe("shared skills catalog", () => {
 
     expect(listLocalCatalog(repoRoot)).toEqual([{
       name: "portable-skill",
-      version: "unversioned",
       description: "Portable skill used for compatibility testing.",
       path: skillDir,
     }]);
   });
 
-  it("treats SKILL.md as authoritative while retaining optional legacy version metadata", () => {
+  it("does not require or interpret legacy skill.json metadata", () => {
     const repoRoot = makeHome();
     const skillDir = writeSkill(repoRoot, "portable-skill", "Description from the portable skill.");
     writeFileSync(join(skillDir, "skill.json"), `${JSON.stringify({
-      name: "portable-skill",
-      version: "2.3.4",
-      description: "Legacy sidecar description.",
+      name: 42,
+      version: {},
+      description: null,
     }, null, 2)}\n`);
 
     expect(listLocalCatalog(repoRoot)).toEqual([{
       name: "portable-skill",
-      version: "2.3.4",
       description: "Description from the portable skill.",
       path: skillDir,
     }]);

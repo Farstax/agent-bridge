@@ -1,5 +1,0 @@
-{
-  "name": "delivery-directives",
-  "version": "1.2.0",
-  "description": "Executes agreed ship, release-publication, deployment, and emergency hotfix directives through repository-local workflows"
-}

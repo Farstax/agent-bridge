@@ -5,8 +5,6 @@ import { join } from "node:path";
 describe("autonomous-work skill convergence (#466)", () => {
   it("is provider-neutral and teaches the approved Goal/Episode/Cycle/Run contract", () => {
     const root = process.cwd();
-    const manifest = JSON.parse(readFileSync(join(root, "skills", "autonomous-work", "skill.json"), "utf8"));
-    expect(manifest.name).toBe("autonomous-work");
     const text = readFileSync(join(root, "skills", "autonomous-work", "SKILL.md"), "utf8");
     for (const term of ["Goal", "Episode", "Cycle", "Run", "current truth", "frozen authority", "--notify", "continue", "done", "blocked"]) expect(text).toContain(term);
     expect(text).not.toContain("Farstax");

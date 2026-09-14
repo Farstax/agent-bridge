@@ -1,5 +1,0 @@
-{
-  "name": "release-readiness-review",
-  "version": "1.0.0",
-  "description": "Reviews software changes for deployment risk, rollback, documentation, observability, and post-release validation"
-}

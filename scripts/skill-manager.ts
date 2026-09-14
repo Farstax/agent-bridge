@@ -125,7 +125,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "list") {
-    for (const entry of listLocalCatalog()) console.log(`${entry.name}\t${entry.version}\t${entry.description}`);
+    for (const entry of listLocalCatalog()) console.log(`${entry.name}\t${entry.description}`);
     return;
   }
   if (command === "install") {
