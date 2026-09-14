@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDb } from "../src/db.js";
 import { getAvailableCliKinds } from "../src/interactiveCliAuth.js";
+import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 import { getQualificationFailedProviders, getQualificationPassedProviders } from "../src/providers/qualificationStatus.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
@@ -77,10 +78,11 @@ describe("provider qualification routing", () => {
   it("tracks current passing Grok evidence for health and diagnostics", () => {
     const root = mkdtempSync(join(tmpdir(), "qualification-routing-grok-pass-"));
     const evidencePath = join(root, "qualification.json");
+    const runtimeIdentity = resolveProviderRuntime("grok").runtimeIdentity;
     writeQualificationRecord({
       provider: "grok",
-      executionRuntime: "native:grok",
-      providerVersion: "1.0.5",
+      executionRuntime: runtimeIdentity,
+      providerVersion: "1.0.30",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -94,12 +96,12 @@ describe("provider qualification routing", () => {
       ],
     }, evidencePath);
 
-    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.5" })]).toEqual([]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.30" })]).toEqual([]);
 
     writeQualificationRecord({
       provider: "grok",
-      executionRuntime: "native:grok",
-      providerVersion: "1.0.5",
+      executionRuntime: runtimeIdentity,
+      providerVersion: "1.0.30",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -113,8 +115,8 @@ describe("provider qualification routing", () => {
       ],
     }, evidencePath);
 
-    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.5" })]).toEqual(["grok"]);
-    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.6" })]).toEqual([]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.30" })]).toEqual(["grok"]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.31" })]).toEqual([]);
   });
 
   it("excludes only providers with hard qualification failures from interactive selection", () => {

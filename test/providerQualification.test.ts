@@ -232,6 +232,47 @@ exit 7
     }
   });
 
+  it("versions the Grok ACP executable used by production", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-grok-acp-version-"));
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    const acp = executable(join(root, "grok"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "grok 1.0.30"; exit 0; fi
+echo "acp should not be oneshot-parsed" >&2
+exit 7
+`);
+    process.env.GROK_ACP_COMMAND = acp;
+    process.env.GROK_ACP_ARGS = "agent stdio";
+    try {
+      const result = await qualifyProvider({
+        providerId: "grok",
+        executable: acp,
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "a".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: {
+          ...process.env,
+          GROK_ACP_COMMAND: acp,
+          GROK_ACP_ARGS: "agent stdio",
+        },
+      });
+      expect(result.executionRuntime).toBe(resolveProviderRuntime("grok", {
+        ...process.env,
+        GROK_ACP_COMMAND: acp,
+        GROK_ACP_ARGS: "agent stdio",
+      }).runtimeIdentity);
+      expect(result.providerVersion).toBe("1.0.30");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/grok 1\.0\.30/);
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
+  });
+
   it("versions the Claude ACP executable used by production", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-claude-acp-version-"));
     const previousCommand = process.env.CLAUDE_ACP_COMMAND;
@@ -528,7 +569,7 @@ printf '%s\\n' '{not-json'
     });
   });
 
-  it.each(["agy", "grok", "cursor"] as const)(
+  it.each(["agy", "cursor"] as const)(
     "runs repository-grounding qualification with native tools for %s",
     async (provider) => {
       const root = mkdtempSync(join(tmpdir(), `provider-grounding-${provider}-`));

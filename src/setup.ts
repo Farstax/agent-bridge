@@ -18,7 +18,7 @@ const PROVIDER_COMMAND_ENV: Record<ProviderId, string> = {
   codex: "CODEX_ACP_COMMAND",
   claude: "CLAUDE_ACP_COMMAND",
   agy: "ANTIGRAVITY_COMMAND",
-  grok: "GROK_COMMAND",
+  grok: "GROK_ACP_COMMAND",
   cursor: "CURSOR_COMMAND",
 };
 

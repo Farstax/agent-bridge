@@ -1532,6 +1532,37 @@ describe("BridgeEngine", () => {
         clearAcpSessionConfigSnapshot("codex");
       }
     });
+
+    it("rejects stale native Grok settings callbacks instead of writing ACP values", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000, workingDir: process.cwd(),
+          fullConfig: makeFullConfig(dbPath),
+        },
+        db,
+        client,
+        {},
+      );
+
+      await engine.handleCallback({
+        id: "cb-stale-grok",
+        from: { id: 42, first_name: "Test" },
+        message: { message_id: 123, chat: { id: 100, type: "private" } },
+        data: "model:grok:stale-native-value",
+      });
+
+      expect(client.answerCallbackQuery.mock.calls[0][0]).toMatchObject({
+        text: "This settings button has expired. Open the settings again.",
+      });
+      expect(db.getSetting("grok")).toBeNull();
+    });
   });
 
   describe("/stop in a supergroup thread", () => {

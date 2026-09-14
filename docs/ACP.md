@@ -9,6 +9,10 @@ Pinned Codex ACP adapter: `@agentclientprotocol/codex-acp@1.10.0`
 (maintained implementation; bundled in the active Agent Bridge release).
 Pinned Claude ACP adapter: `@agentclientprotocol/claude-agent-acp@0.76.0`
 (official Registry distribution; bundled in the active Agent Bridge release).
+Pinned Grok ACP distribution: `@xai-official/grok@1.0.30` (`grok agent stdio`;
+official Registry `grok-build` 1.0.30). The package bin symlink is rewritten
+to a relative `grok-native` link at install so release artifacts stay
+self-contained.
 
 ## Ownership
 
@@ -96,6 +100,23 @@ ACP permission requests. Claude setting sources are disabled for every
 Bridge run so local allow rules cannot bypass that authority. Strict
 tool-free runs also disable built-in tools, external MCP configuration, and
 all configured tools through Claude ACP session metadata.
+
+## Grok runtime
+
+Grok uses the same managed ACP lifecycle as Codex and Claude. There is no
+native `grok -p --output-format streaming-json` invocation or parser path.
+
+```bash
+GROK_ACP_COMMAND=...                # optional override of the bundled CLI
+GROK_ACP_ARGS=...                   # optional extra argv; default is `agent stdio`
+```
+
+The release owns `@xai-official/grok@1.0.30` (Registry `grok-build` 1.0.30)
+and resolves the default executable as
+`$BRIDGE_CURRENT_RELEASE_DIR/node_modules/.bin/grok` with args `agent stdio`.
+Ordinary Runs authenticate with ACP `cached_token` from workspace-local
+`~/.grok/auth.json`. `XAI_API_KEY` remains a workspace-local alternative and
+is verified with a bounded ACP probe. Steering is not enabled.
 
 ## Process lifecycle
 

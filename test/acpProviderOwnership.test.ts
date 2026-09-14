@@ -12,7 +12,7 @@ describe("migrated ACP provider ownership", () => {
   it("keeps migrated-provider compatibility dispatch out of the shared CLI", () => {
     const source = readFileSync("src/cli.ts", "utf8");
     expect(source).not.toContain("codexAcpRuntime");
-    expect(source).not.toMatch(/bot\s*===\s*["'](?:codex|claude)["']/);
+    expect(source).not.toMatch(/bot\s*===\s*["'](?:codex|claude|grok)["']/);
     expect(source).not.toContain("nativeCompletion");
     expect(source).not.toContain("void sessionMode");
 
@@ -22,8 +22,8 @@ describe("migrated ACP provider ownership", () => {
 
   it("keeps shared ACP session planning free of migrated-provider branches", () => {
     const source = readFileSync("src/acp/sessionConfig.ts", "utf8");
-    expect(source).not.toMatch(/providerId\s*===\s*["'](?:codex|claude)["']/);
-    expect(source).not.toMatch(/providerId\s*!==\s*["'](?:codex|claude)["']/);
+    expect(source).not.toMatch(/providerId\s*===\s*["'](?:codex|claude|grok)["']/);
+    expect(source).not.toMatch(/providerId\s*!==\s*["'](?:codex|claude|grok)["']/);
   });
 
   it("dispatches ACP API-key verification through registered provider policy", () => {
@@ -34,8 +34,8 @@ describe("migrated ACP provider ownership", () => {
     expect(end).toBeGreaterThan(start);
     const verification = source.slice(start, end);
     expect(verification).toContain("getAcpProviderPolicy(provider)?.verifyApiKey");
-    expect(verification).not.toMatch(/\b(?:codex|claude)\b/);
-    expect(source).not.toMatch(/(?:codex|claude)AcpProbe/);
+    expect(verification).not.toMatch(/\b(?:codex|claude|grok)\b/);
+    expect(source).not.toMatch(/(?:codex|claude|grok)AcpProbe/);
     expect(source).not.toContain("CodexAcpApiKeyProbeExecutor");
 
     const registry = readFileSync("src/providers/registry.ts", "utf8");
@@ -50,6 +50,9 @@ describe("migrated ACP provider ownership", () => {
       registry.indexOf("agy:"),
     );
     expect(migratedAdapters).not.toContain("toolFree");
+    const grokAdapter = registry.slice(registry.indexOf("grok:"), registry.indexOf("cursor:"));
+    expect(grokAdapter).not.toContain("toolFree");
+    expect(grokAdapter).not.toContain("executable");
   });
 
   it("keeps shared qualification diagnostics provider-neutral", () => {
@@ -66,7 +69,7 @@ describe("migrated ACP provider ownership", () => {
 
   it("preserves native owners that have not completed ACP migration", () => {
     expect(existsSync("src/providers/antigravityRuntime.ts")).toBe(true);
-    expect(existsSync("src/providers/grokRuntime.ts")).toBe(true);
+    expect(existsSync("src/providers/grokRuntime.ts")).toBe(false);
     expect(existsSync("src/providers/cursorRuntime.ts")).toBe(true);
   });
 });

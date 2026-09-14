@@ -16,6 +16,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}"
 
 echo "==> npm test (NODE_OPTIONS=${NODE_OPTIONS})"
+node scripts/normalize-grok-bin-symlink.mjs
 npm test
 
 echo "==> npm run typecheck"

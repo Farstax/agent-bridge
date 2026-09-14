@@ -2,12 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { abortCliProcess, buildCliInvocation, parseCliResult, runCli } from "../src/cli.js";
+import { buildCliInvocation, parseCliResult, runCli } from "../src/cli.js";
 import { validateSuccessfulCliExit } from "../src/cliSuccessfulExitValidation.js";
 import type { BridgeEvent } from "../src/events/types.js";
 
 const AGY_SESSION = "11111111-2222-3333-4444-555555555555";
-const GROK_SESSION = "grok-session-575";
 const CURSOR_SESSION = "cursor-session-575";
 
 function terminalEvents(events: BridgeEvent[]): BridgeEvent[] {
@@ -18,7 +17,7 @@ function terminalEvents(events: BridgeEvent[]): BridgeEvent[] {
 
 async function providerFixture(
   root: string,
-  provider: "antigravity" | "grok" | "cursor",
+  provider: "antigravity" | "cursor",
   sessionId: string,
 ): Promise<string> {
   const script = join(root, `${provider}-fixture`);
@@ -36,9 +35,6 @@ if (!resumed) {
   if (provider === "antigravity") {
     emit({ event: "init", conversation_id: sessionId, init: { cwd: "/private/provider/path" } });
     emit({ event: "step_update", step_update: { step_type: "tool", tool_info: { output: "SECRET_TOOL_OUTPUT" } } });
-  } else if (provider === "grok") {
-    emit({ type: "tool", data: "SECRET_TOOL_OUTPUT /private/provider/path" });
-    emit({ type: "end", sessionId, stopReason: "end_turn" });
   } else {
     emit({ type: "assistant", session_id: sessionId, message: "SECRET_INTERNAL_MESSAGE" });
   }
@@ -47,9 +43,6 @@ if (!resumed) {
 fs.writeFileSync(path.join(root, "recovery-args.json"), JSON.stringify(args));
 if (provider === "antigravity") {
   emit({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "verified final answer" } });
-} else if (provider === "grok") {
-  emit({ type: "text", data: "verified final answer" });
-  emit({ type: "end", sessionId, stopReason: "end_turn" });
 } else {
   emit({ type: "result", subtype: "success", is_error: false, result: "verified final answer", session_id: sessionId });
 }
@@ -87,14 +80,6 @@ describe("provider uncertain completion contract", () => {
     expect(error.sessionId).toBeNull();
   });
 
-  it("rejects exit-zero Grok output without terminal evidence before run.completed", () => {
-    const error = validateSuccessfulCliExit("grok", {
-      stdout: `${JSON.stringify({ type: "text", data: "partial answer" })}\n`,
-      stderr: "",
-    });
-    expect(error?.message).toMatch(/completion could not be verified/i);
-  });
-
   it("rejects exit-zero Cursor output without a terminal result before run.completed", () => {
     const error = validateSuccessfulCliExit("cursor", {
       stdout: `${JSON.stringify({ type: "assistant", session_id: CURSOR_SESSION, message: "internal" })}\n`,
@@ -103,20 +88,8 @@ describe("provider uncertain completion contract", () => {
     expect(error?.message).toMatch(/completion could not be verified/i);
   });
 
-  it("preserves an explicit Grok failure instead of reconciling it", () => {
-    const error = validateSuccessfulCliExit("grok", {
-      stdout: [
-        JSON.stringify({ type: "error", message: "provider rejected the turn" }),
-        JSON.stringify({ type: "end", sessionId: GROK_SESSION, stopReason: "end_turn" }),
-      ].join("\n") + "\n",
-      stderr: "",
-    });
-    expect(error?.message).toBe("provider rejected the turn");
-  });
-
   it.each([
     { provider: "antigravity" as const, bot: "antigravity" as const, sessionId: AGY_SESSION, outputFormat: "stream-json" as const },
-    { provider: "grok" as const, bot: "grok" as const, sessionId: GROK_SESSION, outputFormat: "streaming-json" as const },
     { provider: "cursor" as const, bot: "cursor" as const, sessionId: CURSOR_SESSION, outputFormat: "stream-json" as const },
   ])("reconciles $provider exactly once in the same native session without replaying side effects", async ({ provider, bot, sessionId, outputFormat }) => {
     const root = await mkdtemp(join(tmpdir(), `provider-uncertain-${provider}-`));
@@ -160,77 +133,4 @@ describe("provider uncertain completion contract", () => {
     }
   });
 
-  it("preserves cancellation instead of completing an uncertain Grok recovery", async () => {
-    const root = await mkdtemp(join(tmpdir(), "grok-cancel-recovery-"));
-    const command = join(root, "grok-cancel-fixture");
-    const executionChatId = "grok-cancel-recovery";
-    const source = `#!/usr/bin/env node
-const args = process.argv.slice(2);
-const emit = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
-if (!args.includes("--resume")) {
-  emit({ type: "end", sessionId: ${JSON.stringify(GROK_SESSION)}, stopReason: "end_turn" });
-  process.exit(0);
-}
-setInterval(() => {}, 1000);
-`;
-    await writeFile(command, source, { mode: 0o700 });
-    const events: BridgeEvent[] = [];
-
-    try {
-      const invocation = buildCliInvocation({
-        bot: "grok",
-        prompt: "perform side effect",
-        sessionId: null,
-        command,
-        model: null,
-        outputFormat: "streaming-json",
-      });
-      const stdout = await runCli(command, invocation.args, root, {
-        bot: "grok",
-        chatId: executionChatId,
-        bypassWorkspaceLock: true,
-        eventContext: {
-          runId: "uncertain-grok-cancel",
-          bot: "grok",
-          chatId: "chat:575",
-          chatKey: "chat:575",
-        },
-        onEvent: (event) => events.push(event),
-        processWatch: ({ args }) => {
-          if (args.includes("--resume")) abortCliProcess(executionChatId);
-          return null;
-        },
-      });
-
-      expect(stdout).toBe("");
-      expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.cancelled"]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("returns a concrete clean incomplete closure when Grok has no recoverable session", async () => {
-    const events: BridgeEvent[] = [];
-    const raw = `${JSON.stringify({ type: "text", data: "SECRET_PARTIAL_OUTPUT /private/provider/path" })}\n`;
-    const script = `process.stdout.write(${JSON.stringify(raw)});`;
-    let caught: Error | null = null;
-    try {
-      await runCli(process.execPath, ["-e", script], process.cwd(), {
-        bot: "grok",
-        bypassWorkspaceLock: true,
-        eventContext: { runId: "uncertain-grok-no-session", bot: "grok", chatId: "chat:575" },
-        onEvent: (event) => events.push(event),
-      });
-    } catch (error) {
-      caught = error as Error;
-    }
-
-    expect(caught?.message).toMatch(/Grok stopped before confirming completion/i);
-    expect(caught?.message).not.toContain("SECRET_PARTIAL_OUTPUT");
-    expect(caught?.message).not.toContain("/private/provider/path");
-    expect(terminalEvents(events)).toMatchObject([{
-      type: "run.failed",
-      error: expect.stringMatching(/completion could not be verified/i),
-    }]);
-  });
 });

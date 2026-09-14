@@ -18,7 +18,6 @@ import type { ProviderId } from "../src/providers/types.js";
 
 const nativeProviderCases: Array<{ provider: ProviderId; envVar: string; commandEnv: string }> = [
   { provider: "agy", envVar: "GEMINI_API_KEY", commandEnv: "ANTIGRAVITY_COMMAND" },
-  { provider: "grok", envVar: "XAI_API_KEY", commandEnv: "GROK_COMMAND" },
   { provider: "cursor", envVar: "CURSOR_API_KEY", commandEnv: "CURSOR_COMMAND" },
 ];
 
@@ -34,6 +33,7 @@ describe("provider API-key authentication", () => {
     expect(Object.keys(PROVIDER_API_KEY_AUTH).sort()).toEqual(["agy", "claude", "codex", "cursor", "grok"]);
     expect(getProviderApiKeyCapability("cursor")?.envVar).toBe("CURSOR_API_KEY");
     expect(getProviderApiKeyCapability("claude")?.verification).toBe("bounded_acp_turn");
+    expect(getProviderApiKeyCapability("grok")?.verification).toBe("bounded_acp_turn");
     expect(getProviderApiKeyCapability("future-provider")).toBeNull();
   });
 
@@ -95,6 +95,26 @@ describe("provider API-key authentication", () => {
     };
     await expect(verifyProviderApiKey(provider, { env, execFile, useCache: false })).resolves.toBe(false);
     expect(isProviderApiKeyVerified(provider, env)).toBe(false);
+  });
+
+  it("verifies Grok through the selected ACP probe and isolates unrelated credentials", async () => {
+    const env = {
+      XAI_API_KEY: "grok-acp-secret",
+      GROK_COMMAND: "must-not-be-used",
+      TELEGRAM_BOT_TOKEN_GROK: "telegram-secret",
+      ANTHROPIC_API_KEY: "unrelated-claude-secret",
+    };
+    let probeEnv: NodeJS.ProcessEnv | null = null;
+    await expect(verifyProviderApiKey("grok", {
+      env,
+      useCache: false,
+      acpProbe: async (_provider, candidateEnv) => { probeEnv = candidateEnv; },
+      execFile: async () => { throw new Error("native Grok probe must not execute"); },
+    })).resolves.toBe(true);
+    expect(probeEnv).not.toBeNull();
+    expect(probeEnv!.XAI_API_KEY).toBe("grok-acp-secret");
+    expect(probeEnv!.TELEGRAM_BOT_TOKEN_GROK).toBeUndefined();
+    expect(probeEnv!.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it("does not treat a non-empty ANTHROPIC_API_KEY as proof when the ACP adapter rejects it", async () => {

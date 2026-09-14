@@ -123,7 +123,6 @@ describe("interactive CLI availability filtering", () => {
 
     expect(paths.grok).toEqual([
       "/home/tester/.grok/auth.json",
-      "/home/tester/.config/grok/auth.json",
     ]);
     expect(available).toEqual(new Set<CliKind>(["grok"]));
     expect(getSelectableCliKinds()).not.toContain("grok");
@@ -232,7 +231,7 @@ describe("interactive CLI availability filtering", () => {
         CODEX_ACP_COMMAND: commands.codex,
         CLAUDE_ACP_COMMAND: commands.claude,
         ANTIGRAVITY_COMMAND: commands.agy,
-        GROK_COMMAND: commands.grok,
+        GROK_ACP_COMMAND: commands.grok,
         CURSOR_COMMAND: commands.cursor,
       },
       readCursorStatus: () => ({ isAuthenticated: true }),
@@ -260,7 +259,7 @@ describe("interactive CLI availability filtering", () => {
         CODEX_ACP_COMMAND: "/runtime/codex-custom",
         CLAUDE_ACP_COMMAND: "/runtime/claude-custom",
         ANTIGRAVITY_COMMAND: "/runtime/agy-custom",
-        GROK_COMMAND: "/runtime/grok-custom",
+        GROK_ACP_COMMAND: "/runtime/grok-custom",
         CURSOR_COMMAND: "/runtime/cursor-custom",
       },
       readCursorStatus: () => ({ isAuthenticated: true }),

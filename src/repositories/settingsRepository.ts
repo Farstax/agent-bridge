@@ -4,17 +4,20 @@ import {
   setAcpProviderDefaultIntent,
 } from "../acp/sessionConfig.js";
 import { normalizeAgyModelFamily } from "../effort.js";
+import { isAcpBackedBot } from "../providers/registry.js";
 
 type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
-type AcpSelection = { providerId: "codex" | "claude"; category: "model" | "thought_level" };
+type AcpSelection = { providerId: string; category: "model" | "thought_level" };
 
 const pollingKey = (bot: string) => `$polling:${bot}`;
 
 function acpSelectionForKey(key: string): AcpSelection | null {
-  if (key === "codex" || key === "claude") return { providerId: key, category: "model" };
-  if (key === "effort:codex") return { providerId: "codex", category: "thought_level" };
-  if (key === "effort:claude") return { providerId: "claude", category: "thought_level" };
+  if (isAcpBackedBot(key)) return { providerId: key, category: "model" };
+  if (key.startsWith("effort:")) {
+    const providerId = key.slice("effort:".length);
+    if (isAcpBackedBot(providerId)) return { providerId, category: "thought_level" };
+  }
   return null;
 }
 

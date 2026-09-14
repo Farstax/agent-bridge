@@ -38,6 +38,20 @@ describe("provider error classification", () => {
     });
   });
 
+  it("classifies Grok Build usage balance exhaustion (live-observed 402) as capacity, not fatal", () => {
+    // Observed from a real authenticated grok-build 1.0.30 fresh-turn qualification run:
+    // account auth succeeded, but the account's Grok Build usage balance was exhausted.
+    // The generic ACP transport reports this as a top-level "Internal error" RequestError
+    // whose real detail lives only in the nested error.data.message.
+    const liveObservedError = RequestError.internalError({
+      message: "API error (status 402 Payment Required): Grok Build usage balance exhausted",
+    });
+    expect(classifyProviderError("grok", liveObservedError)).toMatchObject({
+      kind: "capacity_exhausted",
+    });
+    expect(isFallbackEligibleProviderError(classifyAnyProviderError(liveObservedError))).toBe(true);
+  });
+
   it("classifies Claude auth, overloaded, and rate-limit messages", () => {
     expect(classifyProviderError("claude", new Error("overloaded_error: Overloaded"))).toMatchObject({
       kind: "capacity_exhausted",

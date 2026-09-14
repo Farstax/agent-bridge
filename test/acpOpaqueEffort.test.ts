@@ -76,11 +76,11 @@ describe("ACP-native effort values", () => {
   it("does not broaden native Bridge effort normalization", () => {
     const db = {
       getSetting(key: string) {
-        if (key === "effort:grok") return "future-provider-value";
+        if (key === "effort:cursor") return "future-provider-value";
         return null;
       },
     };
 
-    expect(resolveEffort("grok", db)).toBe("medium");
+    expect(resolveEffort("cursor", db)).toBe("medium");
   });
 });

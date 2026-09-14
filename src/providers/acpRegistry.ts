@@ -77,6 +77,22 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
       },
     },
   },
+  grok: {
+    id: "grok-build",
+    name: "Grok Build",
+    version: "1.0.30",
+    description: "xAI's coding agent and CLI",
+    website: "https://x.ai/cli",
+    authors: ["xAI"],
+    license: "proprietary",
+    license_url: "https://x.ai/legal/terms-of-service",
+    distribution: {
+      npx: {
+        package: "@xai-official/grok@1.0.30",
+        args: ["agent", "stdio"],
+      },
+    },
+  },
 };
 
 export function getLockedAcpRegistryEntry(providerId: ProviderId): AcpRegistryAgentEntry | null {
