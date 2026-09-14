@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-bridge.dev/schemas/agent-bridge-skill-collection-v2.json",
+  "title": "Agent Bridge Skill Collection catalogue",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "catalogueId", "skills", "collections"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "catalogueId": { "$ref": "#/$defs/nonEmpty" },
+    "skills": { "type": "array", "items": { "$ref": "#/$defs/skill" } },
+    "collections": { "type": "array", "items": { "$ref": "#/$defs/collection" } }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 64 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "path", "sha256"],
+      "properties": {
+        "repository": { "$ref": "#/$defs/nonEmpty" },
+        "revision": { "$ref": "#/$defs/nonEmpty" },
+        "path": { "$ref": "#/$defs/nonEmpty" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "modifiedFromUpstream", "lastReviewed"],
+      "properties": {
+        "origin": { "enum": ["author-created", "adapted-upstream", "vendored-upstream"] },
+        "upstreamRepository": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "upstreamRevision": { "$ref": "#/$defs/nonEmpty" },
+        "upstreamLicense": { "$ref": "#/$defs/nonEmpty" },
+        "noticePath": { "$ref": "#/$defs/nonEmpty" },
+        "noticeSha256": { "$ref": "#/$defs/sha256" },
+        "modifiedFromUpstream": { "type": "boolean" },
+        "lastReviewed": { "type": "string", "format": "date" }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "content", "provenance"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "description": { "$ref": "#/$defs/nonEmpty" },
+        "content": { "$ref": "#/$defs/content" },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description", "skills"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "$ref": "#/$defs/nonEmpty" },
+        "description": { "$ref": "#/$defs/nonEmpty" },
+        "skills": { "type": "array", "items": { "$ref": "#/$defs/id" }, "uniqueItems": true }
+      }
+    }
+  }
+}
