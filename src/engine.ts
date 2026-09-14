@@ -1074,6 +1074,24 @@ export class BridgeEngine {
     return !this.laneCoordinator.isAborted(this._executionLane(handle.chatKey)) && this.db.ownsLock(handle);
   }
 
+  /**
+   * Generic terminal-attempt cleanup boundary (issue #741): once a provider
+   * attempt is terminal without delivery/settlement authority — whether it
+   * returned a graceful ACP cancellation, was killed/aborted by a hard
+   * `/stop`, lost its execution lease to fencing, or threw from any other
+   * hard-abort ACP/native path — its Run-owned output directory must be
+   * best-effort removed immediately rather than left for the periodic
+   * sweeper. Failure here is contained: it is logged, never rethrown, and
+   * never restores publish/delivery authority.
+   */
+  private async _cleanTerminalOutputDir(outDir: string, reason: string): Promise<void> {
+    try {
+      await cleanOutputDir(outDir);
+    } catch (error) {
+      console.warn(`[${this.kind}] failed to clean output after ${reason}`, error);
+    }
+  }
+
   private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask): Promise<void> {
     const executionLane = this._executionLane(handle.chatKey);
     const existing = this.laneCoordinator.getDrainer(executionLane);
@@ -1644,11 +1662,7 @@ export class BridgeEngine {
         if (collect && runId && eventContext) {
           collect(eventType.runCancelled({ ...eventContext, reason: "provider" }));
         }
-        try {
-          await cleanOutputDir(outDir);
-        } catch (error) {
-          console.warn(`[${this.kind}] failed to clean output after provider cancellation`, error);
-        }
+        await this._cleanTerminalOutputDir(outDir, "provider cancellation");
         return stagedResult;
       }
       this._renewLaneOrThrow(laneHandle);
@@ -1680,8 +1694,16 @@ export class BridgeEngine {
       return stagedResult;
     } catch (error) {
       if (logFile) { try { rmSync(logFile); } catch {} }
-      if (error instanceof LostExecutionLeaseError) throw error;
-      if (this._canPublish(laneHandle)) await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
+      if (error instanceof LostExecutionLeaseError) {
+        // Fenced after losing the execution lease: never publish, and the
+        // attempt owns no further continuation, so its output is terminal.
+        await this._cleanTerminalOutputDir(outDir, "lease loss");
+        throw error;
+      }
+      const canPublish = this._canPublish(laneHandle);
+      if (canPublish) {
+        await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
+      }
       if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
@@ -1696,6 +1718,14 @@ export class BridgeEngine {
           );
         }
       }
+      // A hard /stop, abort, fence or any other terminal ACP/native throw
+      // that skipped the upload above (this attempt lost publish authority
+      // and is not being retried/falling back) must not leave its
+      // Run-owned output behind for the periodic sweeper. Cleaned before
+      // _handleCircuitBreaker, which itself can throw LostExecutionLeaseError
+      // for a fenced lane (e.g. a "killed by signal" message) and would
+      // otherwise skip straight past any cleanup placed after it.
+      if (!canPublish) await this._cleanTerminalOutputDir(outDir, "terminal provider attempt");
       this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
       throw error;
     }
@@ -1801,6 +1831,11 @@ export class BridgeEngine {
       return stagedResult;
     } catch (fallbackError) {
       if (fallbackLogFile) { try { rmSync(fallbackLogFile); } catch {} }
+      // The fallback attempt reuses the primary attempt's Run-owned outDir;
+      // if it too becomes terminal without publish authority (fenced, hard
+      // /stop, or any other throw), it is the current owner of that output
+      // and must clean it up the same way the primary attempt does.
+      if (!this._canPublish(laneHandle)) await this._cleanTerminalOutputDir(outDir, "terminal fallback attempt");
       throw fallbackError;
     }
   }

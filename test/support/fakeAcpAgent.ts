@@ -197,6 +197,18 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         return { stopReason: "cancelled" };
       }
 
+      if (text.includes("KILL_UNCANCELLABLE")) {
+        const outputFile = process.env.FAKE_ACP_OUTPUT_FILE;
+        if (!outputFile) throw new Error("FAKE_ACP_OUTPUT_FILE is required for KILL_UNCANCELLABLE");
+        writeFileSync(outputFile, "partial output from a turn that never acknowledges cancellation");
+        // Deliberately ignores both the session cancel notification and the
+        // ACP request's abort signal so the only way Bridge can end this
+        // turn is a hard process kill (SIGTERM/SIGKILL) that severs the
+        // stdio transport mid-request — reproducing a provider attempt that
+        // throws instead of returning a graceful stopReason: "cancelled".
+        await new Promise<void>(() => {});
+      }
+
       if (text.includes("HANG")) {
         await new Promise<void>((resolve) => {
           const done = () => resolve();
