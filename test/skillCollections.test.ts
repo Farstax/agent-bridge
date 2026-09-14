@@ -61,6 +61,28 @@ function catalogue(root: string, skills: ReturnType<typeof skill>[], collections
   return path;
 }
 
+async function seedLegacyMigration(tamperNotice = false) {
+  const home = temp(tamperNotice ? "migration-tamper-home" : "migration-home");
+  const root = temp(tamperNotice ? "migration-tamper" : "migration");
+  const repo = join(root, "content");
+  writeSkill(repo, "skills/shared", "shared", "Shared capability.");
+  const source = catalogue(root, [skill("shared", repo, "skills/shared")], [{ id: "marketing", name: "Marketing", description: "Marketing helpers", skills: ["shared"] }]);
+  await installSkillCollection("marketing", { homeDir: home, catalogueSource: source });
+  const current = getSkillCollectionStatus({ homeDir: home });
+
+  rmSync(join(home, ".agents", ".skill-collection-lock.json"), { force: true });
+  rmSync(join(home, ".agents", "skill-collections"), { recursive: true, force: true });
+  const legacyNotice = join(home, ".agents", "skill-packs", "notices", "shared", "NOTICE.txt");
+  mkdirSync(join(home, ".agents", "skill-packs", "notices", "shared"), { recursive: true });
+  writeFileSync(legacyNotice, tamperNotice ? "tampered notice\n" : "MIT upstream notice\n");
+  writeFileSync(join(home, ".agents", ".skill-pack-lock.json"), `${JSON.stringify({
+    version: 1,
+    packs: { marketing: { catalogueId: "test-catalogue", catalogueSource: source, skills: ["shared"], installedAt: current.collections.marketing.installedAt, updatedAt: current.collections.marketing.updatedAt } },
+    skills: { shared: { explicit: false, packRefs: ["marketing"], content: current.skills.shared.content, provenance: current.skills.shared.provenance, installedAt: current.skills.shared.installedAt, updatedAt: current.skills.shared.updatedAt, noticeLocalPath: ".agents/skill-packs/notices/shared/NOTICE.txt" } },
+  }, null, 2)}\n`);
+  return { home };
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -118,27 +140,24 @@ describe("lightweight Skill Collections", () => {
     expect(removeManagedSkill("research", { homeDir: home }).removed).toEqual(["research"]);
   });
 
-  it("migrates legacy Pack state idempotently without reinstalling installed Skills", async () => {
-    const home = temp("migration-home");
-    const root = temp("migration");
-    const repo = join(root, "content");
-    writeSkill(repo, "skills/shared", "shared", "Shared capability.");
-    const source = catalogue(root, [skill("shared", repo, "skills/shared")], [{ id: "marketing", name: "Marketing", description: "Marketing helpers", skills: ["shared"] }]);
-    await installSkillCollection("marketing", { homeDir: home, catalogueSource: source });
-    const current = getSkillCollectionStatus({ homeDir: home });
-
-    rmSync(join(home, ".agents", ".skill-collection-lock.json"), { force: true });
-    writeFileSync(join(home, ".agents", ".skill-pack-lock.json"), `${JSON.stringify({
-      version: 1,
-      packs: { marketing: { catalogueId: "test-catalogue", catalogueSource: source, skills: ["shared"], installedAt: current.collections.marketing.installedAt, updatedAt: current.collections.marketing.updatedAt } },
-      skills: { shared: { explicit: false, packRefs: ["marketing"], content: current.skills.shared.content, provenance: current.skills.shared.provenance, installedAt: current.skills.shared.installedAt, updatedAt: current.skills.shared.updatedAt } },
-    }, null, 2)}\n`);
-
+  it("migrates legacy Pack state and required notices idempotently without reinstalling installed Skills", async () => {
+    const { home } = await seedLegacyMigration();
     const migrated = getSkillCollectionStatus({ homeDir: home });
     expect(migrated.collections.marketing.skills).toEqual(["shared"]);
     expect(migrated.skills.shared.collectionRefs).toEqual(["marketing"]);
+    expect(migrated.skills.shared.noticeLocalPath).toBe(".agents/skill-collections/notices/shared/NOTICE.txt");
+    expect(readFileSync(join(home, migrated.skills.shared.noticeLocalPath!), "utf8")).toBe("MIT upstream notice\n");
     expect(verifySkillGlobal("shared", { homeDir: home }).ok).toBe(true);
     expect(existsSync(join(home, ".agents", ".skill-pack-lock.json"))).toBe(false);
+    expect(existsSync(join(home, ".agents", "skill-packs", "notices"))).toBe(false);
     expect(getSkillCollectionStatus({ homeDir: home })).toEqual(migrated);
+  });
+
+  it("fails closed instead of migrating a tampered legacy provenance notice", async () => {
+    const { home } = await seedLegacyMigration(true);
+    expect(() => getSkillCollectionStatus({ homeDir: home })).toThrow(/provenance notice checksum mismatch/i);
+    expect(existsSync(join(home, ".agents", ".skill-pack-lock.json"))).toBe(true);
+    expect(existsSync(join(home, ".agents", ".skill-collection-lock.json"))).toBe(false);
+    expect(verifySkillGlobal("shared", { homeDir: home }).ok).toBe(true);
   });
 });
