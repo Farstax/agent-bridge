@@ -664,8 +664,13 @@ function migrateLegacyState(paths: Paths): SkillCollectionState {
     const parsedContent = content(value.content, `legacy Skill ${skillId}.content`);
     const parsedProvenance = provenance(value.provenance, `legacy Skill ${skillId}.provenance`);
     const collectionRefs = value.packRefs.map((ref, index) => id(ref, `legacy Skill ${skillId}.packRefs[${index}]`)).sort();
-    let noticeLocalPath = typeof value.noticeLocalPath === "string" ? value.noticeLocalPath : undefined;
-    if (noticeLocalPath) noticeLocalPath = migrateLegacyNotice(paths, skillId, noticeLocalPath);
+    let noticeLocalPath: string | undefined;
+    if (parsedProvenance.noticePath) {
+      if (typeof value.noticeLocalPath !== "string") throw new Error(`Legacy Skill ${skillId} is missing its required provenance notice`);
+      const expectedNoticeSha256 = parsedProvenance.noticeSha256;
+      if (!expectedNoticeSha256) throw new Error(`Legacy Skill ${skillId} is missing its required provenance notice checksum`);
+      noticeLocalPath = migrateLegacyNotice(paths, skillId, value.noticeLocalPath, expectedNoticeSha256);
+    }
     state.skills[skillId] = {
       explicit: value.explicit,
       collectionRefs,
@@ -682,12 +687,19 @@ function migrateLegacyState(paths: Paths): SkillCollectionState {
   return state;
 }
 
-function migrateLegacyNotice(paths: Paths, skillId: string, relativePath: string): string {
+function migrateLegacyNotice(paths: Paths, skillId: string, relativePath: string, expectedSha256: string): string {
   const oldPath = safeJoin(paths.homeDir, relativePath, "legacy installed notice path");
-  if (!existsSync(oldPath)) return relativePath;
+  const expectedRoot = join(paths.legacyRoot, "notices", skillId);
+  const legacyRelative = relative(resolve(expectedRoot), resolve(oldPath));
+  if (legacyRelative.startsWith("..") || isAbsolute(legacyRelative)) {
+    throw new Error(`Legacy Skill ${skillId} provenance notice is outside the managed Pack notice directory`);
+  }
+  if (!existsSync(oldPath) || !lstatSync(oldPath).isFile()) throw new Error(`Legacy Skill ${skillId} provenance notice is missing: ${oldPath}`);
+  if (fileSha256(oldPath) !== expectedSha256) throw new Error(`Legacy Skill ${skillId} provenance notice checksum mismatch`);
   const target = join(paths.notices, skillId, basename(oldPath));
   mkdirSync(dirname(target), { recursive: true });
   cpSync(oldPath, target);
+  if (fileSha256(target) !== expectedSha256) throw new Error(`Migrated Skill ${skillId} provenance notice checksum mismatch`);
   return relative(paths.homeDir, target).split("\\").join("/");
 }
 
