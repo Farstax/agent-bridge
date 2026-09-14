@@ -1,22 +1,25 @@
 ---
 name: manage-skills
-description: Use when the user asks to create, save, update, verify, repair, or remove a user-authored Skill without changing Agent Bridge's bundled Skills.
+description: Use when the user asks to create, save, update, verify, repair, or remove a user-authored Skill without changing Agent Bridge's bundled or catalogue-managed Skills.
 ---
 
 # Manage User Skills
 
 Use Agent Bridge's existing shared-skill projection. Do not create another skill registry or provider-specific copy workflow.
 
+A **Skill** is the installed capability. A **Collection** is only a curated list of ordinary Skill references used for discovery and bulk install/remove convenience; it does not define a second runtime, permission model, provider contract, or dependency graph.
+
 ## Ownership
 
 - Bundled Agent Bridge Skills live in the active release's `skills/` directory and are managed by the release.
+- Catalogue-managed Skills are ordinary installed Skills managed through `npm run skills -- install <name> --catalogue <source>` or the `collections` convenience commands. Do not edit them through the user-authored path.
 - User-authored Skills live canonically at `~/.agents/skills/<skill-name>/SKILL.md` (`SHARED_MEMORY_HOME` takes precedence over `HOME` when configured).
 - User Skills project as symlinks into native provider directories so the canonical Skill remains authoritative:
   - Codex: `~/.codex/skills/<skill-name>`
   - Claude: `~/.claude/skills/<skill-name>`
   - Antigravity/Agy: `~/.gemini/antigravity-cli/skills/<skill-name>`
 - Cursor is excluded from that universal projection. The canonical Cursor-native path is `~/.cursor/skills/<skill-name>/SKILL.md` and is created only when explicitly requested.
-- Do not edit a bundled Skill when the user intends to create their own Skill.
+- Do not edit a bundled or catalogue-managed Skill when the user intends to create their own Skill.
 
 ## Create or save
 
