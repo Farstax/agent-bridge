@@ -17,7 +17,7 @@ Pinned Agy ACP distribution: official Registry `antigravity-acp@1.1.1`
 (`agy_acp_server.par` with args `--uid=`). The binary is not npm-bundled;
 ordinary Runs never download it. Set `AGY_ACP_COMMAND` to the installed
 server path.
-Pinned Cursor ACP distribution: official Registry `cursor` 2026.09.08
+Pinned Cursor ACP distribution: official Registry `cursor` 2026.09.08-6caf4ff
 (`cursor-agent acp`; binary 2026.09.08-6caf4ff). The Cursor CLI is not
 vendored into git or npm; ordinary Runs use `CURSOR_ACP_COMMAND` or PATH
 `cursor-agent`.
@@ -157,7 +157,7 @@ CURSOR_ACP_COMMAND=...              # optional override of PATH `cursor-agent`
 CURSOR_ACP_ARGS=...                 # optional extra argv; default is `acp`
 ```
 
-The release locks official Registry `cursor@2026.09.08` (binary archive
+The release locks official Registry `cursor@2026.09.08-6caf4ff` (binary archive
 `2026.09.08-6caf4ff`) and resolves the default executable as `cursor-agent`
 with args `acp`. Ordinary Runs authenticate with ACP `cursor_login` only when
 a cached Cursor login already exists at workspace-local
@@ -168,7 +168,7 @@ account login is authoritative over an optional, unverified `CURSOR_API_KEY`
 (same account-auth precedence as Grok). Safe runs select the advertised `ask`
 mode and trusted runs select `agent`; the policy does not assume a provider
 default. The selected executable is version-checked against the locked
-`2026.09.08` release before routing and before execution, so a stale or
+`2026.09.08-6caf4ff` release before routing and before execution, so a stale or
 unverifiable `cursor-agent` fails closed. The official binary distribution is
 recorded in the Registry lock; Agent Bridge does not download or vendor that
 archive.

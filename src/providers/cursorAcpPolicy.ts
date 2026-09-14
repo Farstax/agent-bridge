@@ -62,7 +62,7 @@ function sessionSettings(
     thoughtLevel: env.CURSOR_EFFORT?.trim() ? [env.CURSOR_EFFORT.trim()] : [],
   });
   return {
-    // Cursor's locked 2026.09.08 distribution advertises "ask", "plan", and
+    // Cursor's locked 2026.09.08-6caf4ff distribution advertises "ask", "plan", and
     // "agent". Safe runs must remain read-only; trusted runs may edit.
     modeId: request.executionMode === "trusted" ? "agent" : "ask",
     ...(config.length > 0 ? { config } : {}),

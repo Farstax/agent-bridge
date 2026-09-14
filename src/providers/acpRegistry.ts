@@ -1,4 +1,5 @@
 import type { ProviderId } from "./types.js";
+import { CURSOR_ACP_VERSION } from "./cursorAcpConfig.js";
 
 /**
  * ACP Registry v1 entry shape used as the upstream distribution contract.
@@ -132,7 +133,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   cursor: {
     id: "cursor",
     name: "Cursor",
-    version: "2026.09.08",
+    version: CURSOR_ACP_VERSION,
     description: "Cursor's coding agent",
     website: "https://cursor.com/docs/cli/acp",
     authors: ["Cursor"],
