@@ -9,16 +9,16 @@ import {
   type SkillLinkMode,
 } from "../src/skills.js";
 import {
-  getAvailableSkillPack,
-  getSkillPackStatus,
-  installSkillFromPack,
-  installSkillPack,
-  listAvailableSkillPacks,
-  removeExplicitSkillPackSkill,
-  removeSkillPack,
-  updateSkillPack,
-  type SkillPackManagerOptions,
-} from "../src/skillPacks.js";
+  getAvailableSkillCollection,
+  getSkillCollectionStatus,
+  installManagedSkill,
+  installSkillCollection,
+  listAvailableSkillCollections,
+  removeManagedSkill,
+  removeSkillCollection,
+  updateSkillCollection,
+  type SkillCollectionManagerOptions,
+} from "../src/skillCollections.js";
 import { projectUserSkillGlobal, uninstallUserSkillGlobal } from "../src/userSkills.js";
 
 function usage(): never {
@@ -26,19 +26,18 @@ function usage(): never {
     "Usage:",
     "  npx tsx scripts/skill-manager.ts list",
     "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy] [--project-cursor]",
+    "  npx tsx scripts/skill-manager.ts install <skill-name> --catalogue <source> [--link-mode symlink|copy]",
     "  npx tsx scripts/skill-manager.ts project-user <skill-name> [--project-cursor]",
     "  npx tsx scripts/skill-manager.ts project-cursor <skill-name> [--link-mode symlink|copy]",
     "  npx tsx scripts/skill-manager.ts verify [<skill-name>] [--fix]",
     "  npx tsx scripts/skill-manager.ts uninstall-user <skill-name>",
     "  npx tsx scripts/skill-manager.ts uninstall <skill-name>",
-    "  npx tsx scripts/skill-manager.ts packs list [--catalogue <source>]",
-    "  npx tsx scripts/skill-manager.ts packs show <pack-id> [--version <x.y.z>] [--catalogue <source>]",
-    "  npx tsx scripts/skill-manager.ts packs status",
-    "  npx tsx scripts/skill-manager.ts packs install <pack-id> [--version <x.y.z>] [--catalogue <source>] [--link-mode symlink|copy]",
-    "  npx tsx scripts/skill-manager.ts packs install-skill <pack-id> <skill-id> [--version <x.y.z>] [--catalogue <source>] [--link-mode symlink|copy]",
-    "  npx tsx scripts/skill-manager.ts packs update <pack-id> [--version <x.y.z>] [--catalogue <source>] [--link-mode symlink|copy]",
-    "  npx tsx scripts/skill-manager.ts packs remove <pack-id>",
-    "  npx tsx scripts/skill-manager.ts packs remove-skill <skill-id>",
+    "  npx tsx scripts/skill-manager.ts collections list [--catalogue <source>]",
+    "  npx tsx scripts/skill-manager.ts collections show <collection-id> [--catalogue <source>]",
+    "  npx tsx scripts/skill-manager.ts collections status",
+    "  npx tsx scripts/skill-manager.ts collections install <collection-id> [--catalogue <source>] [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts collections update <collection-id> [--catalogue <source>] [--link-mode symlink|copy]",
+    "  npx tsx scripts/skill-manager.ts collections remove <collection-id>",
   ].join("\n"));
   process.exit(1);
 }
@@ -59,59 +58,46 @@ function parseLinkMode(value: string | null): SkillLinkMode {
   throw new Error(`Invalid --link-mode value: ${value}`);
 }
 
-function packOptions(args: string[], includeLinkMode = false): SkillPackManagerOptions {
+function collectionOptions(args: string[], includeLinkMode = false): SkillCollectionManagerOptions {
   return {
     catalogueSource: optionValue(args, "--catalogue") ?? undefined,
-    requestedPackVersion: optionValue(args, "--version") ?? undefined,
     linkMode: includeLinkMode ? parseLinkMode(optionValue(args, "--link-mode")) : undefined,
   };
 }
 
-async function runPackCommand(subcommand: string | undefined, args: string[]): Promise<void> {
+async function runCollectionCommand(subcommand: string | undefined, args: string[]): Promise<void> {
   if (subcommand === "list") {
-    for (const pack of await listAvailableSkillPacks(packOptions(args))) {
-      console.log(`${pack.id}\t${pack.version}\t${pack.displayName}\t${pack.description}`);
+    for (const collection of await listAvailableSkillCollections(collectionOptions(args))) {
+      console.log(`${collection.id}\t${collection.name}\t${collection.description}\t${collection.skills.length} Skills`);
     }
     return;
   }
   if (subcommand === "show") {
-    const [packId, ...rest] = args;
-    if (!packId) usage();
-    console.log(JSON.stringify(await getAvailableSkillPack(packId, packOptions(rest)), null, 2));
+    const [collectionId, ...rest] = args;
+    if (!collectionId) usage();
+    console.log(JSON.stringify(await getAvailableSkillCollection(collectionId, collectionOptions(rest)), null, 2));
     return;
   }
   if (subcommand === "status") {
-    console.log(JSON.stringify(getSkillPackStatus(), null, 2));
+    console.log(JSON.stringify(getSkillCollectionStatus(), null, 2));
     return;
   }
   if (subcommand === "install") {
-    const [packId, ...rest] = args;
-    if (!packId) usage();
-    console.log(JSON.stringify(await installSkillPack(packId, packOptions(rest, true)), null, 2));
-    return;
-  }
-  if (subcommand === "install-skill") {
-    const [packId, skillId, ...rest] = args;
-    if (!packId || !skillId) usage();
-    console.log(JSON.stringify(await installSkillFromPack(packId, skillId, packOptions(rest, true)), null, 2));
+    const [collectionId, ...rest] = args;
+    if (!collectionId) usage();
+    console.log(JSON.stringify(await installSkillCollection(collectionId, collectionOptions(rest, true)), null, 2));
     return;
   }
   if (subcommand === "update") {
-    const [packId, ...rest] = args;
-    if (!packId) usage();
-    console.log(JSON.stringify(await updateSkillPack(packId, packOptions(rest, true)), null, 2));
+    const [collectionId, ...rest] = args;
+    if (!collectionId) usage();
+    console.log(JSON.stringify(await updateSkillCollection(collectionId, collectionOptions(rest, true)), null, 2));
     return;
   }
   if (subcommand === "remove") {
-    const [packId] = args;
-    if (!packId) usage();
-    console.log(JSON.stringify(removeSkillPack(packId), null, 2));
-    return;
-  }
-  if (subcommand === "remove-skill") {
-    const [skillId] = args;
-    if (!skillId) usage();
-    console.log(JSON.stringify(removeExplicitSkillPackSkill(skillId), null, 2));
+    const [collectionId] = args;
+    if (!collectionId) usage();
+    console.log(JSON.stringify(removeSkillCollection(collectionId), null, 2));
     return;
   }
   usage();
@@ -120,8 +106,8 @@ async function runPackCommand(subcommand: string | undefined, args: string[]): P
 async function main(): Promise<void> {
   const [command, maybeSkillName, ...rest] = process.argv.slice(2);
 
-  if (command === "packs") {
-    await runPackCommand(maybeSkillName, rest);
+  if (command === "collections") {
+    await runCollectionCommand(maybeSkillName, rest);
     return;
   }
   if (command === "list") {
@@ -130,7 +116,12 @@ async function main(): Promise<void> {
   }
   if (command === "install") {
     if (!maybeSkillName) usage();
+    const catalogue = optionValue(rest, "--catalogue");
     const linkMode = parseLinkMode(optionValue(rest, "--link-mode"));
+    if (catalogue) {
+      console.log(JSON.stringify(await installManagedSkill(maybeSkillName, { catalogueSource: catalogue, linkMode }), null, 2));
+      return;
+    }
     installSkillGlobal(maybeSkillName, { force: hasFlag(rest, "--force"), linkMode, projectCursor: hasFlag(rest, "--project-cursor") });
     console.log(`Installed ${maybeSkillName} (${linkMode}${hasFlag(rest, "--project-cursor") ? ", cursor" : ""})`);
     return;
@@ -168,6 +159,12 @@ async function main(): Promise<void> {
   }
   if (command === "uninstall") {
     if (!maybeSkillName) usage();
+    const managed = getSkillCollectionStatus().skills[maybeSkillName];
+    if (managed) {
+      if (!managed.explicit) throw new Error(`Skill ${maybeSkillName} is installed only through Collection(s): ${managed.collectionRefs.join(", ")}; remove those Collections instead`);
+      console.log(JSON.stringify(removeManagedSkill(maybeSkillName), null, 2));
+      return;
+    }
     uninstallSkillGlobal(maybeSkillName);
     console.log(`Uninstalled ${maybeSkillName}`);
     return;
