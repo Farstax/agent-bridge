@@ -165,12 +165,13 @@ a cached Cursor login already exists at workspace-local
 `authenticate({methodId:"cursor_login"})` blocks indefinitely with no cached
 login, so Agent Bridge never triggers it during an ordinary Run. Cached
 account login is authoritative over an optional, unverified `CURSOR_API_KEY`
-(same account-auth precedence as Grok). Session mode is pinned to `default`
-(per-tool permission prompts) rather than trusting whichever mode
-`session/new` happens to default to, since Cursor also advertises `auto_edit`
-and `yolo` (auto-approve everything) as selectable modes. Steering is not
-enabled. The official binary distribution is recorded in the Registry lock;
-Agent Bridge does not download or vendor that archive.
+(same account-auth precedence as Grok). Safe runs select the advertised `ask`
+mode and trusted runs select `agent`; the policy does not assume a provider
+default. The selected executable is version-checked against the locked
+`2026.09.08` release before routing and before execution, so a stale or
+unverifiable `cursor-agent` fails closed. The official binary distribution is
+recorded in the Registry lock; Agent Bridge does not download or vendor that
+archive.
 
 ## Process lifecycle
 

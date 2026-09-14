@@ -2,9 +2,10 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
+import type { AcpTurnResult } from "../acp/client.js";
 import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
-import { resolveCursorAcpArgs, resolveCursorAcpCommand } from "./cursorAcpConfig.js";
+import { assertCursorAcpVersion, resolveCursorAcpArgs, resolveCursorAcpCommand } from "./cursorAcpConfig.js";
 import type { ProviderInvocationRequest } from "./types.js";
 
 /**
@@ -61,14 +62,17 @@ function sessionSettings(
     thoughtLevel: env.CURSOR_EFFORT?.trim() ? [env.CURSOR_EFFORT.trim()] : [],
   });
   return {
-    // Explicitly pin Cursor's session permission mode rather than trusting
-    // whatever session/new happens to default to. Cursor advertises
-    // "default" (per-tool permission prompts, Bridge-owned), "auto_edit",
-    // and "yolo" (auto-approve everything) as selectable modes -- Claude's
-    // policy pins modeId the same way for the identical reason.
-    modeId: "default",
+    // Cursor's locked 2026.09.08 distribution advertises "ask", "plan", and
+    // "agent". Safe runs must remain read-only; trusted runs may edit.
+    modeId: request.executionMode === "trusted" ? "agent" : "ask",
     ...(config.length > 0 ? { config } : {}),
   };
+}
+
+function detectCursorTurnError(result: AcpTurnResult): Error | null {
+  if (result.stopReason !== "end_turn") return null;
+  if (!/Upgrade your plan to continue/i.test(result.liveText)) return null;
+  return new Error(`Cursor ACP capacity exhausted: ${result.liveText.trim()}`);
 }
 
 const CURSOR_QUALIFICATION_ENV_KEYS = [
@@ -94,6 +98,8 @@ export const cursorAcpPolicy: AcpProviderPolicy = {
   },
   resolveExecutable: resolveCursorAcpCommand,
   resolveArgs: (env, entry) => resolveCursorAcpArgs(env, entry),
+  validateRuntime: (runtime) => assertCursorAcpVersion(runtime.executable),
+  detectTurnError: detectCursorTurnError,
   qualificationEnvKeys: CURSOR_QUALIFICATION_ENV_KEYS,
   // Cached account login is authoritative over an optional API key -- Agent
   // Bridge deliberately withholds an unverified candidate key from the
