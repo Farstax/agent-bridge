@@ -24,6 +24,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 
 export type SkillLinkMode = "symlink" | "copy";
 export type SkillOwnership = "bundled" | "user";
@@ -372,26 +373,22 @@ function readSkillFrontmatter(skillPath: string): { name: string; description: s
   const frontmatter = readFileSync(skillPath, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
   if (!frontmatter) throw new Error(`SKILL.md frontmatter is invalid: ${skillPath}`);
 
-  const name = readFrontmatterString(frontmatter, "name");
-  const description = readFrontmatterString(frontmatter, "description");
-  if (name === undefined || description === undefined) throw new Error(`SKILL.md frontmatter is invalid: ${skillPath}`);
-  return { name, description };
-}
-
-function readFrontmatterString(frontmatter: string, key: string): string | undefined {
-  const line = frontmatter.split(/\r?\n/).find((candidate) => candidate.startsWith(`${key}:`));
-  if (!line) return undefined;
-  const raw = line.slice(key.length + 1).trim();
-  if (raw.startsWith('"') && raw.endsWith('"')) {
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      return typeof parsed === "string" ? parsed : undefined;
-    } catch {
-      return undefined;
-    }
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(frontmatter);
+  } catch {
+    throw new Error(`SKILL.md frontmatter is invalid: ${skillPath}`);
   }
-  if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1).replace(/''/g, "'");
-  return raw;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`SKILL.md frontmatter is invalid: ${skillPath}`);
+  }
+  const metadata = parsed as { name?: unknown; description?: unknown };
+  if (typeof metadata.name !== "string" || typeof metadata.description !== "string") {
+    throw new Error(`SKILL.md frontmatter is invalid: ${skillPath}`);
+  }
+  const name = metadata.name;
+  const description = metadata.description;
+  return { name, description };
 }
 
 function validateSkillName(name: string, skillPath: string): void {
