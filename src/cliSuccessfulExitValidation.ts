@@ -7,22 +7,9 @@
  */
 
 import type { CliOptions } from "./types.js";
-import { parseAntigravityStreamJsonResult } from "./providers/antigravityRuntime.js";
 import { parseResult as parseCursorResult } from "./providers/cursorRuntime.js";
 
-const AGY_UNCERTAIN_COMPLETION = "Agy completion could not be verified from structured output";
 const CURSOR_UNCERTAIN_COMPLETION = "Cursor completion could not be verified from structured output";
-const AGY_CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export class AntigravityUncertainCompletionError extends Error {
-  readonly sessionId: string | null;
-
-  constructor(sessionId: string | null) {
-    super(AGY_UNCERTAIN_COMPLETION);
-    this.name = "AntigravityUncertainCompletionError";
-    this.sessionId = sessionId;
-  }
-}
 
 export class CursorUncertainCompletionError extends Error {
   readonly sessionId: string | null;
@@ -32,10 +19,6 @@ export class CursorUncertainCompletionError extends Error {
     this.name = "CursorUncertainCompletionError";
     this.sessionId = sessionId;
   }
-}
-
-export function isAntigravityUncertainCompletionFailureMessage(message: string): boolean {
-  return message === AGY_UNCERTAIN_COMPLETION;
 }
 
 export function isCursorUncertainCompletionFailureMessage(message: string): boolean {
@@ -59,22 +42,6 @@ function parseObjectLines(stdout: string): Record<string, unknown>[] {
   return records;
 }
 
-function extractAgySessionId(stdout: string): string | null {
-  for (const record of parseObjectLines(stdout)) {
-    if (
-      typeof record.conversation_id === "string" &&
-      AGY_CONVERSATION_ID_PATTERN.test(record.conversation_id)
-    ) {
-      return record.conversation_id;
-    }
-    if (record.result && typeof record.result === "object" && !Array.isArray(record.result)) {
-      const id = (record.result as Record<string, unknown>).conversation_id;
-      if (typeof id === "string" && AGY_CONVERSATION_ID_PATTERN.test(id)) return id;
-    }
-  }
-  return null;
-}
-
 function extractCursorSessionId(stdout: string): string | null {
   for (const record of parseObjectLines(stdout)) {
     if (typeof record.session_id === "string" && record.session_id.trim()) return record.session_id;
@@ -86,25 +53,6 @@ function cursorHasExplicitFailure(stdout: string): boolean {
   return parseObjectLines(stdout).some((record) =>
     record.type === "result" && (record.is_error === true || record.subtype === "error")
   );
-}
-
-function agyHasExplicitFailure(stdout: string): boolean {
-  return parseObjectLines(stdout).some((record) => {
-    if (record.event !== "result" || !record.result || typeof record.result !== "object" || Array.isArray(record.result)) {
-      return false;
-    }
-    return (record.result as Record<string, unknown>).status === "ERROR";
-  });
-}
-
-function validateAgySuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
-  try {
-    parseAntigravityStreamJsonResult(output.stdout);
-    return null;
-  } catch (error) {
-    if (agyHasExplicitFailure(output.stdout)) return error instanceof Error ? error : new Error("Agy reported an error");
-    return new AntigravityUncertainCompletionError(extractAgySessionId(output.stdout));
-  }
 }
 
 function validateCursorSuccessfulExit(output: Readonly<{ stdout: string; stderr: string }>): Error | null {
@@ -121,7 +69,6 @@ export function validateSuccessfulCliExit(
   bot: CliOptions["bot"],
   output: Readonly<{ stdout: string; stderr: string }>,
 ): Error | null {
-  if (bot === "antigravity") return validateAgySuccessfulExit(output);
   if (bot === "cursor") return validateCursorSuccessfulExit(output);
   return null;
 }

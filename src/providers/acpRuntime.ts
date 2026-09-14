@@ -579,7 +579,7 @@ export async function runResolvedAcpProviderTurn(
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);
-  replaceAcpSessionConfigSnapshot(providerId, result.configOptions, result.staleSessionConfig);
+  replaceAcpSessionConfigSnapshot(providerBotKind(providerId), result.configOptions, result.staleSessionConfig);
   const parsed = acpTurnResultToCliResult(providerId, result, policy);
   if (parsed.stopReason === "cancelled" && request.outputDir) {
     try {

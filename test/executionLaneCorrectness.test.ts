@@ -29,10 +29,6 @@ function cursorResult(text: string, sessionId = "cursor-session"): string {
   return JSON.stringify({ type: "result", result: text, session_id: sessionId });
 }
 
-function agyResult(text: string, sessionId = "11111111-1111-4111-8111-111111111111"): string {
-  return JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: text } });
-}
-
 function options(kind: "codex" | "cursor" | "antigravity", hooks: any = {}) {
   return { surfaceIdentity: "telegram:interactive", kind, botConfig: { command: kind === "antigravity" ? "agy" : kind, modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe" as const, busyMessageMode: "interrupt" as const,  pollIntervalMs: 1000, workingDir: process.cwd(), hooks };
 }
@@ -603,7 +599,9 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const engine = new BridgeEngine({
       ...options("antigravity"), busyMessageMode: "augment",
       hooks: { onAfterExecute: async (prompt: string) => { prompts.push(prompt); } },
-    }, db, client(), { runCli: vi.fn().mockResolvedValue(agyResult("recovered")) });
+    }, db, client(), {
+      runProviderInvocation: vi.fn().mockResolvedValue({ text: "recovered", sessionId: "agy-acp-session", stopReason: "end_turn" }),
+    });
     await engine.recoverPendingQueues();
     expect(prompts).toEqual(["original after restart\n\naddition after restart"]);
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
@@ -913,10 +911,12 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     });
     const seen: Array<{ prompt: string; hasAttachment: boolean }> = [];
     const engine = new BridgeEngine(options("antigravity"), db, client(), {
-      runCli: vi.fn().mockImplementation(async (_command: string, args: string[], _cwd: string, cliOptions: any) => {
-        const prompt = `${args.join(" ")} ${cliOptions?.stdin ?? ""}`;
-        seen.push({ prompt, hasAttachment: prompt.includes("queued-attachment-") });
-        return agyResult("ok");
+      runProviderInvocation: vi.fn().mockImplementation(async (
+        _bot: unknown, _invocation: unknown, _cwd: string, _options: unknown,
+        request: { prompt: string; attachments: string[] },
+      ) => {
+        seen.push({ prompt: request.prompt, hasAttachment: request.attachments.some((a) => a.includes("queued-attachment-")) });
+        return { text: "ok", sessionId: "agy-acp-session", stopReason: "end_turn" };
       }),
     });
     await engine.handleMessages([message("new arrival", 7)]);
@@ -936,11 +936,14 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       writeFileSync(destination, "queued document payload");
     });
     let cliInput = "";
-    const runCli = vi.fn().mockImplementation(async (_command: string, args: string[], _cwd: string, cliOptions: any) => {
-      cliInput = `${args.join(" ")} ${cliOptions?.stdin ?? ""}`;
-      return agyResult("processed attachment");
+    const runProviderInvocation = vi.fn().mockImplementation(async (
+      _bot: unknown, _invocation: unknown, _cwd: string, _options: unknown,
+      request: { prompt: string; attachments: string[] },
+    ) => {
+      cliInput = `${request.prompt} ${request.attachments.join(" ")}`;
+      return { text: "processed attachment", sessionId: "agy-acp-session", stopReason: "end_turn" };
     });
-    const engine = new BridgeEngine(options("antigravity"), db, c, { runCli });
+    const engine = new BridgeEngine(options("antigravity"), db, c, { runProviderInvocation });
     const attached = message("inspect this document", 7);
     attached.document = { file_id: "queued-file", file_name: "queued.txt", mime_type: "text/plain", file_size: 23 };
 
@@ -950,11 +953,11 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     expect(queued[0].attachments).toHaveLength(1);
     const queuedPath = queued[0].attachments[0];
     expect(existsSync(queuedPath)).toBe(true);
-    expect(runCli).not.toHaveBeenCalled();
+    expect(runProviderInvocation).not.toHaveBeenCalled();
 
     db.unlock(blockingHandle);
     await engine.recoverPendingQueues();
-    expect(runCli).toHaveBeenCalledOnce();
+    expect(runProviderInvocation).toHaveBeenCalledOnce();
     expect(cliInput).toContain("queued.txt");
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
     expect(existsSync(queuedPath)).toBe(false);

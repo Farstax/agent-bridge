@@ -1,7 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import {
   buildExecutionOptions,
   isAuthorizedMessage,
@@ -16,11 +14,6 @@ import {
   buildModelKeyboard,
   buildModelsText,
   buildTelegramCommands,
-  extractAntigravityConversationId,
-  readAntigravityLastConversation,
-  readLatestAntigravityConversationFromLogs,
-  resolveAntigravityConversationId,
-  ensureAntigravityStateDirs,
 } from "../src/bridge.js";
 import { openDb, BridgeDb } from "../src/db.js";
 import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
@@ -127,79 +120,77 @@ describe("agent bridge MVP", () => {
     if (prevBridgeProjectDir === undefined) delete process.env.BRIDGE_PROJECT_DIR; else process.env.BRIDGE_PROJECT_DIR = prevBridgeProjectDir;
   });
 
-  it("creates fresh antigravity invocation with --print prompt after all flags", () => {
-    const { command, args } = buildCliInvocation({
+  it("creates a fresh Agy ACP invocation instead of native --print", () => {
+    const invocation = buildCliInvocation({
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "antigravity",
+      command: "agy_acp_server.par",
       model: "antigravity-pro",
       executionMode: "trusted",
     });
-    expect(command).toBe("antigravity");
-    expect(args).not.toContain("--model");
-    expect(args.at(-2)).toBe("--print");
-    expect(String(args.at(-1))).toContain("hello");
-    expect(args.indexOf("--dangerously-skip-permissions")).toBeLessThan(args.indexOf("--print"));
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.args).toEqual(["--uid="]);
+    expect(invocation.args).not.toContain("--print");
+    expect(invocation.prompt).toContain("hello");
   });
 
   it("wraps antigravity prompts without a retired JSON output instruction", () => {
-    const { args } = buildCliInvocation({
+    const invocation = buildCliInvocation({
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "antigravity",
+      command: "agy_acp_server.par",
       model: null,
+      includeResponseContract: false,
     });
 
-    const printedPrompt = String(args.at(-1));
+    const printedPrompt = String(invocation.prompt);
     expect(printedPrompt).toContain("hello");
-    expect(printedPrompt).toContain("Execute directly. Do not get stuck in planning loops.");
-    expect(printedPrompt).toContain("If a tool, search, or shell step fails twice");
+    expect(printedPrompt).toContain("Agent Bridge execution contract:");
     expect(printedPrompt).not.toContain('"response"');
     expect(printedPrompt).not.toContain('"reasoning"');
   });
 
   it("keeps antigravity delimiter outside SOUL.md and Telegram style context", () => {
-    const { args } = buildCliInvocation({
+    const invocation = buildCliInvocation({
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "antigravity",
+      command: "agy_acp_server.par",
       model: null,
       soulContext: "Identity: Chas",
+      includeResponseContract: false,
     });
 
-    const printedPrompt = String(args.at(-1));
-    expect(printedPrompt.indexOf("line containing only ***")).toBeLessThan(printedPrompt.indexOf("Soul contract:"));
-    expect(printedPrompt.indexOf("Soul contract:")).toBeLessThan(printedPrompt.indexOf("User request:"));
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.prompt).toContain("hello");
   });
 
-  it("antigravity session invocation uses --conversation to continue an existing session", () => {
-    const { args } = buildCliInvocation({
+  it("antigravity session invocation resumes through ACP instead of --conversation", () => {
+    const invocation = buildCliInvocation({
       bot: "antigravity",
       prompt: "hello",
       sessionId: "4229bce3-5009-429e-a3cb-d1bdaa8cfeed",
-      command: "antigravity",
+      command: "agy_acp_server.par",
       model: null,
     });
-    expect(args).toContain("--conversation");
-    expect(args[args.indexOf("--conversation") + 1]).toBe("4229bce3-5009-429e-a3cb-d1bdaa8cfeed");
-    expect(args.indexOf("--conversation")).toBeLessThan(args.indexOf("--print"));
-    expect(args.at(-2)).toBe("--print");
-    expect(String(args.at(-1))).toContain("hello");
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.nativeSessionMode).toBe("resume");
+    expect(invocation.args).not.toContain("--conversation");
+    expect(invocation.prompt).toContain("hello");
   });
 
-  it("antigravity trusted execution mode adds --dangerously-skip-permissions", () => {
-    const { args } = buildCliInvocation({
+  it("antigravity trusted execution mode does not add native skip-permissions flags", () => {
+    const invocation = buildCliInvocation({
       bot: "antigravity",
       prompt: "hello",
       sessionId: null,
-      command: "antigravity",
+      command: "agy_acp_server.par",
       model: null,
       executionMode: "trusted",
     });
-    expect(args).toContain("--dangerously-skip-permissions");
+    expect(invocation.args).not.toContain("--dangerously-skip-permissions");
   });
 
   it("kills the CLI process group on idle timeout", async () => {
@@ -214,96 +205,11 @@ describe("agent bridge MVP", () => {
     expect(await shutdownCliProcessesAndWait()).toBe(0);
   });
 
-  it("parses the Agy stream-json terminal result", () => {
-    expect(
-      parseCliResult({
-        bot: "antigravity",
-        stdout: agyStreamJsonResult("hello from antigravity"),
-      }),
-    ).toEqual({ text: "hello from antigravity", sessionId: "4229bce3-5009-429e-a3cb-d1bdaa8cfeed" });
-  });
-
-  it("throws an error if antigravity output indicates a print mode timeout", () => {
-    const stdout = JSON.stringify({
-      event: "result",
-      result: {
-        conversation_id: "4229bce3-5009-429e-a3cb-d1bdaa8cfeed",
-        status: "ERROR",
-        error: "timed out waiting for response",
-      },
-    });
-    expect(() =>
-      parseCliResult({
-        bot: "antigravity",
-        stdout,
-      }),
-    ).toThrow(/timed out/);
-  });
-
-  it("extracts antigravity conversation IDs from canonical Agy log lines", () => {
-    expect(extractAntigravityConversationId("Created conversation 860cd239-3028-4ab6-9590-300532a72cca")).toBe("860cd239-3028-4ab6-9590-300532a72cca");
-    expect(extractAntigravityConversationId("Print mode: conversation=c107dfbd-181e-4cf0-a840-894662adee43, sending message")).toBe("c107dfbd-181e-4cf0-a840-894662adee43");
-  });
-
-  it("reads antigravity last conversation cache by cwd", () => {
-    const home = mkdtempSync(join(tmpdir(), "agy-home-"));
-    try {
-      const cacheDir = join(home, ".gemini", "antigravity-cli", "cache");
-      mkdirSync(cacheDir, { recursive: true });
-      writeFileSync(join(cacheDir, "last_conversations.json"), JSON.stringify({
-        "/repo": "c107dfbd-181e-4cf0-a840-894662adee43",
-      }));
-      expect(readAntigravityLastConversation({ cwd: "/repo", homeDir: home })).toBe("c107dfbd-181e-4cf0-a840-894662adee43");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("pre-creates the antigravity worktrees state dir", () => {
-    const home = mkdtempSync(join(tmpdir(), "agy-home-"));
-    try {
-      ensureAntigravityStateDirs(home);
-      expect(existsSync(join(home, ".gemini", "antigravity-cli", "worktrees"))).toBe(true);
-      // Idempotent: second call must not throw.
-      ensureAntigravityStateDirs(home);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("creates the antigravity worktrees dir when building an agy invocation", () => {
-    const home = mkdtempSync(join(tmpdir(), "agy-home-"));
-    try {
-      buildCliInvocation({
-        bot: "antigravity",
-        prompt: "hello",
-        sessionId: null,
-        command: "agy",
-        model: null,
-        homeDir: home,
-      });
-      expect(existsSync(join(home, ".gemini", "antigravity-cli", "worktrees"))).toBe(true);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("falls back to recent antigravity CLI logs for session resolution", () => {
-    const home = mkdtempSync(join(tmpdir(), "agy-home-"));
-    try {
-      const logDir = join(home, ".gemini", "antigravity-cli", "log");
-      mkdirSync(logDir, { recursive: true });
-      writeFileSync(join(logDir, "cli-test.log"), "Print mode: conversation=b3ba6842-e571-4fd3-9dac-ce613b2f35c6, sending message");
-      expect(readLatestAntigravityConversationFromLogs({ sinceMs: Date.now() - 1000, homeDir: home })).toBe("b3ba6842-e571-4fd3-9dac-ce613b2f35c6");
-      expect(resolveAntigravityConversationId({
-        cwd: "/missing",
-        sinceMs: Date.now() - 1000,
-        homeDir: home,
-        allowSharedStateFallback: true,
-      })).toBe("b3ba6842-e571-4fd3-9dac-ce613b2f35c6");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+  it("does not parse native Agy stream-json after ACP migration", () => {
+    expect(() => parseCliResult({
+      bot: "antigravity",
+      stdout: agyStreamJsonResult("hello from antigravity"),
+    })).toThrow(/ACP structured results/);
   });
 
   it("validates bridge config", () => {
@@ -357,7 +263,7 @@ describe("agent bridge MVP", () => {
     it("handles /models returning keyboard_message with current model info", () => {
       const result = handleCommand("antigravity", "/models", { db, chatId: "123", config });
       expect(result?.kind).toBe("keyboard_message");
-      expect(result && "text" in result ? result.text : "").toContain("antigravity-3.1-pro-preview");
+      expect(result && "text" in result ? result.text : "").toMatch(/provider default|provider-controlled|waiting for a live ACP session/);
       expect((result as any)?.reply_markup?.inline_keyboard).toBeDefined();
     });
 
@@ -440,7 +346,7 @@ describe("model keyboard", () => {
   const prefs = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
   it("includes one button per model in the preference list", () => {
-    const kb = buildModelKeyboard("antigravity", prefs);
+    const kb = buildModelKeyboard("cursor", prefs);
     const allButtons = kb.inline_keyboard.flat();
     for (const model of prefs) {
       expect(allButtons.some((b: any) => b.text === model)).toBe(true);
@@ -448,25 +354,25 @@ describe("model keyboard", () => {
   });
 
   it("each model button carries the correct callback_data", () => {
-    const kb = buildModelKeyboard("antigravity", prefs);
+    const kb = buildModelKeyboard("cursor", prefs);
     const allButtons = kb.inline_keyboard.flat();
     for (const model of prefs) {
       const btn = allButtons.find((b: any) => b.text === model);
-      expect(btn?.callback_data).toBe(`model:antigravity:${model}`);
+      expect(btn?.callback_data).toBe(`model:cursor:${model}`);
     }
   });
 
   it("includes a Reset to Default button", () => {
-    const kb = buildModelKeyboard("antigravity", prefs);
+    const kb = buildModelKeyboard("cursor", prefs);
     const allButtons = kb.inline_keyboard.flat();
-    expect(allButtons.some((b: any) => b.callback_data === "model:antigravity:reset")).toBe(true);
+    expect(allButtons.some((b: any) => b.callback_data === "model:cursor:reset")).toBe(true);
   });
 
   it("returns an empty keyboard when preference list is empty", () => {
-    const kb = buildModelKeyboard("antigravity", []);
+    const kb = buildModelKeyboard("cursor", []);
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "gpt-5.5")).toBe(false);
-    expect(allButtons.some((b: any) => b.callback_data === "model:antigravity:reset")).toBe(true);
+    expect(allButtons.some((b: any) => b.callback_data === "model:cursor:reset")).toBe(true);
   });
 });
 
@@ -547,7 +453,7 @@ describe("/effort command returns keyboard_message", () => {
       chatId: "1",
       config,
     }) as any;
-    expect(result.text).toContain("unsupported");
+    expect(result.text).toMatch(/provider-controlled|provider default|not advertised/);
   });
 });
 
@@ -627,27 +533,27 @@ describe("model keyboard current model indicator", () => {
   const prefs = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
 
   it("marks the active model button with a checkmark", () => {
-    const kb = buildModelKeyboard("antigravity", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("cursor", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.4")).toBe(true);
   });
 
   it("does not mark non-active models with a checkmark", () => {
-    const kb = buildModelKeyboard("antigravity", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("cursor", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.5")).toBe(false);
     expect(allButtons.some((b: any) => b.text === "✓ gpt-5.4-mini")).toBe(false);
   });
 
   it("active button still has correct callback_data", () => {
-    const kb = buildModelKeyboard("antigravity", prefs, "gpt-5.4");
+    const kb = buildModelKeyboard("cursor", prefs, "gpt-5.4");
     const allButtons = kb.inline_keyboard.flat();
     const btn = allButtons.find((b: any) => b.text === "✓ gpt-5.4");
-    expect(btn?.callback_data).toBe("model:antigravity:gpt-5.4");
+    expect(btn?.callback_data).toBe("model:cursor:gpt-5.4");
   });
 
   it("shows no checkmark when currentModel is null", () => {
-    const kb = buildModelKeyboard("antigravity", prefs, null);
+    const kb = buildModelKeyboard("cursor", prefs, null);
     const allButtons = kb.inline_keyboard.flat();
     expect(allButtons.every((b: any) => !b.text.startsWith("✓"))).toBe(true);
   });

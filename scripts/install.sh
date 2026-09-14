@@ -89,7 +89,8 @@ seed_from_env_file() {
   for key in BRIDGE_ROOT_DIR BRIDGE_PROJECT_DIR BRIDGE_CURRENT_RELEASE_DIR \
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
                TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
-              ANTIGRAVITY_COMMAND CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS \
+              AGY_ACP_COMMAND ANTIGRAVITY_ACP_COMMAND AGY_ACP_ARGS ANTIGRAVITY_ACP_ARGS \
+              CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS \
               CODEX_ACP_COMMAND CODEX_ACP_ARGS \
               GROK_ACP_COMMAND GROK_ACP_ARGS \
               CODEX_PROJECT_DIR ANTIGRAVITY_PROJECT_DIR CLAUDE_PROJECT_DIR \
@@ -206,8 +207,8 @@ prompt DISCORD_ALLOWED_USER_IDS       "Discord allowed user IDs (leave blank to 
 prompt DISCORD_GUILD_ID               "Discord guild ID (optional, leave blank for global commands)"
 prompt CODEX_ACP_COMMAND   "Codex ACP command"   "${REPO_DIR}/node_modules/.bin/codex-acp"
 prompt CLAUDE_ACP_COMMAND  "Claude ACP command"  "${REPO_DIR}/node_modules/.bin/claude-agent-acp"
-prompt GROK_ACP_COMMAND    "Grok ACP command"    "${REPO_DIR}/node_modules/.bin/grok"
-prompt ANTIGRAVITY_COMMAND "Antigravity command" "$(command -v agy    2>/dev/null || true)"
+prompt GROK_ACP_COMMAND "Grok ACP command" "${REPO_DIR}/node_modules/.bin/grok"
+prompt AGY_ACP_COMMAND "Agy ACP command" "$(command -v agy_acp_server.par 2>/dev/null || true)"
 prompt CODEX_PROJECT_DIR       "Codex working directory (blank = BRIDGE_PROJECT_DIR)"       ""
 prompt ANTIGRAVITY_PROJECT_DIR "Antigravity working directory (blank = BRIDGE_PROJECT_DIR)" ""
 prompt CLAUDE_PROJECT_DIR      "Claude working directory (blank = BRIDGE_PROJECT_DIR)"      ""
@@ -291,20 +292,12 @@ resolve_binary() {
   echo ""
 }
 
-# Install or upgrade agy via the Google Antigravity installer (idempotent).
-ensure_agy_cli() {
-  echo "Installing/updating agy via Google Antigravity installer..."
-  curl -fsSL https://antigravity.google/cli/install.sh | bash
-  export PATH="${TARGET_HOME}/.local/bin:${PATH}"
-}
-
 require_node
 ensure_target_user
 
 if [[ "${SKIP_CLI_INSTALL}" != "1" ]]; then
   (cd "${REPO_DIR}" && npm install)
-  ensure_agy_cli
-  ANTIGRAVITY_COMMAND="${ANTIGRAVITY_COMMAND:-$(resolve_binary agy)}"
+  AGY_ACP_COMMAND="${AGY_ACP_COMMAND:-$(resolve_binary agy_acp_server.par)}"
   install_shared_skills
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" ]]; then
   install_shared_skills
@@ -312,8 +305,8 @@ fi
 
 ensure_var CODEX_ACP_COMMAND   "Codex ACP command"
 ensure_var CLAUDE_ACP_COMMAND  "Claude ACP command"
-ensure_var GROK_ACP_COMMAND    "Grok ACP command"
-ensure_var ANTIGRAVITY_COMMAND "Antigravity command"
+ensure_var GROK_ACP_COMMAND "Grok ACP command"
+ensure_var AGY_ACP_COMMAND  "Agy ACP command"
 
 # Write local .env.* files from examples (machine-specific values substituted in)
 echo "Writing local env files..."
@@ -361,6 +354,8 @@ _write_shared_defaults() {
     [[ -n "${CLAUDE_ACP_COMMAND:-}" ]] && echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
     [[ -n "${GROK_ACP_COMMAND:-}" ]] && echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
     [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
+    [[ -n "${AGY_ACP_COMMAND:-}" ]] && echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND}"
+    [[ -n "${AGY_ACP_ARGS:-}" ]] && echo "AGY_ACP_ARGS=${AGY_ACP_ARGS}"
     echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
     echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
     echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
@@ -392,6 +387,8 @@ _write_systemd_defaults() {
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     elif [[ "${bot}" == "claude" ]]; then
       [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
+    elif [[ "${bot}" == "antigravity" ]]; then
+      [[ -n "${AGY_ACP_ARGS:-}" ]] && echo "AGY_ACP_ARGS=${AGY_ACP_ARGS}"
     fi
     true
   } | sudo tee "${dest}" > /dev/null
@@ -410,7 +407,7 @@ _write_release_defaults() {
 _write_release_defaults
 _write_shared_defaults
 _write_systemd_defaults codex       TELEGRAM_BOT_TOKEN_CODEX       CODEX_ACP_COMMAND   CODEX_PROJECT_DIR
-_write_systemd_defaults antigravity TELEGRAM_BOT_TOKEN_ANTIGRAVITY ANTIGRAVITY_COMMAND ANTIGRAVITY_PROJECT_DIR
+_write_systemd_defaults antigravity TELEGRAM_BOT_TOKEN_ANTIGRAVITY AGY_ACP_COMMAND ANTIGRAVITY_PROJECT_DIR
 if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
   if [[ "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
     ensure_var TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token required for integrated health"
@@ -430,7 +427,7 @@ _write_interactive_defaults() {
     echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
     echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
     echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
-    echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
+    echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND:-agy_acp_server.par}"
     [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
     [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
     echo "DB_PATH=${DB_PATH:-${BRIDGE_ROOT_DIR}/runtime/agent-bridge/interactive/bridge.sqlite}"
@@ -458,8 +455,8 @@ _write_discord_defaults() {
       echo "INTERACTIVE_CLI_CHAIN=${INTERACTIVE_CLI_CHAIN:-codex,claude,antigravity,grok,cursor}"
       echo "CODEX_ACP_COMMAND=${CODEX_ACP_COMMAND}"
       echo "CLAUDE_ACP_COMMAND=${CLAUDE_ACP_COMMAND}"
-    echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
-      echo "ANTIGRAVITY_COMMAND=${ANTIGRAVITY_COMMAND:-agy}"
+      echo "GROK_ACP_COMMAND=${GROK_ACP_COMMAND}"
+      echo "AGY_ACP_COMMAND=${AGY_ACP_COMMAND:-agy_acp_server.par}"
       [[ -n "${CODEX_ACP_ARGS:-}" ]] && echo "CODEX_ACP_ARGS=${CODEX_ACP_ARGS}"
       [[ -n "${CLAUDE_ACP_ARGS:-}" ]] && echo "CLAUDE_ACP_ARGS=${CLAUDE_ACP_ARGS}"
       echo "BRIDGE_EXECUTION_MODE=${BRIDGE_EXECUTION_MODE:-trusted}"

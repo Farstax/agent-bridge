@@ -57,7 +57,6 @@ describe("full CLI update qualification", () => {
   it("uses only fixture provider CLIs and fixture qualification state", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-full-update-qualification-"));
     const hostRoot = mkdtempSync(join(tmpdir(), "agent-bridge-host-provider-trap-"));
-    const agyState = join(root, "agy-updated");
     const claudeState = join(root, "claude-updated");
     const npmState = join(root, "npm-updated");
     const qualificationLog = join(root, "provider-invocations.log");
@@ -90,12 +89,11 @@ printf '%s\n' "$0 $*" >> "${qualificationLog}"
 if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/codex-acp 1.10.0'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
-      fakeProvider(agy, `
-if [ "$1" = --version ]; then
-  if [ -f "${agyState}" ]; then echo 'agy 1.1.13'; else echo 'agy 1.1.12'; fi
-  exit 0
-fi
-`, qualificationLog);
+      script(agy, `
+printf '%s\\n' "$0 $*" >> "${qualificationLog}"
+if [ "\${1:-}" = --version ]; then echo 'agy_acp_server.par 1.1.1'; exit 0; fi
+exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
+`);
       script(grok, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
 if [ "\${1:-}" = --version ]; then echo 'grok 1.0.30'; exit 0; fi
@@ -120,9 +118,6 @@ if [ "$1" = run ]; then exit 0; fi
 if [ "$1" = test ]; then exit 0; fi
 if [ "$1" = install ]; then exit 0; fi
 exit 0
-`);
-      script(join(root, "curl"), `
-printf '%s\\n' '#!/usr/bin/env bash' 'touch "${agyState}"'
 `);
       script(join(root, "systemctl"), "exit 1\n");
       const sttLog = join(root, "stt-convergence.log");
@@ -151,7 +146,7 @@ exit 97
           CODEX_ACP_COMMAND: codex,
           FAKE_ACP_STORE: join(root, "codex-acp-sessions.json"),
           FAKE_ACP_RESUME: "1",
-          ANTIGRAVITY_COMMAND: agy,
+          AGY_ACP_COMMAND: agy,
           GROK_ACP_COMMAND: grok,
           GROK_ACP_ARGS: "",
           CURSOR_COMMAND: cursor,
@@ -181,7 +176,7 @@ exit 97
       expect(evidence.providers).toMatchObject({
         claude: { overall: "pass", providerVersion: "0.76.0" },
         codex: { overall: "pass", providerVersion: "1.10.0" },
-        agy: { overall: "pass", providerVersion: "1.1.13" },
+        agy: { overall: "pass", providerVersion: "1.1.1" },
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

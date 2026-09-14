@@ -108,34 +108,45 @@ function passingRecord(overrides: Partial<ProviderQualificationRecord> = {}): Pr
 }
 
 describe("provider qualification contract", () => {
-  it("fails closed when Agy stream-json terminal ERROR includes a partial response on nonzero exit", async () => {
-    const root = mkdtempSync(join(tmpdir(), "provider-qualification-agy-"));
-    const evidencePath = join(root, "qualification.json");
-    const fake = executable(join(root, "agy"), `
-if [[ "\${1:-}" == "--version" ]]; then
-  echo "agy 1.1.12"
-  exit 0
-fi
-printf '%s\\n' '{"event":"result","result":{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"ERROR","response":"partial response","error":"timed out waiting for idle"}}'
-exit 1
+  it("versions the Agy ACP executable used by production", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-agy-acp-version-"));
+    const previousCommand = process.env.AGY_ACP_COMMAND;
+    const previousArgs = process.env.AGY_ACP_ARGS;
+    const acp = executable(join(root, "agy_acp_server.par"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.1.1"; exit 0; fi
+echo "acp should not be oneshot-parsed" >&2
+exit 7
 `);
-
-    const result = await qualifyProvider({
-      providerId: "agy",
-      executable: fake,
-      evidencePath,
-      bridgeCommit: "b".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-
-    expect(result.overall).toBe("fail");
-    expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
-      status: "fail",
-      diagnostic: expect.stringMatching(/ERROR result included a response/i),
-    });
-    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
+    process.env.AGY_ACP_COMMAND = acp;
+    process.env.AGY_ACP_ARGS = "--uid=";
+    try {
+      const result = await qualifyProvider({
+        providerId: "agy",
+        executable: acp,
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "a".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: {
+          ...process.env,
+          AGY_ACP_COMMAND: acp,
+          AGY_ACP_ARGS: "--uid=",
+        },
+      });
+      expect(result.executionRuntime).toBe(resolveProviderRuntime("agy", {
+        ...process.env,
+        AGY_ACP_COMMAND: acp,
+        AGY_ACP_ARGS: "--uid=",
+      }).runtimeIdentity);
+      expect(result.providerVersion).toBe("1.1.1");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.1\.1/);
+    } finally {
+      if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
+      else process.env.AGY_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.AGY_ACP_ARGS;
+      else process.env.AGY_ACP_ARGS = previousArgs;
+    }
   });
 
   it("treats authentication prerequisites as degraded rather than a provider contract failure", async () => {
@@ -499,15 +510,12 @@ printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"
     expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
   });
 
-  it("accepts strict Agy stream-json conversation evidence without semantic marker prose", async () => {
-    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-agy-"));
-    const fake = executable(join(root, "agy"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.1.12"; exit 0; fi
-printf '%s\\n' '{"event":"result","result":{"conversation_id":"11111111-2222-3333-4444-555555555555","status":"SUCCESS","response":"native protocol response"}}'
-`);
+  it("accepts strict Cursor conversation evidence without semantic marker prose", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-cursor-"));
+    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"));
 
     const result = await qualifyProvider({
-      providerId: "agy",
+      providerId: "cursor",
       executable: fake,
       evidencePath: join(root, "qualification.json"),
       bridgeCommit: "4".repeat(40),
@@ -547,13 +555,13 @@ printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"
 
   it("fails closed on malformed provider-native envelopes", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-malformed-"));
-    const fake = executable(join(root, "agy"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy 1.1.12"; exit 0; fi
+    const fake = executable(join(root, "cursor-agent"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "cursor-agent 2.3.4"; exit 0; fi
 printf '%s\\n' '{not-json'
 `);
 
     const result = await qualifyProvider({
-      providerId: "agy",
+      providerId: "cursor",
       executable: fake,
       evidencePath: join(root, "qualification.json"),
       bridgeCommit: "4".repeat(40),
@@ -565,11 +573,11 @@ printf '%s\\n' '{not-json'
     expect(result.overall).toBe("fail");
     expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
       status: "fail",
-      diagnostic: expect.stringMatching(/native result parsing|stream JSON parse failed/i),
+      diagnostic: expect.stringMatching(/native result parsing|JSON/i),
     });
   });
 
-  it.each(["agy", "cursor"] as const)(
+  it.each(["cursor"] as const)(
     "runs repository-grounding qualification with native tools for %s",
     async (provider) => {
       const root = mkdtempSync(join(tmpdir(), `provider-grounding-${provider}-`));

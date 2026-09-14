@@ -758,7 +758,7 @@ describe("runAutonomousGoalOperatorStandalone", () => {
   });
 
   it("resolves the real (non-injected) standalone engine's provider from the durable goal's bot, not a hard-coded Claude default", () => {
-    const overrideKeys = ["CODEX_ACP_COMMAND", "CLAUDE_ACP_COMMAND", "ANTIGRAVITY_COMMAND", "GEMINI_COMMAND"] as const;
+    const overrideKeys = ["CODEX_ACP_COMMAND", "CLAUDE_ACP_COMMAND", "AGY_ACP_COMMAND", "ANTIGRAVITY_ACP_COMMAND"] as const;
     const previous = Object.fromEntries(overrideKeys.map((key) => [key, process.env[key]]));
     for (const key of overrideKeys) delete process.env[key];
     try {
@@ -767,7 +767,7 @@ describe("runAutonomousGoalOperatorStandalone", () => {
       expect(standaloneBotConfig("claude").executionKind).toBe("claude");
       expect(standaloneBotConfig("claude").botConfig.command).toContain("node_modules/.bin/claude-agent-acp");
       expect(standaloneBotConfig("antigravity").executionKind).toBe("antigravity");
-      expect(standaloneBotConfig("antigravity").botConfig.command).toBe("agy");
+      expect(standaloneBotConfig("antigravity").botConfig.command).toBe("agy_acp_server.par");
     } finally {
       for (const key of overrideKeys) {
         if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key] as string;

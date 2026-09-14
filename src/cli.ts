@@ -17,32 +17,7 @@ import {
   runAcpProviderTurn,
 } from "./providers/acpRuntime.js";
 import * as cursorRuntime from "./providers/cursorRuntime.js";
-import * as antigravityRuntime from "./providers/antigravityRuntime.js";
-import { extractAntigravityRunTelemetry } from "./providers/antigravityTelemetry.js";
-import {
-  extractAntigravityConversationId,
-  toAntigravityModelLabel,
-  ensureAntigravityStateDirs,
-  setAntigravityModel,
-  readAntigravityLastConversation,
-  readLatestAntigravityConversationFromLogs,
-  resolveAntigravityConversationId,
-} from "./providers/antigravityRuntime.js";
-import {
-  runAntigravitySerialized,
-  type AntigravityExecutionContext,
-} from "./providers/antigravitySerializedRunner.js";
-
-export {
-  extractAntigravityConversationId,
-  toAntigravityModelLabel,
-  ensureAntigravityStateDirs,
-  setAntigravityModel,
-  readAntigravityLastConversation,
-  readLatestAntigravityConversationFromLogs,
-  resolveAntigravityConversationId,
-};
-import { appendEffortArgs, resolveAgyModelForEffort, type EffortLevel } from "./effort.js";
+import { appendEffortArgs, type EffortLevel } from "./effort.js";
 import { isProviderFallbackEligibleError } from "./providers/fallbackEligibility.js";
 import {
   getProcessWatchForCommand,
@@ -69,7 +44,6 @@ import {
   isAbortRequested,
   isChildRunning,
 } from "./cliSupervisor.js";
-import { normalizeCliArgs } from "./cliArgNormalization.js";
 import {
   captureParsedProviderOutput,
   consumePendingRunFallback,
@@ -78,17 +52,13 @@ import {
 } from "./runTelemetry.js";
 import { wrapPromptContext } from "./promptWrapping.js";
 import {
-  AntigravityUncertainCompletionError,
   CursorUncertainCompletionError,
-  isAntigravityUncertainCompletionFailureMessage,
   isCursorUncertainCompletionFailureMessage,
 } from "./cliSuccessfulExitValidation.js";
 import { type as evtType } from "./events/types.js";
 import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
 
-const antigravityInvocationMetadata = new WeakMap<string[], AntigravityExecutionContext>();
-
-type RecoverableProvider = "antigravity" | "cursor";
+type RecoverableProvider = "cursor";
 
 export {
   getExecutionProcessState,
@@ -104,7 +74,6 @@ export {
   shutdownCliProcesses,
   shutdownCliProcessesAndWait,
   redactArgs,
-  normalizeCliArgs,
   CliTimeoutError,
   resolveSupervisorTimeouts,
   isAbortRequested,
@@ -190,18 +159,6 @@ export function buildCliInvocation({
       prompt: providerPrompt, sessionId, command, model, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode,
     });
   }
-  if (bot === "antigravity") {
-    const resolvedModel = resolveAgyModelForEffort(model, effort);
-    const invocation = antigravityRuntime.buildInvocation({
-      prompt: providerPrompt, sessionId, command, model: resolvedModel, executionMode, outputFormat, soulContext, includeResponseContract, attachments, outputDir, effort, toolMode, logFile, homeDir,
-    });
-    antigravityInvocationMetadata.set(invocation.args, {
-      homeDir,
-      model: resolvedModel,
-      applyModel: true,
-    });
-    return invocation;
-  }
   return { command, args: appendEffortArgs(command, [], effort), nativeSessionMode: "fresh" };
 }
 
@@ -269,11 +226,6 @@ export function parseCliResult({
     throw new Error(`${bot} uses ACP structured results and is not parsed as native CLI output`);
   } else if (bot === "cursor") {
     result = cursorRuntime.parseResult(stdout);
-  } else if (bot === "antigravity") {
-    void outputFormat;
-    result = antigravityRuntime.parseResult(stdout);
-    const telemetry = extractAntigravityRunTelemetry(stdout);
-    if (telemetry) result = { ...result, telemetry };
   } else {
     throw new Error(`Unknown bot type: ${bot}`);
   }
@@ -319,16 +271,12 @@ export function getNextFallbackModel(currentModel: string | null, modelPreferenc
   return modelPreference[idx + 1];
 }
 
-function isAntigravityExecution(options: CliOptions): boolean {
-  return options.bot === "antigravity" || options.eventContext?.bot === "antigravity";
-}
-
 function eventChatKey(options: CliOptions): string | undefined {
   return options.eventContext?.chatKey;
 }
 
-function providerRecoveryPrompt(provider: RecoverableProvider): string {
-  const name = provider === "antigravity" ? "Agy" : "Cursor";
+function providerRecoveryPrompt(_provider: RecoverableProvider): string {
+  const name = "Cursor";
   return [
     "Agent Bridge detected that the immediately preceding turn ended with uncertain completion.",
     `Reconcile the current ${name} session state for that preceding user request.`,
@@ -365,15 +313,9 @@ function safeRecoveryResult(options: CliOptions, result: CliResult): CliResult {
 }
 
 function serializeProviderResult(
-  provider: RecoverableProvider,
+  _provider: RecoverableProvider,
   result: CliResult,
 ): string {
-  if (provider === "antigravity") {
-    return JSON.stringify({
-      event: "result",
-      result: { conversation_id: result.sessionId, status: "SUCCESS", response: result.text },
-    }) + "\n";
-  }
   return JSON.stringify({
     type: "result",
     subtype: "success",
@@ -383,8 +325,8 @@ function serializeProviderResult(
   }) + "\n";
 }
 
-function incompleteProviderText(provider: RecoverableProvider): string {
-  const name = provider === "antigravity" ? "Agy" : "Cursor";
+function incompleteProviderText(_provider: RecoverableProvider): string {
+  const name = "Cursor";
   return `${name} stopped before confirming completion. Some work may have been applied, but completion could not be verified.`;
 }
 
@@ -432,19 +374,16 @@ function finishRecoveryCancelled(options: CliOptions): { stdout: string } {
   return { stdout: "" };
 }
 
-type NonClaudeUncertainCompletionError =
-  | AntigravityUncertainCompletionError
-  | CursorUncertainCompletionError;
+type NonClaudeUncertainCompletionError = CursorUncertainCompletionError;
 
 function uncertainSessionId(error: NonClaudeUncertainCompletionError): string | null {
   return error.sessionId;
 }
 
 function originalSessionId(
-  provider: RecoverableProvider,
+  _provider: RecoverableProvider,
   args: string[],
 ): string | null {
-  if (provider === "antigravity") return optionValue(args, "--conversation");
   return optionValue(args, "--resume");
 }
 
@@ -452,15 +391,13 @@ function providerExecutionMode(
   provider: RecoverableProvider,
   args: string[],
 ): "safe" | "trusted" {
-  if (provider === "antigravity") return args.includes("--dangerously-skip-permissions") ? "trusted" : "safe";
   return optionValue(args, "--sandbox") === "disabled" ? "trusted" : "safe";
 }
 
 function providerToolMode(
-  provider: RecoverableProvider,
-  args: string[],
+  _provider: RecoverableProvider,
+  _args: string[],
 ): "default" | "none" {
-  if (provider === "antigravity") return args.includes("--sandbox") ? "none" : "default";
   return "default";
 }
 
@@ -472,19 +409,17 @@ function providerOutputFormat(
 }
 
 function isRecoverableProvider(provider: string | undefined): provider is RecoverableProvider {
-  return provider === "antigravity" || provider === "cursor";
+  return provider === "cursor";
 }
 
 function isNonClaudeUncertainCompletion(
   provider: RecoverableProvider,
   error: unknown,
 ): error is NonClaudeUncertainCompletionError {
-  return (provider === "antigravity" && error instanceof AntigravityUncertainCompletionError)
-    || (provider === "cursor" && error instanceof CursorUncertainCompletionError);
+  return provider === "cursor" && error instanceof CursorUncertainCompletionError;
 }
 
 function isProviderUncertainCompletionFailureMessage(provider: string | undefined, message: string): boolean {
-  if (provider === "antigravity") return isAntigravityUncertainCompletionFailureMessage(message);
   if (provider === "cursor") return isCursorUncertainCompletionFailureMessage(message);
   return false;
 }
@@ -511,22 +446,21 @@ async function recoverProviderUncertainCompletion(
   if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
   if (!sessionId) return finishIncomplete();
 
-  const agyMetadata = provider === "antigravity" ? antigravityInvocationMetadata.get(args) : undefined;
   const recoveryInvocation = buildCliInvocation({
     bot: provider,
     prompt: providerRecoveryPrompt(provider),
     sessionId,
     command,
-    model: provider === "antigravity" ? agyMetadata?.model ?? null : optionValue(args, "--model"),
+    model: optionValue(args, "--model"),
     executionMode: providerExecutionMode(provider, args),
     outputFormat: providerOutputFormat(provider),
-    logFile: provider === "antigravity" ? optionValue(args, "--log-file") : null,
+    logFile: null,
     soulContext: null,
     includeResponseContract: false,
     attachments: [],
     outputDir: null,
     effort: effortFromArgs(args),
-    homeDir: provider === "antigravity" ? agyMetadata?.homeDir ?? homedir() : homedir(),
+    homeDir: homedir(),
     toolMode: providerToolMode(provider, args),
   });
 
@@ -539,20 +473,12 @@ async function recoverProviderUncertainCompletion(
       onEvent: undefined,
       onProviderOutputChunk: undefined,
     };
-    const recovery = provider === "antigravity"
-      ? await runAntigravitySerialized(
-          recoveryInvocation.command,
-          recoveryInvocation.args,
-          cwd,
-          recoveryOptions,
-          antigravityInvocationMetadata.get(recoveryInvocation.args),
-        )
-      : await runSupervisedProcess(
-          recoveryInvocation.command,
-          recoveryInvocation.args,
-          cwd,
-          recoveryOptions,
-        );
+    const recovery = await runSupervisedProcess(
+      recoveryInvocation.command,
+      recoveryInvocation.args,
+      cwd,
+      recoveryOptions,
+    );
     if (recoveryWasCancelled(options)) return finishRecoveryCancelled(options);
     const parsed = parseCliResult({ bot: provider, stdout: recovery.stdout, outputFormat: providerOutputFormat(provider) });
     const result = safeRecoveryResult(options, parsed);
@@ -576,11 +502,8 @@ async function runConfiguredCli(
   const explicitModel = explicitModelIndex >= 0 && explicitModelIndex + 1 < args.length
     ? args[explicitModelIndex + 1]
     : null;
-  const antigravityModel = isAntigravityExecution(options)
-    ? antigravityInvocationMetadata.get(args)?.model ?? null
-    : null;
   consumePendingRunFallback(options.eventContext?.runId, eventChatKey(options), provider);
-  noteRunProviderAttempt(options.eventContext?.runId, provider, antigravityModel ?? explicitModel);
+  noteRunProviderAttempt(options.eventContext?.runId, provider, explicitModel);
 
   const executionOptions: CliOptions = {
     ...options,
@@ -596,16 +519,7 @@ async function runConfiguredCli(
 
   let outcome: { stdout: string };
   try {
-    outcome = isAntigravityExecution(options)
-      ? await runAntigravitySerialized(
-          command,
-          args,
-          cwd,
-          executionOptions,
-          antigravityInvocationMetadata.get(args),
-          onProgress,
-        )
-      : await runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
+    outcome = await runSupervisedProcess(command, args, cwd, executionOptions, onProgress);
   } catch (error) {
     if (isRecoverableProvider(provider) && isNonClaudeUncertainCompletion(provider, error)) {
       outcome = await recoverProviderUncertainCompletion(command, args, cwd, executionOptions, provider, error);

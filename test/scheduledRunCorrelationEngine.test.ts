@@ -127,7 +127,7 @@ describe("authoritative scheduled Run correlation", () => {
       const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
       const exhaustedChats = new Set<string>();
       const claudeCli = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
-      const codexCli = vi.fn().mockResolvedValue(JSON.stringify({ event: "result", result: { conversation_id: "11111111-2222-4333-8444-555555555555", status: "SUCCESS", response: "ROUTINE_TEST_OK" } }));
+      const codexCli = vi.fn().mockResolvedValue({ text: "ROUTINE_TEST_OK", sessionId: "11111111-2222-4333-8444-555555555555", stopReason: "end_turn" as const });
       const claude = new BridgeEngine({
         surfaceIdentity: "telegram:interactive",
         kind: "cursor",
@@ -144,7 +144,7 @@ describe("authoritative scheduled Run correlation", () => {
         allowedUserIds: new Set(["42"]),
         executionMode: "safe",
         pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, mockClient(), { runCli: codexCli });
+      }, db, mockClient(), { runProviderInvocation: codexCli });
       const deps = {
         engines: { cursor: claude, antigravity: codex },
         fallbackChain: new ProviderFallbackChain(["cursor", "antigravity"], db, () => true),

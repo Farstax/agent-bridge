@@ -19,7 +19,6 @@ import { type as evtType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
 import type { ExecutionLaneHandle } from "./db.js";
 import { buildWorkspaceLockedInvocation } from "./workspaceLock.js";
-import { normalizeCliArgs } from "./cliArgNormalization.js";
 import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
 import {
   filterProviderCredentialEnv,
@@ -406,11 +405,10 @@ export async function runSupervisedProcess(
       reject(new Error(`Execution already aborted for chatId=${String(options.chatId)}`));
       return;
     }
-    const normalizedArgs = normalizeCliArgs(command, args);
-    const spawnInvocation = buildWorkspaceLockedInvocation(command, normalizedArgs, cwd, {
+    const spawnInvocation = buildWorkspaceLockedInvocation(command, args, cwd, {
       bypassWorkspaceLock: options.bypassWorkspaceLock,
     });
-    console.log(formatSpawnLog(command, normalizedArgs, cwd, options.chatId, options.stdin, redactionEnv));
+    console.log(formatSpawnLog(command, args, cwd, options.chatId, options.stdin, redactionEnv));
     const childEnv = filterProviderCredentialEnv(options.bot, redactionEnv);
     if (options.eventContext?.runId) childEnv[RUN_MARKER_ENV] = options.eventContext.runId;
     if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;
@@ -449,7 +447,7 @@ export async function runSupervisedProcess(
     }, timeoutMs);
 
     const processWatchTimer = options.processWatch?.({
-      args: normalizedArgs,
+      args,
       readStdout: () => stdout,
       onFailure: (error, category = "unknown") => {
         if (settled || pendingError) return;
@@ -611,11 +609,10 @@ export async function runSupervisedStdioSession<T>(
   if (options.chatId != null && activeExecutions.get(options.chatId)?.abortRequested) {
     throw new Error(`Execution already aborted for chatId=${String(options.chatId)}`);
   }
-  const normalizedArgs = normalizeCliArgs(command, args);
-  const spawnInvocation = buildWorkspaceLockedInvocation(command, normalizedArgs, cwd, {
+  const spawnInvocation = buildWorkspaceLockedInvocation(command, args, cwd, {
     bypassWorkspaceLock: options.bypassWorkspaceLock,
   });
-  console.log(formatSpawnLog(command, normalizedArgs, cwd, options.chatId, undefined, redactionEnv));
+  console.log(formatSpawnLog(command, args, cwd, options.chatId, undefined, redactionEnv));
   const childEnv = filterProviderCredentialEnv(options.bot, redactionEnv);
   if (options.eventContext?.runId) childEnv[RUN_MARKER_ENV] = options.eventContext.runId;
   if (options.eventContext?.serviceId) childEnv[SERVICE_MARKER_ENV] = options.eventContext.serviceId;

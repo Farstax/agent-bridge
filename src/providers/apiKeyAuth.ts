@@ -1,16 +1,11 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
   mkdtempSync,
-  readFileSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
@@ -38,7 +33,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   },
   agy: {
     envVar: "GEMINI_API_KEY",
-    notes: "Agy requires modelProvider=gemini while the key is used; Bridge applies that setting only around the run.",
+    notes: "Agy ACP authenticates with workspace-local oauth-personal credentials under ~/.gemini/antigravity-acp/; GEMINI_API_KEY is redacted when present but is not a Bridge-managed ACP auth method.",
   },
   grok: {
     envVar: "XAI_API_KEY",
@@ -205,80 +200,6 @@ function cacheKey(provider: ProviderId, apiKey: string, env: Env): string {
   return `${provider}:${verificationScope(provider, env)}:${fingerprint}`;
 }
 
-function writeSettings(path: string, settings: Record<string, unknown>): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  chmodSync(dirname(path), 0o700);
-  writeFileSync(path, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-  chmodSync(path, 0o600);
-}
-
-function applyTemporaryAgyApiKeyProvider(homeDir: string): () => void {
-  const settingsPath = join(homeDir, ".gemini", "antigravity-cli", "settings.json");
-  const existed = existsSync(settingsPath);
-  let settings: Record<string, unknown> = {};
-  if (existed) {
-    try {
-      settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      settings = {};
-    }
-  }
-  const hadModelProvider = Object.prototype.hasOwnProperty.call(settings, "modelProvider");
-  const previousModelProvider = settings.modelProvider;
-  settings.modelProvider = "gemini";
-  writeSettings(settingsPath, settings);
-
-  return () => {
-    let current: Record<string, unknown> = {};
-    try {
-      current = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      current = {};
-    }
-    if (hadModelProvider) current.modelProvider = previousModelProvider;
-    else delete current.modelProvider;
-
-    if (!existed && Object.keys(current).length === 0) {
-      rmSync(settingsPath, { force: true });
-      return;
-    }
-    writeSettings(settingsPath, current);
-  };
-}
-
-export function hasAntigravityAccountAuth(homeDir: string): boolean {
-  return [
-    join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
-    join(homeDir, ".gemini", "oauth_creds.json"),
-  ].some(existsSync);
-}
-
-/**
- * Account auth remains Agy's default. With no account credential, a configured
- * key is verified asynchronously before the Gemini setting is applied. Normal
- * runtime calls hit the fingerprint cache; qualification can establish the
- * same evidence without a separate unsafe execution path.
- */
-export async function withAntigravityApiKeyProvider<T>(
-  homeDir: string,
-  env: Env,
-  operation: () => Promise<T>,
-): Promise<T> {
-  if (hasAntigravityAccountAuth(homeDir) || !isProviderApiKeyConfigured("agy", env)) {
-    return operation();
-  }
-  const verified = isProviderApiKeyVerified("agy", env)
-    || await verifyProviderApiKey("agy", { env });
-  if (!verified) return operation();
-
-  const restore = applyTemporaryAgyApiKeyProvider(homeDir);
-  try {
-    return await operation();
-  } finally {
-    restore();
-  }
-}
-
 const defaultProbeExecutor: ProviderApiKeyProbeExecutor = (command, args, options) =>
   new Promise((resolve, reject) => {
     execFile(command, args, options, (error) => {
@@ -307,19 +228,6 @@ async function runNativeProbe(
   };
 
   try {
-    if (provider === "agy") {
-      writeSettings(join(probeHome, ".gemini", "antigravity-cli", "settings.json"), { modelProvider: "gemini" });
-      await execute(command, [
-        "--sandbox",
-        "--print-timeout",
-        "15s",
-        "--output-format",
-        "json",
-        "--print",
-        "Reply with exactly OK.",
-      ], common);
-      return;
-    }
     if (provider === "cursor") {
       await execute(command, [
         "-p",

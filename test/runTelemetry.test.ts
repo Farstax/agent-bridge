@@ -46,7 +46,33 @@ describe("normalized provider run telemetry", () => {
     });
   });
 
-  it("extracts Agy structured usage and ignores unknown fields", () => {
+  it("extracts Agy ACP usage into normalized telemetry", () => {
+    const parsed = acpTurnResultToCliResult("agy", {
+      liveText: "done",
+      acpSessionId: AGY_SESSION,
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 90,
+        outputTokens: 20,
+        cachedReadTokens: 30,
+        thoughtTokens: 6,
+      },
+    });
+    expect(parsed).toEqual({
+      text: "done",
+      sessionId: AGY_SESSION,
+      stopReason: "end_turn",
+      telemetry: {
+        provider: "antigravity",
+        inputTokens: 90,
+        outputTokens: 20,
+        cachedInputTokens: 30,
+        reasoningTokens: 6,
+      },
+    });
+  });
+
+  it("ignores leftover native Agy stream-json telemetry after ACP migration", () => {
     const stdout = JSON.stringify({
       event: "result",
       result: {
@@ -66,20 +92,8 @@ describe("normalized provider run telemetry", () => {
       },
     });
 
-    expect(parseCliResult({ bot: "antigravity", stdout, outputFormat: "stream-json" })).toEqual({
-      text: "done",
-      sessionId: AGY_SESSION,
-      telemetry: {
-        provider: "antigravity",
-        model: "Gemini 3.5 Flash (High)",
-        inputTokens: 90,
-        cachedInputTokens: 30,
-        outputTokens: 20,
-        reasoningTokens: 6,
-        providerDurationMs: 1400,
-        stopReason: "completed",
-      },
-    });
+    expect(() => parseCliResult({ bot: "antigravity", stdout, outputFormat: "stream-json" }))
+      .toThrow(/ACP structured results/);
   });
 
   it("preserves legacy parser shapes when telemetry is absent", () => {
@@ -89,14 +103,14 @@ describe("normalized provider run telemetry", () => {
       stopReason: "end_turn",
     })).toEqual({ text: "done", sessionId: "legacy-session", stopReason: "end_turn" });
 
-    expect(parseCliResult({
+    expect(() => parseCliResult({
       bot: "antigravity",
       outputFormat: "stream-json",
       stdout: JSON.stringify({
         event: "result",
         result: { conversation_id: AGY_SESSION, status: "SUCCESS", response: "done" },
       }),
-    })).toEqual({ text: "done", sessionId: AGY_SESSION });
+    })).toThrow(/ACP structured results/);
   });
 
   it("keeps provider-reported actual model authoritative", () => {
@@ -181,7 +195,13 @@ describe("normalized provider run telemetry", () => {
       });
       noteRunProviderAttempt(runId, "antigravity", "requested-antigravity");
       registerProviderOutput(runId, "antigravity", stdout);
-      const parsed = parseCliResult({ bot: "antigravity", stdout, outputFormat: "stream-json" });
+      const parsed = acpTurnResultToCliResult("agy", {
+        liveText: "done",
+        acpSessionId: AGY_SESSION,
+        stopReason: "end_turn",
+        usage: { inputTokens: 12, outputTokens: 4 },
+      });
+      captureParsedProviderOutput("antigravity", stdout, parsed.telemetry);
 
       const store = new EventStore(db);
       store.collect(eventType.runStarted({

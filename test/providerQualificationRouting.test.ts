@@ -15,9 +15,9 @@ describe("provider qualification routing", () => {
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord({
       provider: "agy",
-      executionRuntime: "native:agy",
-      providerVersion: "1.1.12",
-      previousVersion: "1.1.11",
+      executionRuntime: resolveProviderRuntime("agy", {}).runtimeIdentity,
+      providerVersion: "1.1.1",
+      previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
       qualifiedAt: "2026-08-10T17:00:00.000Z",
@@ -25,7 +25,7 @@ describe("provider qualification routing", () => {
       overall: "fail",
       checks: [
         { name: "version", status: "pass" },
-        { name: "fresh_prompt", status: "fail", diagnostic: "native JSON contract drift" },
+        { name: "fresh_prompt", status: "fail", diagnostic: "ACP structured error contract drift" },
         { name: "session_resume", status: "not_applicable" },
       ],
     }, evidencePath);
@@ -47,7 +47,7 @@ describe("provider qualification routing", () => {
     }, evidencePath);
 
     expect([...getQualificationFailedProviders(evidencePath, {
-      agy: "1.1.12",
+      agy: "1.1.1",
       claude: "2.3.4",
     })]).toEqual(["agy"]);
   });

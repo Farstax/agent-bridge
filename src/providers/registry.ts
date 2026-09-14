@@ -6,7 +6,7 @@ import {
   PROVIDER_IDS,
 } from "./types.js";
 import type { AcpProviderPolicy } from "./acpRuntime.js";
-import { createPlannerStallWatch } from "./antigravityRuntime.js";
+import { agyAcpPolicy } from "./agyAcpPolicy.js";
 import { claudeAcpPolicy } from "./claudeAcpPolicy.js";
 import { codexAcpPolicy } from "./codexAcpPolicy.js";
 import { grokAcpPolicy } from "./grokAcpPolicy.js";
@@ -31,15 +31,10 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   agy: {
     id: "agy",
     displayName: "Antigravity",
-    executable: "agy",
-    versionArgs: ["--version"],
-    defaultArgs: ["--print"],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
-      toolFree: true,
     },
-    processWatch: createPlannerStallWatch,
   },
   grok: {
     id: "grok",
@@ -68,6 +63,7 @@ const ACP_POLICIES: Readonly<Partial<Record<ProviderId, AcpProviderPolicy>>> = {
   codex: codexAcpPolicy,
   claude: claudeAcpPolicy,
   grok: grokAcpPolicy,
+  agy: agyAcpPolicy,
 };
 
 /**

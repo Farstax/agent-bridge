@@ -88,7 +88,7 @@ cli_command_version() {
     claude) configured="${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" ;;
     codex) configured="${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" ;;
     grok) configured="${GROK_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/grok}" ;;
-    agy) configured="${ANTIGRAVITY_COMMAND:-}" ;;
+    agy) configured="${AGY_ACP_COMMAND:-}" ;;
   esac
   if [[ -n "${configured}" ]]; then
     command="${configured}"
@@ -230,8 +230,7 @@ if [[ "${1:-}" == "--update" ]]; then
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
   fi
-  echo "[update] Updating agy (antigravity)..."
-  bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
+  echo "[update] Agy ACP uses the host-installed agy_acp_server.par; not downloaded by upgrade."
 
   after_claude="$(cli_command_version claude)"
   if [[ -z "${after_claude}" ]]; then
@@ -322,12 +321,8 @@ if [[ "${1:-}" != "--skip-cli-install" ]]; then
     run_as_target_user "${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" --version >/dev/null
   fi
 
-  if ! command -v agy >/dev/null 2>&1; then
-    echo "Installing agy..."
-    run_as_target_user bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
-  fi
-  if command -v agy >/dev/null 2>&1; then
-    run_as_target_user agy --help >/dev/null
+  if [[ -x "${AGY_ACP_COMMAND:-${ANTIGRAVITY_ACP_COMMAND:-}}" ]]; then
+    run_as_target_user "${AGY_ACP_COMMAND:-${ANTIGRAVITY_ACP_COMMAND}}" --version >/dev/null
   fi
 
   if [[ -x "${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" ]]; then

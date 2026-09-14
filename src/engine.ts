@@ -29,7 +29,6 @@ import {
   scrubOutputDir,
   CliTimeoutError,
 } from "./cli.js";
-import { resolveAntigravityConversationId, setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
 import { isAcpBackedBot, supportsToolFreeMode } from "./providers/registry.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
@@ -40,7 +39,6 @@ import { adaptTelegramMessage, adaptTelegramUpdate, InteractiveTurnBuffer, type 
 import { hasAudioAttachment, prepareVoiceBatchForDispatch } from "./voiceIngress.js";
 import { downloadSurfaceAttachment } from "./fileDownload.js";
 import { cleanOutputDir, prepareOutputDir, uploadOutputFiles } from "./fileOutput.js";
-import { createAntigravityAnswerPresentationDecoder } from "./providers/antigravityAnswerPresentation.js";
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { sendSurfaceMessage, sendMessageWithProgress, PreviewCleanupError } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir } from "./bridge.js";
@@ -157,15 +155,6 @@ const ENGINE_TURN_TEXT_LIMIT = 1_200;
 const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor"]);
 function isAgentKind(kind: string): kind is BotKind {
   return AGENT_KINDS.has(kind);
-}
-
-function isAntigravityPrintTimeoutError(error: Error): boolean {
-  return /agy execution timed out waiting for response|print mode timed out waiting for response/i.test(error.message ?? "");
-}
-
-function isRecoverableAntigravityExecutionError(error: Error): boolean {
-  const message = error.message ?? "";
-  return /error executing cascade step:|agent executor error:|PlannerResponse without ModifiedResponse|Agy stalled in planner loop without usable output|Agy JSON parse failed/i.test(message);
 }
 
 function topicChatKey(chatId: number | string, chatType: string, threadId?: number | string): string {
@@ -802,18 +791,9 @@ export class BridgeEngine {
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
           const executionKind = this._executionKind();
-          const answerDecoder = executionKind === "antigravity"
-            ? createAntigravityAnswerPresentationDecoder(onAnswerDelta)
-            : null;
           const body = {
             message_thread_id: input.threadId,
-            onProviderOutputChunk: answerDecoder ? (chunk: string) => answerDecoder.push(chunk) : undefined,
-            onProviderOutputFinished: answerDecoder ? () => answerDecoder.finish() : undefined,
-            // A messaging-kind decoder already routes provisional deltas through
-            // onProviderOutputChunk; only providers without one and whose
-            // resolved runtime policy opts into provisional answers get the
-            // raw seam directly, so a future ACP provider needs no engine edit.
-            onAnswerDelta: !answerDecoder && supportsProvisionalAnswers(executionKind) ? onAnswerDelta : undefined,
+            onAnswerDelta: supportsProvisionalAnswers(executionKind) ? onAnswerDelta : undefined,
           };
           result = await this.executePromptAsync(
             input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments,
@@ -1553,16 +1533,11 @@ export class BridgeEngine {
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
 
-    let logFile: string | null = null;
-    if (executionKind === "antigravity") {
-      logFile = join(tmpdir(), `antigravity-${randomUUID()}.log`);
-    }
+    const logFile: string | null = null;
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
     const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
     const cwd = this._workingDir(executionKind);
-    const startedAtMs = Date.now();
-    if (executionKind === "antigravity") setAntigravityModel(model);
     const nativeSessionMode = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -1587,7 +1562,7 @@ export class BridgeEngine {
       prompt: promptForCli.prompt,
       sessionId,
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" ? "stream-json" : "json",
+      outputFormat: "json",
       logFile,
       soulContext: promptForCli.soulContext,
       includeResponseContract: promptForCli.includeResponseContract,
@@ -1643,18 +1618,7 @@ export class BridgeEngine {
         try { logContent = readFileSync(logFile, "utf8"); } catch {} finally { try { rmSync(logFile); } catch {} }
       }
 
-      let result: CliResult;
-      if (parsedAcp) {
-        result = parsedAcp;
-      } else {
-        const outputFormat = executionKind === "antigravity"
-          ? (invocation.args.includes("stream-json") ? "stream-json" : (invocation.args.includes("json") ? "json" : "text"))
-          : undefined;
-        result = parseCliResult({ bot: executionKind, stdout, logContent, outputFormat });
-      }
-      if (executionKind === "antigravity" && !result.sessionId) {
-        result.sessionId = resolveAntigravityConversationId({ cwd, sinceMs: startedAtMs, explicitLogContent: logContent });
-      }
+      const result: CliResult = parsedAcp ?? parseCliResult({ bot: executionKind, stdout, logContent });
       result.text = scrubOutputDir(result.text, outDir);
       const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
       if (stagedResult.stopReason === "cancelled") {
@@ -1723,14 +1687,11 @@ export class BridgeEngine {
         if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
-      if (executionKind === "antigravity" && (isAntigravityPrintTimeoutError(error as Error) || isRecoverableAntigravityExecutionError(error as Error))) {
-        return this._retryAntigravityFreshSession(prompt, chatId, chatKey, outDir, onProgress, attachments, laneHandle, eventContext, runId, collect, body.message_thread_id, body);
-      }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
           return this._runWithFallback(
-            prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, startedAtMs, onProgress,
+            prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, Date.now(), onProgress,
             attachments, logFile, laneHandle, eventContext, runId, collect, body,
           );
         }
@@ -1738,174 +1699,6 @@ export class BridgeEngine {
       this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
       throw error;
     }
-  }
-
-  private async _runFreshAntigravityRetry(
-    prompt: string,
-    chatId: number | string,
-    chatKey: string,
-    outDir: string,
-    onProgress: (t: string) => void,
-    attachments: string[],
-    laneHandle: ExecutionLaneHandle,
-    eventContext: CliOptions["eventContext"] = undefined as any,
-    runId: string | null = null,
-    collect: ((e: BridgeEvent) => void) | null = null,
-    soulContext: string | null = null,
-    includeResponseContract = true,
-    body: any = {},
-  ): Promise<StagedCliResult> {
-    const executionKind = this._executionKind();
-    const model = isAgentKind(this.kind)
-      ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
-      : (this.opts.botConfig.modelPreference[0] || null);
-    const retryLogFile = join(tmpdir(), `antigravity-${randomUUID()}.log`);
-    const retryCwd = this._workingDir(executionKind);
-    const retryStartedAtMs = Date.now();
-    setAntigravityModel(model);
-    const retryInvocation = buildCliInvocation({
-      bot: executionKind,
-      command: this.opts.botConfig.command,
-      model,
-      prompt,
-      sessionId: null,
-      executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" ? "stream-json" : "json",
-      logFile: retryLogFile,
-      soulContext,
-      includeResponseContract,
-      outputDir: outDir,
-      attachments,
-    });
-
-    try {
-      let rawResult: string;
-      let parsedAcp: CliResult | null = null;
-      try {
-        const invoked = await this._runNativeOrAcp(
-          executionKind,
-          retryInvocation,
-          retryCwd,
-          {
-            ...buildExecutionOptions(executionKind),
-            onProgress,
-            onProviderOutputChunk: body.onProviderOutputChunk,
-            chatId: this._executionLane(chatKey),
-            stdin: retryInvocation.stdin,
-            eventContext,
-            onEvent: collect ?? undefined,
-          },
-          {
-            prompt,
-            sessionId: null,
-            model,
-            executionMode: this.opts.executionMode,
-            soulContext,
-            includeResponseContract,
-            attachments,
-            outputDir: outDir,
-            effort: resolveEffort(executionKind, this.db),
-          },
-          { conversationId: chatKey, runId: runId ?? randomUUID() },
-        );
-        rawResult = invoked.stdout;
-        parsedAcp = invoked.parsed;
-      } finally {
-        body.onProviderOutputFinished?.();
-      }
-      this._assertLaneOwned(laneHandle);
-
-      let retryLogContent: string | null = null;
-      try { retryLogContent = readFileSync(retryLogFile, "utf8"); } catch {}
-      finally { try { rmSync(retryLogFile); } catch {} }
-
-      const outputFormat = executionKind === "antigravity"
-        ? (retryInvocation.args.includes("stream-json") ? "stream-json" : (retryInvocation.args.includes("json") ? "json" : "text"))
-        : undefined;
-      const result = parsedAcp ?? parseCliResult({ bot: executionKind, stdout: rawResult, logContent: retryLogContent, outputFormat });
-      if (!result.sessionId) {
-        result.sessionId = resolveAntigravityConversationId({ cwd: retryCwd, sinceMs: retryStartedAtMs, explicitLogContent: retryLogContent });
-      }
-      result.text = scrubOutputDir(result.text, outDir);
-      const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode: "fresh" };
-      if (collect && runId && eventContext) {
-        collect({
-          type: "run.completed",
-          version: 1,
-          id: randomUUID(),
-          runId,
-          timestamp: new Date().toISOString(),
-          bot: eventContext.bot,
-          chatId: eventContext.chatId,
-          chatKey: eventContext.chatKey,
-          threadId: eventContext.threadId,
-          sessionId: stagedResult.sessionId ?? null,
-          text: stagedResult.text,
-          ...(stagedResult.telemetry ? { telemetry: stagedResult.telemetry } : {}),
-        });
-      }
-      return stagedResult;
-    } catch (retryError) {
-      try { rmSync(retryLogFile); } catch {}
-      throw retryError;
-    }
-  }
-
-  private async _retryAntigravityFreshSession(
-    prompt: string,
-    chatId: number | string,
-    chatKey: string,
-    outDir: string,
-    onProgress: (t: string) => void,
-    attachments: string[],
-    laneHandle: ExecutionLaneHandle,
-    eventContext: CliOptions["eventContext"] = undefined as any,
-    runId: string | null = null,
-    collect: ((e: BridgeEvent) => void) | null = null,
-    bodyThreadId?: number | string,
-    body: any = {},
-  ): Promise<StagedCliResult> {
-    if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
-    const model = isAgentKind(this.kind)
-      ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
-      : (this.opts.botConfig.modelPreference[0] || null);
-    const retryPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", model);
-    const maxFreshAttempts = 2;
-    let retryResult: StagedCliResult | null = null;
-    for (let attempt = 1; attempt <= maxFreshAttempts; attempt++) {
-      try {
-        retryResult = await this._runFreshAntigravityRetry(
-          retryPromptForCli.prompt,
-          chatId,
-          chatKey,
-          outDir,
-          onProgress,
-          attachments,
-          laneHandle,
-          eventContext,
-          runId,
-          collect,
-          retryPromptForCli.soulContext,
-          retryPromptForCli.includeResponseContract,
-          body,
-        );
-        break;
-      } catch (retryError) {
-        const err = retryError instanceof Error ? retryError : new Error(String(retryError));
-        if (!(isAntigravityPrintTimeoutError(err) || isRecoverableAntigravityExecutionError(err))) throw err;
-        console.warn(`[${this.kind}] fresh-session retry ${attempt}/${maxFreshAttempts} failed with recoverable Agy error`, err.message);
-        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
-        if (attempt === maxFreshAttempts) {
-          throw new Error("Agy failed repeatedly with an internal cascade error. The session was reset — please resend your message.");
-        }
-      }
-    }
-    if (!retryResult) throw new Error("Agy fresh-session retry produced no result.");
-    this._renewLaneOrThrow(laneHandle);
-    if (this.hooks.onAfterExecute) {
-      await this.hooks.onAfterExecute(prompt, retryResult.text, hookContext(chatId, chatKey, bodyThreadId));
-    }
-    return retryResult;
   }
 
   private async _runWithFallback(
@@ -1927,11 +1720,7 @@ export class BridgeEngine {
     body: any = {},
   ): Promise<StagedCliResult> {
     const executionKind = this._executionKind();
-    let fallbackLogFile: string | null = null;
-    if (executionKind === "antigravity") {
-      fallbackLogFile = join(tmpdir(), `antigravity-${randomUUID()}.log`);
-    }
-    if (executionKind === "antigravity") setAntigravityModel(fallbackModel);
+    const fallbackLogFile: string | null = null;
     const fallbackPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", fallbackModel);
     const fallbackInvocation = buildCliInvocation({
       bot: executionKind,
@@ -1941,7 +1730,7 @@ export class BridgeEngine {
       prompt: fallbackPromptForCli.prompt,
       sessionId: null,
       executionMode: this.opts.executionMode,
-      outputFormat: executionKind === "antigravity" ? "stream-json" : "json",
+      outputFormat: "json",
       logFile: fallbackLogFile,
       soulContext: fallbackPromptForCli.soulContext,
       includeResponseContract: fallbackPromptForCli.includeResponseContract,
@@ -1950,7 +1739,6 @@ export class BridgeEngine {
     });
     try {
       const fallbackCwd = this._workingDir(executionKind);
-      const fallbackStartedAtMs = Date.now();
       let rawResult: string;
       let parsedAcp: CliResult | null = null;
       try {
@@ -1995,18 +1783,11 @@ export class BridgeEngine {
         finally { try { rmSync(fallbackLogFile); } catch {} }
       }
 
-      let result: CliResult;
-      if (parsedAcp) {
-        result = parsedAcp;
-      } else {
-        const outputFormat = executionKind === "antigravity"
-          ? (fallbackInvocation.args.includes("stream-json") ? "stream-json" : (fallbackInvocation.args.includes("json") ? "json" : "text"))
-          : undefined;
-        result = parseCliResult({ bot: executionKind, stdout: rawResult, logContent: fallbackLogContent, outputFormat });
-      }
-      if (executionKind === "antigravity" && !result.sessionId) {
-        result.sessionId = resolveAntigravityConversationId({ cwd: fallbackCwd, sinceMs: fallbackStartedAtMs, explicitLogContent: fallbackLogContent });
-      }
+      const result: CliResult = parsedAcp ?? parseCliResult({
+        bot: executionKind,
+        stdout: rawResult,
+        logContent: fallbackLogContent,
+      });
       const currentModel = isAgentKind(this.kind) ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null) : null;
       const finalResult = {
         ...result,
@@ -2162,7 +1943,6 @@ export class BridgeEngine {
 
     if (value === "reset") {
       this.db.setSetting(this.kind, null);
-      if (this.kind === "antigravity") setAntigravityModel(null);
       await this.client.answerCallbackQuery({
         callback_query_id: callbackQuery.id,
         text: `${this.kind} reset to default`,
@@ -2177,7 +1957,6 @@ export class BridgeEngine {
     }
 
     this.db.setSetting(this.kind, value);
-    if (this.kind === "antigravity") setAntigravityModel(value);
     await this.client.answerCallbackQuery({ callback_query_id: callbackQuery.id });
     await this.client.editMessageText({
       chat_id: chatId,

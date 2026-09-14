@@ -131,7 +131,12 @@ describe("cursor doctor and session expiry", () => {
   it("accepts cursor in INTERACTIVE_CLI_CHAIN", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "cursor" },
-      commandExists: () => true,
+      // Only claim the configured provider (cursor) as installed. Other ACP
+      // providers (codex/claude/grok/agy) are not configured in this chain;
+      // faking their executables as present would force real version
+      // inspection against binaries that don't exist in this sandbox,
+      // reporting them "invalid" and incorrectly failing the overall report.
+      commandExists: (executable) => executable.includes("cursor"),
       inspectVoiceRuntime: () => ({ status: "ready", reasonCode: null }),
     });
     const chain = report.chains.find((entry) => entry.name === "INTERACTIVE_CLI_CHAIN");

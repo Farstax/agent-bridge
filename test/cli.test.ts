@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterAll, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, toAntigravityModelLabel, setAntigravityModel, parseCliResult, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv, normalizeCliArgs } from "../src/cli.js";
+import { runCli, runCliAsync, abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses, shutdownCliProcessesAndWait, isCapacityExhaustedError, getNextFallbackModel, parseCliResult, buildCliInvocation, buildSafeChildEnv, buildAdvisorChildEnv } from "../src/cli.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,32 +18,6 @@ describe("runCliAsync idle timeout", () => {
     ).rejects.toThrow(/idle timeout/i);
   }, 2000);
 
-  it("aborts agy when planner churn persists without usable output", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "agy-stall-"));
-    const scriptPath = join(tempDir, "agy");
-    const logPath = join(tempDir, "agy.log");
-    writeFileSync(
-      scriptPath,
-      `#!/usr/bin/env bash\necho 'PlannerResponse without ModifiedResponse encountered' > "$2"\nsleep 5\n`,
-      { mode: 0o755 },
-    );
-
-    const previous = process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS;
-    process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS = "200";
-    try {
-      await expect(
-        runCliAsync(scriptPath, ["--log-file", logPath, "--print", "hello"], cliTestCwd, {
-          timeoutMs: 5_000,
-          idleTimeoutMs: 5_000,
-          killGraceMs: 25,
-        }),
-      ).rejects.toThrow(/stalled in planner loop/i);
-    } finally {
-      if (previous === undefined) delete process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS;
-      else process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS = previous;
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  }, 4000);
 });
 
 describe("CLI Runner", () => {
@@ -83,11 +57,11 @@ describe("CLI Runner", () => {
 
   it("rejects unsupported tool-free providers", () => {
     const agy = buildCliInvocation({
-      bot: "antigravity", prompt: "advise", sessionId: null, command: "agy",
+      bot: "antigravity", prompt: "advise", sessionId: null, command: "agy_acp_server.par",
       model: "gemini-3.5-flash-high", outputFormat: "json", toolMode: "none",
     });
-    expect(agy.args).toContain("--sandbox");
-    expect(agy.args).toEqual(expect.arrayContaining(["--output-format", "stream-json"]));
+    expect(agy.transport).toBe("acp-stdio");
+    expect(agy.args).not.toContain("--sandbox");
 
     expect(() => buildCliInvocation({
       bot: "codex", prompt: "advise", sessionId: null, command: "codex-acp",
@@ -304,133 +278,18 @@ describe("model fallback", () => {
     expect(getNextFallbackModel("c", prefs)).toBeNull();
   });
 
-  it("aborts agy when planner churn persists without usable output", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "agy-stall-cli-"));
-    const fakeAgy = join(tempDir, "agy");
-    const tmpLog = join(tempDir, "agy.log");
-    writeFileSync(
-      fakeAgy,
-      `#!/usr/bin/env bash
-printf 'PlannerResponse without ModifiedResponse encountered\\n' >> "$2"
-sleep 5
-`,
-      { mode: 0o755 },
-    );
-
-    const previous = process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS;
-    process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS = "200";
-    try {
-      await expect(
-        runCliAsync(
-          fakeAgy,
-          ["--log-file", tmpLog, "--print", "hello"],
-          cliTestCwd,
-          {
-            timeoutMs: 5_000,
-            idleTimeoutMs: 5_000,
-            killGraceMs: 25,
-          },
-        ),
-      ).rejects.toThrow(/stalled in planner loop/i);
-    } finally {
-      if (previous === undefined) delete process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS;
-      else process.env.ANTIGRAVITY_STALLED_PLANNER_TIMEOUT_MS = previous;
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  }, 4000);
 });
 
-describe("antigravity model mapping and stream-json result contract", () => {
-  const conversationId = "11111111-2222-3333-4444-555555555555";
-
-  function streamResult(result: Record<string, unknown>): string {
-    return JSON.stringify({ event: "result", result });
-  }
-
-  it("maps model IDs to Agy display names", () => {
-    expect(toAntigravityModelLabel("gemini-3.5-flash-high")).toBe("Gemini 3.5 Flash (High)");
-    expect(toAntigravityModelLabel("gemini-3.5-flash-medium")).toBe("Gemini 3.5 Flash (Medium)");
-    expect(toAntigravityModelLabel("gemini-3.1-pro-high")).toBe("Gemini 3.1 Pro (High)");
-    expect(toAntigravityModelLabel("gemini-3.1-pro-low")).toBe("Gemini 3.1 Pro (Low)");
-    expect(toAntigravityModelLabel("claude-4.6-sonnet-thinking")).toBe("Claude Sonnet 4.6 (Thinking)");
-    expect(toAntigravityModelLabel("claude-4.6-opus-thinking")).toBe("Claude Opus 4.6 (Thinking)");
-  });
-
-  it("handles unrecognized slugs gracefully using backup formatter", () => {
-    expect(toAntigravityModelLabel("gemini-4.0-pro-high")).toBe("Gemini 4.0 Pro (High)");
-    expect(toAntigravityModelLabel("claude-5.0-sonnet-thinking")).toBe("Claude 5.0 Sonnet (Thinking)");
-  });
-
-  it("leaves already-formatted display labels alone", () => {
-    expect(toAntigravityModelLabel("Gemini 3.5 Flash (High)")).toBe("Gemini 3.5 Flash (High)");
-    expect(toAntigravityModelLabel("Claude Sonnet 4.6 (Thinking)")).toBe("Claude Sonnet 4.6 (Thinking)");
-  });
-
-  it("writes mapped model names to settings.json using setAntigravityModel", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "agy-settings-test-"));
-    try {
-      // 1. Initial write to new settings
-      setAntigravityModel("gemini-3.5-flash-high", tempDir);
-      const settingsPath = join(tempDir, ".gemini", "antigravity-cli", "settings.json");
-      let data = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(data.model).toBe("Gemini 3.5 Flash (High)");
-
-      // 2. Overwrite with another model
-      setAntigravityModel("claude-4.6-opus-thinking", tempDir);
-      data = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(data.model).toBe("Claude Opus 4.6 (Thinking)");
-
-      // 3. Reset (pass null) deletes the model key
-      setAntigravityModel(null, tempDir);
-      data = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(data.model).toBeUndefined();
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("fails closed when Agy returns no terminal stream-json result", () => {
-    expect(() => parseCliResult({ bot: "antigravity", stdout: "" })).toThrow(/terminal result event was missing/i);
-    expect(() => parseCliResult({ bot: "antigravity", stdout: "   " })).toThrow(/terminal result event was missing/i);
-  });
-
-  it("extracts response and conversation from the terminal stream-json result", () => {
-    const stdout = [
-      JSON.stringify({ event: "init", conversation_id: conversationId }),
-      streamResult({ conversation_id: conversationId, status: "SUCCESS", response: "The server is running on port 3000." }),
-    ].join("\n");
-    expect(parseCliResult({ bot: "antigravity", stdout })).toEqual({
-      text: "The server is running on port 3000.",
-      sessionId: conversationId,
-    });
-  });
-
-  it("rejects legacy plain, fenced, and delimiter output instead of recovering it", () => {
-    for (const stdout of [
-      JSON.stringify({ reasoning: "old", response: "legacy object" }),
-      "```json\n{\"response\":\"legacy fenced\"}\n```",
-      "STATUS: working***\nlegacy delimiter answer",
-      "🧠 Memory Loaded: old context\nlegacy text",
-    ]) {
-      expect(() => parseCliResult({ bot: "antigravity", stdout })).toThrow(/Agy stream JSON/i);
-    }
-  });
-
-  it("preserves capacity classification from a terminal stream-json error", () => {
-    const stdout = streamResult({
-      conversation_id: conversationId,
-      status: "ERROR",
-      response: "",
-      error: "RESOURCE_EXHAUSTED: Individual quota reached",
-    });
-    let caught: Error | null = null;
-    try {
-      parseCliResult({ bot: "antigravity", stdout });
-    } catch (error) {
-      caught = error as Error;
-    }
-    expect(caught).not.toBeNull();
-    expect(isCapacityExhaustedError(caught!)).toBe(true);
+describe("antigravity ACP result contract", () => {
+  it("does not parse native stream-json after ACP migration", () => {
+    expect(() => parseCliResult({ bot: "antigravity", stdout: "" })).toThrow(/ACP structured results/);
+    expect(() => parseCliResult({
+      bot: "antigravity",
+      stdout: JSON.stringify({
+        event: "result",
+        result: { conversation_id: "11111111-2222-3333-4444-555555555555", status: "SUCCESS", response: "ok" },
+      }),
+    })).toThrow(/ACP structured results/);
   });
 });
 
@@ -439,25 +298,24 @@ describe("antigravity model mapping and stream-json result contract", () => {
 describe("buildCliInvocation — attachment injection", () => {
   const base = { prompt: "hello", sessionId: null, command: "agy", model: null };
 
-  it("agy: appends attachment annotation lines to prompt for each file", () => {
-    const { args } = buildCliInvocation({
+  it("agy: keeps ACP argv free of attachment path flags", () => {
+    const invocation = buildCliInvocation({
       ...base,
       bot: "antigravity",
       attachments: ["/tmp/x.jpg", "/tmp/y.png"],
     });
-    const prompt = args[args.length - 1];
-    expect(prompt).toContain("[Attached file saved at: /tmp/x.jpg]");
-    expect(prompt).toContain("[Attached file saved at: /tmp/y.png]");
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.args).toEqual(["--uid="]);
+    expect(invocation.args.join(" ")).not.toContain("/tmp/x.jpg");
   });
 
   it("agy: no annotation when attachments is empty", () => {
-    const { args } = buildCliInvocation({
+    const invocation = buildCliInvocation({
       ...base,
       bot: "antigravity",
       attachments: [],
     });
-    const prompt = args[args.length - 1];
-    expect(prompt).not.toContain("[Attached file saved at:");
+    expect(invocation.prompt).not.toContain("[Attached file saved at:");
   });
 
   it("codex: no -i flags when attachments is empty", () => {
@@ -470,43 +328,29 @@ describe("buildCliInvocation — attachment injection", () => {
     expect(args).not.toContain("-i");
   });
 
-  it("all bots: appends outputDir instruction to prompt when outputDir is set", () => {
+  it("all bots: ACP invocation carries the outputDir on the request path, not native argv", () => {
     for (const bot of ["antigravity"] as const) {
-      const { args } = buildCliInvocation({
+      const invocation = buildCliInvocation({
         ...base,
         bot,
         command: "cmd",
         outputDir: "/tmp/bridge-out/42",
       });
-      const prompt = args[args.length - 1];
-      expect(prompt).toContain("If you are explicitly asked to share or generate a file for the user, save it to /tmp/bridge-out/42");
+      expect(invocation.transport).toBe("acp-stdio");
+      expect(invocation.args).not.toContain("/tmp/bridge-out/42");
     }
   });
 
-  it("outputDir instruction states that the bridge handles delivery and omit file paths", () => {
-    for (const bot of ["antigravity"] as const) {
-      const { args } = buildCliInvocation({
-        ...base,
-        bot,
-        command: "cmd",
-        outputDir: "/tmp/bridge-out/42",
-      });
-      const prompt = args[args.length - 1];
-      expect(prompt).toContain("the bridge handles delivery");
-      expect(prompt).toMatch(/omit.*file path|file path.*omit/i);
-    }
-  });
-
-  it("wraps prompts with the minimum response contract when Soul is absent", () => {
-    const { args } = buildCliInvocation({
+  it("wraps prompts with the execution contract when Soul is absent", () => {
+    const invocation = buildCliInvocation({
       ...base,
       bot: "antigravity",
       command: "agy",
+      includeResponseContract: false,
     });
-    const prompt = args[args.length - 1];
-    expect(prompt).toContain("Response contract:");
-    expect(prompt).toContain("Preserve critical facts");
-    expect(prompt).not.toContain("Keep replies extremely concise");
+    expect(invocation.prompt).toContain("Agent Bridge execution contract:");
+    expect(invocation.prompt).toContain("hello");
+    expect(invocation.prompt).not.toContain("Keep replies extremely concise");
   });
 });
 
@@ -616,88 +460,11 @@ describe("redactArgs — spawn log prompt redaction", () => {
   });
 });
 
-describe("normalizeCliArgs — CLI argument translator", () => {
-  it("preserves Agy tool-free sandbox through invocation normalization", () => {
-    const invocation = buildCliInvocation({
-      bot: "antigravity",
-      prompt: "compact these turns",
-      sessionId: null,
-      command: "agy",
-      model: "gemini-3.5-flash-high",
-      executionMode: "safe",
-      toolMode: "none",
-    });
-
-    expect(invocation.args).toContain("--sandbox");
-    const normalized = normalizeCliArgs(invocation.command, invocation.args);
-    expect(normalized).toContain("--sandbox");
-    expect(normalized).toEqual(expect.arrayContaining(["--output-format", "stream-json"]));
-  });
-
-  it("keeps arguments unchanged for Claude commands", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["--print", "--output-format", "text", "--permission-mode", "acceptEdits", "hello"];
-    expect(normalizeCliArgs("claude", args)).toEqual(args);
-    expect(normalizeCliArgs("/path/to/claude-cli", args)).toEqual(args);
-  });
-
-  it("normalizes stale Antigravity text arguments to stream-json", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["--print", "--output-format", "text", "--permission-mode", "acceptEdits", "hello"];
-    const expected = ["--dangerously-skip-permissions", "--output-format", "stream-json", "--print", "hello"];
-    expect(normalizeCliArgs("agy", args)).toEqual(expected);
-    expect(normalizeCliArgs("/usr/local/bin/antigravity", args)).toEqual(expected);
-  });
-
-  it("keeps Codex ACP adapter argv unchanged", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    expect(normalizeCliArgs("codex-acp", [])).toEqual([]);
-    expect(normalizeCliArgs("/opt/agent-bridge/releases/current/node_modules/.bin/codex-acp", ["--verbose"])).toEqual(["--verbose"]);
-  });
-
-  it("adds stream-json to basic Antigravity arguments without permissions", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = ["--print", "--output-format", "text", "hello"];
-    expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
-  });
-
-  it("converges Antigravity json output hints to stream-json", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    for (const args of [
-      ["--print", "--output-format", "json", "hello"],
-      ["--print", "--output-format=json", "hello"],
-    ]) {
-      expect(normalizeCliArgs("agy", args)).toEqual(["--output-format", "stream-json", "--print", "hello"]);
-    }
-  });
-
-  it("preserves conversation, log-file, and print-timeout for Antigravity while enforcing stream-json", async () => {
-    const { normalizeCliArgs } = await import("../src/cli.js");
-    const args = [
-      "--conversation", "abc-123",
-      "--dangerously-skip-permissions",
-      "--log-file", "/tmp/log.txt",
-      "--print-timeout", "60s",
-      "--print", "hello"
-    ];
-    expect(normalizeCliArgs("agy", args)).toEqual([
-      "--conversation", "abc-123",
-      "--dangerously-skip-permissions",
-      "--log-file", "/tmp/log.txt",
-      "--print-timeout", "60s",
-      "--output-format", "stream-json",
-      "--print", "hello"
-    ]);
-  });
-
-});
-
 describe("wrapAntigravityPrompt — liveness and narration", () => {
   const base = { prompt: "do something long", sessionId: null, command: "agy", model: null };
 
   function getAgyPrompt(): string {
-    const { args } = buildCliInvocation({ ...base, bot: "antigravity" });
-    return args[args.length - 1];
+    return buildCliInvocation({ ...base, bot: "antigravity" }).prompt ?? "";
   }
 
   it("does not contain the old LIVENESS RULE idle-timeout coupling", () => {

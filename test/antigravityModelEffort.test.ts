@@ -1,7 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   appendEffortArgs,
   resolveAgyModelForEffort,
@@ -9,30 +6,28 @@ import {
 import {
   DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE,
   loadBotsConfig,
+  parseAntigravityModelPreference,
 } from "../src/config.js";
-import { buildCliInvocation, getNextFallbackModel, runCli } from "../src/cli.js";
+import { buildCliInvocation, getNextFallbackModel } from "../src/cli.js";
+import { agyAcpPolicy } from "../src/providers/agyAcpPolicy.js";
 import { openDb } from "../src/db.js";
+import type { ProviderInvocationRequest } from "../src/providers/types.js";
 
 describe("Antigravity model families and effort", () => {
-  it("keeps the durable default at model-family level", () => {
-    expect(loadBotsConfig({}).antigravity.modelPreference).toEqual([
-      ...DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE,
-    ]);
+  it("keeps BotConfig.modelPreference empty because ACP session config owns the catalogue", () => {
+    expect(loadBotsConfig({}).antigravity.modelPreference).toEqual([]);
     expect(DEFAULT_ANTIGRAVITY_MODEL_PREFERENCE[0]).toBe("gemini-3.8-flash");
   });
 
   it("normalizes qualified legacy effort triads without rewriting unknown model ids", () => {
-    const bots = loadBotsConfig({
-      ANTIGRAVITY_MODEL_PREFERENCE: [
-        "gemini-3.8-flash-high",
-        "gemini-3.8-flash-medium",
-        "gemini-3.8-flash-low",
-        "gemini-3.7-flash-high",
-        "gemini-future-preview-high",
-        "claude-sonnet-4-6",
-      ].join(","),
-    });
-    expect(bots.antigravity.modelPreference).toEqual([
+    expect(parseAntigravityModelPreference([
+      "gemini-3.8-flash-high",
+      "gemini-3.8-flash-medium",
+      "gemini-3.8-flash-low",
+      "gemini-3.7-flash-high",
+      "gemini-future-preview-high",
+      "claude-sonnet-4-6",
+    ].join(","))).toEqual([
       "gemini-3.8-flash",
       "gemini-3.7-flash",
       "gemini-future-preview-high",
@@ -73,74 +68,35 @@ describe("Antigravity model families and effort", () => {
     expect(resolveAgyModelForEffort("gemini-3.1-pro", "medium")).toBe("gemini-3.1-pro-high");
   });
 
-  it("keeps Agy effort out of the native CLI args", () => {
-    const args = ["--output-format", "stream-json", "--print", "hi"];
-    expect(appendEffortArgs("agy", args, "high")).toBe(args);
-    expect(args).toEqual(["--output-format", "stream-json", "--print", "hi"]);
-  });
-
-  it("resolves model family plus effort and pins compact verbosity before serialized Agy execution", async () => {
-    const homeDir = mkdtempSync(join(tmpdir(), "agent-bridge-agy-effort-"));
-    const sessionId = "c107dfbd-181e-4cf0-a840-894662adee43";
-    const stream = [
-      JSON.stringify({ event: "init", conversation_id: sessionId }),
-      JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "ok" } }),
-    ].join("\n");
-    const fakeAgy = join(homeDir, "fake-agy");
-    writeFileSync(
-      fakeAgy,
-      `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(stream)});\n`,
-      { encoding: "utf8", mode: 0o755 },
-    );
-    chmodSync(fakeAgy, 0o755);
-
-    try {
-      const invocation = buildCliInvocation({
-        bot: "antigravity",
-        prompt: "hi",
-        sessionId: null,
-        command: fakeAgy,
-        model: "gemini-3.8-flash",
-        effort: "high",
-        homeDir,
-      });
-      const settingsPath = join(homeDir, ".gemini", "antigravity-cli", "settings.json");
-
-      await runCli(
-        invocation.command,
-        invocation.args,
-        homeDir,
-        { bot: "antigravity", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
-      );
-      let settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
-        model?: string;
-        verbosity?: string;
-        theme?: string;
-      };
-      expect(settings.model).toBe("Gemini 3.8 Flash (High)");
-      expect(settings.verbosity).toBe("compact");
-
-      writeFileSync(
-        settingsPath,
-        JSON.stringify({ verbosity: "high", theme: "dark" }, null, 2) + "\n",
-        "utf8",
-      );
-      await runCli(
-        invocation.command,
-        invocation.args,
-        homeDir,
-        { bot: "antigravity", timeoutMs: 5_000, idleTimeoutMs: 5_000 },
-      );
-      settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
-        model?: string;
-        verbosity?: string;
-        theme?: string;
-      };
-      expect(settings.model).toBe("Gemini 3.8 Flash (High)");
-      expect(settings.verbosity).toBe("compact");
-      expect(settings.theme).toBe("dark");
-    } finally {
-      rmSync(homeDir, { recursive: true, force: true });
-    }
+  it("keeps Agy effort out of ACP argv and expresses it as session config", () => {
+    const args = ["--uid="];
+    expect(appendEffortArgs("agy_acp_server.par", args, "high")).toBe(args);
+    const invocation = buildCliInvocation({
+      bot: "antigravity",
+      prompt: "hi",
+      sessionId: null,
+      command: "agy_acp_server.par",
+      model: "gemini-3.8-flash",
+      effort: "high",
+    });
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.args).toEqual(["--uid="]);
+    const request: ProviderInvocationRequest = {
+      prompt: "hi",
+      sessionId: null,
+      command: "agy_acp_server.par",
+      model: "gemini-3.8-flash",
+      executionMode: "safe",
+      outputFormat: "json",
+      soulContext: null,
+      attachments: [],
+      outputDir: null,
+      effort: "high",
+      toolMode: "default",
+    };
+    expect(agyAcpPolicy.sessionSettings?.(request, {})?.config).toEqual([
+      { category: "model", explicitValue: "gemini-3.8-flash", preferredValues: [] },
+      { category: "thought_level", explicitValue: "high", preferredValues: [] },
+    ]);
   });
 });

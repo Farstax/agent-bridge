@@ -13,6 +13,10 @@ Pinned Grok ACP distribution: `@xai-official/grok@1.0.30` (`grok agent stdio`;
 official Registry `grok-build` 1.0.30). The package bin symlink is rewritten
 to a relative `grok-native` link at install so release artifacts stay
 self-contained.
+Pinned Agy ACP distribution: official Registry `antigravity-acp@1.1.1`
+(`agy_acp_server.par` with args `--uid=`). The binary is not npm-bundled;
+ordinary Runs never download it. Set `AGY_ACP_COMMAND` to the installed
+server path.
 
 ## Ownership
 
@@ -117,6 +121,27 @@ and resolves the default executable as
 Ordinary Runs authenticate with ACP `cached_token` from workspace-local
 `~/.grok/auth.json`. `XAI_API_KEY` remains a workspace-local alternative and
 is verified with a bounded ACP probe. Steering is not enabled.
+
+## Agy runtime
+
+Agy uses the same managed ACP lifecycle as Codex and Claude. There is no
+native `agy --print --output-format stream-json` invocation, parser, planner
+stall watch, or settings.json model writer.
+
+```bash
+AGY_ACP_COMMAND=...                 # optional override; default is agy_acp_server.par
+AGY_ACP_ARGS=...                    # optional extra argv; default is --uid=
+```
+
+The release locks official Registry `antigravity-acp@1.1.1`. The binary is
+host-installed, not npm-bundled; ordinary Runs never download it. Ordinary
+Runs authenticate with ACP `oauth-personal` only when a cached credential
+already exists at workspace-local `~/.gemini/antigravity-acp/acp_token.json`
+(a separate credential tree from native Agy/`antigravity-cli`'s
+`~/.gemini/oauth_creds.json`); Agent Bridge never triggers the interactive
+Google OAuth browser flow during an ordinary Run, and does not invent
+`GEMINI_API_KEY`. Steering is not enabled. Native Agy advertised tool-free
+execution, and the generic ACP policy keeps that advertisement.
 
 ## Process lifecycle
 
