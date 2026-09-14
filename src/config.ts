@@ -8,6 +8,7 @@
  */
 
 import { normalizeAgyModelFamily } from "./effort.js";
+import { resolveAgyAcpCommand } from "./providers/agyAcpConfig.js";
 import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import { resolveClaudeAcpCommand } from "./providers/claudeAcpConfig.js";
 import { resolveGrokAcpCommand } from "./providers/grokAcpConfig.js";
@@ -51,7 +52,7 @@ export function parseAntigravityModelPreference(raw: string | undefined): string
 /**
  * Build bot runtime configs from env. ACP model preferences intentionally do
  * not populate BotConfig.modelPreference: that array is the legacy/native
- * execution catalogue and fallback list. Claude/Codex/Grok preference policy is
+ * execution catalogue and fallback list. Claude/Codex/Grok/Agy preference policy is
  * consumed only after their ACP sessions advertise configOptions.
  */
 export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): Record<BotKind, BotConfig> {
@@ -64,8 +65,8 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     },
     antigravity: {
       token: token(env.TELEGRAM_BOT_TOKEN_ANTIGRAVITY || env.TELEGRAM_BOT_TOKEN_GEMINI),
-      command: env.ANTIGRAVITY_COMMAND || env.GEMINI_COMMAND || "agy",
-      modelPreference: parseAntigravityModelPreference(env.ANTIGRAVITY_MODEL_PREFERENCE || env.GEMINI_MODEL_PREFERENCE),
+      command: resolveAgyAcpCommand(env),
+      modelPreference: [],
     },
     claude: {
       token: token(env.TELEGRAM_BOT_TOKEN_CLAUDE),

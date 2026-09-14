@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,13 +11,11 @@ import {
   redactProviderApiKeySecrets,
   verifyConfiguredProviderApiKeys,
   verifyProviderApiKey,
-  withAntigravityApiKeyProvider,
   type ProviderApiKeyProbeExecutor,
 } from "../src/providers/apiKeyAuth.js";
 import type { ProviderId } from "../src/providers/types.js";
 
 const nativeProviderCases: Array<{ provider: ProviderId; envVar: string; commandEnv: string }> = [
-  { provider: "agy", envVar: "GEMINI_API_KEY", commandEnv: "ANTIGRAVITY_COMMAND" },
   { provider: "cursor", envVar: "CURSOR_API_KEY", commandEnv: "CURSOR_COMMAND" },
 ];
 
@@ -209,39 +207,13 @@ describe("provider API-key authentication", () => {
     await verification;
   });
 
-  it("restores Agy modelProvider after a verified API-key run", async () => {
-    const homeDir = mkdtempSync(join(tmpdir(), "agent-bridge-agy-provider-test-"));
-    tempDirs.push(homeDir);
-    const settingsDir = join(homeDir, ".gemini", "antigravity-cli");
-    mkdirSync(settingsDir, { recursive: true });
-    const settingsPath = join(settingsDir, "settings.json");
-    writeFileSync(settingsPath, JSON.stringify({ modelProvider: "antigravity", model: "keep-me" }));
-    const env = { GEMINI_API_KEY: "secret" };
-    await verifyProviderApiKey("agy", { env, execFile: async () => undefined });
-
-    await withAntigravityApiKeyProvider(homeDir, env, async () => {
-      const during = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(during).toEqual({ modelProvider: "gemini", model: "keep-me" });
-    });
-
-    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ modelProvider: "antigravity", model: "keep-me" });
-  });
-
-  it("keeps Agy account settings unchanged even when a verified optional key is configured", async () => {
-    const homeDir = mkdtempSync(join(tmpdir(), "agent-bridge-agy-account-precedence-"));
-    tempDirs.push(homeDir);
-    const settingsDir = join(homeDir, ".gemini", "antigravity-cli");
-    mkdirSync(settingsDir, { recursive: true });
-    const settingsPath = join(settingsDir, "settings.json");
-    const tokenPath = join(settingsDir, "antigravity-oauth-token");
-    writeFileSync(settingsPath, JSON.stringify({ modelProvider: "antigravity", model: "keep-me" }));
-    writeFileSync(tokenPath, "account-token");
-    const env = { GEMINI_API_KEY: "verified-but-optional" };
-    await verifyProviderApiKey("agy", { env, execFile: async () => undefined });
-
-    await withAntigravityApiKeyProvider(homeDir, env, async () => {
-      expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({ modelProvider: "antigravity", model: "keep-me" });
-    });
+  it("does not invent Agy ACP API-key authentication", async () => {
+    expect(getProviderApiKeyCapability("agy")?.verification).toBe("bounded_native_turn");
+    await expect(verifyProviderApiKey("agy", {
+      env: { GEMINI_API_KEY: "should-not-probe-native-agy" },
+      useCache: false,
+      execFile: async () => { throw new Error("native Agy probe must not execute"); },
+    })).resolves.toBe(false);
   });
 
   it("redacts configured provider credentials without redacting ordinary text", () => {

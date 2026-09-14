@@ -116,10 +116,11 @@ describe("SOUL.md runtime context", () => {
     expect(execIdx).toBeLessThan(reqIdx);
 
     // Across legacy-invocation CLI providers that wrap prompts at invocation time, the invocation
-    // receives the exact same Soul contract. Grok is migrated to the shared ACP runtime, which wraps
-    // the prompt with this same wrapPromptContext() call at request time instead (see acpRuntime.ts
-    // and grokAcpRuntime.test.ts) rather than through buildCliInvocation.
-    for (const bot of ["antigravity", "cursor"]) {
+    // receives the exact same Soul contract. Grok and Agy are migrated to the shared ACP runtime,
+    // which wraps the prompt with this same wrapPromptContext() call at request time instead (see
+    // acpRuntime.ts, grokAcpRuntime.test.ts, and agyAcpRuntime.test.ts) rather than through
+    // buildCliInvocation.
+    for (const bot of ["cursor"]) {
       const invocation = buildCliInvocation({
         bot,
         prompt: "implement this feature",

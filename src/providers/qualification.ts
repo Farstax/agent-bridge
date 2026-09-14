@@ -4,15 +4,13 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildCliInvocation, parseCliResult, runCli, runProviderInvocation } from "../cli.js";
-import { runSupervisedProcess } from "../cliSupervisor.js";
 import { resolveExecutionMode } from "../config.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
 import type { BotKind, CliOptions } from "../types.js";
-import { redactProviderApiKeySecrets, withAntigravityApiKeyProvider } from "./apiKeyAuth.js";
-import { withAntigravityStateLock } from "./antigravityRuntime.js";
+import { redactProviderApiKeySecrets } from "./apiKeyAuth.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
 import { classifyProviderError } from "./errorClassification.js";
-import { getAcpProviderPolicy, getProcessWatchForCommand, getProviderAdapter } from "./registry.js";
+import { getAcpProviderPolicy, getProviderAdapter } from "./registry.js";
 import type { ProviderId } from "./types.js";
 
 export const PROVIDER_CONTRACT_VERSION = 6;
@@ -165,7 +163,7 @@ export function buildQualificationInvocation({
     command: executable,
     model: null,
     executionMode,
-    outputFormat: providerId === "agy" ? "stream-json" : "json",
+    outputFormat: "json",
     soulContext: null,
     includeResponseContract: false,
     attachments: [],
@@ -465,33 +463,10 @@ async function runQualificationInvocation({
   idleTimeoutMs: number;
   runtimeEnv: QualificationEnv;
 }): Promise<string> {
+  void homeDir;
+  void runtimeEnv;
   const supervisorOptions = buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs);
-  if (providerId !== "agy") {
-    return runCli(command, args, cwd, supervisorOptions);
-  }
-
-  return withAntigravityStateLock(homeDir, async () =>
-    withAntigravityApiKeyProvider(homeDir, runtimeEnv, async () => {
-      try {
-        const result = await runSupervisedProcess(command, args, cwd, {
-          ...supervisorOptions,
-          processWatch: getProcessWatchForCommand(command),
-        });
-        return result.stdout;
-      } catch (caught) {
-        const error = caught instanceof Error ? caught : new Error(String(caught));
-        const stdout = (error as Error & { stdout?: string }).stdout ?? "";
-        if (stdout.trim()) {
-          parseCliResult({
-            bot: providerBotKind(providerId),
-            stdout,
-            outputFormat: qualificationOutputFormat(args),
-          });
-        }
-        throw error;
-      }
-    }),
-  );
+  return runCli(command, args, cwd, supervisorOptions);
 }
 
 async function executeNativeQualificationCheck({

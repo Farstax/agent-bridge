@@ -230,7 +230,7 @@ describe("interactive CLI availability filtering", () => {
       env: {
         CODEX_ACP_COMMAND: commands.codex,
         CLAUDE_ACP_COMMAND: commands.claude,
-        ANTIGRAVITY_COMMAND: commands.agy,
+        AGY_ACP_COMMAND: commands.agy,
         GROK_ACP_COMMAND: commands.grok,
         CURSOR_COMMAND: commands.cursor,
       },
@@ -258,7 +258,7 @@ describe("interactive CLI availability filtering", () => {
       env: {
         CODEX_ACP_COMMAND: "/runtime/codex-custom",
         CLAUDE_ACP_COMMAND: "/runtime/claude-custom",
-        ANTIGRAVITY_COMMAND: "/runtime/agy-custom",
+        AGY_ACP_COMMAND: "/runtime/agy-custom",
         GROK_ACP_COMMAND: "/runtime/grok-custom",
         CURSOR_COMMAND: "/runtime/cursor-custom",
       },

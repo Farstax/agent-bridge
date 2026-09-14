@@ -21,15 +21,9 @@ import {
   isAcpSessionConfigValueStale,
 } from "./acp/sessionConfig.js";
 import { buildAcpTelegramConfigCallbackData } from "./acp/telegramConfigCallback.js";
-import {
-  resolveAntigravityConversationId, extractAntigravityConversationId,
-  readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
-  setAntigravityModel, ensureAntigravityStateDirs, toAntigravityModelLabel,
-} from "./providers/antigravityRuntime.js";
 import { isCursorRouteable } from "./providers/cursorAvailability.js";
 import { isGrokRouteable } from "./providers/grokAvailability.js";
 import { isAcpBackedBot } from "./providers/registry.js";
-import { normalizeCliArgs } from "./cliArgNormalization.js";
 import { classifyAnyProviderError, classifyProviderError, isFallbackEligibleProviderError } from "./providers/errorClassification.js";
 
 export function getBridgeProjectDir(): string {
@@ -184,9 +178,6 @@ export {
   isCapacityExhaustedError, getNextFallbackModel, toUserMessage, scrubOutputDir,
   abortCliProcess, abortCliProcessAndWait, shutdownCliProcesses,
   validateBridgeConfig, parseModelPreference, BridgeDb,
-  resolveAntigravityConversationId, extractAntigravityConversationId,
-  readAntigravityLastConversation, readLatestAntigravityConversationFromLogs,
-  setAntigravityModel, ensureAntigravityStateDirs, toAntigravityModelLabel,
-  normalizeCliArgs, classifyAnyProviderError, classifyProviderError, isFallbackEligibleProviderError,
+  classifyAnyProviderError, classifyProviderError, isFallbackEligibleProviderError,
 };
 export { buildTelegramCommands, handleCommand, isBridgeCommand } from "./commands.js";

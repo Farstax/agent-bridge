@@ -36,7 +36,7 @@ describe("issue #654 qualification runtime parity", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-entrypoint-env-"));
     writeFileSync(join(root, "agent-bridge-shared"), "BRIDGE_EXECUTION_MODE=safe\nCLI_TIMEOUT_MS=1000\nCLI_IDLE_TIMEOUT_MS=2000\n");
     writeFileSync(join(root, "agent-bridge-release"), "BRIDGE_EXECUTION_MODE=safe\nCLI_TIMEOUT_MS=3000\nCLI_IDLE_TIMEOUT_MS=3500\n");
-    writeFileSync(join(root, "agent-bridge-antigravity"), "ANTIGRAVITY_EXECUTION_MODE=trusted\nANTIGRAVITY_CLI_TIMEOUT_MS=3600000\nANTIGRAVITY_CLI_IDLE_TIMEOUT_MS=180000\nANTIGRAVITY_COMMAND=/service/agy\n");
+    writeFileSync(join(root, "agent-bridge-antigravity"), "ANTIGRAVITY_EXECUTION_MODE=trusted\nANTIGRAVITY_CLI_TIMEOUT_MS=3600000\nANTIGRAVITY_CLI_IDLE_TIMEOUT_MS=180000\nAGY_ACP_COMMAND=/service/agy_acp_server.par\n");
 
     const env = resolveQualificationEntrypointEnvironment("agy", {
       directory: root,
@@ -47,7 +47,7 @@ describe("issue #654 qualification runtime parity", () => {
         ANTIGRAVITY_EXECUTION_MODE: "safe",
         ANTIGRAVITY_CLI_TIMEOUT_MS: "7",
         ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS: "9",
-        ANTIGRAVITY_COMMAND: "/caller/agy",
+        AGY_ACP_COMMAND: "/caller/agy_acp_server.par",
         GEMINI_API_KEY: "caller-only-key",
       },
     });
@@ -57,7 +57,7 @@ describe("issue #654 qualification runtime parity", () => {
       timeoutMs: 3_600_000,
       idleTimeoutMs: 180_000,
     });
-    expect(resolveProviderExecutable("agy", env)).toBe("/service/agy");
+    expect(resolveProviderExecutable("agy", env)).toBe("/service/agy_acp_server.par");
     expect(env.HOME).toBe("/tmp/home");
     expect(env.GEMINI_API_KEY).toBeUndefined();
 
@@ -145,17 +145,17 @@ describe("issue #654 qualification runtime parity", () => {
     });
   });
 
-  it("generates trusted Agy qualification flags while safe mode omits them", () => {
+  it("keeps Agy ACP qualification args identical across safe and trusted, since authority is Bridge-owned ACP session state, not a native CLI flag", () => {
     const trustedAgy = buildQualificationInvocation({
       providerId: "agy", executable: "agy", prompt: "probe", sessionId: null,
       executionMode: "trusted", homeDir: "/tmp",
     });
-    expect(trustedAgy.args).toContain("--dangerously-skip-permissions");
-
     const safeAgy = buildQualificationInvocation({
       providerId: "agy", executable: "agy", prompt: "probe", sessionId: null,
       executionMode: "safe", homeDir: "/tmp",
     });
-    expect(safeAgy.args).not.toContain("--dangerously-skip-permissions");
+    expect(trustedAgy.transport).toBe("acp-stdio");
+    expect(trustedAgy.args).toEqual(safeAgy.args);
+    expect(trustedAgy.args).not.toContain("--dangerously-skip-permissions");
   });
 });

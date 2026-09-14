@@ -6,7 +6,6 @@ import { buildCliInvocation, parseCliResult, runCli } from "../src/cli.js";
 import { validateSuccessfulCliExit } from "../src/cliSuccessfulExitValidation.js";
 import type { BridgeEvent } from "../src/events/types.js";
 
-const AGY_SESSION = "11111111-2222-3333-4444-555555555555";
 const CURSOR_SESSION = "cursor-session-575";
 
 function terminalEvents(events: BridgeEvent[]): BridgeEvent[] {
@@ -17,69 +16,31 @@ function terminalEvents(events: BridgeEvent[]): BridgeEvent[] {
 
 async function providerFixture(
   root: string,
-  provider: "antigravity" | "cursor",
+  provider: "cursor",
   sessionId: string,
 ): Promise<string> {
   const script = join(root, `${provider}-fixture`);
   const source = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
-const provider = ${JSON.stringify(provider)};
 const sessionId = ${JSON.stringify(sessionId)};
 const args = process.argv.slice(2);
 const root = process.cwd();
-const resumed = args.includes(provider === "antigravity" ? "--conversation" : "--resume");
+const resumed = args.includes("--resume");
 const emit = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 if (!resumed) {
   fs.appendFileSync(path.join(root, "side-effects.txt"), "effect\\n");
-  if (provider === "antigravity") {
-    emit({ event: "init", conversation_id: sessionId, init: { cwd: "/private/provider/path" } });
-    emit({ event: "step_update", step_update: { step_type: "tool", tool_info: { output: "SECRET_TOOL_OUTPUT" } } });
-  } else {
-    emit({ type: "assistant", session_id: sessionId, message: "SECRET_INTERNAL_MESSAGE" });
-  }
+  emit({ type: "assistant", session_id: sessionId, message: "SECRET_INTERNAL_MESSAGE" });
   process.exit(0);
 }
 fs.writeFileSync(path.join(root, "recovery-args.json"), JSON.stringify(args));
-if (provider === "antigravity") {
-  emit({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "verified final answer" } });
-} else {
-  emit({ type: "result", subtype: "success", is_error: false, result: "verified final answer", session_id: sessionId });
-}
+emit({ type: "result", subtype: "success", is_error: false, result: "verified final answer", session_id: sessionId });
 `;
   await writeFile(script, source, { mode: 0o700 });
   return script;
 }
 
 describe("provider uncertain completion contract", () => {
-  it("rejects exit-zero Agy output without a terminal result before run.completed", () => {
-    const error = validateSuccessfulCliExit("antigravity", {
-      stdout: `${JSON.stringify({ event: "init", conversation_id: AGY_SESSION })}\n`,
-      stderr: "",
-    });
-    expect(error?.message).toMatch(/completion could not be verified/i);
-  });
-
-  it("does not trust an invalid Agy conversation id for recovery", () => {
-    const error = validateSuccessfulCliExit("antigravity", {
-      stdout: `${JSON.stringify({ event: "init", conversation_id: "not-a-uuid" })}\n`,
-      stderr: "",
-    }) as Error & { sessionId?: string | null };
-
-    expect(error.message).toMatch(/completion could not be verified/i);
-    expect(error.sessionId).toBeNull();
-  });
-
-  it("does not trust session evidence after a malformed structured boundary", () => {
-    const error = validateSuccessfulCliExit("antigravity", {
-      stdout: `not-json\n${JSON.stringify({ event: "init", conversation_id: AGY_SESSION })}\n`,
-      stderr: "",
-    }) as Error & { sessionId?: string | null };
-
-    expect(error.message).toMatch(/completion could not be verified/i);
-    expect(error.sessionId).toBeNull();
-  });
-
   it("rejects exit-zero Cursor output without a terminal result before run.completed", () => {
     const error = validateSuccessfulCliExit("cursor", {
       stdout: `${JSON.stringify({ type: "assistant", session_id: CURSOR_SESSION, message: "internal" })}\n`,
@@ -88,10 +49,11 @@ describe("provider uncertain completion contract", () => {
     expect(error?.message).toMatch(/completion could not be verified/i);
   });
 
-  it.each([
-    { provider: "antigravity" as const, bot: "antigravity" as const, sessionId: AGY_SESSION, outputFormat: "stream-json" as const },
-    { provider: "cursor" as const, bot: "cursor" as const, sessionId: CURSOR_SESSION, outputFormat: "stream-json" as const },
-  ])("reconciles $provider exactly once in the same native session without replaying side effects", async ({ provider, bot, sessionId, outputFormat }) => {
+  it("reconciles cursor exactly once in the same native session without replaying side effects", async () => {
+    const provider = "cursor" as const;
+    const bot = "cursor" as const;
+    const sessionId = CURSOR_SESSION;
+    const outputFormat = "stream-json" as const;
     const root = await mkdtemp(join(tmpdir(), `provider-uncertain-${provider}-`));
     const homeDir = join(root, "home");
     const events: BridgeEvent[] = [];
@@ -119,14 +81,7 @@ describe("provider uncertain completion contract", () => {
       const recoveryArgs = JSON.parse(await readFile(join(root, "recovery-args.json"), "utf8")) as string[];
       expect(recoveryArgs).toContain(sessionId);
       expect(recoveryArgs.join(" ")).toMatch(/Do not repeat side effects/i);
-      if (provider === "antigravity") {
-        const printIndex = recoveryArgs.lastIndexOf("--print");
-        expect(printIndex).toBeGreaterThan(-1);
-        expect(recoveryArgs[printIndex + 1]).not.toMatch(/^\/goal\s/);
-      }
-      expect(stdout).not.toContain("SECRET_TOOL_OUTPUT");
       expect(stdout).not.toContain("SECRET_INTERNAL_MESSAGE");
-      expect(stdout).not.toContain("/private/provider/path");
       expect(terminalEvents(events).map((event) => event.type)).toEqual(["run.completed"]);
     } finally {
       await rm(root, { recursive: true, force: true });

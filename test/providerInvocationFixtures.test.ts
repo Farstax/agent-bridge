@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCliInvocation, parseCliResult, isCapacityExhaustedError, setAntigravityModel } from "../src/cli.js";
+import { buildCliInvocation, parseCliResult, isCapacityExhaustedError } from "../src/cli.js";
 import { prependWorkspaceContext } from "../src/workspaceContext.js";
 
 // Issue #135 Phase 3A — characterization fixtures.
@@ -16,8 +16,6 @@ import { prependWorkspaceContext } from "../src/workspaceContext.js";
 // with expect.stringContaining() rather than reproduced verbatim, so these
 // stay exact on flag identity, order, and count without being brittle against
 // unrelated prompt-wrapping copy changes.
-const anyPrompt = () => expect.stringContaining("hi") as unknown as string;
-
 function managedPrompt(): string {
   const dir = mkdtempSync(join(tmpdir(), "agent-bridge-workspace-context-"));
   const file = join(dir, "workspace-context.md");
@@ -69,45 +67,46 @@ describe("provider invocation fixtures — claude ACP", () => {
   });
 });
 
-describe("provider invocation fixtures — antigravity", () => {
-  it("delivers managed repository context to the provider prompt", () => {
+describe("provider invocation fixtures — antigravity ACP", () => {
+  it("always selects the release-locked ACP transport instead of native Agy argv", () => {
     const prompt = managedPrompt();
-    const inv = buildCliInvocation({ bot: "antigravity", prompt, sessionId: null, command: "agy" });
-    expect(inv.args.join("\n")).toContain("selected-owner/selected-repo");
-  });
-
-  it("fresh session — exact stream-json arg order", () => {
-    const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: null, command: "agy" });
-    expect(inv.args).toEqual(["--output-format", "stream-json", "--print", anyPrompt()]);
-  });
-
-  it("resumes an existing conversation — exact stream-json arg order", () => {
-    const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: "conv-1", command: "agy" });
-    expect(inv.args).toEqual([
-      "--conversation", "conv-1", "--output-format", "stream-json", "--print", anyPrompt(),
-    ]);
-  });
-
-  it("trusted mode — exact stream-json arg order", () => {
-    const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: null, command: "agy", executionMode: "trusted" });
-    expect(inv.args).toEqual([
-      "--dangerously-skip-permissions", "--output-format", "stream-json", "--print", anyPrompt(),
-    ]);
-  });
-
-  it("tool-free mode — exact stream-json arg order, --sandbox present", () => {
-    const inv = buildCliInvocation({ bot: "antigravity", prompt: "hi", sessionId: null, command: "agy", toolMode: "none" });
-    expect(inv.args).toEqual(["--sandbox", "--output-format", "stream-json", "--print", anyPrompt()]);
-  });
-
-  it("attachments are annotated inline into the prompt text, not passed as separate flags", () => {
-    const inv = buildCliInvocation({
-      bot: "antigravity", prompt: "hi", sessionId: null, command: "agy", attachments: ["/tmp/a.png"],
+    const fresh = buildCliInvocation({
+      bot: "antigravity",
+      prompt,
+      sessionId: null,
+      command: "agy_acp_server.par",
+      executionMode: "safe",
+      toolMode: "none",
     });
-    expect(inv.args).toHaveLength(4);
-    expect(inv.args.slice(0, 3)).toEqual(["--output-format", "stream-json", "--print"]);
-    expect(inv.args[inv.args.length - 1]).toContain("/tmp/a.png");
-    expect(inv.stdin).toBeUndefined();
+    expect(fresh).toMatchObject({
+      command: expect.stringMatching(/agy_acp_server\.par$/) as unknown as string,
+      args: ["--uid="],
+      nativeSessionMode: "fresh",
+      transport: "acp-stdio",
+    });
+    expect(fresh.prompt).toContain("selected-owner/selected-repo");
+    expect(fresh.args).not.toContain("--print");
+    expect(fresh.args).not.toContain("--sandbox");
+
+    const resumed = buildCliInvocation({
+      bot: "antigravity",
+      prompt: "hi",
+      sessionId: "sess-9",
+      command: "agy_acp_server.par",
+      executionMode: "trusted",
+    });
+    expect(resumed).toMatchObject({
+      args: ["--uid="],
+      nativeSessionMode: "resume",
+      transport: "acp-stdio",
+    });
+    expect(resumed.args).not.toContain("--conversation");
+    expect(resumed.args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("refuses native Agy output parsing because ACP returns structured results", () => {
+    expect(() => parseCliResult({ bot: "antigravity", stdout: "plain response" }))
+      .toThrow(/ACP structured results/);
   });
 });
 
@@ -118,45 +117,14 @@ describe("provider result parsing fixtures", () => {
 });
 
 describe("provider result parsing fixtures — antigravity", () => {
-  const sessionId = "c107dfbd-181e-4cf0-a840-894662adee43";
-
-  it("uses the stream-json terminal response and native session id", () => {
-    const stdout = [
-      JSON.stringify({ event: "init", conversation_id: sessionId }),
-      JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: "The answer." } }),
-    ].join("\n");
-    expect(parseCliResult({ bot: "antigravity", stdout })).toEqual({
-      text: "The answer.",
-      sessionId,
-    });
-  });
-
-  it("timeout: terminal stream-json ERROR throws a timeout error", () => {
-    const stdout = JSON.stringify({
-      event: "result",
-      result: { conversation_id: sessionId, status: "ERROR", response: "", error: "timeout waiting for response" },
-    });
-    expect(() => parseCliResult({ bot: "antigravity", stdout })).toThrow(/timed out/i);
-  });
-
-  it("settings-file preservation: setAntigravityModel only touches the managed 'model' and 'verbosity' keys, leaving unrelated settings intact", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "agy-settings-preserve-"));
-    try {
-      const settingsDir = join(tempDir, ".gemini", "antigravity-cli");
-      const settingsPath = join(settingsDir, "settings.json");
-      mkdirSync(settingsDir, { recursive: true });
-      writeFileSync(settingsPath, JSON.stringify({ theme: "dark", telemetry: false }));
-
-      setAntigravityModel("gemini-3.5-flash-high", tempDir);
-      let data = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(data).toEqual({ theme: "dark", telemetry: false, model: "Gemini 3.5 Flash (High)", verbosity: "compact" });
-
-      setAntigravityModel(null, tempDir);
-      data = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(data).toEqual({ theme: "dark", telemetry: false, verbosity: "compact" });
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+  it("refuses native stream-json parsing after ACP migration", () => {
+    expect(() => parseCliResult({
+      bot: "antigravity",
+      stdout: JSON.stringify({
+        event: "result",
+        result: { conversation_id: "c107dfbd-181e-4cf0-a840-894662adee43", status: "SUCCESS", response: "The answer." },
+      }),
+    })).toThrow(/ACP structured results/);
   });
 });
 

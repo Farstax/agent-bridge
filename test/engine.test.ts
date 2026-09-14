@@ -291,32 +291,22 @@ describe("BridgeEngine", () => {
       expect(capturedPrompts[1]).not.toContain(MARKER);
     });
 
-    it("streams only Antigravity agent responses into a visible preview", async () => {
+    it("streams Agy ACP provisional answers through the generic answer-delta seam", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
-        const streamOutput = [
-          JSON.stringify({ event: "init", init: { cwd: "/tmp" } }),
-          JSON.stringify({ event: "step_update", step_update: { step_type: "tool", text_delta: "secret tool output" } }),
-          JSON.stringify({ event: "step_update", step_update: { step_type: "checkpoint", text_delta: "secret checkpoint" } }),
-          JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "safe agent response" } }),
-          JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "safe agent response", conversation_id: "11111111-1111-4111-8111-111111111111" } }),
-        ].join("\n") + "\n";
-        options.onProviderOutputChunk?.(streamOutput);
-        options.onProviderOutputFinished?.();
-        return { text: streamOutput };
+      const runProviderInvocation = vi.fn().mockImplementation(async (_bot: string, _invocation: unknown, _cwd: string, options: any) => {
+        options.onAnswerDelta?.("safe agent response");
+        return { text: "safe agent response", sessionId: "agy-acp-session" };
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCliAsync },
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy_acp_server.par", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        db, client, { runProviderInvocation },
       );
 
       await engine.handleMessages([makeMessage("hello")]);
 
       expect(client.sendMessage).toHaveBeenCalledTimes(1);
       expect(client.sendMessage.mock.calls[0][0].text).toContain("safe agent response");
-      expect(client.sendMessage.mock.calls[0][0].text).not.toContain("secret tool output");
-      expect(client.sendMessage.mock.calls[0][0].text).not.toContain("secret checkpoint");
       expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
         text: expect.stringContaining("safe agent response"),
       }));
@@ -538,14 +528,17 @@ describe("BridgeEngine", () => {
     it("uses executionKind for non-agent CLI invocation and parsing", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
 
-      const runCli = vi.fn().mockResolvedValue(agyStreamJsonResult("Use the Agy-specific response."));
+      const runProviderInvocation = vi.fn().mockResolvedValue({
+        text: "Use the Agy-specific response.",
+        sessionId: "agy-acp-session",
+      });
       const client = makeMockClient();
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
           kind: "health",
           executionKind: "antigravity",
-          botConfig: { command: "agy", modelPreference: ["gemini-3-pro-preview"] },
+          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -555,47 +548,41 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        { runProviderInvocation },
       );
 
       await engine.handleMessages([makeMessage("diagnose health report")]);
 
-      expect(runCli).toHaveBeenCalledOnce();
-      const [command, args] = runCli.mock.calls[0];
-      expect(command).toBe("agy");
-      expect(args).toContain("--print");
-      const outputFormatIdx = args.indexOf("--output-format");
-      expect(outputFormatIdx).not.toBe(-1);
-      expect(args[outputFormatIdx + 1]).toBe("stream-json");
+      expect(runProviderInvocation).toHaveBeenCalledOnce();
+      expect(runProviderInvocation.mock.calls[0][1]).toEqual(expect.objectContaining({
+        transport: "acp-stdio",
+        args: ["--uid="],
+      }));
+      expect(runProviderInvocation.mock.calls[0][1].args).not.toContain("--print");
       expect(client.sendMessage).toHaveBeenCalledOnce();
       expect(client.sendMessage.mock.calls[0][0].text).toBe("Use the Agy-specific response.");
     });
 
-    it("retries Agy print timeouts once with a fresh conversation and recent context", async () => {
+    it("does not retry Agy timeouts as a native fresh session", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
+      const { CliTimeoutError } = await import("../src/cli.js");
 
-      const capturedPrompts: string[] = [];
-      const capturedArgs: string[][] = [];
-      const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-        capturedArgs.push(args);
-        capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer from Agy");
-        if (runCli.mock.calls.length === 2) throw new Error("Agy execution timed out waiting for response");
-        return agyStreamJsonResult("Recovered answer");
-      });
+      const runProviderInvocation = vi.fn()
+        .mockResolvedValueOnce({ text: "Prior answer from Agy", sessionId: "sess-1" })
+        .mockRejectedValueOnce(new CliTimeoutError("CLI execution timed out after 1ms"));
       const client = makeMockClient();
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
+          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        { runProviderInvocation },
       );
 
       db.setSession("100", "antigravity", "stale-conversation");
@@ -603,322 +590,97 @@ describe("BridgeEngine", () => {
       await engine.handleMessages([makeMessage("first question")]);
       await engine.handleMessages([makeMessage("second question")]);
 
-      expect(runCli).toHaveBeenCalledTimes(3);
-      expect(db.getSession("100", "antigravity")).not.toBe("stale-conversation");
-      expect(capturedArgs[2]).not.toContain("--conversation");
-      expect(capturedPrompts[2]).toContain("[Context from previous conversation]");
-      expect(capturedPrompts[2]).toContain("User: first question");
-      expect(capturedPrompts[2]).toContain("Assistant: Prior answer from Agy");
-      expect(capturedPrompts[2]).toContain("User request:");
-      expect(capturedPrompts[2]).toContain("second question");
-      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("Recovered answer");
+      expect(runProviderInvocation).toHaveBeenCalledTimes(2);
+      expect(runProviderInvocation.mock.calls.every((call) => !call[1].args.includes("--print"))).toBe(true);
+      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).not.toBe("Recovered answer");
     });
 
-    it("resets the Antigravity presentation decoder before a fresh retry", async () => {
+    it("rejects stale native Agy settings callbacks instead of writing ACP values", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const retrySessionId = "22222222-2222-4222-8222-222222222222";
-      const retryOutput = [
-        JSON.stringify({ event: "init", init: { cwd: "/tmp" } }),
-        JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "recovered visible answer" } }),
-        JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "recovered visible answer", conversation_id: retrySessionId } }),
-      ].join("\n") + "\n";
-      const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
-        if (runCli.mock.calls.length === 1) {
-          options.onProviderOutputChunk?.('{"event":"step_update","step_update":{"step_type":"agent_response"}');
-          throw new Error("Agy execution timed out waiting for response");
-        }
-        options.onProviderOutputChunk?.(retryOutput);
-        return retryOutput;
-      });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCli },
-      );
-
-      db.setSession("100", "antigravity", "stale-conversation");
-      await engine.handleMessages([makeMessage("retry after partial output")]);
-
-      expect(runCli).toHaveBeenCalledTimes(2);
-      expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
-        text: expect.stringContaining("recovered visible answer"),
-      }));
-    });
-
-    it("streams only agent responses through the canonical capacity fallback", async () => {
-      const { BridgeEngine } = await import("../src/engine.js");
-      const fallbackSessionId = "33333333-3333-4333-8333-333333333333";
-      const fallbackOutput = [
-        JSON.stringify({ event: "init", init: { cwd: "/tmp" } }),
-        JSON.stringify({ event: "step_update", step_update: { step_type: "tool", text_delta: "hidden tool output" } }),
-        JSON.stringify({ event: "step_update", step_update: { step_type: "checkpoint", text_delta: "hidden checkpoint" } }),
-        JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "visible fallback answer" } }),
-        JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "visible fallback answer", conversation_id: fallbackSessionId } }),
-      ].join("\n") + "\n";
-      let attempts = 0;
-      const providerRun = vi.fn((_cmd: string, _args: string[], _cwd: string, options: any) => {
-        attempts += 1;
-        if (attempts === 1) {
-          options.onProviderOutputChunk?.('{"event":"step_update","step_update":{"step_type":"agent_response"}');
-          throw new Error("MODEL_CAPACITY_EXHAUSTED");
-        }
-        options.onProviderOutputChunk?.(fallbackOutput);
-        return { text: fallbackOutput };
-      });
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        {
+          surfaceIdentity: "test",
+          kind: "antigravity",
+          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000, workingDir: process.cwd(),
+          fullConfig: makeFullConfig(dbPath),
+        },
         db,
         client,
-        { runCliAsync: providerRun as any },
+        {},
+      );
+
+      await engine.handleCallback({
+        id: "cb-stale-agy",
+        from: { id: 42, first_name: "Test" },
+        message: { message_id: 123, chat: { id: 100, type: "private" } },
+        data: "model:antigravity:stale-native-value",
+      });
+
+      expect(client.answerCallbackQuery.mock.calls[0][0]).toMatchObject({
+        text: "This settings button has expired. Open the settings again.",
+      });
+      expect(db.getSetting("antigravity")).toBeNull();
+    });
+
+    it("streams Agy ACP fallback answers through the generic answer-delta seam", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      let attempts = 0;
+      const runProviderInvocation = vi.fn(async (_bot: string, _invocation: unknown, _cwd: string, options: any) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+        options.onAnswerDelta?.("visible fallback answer");
+        return { text: "visible fallback answer", sessionId: "agy-fallback-session" };
+      });
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        { surfaceIdentity: "test", kind: "antigravity", botConfig: { command: "agy_acp_server.par", modelPreference: ["primary", "fallback"] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        db,
+        client,
+        { runProviderInvocation },
       );
 
       await engine.handleMessages([makeMessage("capacity fallback")]);
 
-      expect(providerRun).toHaveBeenCalledTimes(2);
+      expect(runProviderInvocation).toHaveBeenCalledTimes(2);
       const deliveredTexts = [
         ...client.sendMessage.mock.calls.map((call: any[]) => String(call[0]?.text ?? "")),
         ...client.editMessageText.mock.calls.map((call: any[]) => String(call[0]?.text ?? "")),
       ];
       expect(deliveredTexts.some((text) => text.includes("visible fallback answer"))).toBe(true);
-      expect(deliveredTexts.every((text) => !text.includes("hidden tool output") && !text.includes("hidden checkpoint"))).toBe(true);
-      expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
-        text: expect.stringContaining("visible fallback answer"),
-      }));
     });
 
-    it("retries recoverable Agy cascade errors once with a fresh conversation and recent context", async () => {
+    it("does not enter native Agy cascade fresh-session retry", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-
-      const capturedPrompts: string[] = [];
-      const capturedArgs: string[][] = [];
-      const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-        capturedArgs.push(args);
-        capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer from Agy");
-        if (runCli.mock.calls.length === 2) {
-          throw new Error('{"type":"error","message":"error executing cascade step: CORTEX_STEP_TYPE_GREP_SEARCH: grep: -r: No such file or directory: exit status 2"}');
-        }
-        return agyStreamJsonResult("Recovered after reset");
-      });
+      const runProviderInvocation = vi.fn()
+        .mockResolvedValueOnce({ text: "Prior answer from Agy", sessionId: "sess-1" })
+        .mockRejectedValueOnce(new Error("error executing cascade step: CORTEX_STEP_TYPE_GREP_SEARCH"));
       const client = makeMockClient();
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
+          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
-      );
-
-      db.setSession("100", "antigravity", "stale-conversation");
-
-      await engine.handleMessages([makeMessage("first question")]);
-      await engine.handleMessages([makeMessage("second question")]);
-
-      expect(runCli).toHaveBeenCalledTimes(3);
-      expect(capturedArgs[2]).not.toContain("--conversation");
-      expect(capturedPrompts[2]).toContain("[Context from previous conversation]");
-      expect(capturedPrompts[2]).toContain("User: first question");
-      expect(capturedPrompts[2]).toContain("Assistant: Prior answer from Agy");
-      expect(capturedPrompts[2]).toContain("second question");
-      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("Recovered after reset");
-    });
-
-    it("retries stalled Agy planner loops once with a fresh conversation and recent context", async () => {
-      const { BridgeEngine } = await import("../src/engine.js");
-
-      const capturedPrompts: string[] = [];
-      const capturedArgs: string[][] = [];
-      const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-        capturedArgs.push(args);
-        capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer from Agy");
-        if (runCli.mock.calls.length === 2) {
-          throw new Error("Agy stalled in planner loop without usable output");
-        }
-        return agyStreamJsonResult("Recovered from stall");
-      });
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        {
-          surfaceIdentity: "test",
-          kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          pollIntervalMs: 1000, workingDir: process.cwd(),
-        },
-        db,
-        client,
-        { runCli },
-      );
-
-      db.setSession("100", "antigravity", "stale-conversation");
-
-      await engine.handleMessages([makeMessage("first question")]);
-      await engine.handleMessages([makeMessage("second question")]);
-
-      expect(runCli).toHaveBeenCalledTimes(3);
-      expect(capturedArgs[2]).not.toContain("--conversation");
-      expect(capturedPrompts[2]).toContain("[Context from previous conversation]");
-      expect(capturedPrompts[2]).toContain("User: first question");
-      expect(capturedPrompts[2]).toContain("Assistant: Prior answer from Agy");
-      expect(capturedPrompts[2]).toContain("second question");
-      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("Recovered from stall");
-    });
-
-    it("retries Agy cascade command status not found errors once with a fresh conversation", async () => {
-      const { BridgeEngine } = await import("../src/engine.js");
-
-      const capturedPrompts: string[] = [];
-      const capturedArgs: string[][] = [];
-      const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-        capturedArgs.push(args);
-        capturedPrompts.push(args[args.length - 1]);
-        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer");
-        if (runCli.mock.calls.length === 2) {
-          throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command abc/task-22 not Found");
-        }
-        return agyStreamJsonResult("Recovered command status error");
-      });
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        {
-          surfaceIdentity: "test",
-          kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          pollIntervalMs: 1000, workingDir: process.cwd(),
-        },
-        db,
-        client,
-        { runCli },
-      );
-
-      db.setSession("100", "antigravity", "stale-conversation");
-
-      await engine.handleMessages([makeMessage("first question")]);
-      await engine.handleMessages([makeMessage("second question")]);
-
-      expect(runCli).toHaveBeenCalledTimes(3);
-      expect(capturedArgs[2]).not.toContain("--conversation");
-      expect(capturedPrompts[2]).toContain("first question");
-      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("Recovered command status error");
-    });
-
-    it("retries a second fresh session when the first fresh retry also hits a recoverable cascade error", async () => {
-      const { BridgeEngine } = await import("../src/engine.js");
-
-      const runCli = vi.fn().mockImplementation(async () => {
-        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer");
-        if (runCli.mock.calls.length <= 3) {
-          throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command abc/task-18 not found");
-        }
-        return agyStreamJsonResult("Recovered on second fresh retry");
-      });
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        {
-          surfaceIdentity: "test",
-          kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          pollIntervalMs: 1000, workingDir: process.cwd(),
-        },
-        db,
-        client,
-        { runCli },
-      );
-
-      db.setSession("100", "antigravity", "stale-conversation");
-
-      await engine.handleMessages([makeMessage("first question")]);
-      await engine.handleMessages([makeMessage("second question")]);
-
-      expect(runCli).toHaveBeenCalledTimes(4);
-      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("Recovered on second fresh retry");
-    });
-
-    it("commits a recoverable Agy fresh-session retry exactly once", async () => {
-      const { BridgeEngine } = await import("../src/engine.js");
-      let calls = 0;
-      const execute = vi.fn().mockImplementation(async () => {
-        calls += 1;
-        if (calls === 1) return agyStreamJsonResult("Prior answer");
-        if (calls === 2) throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command retry/task not found");
-        return agyStreamJsonResult("Recovered exactly once.");
-      });
-      const onAfterExecute = vi.fn();
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        {
-          surfaceIdentity: "test",
-          kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          pollIntervalMs: 1000, workingDir: process.cwd(),
-          fullConfig: makeFullConfig(dbPath),
-          hooks: { onAfterExecute },
-        },
-        db,
-        client,
-        { runCliAsync: async (...args: any[]) => ({ text: await execute(...args) }) },
+        { runProviderInvocation },
       );
 
       db.setSession("100", "antigravity", "stale-conversation");
       await engine.handleMessages([makeMessage("first question")]);
-      const turnsBeforeRetry = db.raw.prepare("SELECT COUNT(*) AS count FROM conversation_turns WHERE chat_key = '100'").get() as { count: number };
-      onAfterExecute.mockClear();
-
       await engine.handleMessages([makeMessage("second question")]);
 
-      const turnsAfterRetry = db.raw.prepare("SELECT COUNT(*) AS count FROM conversation_turns WHERE chat_key = '100'").get() as { count: number };
-      expect(turnsAfterRetry.count - turnsBeforeRetry.count).toBe(2);
-      expect(onAfterExecute).toHaveBeenCalledOnce();
-      expect(client.sendMessage.mock.calls.at(-1)?.[0].text).toBe("Recovered exactly once.");
-    });
-
-    it("surfaces a friendly error instead of the raw cascade error when all fresh retries fail", async () => {
-      const { BridgeEngine } = await import("../src/engine.js");
-
-      const runCli = vi.fn().mockImplementation(async () => {
-        if (runCli.mock.calls.length === 1) return agyStreamJsonResult("Prior answer");
-        throw new Error("error executing cascade step: CORTEX_STEP_TYPE_COMMAND_STATUS: command abc/task-18 not found");
-      });
-      const client = makeMockClient();
-      const engine = new BridgeEngine(
-        {
-          surfaceIdentity: "test",
-          kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
-          allowedUserIds: new Set(["42"]),
-          executionMode: "safe",
-          pollIntervalMs: 1000, workingDir: process.cwd(),
-        },
-        db,
-        client,
-        { runCli },
-      );
-
-      db.setSession("100", "antigravity", "stale-conversation");
-
-      await engine.handleMessages([makeMessage("first question")]);
-      await engine.handleMessages([makeMessage("second question")]);
-
-      expect(runCli).toHaveBeenCalledTimes(4);
-      const finalText = client.sendMessage.mock.calls.at(-1)?.[0].text as string;
-      expect(finalText).not.toContain("CORTEX_STEP_TYPE");
-      expect(finalText).toContain("internal cascade error");
-      expect(finalText).toContain("resend");
+      expect(runProviderInvocation).toHaveBeenCalledTimes(2);
+      const finalText = String(client.sendMessage.mock.calls.at(-1)?.[0].text ?? "");
+      expect(finalText).not.toBe("Recovered after reset");
+      expect(finalText).not.toContain("internal cascade error");
     });
   });
 
@@ -1630,30 +1392,34 @@ describe("BridgeEngine", () => {
       const staleId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
       const replacementId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
       const topicKey = "100:7";
-      db.setSession(topicKey, "antigravity", staleId);
-      const capturedArgs: string[][] = [];
-      const runCli = vi.fn().mockImplementation(async (_command: string, args: string[]) => {
-        capturedArgs.push(args);
-        return agyStreamJsonResult("native topic response", replacementId);
+      db.putAcpSessionBinding({
+        conversationId: topicKey,
+        providerId: "agy",
+        acpSessionId: staleId,
+        runId: null,
+      });
+      const runProviderInvocation = vi.fn().mockResolvedValue({
+        text: "native topic response",
+        sessionId: replacementId,
       });
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
           kind: "antigravity",
-          botConfig: { command: "agy", modelPreference: [] },
+          botConfig: { command: "agy_acp_server.par", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        { runProviderInvocation },
       );
 
       await engine.handleMessages([makePrivateTopicMessage("resume topic", 7)]);
-      expect(capturedArgs[0]).toContain(staleId);
-      expect(db.getSession(topicKey, "antigravity")).toBe(replacementId);
-      expect(db.getSession("100", "antigravity")).toBeNull();
+      expect(runProviderInvocation.mock.calls[0][4].sessionId).toBe(staleId);
+      expect(db.getAcpSessionBinding(topicKey, "agy")?.acpSessionId).toBe(replacementId);
+      expect(db.getAcpSessionBinding("100", "agy")).toBeNull();
       expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
         chat_id: 100,
         message_thread_id: "7",

@@ -74,8 +74,8 @@ describe("unknown authenticated slash commands", () => {
   });
 
   it.each([
-    { bot: "antigravity", command: "agy", sessionId: "sess-agy" },
-  ])("keeps resumed unclaimed slash requests out of native $bot slash parsing", ({ bot, command, sessionId }) => {
+    { bot: "cursor", command: "cursor-agent", sessionId: "sess-cursor" },
+  ] as const)("keeps resumed unclaimed slash requests out of native $bot slash parsing", ({ bot, command, sessionId }) => {
     for (const prompt of ["/company", "/company status", "/company approve", "/company stop"]) {
       const invocation = buildCliInvocation({
         bot,
@@ -84,10 +84,11 @@ describe("unknown authenticated slash commands", () => {
         command,
         includeResponseContract: false,
       });
-      const providerPrompt = invocation.args.at(-1) ?? invocation.stdin ?? "";
+      const providerPrompt = invocation.args.find((arg) => arg.includes(prompt)) ?? invocation.stdin ?? "";
 
       expect(providerPrompt).toContain(prompt);
       expect(providerPrompt.startsWith("/")).toBe(false);
+      expect(invocation.args).not.toContain(prompt);
     }
   });
 

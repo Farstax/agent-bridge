@@ -22,12 +22,17 @@ describe("source setup", () => {
       ["codex-acp", "/usr/local/bin/codex-acp"],
       ["claude-agent-acp", "/usr/local/bin/claude-agent-acp"],
       ["grok", "/usr/local/bin/grok"],
-      ["agy", "/usr/local/bin/agy"],
+      ["agy_acp_server.par", "/usr/local/bin/agy_acp_server.par"],
       ["cursor-agent", "/usr/local/bin/cursor-agent"],
     ]);
 
     const providers = detectInteractiveProviders({
-      env: { CODEX_ACP_COMMAND: "codex-acp", CLAUDE_ACP_COMMAND: "claude-agent-acp", GROK_ACP_COMMAND: "grok" },
+      env: {
+        CODEX_ACP_COMMAND: "codex-acp",
+        CLAUDE_ACP_COMMAND: "claude-agent-acp",
+        GROK_ACP_COMMAND: "grok",
+        AGY_ACP_COMMAND: "agy_acp_server.par",
+      },
       resolvePath: (command) => installed.get(command) ?? null,
     });
 
@@ -42,7 +47,7 @@ describe("source setup", () => {
       "CODEX_ACP_COMMAND",
       "CLAUDE_ACP_COMMAND",
       "GROK_ACP_COMMAND",
-      "ANTIGRAVITY_COMMAND",
+      "AGY_ACP_COMMAND",
       "CURSOR_COMMAND",
     ]);
   });

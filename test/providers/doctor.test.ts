@@ -4,10 +4,17 @@ import { runDoctor } from "../../src/providers/doctor.js";
 const allFound = () => true;
 const noneFound = () => false;
 const voiceReady = () => ({ status: "ready" as const, reasonCode: null });
+const acpInspectVersion = (executable: string): string | null => {
+  if (executable.includes("codex-acp")) return "1.10.0";
+  if (executable.includes("claude-agent-acp")) return "0.76.0";
+  if (executable.includes("agy_acp_server") || executable.includes("/agy")) return "1.1.1";
+  if (executable.includes("grok")) return "1.0.30";
+  return "1.0.0";
+};
 
 describe("doctor diagnostics", () => {
   it("reports provider commands as available when the executable resolves", () => {
-    const report = runDoctor({ env: {}, commandExists: allFound, inspectVoiceRuntime: voiceReady });
+    const report = runDoctor({ env: {}, commandExists: allFound, inspectVersion: acpInspectVersion, inspectVoiceRuntime: voiceReady });
     for (const p of report.providers) {
       expect(p.status).toBe("available");
     }
@@ -18,17 +25,19 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "antigravity",
-        ANTIGRAVITY_COMMAND: configuredAgy,
+        AGY_ACP_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable === configuredAgy,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: voiceReady,
     });
 
-    expect(report.providers.find((p) => p.id === "agy")).toEqual({
+    expect(report.providers.find((p) => p.id === "agy")).toEqual(expect.objectContaining({
       id: "agy",
       executable: configuredAgy,
       status: "available",
-    });
+      runtime: "acp",
+    }));
     expect(report.ok).toBe(true);
   });
 
@@ -60,18 +69,19 @@ describe("doctor diagnostics", () => {
       env: {
         INTERACTIVE_CLI_CHAIN: "codex",
         CODEX_ACP_COMMAND: codexAcp,
-        ANTIGRAVITY_COMMAND: configuredAgy,
+        AGY_ACP_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable === codexAcp,
-      inspectVersion: (executable) => executable === codexAcp ? "1.10.0" : null,
+      inspectVersion: (executable) => executable === codexAcp ? "1.10.0" : acpInspectVersion(executable),
       inspectVoiceRuntime: voiceReady,
     });
 
-    expect(report.providers.find((p) => p.id === "agy")).toEqual({
+    expect(report.providers.find((p) => p.id === "agy")).toEqual(expect.objectContaining({
       id: "agy",
       executable: configuredAgy,
       status: "missing",
-    });
+      runtime: "acp",
+    }));
     expect(report.ok).toBe(true);
   });
 
@@ -80,17 +90,19 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: {
         INTERACTIVE_CLI_CHAIN: "antigravity",
-        ANTIGRAVITY_COMMAND: configuredAgy,
+        AGY_ACP_COMMAND: configuredAgy,
       },
       commandExists: (executable) => executable !== configuredAgy,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: voiceReady,
     });
 
-    expect(report.providers.find((p) => p.id === "agy")).toEqual({
+    expect(report.providers.find((p) => p.id === "agy")).toEqual(expect.objectContaining({
       id: "agy",
       executable: configuredAgy,
       status: "missing",
-    });
+      runtime: "acp",
+    }));
     expect(report.ok).toBe(false);
   });
 
@@ -140,6 +152,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,claude" },
       commandExists: allFound,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: voiceReady,
     });
     expect(report.ok).toBe(true);
@@ -154,7 +167,7 @@ describe("doctor diagnostics", () => {
       INTERACTIVE_CLI_CHAIN: "codex",
       AGENT_BRIDGE_STT_ROOT: "/opt/agent-bridge/host-components/voice-stt",
     };
-    const report = runDoctor({ env, commandExists: allFound, inspectVoiceRuntime });
+    const report = runDoctor({ env, commandExists: allFound, inspectVersion: acpInspectVersion, inspectVoiceRuntime });
 
     expect(inspectVoiceRuntime).toHaveBeenCalledWith(env);
     expect(report.voiceTranscription).toEqual({ status: "ready", reasonCode: null });
@@ -175,6 +188,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex", AGENT_BRIDGE_VOICE_TRANSCRIPTION: "disabled" },
       commandExists: allFound,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: () => ({ status: "unavailable", reasonCode: "voice_transcription_disabled" }),
     });
     expect(report.ok).toBe(true);

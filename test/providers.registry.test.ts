@@ -50,9 +50,10 @@ describe("provider registry", () => {
     const adapter = getProviderAdapter("agy");
     expect(adapter.id).toBe("agy");
     expect(adapter.displayName).toBe("Antigravity");
-    expect(adapter.executable).toBe("agy");
-    expect(adapter.defaultArgs).toEqual(["--print"]);
-    expect(adapter.versionArgs).toEqual(["--version"]);
+    expect(adapter.executable).toBeUndefined();
+    expect(adapter.defaultArgs).toBeUndefined();
+    expect(adapter.versionArgs).toBeUndefined();
+    expect(adapter.capabilities.toolFree).toBeUndefined();
   });
 
   it("retains native launch metadata for unmigrated Cursor and Agy", () => {
@@ -66,10 +67,10 @@ describe("provider registry", () => {
       versionArgs: ["--version"],
       defaultArgs: ["-p", "--output-format", "json"],
     });
-    expect(resolveProviderRuntime("agy", { ANTIGRAVITY_COMMAND: "/native/agy" })).toMatchObject({
-      transport: "oneshot",
-      executable: "/native/agy",
-      args: ["--print"],
+    expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" })).toMatchObject({
+      transport: "acp-stdio",
+      executable: "/opt/agy/agy_acp_server.par",
+      args: ["--uid="],
     });
     expect(resolveProviderRuntime("grok", {
       GROK_ACP_COMMAND: "/opt/xai/bin/grok",
@@ -118,14 +119,14 @@ describe("provider registry", () => {
   it("derives provisional-answer eligibility from the resolved ACP presentation policy, not a provider-name branch", () => {
     expect(supportsProvisionalAnswers("codex")).toBe(true);
     expect(supportsProvisionalAnswers("claude")).toBe(true);
-    expect(supportsProvisionalAnswers("antigravity")).toBe(false);
+    expect(supportsProvisionalAnswers("antigravity")).toBe(true);
     expect(supportsProvisionalAnswers("not-a-bot-kind")).toBe(false);
   });
 
   it("resolves the ACP-backed provider id behind a bot kind generically for session-binding routing", () => {
     expect(acpProviderIdForBotName("codex")).toBe("codex");
     expect(acpProviderIdForBotName("claude")).toBe("claude");
-    expect(acpProviderIdForBotName("antigravity")).toBeNull();
+    expect(acpProviderIdForBotName("antigravity")).toBe("agy");
     expect(acpProviderIdForBotName("not-a-bot-kind")).toBeNull();
   });
 

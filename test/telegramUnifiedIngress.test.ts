@@ -76,30 +76,39 @@ function codexEngine(db: any, telegram: any, runCli: any) {
 }
 
 describe("unified Telegram callback ingress", () => {
-  it("routes locked Antigravity model, effort, and queue callbacks to the engine without execution", async () => {
+  it("rejects raw legacy Antigravity model/effort callbacks as expired now that Agy is ACP-backed, while still routing queue callbacks", async () => {
     const db = openDb(":memory:");
     const telegram = client();
     const runCli = vi.fn();
     const engine = antigravityEngine(db, telegram, runCli);
     const messageDispatch = vi.fn();
 
+    // ACP-backed providers (Agy included) only accept the bounded ACP config
+    // callback token, not raw legacy "model:<bot>:<value>" callback data —
+    // see engine.ts's isAcpBackedBot(this.kind) guard.
     await dispatchUnifiedTelegramUpdate(callback("model:antigravity:gemini-3.8-flash"), "100:7", "telegram:antigravity", engine, messageDispatch);
-    expect(db.getSetting("antigravity")).toBe("gemini-3.8-flash");
-    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith({ callback_query_id: "cb-model:antigravity:gemini-3.8-flash" });
-    expect(telegram.editMessageText).toHaveBeenCalled();
+    expect(db.getSetting("antigravity")).toBeNull();
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith({
+      callback_query_id: "cb-model:antigravity:gemini-3.8-flash",
+      text: "This settings button has expired. Open the settings again.",
+    });
+    expect(telegram.editMessageText).not.toHaveBeenCalled();
     expect(messageDispatch).not.toHaveBeenCalled();
     expect(runCli).not.toHaveBeenCalled();
 
     await dispatchUnifiedTelegramUpdate(callback("effort:antigravity:high"), "100:7", "telegram:antigravity", engine, messageDispatch);
-    expect(db.getSetting("effort:antigravity")).toBe("high");
-    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith({ callback_query_id: "cb-effort:antigravity:high" });
-    expect(telegram.editMessageText).toHaveBeenCalledTimes(2);
+    expect(db.getSetting("effort:antigravity")).toBeNull();
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith({
+      callback_query_id: "cb-effort:antigravity:high",
+      text: "This settings button has expired. Open the settings again.",
+    });
+    expect(telegram.editMessageText).not.toHaveBeenCalled();
     expect(runCli).not.toHaveBeenCalled();
 
     await dispatchUnifiedTelegramUpdate(callback("queue_mode:queue"), "100:7", "telegram:antigravity", engine, messageDispatch);
     expect(db.getSetting(busyMessageModeSettingKey("telegram:antigravity", "100:7"))).toBe("queue");
     expect(telegram.answerCallbackQuery).toHaveBeenCalledWith({ callback_query_id: "cb-queue_mode:queue", text: "Busy-message mode: queue" });
-    expect(telegram.editMessageText).toHaveBeenCalledTimes(3);
+    expect(telegram.editMessageText).toHaveBeenCalledTimes(1);
     expect(runCli).not.toHaveBeenCalled();
     db.close();
   });

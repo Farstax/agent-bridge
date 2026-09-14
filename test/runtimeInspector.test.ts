@@ -218,7 +218,13 @@ describe("runtime inspector", () => {
         HOME: dir,
       }));
 
-      expect(view.providers.every((provider: { availability: string }) => provider.availability === "unknown")).toBe(true);
+      // Agy is a host-installed (not npm-bundled) ACP adapter: in this isolated
+      // sandbox its binary is genuinely absent, so it correctly reports
+      // "unavailable"/acp_adapter_missing rather than an invented "unknown" --
+      // this is real, not stale or fabricated, evidence.
+      expect(view.providers.every((provider: { availability: string }) =>
+        provider.availability === "unknown" || provider.availability === "unavailable"
+      )).toBe(true);
       expect(view.sessions.status).toBe("unknown");
       expect(view.health.status).toBeNull();
       expect(view.health.stalePluginNames).toContain("agent-bridge");

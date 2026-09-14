@@ -7,8 +7,8 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
-function providerResult(text = "done", sessionId = "11111111-1111-4111-8111-111111111111"): string {
-  return JSON.stringify({ event: "result", result: { conversation_id: sessionId, status: "SUCCESS", response: text } });
+function providerResult(text = "done", sessionId = "11111111-1111-4111-8111-111111111111") {
+  return { text, sessionId, stopReason: "end_turn" as const };
 }
 
 function client() {
@@ -29,7 +29,7 @@ function client() {
   } as any;
 }
 
-function engine(db: any, c: any, runCli: any, busyMessageMode: "augment" | "interrupt" | "queue" = "queue") {
+function engine(db: any, c: any, runProviderInvocation: any, busyMessageMode: "augment" | "interrupt" | "queue" = "queue") {
   return new BridgeEngine({
     surfaceIdentity: "telegram:interactive",
     kind: "antigravity",
@@ -38,7 +38,7 @@ function engine(db: any, c: any, runCli: any, busyMessageMode: "augment" | "inte
     executionMode: "safe",
     busyMessageMode,
     pollIntervalMs: 1, workingDir: process.cwd(),
-  }, db, c, { runCli });
+  }, db, c, { runProviderInvocation });
 }
 
 function album(caption = "review album") {
@@ -68,15 +68,6 @@ function album(caption = "review album") {
   ] as any[];
 }
 
-function attachmentArgs(runCli: any, callIndex = 0): string[] {
-  const args = runCli.mock.calls[callIndex][1] as string[];
-  const paths: string[] = [];
-  for (let i = 0; i < args.length - 1; i += 1) {
-    if (args[i] === "-i") paths.push(args[i + 1]);
-  }
-  return paths;
-}
-
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -85,13 +76,13 @@ describe("Telegram media group attachment ownership", () => {
   it("passes every supported album attachment to execution in message order and cleans the run directory", async () => {
     const db = openDb(":memory:");
     const c = client();
-    const runCli = vi.fn().mockResolvedValue(providerResult());
-    const subject = engine(db, c, runCli);
+    const runProviderInvocation = vi.fn().mockResolvedValue(providerResult());
+    const subject = engine(db, c, runProviderInvocation);
 
     await subject.handleMessages(album());
 
     expect(c.getFilePath.mock.calls.map((call: any[]) => call[0])).toEqual(["photo-id", "doc-id"]);
-    expect(runCli).toHaveBeenCalledOnce();
+    expect(runProviderInvocation).toHaveBeenCalledOnce();
     const paths = c.downloadFile.mock.calls.map((call: any[]) => call[1] as string);
     expect(paths.map((value) => basename(value).replace(/^attachment-\d+-/, ""))).toEqual([
       "photo_photo-id.jpg",
@@ -109,13 +100,13 @@ describe("Telegram media group attachment ownership", () => {
       if (remotePath.endsWith("doc-id")) throw new Error("download failed");
       await writeFile(localPath, remotePath, "utf8");
     });
-    const runCli = vi.fn().mockResolvedValue(providerResult());
-    const subject = engine(db, c, runCli);
+    const runProviderInvocation = vi.fn().mockResolvedValue(providerResult());
+    const subject = engine(db, c, runProviderInvocation);
 
     await subject.handleMessages(album());
 
     expect(c.getFilePath.mock.calls.map((call: any[]) => call[0])).toEqual(["photo-id", "doc-id"]);
-    expect(runCli).not.toHaveBeenCalled();
+    expect(runProviderInvocation).not.toHaveBeenCalled();
     expect(c.sendMessage.mock.calls.some((call: any[]) => /could not download all attachments/i.test(call[0]?.text ?? ""))).toBe(true);
     db.close();
   });
@@ -125,10 +116,10 @@ describe("Telegram media group attachment ownership", () => {
     const c = client();
     let releaseFirst!: (value: string) => void;
     const firstResult = new Promise<string>((resolve) => { releaseFirst = resolve; });
-    const runCli = vi.fn()
+    const runProviderInvocation = vi.fn()
       .mockImplementationOnce(() => firstResult)
       .mockResolvedValueOnce(providerResult("album done", "22222222-2222-4222-8222-222222222222"));
-    const subject = engine(db, c, runCli, "queue");
+    const subject = engine(db, c, runProviderInvocation, "queue");
 
     const first = subject.handleMessages([{
       message_id: 1,
@@ -137,10 +128,10 @@ describe("Telegram media group attachment ownership", () => {
       message_thread_id: 7,
       text: "first",
     } as any]);
-    await vi.waitFor(() => expect(runCli).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(runProviderInvocation).toHaveBeenCalledOnce());
 
     await subject.handleMessages(album("queued album"));
-    expect(runCli).toHaveBeenCalledOnce();
+    expect(runProviderInvocation).toHaveBeenCalledOnce();
     const queued = db.dequeueMsgs("telegram:interactive", "100:7").find((row) => row.prompt === "queued album");
     expect(queued).toBeDefined();
     expect(queued!.attachments).toHaveLength(2);
@@ -150,7 +141,7 @@ describe("Telegram media group attachment ownership", () => {
     releaseFirst(providerResult("first done"));
     await first;
 
-    expect(runCli).toHaveBeenCalledTimes(2);
+    expect(runProviderInvocation).toHaveBeenCalledTimes(2);
     expect(retainedPaths.every((value) => !existsSync(value))).toBe(true);
     db.close();
   });
@@ -158,8 +149,8 @@ describe("Telegram media group attachment ownership", () => {
   it("does not delete a legacy queued attachment path outside a run-owned upload directory", async () => {
     const db = openDb(":memory:");
     const c = client();
-    const runCli = vi.fn();
-    const subject = engine(db, c, runCli);
+    const runProviderInvocation = vi.fn();
+    const subject = engine(db, c, runProviderInvocation);
     const sentinelDir = await mkdtemp(join(tmpdir(), "bridge-cleanup-sentinel-"));
     const sentinelPath = join(sentinelDir, "outside.txt");
     await writeFile(sentinelPath, "keep", "utf8");
@@ -183,7 +174,7 @@ describe("Telegram media group attachment ownership", () => {
 
       expect(existsSync(sentinelPath)).toBe(true);
       expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
-      expect(runCli).not.toHaveBeenCalled();
+      expect(runProviderInvocation).not.toHaveBeenCalled();
     } finally {
       db.close();
       await rm(sentinelDir, { recursive: true, force: true });

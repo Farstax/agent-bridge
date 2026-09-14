@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { HealthReport } from "../src/health/types.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
+import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import { formatQualificationSummary, readInstalledProviderVersions } from "../src/providers/qualificationStatus.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -98,11 +99,16 @@ describe("provider qualification health integration", () => {
   it("formats persistent current and stale qualification states for on-demand health", () => {
     const root = mkdtempSync(join(tmpdir(), "qualification-health-summary-"));
     const evidencePath = join(root, "qualification.json");
+    // Agy is release-locked to exactly antigravity-acp 1.1.1; the qualification
+    // health check compares the installed version against that lock (and the
+    // real acp:antigravity-acp@1.1.1:<hash> runtime identity), not an
+    // arbitrary native version string.
+    const agyRuntimeIdentity = resolveProviderRuntime("agy", {}).runtimeIdentity;
     writeQualificationRecord({
       provider: "agy",
-      executionRuntime: "native:agy",
-      providerVersion: "1.1.12",
-      previousVersion: "1.1.11",
+      executionRuntime: agyRuntimeIdentity,
+      providerVersion: "1.1.1",
+      previousVersion: null,
       bridgeCommit: "d".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
       qualifiedAt: "2026-08-10T17:00:00.000Z",
@@ -115,7 +121,7 @@ describe("provider qualification health integration", () => {
       ],
     }, evidencePath);
 
-    expect(formatQualificationSummary(evidencePath, { agy: "1.1.12" })).toMatch(/agy 1\.1\.12 degraded — fresh_prompt/);
-    expect(formatQualificationSummary(evidencePath, { agy: "1.1.13" })).toMatch(/agy 1\.1\.13 unqualified/);
+    expect(formatQualificationSummary(evidencePath, { agy: "1.1.1" })).toMatch(/agy 1\.1\.1 degraded — fresh_prompt/);
+    expect(formatQualificationSummary(evidencePath, { agy: "1.1.2" })).toMatch(/agy 1\.1\.2 unqualified/);
   });
 });

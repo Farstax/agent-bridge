@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { BridgeDb } from "./db.js";
 import type { BotConfig, BotKind } from "./types.js";
 import { buildCliInvocation, parseCliResult, runProviderInvocation } from "./cli.js";
-import { setAntigravityModel } from "./providers/antigravityRuntime.js";
 import { supportsToolFreeMode } from "./providers/registry.js";
 import type { ProviderId } from "./providers/types.js";
 import type { AdvisorConfig, AdvisorTarget } from "./advisorTypes.js";
@@ -115,7 +114,6 @@ export async function executeFrontierAdvice(deps: {
   const startedAt = Date.now();
   const executionId = request.executionId ?? `advisor:${randomUUID()}`;
   try {
-    if (target.provider === "agy") setAntigravityModel(target.model);
     const prompt = [
       "Give one independent frontier opinion on the question below.",
       `The active provider is ${normalizeProvider(request.activeProvider)}; do not act as its continuation or claim execution ownership.`,
