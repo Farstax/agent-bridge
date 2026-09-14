@@ -3,7 +3,7 @@
  * INPUTS: A validated user skill name, shared home directory, and bundled-skill catalog root.
  * OUTPUTS: Existing shared skill registration plus native CLI symlink projections managed by the shared skill manager.
  * NEIGHBORS: src/skills.ts, scripts/skill-manager.ts, skills/manage-skills/SKILL.md
- * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, pack-managed ownership, or unmanaged native paths, then reuse the shared skill manager with explicit user ownership.
+ * LOGIC: Fail closed on invalid names, corrupt lock state, bundled-name collisions, managed-catalogue ownership, or unmanaged native paths, then reuse the shared skill manager with explicit user ownership.
  */
 
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
@@ -21,11 +21,6 @@ export interface ProjectUserSkillOptions {
 export function projectUserSkillGlobal(skillName: string, options: ProjectUserSkillOptions = {}): void {
   const paths = preflightUserSkill(skillName, options);
 
-  // installSkillGlobal already owns SKILL.md validation, lockfile metadata,
-  // atomic writes, and provider-native projection. Point its source root at
-  // ~/.agents so the canonical user skill is registered in place. User skills
-  // intentionally use symlinks: copy mode cannot safely distinguish a stale
-  // managed copy from unrelated user-owned native content after an edit.
   installSkillGlobal(skillName, {
     repoRoot: join(paths.homeDir, ".agents"),
     homeDir: paths.homeDir,
@@ -45,7 +40,7 @@ export function uninstallUserSkillGlobal(skillName: string, options: ProjectUser
 function preflightUserSkill(skillName: string, options: ProjectUserSkillOptions): ReturnType<typeof resolveSkillPaths> {
   validateUserSkillName(skillName);
   const paths = resolveSkillPaths(options.homeDir);
-  assertNotPackManaged(skillName, paths.homeDir);
+  assertNotManagedCatalogueSkill(skillName, paths.homeDir);
   const sharedDir = join(paths.agentsSkillsDir, skillName);
 
   if (!existsSync(sharedDir)) throw new Error(`User skill is missing from canonical shared storage: ${sharedDir}`);
@@ -61,24 +56,25 @@ function preflightUserSkill(skillName: string, options: ProjectUserSkillOptions)
   return paths;
 }
 
-function assertNotPackManaged(skillName: string, homeDir: string): void {
-  const packLockPath = join(homeDir, ".agents", ".skill-pack-lock.json");
-  if (!existsSync(packLockPath)) return;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(packLockPath, "utf8")) as unknown;
-  } catch {
-    throw new Error(`Unable to parse Skill Pack lockfile: ${packLockPath}`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Invalid Skill Pack lockfile: ${packLockPath}`);
-  }
-  const skills = (parsed as { skills?: unknown }).skills;
-  if (!skills || typeof skills !== "object" || Array.isArray(skills)) {
-    throw new Error(`Invalid Skill Pack lockfile: ${packLockPath}`);
-  }
-  if (Object.prototype.hasOwnProperty.call(skills, skillName)) {
-    throw new Error(`Refusing user-skill operation for pack-managed Skill: ${skillName}; use the Skill Pack manager`);
+function assertNotManagedCatalogueSkill(skillName: string, homeDir: string): void {
+  const candidates = [
+    { path: join(homeDir, ".agents", ".skill-collection-lock.json"), label: "Skill Collection", guidance: "the Skill/Collection manager" },
+    { path: join(homeDir, ".agents", ".skill-pack-lock.json"), label: "legacy Skill Pack", guidance: "the Skill/Collection manager" },
+  ];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate.path)) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(candidate.path, "utf8")) as unknown;
+    } catch {
+      throw new Error(`Unable to parse ${candidate.label} lockfile: ${candidate.path}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid ${candidate.label} lockfile: ${candidate.path}`);
+    const skills = (parsed as { skills?: unknown }).skills;
+    if (!skills || typeof skills !== "object" || Array.isArray(skills)) throw new Error(`Invalid ${candidate.label} lockfile: ${candidate.path}`);
+    if (Object.prototype.hasOwnProperty.call(skills, skillName)) {
+      throw new Error(`Refusing user-skill operation for catalogue-managed Skill: ${skillName}; use ${candidate.guidance}`);
+    }
   }
 }
 
@@ -94,9 +90,7 @@ function assertLockfileReadable(lockfilePath: string): void {
     const parsed = JSON.parse(readFileSync(lockfilePath, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid lockfile root");
     const skills = (parsed as { skills?: unknown }).skills;
-    if (skills !== undefined && (!skills || typeof skills !== "object" || Array.isArray(skills))) {
-      throw new Error("invalid skills map");
-    }
+    if (skills !== undefined && (!skills || typeof skills !== "object" || Array.isArray(skills))) throw new Error("invalid skills map");
   } catch {
     throw new Error(`Unable to parse skill lockfile: ${lockfilePath}`);
   }
@@ -113,9 +107,7 @@ function assertNativeProjectionCompatible(nativePath: string, sharedDir: string)
   if (stat.isSymbolicLink()) {
     try {
       if (resolve(dirname(nativePath), readlinkSync(nativePath)) === resolve(sharedDir)) return;
-    } catch {
-      // Fall through to the collision error below.
-    }
+    } catch {}
   }
 
   throw new Error(`Native skill path already exists and is not this managed projection: ${nativePath}`);
