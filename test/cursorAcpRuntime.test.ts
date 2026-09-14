@@ -39,7 +39,7 @@ describe("Cursor ACP provider", () => {
   it("locks the official Registry distribution and selects it for execution", () => {
     expect(getLockedAcpRegistryEntry("cursor")).toEqual(expect.objectContaining({
       id: "cursor",
-      version: "2026.09.08",
+      version: CURSOR_ACP_VERSION,
       distribution: {
         binary: expect.objectContaining({
           "linux-x86_64": {
@@ -57,7 +57,7 @@ describe("Cursor ACP provider", () => {
       executable: "cursor-agent",
       args: ["acp"],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:cursor@2026\.09\.08:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:cursor@2026\.09\.08-6caf4ff:[a-f0-9]{64}$/),
       toolFree: false,
       provisionalAnswers: true,
     }));

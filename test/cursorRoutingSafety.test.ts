@@ -9,6 +9,7 @@ import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBo
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import { isCursorRouteable } from "../src/providers/cursorAvailability.js";
+import { CURSOR_ACP_VERSION } from "../src/providers/cursorAcpConfig.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -22,7 +23,7 @@ if [ "$1" = "status" ]; then
   echo '{"status":"authenticated","isAuthenticated":true,"hasAccessToken":true,"hasRefreshToken":true}'
   exit 0
 fi
-echo '2026.09.08'
+echo '${CURSOR_ACP_VERSION}'
 `, "utf8");
   chmodSync(executable, 0o755);
 
@@ -51,7 +52,7 @@ function writeFailedCursorQualification(evidencePath: string): void {
   writeQualificationRecord({
     provider: "cursor",
     executionRuntime: resolveProviderRuntime("cursor").runtimeIdentity,
-    providerVersion: "2026.09.08",
+    providerVersion: CURSOR_ACP_VERSION,
     previousVersion: null,
     bridgeCommit: "e".repeat(40),
     contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -100,7 +101,7 @@ describe("Cursor routing safety", () => {
     withCursorEnvironment(() => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(["codex", "cursor", "antigravity"], db);
-      expect(isCursorRouteable({ readVersion: () => "2026.09.08" })).toBe(true);
+      expect(isCursorRouteable({ readVersion: () => CURSOR_ACP_VERSION })).toBe(true);
       expect(chain.getActiveCli("chat:1")).toBe("codex");
       expect(chain.advance("chat:1")).toBe("cursor");
       expect(chain.getChain()).toEqual(["codex", "cursor", "antigravity"]);

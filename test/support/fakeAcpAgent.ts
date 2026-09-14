@@ -99,6 +99,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
             { id: "default", name: "Default" },
             { id: "read-only", name: "Read Only" },
             { id: "agent-full-access", name: "Full Access" },
+            { id: "ask", name: "Ask" },
+            { id: "agent", name: "Agent" },
           ],
         },
         // Advertised so Bridge's per-provider effort session config (real
@@ -125,6 +127,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
             { id: "default", name: "Default" },
             { id: "read-only", name: "Read Only" },
             { id: "agent-full-access", name: "Full Access" },
+            { id: "ask", name: "Ask" },
+            { id: "agent", name: "Agent" },
           ],
         },
         configOptions: [effortConfigOption("medium")],
@@ -147,6 +151,8 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
             { id: "default", name: "Default" },
             { id: "read-only", name: "Read Only" },
             { id: "agent-full-access", name: "Full Access" },
+            { id: "ask", name: "Ask" },
+            { id: "agent", name: "Agent" },
           ],
         },
       };

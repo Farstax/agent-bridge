@@ -15,6 +15,7 @@ import {
   type ProviderQualificationRecord,
 } from "../src/providers/qualification.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
+import { CURSOR_ACP_VERSION } from "../src/providers/cursorAcpConfig.js";
 
 type GroundingMode = "pass" | "omit_instruction" | "omit_source" | "capacity";
 
@@ -236,7 +237,7 @@ exit 1
     const previousCommand = process.env.CURSOR_ACP_COMMAND;
     const previousArgs = process.env.CURSOR_ACP_ARGS;
     const acp = executable(join(root, "cursor-agent"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "2026.09.08"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "${CURSOR_ACP_VERSION}"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -262,7 +263,7 @@ exit 7
         CURSOR_ACP_COMMAND: acp,
         CURSOR_ACP_ARGS: "acp",
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("2026.09.08");
+      expect(result.providerVersion).toBe(CURSOR_ACP_VERSION);
       expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/2026\.09\.08/);
     } finally {
       if (previousCommand === undefined) delete process.env.CURSOR_ACP_COMMAND;
@@ -604,7 +605,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("accepts strict Cursor conversation evidence without semantic marker prose", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-cursor-"));
-    const agent = acpAgentExecutable(root, "pass", "2026.09.08");
+    const agent = acpAgentExecutable(root, "pass", CURSOR_ACP_VERSION);
     const previousCommand = process.env.CURSOR_ACP_COMMAND;
     const previousArgs = process.env.CURSOR_ACP_ARGS;
     Object.assign(process.env, { CURSOR_ACP_COMMAND: agent.path, CURSOR_ACP_ARGS: "acp" }, agent.env);
@@ -662,7 +663,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("fails closed on malformed provider-native envelopes", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-malformed-"));
-    const agent = acpAgentExecutable(root, "malformed", "2026.09.08");
+    const agent = acpAgentExecutable(root, "malformed", CURSOR_ACP_VERSION);
     const previousCommand = process.env.CURSOR_ACP_COMMAND;
     const previousArgs = process.env.CURSOR_ACP_ARGS;
     Object.assign(process.env, { CURSOR_ACP_COMMAND: agent.path, CURSOR_ACP_ARGS: "acp" }, agent.env);
@@ -695,7 +696,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
 
   it("runs repository-grounding qualification with native tools for cursor", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-cursor-"));
-    const agent = acpAgentExecutable(root, "grounding_pass", "2026.09.08");
+    const agent = acpAgentExecutable(root, "grounding_pass", CURSOR_ACP_VERSION);
     const previousCommand = process.env.CURSOR_ACP_COMMAND;
     const previousArgs = process.env.CURSOR_ACP_ARGS;
     Object.assign(process.env, { CURSOR_ACP_COMMAND: agent.path, CURSOR_ACP_ARGS: "acp" }, agent.env);

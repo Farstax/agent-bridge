@@ -159,7 +159,7 @@ describe("interactive CLI availability filtering", () => {
       env,
       verifyApiKey: (candidate: ProviderId) => candidate === provider,
       readCursorStatus: cursorStatusUnavailable,
-      readCursorVersion: () => "2026.09.08",
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
     const rejected = getAvailableCliKinds({
       homeDir: "/home/tester",
@@ -169,7 +169,7 @@ describe("interactive CLI availability filtering", () => {
       env,
       verifyApiKey: () => false,
       readCursorStatus: cursorStatusUnavailable,
-      readCursorVersion: () => "2026.09.08",
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
 
     expect(verified).toEqual(new Set<CliKind>([cliKind]));
@@ -237,7 +237,7 @@ describe("interactive CLI availability filtering", () => {
         CURSOR_ACP_COMMAND: commands.cursor,
       },
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.09.08",
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
 
     expect(available).toEqual(new Set<CliKind>(["codex", "claude", "antigravity", "grok", "cursor"]));
@@ -266,7 +266,7 @@ describe("interactive CLI availability filtering", () => {
         CURSOR_ACP_COMMAND: "/runtime/cursor-custom",
       },
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.09.08",
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
 
     expect(available.has(cliKind as CliKind)).toBe(false);
@@ -312,7 +312,7 @@ describe("interactive CLI availability filtering", () => {
       env: { CURSOR_API_KEY: "invalid-cursor-key" },
       verifyApiKey: () => false,
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.09.08",
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
     expect(available).toEqual(new Set<CliKind>(["cursor"]));
   });
@@ -324,7 +324,7 @@ describe("interactive CLI availability filtering", () => {
       commandExists: () => true,
       failedProviders: new Set(),
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.09.08",
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
     expect(available).toEqual(new Set<CliKind>(["cursor"]));
 
