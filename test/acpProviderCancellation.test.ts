@@ -6,6 +6,7 @@ import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import type { BridgeDb } from "../src/db.js";
 import type { TelegramMessage } from "../src/types.js";
+import * as fileOutput from "../src/fileOutput.js";
 
 // runProviderInvocation is the provider-neutral ACP transport entry point used
 // by engine.ts. Mocking it here lets these tests drive the
@@ -188,6 +189,52 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     for (const run of runs) expect(run.status).toBe("cancelled");
   });
 
+  it("cleans Run-owned output when a hard /stop kills an ACP child that never acknowledges cancellation", async () => {
+    const actualCli = await vi.importActual<typeof import("../src/cli.js")>("../src/cli.js");
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    process.env.AGENT_BRIDGE_KILL_GRACE_MS = "50";
+
+    let killedOutputDir: string | null = null;
+    let outputFile: string | null = null;
+    runProviderInvocationMock.mockImplementation(async (...args: Parameters<typeof actualCli.runProviderInvocation>) => {
+      const request = args[4];
+      killedOutputDir = request.outputDir ?? null;
+      if (!killedOutputDir) throw new Error("missing ACP outputDir in hard-stop kill test");
+      outputFile = join(killedOutputDir, "partial.txt");
+      process.env.FAKE_ACP_OUTPUT_FILE = outputFile;
+      return actualCli.runProviderInvocation(...args);
+    });
+
+    const { BridgeEngine } = await import("../src/engine.js");
+    const client = makeMockClient();
+    const engine = new BridgeEngine(
+      { surfaceIdentity: "test", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000 },
+      db, client, {},
+    );
+
+    const execution = engine.handleMessages([makeMessage("KILL_UNCANCELLABLE")]).catch(() => undefined);
+    const deadline = Date.now() + 10_000;
+    while (!outputFile || !existsSync(outputFile)) {
+      if (Date.now() > deadline) throw new Error("timed out waiting for the uncancellable turn to write output");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    await engine.handleUpdate({ update_id: 1, message: makeMessage("/stop") });
+    await execution;
+
+    expect(killedOutputDir).not.toBeNull();
+    expect(existsSync(killedOutputDir!)).toBe(false);
+    expect(client.sendPhoto).not.toHaveBeenCalled();
+    expect(client.sendDocument).not.toHaveBeenCalled();
+    expect(db.getConvStatus("100", "test").turnCount).toBe(0);
+    const runs = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").all("100") as Array<{ status: string }>;
+    expect(runs.length).toBeGreaterThan(0);
+    for (const run of runs) expect(run.status).not.toBe("done");
+
+    delete process.env.AGENT_BRIDGE_KILL_GRACE_MS;
+  }, 15_000);
+
   it("still delivers, completes, and remembers a normal (non-cancelled) ACP turn", async () => {
     runProviderInvocationMock.mockImplementation(async (
       _bot: unknown,
@@ -301,6 +348,83 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
       message_id: 1,
       text: expect.stringContaining("fallback answer"),
     }));
+  });
+
+  it("removes Run-owned output and never publishes/completes/remembers when a fenced attempt throws instead of returning a graceful cancellation", async () => {
+    let hardStopOutputDir: string | null = null;
+    let engineRef: InstanceType<Awaited<typeof import("../src/engine.js")>["BridgeEngine"]> | null = null;
+    runProviderInvocationMock.mockImplementation(async (
+      _bot: unknown,
+      _invocation: unknown,
+      _cwd: string,
+      _options: unknown,
+      request: { outputDir?: string | null },
+    ) => {
+      hardStopOutputDir = request.outputDir ?? null;
+      if (!hardStopOutputDir) throw new Error("missing ACP outputDir in hard-stop test");
+      writeFileSync(join(hardStopOutputDir, "partial.txt"), "partial output from a killed attempt");
+      // A concurrent hard /stop marks the lane aborted before the killed
+      // child's promise settles, mirroring the real fencing race without a
+      // real spawned process for this deterministic case (exercised with a
+      // real process/real /stop below).
+      (engineRef as any).laneCoordinator.markAborted(JSON.stringify(["test", "100"]));
+      throw new Error("CLI killed by signal SIGKILL: (no diagnostic output)");
+    });
+    const { BridgeEngine } = await import("../src/engine.js");
+    const client = makeMockClient();
+    const engine = new BridgeEngine(
+      { surfaceIdentity: "test", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000 },
+      db, client, {},
+    );
+    engineRef = engine;
+
+    await engine.handleMessages([makeMessage("hello")]).catch(() => undefined);
+
+    expect(hardStopOutputDir).not.toBeNull();
+    expect(existsSync(hardStopOutputDir!)).toBe(false);
+    expect(client.sendPhoto).not.toHaveBeenCalled();
+    expect(client.sendDocument).not.toHaveBeenCalled();
+    expect(db.getConvStatus("100", "test").turnCount).toBe(0);
+    const runs = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").all("100") as Array<{ status: string }>;
+    expect(runs.length).toBeGreaterThan(0);
+    for (const run of runs) expect(run.status).not.toBe("done");
+  });
+
+  it("contains a cleanup failure without restoring delivery authority, publishing output, or completing the run", async () => {
+    let thrownOutputDir: string | null = null;
+    let engineRef: InstanceType<Awaited<typeof import("../src/engine.js")>["BridgeEngine"]> | null = null;
+    runProviderInvocationMock.mockImplementation(async (
+      _bot: unknown,
+      _invocation: unknown,
+      _cwd: string,
+      _options: unknown,
+      request: { outputDir?: string | null },
+    ) => {
+      thrownOutputDir = request.outputDir ?? null;
+      if (!thrownOutputDir) throw new Error("missing ACP outputDir in cleanup-failure test");
+      writeFileSync(join(thrownOutputDir, "partial.txt"), "partial output from a killed attempt");
+      (engineRef as any).laneCoordinator.markAborted(JSON.stringify(["test", "100"]));
+      throw new Error("CLI killed by signal SIGKILL: (no diagnostic output)");
+    });
+    const cleanOutputDirSpy = vi.spyOn(fileOutput, "cleanOutputDir").mockRejectedValue(new Error("disk cleanup failed"));
+    const { BridgeEngine } = await import("../src/engine.js");
+    const client = makeMockClient();
+    const engine = new BridgeEngine(
+      { surfaceIdentity: "test", kind: "codex", botConfig: { command: "codex", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000 },
+      db, client, {},
+    );
+    engineRef = engine;
+
+    await engine.handleMessages([makeMessage("hello")]).catch(() => undefined);
+
+    expect(cleanOutputDirSpy).toHaveBeenCalled();
+    expect(client.sendPhoto).not.toHaveBeenCalled();
+    expect(client.sendDocument).not.toHaveBeenCalled();
+    expect(db.getConvStatus("100", "test").turnCount).toBe(0);
+    const runs = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").all("100") as Array<{ status: string }>;
+    expect(runs.length).toBeGreaterThan(0);
+    for (const run of runs) expect(run.status).not.toBe("done");
+    cleanOutputDirSpy.mockRestore();
   });
 
   it("does not turn a cancelled turn into an error reply or a completion when the ACP session binding write fails for a non-fencing reason", async () => {
