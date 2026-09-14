@@ -126,6 +126,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
 
     expect([...available]).toEqual(["claude", "grok", "cursor"]);
@@ -138,6 +139,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy", "grok"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
+      readCursorVersion: () => "2026.09.08-6caf4ff",
     });
 
     expect([...available]).toEqual(["claude", "cursor"]);
