@@ -14,6 +14,7 @@ import {
 } from "../src/acp/sessionConfig.js";
 import { openDb } from "../src/db.js";
 import { cursorAcpPolicy } from "../src/providers/cursorAcpPolicy.js";
+import { assertCursorAcpVersion, CURSOR_ACP_VERSION } from "../src/providers/cursorAcpConfig.js";
 import { getAcpProviderPolicy, isAcpBackedBot, supportsToolFreeMode } from "../src/providers/registry.js";
 import type { ProviderInvocationRequest } from "../src/providers/types.js";
 
@@ -99,7 +100,7 @@ describe("Cursor ACP provider", () => {
       CURSOR_MODEL_PREFERENCE: "composer-2.5,auto",
       CURSOR_EFFORT: "high",
     })).toEqual({
-      modeId: "default",
+      modeId: "ask",
       config: [
         { category: "model", explicitValue: null, preferredValues: ["composer-2.5", "auto"] },
         { category: "thought_level", explicitValue: "xhigh", preferredValues: ["high"] },
@@ -149,12 +150,17 @@ describe("Cursor ACP provider", () => {
       CURSOR_MODEL_PREFERENCE: "composer-2.5,auto",
       CURSOR_EFFORT: "high",
     })).toEqual({
-      modeId: "default",
+      modeId: "ask",
       config: [
         { category: "model", explicitValue: null, preferredValues: [], useProviderDefault: true },
         { category: "thought_level", explicitValue: null, preferredValues: [], useProviderDefault: true },
       ],
     });
+  });
+
+  it("maps safe and trusted execution to Cursor's advertised ACP modes", () => {
+    expect(cursorAcpPolicy.sessionSettings?.(request({ executionMode: "safe" }), {} )?.modeId).toBe("ask");
+    expect(cursorAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {} )?.modeId).toBe("agent");
   });
 
   it("rejects tool-free mode until a Cursor ACP contract is proven", () => {
@@ -184,6 +190,14 @@ describe("Cursor ACP provider", () => {
       .onRequest(acp.methods.agent.authenticate, async () => ({}))
       .onRequest(acp.methods.agent.session.new, async () => ({
         sessionId: "cursor-session",
+        modes: {
+          currentModeId: "ask",
+          availableModes: [
+            { id: "agent", name: "Agent" },
+            { id: "plan", name: "Plan" },
+            { id: "ask", name: "Ask" },
+          ],
+        },
         configOptions: [
           {
             id: "model",
@@ -232,12 +246,57 @@ describe("Cursor ACP provider", () => {
       prompt: "hello",
       executionMode: "safe",
       authenticateMethodId: "cursor_login",
+      sessionModeId: cursorAcpPolicy.sessionSettings?.(request({ model: "composer-2.5" }), {})?.modeId,
       sessionConfig: cursorAcpPolicy.sessionSettings?.(request({ model: "composer-2.5" }), {})?.config,
     });
     expect(result.liveText).toBe("QUAL-OK");
     expect(result.liveText).not.toContain("secret-thought");
     expect(result.acpSessionId).toBe("cursor-session");
     expect(result.stopReason).toBe("end_turn");
+  });
+
+  it("classifies Cursor's capacity completion as a provider error", async () => {
+    const agent = acp.agent({ name: "cursor-capacity-fixture" })
+      .onRequest(acp.methods.agent.initialize, async () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: {},
+      }))
+      .onRequest(acp.methods.agent.session.new, async () => ({
+        sessionId: "cursor-capacity-session",
+        modes: {
+          currentModeId: "ask",
+          availableModes: [{ id: "ask", name: "Ask" }],
+        },
+      }))
+      .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+        await ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Upgrade your plan to continue" },
+          },
+        });
+        return { stopReason: "end_turn" };
+      });
+
+    const error = cursorAcpPolicy.detectTurnError?.(await runAcpTurn({
+      peer: agent,
+      cwd: process.cwd(),
+      conversationId: "bridge-capacity",
+      runId: "run-capacity",
+      existingAcpSessionId: null,
+      prompt: "hello",
+      executionMode: "safe",
+      sessionModeId: "ask",
+    }));
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toMatch(/capacity/i);
+  });
+
+  it("fails closed when the selected Cursor executable is not the release-locked version", () => {
+    expect(() => assertCursorAcpVersion("cursor-agent", () => "2026.08.31-4057e58"))
+      .toThrow(new RegExp(`expects ${CURSOR_ACP_VERSION}`));
+    expect(() => assertCursorAcpVersion("cursor-agent", () => CURSOR_ACP_VERSION)).not.toThrow();
   });
 
   it("owns Cursor ACP through policy rather than a Cursor-specific runtime", () => {

@@ -48,7 +48,7 @@ describe("Cursor review regressions", () => {
     expect(invocation.args).not.toContain("--mode");
     expect(invocation.args).not.toContain("ask");
     expect(invocation.args).not.toContain("-p");
-    expect(cursorAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {})).toEqual({ modeId: "default" });
+    expect(cursorAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {})).toEqual({ modeId: "agent" });
   });
 
   it("does not parse native oneshot JSON as a Cursor ACP result", () => {
@@ -193,6 +193,17 @@ describe("cursor auth readiness", () => {
       exists: () => false,
       env: {},
       readStatus: () => ({ isAuthenticated: false }),
+      failedProviders: new Set(),
+    })).toBe(false);
+  });
+
+  it("is not routeable when the installed Cursor ACP version drifts from the release lock", () => {
+    expect(isCursorRouteable({
+      homeDir: "/no-cursor-home",
+      exists: () => false,
+      env: {},
+      readStatus: () => ({ isAuthenticated: true }),
+      readVersion: () => "2026.08.31-4057e58",
       failedProviders: new Set(),
     })).toBe(false);
   });

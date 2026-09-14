@@ -52,11 +52,25 @@ acp.agent({ name: "fake-qualification-acp-agent" })
   }))
   .onRequest(acp.methods.agent.session.new, async () => ({
     sessionId: randomUUID(),
-    modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] },
+    modes: {
+      currentModeId: "ask",
+      availableModes: [
+        { id: "agent", name: "Agent" },
+        { id: "plan", name: "Plan" },
+        { id: "ask", name: "Ask" },
+      ],
+    },
   }))
   .onRequest(acp.methods.agent.session.resume, async (ctx) => ({
     sessionId: ctx.params.sessionId,
-    modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }] },
+    modes: {
+      currentModeId: "ask",
+      availableModes: [
+        { id: "agent", name: "Agent" },
+        { id: "plan", name: "Plan" },
+        { id: "ask", name: "Ask" },
+      ],
+    },
   }))
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
     const prompt = ctx.params.prompt.map((block) => block.type === "text" ? block.text : "").join("");

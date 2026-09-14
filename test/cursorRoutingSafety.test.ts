@@ -100,6 +100,7 @@ describe("Cursor routing safety", () => {
     withCursorEnvironment(() => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(["codex", "cursor", "antigravity"], db);
+      expect(isCursorRouteable({ readVersion: () => "2026.09.08" })).toBe(true);
       expect(chain.getActiveCli("chat:1")).toBe("codex");
       expect(chain.advance("chat:1")).toBe("cursor");
       expect(chain.getChain()).toEqual(["codex", "cursor", "antigravity"]);
