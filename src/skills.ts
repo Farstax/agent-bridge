@@ -30,7 +30,6 @@ export type SkillOwnership = "bundled" | "user";
 
 export interface SkillCatalogEntry {
   name: string;
-  version: string;
   description: string;
   path: string;
 }
@@ -105,15 +104,8 @@ type SkillLockfile = {
   [key: string]: unknown;
 };
 
-type LegacySkillManifest = {
-  name?: unknown;
-  version?: unknown;
-  description?: unknown;
-};
-
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = join(moduleDir, "..");
-const unversionedSkill = "unversioned";
 const skillLockVersion = 4;
 
 // Frozen at the v4 ownership migration. Never derive this from the current
@@ -365,7 +357,6 @@ export function hashDirectory(dir: string): string {
 }
 
 function readCatalogEntry(skillDir: string): SkillCatalogEntry {
-  const manifestPath = join(skillDir, "skill.json");
   const skillPath = join(skillDir, "SKILL.md");
   if (!existsSync(skillPath)) throw new Error(`Missing SKILL.md: ${skillDir}`);
 
@@ -374,16 +365,7 @@ function readCatalogEntry(skillDir: string): SkillCatalogEntry {
   validateSkillDescription(frontmatter.description, skillPath);
   if (frontmatter.name !== basename(skillDir)) throw new Error(`Skill name does not match folder: ${skillDir}`);
 
-  let version = unversionedSkill;
-  if (existsSync(manifestPath)) {
-    const manifest = readLegacySkillManifest(manifestPath);
-    if (manifest.name !== undefined && manifest.name !== frontmatter.name) {
-      throw new Error(`Skill manifest name does not match SKILL.md: ${skillDir}`);
-    }
-    if (manifest.version !== undefined) version = manifest.version;
-  }
-
-  return { name: frontmatter.name, version, description: frontmatter.description, path: skillDir };
+  return { name: frontmatter.name, description: frontmatter.description, path: skillDir };
 }
 
 function readSkillFrontmatter(skillPath: string): { name: string; description: string } {
@@ -424,24 +406,6 @@ function validateSkillDescription(description: string, skillPath: string): void 
   }
 }
 
-function readLegacySkillManifest(manifestPath: string): { name?: string; version?: string } {
-  let manifest: LegacySkillManifest;
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as LegacySkillManifest;
-  } catch {
-    throw new Error(`Invalid skill.json: ${manifestPath}`);
-  }
-  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error(`Invalid skill.json: ${manifestPath}`);
-  if (manifest.name !== undefined && typeof manifest.name !== "string") throw new Error(`Invalid skill.json: ${manifestPath}`);
-  if (manifest.version !== undefined && (typeof manifest.version !== "string" || manifest.version.trim().length === 0)) {
-    throw new Error(`Invalid skill.json: ${manifestPath}`);
-  }
-  if (manifest.description !== undefined && typeof manifest.description !== "string") throw new Error(`Invalid skill.json: ${manifestPath}`);
-  return {
-    name: manifest.name as string | undefined,
-    version: manifest.version as string | undefined,
-  };
-}
 
 function readLockfile(path: string, options: { force?: boolean }): SkillLockfile {
   if (!existsSync(path)) return { version: skillLockVersion, skills: {} };

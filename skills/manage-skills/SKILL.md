@@ -33,7 +33,7 @@ description: Use when ...
 # My Skill
 ```
 
-4. Keep the description non-empty and at most 1024 characters. `skill.json` is optional legacy metadata; do not create it unless a concrete compatibility need exists.
+4. Keep the description non-empty and at most 1024 characters.
 5. Project/register the canonical user Skill with:
 
 ```bash

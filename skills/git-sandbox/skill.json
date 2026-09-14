@@ -1,5 +1,0 @@
-{
-  "name": "git-sandbox",
-  "version": "1.0.0",
-  "description": "Isolate substantial changes using git worktree feature branches, Draft PRs, and sandbox testing before merging"
-}
