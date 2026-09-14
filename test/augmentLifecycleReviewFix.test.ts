@@ -5,6 +5,7 @@ import { existsSync, rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 
 function message(text: string) {
   return {
@@ -88,7 +89,7 @@ describe("augment lifecycle review regressions", () => {
       options("interrupt", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }),
       db,
       c,
-      { runCli: mockRunCli },
+      acpEngineExec(mockRunCli),
     );
 
     const original = engine.handleMessages([message("cancelled original")]);
@@ -137,7 +138,7 @@ describe("augment lifecycle review regressions", () => {
       options("augment", { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } }),
       db,
       c,
-      { runCli: mockRunCli },
+      acpEngineExec(mockRunCli),
     );
 
     // The augment notice message is gone (Issue #229 — silent augment), but the

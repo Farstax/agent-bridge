@@ -15,25 +15,23 @@ function client() {
 }
 
 describe("BridgeEngine provider-attempt contract", () => {
-  it("executes an ordinary provider attempt through the canonical native runtime", async () => {
+  it("executes an ordinary provider attempt through the canonical ACP runtime", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-provider-attempt-"));
     const db = openDb(join(root, "bridge.sqlite"));
     const runCli = vi.fn().mockResolvedValue("legacy response");
-    const runCliAsync = vi.fn().mockResolvedValue({ text: JSON.stringify({
-      type: "result", result: "provider response", session_id: "cursor-session",
-    }) });
+    const runProviderInvocation = vi.fn().mockResolvedValue({ text: "provider response", sessionId: "cursor-session", stopReason: "end_turn" });
     const engine = new BridgeEngine({
-      kind: "cursor", surfaceIdentity: "test",
+      kind: "grok", surfaceIdentity: "test",
       botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
       allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1_000, workingDir: process.cwd(),
-    }, db, client(), { runCli, runCliAsync });
+    }, db, client(), { runCli, runProviderInvocation });
     const handle = db.acquireLock("test", "100");
     try {
       expect(handle).not.toBeNull();
       const result = await engine.executePromptAsync("hello", null, 100, {}, () => {}, [], undefined, null, null, "100", handle!);
       expect(result.text).toBe("provider response");
       expect(result.sessionId).toBe("cursor-session");
-      expect(runCliAsync).toHaveBeenCalledOnce();
+      expect(runProviderInvocation).toHaveBeenCalledOnce();
       expect(runCli).not.toHaveBeenCalled();
     } finally {
       if (handle && db.ownsLock(handle)) db.unlock(handle);

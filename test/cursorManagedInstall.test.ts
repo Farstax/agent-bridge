@@ -23,7 +23,8 @@ describe("managed Cursor provider installation", () => {
 env = {
   "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
   "INTERACTIVE_CLI_CHAIN": "cursor",
-  "CURSOR_COMMAND": "/home/agentbridge/.local/bin/cursor-agent",
+  "CURSOR_ACP_COMMAND": "/home/agentbridge/.local/bin/cursor-agent",
+  "CURSOR_ACP_ARGS": "acp",
   "CURSOR_MODEL_PREFERENCE": "composer-2.5,auto",
   "CURSOR_EFFORT": "high",
   "CURSOR_PROJECT_DIR": "/srv/workspace",
@@ -45,7 +46,8 @@ print(json.dumps({"service": list(interactive), "values": values}))
     expect(result.values).toMatchObject({
       TELEGRAM_BOT_TOKEN_INTERACTIVE: "interactive-token",
       INTERACTIVE_CLI_CHAIN: "cursor",
-      CURSOR_COMMAND: "/home/agentbridge/.local/bin/cursor-agent",
+      CURSOR_ACP_COMMAND: "/home/agentbridge/.local/bin/cursor-agent",
+      CURSOR_ACP_ARGS: "acp",
       CURSOR_MODEL_PREFERENCE: "composer-2.5,auto",
       CURSOR_EFFORT: "high",
       CURSOR_PROJECT_DIR: "/srv/workspace",

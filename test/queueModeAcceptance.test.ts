@@ -2,17 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { busyMessageModeSettingKey } from "../src/busyMessageMode.js";
-import { runCli, shutdownCliProcessesAndWait } from "../src/cli.js";
+import { runCli as realRunCli, shutdownCliProcessesAndWait } from "../src/cli.js";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 
 function client() {
   return { sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }), sendChatAction: vi.fn(), sendPhoto: vi.fn(), sendDocument: vi.fn(), getUpdates: vi.fn(), setMyCommands: vi.fn(), answerCallbackQuery: vi.fn(), editMessageText: vi.fn() } as any;
 }
 
 function engine(db: any, c: any, runCli = vi.fn(), busyMessageMode: "augment" | "interrupt" | "queue" = "augment") {
-  return new BridgeEngine({ surfaceIdentity: "telegram:interactive", kind: "cursor", botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode, pollIntervalMs: 1, workingDir: process.cwd(), fullConfig: { bots: { claude: { command: "cursor", modelPreference: [] } } } as any }, db, c, { runCli });
+  return new BridgeEngine({ surfaceIdentity: "telegram:interactive", kind: "grok", botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode, pollIntervalMs: 1, workingDir: process.cwd(), fullConfig: { bots: { claude: { command: "cursor", modelPreference: [] } } } as any }, db, c, acpEngineExec(runCli));
 }
 
 function callback(data: string, from = 42, threadId = 7) {
@@ -53,7 +54,7 @@ describe("queue mode callback acceptance", () => {
     let release!: (value: string) => void;
     const runCli = vi.fn()
       .mockImplementationOnce(() => new Promise<string>((resolve) => { release = resolve; }))
-      .mockResolvedValue(JSON.stringify({ type: "result", result: "second complete", session_id: "cursor-second" }));
+      .mockResolvedValue([JSON.stringify({ type: "text", data: "second complete" }), JSON.stringify({ type: "end", sessionId: "cursor-second", stopReason: "end_turn" })].join("\n") + "\n");
     const subject = engine(db, c, runCli);
     const first = subject.handleMessages([{ message_id: 1, chat: { id: 100, type: "private" }, from: { id: 42 }, message_thread_id: 7, text: "first" } as any]);
     await vi.waitFor(() => expect(runCli).toHaveBeenCalledOnce());
@@ -65,15 +66,15 @@ describe("queue mode callback acceptance", () => {
     // The first accepted turn remains claimed; the new turn is appended rather
     // than being merged, cancelled, or reclassified.
     expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(2);
-    release(JSON.stringify({ type: "result", result: "first complete", session_id: "cursor-first" }));
+    release([JSON.stringify({ type: "text", data: "first complete" }), JSON.stringify({ type: "end", sessionId: "cursor-first", stopReason: "end_turn" })].join("\n") + "\n");
     await first;
     db.close();
   });
 
   it("leaves the active run alone until the next interrupt-mode message cancels it", async () => {
     const db = openDb(":memory:"); const c = client(); const ready = join(tmpdir(), `queue-mode-interrupt-${Date.now()}`);
-    const successor = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "second complete", session_id: "cursor-second" }));
-    const run = vi.fn().mockImplementationOnce((_command, _args, cwd, options) => runCli(process.execPath,
+    const successor = vi.fn().mockResolvedValue([JSON.stringify({ type: "text", data: "second complete" }), JSON.stringify({ type: "end", sessionId: "cursor-second", stopReason: "end_turn" })].join("\n") + "\n");
+    const run = vi.fn().mockImplementationOnce((_command, _args, cwd, options) => realRunCli(process.execPath,
       ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", ready], cwd, options)).mockImplementationOnce(successor);
     const subject = engine(db, c, run);
     const first = subject.handleMessages([{ message_id: 1, chat: { id: 100, type: "private" }, from: { id: 42 }, message_thread_id: 7, text: "first" } as any]);
@@ -88,8 +89,8 @@ describe("queue mode callback acceptance", () => {
 
   it("leaves the active run alone until the next augment-mode message follows the augment path", async () => {
     const db = openDb(":memory:"); const c = client(); const ready = join(tmpdir(), `queue-mode-augment-${Date.now()}`);
-    const successor = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "combined complete", session_id: "cursor-combined" }));
-    const run = vi.fn().mockImplementationOnce((_command, _args, cwd, options) => runCli(process.execPath,
+    const successor = vi.fn().mockResolvedValue([JSON.stringify({ type: "text", data: "combined complete" }), JSON.stringify({ type: "end", sessionId: "cursor-combined", stopReason: "end_turn" })].join("\n") + "\n");
+    const run = vi.fn().mockImplementationOnce((_command, _args, cwd, options) => realRunCli(process.execPath,
       ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},10000)", ready], cwd, options)).mockImplementationOnce(successor);
     const subject = engine(db, c, run, "queue");
     await subject.handleCallback(callback("queue_mode:queue"));

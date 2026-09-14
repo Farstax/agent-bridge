@@ -1,9 +1,10 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildCliInvocation, parseCliResult } from "../src/cli.js";
 import { openDb } from "../src/db.js";
+import { cursorAcpPolicy } from "../src/providers/cursorAcpPolicy.js";
 import { isCursorAuthenticated, isCursorRouteable } from "../src/providers/cursorAvailability.js";
 import { runDoctor } from "../src/providers/doctor.js";
 import {
@@ -13,13 +14,27 @@ import {
   resolveSkillPaths,
 } from "../src/skills.js";
 import { projectUserSkillGlobal } from "../src/userSkills.js";
+import type { ProviderInvocationRequest } from "../src/providers/types.js";
 
-function cursorStream(events: unknown[]): string {
-  return events.map((event) => JSON.stringify(event)).join("\n") + "\n";
+function request(overrides: Partial<ProviderInvocationRequest> = {}): ProviderInvocationRequest {
+  return {
+    prompt: "edit files",
+    sessionId: null,
+    command: "cursor-agent",
+    model: null,
+    executionMode: "safe",
+    outputFormat: "json",
+    soulContext: null,
+    attachments: [],
+    outputDir: null,
+    effort: null,
+    toolMode: "default",
+    ...overrides,
+  };
 }
 
-describe("cursor safe execution policy", () => {
-  it("maps safe mode to Cursor ask mode with workspace trust for headless refusal of writes", () => {
+describe("Cursor review regressions", () => {
+  it("maps execution through ACP stdio rather than native ask/trust flags", () => {
     const invocation = buildCliInvocation({
       bot: "cursor",
       prompt: "edit files",
@@ -28,50 +43,25 @@ describe("cursor safe execution policy", () => {
       executionMode: "safe",
       includeResponseContract: false,
     });
-    expect(invocation.args).toContain("--mode");
-    expect(invocation.args).toContain("ask");
-    expect(invocation.args).toContain("--trust");
-    expect(invocation.args).not.toContain("--sandbox");
-    expect(invocation.args).not.toContain("disabled");
-  });
-
-  it("keeps trusted mode on the qualified write-capable flags", () => {
-    const invocation = buildCliInvocation({
-      bot: "cursor",
-      prompt: "edit files",
-      sessionId: null,
-      command: "cursor-agent",
-      executionMode: "trusted",
-      includeResponseContract: false,
-    });
-    expect(invocation.args.slice(2)).toEqual([
-      "--output-format", "json",
-      "--trust",
-      "--sandbox", "disabled",
-    ]);
+    expect(invocation.transport).toBe("acp-stdio");
+    expect(invocation.args).toEqual(["acp"]);
     expect(invocation.args).not.toContain("--mode");
-  });
-});
-
-describe("cursor terminal parse fail-closed", () => {
-  it("rejects events after a terminal result", () => {
-    expect(() => parseCliResult({
-      bot: "cursor",
-      stdout: cursorStream([
-        { type: "result", subtype: "success", is_error: false, result: "first", session_id: "sess-1" },
-        { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "late" }] }, session_id: "sess-1" },
-      ]),
-    })).toThrow(/after terminal/i);
+    expect(invocation.args).not.toContain("ask");
+    expect(invocation.args).not.toContain("-p");
+    expect(cursorAcpPolicy.sessionSettings?.(request({ executionMode: "trusted" }), {})).toEqual({ modeId: "default" });
   });
 
-  it("rejects a second terminal result", () => {
+  it("does not parse native oneshot JSON as a Cursor ACP result", () => {
     expect(() => parseCliResult({
       bot: "cursor",
-      stdout: cursorStream([
-        { type: "result", subtype: "success", is_error: false, result: "first", session_id: "sess-1" },
-        { type: "result", subtype: "success", is_error: false, result: "second", session_id: "sess-2" },
-      ]),
-    })).toThrow(/after terminal/i);
+      stdout: JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "first",
+        session_id: "sess-1",
+      }) + "\n",
+    })).toThrow(/ACP structured results/);
   });
 });
 
@@ -136,7 +126,12 @@ describe("cursor doctor and session expiry", () => {
       // faking their executables as present would force real version
       // inspection against binaries that don't exist in this sandbox,
       // reporting them "invalid" and incorrectly failing the overall report.
-      commandExists: (executable) => executable.includes("cursor"),
+      // Match on the executable's basename, not a raw substring: a
+      // worktree checkout directory can itself contain "cursor" in its
+      // path (e.g. agent-bridge-738-cursor), which would otherwise make
+      // every other provider's node_modules/.bin path match too.
+      commandExists: (executable) => basename(executable).includes("cursor"),
+      inspectVersion: () => "2026.09.08",
       inspectVoiceRuntime: () => ({ status: "ready", reasonCode: null }),
     });
     const chain = report.chains.find((entry) => entry.name === "INTERACTIVE_CLI_CHAIN");
@@ -212,7 +207,7 @@ describe("cursor auth readiness", () => {
 describe("cursor managed install propagation", () => {
   it("propagates CURSOR_* runtime configuration through the installer SERVICE_KEYS", () => {
     const installer = readFileSync(join(process.cwd(), "scripts/agent-bridge-install.py"), "utf8");
-    for (const key of ["CURSOR_COMMAND", "CURSOR_MODEL_PREFERENCE", "CURSOR_EFFORT", "CURSOR_PROJECT_DIR"]) {
+    for (const key of ["CURSOR_ACP_COMMAND", "CURSOR_ACP_ARGS", "CURSOR_MODEL_PREFERENCE", "CURSOR_EFFORT", "CURSOR_PROJECT_DIR"]) {
       expect(installer).toContain(`"${key}"`);
     }
   });

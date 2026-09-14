@@ -10,6 +10,7 @@ import { agyAcpPolicy } from "./agyAcpPolicy.js";
 import { claudeAcpPolicy } from "./claudeAcpPolicy.js";
 import { codexAcpPolicy } from "./codexAcpPolicy.js";
 import { grokAcpPolicy } from "./grokAcpPolicy.js";
+import { cursorAcpPolicy } from "./cursorAcpPolicy.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
@@ -47,13 +48,9 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   cursor: {
     id: "cursor",
     displayName: "Cursor",
-    executable: "cursor-agent",
-    versionArgs: ["--version"],
-    defaultArgs: ["-p", "--output-format", "json"],
     capabilities: {
       interactive: true,
       fallbackTarget: true,
-      toolFree: false,
     },
   },
 };
@@ -64,6 +61,7 @@ const ACP_POLICIES: Readonly<Partial<Record<ProviderId, AcpProviderPolicy>>> = {
   claude: claudeAcpPolicy,
   grok: grokAcpPolicy,
   agy: agyAcpPolicy,
+  cursor: cursorAcpPolicy,
 };
 
 /**

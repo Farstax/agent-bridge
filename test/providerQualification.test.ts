@@ -18,6 +18,40 @@ import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 
 type GroundingMode = "pass" | "omit_instruction" | "omit_source" | "capacity";
 
+const fakeAcpAgentPath = fileURLToPath(new URL("./support/fakeQualificationAcpAgent.ts", import.meta.url));
+const tsxCliPath = join(process.cwd(), "node_modules/tsx/dist/cli.mjs");
+
+type FakeAcpMode = "pass" | "missing_session" | "malformed" | "capacity" | "grounding_pass" | "grounding_omit_instruction" | "grounding_omit_source";
+
+/**
+ * Every real provider is ACP-transport now. qualifyProvider()'s bounded
+ * probes speak real ACP JSON-RPC over stdio -- unlike the plain oneshot
+ * `executable()` fixtures above (still valid for the version-only checks),
+ * a full-turn qualification test needs a fake agent that actually answers
+ * the protocol. This builds a small wrapper executable that special-cases
+ * `--version` (matching how qualifyProvider probes the installed version)
+ * and otherwise execs into fakeQualificationAcpAgent.ts.
+ */
+function acpAgentExecutable(root: string, mode: FakeAcpMode, version = "1.0.0"): {
+  path: string;
+  env: Record<string, string>;
+} {
+  const wrapper = join(root, "fake-acp-wrapper");
+  writeFileSync(wrapper, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then
+  echo "${version}"
+  exit 0
+fi
+exec "${process.execPath}" "${tsxCliPath}" "${fakeAcpAgentPath}" "$@"
+`, { mode: 0o755 });
+  chmodSync(wrapper, 0o755);
+  return {
+    path: wrapper,
+    env: { FAKE_ACP_MODE: mode, FAKE_ACP_VERSION: version },
+  };
+}
+
 function executable(path: string, body: string, groundingMode: GroundingMode = "pass"): string {
   const groundingAction = groundingMode === "capacity"
     ? 'echo "usage limit reached" >&2\nexit 1'
@@ -152,9 +186,9 @@ exit 7
   it("treats authentication prerequisites as degraded rather than a provider contract failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-auth-"));
     const evidencePath = join(root, "qualification.json");
-    const fake = executable(join(root, "cursor-agent"), `
+    const fake = executable(join(root, "grok"), `
 if [[ "\${1:-}" == "--version" ]]; then
-  echo "cursor-agent 2.3.4"
+  echo "grok 1.2.3"
   exit 0
 fi
 echo "Authentication required. Please log in." >&2
@@ -162,7 +196,7 @@ exit 1
 `);
 
     const result = await qualifyProvider({
-      providerId: "cursor",
+      providerId: "grok",
       executable: fake,
       evidencePath,
       bridgeCommit: "c".repeat(40),
@@ -192,15 +226,50 @@ exit 1
     expect(isQualificationCurrent({ ...current, provider: "claude" }, "codex", "1.10.0")).toBe(false);
   });
 
-  it("only considers native (non-ACP) evidence current for the resolved runtime identity", () => {
-    const current = passingRecord({
-      provider: "cursor",
-      providerVersion: "1.2.3",
-      executionRuntime: "native:cursor",
-    });
-    expect(isQualificationCurrent(current, "cursor", "1.2.3")).toBe(true);
-    expect(isQualificationCurrent({ ...current, executionRuntime: "native:codex" }, "cursor", "1.2.3")).toBe(false);
-    expect(isQualificationCurrent(current, "cursor", "1.2.4")).toBe(false);
+  // Every real ProviderId (codex, claude, antigravity, grok, cursor) is
+  // ACP-backed now that Cursor has migrated -- resolveProviderRuntime(...)
+  // never resolves a real provider to a "native:*" runtime identity any
+  // more, so "native (non-ACP) evidence" has no live target left to test.
+
+  it("versions the Cursor ACP executable used by production", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-cursor-acp-version-"));
+    const previousCommand = process.env.CURSOR_ACP_COMMAND;
+    const previousArgs = process.env.CURSOR_ACP_ARGS;
+    const acp = executable(join(root, "cursor-agent"), `
+if [[ "\${1:-}" == "--version" ]]; then echo "2026.09.08"; exit 0; fi
+echo "acp should not be oneshot-parsed" >&2
+exit 7
+`);
+    process.env.CURSOR_ACP_COMMAND = acp;
+    process.env.CURSOR_ACP_ARGS = "acp";
+    try {
+      const result = await qualifyProvider({
+        providerId: "cursor",
+        executable: acp,
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "a".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: {
+          ...process.env,
+          CURSOR_ACP_COMMAND: acp,
+          CURSOR_ACP_ARGS: "acp",
+        },
+      });
+      expect(result.executionRuntime).toBe(resolveProviderRuntime("cursor", {
+        ...process.env,
+        CURSOR_ACP_COMMAND: acp,
+        CURSOR_ACP_ARGS: "acp",
+      }).runtimeIdentity);
+      expect(result.providerVersion).toBe("2026.09.08");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/2026\.09\.08/);
+    } finally {
+      if (previousCommand === undefined) delete process.env.CURSOR_ACP_COMMAND;
+      else process.env.CURSOR_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CURSOR_ACP_ARGS;
+      else process.env.CURSOR_ACP_ARGS = previousArgs;
+    }
   });
 
   it("versions the Codex ACP executable used by production", async () => {
@@ -389,83 +458,100 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
   }, 15_000);
 
   it("observes the active executable before reusing qualification evidence", async () => {
+    // ACP providers are registry-version-locked (assertReleaseLockedVersion),
+    // so version drift isn't a valid staleness scenario any more -- a
+    // different resolved executable identity is. Evidence recorded under
+    // the default (unresolved-override) grok executable must not be reused
+    // once a differently-resolved executable (this fake ACP agent) is active.
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-runtime-version-"));
     const evidencePath = join(root, "qualification.json");
     writeQualificationRecord(passingRecord({
-      provider: "cursor",
-      providerVersion: "2.1.229",
-      executionRuntime: "native:cursor-agent",
+      provider: "grok",
+      providerVersion: "1.0.30",
+      executionRuntime: currentQualificationRuntime("grok"),
     }), evidencePath);
-    const fake = executable(join(root, "cursor-agent"), `
-if [[ "\${1:-}" == "--version" ]]; then
-  echo "cursor-agent 2.1.228"
-  exit 0
-fi
-printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"AGENT_BRIDGE_QUALIFICATION_OK","session_id":"session-1"}'
-`);
-
-    const result = await import("../src/providers/qualification.js").then(({ qualifyProviderIfNeeded }) =>
-      qualifyProviderIfNeeded({
-        providerId: "cursor",
-        executable: fake,
-        installedVersion: "2.1.229",
+    const agent = acpAgentExecutable(root, "pass", "1.0.30");
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
+    try {
+      const { qualifyProviderIfNeeded } = await import("../src/providers/qualification.js");
+      const result = await qualifyProviderIfNeeded({
+        providerId: "grok",
+        installedVersion: "1.0.30",
         evidencePath,
         bridgeCommit: "f".repeat(40),
         cwd: root,
         homeDir: root,
         timeoutMs: 5_000,
-      }));
+        env: process.env,
+      });
 
-    expect(result.ran).toBe(true);
-    expect(result.record.providerVersion).toBe("2.1.228");
-    expect(readQualificationEvidence(evidencePath).providers.cursor?.providerVersion).toBe("2.1.228");
+      expect(result.ran).toBe(true);
+      expect(result.record.providerVersion).toBe("1.0.30");
+      expect(result.record.executionRuntime).toBe(currentQualificationRuntime("grok", process.env));
+      expect(readQualificationEvidence(evidencePath).providers.grok?.executionRuntime)
+        .toBe(currentQualificationRuntime("grok", process.env));
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
   });
 
   it("reuses cached evidence only when the active executable version agrees", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-runtime-cache-"));
     const evidencePath = join(root, "qualification.json");
-    const fake = executable(join(root, "cursor-agent"), `
-if [[ "\${1:-}" == "--version" ]]; then
-  echo "cursor-agent 2.1.229"
-  exit 0
-fi
-exit 1
-`);
-    const cached = passingRecord({
-      provider: "cursor",
-      providerVersion: "2.1.229",
-      executionRuntime: "native:cursor",
-    });
-    writeQualificationRecord(cached, evidencePath);
+    const agent = acpAgentExecutable(root, "pass", "1.0.30");
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
+    try {
+      const cached = passingRecord({
+        provider: "grok",
+        providerVersion: "1.0.30",
+        executionRuntime: currentQualificationRuntime("grok", process.env),
+      });
+      writeQualificationRecord(cached, evidencePath);
 
-    const { qualifyProviderIfNeeded } = await import("../src/providers/qualification.js");
-    const result = await qualifyProviderIfNeeded({
-      providerId: "cursor",
-      executable: fake,
-      installedVersion: "2.1.229",
-      evidencePath,
-      bridgeCommit: "f".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
+      const { qualifyProviderIfNeeded } = await import("../src/providers/qualification.js");
+      const result = await qualifyProviderIfNeeded({
+        providerId: "grok",
+        installedVersion: "1.0.30",
+        evidencePath,
+        bridgeCommit: "f".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
 
-    expect(result.ran).toBe(false);
-    expect(result.record).toEqual(cached);
+      expect(result.ran).toBe(false);
+      expect(result.record).toEqual(cached);
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
   });
 
   it("surfaces persistent pass, degraded and unqualified states for health without rerunning tests", () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-health-"));
     const evidencePath = join(root, "qualification.json");
+    // Grok is registry-version-locked (assertReleaseLockedVersion) -- unlike
+    // native cursor previously, an arbitrary fabricated version can never be
+    // "current" for it, so the matching-version case must use the real lock.
     const nativeRecord = (overrides: Partial<ProviderQualificationRecord> = {}) => passingRecord({
-      provider: "cursor",
-      providerVersion: "9.9.9",
-      executionRuntime: "native:cursor",
+      provider: "grok",
+      providerVersion: "1.0.30",
+      executionRuntime: currentQualificationRuntime("grok"),
       ...overrides,
     });
     writeQualificationRecord(nativeRecord(), evidencePath);
 
-    expect(qualificationHealthCheck("cursor", "9.9.9", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("grok", "1.0.30", evidencePath)).toMatchObject({
       status: "green",
       message: expect.stringContaining("qualified"),
     });
@@ -478,183 +564,249 @@ exit 1
         { name: "session_resume", status: "not_applicable" },
       ],
     }), evidencePath);
-    expect(qualificationHealthCheck("cursor", "9.9.9", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("grok", "1.0.30", evidencePath)).toMatchObject({
       status: "red",
       message: expect.stringMatching(/degraded.*fresh_prompt/i),
     });
 
-    expect(qualificationHealthCheck("cursor", "9.9.10", evidencePath)).toMatchObject({
+    expect(qualificationHealthCheck("grok", "9.9.10", evidencePath)).toMatchObject({
       status: "amber",
       message: expect.stringMatching(/9\.9\.10.*unqualified/i),
     });
   });
 
-  it("accepts native Cursor result/session evidence without semantic marker prose", async () => {
-    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-cursor-"));
-    const fake = executable(join(root, "cursor-agent"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "cursor-agent 2.3.4"; exit 0; fi
-printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"native protocol response","session_id":"11111111-2222-3333-4444-555555555555"}'
-`);
+  it("accepts native Grok result/session evidence without semantic marker prose", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-grok-"));
+    const agent = acpAgentExecutable(root, "pass", "1.0.30");
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
+    try {
+      const result = await qualifyProvider({
+        providerId: "grok",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "4".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
 
-    const result = await qualifyProvider({
-      providerId: "cursor",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "4".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-
-    expect(result.overall).toBe("pass");
-    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
+      expect(result.overall).toBe("pass");
+      expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
   });
 
   it("accepts strict Cursor conversation evidence without semantic marker prose", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-cursor-"));
-    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"));
+    const agent = acpAgentExecutable(root, "pass", "2026.09.08");
+    const previousCommand = process.env.CURSOR_ACP_COMMAND;
+    const previousArgs = process.env.CURSOR_ACP_ARGS;
+    Object.assign(process.env, { CURSOR_ACP_COMMAND: agent.path, CURSOR_ACP_ARGS: "acp" }, agent.env);
+    try {
+      const result = await qualifyProvider({
+        providerId: "cursor",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "4".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
 
-    const result = await qualifyProvider({
-      providerId: "cursor",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "4".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-
-    expect(result.overall).toBe("pass");
-    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
+      expect(result.overall).toBe("pass");
+      expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("pass");
+    } finally {
+      if (previousCommand === undefined) delete process.env.CURSOR_ACP_COMMAND;
+      else process.env.CURSOR_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CURSOR_ACP_ARGS;
+      else process.env.CURSOR_ACP_ARGS = previousArgs;
+    }
   });
 
   it("fails closed when a required native session identity is missing", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-missing-session-"));
-    const fake = executable(join(root, "cursor-agent"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "cursor-agent 2.3.4"; exit 0; fi
-printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"native protocol response"}'
-`);
+    const agent = acpAgentExecutable(root, "missing_session", "1.0.30");
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
+    try {
+      const result = await qualifyProvider({
+        providerId: "grok",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "4".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
 
-    const result = await qualifyProvider({
-      providerId: "cursor",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "4".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-
-    expect(result.overall).toBe("fail");
-    expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
-      status: "fail",
-      diagnostic: expect.stringMatching(/session|stopped before confirming completion/i),
-    });
-    expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
+      expect(result.overall).toBe("fail");
+      expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
+        status: "fail",
+        diagnostic: expect.stringMatching(/session|stopped before confirming completion/i),
+      });
+      expect(result.checks.find((check) => check.name === "session_resume")?.status).toBe("not_applicable");
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
   });
 
   it("fails closed on malformed provider-native envelopes", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-qualification-native-malformed-"));
-    const fake = executable(join(root, "cursor-agent"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "cursor-agent 2.3.4"; exit 0; fi
-printf '%s\\n' '{not-json'
-`);
+    const agent = acpAgentExecutable(root, "malformed", "2026.09.08");
+    const previousCommand = process.env.CURSOR_ACP_COMMAND;
+    const previousArgs = process.env.CURSOR_ACP_ARGS;
+    Object.assign(process.env, { CURSOR_ACP_COMMAND: agent.path, CURSOR_ACP_ARGS: "acp" }, agent.env);
+    try {
+      const result = await qualifyProvider({
+        providerId: "cursor",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "4".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
 
-    const result = await qualifyProvider({
-      providerId: "cursor",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "4".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-
-    expect(result.overall).toBe("fail");
-    expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
-      status: "fail",
-      diagnostic: expect.stringMatching(/native result parsing|JSON/i),
-    });
+      expect(result.overall).toBe("fail");
+      expect(result.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({
+        status: "fail",
+        // "provider native result parsing failed" is native-transport wording
+        // (qualifyProvider rethrows ACP errors verbatim); a corrupted ACP
+        // wire response surfaces as a dropped connection instead.
+        diagnostic: expect.stringMatching(/native result parsing|JSON|connection closed/i),
+      });
+    } finally {
+      if (previousCommand === undefined) delete process.env.CURSOR_ACP_COMMAND;
+      else process.env.CURSOR_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CURSOR_ACP_ARGS;
+      else process.env.CURSOR_ACP_ARGS = previousArgs;
+    }
   });
 
-  it.each(["cursor"] as const)(
-    "runs repository-grounding qualification with native tools for %s",
-    async (provider) => {
-      const root = mkdtempSync(join(tmpdir(), `provider-grounding-${provider}-`));
-      const command = provider === "cursor" ? "cursor-agent" : provider;
-      const fake = executable(join(root, command), passingProviderBody(provider));
+  it("runs repository-grounding qualification with native tools for cursor", async () => {
+    const root = mkdtempSync(join(tmpdir(), "provider-grounding-cursor-"));
+    const agent = acpAgentExecutable(root, "grounding_pass", "2026.09.08");
+    const previousCommand = process.env.CURSOR_ACP_COMMAND;
+    const previousArgs = process.env.CURSOR_ACP_ARGS;
+    Object.assign(process.env, { CURSOR_ACP_COMMAND: agent.path, CURSOR_ACP_ARGS: "acp" }, agent.env);
+    try {
       const result = await qualifyProvider({
-        providerId: provider,
-        executable: fake,
+        providerId: "cursor",
         evidencePath: join(root, "qualification.json"),
         bridgeCommit: "6".repeat(40),
         cwd: root,
         homeDir: root,
         timeoutMs: 5_000,
+        env: process.env,
       });
       expect(result.overall).toBe("pass");
       expect(result.checks.find((check) => check.name === "repository_grounding")).toEqual({
         name: "repository_grounding",
         status: "pass",
       });
-    },
-  );
+    } finally {
+      if (previousCommand === undefined) delete process.env.CURSOR_ACP_COMMAND;
+      else process.env.CURSOR_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CURSOR_ACP_ARGS;
+      else process.env.CURSOR_ACP_ARGS = previousArgs;
+    }
+  });
 
   it("fails repository grounding when the native answer omits the repository instruction marker", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-omission-"));
-    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"), "omit_instruction");
-    const result = await qualifyProvider({
-      providerId: "cursor",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "7".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-    expect(result.overall).toBe("fail");
-    expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
-      status: "fail",
-      diagnostic: expect.stringMatching(/repository instruction marker/i),
-    });
+    const agent = acpAgentExecutable(root, "grounding_omit_instruction", "1.0.30");
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
+    try {
+      const result = await qualifyProvider({
+        providerId: "grok",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "7".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
+      expect(result.overall).toBe("fail");
+      expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
+        status: "fail",
+        diagnostic: expect.stringMatching(/repository instruction marker/i),
+      });
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
   });
 
   it("fails repository grounding when the native answer returns the wrong source fact", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-wrong-source-"));
-    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"), "omit_source");
-    const result = await qualifyProvider({
-      providerId: "cursor",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "9".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-    expect(result.overall).toBe("fail");
-    expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
-      status: "fail",
-      diagnostic: expect.stringMatching(/source fact/i),
-    });
+    const agent = acpAgentExecutable(root, "grounding_omit_source", "1.0.30");
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
+    try {
+      const result = await qualifyProvider({
+        providerId: "grok",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "9".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
+      expect(result.overall).toBe("fail");
+      expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
+        status: "fail",
+        diagnostic: expect.stringMatching(/source fact/i),
+      });
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
   });
 
   it("keeps provider capacity exhaustion distinct from a deterministic grounding failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "provider-grounding-capacity-"));
-    const fake = executable(join(root, "cursor-agent"), passingProviderBody("cursor"), "capacity");
-    const result = await qualifyProvider({
-      providerId: "cursor",
-      executable: fake,
-      evidencePath: join(root, "qualification.json"),
-      bridgeCommit: "8".repeat(40),
-      cwd: root,
-      homeDir: root,
-      timeoutMs: 5_000,
-    });
-    expect(result.overall).toBe("degraded");
-    expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
-      status: "capacity_exhausted",
-      diagnostic: expect.stringMatching(/usage limit/i),
-    });
+    const agent = acpAgentExecutable(root, "capacity", "1.0.30");
+    const previousCommand = process.env.GROK_ACP_COMMAND;
+    const previousArgs = process.env.GROK_ACP_ARGS;
+    Object.assign(process.env, { GROK_ACP_COMMAND: agent.path, GROK_ACP_ARGS: "agent stdio" }, agent.env);
+    try {
+      const result = await qualifyProvider({
+        providerId: "grok",
+        evidencePath: join(root, "qualification.json"),
+        bridgeCommit: "8".repeat(40),
+        cwd: root,
+        homeDir: root,
+        timeoutMs: 5_000,
+        env: process.env,
+      });
+      expect(result.overall).toBe("degraded");
+      expect(result.checks.find((check) => check.name === "repository_grounding")).toMatchObject({
+        status: "capacity_exhausted",
+        diagnostic: expect.stringMatching(/usage limit/i),
+      });
+    } finally {
+      if (previousCommand === undefined) delete process.env.GROK_ACP_COMMAND;
+      else process.env.GROK_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.GROK_ACP_ARGS;
+      else process.env.GROK_ACP_ARGS = previousArgs;
+    }
   });
 
 });

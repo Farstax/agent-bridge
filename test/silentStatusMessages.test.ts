@@ -5,6 +5,7 @@ import { rmSync } from "node:fs";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { shutdownCliProcessesAndWait } from "../src/cli.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 
 // Regression coverage for Issue #229: the interstitial "🔄 Updating the
 // active task...", "⏳ Queued (position N of 5)...", and "▶️ Processing
@@ -37,11 +38,18 @@ function client() {
   } as any;
 }
 
+function grokStdout(text: string, sessionId: string): string {
+  return [
+    JSON.stringify({ type: "text", data: text }),
+    JSON.stringify({ type: "end", sessionId, stopReason: "end_turn" }),
+  ].join("\n") + "\n";
+}
+
 function options(mode: "augment" | "interrupt" | "queue", overrides: any = {}) {
   return {
     surfaceIdentity: "telegram:interactive",
-    kind: "cursor",
-    botConfig: { command: "cursor", modelPreference: [] },
+    kind: "grok",
+    botConfig: { command: "grok", modelPreference: [] },
     allowedUserIds: new Set(["42"]),
     executionMode: "safe" as const,
     busyMessageMode: mode === "queue" ? "queue" : mode,
@@ -89,15 +97,15 @@ describe("Issue #229: silent queue/augment admission", () => {
     const firstCli = new Promise<string>((resolve) => { resolveFirst = resolve; });
     const mockRunCli = vi.fn()
       .mockImplementationOnce(async () => { firstStarted.release(); return firstCli; })
-      .mockResolvedValueOnce('{"result":"merged result","session_id":"merged-session"}');
+      .mockResolvedValueOnce(grokStdout("merged result", "merged-session"));
 
-    const engine = new BridgeEngine(options("augment"), db, c, { runCli: mockRunCli });
+    const engine = new BridgeEngine(options("augment"), db, c, acpEngineExec(mockRunCli));
 
     const first = engine.handleMessages([message("first request")]);
     await firstStarted.promise;
     const second = engine.handleMessages([message("second request")]);
     await waitForCondition(() => mockRunCli.mock.calls.length >= 1);
-    resolveFirst('{"result":"first final","session_id":"first-session"}');
+    resolveFirst(grokStdout("first final", "first-session"));
     await Promise.all([first, second]);
 
     expect(anyStatusNoise(c)).toBe(false);
@@ -131,10 +139,10 @@ describe("Issue #229: silent queue/augment admission", () => {
       prompt: "orphaned older message", chatId: 100, threadId: 7, chatType: "private",
     });
     const mockRunCli = vi.fn()
-      .mockResolvedValueOnce('{"type":"result","result":"older answer","session_id":"older-session"}')
-      .mockResolvedValueOnce('{"type":"result","result":"newer answer","session_id":"newer-session"}');
+      .mockResolvedValueOnce(grokStdout("older answer", "older-session"))
+      .mockResolvedValueOnce(grokStdout("newer answer", "newer-session"));
 
-    const engine = new BridgeEngine(options("queue"), db, c, { runCli: mockRunCli });
+    const engine = new BridgeEngine(options("queue"), db, c, acpEngineExec(mockRunCli));
     await engine.handleMessages([message("newer message")]);
     await waitForCondition(() => db.pendingMsgCount("telegram:interactive", "100:7") === 0);
 
@@ -147,8 +155,8 @@ describe("Issue #229: silent queue/augment admission", () => {
   it("4. final answers and actionable failures are still delivered", async () => {
     const db = openDb(":memory:");
     const c = client();
-    const mockRunCli = vi.fn().mockResolvedValueOnce('{"type":"result","result":"solo answer","session_id":"solo-session"}');
-    const engine = new BridgeEngine(options("queue"), db, c, { runCli: mockRunCli });
+    const mockRunCli = vi.fn().mockResolvedValueOnce(grokStdout("solo answer", "solo-session"));
+    const engine = new BridgeEngine(options("queue"), db, c, acpEngineExec(mockRunCli));
     await engine.handleMessages([message("solo request")]);
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0]?.text === "solo answer")).toBe(true);
 
@@ -179,17 +187,17 @@ describe("Issue #229: silent queue/augment admission", () => {
     const firstCli = new Promise<string>((resolve) => { resolveFirst = resolve; });
     const mockRunCli = vi.fn()
       .mockImplementationOnce(async () => { firstStarted.release(); return firstCli; })
-      .mockResolvedValueOnce('{"type":"result","result":"merged answer","session_id":"merged-session"}');
+      .mockResolvedValueOnce(grokStdout("merged answer", "merged-session"));
 
     const engine = new BridgeEngine(
       options("augment", { hooks: { onBeforeExecute: async (prompt: string) => { prompts.push(prompt); return prompt; } } }),
-      db, c, { runCli: mockRunCli },
+      db, c, acpEngineExec(mockRunCli),
     );
 
     const first = engine.handleMessages([message("first ask")]);
     await firstStarted.promise;
     const second = engine.handleMessages([message("second ask")]);
-    resolveFirst('{"type":"result","result":"first final","session_id":"first-session"}');
+    resolveFirst(grokStdout("first final", "first-session"));
     await Promise.all([first, second]);
 
     // Coalescing behaviour unchanged: the merged execution receives both

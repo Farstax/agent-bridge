@@ -6,6 +6,7 @@ import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
 import { resolveDiscordStartInteraction } from "../src/discordStart.js";
 import { DISCORD_SURFACE_CAPABILITIES } from "../src/platform.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 
 function interaction(payload: unknown, id = "123456789012345678"): any {
   return {
@@ -86,7 +87,7 @@ describe("Discord /start ingress", () => {
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       pollIntervalMs: 1000, workingDir: process.cwd(),
-    }, db, client, { runCli });
+    }, db, client, acpEngineExec(runCli));
     const resolved = resolveDiscordStartInteraction(interaction("incident-42"), { surfaceIdentity: "discord:interactive", chatKey: "channel:100", userId: "42" });
     expect(resolved.kind).toBe("accepted");
     if (resolved.kind !== "accepted") return;

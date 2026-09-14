@@ -84,7 +84,7 @@ describe("unknown authenticated slash commands", () => {
         command,
         includeResponseContract: false,
       });
-      const providerPrompt = invocation.args.find((arg) => arg.includes(prompt)) ?? invocation.stdin ?? "";
+      const providerPrompt = invocation.args.find((arg) => arg.includes(prompt)) ?? invocation.stdin ?? invocation.prompt ?? "";
 
       expect(providerPrompt).toContain(prompt);
       expect(providerPrompt.startsWith("/")).toBe(false);

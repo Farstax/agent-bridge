@@ -7,8 +7,26 @@ import { openDb } from "../src/db.js";
 import type { BridgeConfig, TelegramMessage } from "../src/types.js";
 import { type as eventType } from "../src/events/types.js";
 import { markHandoffRequired, isHandoffRequired } from "../src/handoffState.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Grok is ACP-transport now -- its session state routes through
+ * db.putAcpSessionBinding/getAcpSessionBinding, not the classic
+ * db.setSession/getSession(chatKey, kind) native-CLI session pointer.
+ */
+function setGrokSession(database: ReturnType<typeof openDb>, chatKey: string, sessionId: string | null): void {
+  if (sessionId === null) {
+    database.clearAcpSessionBinding(chatKey, "grok");
+    return;
+  }
+  database.putAcpSessionBinding({ conversationId: chatKey, providerId: "grok", acpSessionId: sessionId, runId: null });
+}
+
+function getGrokSession(database: ReturnType<typeof openDb>, chatKey: string): string | null {
+  return database.getAcpSessionBinding(chatKey, "grok")?.acpSessionId ?? null;
+}
 
 function makeMessage(text: string, userId = 42, chatId = 100): TelegramMessage {
   return {
@@ -59,7 +77,10 @@ function agyStreamJsonResult(responseText: string, sessionId = "11111111-1111-41
 }
 
 function cursorResult(text: string, sessionId = "cursor-session"): string {
-  return JSON.stringify({ type: "result", result: text, session_id: sessionId });
+  return [
+    JSON.stringify({ type: "text", data: text }),
+    JSON.stringify({ type: "end", sessionId, stopReason: "end_turn" }),
+  ].join("\n") + "\n";
 }
 
 function makeFullConfig(dbPath: string): BridgeConfig {
@@ -100,8 +121,8 @@ describe("BridgeEngine", () => {
   it("requires an explicit runtime surface identity", async () => {
     const { BridgeEngine } = await import("../src/engine.js");
     expect(() => new BridgeEngine({
-      kind: "cursor",
-      botConfig: { command: "cursor", modelPreference: [] },
+      kind: "grok",
+      botConfig: { command: "grok", modelPreference: [] },
       allowedUserIds: new Set(["42"]),
       executionMode: "safe",
       pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -111,14 +132,14 @@ describe("BridgeEngine", () => {
   describe("handoff consumption", () => {
     it("clears a pending handoff mark after the first turn for that chat+CLI", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
-      const runCli = vi.fn().mockResolvedValue(JSON.stringify({ type: "result", result: "Hello there!", session_id: "handoff-session" }));
+      const runCli = vi.fn().mockResolvedValue(cursorResult("Hello there!", "handoff-session"));
       const client = makeMockClient();
 
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["claude-primary"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -126,15 +147,15 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
-      markHandoffRequired(db, "100", "cursor", "manual_switch");
-      expect(isHandoffRequired(db, "100", "cursor")).toBe(true);
+      markHandoffRequired(db, "100", "grok", "manual_switch");
+      expect(isHandoffRequired(db, "100", "grok")).toBe(true);
 
       await engine.handleMessages([makeMessage("hello")]);
 
-      expect(isHandoffRequired(db, "100", "cursor")).toBe(false);
+      expect(isHandoffRequired(db, "100", "grok")).toBe(false);
     });
 
     it("does not error when no handoff is pending", async () => {
@@ -145,8 +166,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["claude-primary"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -154,11 +175,11 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await expect(engine.handleMessages([makeMessage("hello")])).resolves.not.toThrow();
-      expect(isHandoffRequired(db, "100", "cursor")).toBe(false);
+      expect(isHandoffRequired(db, "100", "grok")).toBe(false);
     });
   });
 
@@ -168,7 +189,7 @@ describe("BridgeEngine", () => {
     it("does not inject context into a resumed native session", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
-      db.setSession("100", "cursor", "existing-session-continuing");
+      setGrokSession(db, "100", "existing-session-continuing");
 
       let capturedPrompt = "";
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
@@ -177,8 +198,8 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "cursor", botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCli },
+        { surfaceIdentity: "test", kind: "grok", botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        db, client, acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("continue please")]);
@@ -189,7 +210,7 @@ describe("BridgeEngine", () => {
     it("does not inject context into a resumed native session by default", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
-      db.setSession("100", "cursor", "existing-session-continuing");
+      setGrokSession(db, "100", "existing-session-continuing");
 
       let capturedPrompt = "";
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
@@ -198,8 +219,8 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "cursor", botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCli },
+        { surfaceIdentity: "test", kind: "grok", botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        db, client, acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("continue please")]);
@@ -218,8 +239,8 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "cursor", botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCli },
+        { surfaceIdentity: "test", kind: "grok", botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        db, client, acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello")]);
@@ -235,13 +256,13 @@ describe("BridgeEngine", () => {
       const capturedPrompts: string[] = [];
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
         capturedPrompts.push(args[1]);
-        return JSON.stringify({ type: "result", result: "ok", session_id: "handoff-session" });
+        return cursorResult("ok", "handoff-session");
       });
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["claude-primary"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -249,7 +270,7 @@ describe("BridgeEngine", () => {
         },
         db,
         makeMockClient(),
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("first handoff request")]);
@@ -272,20 +293,20 @@ describe("BridgeEngine", () => {
       const capturedPrompts: string[] = [];
       const runCliAsync = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
         capturedPrompts.push(args[1]);
-        const rawOutput = JSON.stringify({ type: "result", result: "ok", session_id: "async-session-abc" });
+        const rawOutput = cursorResult("ok", "async-session-abc");
         const ctx = options.eventContext;
         options.onEvent?.(eventType.runCompleted({ ...ctx, text: rawOutput, sessionId: null }));
         return { text: rawOutput };
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "cursor", botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCliAsync },
+        { surfaceIdentity: "test", kind: "grok", botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        db, client, acpEngineExec(runCliAsync),
       );
 
       await engine.handleMessages([makeMessage("first message")]);
       expect(capturedPrompts[0]).toContain(MARKER);
-      expect(db.getSession("100", "cursor")).toBe("async-session-abc");
+      expect(getGrokSession(db, "100")).toBe("async-session-abc");
 
       await engine.handleMessages([makeMessage("second message, same session")]);
       expect(capturedPrompts[1]).not.toContain(MARKER);
@@ -315,8 +336,8 @@ describe("BridgeEngine", () => {
     it("handoff_once injects when handoff_required is set even though a native session already exists", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
-      db.setSession("100", "cursor", "stale-session-before-handoff-mark");
-      markHandoffRequired(db, "100", "cursor", "manual_switch");
+      setGrokSession(db, "100", "stale-session-before-handoff-mark");
+      markHandoffRequired(db, "100", "grok", "manual_switch");
 
       let capturedPrompt = "";
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
@@ -325,20 +346,20 @@ describe("BridgeEngine", () => {
       });
       const client = makeMockClient();
       const engine = new BridgeEngine(
-        { surfaceIdentity: "test", kind: "cursor", botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
-        db, client, { runCli },
+        { surfaceIdentity: "test", kind: "grok", botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd() },
+        db, client, acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello after switch")]);
 
       expect(capturedPrompt).not.toContain(MARKER);
-      expect(isHandoffRequired(db, "100", "cursor")).toBe(true);
+      expect(isHandoffRequired(db, "100", "grok")).toBe(true);
     });
 
     it("keeps Agent Bridge context env available under handoff_once even when the prompt preamble is suppressed", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
-      db.setSession("100", "cursor", "session-continuing");
+      setGrokSession(db, "100", "session-continuing");
 
       let capturedPrompt = "";
       let capturedContextEnv: Record<string, string> | undefined;
@@ -351,14 +372,14 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
           fullConfig: makeFullConfig(dbPath),
         },
-        db, client, { runCli },
+        db, client, acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("continuing session")]);
@@ -384,7 +405,7 @@ describe("BridgeEngine", () => {
         {
           surfaceIdentity: "test",
           kind: "health",
-          botConfig: { command: "cursor", modelPreference: [] },
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -394,7 +415,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("/health")]);
@@ -413,8 +434,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -424,7 +445,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("/start")]);
@@ -451,7 +472,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("/start")]);
@@ -477,8 +498,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -488,7 +509,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("what is the disk usage?")]);
@@ -507,8 +528,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -516,7 +537,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("/start")]);
@@ -693,15 +714,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["99999"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello", 42)]);
@@ -719,8 +740,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           busyMessageMode: "queue",
@@ -747,15 +768,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
       const message = makeMessage("one prompt");
 
@@ -775,8 +796,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           busyMessageMode: "queue",
@@ -814,15 +835,15 @@ describe("BridgeEngine", () => {
       });
       const secondRun = vi.fn().mockResolvedValue("claude done");
       const codex = new BridgeEngine({
-        kind: "cursor", surfaceIdentity: "telegram:codex",
-        botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "grok", surfaceIdentity: "telegram:codex",
+        botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, makeMockClient(), { runCli: firstRun });
+      }, db, makeMockClient(), acpEngineExec(firstRun));
       const claude = new BridgeEngine({
-        kind: "cursor", surfaceIdentity: "telegram:claude",
-        botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "grok", surfaceIdentity: "telegram:claude",
+        botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, makeMockClient(), { runCli: secondRun });
+      }, db, makeMockClient(), acpEngineExec(secondRun));
 
       const codexTask = codex.handleMessages([makeMessage("codex")]);
       await firstStarted;
@@ -848,15 +869,15 @@ describe("BridgeEngine", () => {
       });
       const secondRun = vi.fn().mockResolvedValue("topic 8 done");
       const topic7 = new BridgeEngine({
-        kind: "cursor", surfaceIdentity: "telegram:interactive",
-        botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "grok", surfaceIdentity: "telegram:interactive",
+        botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, makeMockClient(), { runCli: firstRun });
+      }, db, makeMockClient(), acpEngineExec(firstRun));
       const topic8 = new BridgeEngine({
-        kind: "cursor", surfaceIdentity: "telegram:interactive",
-        botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "grok", surfaceIdentity: "telegram:interactive",
+        botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, makeMockClient(), { runCli: secondRun });
+      }, db, makeMockClient(), acpEngineExec(secondRun));
 
       const topic7Task = topic7.handleMessages([makePrivateTopicMessage("seven", 7)]);
       await firstStarted;
@@ -884,15 +905,15 @@ describe("BridgeEngine", () => {
       const firstClient = makeMockClient();
       const secondClient = makeMockClient();
       const first = new BridgeEngine({
-        kind: "cursor", surfaceIdentity: "telegram:interactive",
-        botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "grok", surfaceIdentity: "telegram:interactive",
+        botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", busyMessageMode: "queue", pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, firstClient, { runCli: firstRun });
+      }, db, firstClient, acpEngineExec(firstRun));
       const second = new BridgeEngine({
-        kind: "cursor", surfaceIdentity: "telegram:interactive",
-        botConfig: { command: "cursor", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+        kind: "grok", surfaceIdentity: "telegram:interactive",
+        botConfig: { command: "grok", modelPreference: [] }, allowedUserIds: new Set(["42"]),
         executionMode: "safe", busyMessageMode: "queue", pollIntervalMs: 1000, workingDir: process.cwd(),
-      }, db, secondClient, { runCli: secondRun });
+      }, db, secondClient, acpEngineExec(secondRun));
 
       const firstTask = first.handleMessages([makePrivateTopicMessage("first", 7)]);
       await firstStarted;
@@ -932,7 +953,7 @@ describe("BridgeEngine", () => {
     it("persists one run and lifecycle events from the async production path", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      const rawOutput = JSON.stringify({ type: "result", subtype: "success", result: "Persisted final answer", session_id: "session-123" });
+      const rawOutput = cursorResult("Persisted final answer", "session-123");
 
       const runCliAsync = vi.fn().mockImplementation(async (
         _command: string,
@@ -950,15 +971,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCliAsync },
+        acpEngineExec(runCliAsync),
       );
 
       await engine.handleMessages([makeMessage("persist this run")]);
@@ -967,7 +988,7 @@ describe("BridgeEngine", () => {
       expect(runs).toHaveLength(1);
       expect(runs[0]).toMatchObject({
         chat_id: "100",
-        bot: "cursor",
+        bot: "grok",
         status: "done",
         session_id: "session-123",
         final_text_preview: "Persisted final answer",
@@ -987,15 +1008,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
       const laneHandle = db.acquireLock("test", "100");
       expect(laneHandle).not.toBeNull();
@@ -1041,8 +1062,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1050,7 +1071,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello")]);
@@ -1075,7 +1096,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello")]);
@@ -1092,8 +1113,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["claude-primary"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1101,14 +1122,14 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello")]);
-      db.setSession("100", "cursor", "invalid-session-id-123");
+      setGrokSession(db, "100", "invalid-session-id-123");
       await engine.handleMessages([makeMessage("help me")]);
 
-      expect(db.getSession("100", "cursor")).toBe("cursor-retry");
+      expect(getGrokSession(db, "100")).toBe("cursor-retry");
       expect(runCli).toHaveBeenCalledTimes(3);
       expect(client.sendMessage).toHaveBeenCalledTimes(2);
       expect(client.sendMessage.mock.calls[1][0].text).toContain("Successful fresh retry result");
@@ -1133,8 +1154,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["claude-primary"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1142,14 +1163,14 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello")]);
-      db.setSession("100", "cursor", "invalid-session-id-123");
+      setGrokSession(db, "100", "invalid-session-id-123");
       await engine.handleMessages([makeMessage("help me")]);
 
-      expect(db.getSession("100", "cursor")).toBe("cursor-retry");
+      expect(getGrokSession(db, "100")).toBe("cursor-retry");
       const thirdCallArgs = runCli.mock.calls[2][1];
       const promptArg = thirdCallArgs[1];
       expect(promptArg).toContain("[Context from previous conversation]");
@@ -1163,14 +1184,14 @@ describe("BridgeEngine", () => {
       const runCli = vi.fn()
         .mockResolvedValueOnce(cursorResult("Hello there! I am Claude Sonnet.", "cursor-first"))
         .mockRejectedValueOnce(new Error("CLI exited with code 1: You've hit your session limit · resets 1pm (Europe/London)"))
-        .mockResolvedValueOnce(JSON.stringify({ result: "Successful fallback model retry result", session_id: "fallback-session" }))
+        .mockResolvedValueOnce(cursorResult("Successful fallback model retry result", "fallback-session"))
         .mockResolvedValueOnce(cursorResult("Native continuation result", "fallback-session"));
       const client = makeMockClient();
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: ["claude-sonnet-4-6", "claude-opus-4-7"] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["claude-sonnet-4-6", "claude-opus-4-7"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1178,11 +1199,11 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello")]);
-      db.setSession("100", "cursor", "session-sonnet-123");
+      setGrokSession(db, "100", "session-sonnet-123");
       await engine.handleMessages([makeMessage("do something")]);
 
       expect(runCli).toHaveBeenCalledTimes(3);
@@ -1243,7 +1264,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeGroupMessage("make a chart")]);
@@ -1325,6 +1346,37 @@ describe("BridgeEngine", () => {
       });
       expect(db.getSetting("grok")).toBeNull();
     });
+
+    it("rejects stale native Cursor settings callbacks instead of writing ACP values", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "cursor",
+          botConfig: { command: "cursor-agent", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000, workingDir: process.cwd(),
+          fullConfig: makeFullConfig(dbPath),
+        },
+        db,
+        client,
+        {},
+      );
+
+      await engine.handleCallback({
+        id: "cb-stale-cursor",
+        from: { id: 42, first_name: "Test" },
+        message: { message_id: 123, chat: { id: 100, type: "private" } },
+        data: "model:cursor:stale-native-value",
+      });
+
+      expect(client.answerCallbackQuery.mock.calls[0][0]).toMatchObject({
+        text: "This settings button has expired. Open the settings again.",
+      });
+      expect(db.getSetting("cursor")).toBeNull();
+    });
   });
 
   describe("/stop in a supergroup thread", () => {
@@ -1336,8 +1388,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           busyMessageMode: "queue",
@@ -1365,8 +1417,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           busyMessageMode: "queue",
@@ -1430,10 +1482,10 @@ describe("BridgeEngine", () => {
     it("stores session under flat chatId for private chat messages", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      const rawOutput = JSON.stringify({ type: "result", result: "done", session_id: "private-session-xyz" });
+      const rawOutput = cursorResult("done", "private-session-xyz");
       const runCliAsync = vi.fn().mockImplementation(async (_command: string, _args: string[], _cwd: string, options: any) => {
         const ctx = options.eventContext;
-        options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd: "/", model: null }));
+        options.onEvent?.(eventType.runStarted({ ...ctx, command: "grok", cwd: "/", model: null }));
         options.onEvent?.(eventType.textDelta({ ...ctx, text: rawOutput, source: "stdout" }));
         options.onEvent?.(eventType.runCompleted({ ...ctx, text: rawOutput, sessionId: null }));
         return { text: rawOutput };
@@ -1441,21 +1493,21 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCliAsync },
+        acpEngineExec(runCliAsync),
       );
 
       await engine.handleMessages([makeMessage("hello from private")]);
       const flatKey = "100";
-      expect(db.getSession(flatKey, "cursor")).toBe("private-session-xyz");
-      expect(db.getSession("100:undefined:42", "cursor")).toBeNull();
+      expect(getGrokSession(db, flatKey)).toBe("private-session-xyz");
+      expect(getGrokSession(db, "100:undefined:42")).toBeNull();
     });
 
     it("private chat /stop clears the queue for the flat chat key", async () => {
@@ -1466,8 +1518,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           busyMessageMode: "queue",
@@ -1497,8 +1549,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           busyMessageMode: "queue",
@@ -1523,7 +1575,7 @@ describe("BridgeEngine", () => {
       db.acquireLock("test", thread7Key);
       const runCliAsync = vi.fn().mockImplementation(async (_command: string, _args: string[], _cwd: string, options: any) => {
         const ctx = options.eventContext;
-        options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd: "/", model: null }));
+        options.onEvent?.(eventType.runStarted({ ...ctx, command: "grok", cwd: "/", model: null }));
         options.onEvent?.(eventType.textDelta({ ...ctx, text: "hi", source: "stdout" }));
         options.onEvent?.(eventType.runCompleted({ ...ctx, text: "hi", sessionId: null }));
         return { text: "hi" };
@@ -1531,15 +1583,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCliAsync },
+        acpEngineExec(runCliAsync),
       );
 
       await engine.handleMessages([makeGroupMessage("msg in thread 8", 42, 100, 8)]);
@@ -1553,10 +1605,10 @@ describe("BridgeEngine", () => {
     it("stores session under chatId:threadId for supergroup topic messages", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      const rawOutput = JSON.stringify({ type: "result", result: "done", session_id: "thread-session-abc" });
+      const rawOutput = cursorResult("done", "thread-session-abc");
       const runCliAsync = vi.fn().mockImplementation(async (_command: string, _args: string[], _cwd: string, options: any) => {
         const ctx = options.eventContext;
-        options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd: "/", model: null }));
+        options.onEvent?.(eventType.runStarted({ ...ctx, command: "grok", cwd: "/", model: null }));
         options.onEvent?.(eventType.textDelta({ ...ctx, text: rawOutput, source: "stdout" }));
         options.onEvent?.(eventType.runCompleted({ ...ctx, text: rawOutput, sessionId: null }));
         return { text: rawOutput };
@@ -1564,31 +1616,31 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCliAsync },
+        acpEngineExec(runCliAsync),
       );
 
       await engine.handleMessages([makeGroupMessage("hello from thread")]);
       const threadKey = "100:7";
       const flatKey = "100";
-      expect(db.getSession(threadKey, "cursor")).toBe("thread-session-abc");
-      expect(db.getSession(flatKey, "cursor")).toBeNull();
+      expect(getGrokSession(db, threadKey)).toBe("thread-session-abc");
+      expect(getGrokSession(db, flatKey)).toBeNull();
     });
 
     it("drains queued supergroup topic messages with the original topic key", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      const rawOutput = JSON.stringify({ type: "result", result: "done", session_id: "queued-topic-session" });
+      const rawOutput = cursorResult("done", "queued-topic-session");
       const runCliAsync = vi.fn().mockImplementation(async (_command: string, _args: string[], _cwd: string, options: any) => {
         const ctx = options.eventContext;
-        options.onEvent?.(eventType.runStarted({ ...ctx, command: "cursor", cwd: "/", model: null }));
+        options.onEvent?.(eventType.runStarted({ ...ctx, command: "grok", cwd: "/", model: null }));
         options.onEvent?.(eventType.textDelta({ ...ctx, text: rawOutput, source: "stdout" }));
         options.onEvent?.(eventType.runCompleted({ ...ctx, text: rawOutput, sessionId: null }));
         return { text: rawOutput };
@@ -1596,15 +1648,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCliAsync },
+        acpEngineExec(runCliAsync),
       );
 
       const topicKey = "100:7";
@@ -1614,8 +1666,8 @@ describe("BridgeEngine", () => {
       await engine.recoverPendingQueues();
 
       expect(runCliAsync).toHaveBeenCalledOnce();
-      expect(db.getSession(topicKey, "cursor")).toBe("queued-topic-session");
-      expect(db.getSession("100", "cursor")).toBeNull();
+      expect(getGrokSession(db, topicKey)).toBe("queued-topic-session");
+      expect(getGrokSession(db, "100")).toBeNull();
     });
 
     it("calls onAfterExecute hook with correct parameters on successful prompt execution", async () => {
@@ -1626,8 +1678,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1635,7 +1687,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("run testing command")]);
@@ -1651,7 +1703,7 @@ describe("BridgeEngine", () => {
     it("injects helper env and prompt affordance when retained turns exist", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      db.addConvTurn("100", "user", "remember work item #16", "cursor");
+      db.addConvTurn("100", "user", "remember work item #16", "grok");
 
       let capturedPrompt = "";
       let capturedContextEnv: Record<string, string> | undefined;
@@ -1663,8 +1715,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1672,7 +1724,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("what was the work item?")]);
@@ -1702,8 +1754,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1711,7 +1763,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello")]);
@@ -1729,14 +1781,14 @@ describe("BridgeEngine", () => {
       db.addConvSummary("100", 1, 1, "Current objective:\n- important work");
       db.addConvTurn("200", "user", "other conversation context");
       db.addConvSummary("200", 2, 2, "Current objective:\n- other work");
-      db.setSession("100", "cursor", "existing-session");
-      db.setSession("200", "cursor", "other-session");
+      setGrokSession(db, "100", "existing-session");
+      setGrokSession(db, "200", "other-session");
 
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1749,10 +1801,10 @@ describe("BridgeEngine", () => {
       expect(db.getConvStatus("100", "test").turnCount).toBe(0);
       expect(db.getConvStatus("100", "test").latestSummaryAt).toBeNull();
       expect(db.getLatestConvSummary("100")?.summary_md).toContain("important work");
-      expect(db.getSession("100", "cursor")).toBeNull();
+      expect(getGrokSession(db, "100")).toBeNull();
       expect(db.getConvStatus("200", "test").turnCount).toBe(1);
       expect(db.getLatestConvSummary("200")?.summary_md).toContain("other work");
-      expect(db.getSession("200", "cursor")).toBe("other-session");
+      expect(getGrokSession(db, "200")).toBe("other-session");
     });
 
     it("re-seeds baseline fresh-session context after reset without restoring deleted history", async () => {
@@ -1769,8 +1821,8 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: ["claude-primary"] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["claude-primary"] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
@@ -1779,7 +1831,7 @@ describe("BridgeEngine", () => {
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("/reset")]);
@@ -1816,22 +1868,22 @@ describe("BridgeEngine", () => {
       // run.started via options.onEvent before the process resolves.
       const runCli = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
         if (options?.eventContext) {
-          options.onEvent?.(eventType.runStarted({ ...options.eventContext, command: "cursor", cwd: "/", model: null }));
+          options.onEvent?.(eventType.runStarted({ ...options.eventContext, command: "grok", cwd: "/", model: null }));
         }
         return cursorResult("topic answer", "topic-session");
       });
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeSupergroupTopicMessage("hello from the topic", chatId, threadId)]);
@@ -1859,15 +1911,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       await engine.handleMessages([makeMessage("hello from DM")]);
@@ -1890,15 +1942,15 @@ describe("BridgeEngine", () => {
       const engine = new BridgeEngine(
         {
           surfaceIdentity: "test",
-          kind: "cursor",
-          botConfig: { command: "cursor", modelPreference: [] },
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
           allowedUserIds: new Set(["42"]),
           executionMode: "safe",
           pollIntervalMs: 1000, workingDir: process.cwd(),
         },
         db,
         client,
-        { runCli },
+        acpEngineExec(runCli),
       );
 
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

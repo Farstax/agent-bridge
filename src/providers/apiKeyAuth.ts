@@ -41,7 +41,7 @@ export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAu
   },
   cursor: {
     envVar: "CURSOR_API_KEY",
-    notes: "Cursor Agent supports CURSOR_API_KEY for headless automation.",
+    notes: "Cursor verifies CURSOR_API_KEY through the selected ACP adapter with an isolated bounded prompt.",
   },
 };
 
@@ -228,18 +228,6 @@ async function runNativeProbe(
   };
 
   try {
-    if (provider === "cursor") {
-      await execute(command, [
-        "-p",
-        "Reply with exactly OK.",
-        "--output-format",
-        "json",
-        "--mode",
-        "ask",
-        "--trust",
-      ], common);
-      return;
-    }
     throw new Error(`Native API-key probe is not supported for ${provider}`);
   } finally {
     rmSync(probeHome, { recursive: true, force: true });

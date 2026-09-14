@@ -9,6 +9,7 @@ const acpInspectVersion = (executable: string): string | null => {
   if (executable.includes("claude-agent-acp")) return "0.76.0";
   if (executable.includes("agy_acp_server") || executable.includes("/agy")) return "1.1.1";
   if (executable.includes("grok")) return "1.0.30";
+  if (executable.includes("cursor-agent")) return "2026.09.08";
   return "1.0.0";
 };
 

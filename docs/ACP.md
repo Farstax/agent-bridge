@@ -17,6 +17,10 @@ Pinned Agy ACP distribution: official Registry `antigravity-acp@1.1.1`
 (`agy_acp_server.par` with args `--uid=`). The binary is not npm-bundled;
 ordinary Runs never download it. Set `AGY_ACP_COMMAND` to the installed
 server path.
+Pinned Cursor ACP distribution: official Registry `cursor` 2026.09.08
+(`cursor-agent acp`; binary 2026.09.08-6caf4ff). The Cursor CLI is not
+vendored into git or npm; ordinary Runs use `CURSOR_ACP_COMMAND` or PATH
+`cursor-agent`.
 
 ## Ownership
 
@@ -142,6 +146,31 @@ already exists at workspace-local `~/.gemini/antigravity-acp/acp_token.json`
 Google OAuth browser flow during an ordinary Run, and does not invent
 `GEMINI_API_KEY`. Steering is not enabled. Native Agy advertised tool-free
 execution, and the generic ACP policy keeps that advertisement.
+
+## Cursor runtime
+
+Cursor uses the same managed ACP lifecycle as Codex and Claude. There is no
+native `cursor-agent -p --output-format json` invocation or parser path.
+
+```bash
+CURSOR_ACP_COMMAND=...              # optional override of PATH `cursor-agent`
+CURSOR_ACP_ARGS=...                 # optional extra argv; default is `acp`
+```
+
+The release locks official Registry `cursor@2026.09.08` (binary archive
+`2026.09.08-6caf4ff`) and resolves the default executable as `cursor-agent`
+with args `acp`. Ordinary Runs authenticate with ACP `cursor_login` only when
+a cached Cursor login already exists at workspace-local
+`~/.config/cursor/auth.json` or `~/.cursor/auth.json` --
+`authenticate({methodId:"cursor_login"})` blocks indefinitely with no cached
+login, so Agent Bridge never triggers it during an ordinary Run. Cached
+account login is authoritative over an optional, unverified `CURSOR_API_KEY`
+(same account-auth precedence as Grok). Session mode is pinned to `default`
+(per-tool permission prompts) rather than trusting whichever mode
+`session/new` happens to default to, since Cursor also advertises `auto_edit`
+and `yolo` (auto-approve everything) as selectable modes. Steering is not
+enabled. The official binary distribution is recorded in the Registry lock;
+Agent Bridge does not download or vendor that archive.
 
 ## Process lifecycle
 

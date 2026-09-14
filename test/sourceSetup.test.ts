@@ -32,6 +32,7 @@ describe("source setup", () => {
         CLAUDE_ACP_COMMAND: "claude-agent-acp",
         GROK_ACP_COMMAND: "grok",
         AGY_ACP_COMMAND: "agy_acp_server.par",
+        CURSOR_ACP_COMMAND: "cursor-agent",
       },
       resolvePath: (command) => installed.get(command) ?? null,
     });
@@ -48,7 +49,7 @@ describe("source setup", () => {
       "CLAUDE_ACP_COMMAND",
       "GROK_ACP_COMMAND",
       "AGY_ACP_COMMAND",
-      "CURSOR_COMMAND",
+      "CURSOR_ACP_COMMAND",
     ]);
   });
 

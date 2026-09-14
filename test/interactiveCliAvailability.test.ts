@@ -232,7 +232,7 @@ describe("interactive CLI availability filtering", () => {
         CLAUDE_ACP_COMMAND: commands.claude,
         AGY_ACP_COMMAND: commands.agy,
         GROK_ACP_COMMAND: commands.grok,
-        CURSOR_COMMAND: commands.cursor,
+        CURSOR_ACP_COMMAND: commands.cursor,
       },
       readCursorStatus: () => ({ isAuthenticated: true }),
     });
@@ -260,7 +260,7 @@ describe("interactive CLI availability filtering", () => {
         CLAUDE_ACP_COMMAND: "/runtime/claude-custom",
         AGY_ACP_COMMAND: "/runtime/agy-custom",
         GROK_ACP_COMMAND: "/runtime/grok-custom",
-        CURSOR_COMMAND: "/runtime/cursor-custom",
+        CURSOR_ACP_COMMAND: "/runtime/cursor-custom",
       },
       readCursorStatus: () => ({ isAuthenticated: true }),
     });

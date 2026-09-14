@@ -89,6 +89,7 @@ cli_command_version() {
     codex) configured="${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" ;;
     grok) configured="${GROK_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/grok}" ;;
     agy) configured="${AGY_ACP_COMMAND:-}" ;;
+    cursor) configured="${CURSOR_ACP_COMMAND:-cursor-agent}" ;;
   esac
   if [[ -n "${configured}" ]]; then
     command="${configured}"
@@ -225,12 +226,14 @@ if [[ "${1:-}" == "--update" ]]; then
   before_codex="$(cli_command_version codex)"
   before_claude="$(cli_command_version claude)"
   before_agy="$(cli_command_version agy)"
+  before_cursor="$(cli_command_version cursor)"
 
   echo "[update] Updating CLI packages..."
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
   fi
   echo "[update] Agy ACP uses the host-installed agy_acp_server.par; not downloaded by upgrade."
+  echo "[update] Cursor ACP uses the host-installed cursor-agent; not downloaded by upgrade."
 
   after_claude="$(cli_command_version claude)"
   if [[ -z "${after_claude}" ]]; then
@@ -243,6 +246,8 @@ if [[ "${1:-}" == "--update" ]]; then
   [[ -z "${after_codex}" ]] || qualify_provider_if_needed codex "${before_codex}" "${after_codex}"
   after_agy="$(cli_command_version agy)"
   [[ -z "${after_agy}" ]] || qualify_provider_if_needed agy "${before_agy}" "${after_agy}"
+  after_cursor="$(cli_command_version cursor)"
+  [[ -z "${after_cursor}" ]] || qualify_provider_if_needed cursor "${before_cursor}" "${after_cursor}"
 
   echo "[update] Converging shared skills..."
   install_shared_skills
@@ -321,8 +326,8 @@ if [[ "${1:-}" != "--skip-cli-install" ]]; then
     run_as_target_user "${CODEX_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/codex-acp}" --version >/dev/null
   fi
 
-  if [[ -x "${AGY_ACP_COMMAND:-${ANTIGRAVITY_ACP_COMMAND:-}}" ]]; then
-    run_as_target_user "${AGY_ACP_COMMAND:-${ANTIGRAVITY_ACP_COMMAND}}" --version >/dev/null
+  if [[ -x "${AGY_ACP_COMMAND:-}" ]]; then
+    run_as_target_user "${AGY_ACP_COMMAND}" --version >/dev/null
   fi
 
   if [[ -x "${CLAUDE_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/claude-agent-acp}" ]]; then
@@ -331,6 +336,10 @@ if [[ "${1:-}" != "--skip-cli-install" ]]; then
 
   if [[ -x "${GROK_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/grok}" ]]; then
     run_as_target_user "${GROK_ACP_COMMAND:-${REPO_DIR}/node_modules/.bin/grok}" --version >/dev/null
+  fi
+
+  if [[ -x "${CURSOR_ACP_COMMAND:-}" ]] || command -v "${CURSOR_ACP_COMMAND:-cursor-agent}" >/dev/null 2>&1; then
+    run_as_target_user "${CURSOR_ACP_COMMAND:-cursor-agent}" --version >/dev/null
   fi
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" && "${AGENT_BRIDGE_SKILLS}" != "none" && "${AGENT_BRIDGE_SKILLS}" != "skip" ]]; then
   install_shared_skills

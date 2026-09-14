@@ -129,6 +129,50 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
       },
     },
   },
+  cursor: {
+    id: "cursor",
+    name: "Cursor",
+    version: "2026.09.08",
+    description: "Cursor's coding agent",
+    website: "https://cursor.com/docs/cli/acp",
+    authors: ["Cursor"],
+    license: "proprietary",
+    license_url: "https://cursor.com/terms-of-service",
+    distribution: {
+      binary: {
+        "darwin-aarch64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/arm64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "darwin-x86_64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/x64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "linux-aarch64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/arm64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "linux-x86_64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/x64/agent-cli-package.tar.gz",
+          cmd: "./dist-package/cursor-agent",
+          args: ["acp"],
+        },
+        "windows-aarch64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/arm64/agent-cli-package.zip",
+          cmd: "./dist-package\\cursor-agent.cmd",
+          args: ["acp"],
+        },
+        "windows-x86_64": {
+          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/x64/agent-cli-package.zip",
+          cmd: "./dist-package\\cursor-agent.cmd",
+          args: ["acp"],
+        },
+      },
+    },
+  },
 };
 
 export function getLockedAcpRegistryEntry(providerId: ProviderId): AcpRegistryAgentEntry | null {
