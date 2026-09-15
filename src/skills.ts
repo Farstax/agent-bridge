@@ -439,20 +439,26 @@ function validateSkillDescription(description: string, skillPath: string): void 
 
 
 function readLockfile(path: string, options: { force?: boolean }): SkillLockfile {
-  if (!pathExists(path)) return { version: skillLockVersion, skills: {} };
+  const lockfileExists = pathExists(path);
   try {
     const agentsDir = dirname(path);
-    const expectedAgentsDir = join(realpathSync(dirname(agentsDir)), ".agents");
-    if (basename(path) !== ".skill-lock.json"
-      || basename(agentsDir) !== ".agents"
-      || realpathSync(agentsDir) !== expectedAgentsDir
-      || !lstatSync(agentsDir).isDirectory()
-      || !lstatSync(path).isFile()) {
+    if (pathExists(agentsDir)) {
+      const expectedAgentsDir = join(realpathSync(dirname(agentsDir)), ".agents");
+      if (basename(agentsDir) !== ".agents"
+        || realpathSync(agentsDir) !== expectedAgentsDir
+        || !lstatSync(agentsDir).isDirectory()) {
+        throw new Error("non-canonical lockfile parent");
+      }
+    } else if (lockfileExists) {
+      throw new Error("missing lockfile parent");
+    }
+    if (basename(path) !== ".skill-lock.json" || (lockfileExists && !lstatSync(path).isFile())) {
       throw new Error("non-canonical lockfile");
     }
   } catch {
     throw new Error(`Unable to parse skill lockfile: ${path}`);
   }
+  if (!lockfileExists) return { version: skillLockVersion, skills: {} };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid lockfile root");

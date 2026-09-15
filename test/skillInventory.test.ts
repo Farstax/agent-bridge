@@ -167,6 +167,14 @@ describe("installed Skill inventory", () => {
     expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
   });
 
+  it.each(["existing", "dangling"])("rejects an %s symlinked .agents ancestor without a lockfile", (state) => {
+    const home = temp(`symlink-agents-${state}`);
+    const target = state === "existing" ? temp("outside-agents") : join(home, "missing-agents");
+    symlinkSync(target, join(home, ".agents"), "dir");
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
   it.each([
     ["linkMode", "invalid"],
     ["skillFolderHash", "not-a-sha1"],
