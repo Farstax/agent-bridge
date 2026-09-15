@@ -14,6 +14,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   readlinkSync,
   renameSync,
@@ -153,6 +154,35 @@ export function listLocalCatalog(repoRoot = defaultRepoRoot): SkillCatalogEntry[
     .filter((entry) => entry.isDirectory())
     .map((entry) => readCatalogEntry(join(skillsDir, entry.name)))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function listRegisteredSkillCatalog(options: { homeDir?: string } = {}): SkillCatalogEntry[] {
+  const paths = resolveSkillPaths(options.homeDir);
+  const lockfile = readLockfile(paths.lockfilePath, { force: false });
+  const names = Object.keys(lockfile.skills ?? {}).sort((a, b) => a.localeCompare(b));
+  if (names.length === 0) return [];
+  assertCanonicalSharedSkillsRoot(paths);
+
+  return names.map((name) => {
+    const entry = readCatalogEntry(join(paths.agentsSkillsDir, name));
+    const actualHash = hashDirectory(entry.path);
+    const expectedHash = lockfile.skills?.[name]?.skillFolderHash;
+    if (expectedHash && expectedHash !== actualHash) {
+      throw new Error(`Installed skill hash mismatch: ${name}`);
+    }
+    return entry;
+  });
+}
+
+function assertCanonicalSharedSkillsRoot(paths: SkillPaths): void {
+  try {
+    const expected = join(realpathSync(paths.homeDir), ".agents", "skills");
+    if (realpathSync(paths.agentsSkillsDir) !== expected || !lstatSync(paths.agentsSkillsDir).isDirectory()) {
+      throw new Error("non-canonical root");
+    }
+  } catch {
+    throw new Error(`Canonical shared Skills root is not canonical: ${paths.agentsSkillsDir}`);
+  }
 }
 
 export function installSkillGlobal(skillName: string, options: InstallSkillOptions = {}): void {
@@ -358,8 +388,12 @@ export function hashDirectory(dir: string): string {
 }
 
 function readCatalogEntry(skillDir: string): SkillCatalogEntry {
+  if (!existsSync(skillDir) || !lstatSync(skillDir).isDirectory()) {
+    throw new Error(`Skill directory is invalid: ${skillDir}`);
+  }
   const skillPath = join(skillDir, "SKILL.md");
   if (!existsSync(skillPath)) throw new Error(`Missing SKILL.md: ${skillDir}`);
+  if (!lstatSync(skillPath).isFile()) throw new Error(`SKILL.md is not a regular file: ${skillPath}`);
 
   const frontmatter = readSkillFrontmatter(skillPath);
   validateSkillName(frontmatter.name, skillPath);
@@ -405,7 +439,26 @@ function validateSkillDescription(description: string, skillPath: string): void 
 
 
 function readLockfile(path: string, options: { force?: boolean }): SkillLockfile {
-  if (!existsSync(path)) return { version: skillLockVersion, skills: {} };
+  const lockfileExists = pathExists(path);
+  try {
+    const agentsDir = dirname(path);
+    if (pathExists(agentsDir)) {
+      const expectedAgentsDir = join(realpathSync(dirname(agentsDir)), ".agents");
+      if (basename(agentsDir) !== ".agents"
+        || realpathSync(agentsDir) !== expectedAgentsDir
+        || !lstatSync(agentsDir).isDirectory()) {
+        throw new Error("non-canonical lockfile parent");
+      }
+    } else if (lockfileExists) {
+      throw new Error("missing lockfile parent");
+    }
+    if (basename(path) !== ".skill-lock.json" || (lockfileExists && !lstatSync(path).isFile())) {
+      throw new Error("non-canonical lockfile");
+    }
+  } catch {
+    throw new Error(`Unable to parse skill lockfile: ${path}`);
+  }
+  if (!lockfileExists) return { version: skillLockVersion, skills: {} };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid lockfile root");
@@ -416,6 +469,12 @@ function readLockfile(path: string, options: { force?: boolean }): SkillLockfile
     lockfile.skills ??= {};
     for (const [name, record] of Object.entries(lockfile.skills)) {
       if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`invalid skill record: ${name}`);
+      validateSkillName(name, path);
+      if (record.linkMode !== undefined) validateLinkMode(record.linkMode);
+      if (record.skillFolderHash !== undefined
+        && (typeof record.skillFolderHash !== "string" || !/^[0-9a-f]{40}$/i.test(record.skillFolderHash))) {
+        throw new Error(`invalid skill hash: ${name}`);
+      }
       record.ownership = resolveSkillOwnership(name, record);
     }
     lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);
@@ -541,6 +600,7 @@ function listFilesRecursive(dir: string): string[] {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...listFilesRecursive(full));
     else if (entry.isFile()) files.push(full);
+    else if (entry.isSymbolicLink()) throw new Error(`Skill directory contains unsupported symbolic link: ${full}`);
   }
   return files;
 }

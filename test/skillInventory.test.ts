@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -106,6 +106,7 @@ describe("installed Skill inventory", () => {
 
     writeSkill(paths.cursorSkillsDir, "provider-only", "provider-only", "Unmanaged provider-native content.");
     writeSkill(paths.agentsSkillsDir, "unregistered-shared", "unregistered-shared", "Unregistered shared content.");
+    mkdirSync(join(paths.agentsSkillsDir, "unregistered-broken"), { recursive: true });
 
     const beforeLockfile = readFileSync(paths.lockfilePath, "utf8");
     const inventory = listInstalledSkillInventory({ homeDir: home });
@@ -120,6 +121,198 @@ describe("installed Skill inventory", () => {
     expect(hashDirectory(join(paths.agentsSkillsDir, "requirements-to-acceptance"))).toBe(
       hashDirectory(join(paths.cursorSkillsDir, "requirements-to-acceptance")),
     );
+  });
+
+  it("rejects lockfile state rejected by the canonical Skill manager", () => {
+    const home = temp("invalid-lock");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+
+    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as {
+      skills: Record<string, { ownership?: string }>;
+    };
+    lockfile.skills["requirements-to-acceptance"].ownership = "invalid";
+    writeFileSync(paths.lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it("rejects a canonical Skill lockfile that is a symlink", () => {
+    const home = temp("symlink-lock");
+    const paths = resolveSkillPaths(home);
+    const shared = writeSkill(paths.agentsSkillsDir, "linked-skill", "linked-skill", "Canonical metadata.");
+    const outsideLock = join(home, "outside-lock.json");
+    writeFileSync(outsideLock, `${JSON.stringify({
+      version: 4,
+      skills: {
+        "linked-skill": {
+          ownership: "user",
+          linkMode: "symlink",
+          skillFolderHash: hashDirectory(shared),
+        },
+      },
+    }, null, 2)}\n`);
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    symlinkSync(outsideLock, paths.lockfilePath);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it("rejects a dangling canonical Skill lockfile symlink", () => {
+    const home = temp("dangling-symlink-lock");
+    const paths = resolveSkillPaths(home);
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    symlinkSync(join(home, "missing-lock.json"), paths.lockfilePath);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it.each(["existing", "dangling"])("rejects an %s symlinked .agents ancestor without a lockfile", (state) => {
+    const home = temp(`symlink-agents-${state}`);
+    const target = state === "existing" ? temp("outside-agents") : join(home, "missing-agents");
+    symlinkSync(target, join(home, ".agents"), "dir");
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it.each([
+    ["linkMode", "invalid"],
+    ["skillFolderHash", "not-a-sha1"],
+  ])("rejects an invalid canonical registration %s", (field, value) => {
+    const home = temp(`invalid-${field}`);
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+
+    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    lockfile.skills["requirements-to-acceptance"][field] = value;
+    writeFileSync(paths.lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it("rejects a registered ID that escapes the canonical shared Skill directory", () => {
+    const home = temp("escaping-id");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+    writeSkill(join(home, ".agents"), "outside-skill", "outside-skill", "Outside canonical root.");
+
+    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    lockfile.skills["../outside-skill"] = lockfile.skills["requirements-to-acceptance"];
+    delete lockfile.skills["requirements-to-acceptance"];
+    writeFileSync(paths.lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it("rejects registered content that no longer matches its canonical hash", () => {
+    const home = temp("hash-mismatch");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+    writeSkill(
+      paths.agentsSkillsDir,
+      "requirements-to-acceptance",
+      "requirements-to-acceptance",
+      "Changed after registration.",
+    );
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Installed skill hash mismatch/);
+  });
+
+  it("rejects a registered shared Skill directory that is a symlink", () => {
+    const home = temp("symlink-directory");
+    const paths = resolveSkillPaths(home);
+    const outside = writeSkill(home, "outside-skill", "linked-skill", "Outside canonical root.");
+    mkdirSync(paths.agentsSkillsDir, { recursive: true });
+    symlinkSync(outside, join(paths.agentsSkillsDir, "linked-skill"), "dir");
+    writeFileSync(paths.lockfilePath, `${JSON.stringify({
+      version: 4,
+      skills: {
+        "linked-skill": {
+          ownership: "user",
+          linkMode: "symlink",
+          skillFolderHash: hashDirectory(outside),
+        },
+      },
+    }, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Skill directory is invalid/);
+  });
+
+  it("rejects a canonical shared Skills root that is a symlink", () => {
+    const home = temp("symlink-root");
+    const paths = resolveSkillPaths(home);
+    const outsideRoot = temp("outside-skills-root");
+    const outside = writeSkill(outsideRoot, "skills/linked-skill", "linked-skill", "Outside canonical root.");
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    symlinkSync(join(outsideRoot, "skills"), paths.agentsSkillsDir, "dir");
+    writeFileSync(paths.lockfilePath, `${JSON.stringify({
+      version: 4,
+      skills: {
+        "linked-skill": {
+          ownership: "user",
+          linkMode: "symlink",
+          skillFolderHash: hashDirectory(outside),
+        },
+      },
+    }, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/shared Skills root is not canonical/);
+  });
+
+  it("rejects a registered Skill whose SKILL.md is a symlink", () => {
+    const home = temp("symlink-metadata");
+    const paths = resolveSkillPaths(home);
+    const outside = writeSkill(home, "outside-skill", "linked-skill", "Outside canonical root.");
+    const shared = join(paths.agentsSkillsDir, "linked-skill");
+    mkdirSync(shared, { recursive: true });
+    const registeredHash = hashDirectory(shared);
+    symlinkSync(join(outside, "SKILL.md"), join(shared, "SKILL.md"));
+    writeFileSync(paths.lockfilePath, `${JSON.stringify({
+      version: 4,
+      skills: {
+        "linked-skill": {
+          ownership: "user",
+          linkMode: "symlink",
+          skillFolderHash: registeredHash,
+        },
+      },
+    }, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/SKILL.md is not a regular file/);
+  });
+
+  it("rejects a hashless legacy Skill whose canonical content contains a symlink", () => {
+    const home = temp("symlink-content");
+    const paths = resolveSkillPaths(home);
+    const shared = writeSkill(paths.agentsSkillsDir, "linked-skill", "linked-skill", "Canonical metadata.");
+    const outside = join(home, "outside-asset.txt");
+    writeFileSync(outside, "outside content\n");
+    symlinkSync(outside, join(shared, "asset.txt"));
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    writeFileSync(paths.lockfilePath, `${JSON.stringify({
+      version: 4,
+      skills: {
+        "linked-skill": {
+          ownership: "user",
+          linkMode: "symlink",
+        },
+      },
+    }, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/unsupported symbolic link/);
+  });
+
+  it("rejects a registered Skill whose canonical shared content is missing", () => {
+    const home = temp("missing-registered");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+    rmSync(join(paths.agentsSkillsDir, "requirements-to-acceptance"), { recursive: true, force: true });
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Skill directory is invalid/);
   });
 
   it("includes directly curated and Collection-installed Skills using intrinsic SKILL.md metadata", async () => {
