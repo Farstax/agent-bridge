@@ -14,6 +14,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   readlinkSync,
   renameSync,
@@ -158,17 +159,29 @@ export function listLocalCatalog(repoRoot = defaultRepoRoot): SkillCatalogEntry[
 export function listRegisteredSkillCatalog(options: { homeDir?: string } = {}): SkillCatalogEntry[] {
   const paths = resolveSkillPaths(options.homeDir);
   const lockfile = readLockfile(paths.lockfilePath, { force: false });
+  const names = Object.keys(lockfile.skills ?? {}).sort((a, b) => a.localeCompare(b));
+  if (names.length === 0) return [];
+  assertCanonicalSharedSkillsRoot(paths);
 
-  return Object.keys(lockfile.skills ?? {})
-    .sort((a, b) => a.localeCompare(b))
-    .map((name) => {
-      const entry = readCatalogEntry(join(paths.agentsSkillsDir, name));
-      const expectedHash = lockfile.skills?.[name]?.skillFolderHash;
-      if (expectedHash && expectedHash !== hashDirectory(entry.path)) {
-        throw new Error(`Installed skill hash mismatch: ${name}`);
-      }
-      return entry;
-    });
+  return names.map((name) => {
+    const entry = readCatalogEntry(join(paths.agentsSkillsDir, name));
+    const expectedHash = lockfile.skills?.[name]?.skillFolderHash;
+    if (expectedHash && expectedHash !== hashDirectory(entry.path)) {
+      throw new Error(`Installed skill hash mismatch: ${name}`);
+    }
+    return entry;
+  });
+}
+
+function assertCanonicalSharedSkillsRoot(paths: SkillPaths): void {
+  try {
+    const expected = join(realpathSync(paths.homeDir), ".agents", "skills");
+    if (realpathSync(paths.agentsSkillsDir) !== expected || !lstatSync(paths.agentsSkillsDir).isDirectory()) {
+      throw new Error("non-canonical root");
+    }
+  } catch {
+    throw new Error(`Canonical shared Skills root is not canonical: ${paths.agentsSkillsDir}`);
+  }
 }
 
 export function installSkillGlobal(skillName: string, options: InstallSkillOptions = {}): void {

@@ -204,6 +204,27 @@ describe("installed Skill inventory", () => {
     expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Skill directory is invalid/);
   });
 
+  it("rejects a canonical shared Skills root that is a symlink", () => {
+    const home = temp("symlink-root");
+    const paths = resolveSkillPaths(home);
+    const outsideRoot = temp("outside-skills-root");
+    const outside = writeSkill(outsideRoot, "skills/linked-skill", "linked-skill", "Outside canonical root.");
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    symlinkSync(join(outsideRoot, "skills"), paths.agentsSkillsDir, "dir");
+    writeFileSync(paths.lockfilePath, `${JSON.stringify({
+      version: 4,
+      skills: {
+        "linked-skill": {
+          ownership: "user",
+          linkMode: "symlink",
+          skillFolderHash: hashDirectory(outside),
+        },
+      },
+    }, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/shared Skills root is not canonical/);
+  });
+
   it("rejects a registered Skill whose SKILL.md is a symlink", () => {
     const home = temp("symlink-metadata");
     const paths = resolveSkillPaths(home);
