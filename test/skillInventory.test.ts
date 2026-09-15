@@ -158,6 +158,15 @@ describe("installed Skill inventory", () => {
     expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
   });
 
+  it("rejects a dangling canonical Skill lockfile symlink", () => {
+    const home = temp("dangling-symlink-lock");
+    const paths = resolveSkillPaths(home);
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    symlinkSync(join(home, "missing-lock.json"), paths.lockfilePath);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
   it.each([
     ["linkMode", "invalid"],
     ["skillFolderHash", "not-a-sha1"],

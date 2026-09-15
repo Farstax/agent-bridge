@@ -439,7 +439,7 @@ function validateSkillDescription(description: string, skillPath: string): void 
 
 
 function readLockfile(path: string, options: { force?: boolean }): SkillLockfile {
-  if (!existsSync(path)) return { version: skillLockVersion, skills: {} };
+  if (!pathExists(path)) return { version: skillLockVersion, skills: {} };
   try {
     const agentsDir = dirname(path);
     const expectedAgentsDir = join(realpathSync(dirname(agentsDir)), ".agents");
