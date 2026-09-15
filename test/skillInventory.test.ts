@@ -137,6 +137,15 @@ describe("installed Skill inventory", () => {
     expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
   });
 
+  it("rejects a registered Skill whose canonical shared content is missing", () => {
+    const home = temp("missing-registered");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+    rmSync(join(paths.agentsSkillsDir, "requirements-to-acceptance"), { recursive: true, force: true });
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Missing SKILL\.md/);
+  });
+
   it("includes directly curated and Collection-installed Skills using intrinsic SKILL.md metadata", async () => {
     const home = temp("curated-home");
     const root = temp("curated-catalogue");

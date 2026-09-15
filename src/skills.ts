@@ -155,6 +155,15 @@ export function listLocalCatalog(repoRoot = defaultRepoRoot): SkillCatalogEntry[
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export function listRegisteredSkillCatalog(options: { homeDir?: string } = {}): SkillCatalogEntry[] {
+  const paths = resolveSkillPaths(options.homeDir);
+  const lockfile = readLockfile(paths.lockfilePath, { force: false });
+
+  return Object.keys(lockfile.skills ?? {})
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => readCatalogEntry(join(paths.agentsSkillsDir, name)));
+}
+
 export function installSkillGlobal(skillName: string, options: InstallSkillOptions = {}): void {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const paths = resolveSkillPaths(options.homeDir);
