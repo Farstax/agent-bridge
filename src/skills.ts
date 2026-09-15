@@ -165,8 +165,9 @@ export function listRegisteredSkillCatalog(options: { homeDir?: string } = {}): 
 
   return names.map((name) => {
     const entry = readCatalogEntry(join(paths.agentsSkillsDir, name));
+    const actualHash = hashDirectory(entry.path);
     const expectedHash = lockfile.skills?.[name]?.skillFolderHash;
-    if (expectedHash && expectedHash !== hashDirectory(entry.path)) {
+    if (expectedHash && expectedHash !== actualHash) {
       throw new Error(`Installed skill hash mismatch: ${name}`);
     }
     return entry;
@@ -439,6 +440,19 @@ function validateSkillDescription(description: string, skillPath: string): void 
 
 function readLockfile(path: string, options: { force?: boolean }): SkillLockfile {
   if (!existsSync(path)) return { version: skillLockVersion, skills: {} };
+  try {
+    const agentsDir = dirname(path);
+    const expectedAgentsDir = join(realpathSync(dirname(agentsDir)), ".agents");
+    if (basename(path) !== ".skill-lock.json"
+      || basename(agentsDir) !== ".agents"
+      || realpathSync(agentsDir) !== expectedAgentsDir
+      || !lstatSync(agentsDir).isDirectory()
+      || !lstatSync(path).isFile()) {
+      throw new Error("non-canonical lockfile");
+    }
+  } catch {
+    throw new Error(`Unable to parse skill lockfile: ${path}`);
+  }
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid lockfile root");

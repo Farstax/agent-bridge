@@ -137,6 +137,27 @@ describe("installed Skill inventory", () => {
     expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
   });
 
+  it("rejects a canonical Skill lockfile that is a symlink", () => {
+    const home = temp("symlink-lock");
+    const paths = resolveSkillPaths(home);
+    const shared = writeSkill(paths.agentsSkillsDir, "linked-skill", "linked-skill", "Canonical metadata.");
+    const outsideLock = join(home, "outside-lock.json");
+    writeFileSync(outsideLock, `${JSON.stringify({
+      version: 4,
+      skills: {
+        "linked-skill": {
+          ownership: "user",
+          linkMode: "symlink",
+          skillFolderHash: hashDirectory(shared),
+        },
+      },
+    }, null, 2)}\n`);
+    mkdirSync(join(home, ".agents"), { recursive: true });
+    symlinkSync(outsideLock, paths.lockfilePath);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
   it.each([
     ["linkMode", "invalid"],
     ["skillFolderHash", "not-a-sha1"],
@@ -247,11 +268,10 @@ describe("installed Skill inventory", () => {
     expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/SKILL.md is not a regular file/);
   });
 
-  it("rejects a registered Skill whose canonical content contains a symlink", () => {
+  it("rejects a hashless legacy Skill whose canonical content contains a symlink", () => {
     const home = temp("symlink-content");
     const paths = resolveSkillPaths(home);
     const shared = writeSkill(paths.agentsSkillsDir, "linked-skill", "linked-skill", "Canonical metadata.");
-    const registeredHash = hashDirectory(shared);
     const outside = join(home, "outside-asset.txt");
     writeFileSync(outside, "outside content\n");
     symlinkSync(outside, join(shared, "asset.txt"));
@@ -262,7 +282,6 @@ describe("installed Skill inventory", () => {
         "linked-skill": {
           ownership: "user",
           linkMode: "symlink",
-          skillFolderHash: registeredHash,
         },
       },
     }, null, 2)}\n`);
