@@ -374,8 +374,12 @@ export function hashDirectory(dir: string): string {
 }
 
 function readCatalogEntry(skillDir: string): SkillCatalogEntry {
+  if (!existsSync(skillDir) || !lstatSync(skillDir).isDirectory()) {
+    throw new Error(`Skill directory is invalid: ${skillDir}`);
+  }
   const skillPath = join(skillDir, "SKILL.md");
   if (!existsSync(skillPath)) throw new Error(`Missing SKILL.md: ${skillDir}`);
+  if (!lstatSync(skillPath).isFile()) throw new Error(`SKILL.md is not a regular file: ${skillPath}`);
 
   const frontmatter = readSkillFrontmatter(skillPath);
   validateSkillName(frontmatter.name, skillPath);
@@ -563,6 +567,7 @@ function listFilesRecursive(dir: string): string[] {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) files.push(...listFilesRecursive(full));
     else if (entry.isFile()) files.push(full);
+    else if (entry.isSymbolicLink()) throw new Error(`Skill directory contains unsupported symbolic link: ${full}`);
   }
   return files;
 }
