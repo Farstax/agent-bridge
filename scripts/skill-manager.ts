@@ -8,6 +8,7 @@ import {
   verifySkillGlobal,
   type SkillLinkMode,
 } from "../src/skills.js";
+import { listInstalledSkillInventory } from "../src/skillInventory.js";
 import {
   getAvailableSkillCollection,
   getSkillCollectionStatus,
@@ -25,6 +26,7 @@ function usage(): never {
   console.error([
     "Usage:",
     "  npx tsx scripts/skill-manager.ts list",
+    "  npx tsx scripts/skill-manager.ts inventory",
     "  npx tsx scripts/skill-manager.ts install <skill-name> [--force] [--link-mode symlink|copy] [--project-cursor]",
     "  npx tsx scripts/skill-manager.ts install <skill-name> --catalogue <source> [--link-mode symlink|copy]",
     "  npx tsx scripts/skill-manager.ts project-user <skill-name> [--project-cursor]",
@@ -112,6 +114,10 @@ async function main(): Promise<void> {
   }
   if (command === "list") {
     for (const entry of listLocalCatalog()) console.log(`${entry.name}\t${entry.description}`);
+    return;
+  }
+  if (command === "inventory") {
+    console.log(JSON.stringify(listInstalledSkillInventory(), null, 2));
     return;
   }
   if (command === "install") {
