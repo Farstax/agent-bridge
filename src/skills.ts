@@ -161,7 +161,14 @@ export function listRegisteredSkillCatalog(options: { homeDir?: string } = {}): 
 
   return Object.keys(lockfile.skills ?? {})
     .sort((a, b) => a.localeCompare(b))
-    .map((name) => readCatalogEntry(join(paths.agentsSkillsDir, name)));
+    .map((name) => {
+      const entry = readCatalogEntry(join(paths.agentsSkillsDir, name));
+      const expectedHash = lockfile.skills?.[name]?.skillFolderHash;
+      if (expectedHash && expectedHash !== hashDirectory(entry.path)) {
+        throw new Error(`Installed skill hash mismatch: ${name}`);
+      }
+      return entry;
+    });
 }
 
 export function installSkillGlobal(skillName: string, options: InstallSkillOptions = {}): void {
@@ -425,6 +432,12 @@ function readLockfile(path: string, options: { force?: boolean }): SkillLockfile
     lockfile.skills ??= {};
     for (const [name, record] of Object.entries(lockfile.skills)) {
       if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`invalid skill record: ${name}`);
+      validateSkillName(name, path);
+      if (record.linkMode !== undefined) validateLinkMode(record.linkMode);
+      if (record.skillFolderHash !== undefined
+        && (typeof record.skillFolderHash !== "string" || !/^[0-9a-f]{40}$/i.test(record.skillFolderHash))) {
+        throw new Error(`invalid skill hash: ${name}`);
+      }
       record.ownership = resolveSkillOwnership(name, record);
     }
     lockfile.version = Math.max(lockfile.version ?? 0, skillLockVersion);

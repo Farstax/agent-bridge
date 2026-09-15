@@ -137,6 +137,53 @@ describe("installed Skill inventory", () => {
     expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
   });
 
+  it.each([
+    ["linkMode", "invalid"],
+    ["skillFolderHash", "not-a-sha1"],
+  ])("rejects an invalid canonical registration %s", (field, value) => {
+    const home = temp(`invalid-${field}`);
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+
+    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    lockfile.skills["requirements-to-acceptance"][field] = value;
+    writeFileSync(paths.lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it("rejects a registered ID that escapes the canonical shared Skill directory", () => {
+    const home = temp("escaping-id");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+    writeSkill(join(home, ".agents"), "outside-skill", "outside-skill", "Outside canonical root.");
+
+    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as {
+      skills: Record<string, Record<string, unknown>>;
+    };
+    lockfile.skills["../outside-skill"] = lockfile.skills["requirements-to-acceptance"];
+    delete lockfile.skills["requirements-to-acceptance"];
+    writeFileSync(paths.lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
+  });
+
+  it("rejects registered content that no longer matches its canonical hash", () => {
+    const home = temp("hash-mismatch");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+    writeSkill(
+      paths.agentsSkillsDir,
+      "requirements-to-acceptance",
+      "requirements-to-acceptance",
+      "Changed after registration.",
+    );
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Installed skill hash mismatch/);
+  });
+
   it("rejects a registered Skill whose canonical shared content is missing", () => {
     const home = temp("missing-registered");
     const paths = resolveSkillPaths(home);
