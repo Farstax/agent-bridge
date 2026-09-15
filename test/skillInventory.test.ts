@@ -106,6 +106,7 @@ describe("installed Skill inventory", () => {
 
     writeSkill(paths.cursorSkillsDir, "provider-only", "provider-only", "Unmanaged provider-native content.");
     writeSkill(paths.agentsSkillsDir, "unregistered-shared", "unregistered-shared", "Unregistered shared content.");
+    mkdirSync(join(paths.agentsSkillsDir, "unregistered-broken"), { recursive: true });
 
     const beforeLockfile = readFileSync(paths.lockfilePath, "utf8");
     const inventory = listInstalledSkillInventory({ homeDir: home });
@@ -120,6 +121,20 @@ describe("installed Skill inventory", () => {
     expect(hashDirectory(join(paths.agentsSkillsDir, "requirements-to-acceptance"))).toBe(
       hashDirectory(join(paths.cursorSkillsDir, "requirements-to-acceptance")),
     );
+  });
+
+  it("rejects lockfile state rejected by the canonical Skill manager", () => {
+    const home = temp("invalid-lock");
+    const paths = resolveSkillPaths(home);
+    installSkillGlobal("requirements-to-acceptance", { homeDir: home });
+
+    const lockfile = JSON.parse(readFileSync(paths.lockfilePath, "utf8")) as {
+      skills: Record<string, { ownership?: string }>;
+    };
+    lockfile.skills["requirements-to-acceptance"].ownership = "invalid";
+    writeFileSync(paths.lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+
+    expect(() => listInstalledSkillInventory({ homeDir: home })).toThrow(/Unable to parse skill lockfile/);
   });
 
   it("includes directly curated and Collection-installed Skills using intrinsic SKILL.md metadata", async () => {
