@@ -158,6 +158,16 @@ describe("scoped conversation search", () => {
     expect(match?.text.endsWith("…")).toBe(true);
   });
 
+  it("shows a match near the end instead of returning the beginning of the turn", () => {
+    const retained = `${"a".repeat(900)} terminal-needle`;
+    db.addConvTurn("chat:1", "user", retained);
+
+    const match = db.searchConvTurns("chat:1", "terminal-needle", 1).find((row) => row.is_match);
+    expect(match?.text).toContain("terminal-needle");
+    expect(match?.text.startsWith("…")).toBe(true);
+    expect(match?.text.endsWith("…")).toBe(false);
+  });
+
   it("ranks distinctive multi-term evidence ahead of newer common-term matches", () => {
     db.addConvTurn("chat:1", "user", "deployment window is Friday at 15:00");
     for (let i = 0; i < 5; i++) {
