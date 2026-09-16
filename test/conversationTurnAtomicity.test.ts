@@ -58,6 +58,37 @@ describe("conversation-turn post-delivery atomicity", () => {
     try { rmSync(dbPath); } catch {}
   });
 
+  it("persists complete successful user and assistant turns", async () => {
+    const { BridgeEngine } = await import("../src/engine.js");
+    const client = makeMockClient();
+    const userPrompt = `${"u".repeat(1_400)}-user-tail`;
+    const assistantText = `${"a".repeat(1_500)}-assistant-tail`;
+    const runCli = vi.fn().mockResolvedValue([
+      JSON.stringify({ type: "text", data: assistantText }),
+      JSON.stringify({ type: "end", sessionId: "cursor-session", stopReason: "end_turn" }),
+    ].join("\n") + "\n");
+    const engine = new BridgeEngine(
+      {
+        surfaceIdentity: "test",
+        kind: "grok",
+        botConfig: { command: "grok", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000, workingDir: process.cwd(),
+      },
+      db,
+      client,
+      acpEngineExec(runCli),
+    );
+
+    await engine.handleMessages([makeMessage(userPrompt)]);
+
+    expect(db.getRecentConvTurns("100", 10).map((turn) => [turn.role, turn.text])).toEqual([
+      ["user", userPrompt],
+      ["assistant", assistantText],
+    ]);
+  });
+
   it("rolls back the user turn when the assistant turn insert fails, without double-delivering after the answer", async () => {
     const { BridgeEngine } = await import("../src/engine.js");
     const client = makeMockClient();
