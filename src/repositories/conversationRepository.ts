@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const DEFAULT_CONTEXT_MAX_CHARS = 24_000;
+export const DEFAULT_CONTEXT_MAX_CHARS = 50_000;
 export const DEFAULT_CONTEXT_RECENT_TURN_LIMIT = 200;
 
 // Issue #350: bounds for scoped chronological search over conversation_turns.
@@ -91,6 +91,32 @@ function tokenizeSearchQuery(raw: string): string[] {
 // so search terms are matched literally.
 function escapeLikeTerm(term: string): string {
   return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+function searchSnippet(text: string, tokens: string[], isMatch: boolean): string {
+  if (text.length <= MAX_SEARCH_SNIPPET_CHARS) return text;
+
+  let start = 0;
+  if (isMatch) {
+    const lowerText = text.toLowerCase();
+    let matchIndex = -1;
+    let matchLength = 0;
+    for (const token of tokens) {
+      const index = lowerText.indexOf(token);
+      if (index >= 0 && (matchIndex < 0 || index < matchIndex)) {
+        matchIndex = index;
+        matchLength = token.length;
+      }
+    }
+    if (matchIndex >= 0) {
+      const beforeMatch = Math.floor((MAX_SEARCH_SNIPPET_CHARS - Math.min(matchLength, MAX_SEARCH_SNIPPET_CHARS)) / 2);
+      start = Math.max(0, matchIndex - beforeMatch);
+      start = Math.min(start, text.length - MAX_SEARCH_SNIPPET_CHARS);
+    }
+  }
+
+  const end = start + MAX_SEARCH_SNIPPET_CHARS;
+  return `${start > 0 ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
 }
 
 export interface ConversationTurnProvenance {
@@ -185,15 +211,14 @@ export class ConversationRepository {
     const candidates = this.getRecentConvTurns(chatKey, recentTurnCandidateLimit(), undefined, surfaceIdentity);
     if (candidates.length === 0) return "";
 
-    let budget = maxChars;
+    let projectedChars = 0;
     const selected: Array<{ role: string; text: string }> = [];
     for (let i = candidates.length - 1; i >= 0; i--) {
       const t = candidates[i];
       const line = `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`;
-      if (line.length <= budget) {
-        selected.unshift({ role: t.role, text: t.text });
-        budget -= line.length;
-      }
+      selected.unshift({ role: t.role, text: t.text });
+      projectedChars += line.length;
+      if (projectedChars >= maxChars) break;
     }
 
     const lines = ["[Context from previous conversation]"];
@@ -322,9 +347,7 @@ export class ConversationRepository {
 
     return [...evidence.values()].sort((a, b) => a.id - b.id).map((row) => ({
       ...row,
-      text: row.text.length > MAX_SEARCH_SNIPPET_CHARS
-        ? `${row.text.slice(0, MAX_SEARCH_SNIPPET_CHARS)}…`
-        : row.text,
+      text: searchSnippet(row.text, tokens, row.is_match === true),
     }));
   }
 
