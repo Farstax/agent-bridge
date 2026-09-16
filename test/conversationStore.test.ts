@@ -84,12 +84,40 @@ describe("buildConvContext", () => {
     expect(context).not.toContain("LEGACY GENERATED SUMMARY MUST NOT BE USED");
   });
 
-  it("keeps newest turns when the character budget is tight", () => {
-    db.addConvTurn("chat:1", "user", "x".repeat(400));
-    db.addConvTurn("chat:1", "assistant", "short reply");
+  it("includes a newest turn larger than the context target and stops before older turns", () => {
+    db.addConvTurn("chat:1", "user", "older turn must stay out");
+    const newest = "x".repeat(400);
+    db.addConvTurn("chat:1", "assistant", newest);
+
     const context = db.buildConvContext("chat:1", 100);
-    expect(context).toContain("short reply");
-    expect(context).not.toContain("x".repeat(20));
+    expect(context).toContain(newest);
+    expect(context).not.toContain("older turn must stay out");
+  });
+
+  it("includes the complete turn that crosses the context target and then stops", () => {
+    db.addConvTurn("chat:1", "user", "oldest turn must stay out");
+    const crossing = "x".repeat(400);
+    db.addConvTurn("chat:1", "assistant", crossing);
+    db.addConvTurn("chat:1", "user", "newest short turn");
+
+    const context = db.buildConvContext("chat:1", 100);
+    expect(context).toContain("newest short turn");
+    expect(context).toContain(crossing);
+    expect(context).not.toContain("oldest turn must stay out");
+  });
+
+  it("uses a 50k default context target", () => {
+    const oldest = `oldest-${"o".repeat(11_000)}`;
+    const middle = `middle-${"m".repeat(20_000)}`;
+    const newest = `newest-${"n".repeat(20_000)}`;
+    db.addConvTurn("chat:1", "user", oldest);
+    db.addConvTurn("chat:1", "assistant", middle);
+    db.addConvTurn("chat:1", "user", newest);
+
+    const context = db.buildConvContext("chat:1");
+    expect(context).toContain(oldest);
+    expect(context).toContain(middle);
+    expect(context).toContain(newest);
   });
 
   it("keeps the newest candidate window when history exceeds the default turn limit", () => {
@@ -118,6 +146,16 @@ describe("scoped conversation search", () => {
     const rows = db.searchConvTurns("chat:1", "decision alpha");
     expect(rows.map((row) => row.text)).toEqual(["before marker", "decision alpha marker", "after marker"]);
     expect(rows.filter((row: any) => row.is_match).map((row) => row.text)).toEqual(["decision alpha marker"]);
+  });
+
+  it("shows the matching region when a hit occurs beyond the beginning of a long turn", () => {
+    const retained = `${"a".repeat(500)} needle ${"b".repeat(500)}`;
+    db.addConvTurn("chat:1", "user", retained);
+
+    const match = db.searchConvTurns("chat:1", "needle", 1).find((row) => row.is_match);
+    expect(match?.text).toContain("needle");
+    expect(match?.text.startsWith("…")).toBe(true);
+    expect(match?.text.endsWith("…")).toBe(true);
   });
 
   it("ranks distinctive multi-term evidence ahead of newer common-term matches", () => {
