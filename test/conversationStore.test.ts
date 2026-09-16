@@ -168,6 +168,17 @@ describe("scoped conversation search", () => {
     expect(match?.text.endsWith("…")).toBe(false);
   });
 
+  it("recovers a marker stored beyond the former 1,200-character truncation boundary", () => {
+    const retained = `${"a".repeat(1_300)} beyond-1200-marker ${"b".repeat(200)}`;
+    db.addConvTurn("chat:1", "user", retained);
+
+    const stored = db.getRecentConvTurns("chat:1", 1)[0];
+    expect(stored.text).toContain("beyond-1200-marker");
+
+    const match = db.searchConvTurns("chat:1", "beyond-1200-marker", 1).find((row) => row.is_match);
+    expect(match?.text).toContain("beyond-1200-marker");
+  });
+
   it("ranks distinctive multi-term evidence ahead of newer common-term matches", () => {
     db.addConvTurn("chat:1", "user", "deployment window is Friday at 15:00");
     for (let i = 0; i < 5; i++) {

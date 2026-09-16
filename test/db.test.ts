@@ -79,7 +79,7 @@ describe("BridgeDb ordinary Run state", () => {
 
 describe("db.ts public export compatibility", () => {
   it("keeps retained-turn context constants stable", () => {
-    expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(24_000);
+    expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(50_000);
     expect(DEFAULT_CONTEXT_RECENT_TURN_LIMIT).toBe(200);
   });
 });
