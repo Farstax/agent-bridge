@@ -151,7 +151,6 @@ export interface SurfaceNeutralTurnInput {
 
 const MAX_QUEUE_DEPTH = 5;
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
-const ENGINE_TURN_TEXT_LIMIT = 1_200;
 const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor"]);
 function isAgentKind(kind: string): kind is BotKind {
   return AGENT_KINDS.has(kind);
@@ -169,12 +168,6 @@ function telegramUpdateChatKey(update: TelegramUpdate): string | null {
 
 function hookContext(chatId: number | string, chatKey: string, threadId?: number | string): HookContext {
   return { chatId, chatKey, threadId };
-}
-
-function trimTurnText(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= ENGINE_TURN_TEXT_LIMIT) return normalized;
-  return `${normalized.slice(0, ENGINE_TURN_TEXT_LIMIT - 15).trimEnd()}... [truncated]`;
 }
 
 export class BridgeEngine {
@@ -1332,8 +1325,8 @@ export class BridgeEngine {
     const provenance = { surfaceIdentity: this.surfaceIdentity, ...(ownerKey ? { ownerKey } : {}) };
     try {
       this.db.runInTransaction(() => {
-        this.db.addConvTurn(chatKey, "user", trimTurnText(userPrompt), this.kind, provenance);
-        this.db.addConvTurn(chatKey, "assistant", trimTurnText(assistantText), this.kind, provenance);
+        this.db.addConvTurn(chatKey, "user", userPrompt, this.kind, provenance);
+        this.db.addConvTurn(chatKey, "assistant", assistantText, this.kind, provenance);
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

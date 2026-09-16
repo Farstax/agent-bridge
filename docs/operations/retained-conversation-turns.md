@@ -3,7 +3,7 @@ status: authoritative
 type: operations
 authority: canonical
 implementation_status: implemented
-last_validated_against: issue-544
+last_validated_against: issue-811
 ---
 
 # Retained conversation turns
@@ -12,9 +12,10 @@ This is the operator policy for retained `conversation_turns` evidence.
 
 ## Policy
 
-- `conversation_turns` are the Agent Bridge source evidence for a conversation.
+- `conversation_turns` are the Agent Bridge source evidence for a conversation and successful user/assistant turns are stored losslessly; projection limits do not truncate the durable rows.
 - Provider-native sessions remain the primary same-provider continuity path.
-- A fresh provider receives bounded exact retained turns. Older exact turns remain available through `agent-bridge-context --recent` and `--search`.
+- A fresh provider receives exact retained turns under a 50,000-character soft target by default. Turns are selected newest-first; the complete turn that crosses the target is included, then no older turns are added. `BRIDGE_CONTEXT_MAX_CHARS` can override the target without turning it into a hard truncation boundary.
+- Older exact turns remain available through `agent-bridge-context --recent` and `--search`. Search matches the full retained source text while rendering bounded, match-centred snippets for hits.
 - Supported runtime paths do not generate compact summaries, run manual/pre-seed/fallback compaction, or promote project memories.
 - Historical `conversation_summaries` and `project_memories` rows may remain in existing databases for compatibility and audit. They are not a supported continuity input and are not regenerated.
 - Normal operation does not automatically delete retained turns. `/reset` is the explicit user-controlled full-history deletion path for the current conversation scope; it clears that scope's provider session, pending work, retained turns, and historical summaries without affecting other conversations.
@@ -43,7 +44,6 @@ Current recovery evidence should cover:
 - guarded rollout backup/integrity checks providing recoverable database copies, file/hash restoration, schema validation, and post-restore verification.
 
 The removal of legacy compaction/project-memory execution in #544 does not perform a destructive schema migration or delete historical summary/memory rows.
-
 
 ## Explicit cross-conversation search
 
