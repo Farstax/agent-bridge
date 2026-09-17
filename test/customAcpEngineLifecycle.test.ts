@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -138,6 +138,73 @@ describe("custom ACP BridgeEngine lifecycle", () => {
     await engine3.handleMessages([makeMessage("changed runtime turn", 100, 3)]);
     // New runtime starts fresh (produces fixture parent answer rather than resumed answer)
     expect(sentMessages[2]).toBe("fixture parent answer");
+  }, 30_000);
+
+  it("does not resume a custom ACP session after the effective workspace changes", async () => {
+    const workspaceA = mkdtempSync(join(tmpdir(), "custom-acp-workspace-a-"));
+    const workspaceB = mkdtempSync(join(tmpdir(), "custom-acp-workspace-b-"));
+    try {
+      Object.assign(process.env, customEnv([tsxCli, fakeAgent], {
+        CUSTOM_ACP_PROJECT_DIR: workspaceA,
+      }));
+
+      const sentMessages: string[] = [];
+      const client1 = {
+        sendMessage: vi.fn().mockImplementation(async (payload: { text: string }) => {
+          sentMessages.push(payload.text);
+          return { ok: true, result: { message_id: sentMessages.length } };
+        }),
+        sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+      } as any;
+
+      const engine1 = new BridgeEngine(
+        {
+          surfaceIdentity: "test-surface",
+          kind: "custom-acp",
+          botConfig: { command: "", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+        },
+        db,
+        client1,
+      );
+
+      await engine1.handleMessages([makeMessage("workspace A turn", 106, 1)]);
+      expect(sentMessages[0]).toBe("fixture parent answer");
+      expect(lookupProviderSession(db, "106", "custom-acp")).toBe("fixture-root-session");
+
+      Object.assign(process.env, customEnv([tsxCli, fakeAgent], {
+        CUSTOM_ACP_PROJECT_DIR: workspaceB,
+      }));
+
+      const client2 = {
+        sendMessage: vi.fn().mockImplementation(async (payload: { text: string }) => {
+          sentMessages.push(payload.text);
+          return { ok: true, result: { message_id: sentMessages.length } };
+        }),
+        sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+      } as any;
+
+      const engine2 = new BridgeEngine(
+        {
+          surfaceIdentity: "test-surface",
+          kind: "custom-acp",
+          botConfig: { command: "", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+        },
+        db,
+        client2,
+      );
+
+      await engine2.handleMessages([makeMessage("workspace B turn", 106, 2)]);
+      expect(sentMessages[1]).toBe("fixture parent answer");
+    } finally {
+      rmSync(workspaceA, { recursive: true, force: true });
+      rmSync(workspaceB, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it("records lifecycle events with bot identity custom-acp, not claude", async () => {

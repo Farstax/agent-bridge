@@ -26,6 +26,7 @@ import { isCursorRouteable } from "./providers/cursorAvailability.js";
 import { isGrokRouteable } from "./providers/grokAvailability.js";
 import { isAcpBackedBot } from "./providers/registry.js";
 import { classifyAnyProviderError, classifyProviderError, isFallbackEligibleProviderError } from "./providers/errorClassification.js";
+import { resolveCustomAcpWorkingDir } from "./providers/externalAcpLaunch.js";
 
 export function getBridgeProjectDir(): string {
   return process.env.BRIDGE_PROJECT_DIR || process.cwd();
@@ -45,7 +46,7 @@ export function getCliWorkingDir(bot?: RouteableBotKind): string {
   if (bot === "claude" && process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR;
   if (bot === "grok" && process.env.GROK_PROJECT_DIR) return process.env.GROK_PROJECT_DIR;
   if (bot === "cursor" && process.env.CURSOR_PROJECT_DIR) return process.env.CURSOR_PROJECT_DIR;
-  if (bot === "custom-acp" && process.env.CUSTOM_ACP_PROJECT_DIR) return process.env.CUSTOM_ACP_PROJECT_DIR;
+  if (bot === "custom-acp") return resolveCustomAcpWorkingDir(process.env);
   return process.env.BRIDGE_PROJECT_DIR || process.env.BRIDGE_ROOT_DIR || process.cwd();
 }
 
