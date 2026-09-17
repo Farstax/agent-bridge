@@ -63,6 +63,7 @@ const AUTH_PATTERNS: readonly RegExp[] = [
   /login required/i,
   /please log in/i,
   /invalid api key/i,
+  /failed to authenticate/i,
   /unauthorized/i,
   /permission denied/i,
   /XAI_API_KEY/i,
