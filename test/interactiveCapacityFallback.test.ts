@@ -355,7 +355,7 @@ describe("interactive capacity fallback durable admission", () => {
       expect(notifications).toEqual([
         "Switching to claude (codex at capacity)",
         "Switching to antigravity (claude at capacity)",
-        "All CLIs are currently unavailable. Please try again later.",
+        "No remaining configured fallback provider is available. Please try again later.",
       ]);
     } finally {
       db.close();
