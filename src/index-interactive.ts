@@ -435,6 +435,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       engines,
       fallbackChain,
       exhaustedChats,
+      authRequiredChats,
       db,
       notify: sendNotice,
       onCliSwitched: async (newCli) => {
@@ -657,6 +658,7 @@ for (;;) {
                 engines,
                 fallbackChain,
                 exhaustedChats,
+                authRequiredChats,
                 db,
                 notify: async (msg) => {
                   await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: msg, message_thread_id: threadId } });
