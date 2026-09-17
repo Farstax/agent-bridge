@@ -15,13 +15,13 @@ import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
 
-export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
+export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
 export type InteractiveCommandRegistration = {
   commands: Array<{ command: string; description: string }>;
   scope?: { type: "all_group_chats" | "all_chat_administrators" } | { type: "chat" | "chat_administrators"; chat_id: number };
 };
 
-const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity", "grok", "cursor"];
+const VALID_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity", "grok", "cursor", "custom-acp"];
 const DEFAULT_CLI: CliKind = "codex";
 const DEFAULT_AUTHENTICATED_CLI_KINDS = new Set<CliKind>(["codex", "claude", "antigravity"]);
 
