@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { BridgeConfig, BotKind } from "./types.js";
+import type { ChainCliKind } from "./providers/types.js";
 import type { BridgeDb } from "./db.js";
 import { buildModelKeyboard, buildModelsText } from "./bridge.js";
 import { isAcpProviderDefaultSelected } from "./acp/sessionConfig.js";
@@ -298,7 +299,7 @@ export function handleCommand(
   return null;
 }
 
-export function buildTelegramCommands(kind: BotKind): Array<{ command: string; description: string }> {
+export function buildTelegramCommands(kind: ChainCliKind): Array<{ command: string; description: string }> {
   const commands = [
     { command: "models",   description: "Switch model" },
     { command: "effort",   description: "Switch reasoning effort" },

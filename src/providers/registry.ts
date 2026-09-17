@@ -12,7 +12,7 @@ import { claudeAcpPolicy } from "./claudeAcpPolicy.js";
 import { codexAcpPolicy } from "./codexAcpPolicy.js";
 import { grokAcpPolicy } from "./grokAcpPolicy.js";
 import { cursorAcpPolicy } from "./cursorAcpPolicy.js";
-import { resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
+import { hasCustomAcpConfiguration, resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
@@ -105,8 +105,9 @@ export function getAcpProviderPolicy(id: ProviderId): AcpProviderPolicy | null {
 }
 
 /** Bot kinds that execute through the shared ACP runtime. */
-export function isAcpBackedBot(bot: string): boolean {
+export function isAcpBackedBot(bot: string, env: Record<string, string | undefined> = process.env): boolean {
   const id = providerIdForBotName(bot);
+  if (id === "custom-acp" && !hasCustomAcpConfiguration(env)) return false;
   return id != null && getAcpProviderPolicy(id) != null;
 }
 
@@ -149,6 +150,10 @@ export function getProviderAdapter(id: ProviderId): ProviderAdapter {
 }
 
 export function getProviderAdapters(): readonly ProviderAdapter[] {
+  return PROVIDER_IDS.map((id) => ADAPTERS[id]);
+}
+
+export function getRouteableProviderAdapters(): readonly ProviderAdapter[] {
   return ROUTEABLE_PROVIDER_IDS.map((id) => ADAPTERS[id]);
 }
 
@@ -165,7 +170,8 @@ export function resolveProviderExecutable(
   const acp = getAcpProviderPolicy(id);
   if (acp?.resolveExecutable) return acp.resolveExecutable(env);
   const bot = id === "agy" ? "antigravity" : id;
-  return loadBotsConfig(env)[bot].command;
+  const bots = loadBotsConfig(env);
+  return bots[bot as keyof typeof bots]?.command ?? "";
 }
 
 export function isProviderId(value: string): value is ProviderId {

@@ -120,6 +120,9 @@ const RESUME_PROBE = "Agent Bridge provider qualification resume probe.";
 const REPOSITORY_GROUNDING_PROBE = "Agent Bridge repository-grounding qualification. Inspect this repository implementation and report the exact string value assigned to `repositoryGroundingQualificationFact`. Follow the repository native instructions. Reply concisely.";
 
 function providerBotKind(providerId: ProviderId): BotKind {
+  if (providerId === "custom-acp") {
+    throw new Error("Custom ACP is an opt-in user route and cannot be qualified as a managed provider");
+  }
   return providerId === "agy" ? "antigravity" : providerId;
 }
 

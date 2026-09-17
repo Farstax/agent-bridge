@@ -7,6 +7,7 @@ import {
 import {
   getProviderAdapter,
   getProviderAdapters,
+  getRouteableProviderAdapters,
   isProviderId,
   assertProviderId,
   PROVIDER_IDS,
@@ -16,12 +17,17 @@ import {
 import type { ProviderId } from "../src/providers/types.js";
 
 describe("provider registry", () => {
-  it("exports the canonical managed provider ids", () => {
+  it("exports the canonical provider ids", () => {
     expect(PROVIDER_IDS).toEqual(["codex", "claude", "agy", "grok", "cursor"]);
   });
 
-  it("returns all routeable adapters in stable order", () => {
+  it("returns all adapters in stable order", () => {
     const adapters = getProviderAdapters();
+    expect(adapters.map((a) => a.id)).toEqual(["codex", "claude", "agy", "grok", "cursor"]);
+  });
+
+  it("returns all routeable adapters in stable order", () => {
+    const adapters = getRouteableProviderAdapters();
     expect(adapters.map((a) => a.id)).toEqual(["codex", "claude", "agy", "grok", "cursor", "custom-acp"]);
   });
 

@@ -7,7 +7,11 @@ import type { ProviderId } from "./providers/types.js";
 import type { AdvisorConfig, AdvisorTarget } from "./advisorTypes.js";
 
 type RunCli = (command: string, args: string[], cwd: string, options: Record<string, unknown>) => Promise<string>;
-const botKindFor = (provider: ProviderId): BotKind => provider === "agy" ? "antigravity" : provider;
+const botKindFor = (provider: ProviderId): BotKind | null => {
+  if (provider === "agy") return "antigravity";
+  if (provider === "custom-acp") return null;
+  return provider;
+};
 const normalizeProvider = (provider: string): string => provider === "antigravity" ? "agy" : provider;
 
 const ADVISOR_SECRET_KEYS = [
@@ -42,13 +46,16 @@ function chooseTarget(config: AdvisorConfig, activeProvider: string, requestedPr
     const target = config.chain.find((candidate) => candidate.provider === requested);
     if (!target) throw new Error(`Requested provider is not an allowed advisor provider: ${requestedProvider}`);
     if (target.provider === active) throw new Error("Advisor requires an independent provider");
-    if (!supportsToolFreeMode(botKindFor(target.provider))) {
+    const bot = botKindFor(target.provider);
+    if (!bot || !supportsToolFreeMode(bot)) {
       throw new Error(`Advisor provider does not support tool-free mode: ${target.provider}`);
     }
     return target;
   }
-  const target = config.chain.find((candidate) =>
-    candidate.provider !== active && supportsToolFreeMode(botKindFor(candidate.provider)));
+  const target = config.chain.find((candidate) => {
+    const bot = botKindFor(candidate.provider);
+    return candidate.provider !== active && bot !== null && supportsToolFreeMode(bot);
+  });
   if (!target) throw new Error("Advisor requires an independent provider");
   return target;
 }
@@ -94,7 +101,7 @@ export async function executeFrontierAdvice(deps: {
   const context = redactAdvisorSecretText(boundedText(request.context ?? "", "context", config.contextMaxChars, false));
   const target = chooseTarget(config, request.activeProvider, request.provider);
   const bot = botKindFor(target.provider);
-  if (!supportsToolFreeMode(bot)) throw new Error(`Advisor provider does not support tool-free mode: ${target.provider}`);
+  if (!bot || !supportsToolFreeMode(bot)) throw new Error(`Advisor provider does not support tool-free mode: ${target.provider}`);
   const botConfig = bots[bot];
   if (!botConfig?.command) throw new Error(`Advisor provider unavailable: ${target.provider}`);
 

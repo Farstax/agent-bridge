@@ -3,7 +3,7 @@ import type { BotKind } from "../types.js";
 import { resolveRuntimeForBotName } from "./acpRuntime.js";
 
 function acpSessionBindingKey(
-  kind: BotKind,
+  kind: BotKind | "custom-acp",
   resolveRuntime: typeof resolveRuntimeForBotName,
 ): string | null {
   const runtime = resolveRuntime(kind, process.env);
@@ -15,20 +15,20 @@ function acpSessionBindingKey(
 export function lookupProviderSession(
   db: BridgeDb,
   chatKey: string,
-  kind: BotKind,
+  kind: BotKind | "custom-acp",
   resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
 ): string | null {
   const bindingKey = acpSessionBindingKey(kind, resolveRuntime);
   if (bindingKey) {
     return db.getAcpSessionBinding(chatKey, bindingKey)?.acpSessionId ?? null;
   }
-  return db.getSession(chatKey, kind);
+  return db.getSession(chatKey, kind as BotKind);
 }
 
 export function persistProviderSession(
   db: BridgeDb,
   chatKey: string,
-  kind: BotKind,
+  kind: BotKind | "custom-acp",
   sessionId: string | null,
   runId: string | null = null,
   resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
@@ -45,9 +45,13 @@ export function persistProviderSession(
     } else {
       db.clearAcpSessionBinding(chatKey, bindingKey);
       // Remove any pre-ACP compatibility pointer during reset/handoff too.
-      db.setSession(chatKey, kind, null);
+      if (kind !== "custom-acp") {
+        db.setSession(chatKey, kind, null);
+      }
     }
     return;
   }
-  db.setSession(chatKey, kind, sessionId);
+  if (kind !== "custom-acp") {
+    db.setSession(chatKey, kind, sessionId);
+  }
 }

@@ -22,7 +22,7 @@ import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
 import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
 import { buildAcpFailureDiagnosticEvent } from "./acpFailureDiagnostic.js";
-import { resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
+import { hasCustomAcpConfiguration, resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
 import {
   getAcpProviderPolicy,
   getProviderAdapter,
@@ -297,7 +297,9 @@ export function resolveRuntimeForBotName(
   env: Record<string, string | undefined> = process.env,
 ): ResolvedProviderRuntime | null {
   const providerId = providerIdForBotName(bot);
-  return providerId ? resolveProviderRuntime(providerId, env) : null;
+  if (!providerId) return null;
+  if (providerId === "custom-acp" && !hasCustomAcpConfiguration(env)) return null;
+  return resolveProviderRuntime(providerId, env);
 }
 
 export function supportsProvisionalAnswers(

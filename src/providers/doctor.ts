@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
 import { resolveProviderRuntime, type ResolvedProviderRuntime } from "./acpRuntime.js";
 import { hasCustomAcpConfiguration } from "./externalAcpLaunch.js";
-import { getProviderAdapters } from "./registry.js";
+import { getRouteableProviderAdapters } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
@@ -166,7 +166,7 @@ export function runDoctor({
   inspectVersion?: (executable: string, versionArgs: readonly string[]) => string | null;
   inspectVoiceRuntime?: (env: Record<string, string | undefined>) => VoiceRuntimeReadiness;
 } = {}): DoctorReport {
-  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) =>
+  const providers: ProviderCheck[] = getRouteableProviderAdapters().map((adapter) =>
     inspectProvider(adapter.id, env, commandExists, inspectVersion));
 
   const effectiveEntries: Record<(typeof CHAIN_ENV_VARS)[number], string[]> = {

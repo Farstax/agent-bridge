@@ -140,7 +140,7 @@ export function isProviderApiKeyVerified(provider: ProviderId, env: Env = proces
  * are withheld until their selected provider runtime has verified them.
  */
 export function filterProviderCredentialEnv(
-  bot: BotKind | undefined,
+  bot: BotKind | "custom-acp" | undefined,
   env: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   if (!bot) {

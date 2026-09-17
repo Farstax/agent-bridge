@@ -7,7 +7,7 @@
  * src/index-interactive.ts
  */
 
-import { getProviderAdapters } from "./registry.js";
+import { getRouteableProviderAdapters } from "./registry.js";
 import type { ChainCliKind, ProviderId } from "./types.js";
 
 const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
@@ -21,7 +21,7 @@ const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
 
 /** CLI kinds usable in companion interactive chains, in registry order. */
 export function interactiveChainKinds(): ChainCliKind[] {
-  return getProviderAdapters()
+  return getRouteableProviderAdapters()
     .filter((a) => a.capabilities.interactive)
     .map((a) => PROVIDER_TO_CHAIN_KIND[a.id]);
 }

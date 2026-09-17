@@ -25,7 +25,7 @@ export function hasAcpFailureDiagnostic(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && diagnosedAcpFailures.has(error as object));
 }
 
-function botKindForProvider(providerId: ProviderId): BotKind {
+function botKindForProvider(providerId: ProviderId): BotKind | "custom-acp" {
   return providerId === "agy" ? "antigravity" : providerId;
 }
 

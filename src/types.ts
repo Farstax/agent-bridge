@@ -9,7 +9,7 @@
 import type { ProgressReporter } from "./runActivity.js";
 import type { AcpSteerFn } from "./acp/client.js";
 
-export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor" | "custom-acp";
+export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
 /**
  * Configuration for the Agent Bridge.
@@ -30,7 +30,6 @@ export interface BridgeConfig {
     claude: BotConfig;
     grok: BotConfig;
     cursor: BotConfig;
-    "custom-acp": BotConfig;
   };
 }
 

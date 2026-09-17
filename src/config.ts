@@ -59,7 +59,7 @@ export function parseAntigravityModelPreference(raw: string | undefined): string
  */
 export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): Record<BotKind, BotConfig> {
   const token = (v: string | undefined) => (opts.withTokens ? v : undefined);
-  const customAcp = resolveCustomAcpLaunch(env);
+  resolveCustomAcpLaunch(env);
   return {
     codex: {
       token: token(env.TELEGRAM_BOT_TOKEN_CODEX),
@@ -84,11 +84,6 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     cursor: {
       token: token(env.TELEGRAM_BOT_TOKEN_CURSOR),
       command: resolveCursorAcpCommand(env),
-      modelPreference: [],
-    },
-    "custom-acp": {
-      token: undefined,
-      command: customAcp?.command ?? "",
       modelPreference: [],
     },
   };
