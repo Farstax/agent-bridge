@@ -1079,6 +1079,37 @@ describe("BridgeEngine", () => {
       expect(exhaustedChats[0]).toBe("100");
     });
 
+    it("signals auth-required fallback without sending the masked provider error", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const runCli = vi.fn().mockRejectedValue(
+        new Error("Internal error: Failed to authenticate: OAuth session expired and could not be refreshed"),
+      );
+      const client = makeMockClient();
+      const authRequired = vi.fn();
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "claude",
+          botConfig: { command: "claude-agent-acp", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000, workingDir: process.cwd(),
+          hooks: { onAuthRequired: authRequired },
+        },
+        db,
+        client,
+        acpEngineExec(runCli),
+      );
+
+      await engine.handleMessages([makeMessage("hello")]);
+
+      expect(authRequired).toHaveBeenCalledOnce();
+      expect(authRequired).toHaveBeenCalledWith("100");
+      expect(client.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+        text: expect.stringContaining("Internal error"),
+      }));
+    });
+
     it("does not call onCapacityExhausted for non-capacity errors", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const runCli = vi.fn().mockRejectedValue(new Error("some other error"));
