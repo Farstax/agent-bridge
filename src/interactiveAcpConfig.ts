@@ -30,7 +30,7 @@ function advertisesCategory(result: AcpProviderConfigDiscoveryResult, category: 
  * Config-only sessions are transient: they must never become conversation sessions.
  */
 export async function prepareInteractiveAcpConfigControl(input: {
-  kind: BotKind;
+  kind: BotKind | "custom-acp";
   commandText: string;
   chatKey: string;
   db: BridgeDb;

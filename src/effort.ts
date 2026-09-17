@@ -12,7 +12,7 @@ import {
 } from "./acp/sessionConfig.js";
 import { buildAcpTelegramConfigCallbackData } from "./acp/telegramConfigCallback.js";
 import type { BridgeDb } from "./db.js";
-import type { BotKind } from "./types.js";
+import type { BotKind, RouteableBotKind } from "./types.js";
 import { isAcpBackedBot } from "./providers/registry.js";
 
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -35,7 +35,7 @@ const ENV_KEYS: Record<BotKind, string> = {
   cursor: "CURSOR_EFFORT",
 };
 
-function isAcpEffortKind(kind: BotKind): boolean {
+function isAcpEffortKind(kind: RouteableBotKind): boolean {
   return isAcpBackedBot(kind);
 }
 
@@ -56,7 +56,7 @@ export function isEffortLevel(value: string | null | undefined): value is Effort
   return isBridgeEffortLevel(value);
 }
 
-export function effortSettingKey(kind: BotKind): string {
+export function effortSettingKey(kind: RouteableBotKind): string {
   return `effort:${kind}`;
 }
 
@@ -65,22 +65,24 @@ export function normalizeEffort(value: string | null | undefined): BridgeEffortL
   return isBridgeEffortLevel(raw) ? raw : DEFAULT_EFFORT_LEVEL;
 }
 
-export function resolveDefaultEffort(kind: BotKind, env: NodeJS.ProcessEnv = process.env): EffortLevel {
+export function resolveDefaultEffort(kind: RouteableBotKind, env: NodeJS.ProcessEnv = process.env): EffortLevel {
   if (isAcpEffortKind(kind)) {
     const advertised = getAcpSessionConfigOption(kind, "thought_level")?.currentValue;
     if (typeof advertised === "string" && advertised.trim()) return advertised;
-    const configured = env[ENV_KEYS[kind]]?.trim();
+    const envKey = kind in ENV_KEYS ? ENV_KEYS[kind as BotKind] : undefined;
+    const configured = (envKey ? env[envKey] : undefined)?.trim();
     if (isBridgeEffortLevel(configured)) return configured;
     // Reset is an out-of-band provider-default action. Before a live snapshot
     // exists, use a known-valid local sentinel only for presentation; the
     // persisted reset marker makes the subsequent ACP request omit effort.
     return DEFAULT_EFFORT_LEVEL;
   }
-  return normalizeEffort(env[ENV_KEYS[kind]]);
+  const envKey = kind in ENV_KEYS ? ENV_KEYS[kind as BotKind] : undefined;
+  return normalizeEffort(envKey ? env[envKey] : undefined);
 }
 
 export function resolveEffort(
-  kind: BotKind,
+  kind: RouteableBotKind,
   db: Pick<BridgeDb, "getSetting">,
   env: NodeJS.ProcessEnv = process.env,
 ): EffortLevel | null {
@@ -95,7 +97,7 @@ export function resolveEffort(
 }
 
 export function buildEffortKeyboard(
-  kind: BotKind,
+  kind: RouteableBotKind,
   currentEffort: EffortLevel | null,
   providerDefaultSelected = isAcpEffortKind(kind) && hasAcpProviderDefaultIntent(kind, "thought_level"),
 ) {
@@ -135,7 +137,7 @@ export function buildEffortKeyboard(
 }
 
 export function buildEffortText(
-  kind: BotKind,
+  kind: RouteableBotKind,
   currentEffort: EffortLevel | null,
   providerDefaultSelected = isAcpEffortKind(kind) && hasAcpProviderDefaultIntent(kind, "thought_level"),
 ): string {

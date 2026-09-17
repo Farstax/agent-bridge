@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { BridgeConfig, BotKind } from "./types.js";
+import type { BridgeConfig, BotKind, RouteableBotKind } from "./types.js";
 import type { ChainCliKind } from "./providers/types.js";
 import type { BridgeDb } from "./db.js";
 import { buildModelKeyboard, buildModelsText } from "./bridge.js";
@@ -148,7 +148,7 @@ export function isAntigravityNarrationVisible(db: BridgeDb, chatId: string): boo
   return db.getSetting(antigravityNarrationSettingKey(chatId)) === "visible";
 }
 
-function handleNarrationCommand(kind: BotKind, text: string, db: BridgeDb, chatId: string): CommandResult {
+function handleNarrationCommand(kind: RouteableBotKind, text: string, db: BridgeDb, chatId: string): CommandResult {
   if (kind !== "antigravity") {
     return { kind: "message", text: "/narration is only available on Antigravity." };
   }
@@ -193,7 +193,7 @@ function buildSkillsText(): string {
 }
 
 export function handleCommand(
-  kind: BotKind,
+  kind: RouteableBotKind,
   prompt: string,
   {
     db,
@@ -227,7 +227,7 @@ export function handleCommand(
   }
 
   if (text === "/models") {
-    const bot = config.bots[kind];
+    const bot = (kind in config.bots ? config.bots[kind as BotKind] : undefined) ?? { command: "", modelPreference: [], token: "" };
     const providerDefaultSelected = isAcpProviderDefaultSelected(db, kind, "model");
     return {
       kind: "keyboard_message",

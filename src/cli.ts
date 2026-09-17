@@ -7,7 +7,7 @@
  */
 
 import { homedir } from "node:os";
-import type { CliOptions, CliResult, BotKind } from "./types.js";
+import type { CliOptions, CliResult, BotKind, RouteableBotKind } from "./types.js";
 import type { ProviderInvocation, ProviderInvocationRequest } from "./providers/types.js";
 import { randomUUID } from "node:crypto";
 import { resolveTimeoutsForKind } from "./timeouts.js";
@@ -166,7 +166,7 @@ export async function runProviderInvocation(
     if (!providerId) throw new Error(`Unknown ACP provider: ${bot}`);
     return runAcpProviderTurn(providerId, request, cwd, {
       ...options,
-      bot: (options.bot ?? bot) as BotKind,
+      bot: options.bot ?? (bot as RouteableBotKind),
     }, identities);
   }
   const { stdout } = await runConfiguredCli(invocation.command, invocation.args, cwd, {
@@ -183,7 +183,7 @@ export async function runProviderInvocation(
 }
 
 /** Resolve CLI execution options for a specific bot kind. */
-export function buildExecutionOptions(kind: BotKind): CliOptions {
+export function buildExecutionOptions(kind: RouteableBotKind): CliOptions {
   const t = resolveTimeoutsForKind(kind);
   return {
     timeoutMs: t.cliTimeoutMs,
