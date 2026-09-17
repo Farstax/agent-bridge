@@ -92,12 +92,11 @@ describe("interactive CLI availability filtering", () => {
     expect(paths.codex).toBe("/home/tester/.codex/auth.json");
     expect(paths.claude).toBe("/home/tester/.claude/.credentials.json");
     expect(paths.antigravity).toEqual([
-      "/home/tester/.gemini/antigravity-cli/antigravity-oauth-token",
-      "/home/tester/.gemini/oauth_creds.json",
+      "/home/tester/.gemini/antigravity-acp/acp_token.json",
     ]);
   });
 
-  it("detects the current Antigravity OAuth token path when the runtime exists", () => {
+  it("detects the Agy ACP OAuth token path when the runtime exists", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
@@ -108,6 +107,43 @@ describe("interactive CLI availability filtering", () => {
     });
 
     expect(available).toEqual(new Set<CliKind>(["antigravity"]));
+  });
+
+  it("honors GEMINI_HOME for the Agy ACP credential owner", () => {
+    const homeDir = "/home/tester";
+    const env = { GEMINI_HOME: "/srv/gemini" };
+    const paths = resolveInteractiveCliAuthPaths(homeDir, env);
+    const available = getAvailableCliKinds({
+      homeDir,
+      env,
+      exists: (path) => path === paths.antigravity[0],
+      commandExists: () => true,
+      failedProviders: new Set(),
+      readCursorStatus: cursorStatusUnavailable,
+    });
+
+    expect(paths.antigravity).toEqual([
+      "/srv/gemini/antigravity-acp/acp_token.json",
+    ]);
+    expect(available).toEqual(new Set<CliKind>(["antigravity"]));
+  });
+
+  it("does not treat retired native Agy credentials as ACP authentication", () => {
+    const legacyPaths = new Set([
+      "/home/tester/.gemini/antigravity-cli/antigravity-oauth-token",
+      "/home/tester/.gemini/oauth_creds.json",
+    ]);
+    const available = getAvailableCliKinds({
+      homeDir: "/home/tester",
+      env: {},
+      exists: (path) => legacyPaths.has(path),
+      commandExists: () => true,
+      failedProviders: new Set(),
+      verifyApiKey: () => false,
+      readCursorStatus: cursorStatusUnavailable,
+    });
+
+    expect(available.has("antigravity")).toBe(false);
   });
 
   it("treats authenticated Grok as available without qualification evidence when the runtime exists", () => {
