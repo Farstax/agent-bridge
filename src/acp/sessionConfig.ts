@@ -210,6 +210,10 @@ export function clearAcpSessionConfigSnapshot(providerId: string): void {
   staleValues.delete(providerId);
 }
 
+export function hasAcpSessionConfigSnapshot(providerId: string): boolean {
+  return snapshots.has(providerId);
+}
+
 export function getAcpSessionConfigOption(
   providerId: string,
   category: string,

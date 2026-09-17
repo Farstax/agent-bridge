@@ -40,9 +40,10 @@ import {
   runUnifiedTelegramIngress,
   type CliKind,
 } from "./interactiveBot.js";
+import { isAcpConfigControlCommand, prepareInteractiveAcpConfigControl } from "./interactiveAcpConfig.js";
 import { targetTelegramAbortUpdate } from "./telegramCommandTarget.js";
 import { resolveAutonomyRuntimeConfig, resolveTelegramRuntimePolicy } from "./providerLock.js";
-import { runCli } from "./cli.js";
+import { runCli, toUserMessage } from "./cli.js";
 import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
@@ -254,6 +255,22 @@ const engines = Object.fromEntries(
           fullConfig: config,
           advisorCapabilities: advisorBroker ?? undefined,
           hooks: {
+            onCommand: async (commandText, ctx) => {
+              if (!isAcpConfigControlCommand(commandText)) return null;
+              try {
+                await prepareInteractiveAcpConfigControl({
+                  kind: kind as BotKind,
+                  commandText,
+                  chatKey: ctx.chatKey,
+                  db,
+                  executionMode: resolveExecutionMode(kind as BotKind, process.env),
+                });
+                return null;
+              } catch (error) {
+                const userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
+                return { text: `Unable to load live ACP settings for ${kind}: ${userText}` };
+              }
+            },
             onCapacityExhausted: async (chatKey: string) => {
               exhaustedChats.add(chatKey);
             },

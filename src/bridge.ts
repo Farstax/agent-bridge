@@ -17,6 +17,7 @@ import { BridgeDb } from "./db.js";
 import {
   getAcpSessionConfigOption,
   hasAcpProviderDefaultIntent,
+  hasAcpSessionConfigSnapshot,
   isAcpProviderDefaultSelected,
   isAcpSessionConfigValueStale,
 } from "./acp/sessionConfig.js";
@@ -120,11 +121,14 @@ export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; co
     const saved = db.getSetting(kind);
     const providerDefaultSelected = isAcpProviderDefaultSelected(db, kind, "model");
     if (!option) {
+      const available = hasAcpSessionConfigSnapshot(kind)
+        ? "Available: provider-controlled (no selectable model configuration advertised)"
+        : "Available: waiting for a live ACP session to advertise model options";
       return [
         `[${kind} model settings]`,
         "",
         `Current: ${providerDefaultSelected ? "provider default" : "provider-controlled"}`,
-        "Available: waiting for a live ACP session to advertise model options",
+        available,
       ].join("\n");
     }
     const advertised = option.options ?? [];

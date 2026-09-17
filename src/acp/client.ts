@@ -79,7 +79,7 @@ export interface AcpTurnInput {
    * available for already-negotiated callers.
    */
   readonly sessionConfig?: readonly AcpSessionConfigRequest[];
-  /** Standard ACP authentication method selected by provider/workspace policy. */
+  /** Standard ACP authentication method selected from workspace-local policy. */
   readonly authenticateMethodId?: string;
   readonly abortRequested?: () => boolean;
   readonly signal?: AbortSignal;
@@ -87,6 +87,8 @@ export interface AcpTurnInput {
   readonly peer?: AgentApp;
   readonly onLiveText?: (text: string) => void;
   readonly onEvent?: (event: AcpRetainedEvent) => void;
+  /** Session/config negotiation only: never dispatch session/prompt. */
+  readonly setupOnly?: boolean;
   /**
    * Called once, synchronously before the turn's `session/prompt` request is
    * sent, with a live steering handle — but only when the connected agent
@@ -97,6 +99,8 @@ export interface AcpTurnInput {
    */
   readonly onSteerReady?: (steer: AcpSteerFn) => void;
 }
+
+export type AcpSessionSetupInput = Omit<AcpTurnInput, "prompt" | "setupOnly" | "onLiveText" | "onSteerReady">;
 
 /**
  * Outcome of the ACP steering extension's `_session/steering` request.
@@ -388,42 +392,43 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       { parse: (params) => params as SessionNotification },
       (ctx) => {
         const observed = gate.observe(ctx.params);
-      updates.push(observed);
-      const isRootLive = observed.channel === "live"
-        && Boolean(currentAcpSessionId)
-        && observed.notification.sessionId === currentAcpSessionId;
-      if (isRootLive && systemErrorUpdate(observed.notification)) rootSystemErrorSeen = true;
-      const payload = observed.notification.update;
-      const suppressPresentation = isRootLive
-        && rootSystemErrorSeen
-        && payload.sessionUpdate === "agent_message_chunk";
-      remember({
-        kind: "session_update",
-        channel: observed.channel,
-        notification: observed.notification,
-        ...(suppressPresentation ? { presentationSuppressed: true } : {}),
-      });
-      const update = observed.notification.update as unknown as {
-        sessionUpdate?: string;
-        configOptions?: readonly AcpSessionConfigOptionSnapshot[];
-      };
-      if (
-        currentAcpSessionId
-        && observed.notification.sessionId === currentAcpSessionId
-        && update.sessionUpdate === "config_option_update"
-        && update.configOptions
-      ) {
-        // Agent-originated changes carry the complete list too. Treat them as
-        // authoritative even if they arrive while loading/replaying a session.
-        latestConfigOptions = update.configOptions;
-      }
-      if (!isRootLive || suppressPresentation) return;
-      // Native subagent output is retained for structured lifecycle/activity,
-      // but only the parent/root ACP session may feed human-facing live text.
-      if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return;
-      liveEmitted += payload.content.text;
-      input.onLiveText?.(payload.content.text);
-    })
+        updates.push(observed);
+        const isRootLive = observed.channel === "live"
+          && Boolean(currentAcpSessionId)
+          && observed.notification.sessionId === currentAcpSessionId;
+        if (isRootLive && systemErrorUpdate(observed.notification)) rootSystemErrorSeen = true;
+        const payload = observed.notification.update;
+        const suppressPresentation = isRootLive
+          && rootSystemErrorSeen
+          && payload.sessionUpdate === "agent_message_chunk";
+        remember({
+          kind: "session_update",
+          channel: observed.channel,
+          notification: observed.notification,
+          ...(suppressPresentation ? { presentationSuppressed: true } : {}),
+        });
+        const update = observed.notification.update as unknown as {
+          sessionUpdate?: string;
+          configOptions?: readonly AcpSessionConfigOptionSnapshot[];
+        };
+        if (
+          currentAcpSessionId
+          && observed.notification.sessionId === currentAcpSessionId
+          && update.sessionUpdate === "config_option_update"
+          && update.configOptions
+        ) {
+          // Agent-originated changes carry the complete list too. Treat them as
+          // authoritative even if they arrive while loading/replaying a session.
+          latestConfigOptions = update.configOptions;
+        }
+        if (!isRootLive || suppressPresentation) return;
+        // Native subagent output is retained for structured lifecycle/activity,
+        // but only the parent/root ACP session may feed human-facing live text.
+        if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return;
+        liveEmitted += payload.content.text;
+        input.onLiveText?.(payload.content.text);
+      },
+    )
     .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
       const response = mapAcpPermissionRequest(ctx.params, {
         executionMode: input.executionMode,
@@ -506,6 +511,23 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     const applied = await applySessionSettings(agent, acpSessionId, effectiveSetupState, input);
     latestConfigOptions = applied.configOptions;
 
+    if (input.setupOnly) {
+      return {
+        conversationId: input.conversationId,
+        runId: input.runId,
+        acpSessionId,
+        sessionMode,
+        stopReason: "end_turn",
+        liveText: "",
+        events,
+        updates,
+        configOptions: latestConfigOptions,
+        staleSessionConfig: applied.stale,
+        contextUsage: contextUsageFrom(updates, acpSessionId),
+        initialize,
+      };
+    }
+
     const blocks = promptBlocks(input.prompt);
     assertPromptCapabilities(blocks, initialize);
 
@@ -572,4 +594,12 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
 
   if (input.peer) return clientApp.connectWith(input.peer, execute);
   return clientApp.connectWith(input.stream as Stream, execute);
+}
+
+export function runAcpSessionSetup(input: AcpSessionSetupInput): Promise<AcpTurnResult> {
+  return runAcpTurn({
+    ...input,
+    prompt: "",
+    setupOnly: true,
+  });
 }
