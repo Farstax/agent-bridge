@@ -54,6 +54,7 @@ const CAPACITY_PATTERNS: Readonly<Record<ProviderId, readonly RegExp[]>> = {
     /rate limit/i,
     /Upgrade your plan to continue/i,
   ],
+  "custom-acp": [],
 };
 
 const AUTH_PATTERNS: readonly RegExp[] = [
@@ -120,14 +121,6 @@ export function isClaudeOAuthRefreshContention(error: Error | string): boolean {
   return errorMessage(error).toLowerCase().includes(CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER.toLowerCase());
 }
 
-/**
- * Codex ACP (`@agentclientprotocol/codex-acp`) reports provider failures as a
- * generic `RequestError` (message "Internal error") whose classification
- * lives in structured `error.data`, not the top-level message. `data.message`
- * carries the real provider text; `data.codexErrorInfo` carries the adapter's
- * own failure category as either a string (e.g. "usageLimitExceeded") or a
- * single-key object (e.g. { httpConnectionFailed: {...} }).
- */
 interface AcpStructuredErrorData {
   readonly message?: string;
   readonly codexErrorInfo?: string | Readonly<Record<string, unknown>>;
@@ -140,11 +133,6 @@ function acpErrorData(error: Error | string): AcpStructuredErrorData | null {
   return data && typeof data === "object" ? (data as AcpStructuredErrorData) : null;
 }
 
-// Maps `@agentclientprotocol/codex-acp`'s STRING_CODEX_ERROR_CATEGORIES onto
-// Bridge's provider-neutral classification kinds. Categories absent here
-// (contextWindowExceeded, sessionBudgetExceeded, serverOverloaded's siblings,
-// cyberPolicy, misalignmentPolicyViolation, internalServerError, badRequest,
-// threadRollbackFailed, sandboxError, other) stay "unknown" deliberately.
 const ACP_CODEX_ERROR_INFO_KIND: Readonly<Record<string, ProviderErrorClassification["kind"]>> = {
   usageLimitExceeded: "capacity_exhausted",
   rateLimitExceeded: "capacity_exhausted",
@@ -152,9 +140,6 @@ const ACP_CODEX_ERROR_INFO_KIND: Readonly<Record<string, ProviderErrorClassifica
   unauthorized: "auth_required",
 };
 
-// Maps the single key of a structured (object-shaped) codexErrorInfo onto a
-// classification kind. Categories absent here (activeTurnNotSteerable) stay
-// "unknown" deliberately.
 const ACP_CODEX_STRUCTURED_ERROR_INFO_KIND: Readonly<Record<string, ProviderErrorClassification["kind"]>> = {
   httpConnectionFailed: "transient",
   responseStreamConnectionFailed: "transient",
@@ -175,32 +160,13 @@ function classifyAcpCodexErrorInfo(data: AcpStructuredErrorData): ProviderErrorC
 
 export function classifyProviderError(providerId: ProviderId, error: Error | string): ProviderErrorClassification {
   const data = acpErrorData(error);
-
-  // Structured ACP provider categories are authoritative when present: an
-  // adapter-classified failure must not be reinterpreted by incidental text
-  // elsewhere in the message, and an adapter category Bridge does not
-  // recognize must stay "unknown" rather than accidentally matching a
-  // capacity/auth pattern later in this function. Gate on the presence of
-  // `codexErrorInfo` itself (proof the error was produced by Codex's ACP
-  // adapter) rather than the `providerId` under test, so a Codex-shaped
-  // structured error resolves identically through classifyAnyProviderError's
-  // per-provider probing instead of falling through to an unrelated
-  // provider's incidental keyword match against the same nested data.message.
   if (data?.codexErrorInfo !== undefined) {
     const structured = classifyAcpCodexErrorInfo(data);
     if (structured) return structured;
   }
-
-  // Claude's refresh-contention diagnostic is a narrow provider-owned
-  // transient condition and may be nested under a generic ACP RequestError.
   if (providerId === "claude" && isClaudeOAuthRefreshContention(error)) {
     return { kind: "transient", reason: CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN.source };
   }
-
-  // Every generic ACP transport (not just Codex) can wrap the real provider
-  // failure text in a top-level "Internal error" RequestError whose detail
-  // lives only in the nested error.data.message — fold it into the pattern
-  // search for any provider that carries structured ACP error data.
   const message = data
     ? [typeof error === "string" ? error : error.message, data.message, data.additionalDetails]
       .filter((part): part is string => Boolean(part))
