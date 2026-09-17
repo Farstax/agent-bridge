@@ -31,11 +31,15 @@ const registry = await import(pathToFileURL(modulePath).href);
 const entry = registry.getLockedAcpRegistryEntry("agy");
 const binary = entry?.distribution?.binary?.[platform];
 if (!entry?.version || !binary?.archive || !binary?.cmd) process.exit(2);
-process.stdout.write([entry.version, binary.archive, binary.cmd].join("\t"));
+process.stdout.write([entry.version, binary.archive, binary.cmd, binary.sha256 ?? "-"].join("\t"));
 NODE
 )" || fail "release-locked Agy ACP binary metadata is unavailable for ${registry_platform}"
-IFS=$'\t' read -r VERSION ARCHIVE_URL REGISTRY_CMD <<<"${registry_row}"
+IFS=$'\t' read -r VERSION ARCHIVE_URL REGISTRY_CMD ARCHIVE_SHA <<<"${registry_row}"
 [[ -n "${VERSION}" && -n "${ARCHIVE_URL}" && -n "${REGISTRY_CMD}" ]] || fail "invalid release-locked Agy ACP metadata"
+if [[ "${ARCHIVE_SHA}" == "-" ]]; then ARCHIVE_SHA=""; fi
+if [[ -n "${ARCHIVE_SHA}" && ! "${ARCHIVE_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
+  fail "invalid release-locked Agy ACP archive checksum"
+fi
 
 ROOT="${AGENT_BRIDGE_AGY_ACP_ROOT:-/opt/agent-bridge/host-components/agy-acp}"
 LINK="${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}"
@@ -52,11 +56,11 @@ chmod 0755 "${ROOT}" "${ROOT}/components"
 
 valid_component() {
   [[ -d "${COMPONENT_DIR}" && ! -L "${COMPONENT_DIR}" && -x "${BINARY}" && -f "${MANIFEST}" && ! -L "${MANIFEST}" ]] || return 1
-  python3 - "${MANIFEST}" "${BINARY}" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" <<'PY'
+  python3 - "${MANIFEST}" "${BINARY}" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${ARCHIVE_SHA}" <<'PY'
 import hashlib, json, pathlib, stat, sys
 manifest_path = pathlib.Path(sys.argv[1])
 binary = pathlib.Path(sys.argv[2])
-version, archive_url, platform = sys.argv[3:6]
+version, archive_url, platform, archive_sha = sys.argv[3:7]
 try:
     manifest_stat = manifest_path.lstat()
     binary_stat = binary.lstat()
@@ -72,6 +76,8 @@ try:
     expected = {"schemaVersion": 1, "version": version, "archiveUrl": archive_url, "platform": platform}
     if any(manifest.get(key) != value for key, value in expected.items()):
         raise ValueError("manifest identity mismatch")
+    if archive_sha and manifest.get("archiveSha256") != archive_sha:
+        raise ValueError("archive checksum identity mismatch")
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     if manifest.get("binarySha256") != digest:
         raise ValueError("binary checksum mismatch")
@@ -87,6 +93,10 @@ if ! valid_component; then
   staging="${work}/component"
   mkdir -p "${staging}"
   curl --fail --location --silent --show-error --retry 3 --output "${archive}" "${ARCHIVE_URL}"
+  downloaded_archive_sha="$(sha256sum "${archive}" | awk '{print $1}')"
+  if [[ -n "${ARCHIVE_SHA}" && "${downloaded_archive_sha}" != "${ARCHIVE_SHA}" ]]; then
+    fail "release-locked Agy ACP archive checksum mismatch"
+  fi
   python3 - "${archive}" "${staging}/agy_acp_server.par" "${REGISTRY_CMD}" <<'PY'
 import pathlib, sys, zipfile
 archive = pathlib.Path(sys.argv[1])
@@ -101,7 +111,7 @@ PY
   chmod 0555 "${staging}/agy_acp_server.par"
   chown root:root "${staging}/agy_acp_server.par"
   binary_sha="$(sha256sum "${staging}/agy_acp_server.par" | awk '{print $1}')"
-  python3 - "${staging}/manifest.json" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${binary_sha}" <<'PY'
+  python3 - "${staging}/manifest.json" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${binary_sha}" "${ARCHIVE_SHA}" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 manifest = {
@@ -111,6 +121,8 @@ manifest = {
     "platform": sys.argv[4],
     "binarySha256": sys.argv[5],
 }
+if sys.argv[6]:
+    manifest["archiveSha256"] = sys.argv[6]
 path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
   chmod 0444 "${staging}/manifest.json"
