@@ -1,12 +1,12 @@
 /**
  * PURPOSE: Common helper and layout generation functions for Telegram interaction.
  * INPUTS: DB client, configuration settings, and messages context.
- * OUTPUTS: Working directories, layouts, message formatting and parsed targets.
+ * OUTPUTS: Working directories, layouts and parsed targets.
  * NEIGHBORS: src/index.ts, src/cli.ts, src/db.ts
  * LOGIC: Provides interface checks, text extraction helpers, inline keyboard markup setups, and path resolves.
  */
 
-import type { TelegramMessage, BridgeConfig } from "./types.js";
+import type { TelegramMessage, BridgeConfig, BotKind } from "./types.js";
 import {
   runCli, runCliAsync, parseCliResult, buildCliInvocation, buildExecutionOptions,
   isCapacityExhaustedError, getNextFallbackModel, toUserMessage, scrubOutputDir,
@@ -31,7 +31,7 @@ export function getBridgeProjectDir(): string {
   return process.env.BRIDGE_PROJECT_DIR || process.cwd();
 }
 
-export function getCliWorkingDir(bot?: "codex" | "antigravity" | "claude" | "grok" | "cursor"): string {
+export function getCliWorkingDir(bot?: BotKind): string {
   if (bot === "grok" && !isGrokRouteable()) {
     throw new Error("Grok Build is unavailable: authenticate it or resolve its current qualification failure");
   }
@@ -115,7 +115,7 @@ export function buildModelKeyboard(
 }
 
 export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; config: BridgeConfig }): string {
-  const bot = config.bots[kind as "codex" | "antigravity" | "claude" | "grok" | "cursor"];
+  const bot = config.bots[kind as BotKind];
   if (isAcpConfigKind(kind)) {
     const option = getAcpSessionConfigOption(kind, "model");
     const saved = db.getSetting(kind);
