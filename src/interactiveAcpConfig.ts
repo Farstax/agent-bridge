@@ -1,9 +1,9 @@
 import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 import { getCliWorkingDir } from "./bridge.js";
-import { hasAcpSessionConfigSnapshot } from "./acp/sessionConfig.js";
+import { clearAcpSessionConfigSnapshot, hasAcpSessionConfigSnapshot } from "./acp/sessionConfig.js";
 import { isAcpBackedBot } from "./providers/registry.js";
-import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
+import { lookupProviderSession } from "./providers/sessionRuntime.js";
 import {
   discoverAcpProviderConfig,
   type AcpProviderConfigDiscoveryInput,
@@ -21,9 +21,13 @@ function controlCategory(commandText: string): "model" | "thought_level" | null 
   return null;
 }
 
+function advertisesCategory(result: AcpProviderConfigDiscoveryResult, category: string): boolean {
+  return result.configOptions.some((option) => option.type === "select" && option.category === category);
+}
+
 /**
  * Ensure ACP-backed settings commands have a live provider-owned catalogue.
- * This runs before the synchronous command renderer and never consumes a user turn.
+ * Config-only sessions are transient: they must never become conversation sessions.
  */
 export async function prepareInteractiveAcpConfigControl(input: {
   kind: BotKind;
@@ -39,14 +43,32 @@ export async function prepareInteractiveAcpConfigControl(input: {
 
   const discover = input.discover ?? discoverAcpProviderConfig;
   const existingAcpSessionId = lookupProviderSession(input.db, input.chatKey, input.kind);
-  const result = await discover({
+  const discoveryInput = {
     bot: input.kind,
     cwd: getCliWorkingDir(input.kind),
     conversationId: input.chatKey,
-    existingAcpSessionId,
     executionMode: input.executionMode,
+  } as const;
+  const first = await discover({
+    ...discoveryInput,
+    existingAcpSessionId,
   });
-  persistProviderSession(input.db, input.chatKey, input.kind, result.sessionId);
+
+  if (existingAcpSessionId && !advertisesCategory(first, category)) {
+    // ACP resume does not guarantee a catalogue replay after a Bridge restart.
+    // Probe a fresh transient session for the provider-owned catalogue without
+    // replacing the durable conversation session binding.
+    clearAcpSessionConfigSnapshot(input.kind);
+    try {
+      await discover({
+        ...discoveryInput,
+        existingAcpSessionId: null,
+      });
+    } catch (error) {
+      clearAcpSessionConfigSnapshot(input.kind);
+      throw error;
+    }
+  }
   return true;
 }
 
