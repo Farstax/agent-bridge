@@ -16,6 +16,7 @@ const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
   agy: "antigravity",
   grok: "grok",
   cursor: "cursor",
+  "custom-acp": "custom-acp",
 };
 
 /** CLI kinds usable in companion interactive chains, in registry order. */
