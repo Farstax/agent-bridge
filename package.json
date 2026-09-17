@@ -12,6 +12,10 @@
       {
         "id": "voice-stt",
         "installer": "scripts/install-voice-stt.sh"
+      },
+      {
+        "id": "agy-acp",
+        "installer": "scripts/install-agy-acp.sh"
       }
     ]
   },
