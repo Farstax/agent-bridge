@@ -716,6 +716,42 @@ describe("dispatchInteractiveWithFallback", () => {
     expect(codex.handleCount).toBe(0);
   });
 
+  it("falls back to the next CLI when the active provider requires re-authentication", async () => {
+    const authRequiredChats = new Set<string>();
+    setUserCliPreference(db, "chat:1", "claude");
+    claude.handleInteractiveTurn = async () => {
+      claude.handleCount++;
+      authRequiredChats.add("chat:1");
+    };
+
+    await dispatchInteractiveTurnWithFallback(
+      { surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] },
+      { ...deps(), authRequiredChats },
+    );
+
+    expect(claude.handleCount).toBe(1);
+    expect(codex.handleCount).toBe(1);
+    expect(sentMessages).toContain("claude needs re-authentication. Falling back to codex…");
+    expect(getUserCliPreference(db, "chat:1")).toBe("codex");
+  });
+
+  it("does not claim global CLI unavailability when the configured chain is exhausted", async () => {
+    fallbackChain = new ProviderFallbackChain(["codex"], db, () => true);
+    setUserCliPreference(db, "chat:1", "codex");
+    codex.handleInteractiveTurn = async () => {
+      codex.handleCount++;
+      exhaustedChats.add("chat:1");
+    };
+
+    await dispatchInteractiveTurnWithFallback(
+      { surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] },
+      deps(),
+    );
+
+    expect(sentMessages).toContain("No remaining configured fallback provider is available. Please try again later.");
+    expect(sentMessages.join("\n")).not.toContain("All CLIs are currently unavailable");
+  });
+
   it("automatically falls back to the next CLI when exhausted", async () => {
     setUserCliPreference(db, "chat:1", "codex");
     codex.handleInteractiveTurn = async () => {

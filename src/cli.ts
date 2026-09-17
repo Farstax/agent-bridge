@@ -18,6 +18,7 @@ import {
 } from "./providers/acpRuntime.js";
 import { appendEffortArgs, type EffortLevel } from "./effort.js";
 import { isProviderFallbackEligibleError } from "./providers/fallbackEligibility.js";
+import { classifyAnyProviderError } from "./providers/errorClassification.js";
 import {
   getProcessWatchForCommand,
   providerIdForBotName,
@@ -237,6 +238,7 @@ function extractUpstreamCliError(raw: string): string | null {
 export function toUserMessage(err: Error): string {
   const upstream = extractUpstreamCliError(err.message);
   if (upstream) return upstream.trim();
+  if (classifyAnyProviderError(err).kind === "auth_required") return "Authentication required";
   return err.message.split(":")[0].trim();
 }
 
