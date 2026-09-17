@@ -220,6 +220,7 @@ const fallbackChain = new ProviderFallbackChain(
   db,
 );
 const exhaustedChats = new Set<string>();
+const authRequiredChats = new Set<string>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
   const detected = getAvailableCliKinds();
@@ -275,6 +276,9 @@ const engines = Object.fromEntries(
             },
             onCapacityExhausted: async (chatKey: string) => {
               exhaustedChats.add(chatKey);
+            },
+            onAuthRequired: async (chatKey: string) => {
+              authRequiredChats.add(chatKey);
             },
           },
         },
@@ -354,7 +358,7 @@ for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     const chatKey = queued.chatKey;
     return dispatchClaimedInteractiveWithFallback(queued, chatKey, {
-      engines, fallbackChain, exhaustedChats, db,
+      engines, fallbackChain, exhaustedChats, authRequiredChats, db,
       notify: async (msg) => {
         await sendTelegramMessage({ client, kind: "interactive", chatId: queued.chatId, body: { text: msg, message_thread_id: queued.threadId ?? undefined } });
       },
