@@ -1,7 +1,7 @@
 import type { BridgeDb } from "./db.js";
 import type { BotKind } from "./types.js";
 import { getCliWorkingDir } from "./bridge.js";
-import { getAcpSessionConfigOption } from "./acp/sessionConfig.js";
+import { hasAcpSessionConfigSnapshot } from "./acp/sessionConfig.js";
 import { isAcpBackedBot } from "./providers/registry.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import {
@@ -35,7 +35,7 @@ export async function prepareInteractiveAcpConfigControl(input: {
 }): Promise<boolean> {
   const category = controlCategory(input.commandText);
   if (!category || !isAcpBackedBot(input.kind)) return false;
-  if (getAcpSessionConfigOption(input.kind, category)) return true;
+  if (hasAcpSessionConfigSnapshot(input.kind)) return true;
 
   const discover = input.discover ?? discoverAcpProviderConfig;
   const existingAcpSessionId = lookupProviderSession(input.db, input.chatKey, input.kind);
