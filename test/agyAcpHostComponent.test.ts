@@ -19,7 +19,15 @@ describe("Agy ACP managed host component", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
     expect(installer).toContain("dist/providers/acpRegistry.js");
     expect(installer).toContain("getLockedAcpRegistryEntry");
+    expect(installer).toContain("binary.sha256");
     expect(installer).toContain("host_component_status=");
     expect(installer).not.toMatch(/antigravity-acp@\d/);
+  });
+
+  it("packages the installer and verifies every declared host component generically", () => {
+    const workflow = readFileSync(resolve(repoRoot, ".github/workflows/release-artifact.yml"), "utf8");
+    expect(workflow).toContain("scripts/install-agy-acp.sh");
+    expect(workflow).toContain("for (const component of manifest.host_components ?? [])");
+    expect(workflow).not.toContain('find((entry) => entry.id === "voice-stt")');
   });
 });
