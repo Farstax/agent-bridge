@@ -30,6 +30,7 @@ import {
   CliTimeoutError,
 } from "./cli.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
+import { classifyProviderError } from "./providers/errorClassification.js";
 import { isAcpBackedBot, supportsToolFreeMode } from "./providers/registry.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
@@ -87,6 +88,7 @@ export interface BridgeEngineHooks {
   onCommand?: (cmd: string, ctx: HookContext) => Promise<HookCommandResult | null>;
   onBeforeExecute?: (prompt: string, ctx: HookContext) => Promise<string>;
   onCapacityExhausted?: (chatKey: string) => void | Promise<void>;
+  onAuthRequired?: (chatKey: string) => void | Promise<void>;
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
   onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
 }
@@ -710,11 +712,16 @@ export class BridgeEngine {
       } catch (linkError) {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
       }
-      const capacityExhausted = isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)));
-      if (capacityExhausted && this.hooks.onCapacityExhausted) {
+      const providerError = error instanceof Error ? error : new Error(String(error));
+      const classification = classifyProviderError(this._executionKind(), providerError);
+      const capacityExhausted = isCapacityExhaustedError(providerError);
+      const authRequired = classification.kind === "auth_required";
+      if (authRequired && this.hooks.onAuthRequired) {
+        await this.hooks.onAuthRequired(chatKey);
+      } else if (capacityExhausted && this.hooks.onCapacityExhausted) {
         await this.hooks.onCapacityExhausted(chatKey);
       } else if (!capacityExhausted || notifyCapacityFailure) {
-        let userText = toUserMessage(error instanceof Error ? error : new Error(String(error)));
+        let userText = authRequired ? `${this._executionKind()} needs re-authentication.` : toUserMessage(providerError);
         if (capacityExhausted) userText += `\n\n💡 All models for ${this.kind} are currently exhausted. Please try again later.`;
         await sendSurfaceMessage({
           client: this.client,
