@@ -10,7 +10,7 @@ import { loadBotsConfig } from "../config.js";
 import type { BotKind } from "../types.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
 import { applyProviderChildEnvPolicy, getAcpProviderPolicy } from "./registry.js";
-import type { ProviderId } from "./types.js";
+import { isManagedProviderId, type ManagedProviderId, type ProviderId } from "./types.js";
 
 type Env = Record<string, string | undefined>;
 
@@ -22,7 +22,7 @@ export interface ProviderApiKeyAuthCapability {
 
 type ProviderApiKeyAuthDefinition = Omit<ProviderApiKeyAuthCapability, "verification">;
 
-export const PROVIDER_API_KEY_AUTH: Readonly<Record<ProviderId, ProviderApiKeyAuthDefinition>> = {
+export const PROVIDER_API_KEY_AUTH: Readonly<Record<ManagedProviderId, ProviderApiKeyAuthDefinition>> = {
   codex: {
     envVar: "CODEX_API_KEY",
     notes: "Codex verifies through the managed ACP adapter's authenticate + bounded prompt path.",
@@ -59,7 +59,7 @@ const PROVIDER_SECRET_ENV_KEYS = [
 ] as const;
 
 const PROVIDER_SECRET_ENV_KEY_SET = new Set<string>(PROVIDER_SECRET_ENV_KEYS);
-const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ProviderId, ReadonlySet<string>>> = {
+const PROVIDER_ALLOWED_SECRET_ENV_KEYS: Readonly<Record<ManagedProviderId, ReadonlySet<string>>> = {
   codex: new Set(["CODEX_API_KEY", "OPENAI_API_KEY"]),
   claude: new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]),
   agy: new Set(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
@@ -87,7 +87,7 @@ export type ProviderApiKeyProbeExecutor = (
 ) => Promise<unknown>;
 
 export type AcpApiKeyProbeExecutor = (
-  provider: ProviderId,
+  provider: ManagedProviderId,
   env: NodeJS.ProcessEnv,
 ) => Promise<void>;
 
@@ -101,7 +101,7 @@ export interface VerifyProviderApiKeyOptions {
 
 export function getProviderApiKeyCapability(provider: string): ProviderApiKeyAuthCapability | null {
   if (!Object.prototype.hasOwnProperty.call(PROVIDER_API_KEY_AUTH, provider)) return null;
-  const providerId = provider as ProviderId;
+  const providerId = provider as ManagedProviderId;
   return {
     ...PROVIDER_API_KEY_AUTH[providerId],
     verification: getAcpProviderPolicy(providerId)?.verifyApiKey
@@ -111,6 +111,7 @@ export function getProviderApiKeyCapability(provider: string): ProviderApiKeyAut
 }
 
 export function getConfiguredProviderApiKey(provider: ProviderId, env: Env = process.env): string | null {
+  if (!isManagedProviderId(provider)) return null;
   const value = env[PROVIDER_API_KEY_AUTH[provider].envVar]?.trim();
   return value || null;
 }
@@ -128,6 +129,7 @@ export function getProviderApiKeySecretValues(env: Env = process.env): string[] 
 }
 
 export function isProviderApiKeyVerified(provider: ProviderId, env: Env = process.env): boolean {
+  if (!isManagedProviderId(provider)) return false;
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
   return verificationCache.get(cacheKey(provider, apiKey, env)) === true;
@@ -145,13 +147,14 @@ export function filterProviderCredentialEnv(
     return applyProviderChildEnvPolicy(null, env);
   }
   const provider: ProviderId = bot === "antigravity" ? "agy" : bot;
-  const allowed = PROVIDER_ALLOWED_SECRET_ENV_KEYS[provider];
-  const candidateKey = PROVIDER_API_KEY_AUTH[provider].envVar;
-  const candidateVerified = isProviderApiKeyVerified(provider, env);
+  const managedProvider = isManagedProviderId(provider) ? provider : null;
+  const allowed = managedProvider ? PROVIDER_ALLOWED_SECRET_ENV_KEYS[managedProvider] : null;
+  const candidateKey = managedProvider ? PROVIDER_API_KEY_AUTH[managedProvider].envVar : null;
+  const candidateVerified = managedProvider ? isProviderApiKeyVerified(managedProvider, env) : false;
   const out = Object.fromEntries(
     Object.entries(env).filter(([key]) => {
       if (!PROVIDER_SECRET_ENV_KEY_SET.has(key)) return true;
-      if (!allowed.has(key)) return false;
+      if (!managedProvider || !allowed?.has(key)) return false;
       if (key === candidateKey) return candidateVerified;
       return true;
     }),
@@ -174,7 +177,7 @@ export function clearProviderApiKeyVerificationCache(): void {
   verificationInFlight.clear();
 }
 
-function buildProbeEnv(provider: ProviderId, env: Env): NodeJS.ProcessEnv {
+function buildProbeEnv(provider: ManagedProviderId, env: Env): NodeJS.ProcessEnv {
   const activeKey = PROVIDER_API_KEY_AUTH[provider].envVar;
   return Object.fromEntries(
     Object.entries(env).filter(([key]) =>
@@ -185,17 +188,17 @@ function buildProbeEnv(provider: ProviderId, env: Env): NodeJS.ProcessEnv {
   );
 }
 
-function commandForProvider(provider: ProviderId, env: Env): string {
+function commandForProvider(provider: ManagedProviderId, env: Env): string {
   const bots = loadBotsConfig(env);
   if (provider === "agy") return bots.antigravity.command;
   return bots[provider].command;
 }
 
-function verificationScope(provider: ProviderId, env: Env): string {
+function verificationScope(provider: ManagedProviderId, env: Env): string {
   return resolveProviderRuntime(provider, env).runtimeIdentity;
 }
 
-function cacheKey(provider: ProviderId, apiKey: string, env: Env): string {
+function cacheKey(provider: ManagedProviderId, apiKey: string, env: Env): string {
   const fingerprint = createHash("sha256").update(apiKey).digest("hex");
   return `${provider}:${verificationScope(provider, env)}:${fingerprint}`;
 }
@@ -209,7 +212,7 @@ const defaultProbeExecutor: ProviderApiKeyProbeExecutor = (command, args, option
   });
 
 async function runNativeProbe(
-  provider: ProviderId,
+  provider: ManagedProviderId,
   env: Env,
   execute: ProviderApiKeyProbeExecutor,
 ): Promise<void> {
@@ -228,6 +231,9 @@ async function runNativeProbe(
   };
 
   try {
+    void execute;
+    void command;
+    void common;
     throw new Error(`Native API-key probe is not supported for ${provider}`);
   } finally {
     rmSync(probeHome, { recursive: true, force: true });
@@ -238,6 +244,7 @@ export async function verifyProviderApiKey(
   provider: ProviderId,
   options: VerifyProviderApiKeyOptions = {},
 ): Promise<boolean> {
+  if (!isManagedProviderId(provider)) return false;
   const env = options.env ?? process.env;
   const apiKey = getConfiguredProviderApiKey(provider, env);
   if (!apiKey) return false;
@@ -293,7 +300,7 @@ export async function verifyConfiguredProviderApiKeys(
   options: VerifyProviderApiKeyOptions = {},
 ): Promise<void> {
   const env = options.env ?? process.env;
-  const providers = (Object.keys(PROVIDER_API_KEY_AUTH) as ProviderId[])
+  const providers = (Object.keys(PROVIDER_API_KEY_AUTH) as ManagedProviderId[])
     .filter((provider) => isProviderApiKeyConfigured(provider, env));
   await Promise.all(providers.map((provider) => verifyProviderApiKey(provider, { ...options, env })));
 }
