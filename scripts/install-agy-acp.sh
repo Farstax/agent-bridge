@@ -43,7 +43,8 @@ fi
 
 ROOT="${AGENT_BRIDGE_AGY_ACP_ROOT:-/opt/agent-bridge/host-components/agy-acp}"
 LINK="${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}"
-COMPONENT_DIR="${ROOT}/components/${VERSION}/${registry_platform}"
+VERSION_DIR="${ROOT}/components/${VERSION}"
+COMPONENT_DIR="${VERSION_DIR}/${registry_platform}"
 BINARY="${COMPONENT_DIR}/agy_acp_server.par"
 MANIFEST="${COMPONENT_DIR}/manifest.json"
 CHANGED=0
@@ -54,8 +55,29 @@ mkdir -p "${ROOT}/components"
 chown root:root "${ROOT}" "${ROOT}/components"
 chmod 0755 "${ROOT}" "${ROOT}/components"
 
+normalize_runtime_dir() {
+  local path="$1"
+  [[ -d "${path}" && ! -L "${path}" ]] || fail "managed Agy ACP directory is invalid: ${path}"
+  if [[ "$(stat -c '%u:%g:%a' "${path}")" != "0:0:755" ]]; then
+    chown root:root "${path}"
+    chmod 0755 "${path}"
+    CHANGED=1
+  fi
+}
+
+if [[ ! -e "${VERSION_DIR}" ]]; then
+  mkdir -p "${VERSION_DIR}"
+  CHANGED=1
+fi
+normalize_runtime_dir "${VERSION_DIR}"
+if [[ -e "${COMPONENT_DIR}" ]]; then
+  normalize_runtime_dir "${COMPONENT_DIR}"
+fi
+
 valid_component() {
   [[ -d "${COMPONENT_DIR}" && ! -L "${COMPONENT_DIR}" && -x "${BINARY}" && -f "${MANIFEST}" && ! -L "${MANIFEST}" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "${VERSION_DIR}")" == "0:0:755" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "${COMPONENT_DIR}")" == "0:0:755" ]] || return 1
   python3 - "${MANIFEST}" "${BINARY}" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${ARCHIVE_SHA}" <<'PY'
 import hashlib, json, pathlib, stat, sys
 manifest_path = pathlib.Path(sys.argv[1])
@@ -127,11 +149,11 @@ path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\
 PY
   chmod 0444 "${staging}/manifest.json"
   chown root:root "${staging}/manifest.json"
-  mkdir -p "$(dirname "${COMPONENT_DIR}")"
   rm -rf -- "${COMPONENT_DIR}.new"
   mv "${staging}" "${COMPONENT_DIR}.new"
   rm -rf -- "${COMPONENT_DIR}"
   mv "${COMPONENT_DIR}.new" "${COMPONENT_DIR}"
+  normalize_runtime_dir "${COMPONENT_DIR}"
   CHANGED=1
 fi
 
