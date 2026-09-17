@@ -10,7 +10,7 @@ import { isAbortRequested, runSupervisedStdioSession } from "../cliSupervisor.js
 import { cleanOutputDir } from "../fileOutput.js";
 import { appendOutputDirInstruction, wrapPromptContext } from "../promptWrapping.js";
 import type { RunActivity } from "../runActivity.js";
-import type { BotKind, CliOptions, CliResult, RunTelemetry } from "../types.js";
+import type { BotKind, CliOptions, CliResult, RouteableBotKind, RunTelemetry } from "../types.js";
 import { type as bridgeEventType } from "../events/types.js";
 import {
   getProviderApiKeySecretValues,
@@ -345,8 +345,8 @@ export function buildAcpProviderInvocation(
   return buildResolvedAcpProviderInvocation(runtime, request.sessionId, request.prompt);
 }
 
-function providerBotKind(providerId: string): BotKind {
-  return (providerId === "agy" ? "antigravity" : providerId) as BotKind;
+function providerBotKind(providerId: string): RouteableBotKind {
+  return (providerId === "agy" ? "antigravity" : providerId) as RouteableBotKind;
 }
 
 function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {

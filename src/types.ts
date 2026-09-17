@@ -10,6 +10,7 @@ import type { ProgressReporter } from "./runActivity.js";
 import type { AcpSteerFn } from "./acp/client.js";
 
 export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
+export type RouteableBotKind = BotKind | "custom-acp";
 
 /**
  * Configuration for the Agent Bridge.
@@ -139,9 +140,9 @@ export interface CliOptions {
   contextEnv?: Record<string, string>;
   /** Strip advisor authority from nested provider children. */
   advisorChild?: boolean;
-  bot?: BotKind;
+  bot?: RouteableBotKind;
   /** Context for BridgeEvent emission. When provided, runCliAsync emits lifecycle events. */
-  eventContext?: { runId: string; bot: BotKind; chatId: string; chatKey: string; threadId?: string; serviceId?: string; acquisitionId?: string };
+  eventContext?: { runId: string; bot: RouteableBotKind; chatId: string; chatKey: string; threadId?: string; serviceId?: string; acquisitionId?: string };
   /** Called with each emitted BridgeEvent. Requires eventContext to be set. */
   onEvent?: (event: import("./events/types.js").BridgeEvent) => void;
   /** Optional provider-supplied failure watch; supervisor only owns lifecycle/settlement. */
@@ -169,15 +170,15 @@ export interface CliProcessWatchContext {
 export type CliProcessWatch = (context: CliProcessWatchContext) => NodeJS.Timeout | null;
 
 export interface RunTelemetryFallback {
-  fromProvider: BotKind;
-  toProvider: BotKind;
+  fromProvider: RouteableBotKind;
+  toProvider: RouteableBotKind;
   fromModel: string | null;
   toModel: string | null;
   attempt: number;
 }
 
 export interface RunTelemetry {
-  provider: BotKind;
+  provider: RouteableBotKind;
   model?: string | null;
   inputTokens?: number;
   cachedInputTokens?: number;

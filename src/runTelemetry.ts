@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto";
-import type { BotKind, RunTelemetry, RunTelemetryFallback } from "./types.js";
+import type { BotKind, RouteableBotKind, RunTelemetry, RunTelemetryFallback } from "./types.js";
 
 interface RunAttemptState {
-  firstProvider: BotKind;
-  lastProvider: BotKind;
+  firstProvider: RouteableBotKind;
+  lastProvider: RouteableBotKind;
   firstModel: string | null;
   lastModel: string | null;
   attempts: number;
   startedAtMs: number;
 }
-interface OutputCorrelation { runId: string; provider: BotKind }
+interface OutputCorrelation { runId: string; provider: RouteableBotKind }
 
 const MAX_TRANSIENT_RUNS = 1024;
 const attemptsByRun = new Map<string, RunAttemptState>();
@@ -26,11 +26,11 @@ function trimOldest<K, V>(map: Map<K, V>): void {
     map.delete(oldest);
   }
 }
-function outputKey(provider: BotKind, stdout: string): string {
+function outputKey(provider: RouteableBotKind, stdout: string): string {
   return `${provider}:${createHash("sha256").update(stdout).digest("hex")}`;
 }
 
-export function noteRunProviderAttempt(runId: string | undefined, provider: BotKind | undefined, model: string | null, nowMs = Date.now()): void {
+export function noteRunProviderAttempt(runId: string | undefined, provider: RouteableBotKind | undefined, model: string | null, nowMs = Date.now()): void {
   if (!runId || !provider) return;
   const current = attemptsByRun.get(runId);
   if (!current) {
@@ -68,7 +68,7 @@ export function notePendingRunFallback(chatKey: string, fallback: RunTelemetryFa
 export function consumePendingRunFallback(
   runId: string | undefined,
   chatKey: string | undefined,
-  provider: BotKind | undefined,
+  provider: RouteableBotKind | undefined,
 ): void {
   if (!runId || !chatKey || !provider) return;
   const fallback = fallbackChainByChat.get(chatKey);
@@ -85,7 +85,7 @@ export function consumePendingRunFallback(
   trimOldest(chatByRun);
 }
 
-export function registerProviderOutput(runId: string | undefined, provider: BotKind | undefined, stdout: string): void {
+export function registerProviderOutput(runId: string | undefined, provider: RouteableBotKind | undefined, stdout: string): void {
   if (!runId || !provider) return;
   const key = outputKey(provider, stdout);
   const queue = outputCorrelations.get(key) ?? [];
@@ -94,7 +94,7 @@ export function registerProviderOutput(runId: string | undefined, provider: BotK
   trimOldest(outputCorrelations);
 }
 
-export function captureParsedProviderOutput(provider: BotKind, stdout: string, telemetry: RunTelemetry | undefined): void {
+export function captureParsedProviderOutput(provider: RouteableBotKind, stdout: string, telemetry: RunTelemetry | undefined): void {
   const key = outputKey(provider, stdout);
   const queue = outputCorrelations.get(key);
   if (!queue?.length) return;
@@ -105,7 +105,7 @@ export function captureParsedProviderOutput(provider: BotKind, stdout: string, t
   trimOldest(parsedByRun);
 }
 
-export function finalizeRunTelemetry(runId: string | undefined, provider: BotKind, parsed?: RunTelemetry, nowMs = Date.now()): RunTelemetry {
+export function finalizeRunTelemetry(runId: string | undefined, provider: RouteableBotKind, parsed?: RunTelemetry, nowMs = Date.now()): RunTelemetry {
   const state = runId ? attemptsByRun.get(runId) : undefined;
   const inheritedFallback = runId ? fallbackByRun.get(runId) : undefined;
   const parsedTelemetry = parsed ?? (runId ? parsedByRun.get(runId) : undefined);

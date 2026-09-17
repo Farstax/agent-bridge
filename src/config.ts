@@ -94,8 +94,9 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
  * Per-bot env vars override the global BRIDGE_EXECUTION_MODE. Kinds default
  * to safe when no explicit mode is configured.
  */
-export function resolveExecutionMode(kind: BotKind, env: Env): "safe" | "trusted" {
-  const perBotRaw = env[`${kind.toUpperCase()}_EXECUTION_MODE`];
+export function resolveExecutionMode(kind: BotKind | "custom-acp", env: Env): "safe" | "trusted" {
+  const envKey = kind === "custom-acp" ? "CUSTOM_ACP_EXECUTION_MODE" : `${kind.toUpperCase()}_EXECUTION_MODE`;
+  const perBotRaw = env[envKey];
   if (perBotRaw === "safe" || perBotRaw === "trusted") return perBotRaw;
   const globalRaw = env.BRIDGE_EXECUTION_MODE;
   if (globalRaw === "safe" || globalRaw === "trusted") return globalRaw;

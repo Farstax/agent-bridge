@@ -6,7 +6,7 @@
  * LOGIC: Provides interface checks, text extraction helpers, inline keyboard markup setups, and path resolves.
  */
 
-import type { TelegramMessage, BridgeConfig, BotKind } from "./types.js";
+import type { TelegramMessage, BridgeConfig, BotKind, RouteableBotKind } from "./types.js";
 import {
   runCli, runCliAsync, parseCliResult, buildCliInvocation, buildExecutionOptions,
   isCapacityExhaustedError, getNextFallbackModel, toUserMessage, scrubOutputDir,
@@ -31,7 +31,7 @@ export function getBridgeProjectDir(): string {
   return process.env.BRIDGE_PROJECT_DIR || process.cwd();
 }
 
-export function getCliWorkingDir(bot?: BotKind): string {
+export function getCliWorkingDir(bot?: RouteableBotKind): string {
   if (bot === "grok" && !isGrokRouteable()) {
     throw new Error("Grok Build is unavailable: authenticate it or resolve its current qualification failure");
   }
@@ -45,6 +45,7 @@ export function getCliWorkingDir(bot?: BotKind): string {
   if (bot === "claude" && process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR;
   if (bot === "grok" && process.env.GROK_PROJECT_DIR) return process.env.GROK_PROJECT_DIR;
   if (bot === "cursor" && process.env.CURSOR_PROJECT_DIR) return process.env.CURSOR_PROJECT_DIR;
+  if (bot === "custom-acp" && process.env.CUSTOM_ACP_PROJECT_DIR) return process.env.CUSTOM_ACP_PROJECT_DIR;
   return process.env.BRIDGE_PROJECT_DIR || process.env.BRIDGE_ROOT_DIR || process.cwd();
 }
 
@@ -115,7 +116,7 @@ export function buildModelKeyboard(
 }
 
 export function buildModelsText(kind: string, { db, config }: { db: BridgeDb; config: BridgeConfig }): string {
-  const bot = config.bots[kind as BotKind];
+  const bot = (kind in config.bots ? config.bots[kind as BotKind] : undefined) ?? { command: "", modelPreference: [], token: "" };
   if (isAcpConfigKind(kind)) {
     const option = getAcpSessionConfigOption(kind, "model");
     const saved = db.getSetting(kind);

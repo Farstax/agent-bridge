@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { nodeStdioStream, runAcpSessionSetup } from "../acp/index.js";
 import { replaceAcpSessionConfigSnapshot, type AcpSessionConfigOptionSnapshot } from "../acp/sessionConfig.js";
 import { runSupervisedStdioSession } from "../cliSupervisor.js";
-import type { BotKind, CliOptions } from "../types.js";
+import type { BotKind, CliOptions, RouteableBotKind } from "../types.js";
 import { getAcpProviderPolicy, providerIdForBotName } from "./registry.js";
 import { resolveProviderRuntime } from "./acpRuntime.js";
 import type { ProviderInvocationRequest } from "./types.js";
@@ -10,7 +10,7 @@ import type { ProviderInvocationRequest } from "./types.js";
 const CONFIG_DISCOVERY_TIMEOUT_MS = 15_000;
 
 export interface AcpProviderConfigDiscoveryInput {
-  readonly bot: BotKind;
+  readonly bot: RouteableBotKind;
   readonly cwd: string;
   readonly conversationId: string;
   readonly existingAcpSessionId: string | null;

@@ -239,16 +239,18 @@ function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | 
 
 const engines = Object.fromEntries(
   runtimePolicy.cliKinds.map((kind) => {
-    const botConfig = config.bots[kind as BotKind];
+    const botConfig = kind === "custom-acp"
+      ? { command: "", modelPreference: [], token }
+      : { ...config.bots[kind], token };
     return [
       kind,
       new BridgeEngine(
         {
           kind,
           surfaceIdentity: runtimePolicy.surfaceIdentity,
-          botConfig: { ...botConfig, token },
+          botConfig,
           allowedUserIds,
-          executionMode: resolveExecutionMode(kind as BotKind, process.env),
+          executionMode: resolveExecutionMode(kind, process.env),
           busyMessageMode,
           pollIntervalMs,
           soulContext,
@@ -259,11 +261,11 @@ const engines = Object.fromEntries(
               if (!isAcpConfigControlCommand(commandText)) return null;
               try {
                 await prepareInteractiveAcpConfigControl({
-                  kind: kind as BotKind,
+                  kind,
                   commandText,
                   chatKey: ctx.chatKey,
                   db,
-                  executionMode: resolveExecutionMode(kind as BotKind, process.env),
+                  executionMode: resolveExecutionMode(kind, process.env),
                 });
                 return null;
               } catch (error) {

@@ -1,4 +1,4 @@
-import type { BotKind } from "./types.js";
+import type { BotKind, RouteableBotKind } from "./types.js";
 
 interface PerKindDefaults {
   cliTimeoutMs: number;
@@ -54,8 +54,8 @@ export interface ResolvedTimeouts {
  * Fetch timeout (Telegram HTTP only, never kills CLI subprocess):
  *   TELEGRAM_FETCH_TIMEOUT_MS → FETCH_TIMEOUT_MS → 45 000 ms
  */
-export function resolveTimeoutsForKind(kind: BotKind, env: Env = process.env): ResolvedTimeouts {
-  const prefix = kind.toUpperCase();
+export function resolveTimeoutsForKind(kind: RouteableBotKind, env: Env = process.env): ResolvedTimeouts {
+  const prefix = kind.toUpperCase().replace(/-/g, "_");
   const defaults = DEFAULTS[kind];
   return {
     cliTimeoutMs:

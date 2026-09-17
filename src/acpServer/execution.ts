@@ -12,7 +12,7 @@ import { interactiveChainKinds, parseCliChain } from "../providers/selection.js"
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import { createSurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
-import type { BotKind, BridgeConfig, CliResult } from "../types.js";
+import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 
 export const OUTWARD_ACP_SURFACE = "acp:outward";
 const OUTWARD_ACP_EXECUTION_ERROR = -32001;
@@ -103,7 +103,7 @@ function normalizeStopReason(value: string | undefined): acp.StopReason {
   }
 }
 
-function failedEvent(runId: string, provider: BotKind, session: OutwardAcpSessionRecord): BridgeEvent {
+function failedEvent(runId: string, provider: RouteableBotKind, session: OutwardAcpSessionRecord): BridgeEvent {
   return eventType.runFailed({
     runId,
     bot: provider,
@@ -116,7 +116,7 @@ function failedEvent(runId: string, provider: BotKind, session: OutwardAcpSessio
 
 function cancelledEvent(
   runId: string,
-  provider: BotKind,
+  provider: RouteableBotKind,
   session: OutwardAcpSessionRecord,
   reason: "user" | "provider",
 ): RunCancelledEvent {
@@ -218,7 +218,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     let eventStore: EventStore | null = null;
     let active: ActiveOutwardExecution | null = null;
     let signalAbort: (() => void) | null = null;
-    let activeProvider: BotKind = provider;
+    let activeProvider: RouteableBotKind = provider;
     try {
       db.insertRun(runId, input.session.conversationId, provider);
       eventStore = new EventStore(db, runId);
@@ -290,8 +290,8 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       // The router may have fallen back to a different provider mid-turn;
       // attribute persistence to whichever provider actually produced the
       // terminal event, or at minimum the latest surviving run.started event.
-      const terminalBot = (event: { bot: BotKind } | null): BotKind | undefined => event?.bot;
-      const actualProvider: BotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? activeProvider;
+      const terminalBot = (event: { bot: RouteableBotKind } | null): RouteableBotKind | undefined => event?.bot;
+      const actualProvider: RouteableBotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? activeProvider;
       db.runWithLockFence(lane, () => {
         persistProviderSession(db, input.session.conversationId, actualProvider, result.sessionId, runId);
         // Durable transcript for `session/load` replay only — mirrors the

@@ -53,7 +53,7 @@ import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
 import { type as eventType } from "./events/types.js";
 import { EventStore } from "./events/store.js";
-import type { BridgeConfig, BotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
+import type { BridgeConfig, BotKind, RouteableBotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun } from "./scheduledRunCorrelation.js";
@@ -117,7 +117,7 @@ class LostExecutionLeaseError extends Error {
 export interface BridgeEngineOptions {
   kind: string;
   surfaceIdentity: string;
-  executionKind?: BotKind;
+  executionKind?: RouteableBotKind;
   botConfig: { command: string; modelPreference: string[]; token?: string };
   allowedUserIds: ReadonlySet<string>;
   executionMode: "safe" | "trusted";
@@ -151,9 +151,14 @@ export interface SurfaceNeutralTurnInput {
 
 const MAX_QUEUE_DEPTH = 5;
 const ENGINE_CONTEXT_MAX_CHARS = parseInt(process.env.BRIDGE_CONTEXT_MAX_CHARS ?? "") || DEFAULT_CONTEXT_MAX_CHARS;
-const AGENT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor"]);
-function isAgentKind(kind: string): kind is BotKind {
-  return AGENT_KINDS.has(kind);
+const MANAGED_BOT_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor"]);
+function isManagedBotKind(kind: string): kind is BotKind {
+  return MANAGED_BOT_KINDS.has(kind);
+}
+
+const ROUTEABLE_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor", "custom-acp"]);
+function isRouteableKind(kind: string): kind is RouteableBotKind {
+  return ROUTEABLE_KINDS.has(kind);
 }
 
 function topicChatKey(chatId: number | string, chatType: string, threadId?: number | string): string {
@@ -215,7 +220,7 @@ export class BridgeEngine {
     }, 1500);
   }
 
-  private _workingDir(executionKind: BotKind = this._executionKind()): string {
+  private _workingDir(executionKind: RouteableBotKind = this._executionKind()): string {
     return this.opts.workingDir ?? getCliWorkingDir(executionKind);
   }
 
@@ -225,7 +230,7 @@ export class BridgeEngine {
     if (!capabilities.polling || typeof getUpdates !== "function") {
       throw new Error(`[${this.kind}] polling is not supported by this messaging surface`);
     }
-    if (isAgentKind(this.kind)) {
+    if (isManagedBotKind(this.kind)) {
       await this.client.setMyCommands({
         commands: buildTelegramCommands(this.kind),
       }).catch((err) => console.warn(`[${this.kind}] setMyCommands failed`, err));
@@ -234,7 +239,7 @@ export class BridgeEngine {
       console.error(`[${this.kind}] startup queue recovery failed`, error);
     });
 
-    let offset = isAgentKind(this.kind) ? this.db.getLastUpdateId(this.kind) + 1 : 0;
+    let offset = isManagedBotKind(this.kind) ? this.db.getLastUpdateId(this.kind) + 1 : 0;
     console.log(`[${this.kind}] engine online (offset: ${offset})`);
 
     const pollErrState = createPollErrorState();
@@ -255,7 +260,7 @@ export class BridgeEngine {
         for (const update of (updates.result as any) ?? []) {
           const updateId: number = update.update_id;
           offset = updateId + 1;
-          if (isAgentKind(this.kind)) {
+          if (isManagedBotKind(this.kind)) {
             this.db.setLastUpdateId(this.kind, updateId);
           }
           const chatKey = telegramUpdateChatKey(update);
@@ -368,7 +373,7 @@ export class BridgeEngine {
           return;
         }
       }
-      if (isAgentKind(this.kind) && isSlashCmd) {
+      if (isRouteableKind(this.kind) && isSlashCmd) {
         let resetHandle: ExecutionLaneHandle | null = null;
         if (commandText === "/reset") {
           this.laneCoordinator.markResetting(executionLane);
@@ -507,7 +512,7 @@ export class BridgeEngine {
       return;
     }
 
-    const model = isAgentKind(this.kind)
+    const model = isRouteableKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
     const cwd = this._workingDir(executionKind);
@@ -590,7 +595,7 @@ export class BridgeEngine {
     let prompt = rawPrompt;
     if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
 
-    const sessionId = isAgentKind(this.kind) ? lookupEngineProviderSession(this.db, chatKey, this.kind) : null;
+    const sessionId = isRouteableKind(this.kind) ? lookupEngineProviderSession(this.db, chatKey, this.kind) : null;
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
 
@@ -827,7 +832,7 @@ export class BridgeEngine {
     const runId = existingRunId ?? randomUUID();
     const eventContext = {
       runId,
-      bot: (isAgentKind(this.kind) ? this.kind : "claude") as BotKind,
+      bot: this._executionKind(),
       chatId: String(chatId),
       chatKey,
       threadId: threadId != null ? String(threadId) : undefined,
@@ -1293,12 +1298,12 @@ export class BridgeEngine {
   private _commitResultState(handle: ExecutionLaneHandle, prompt: string, result: StagedCliResult, runId: string | null = null): void {
     const chatKey = handle.chatKey;
     this._runWithFence(handle, () => {
-      if (result.sessionId && isAgentKind(this.kind)) {
+      if (result.sessionId && isRouteableKind(this.kind)) {
         persistEngineProviderSession(this.db, chatKey, this.kind, result.sessionId, runId);
         if (result.nativeSessionMode === "fresh") clearHandoffRequired(this.db, chatKey, this.kind);
       }
-      if (isAgentKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
-      if (isAgentKind(this.kind)) this._rememberTurn(chatKey, prompt, result.text);
+      if (isManagedBotKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
+      if (isRouteableKind(this.kind)) this._rememberTurn(chatKey, prompt, result.text);
     });
   }
 
@@ -1406,7 +1411,7 @@ export class BridgeEngine {
       : (includeFreshContext && this.opts.workspaceContext
           ? `[Managed workspace context]\n${this.opts.workspaceContext}\n\n${contextPrompt}`
           : contextPrompt);
-    const fallbackPrompt = nativeSessionMode === "fresh" && isAgentKind(this.kind) && isProviderFallbackHandoffRequired(this.db, chatKey, this.kind)
+    const fallbackPrompt = nativeSessionMode === "fresh" && isRouteableKind(this.kind) && isProviderFallbackHandoffRequired(this.db, chatKey, this.kind)
       ? prependProviderFallbackContinuation(workspacePrompt)
       : workspacePrompt;
     const handoffPrompt = includeFreshContext ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
@@ -1483,7 +1488,7 @@ export class BridgeEngine {
   }
 
   private async _runNativeOrAcp(
-    executionKind: BotKind,
+    executionKind: RouteableBotKind,
     invocation: ProviderInvocation,
     cwd: string,
     options: CliOptions,
@@ -1540,7 +1545,7 @@ export class BridgeEngine {
     if (!laneHandle) throw new Error("execution lane handle is required");
     const threadId = body.message_thread_id;
     const executionKind = this._executionKind();
-    const model = isAgentKind(this.kind)
+    const model = isRouteableKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
 
@@ -1644,9 +1649,10 @@ export class BridgeEngine {
         // still returns this result (non-null) so the caller retires the
         // input message as consumed instead of leaving it queued for retry.
         this._assertLaneOwned(laneHandle);
-        if (stagedResult.sessionId && isAgentKind(this.kind)) {
+        const kind = this.kind;
+        if (stagedResult.sessionId && isRouteableKind(kind)) {
           try {
-            this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, stagedResult.sessionId, runId));
+            this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, kind, stagedResult.sessionId, runId));
           } catch (error) {
             if (error instanceof LostExecutionLeaseError) throw error;
             console.warn(`[${this.kind}] failed to persist ACP session binding after provider cancellation`, error);
@@ -1699,7 +1705,8 @@ export class BridgeEngine {
       }
       if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
-        if (isAgentKind(this.kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
+        const kind = this.kind;
+        if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, kind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
@@ -1811,7 +1818,7 @@ export class BridgeEngine {
         stdout: rawResult,
         logContent: fallbackLogContent,
       });
-      const currentModel = isAgentKind(this.kind) ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null) : null;
+      const currentModel = isRouteableKind(this.kind) ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null) : null;
       const finalResult = {
         ...result,
         text: `⚠️ Fell back to ${fallbackModel} (${currentModel || "default"} at capacity)\n\n${result.text}`,
@@ -1834,7 +1841,7 @@ export class BridgeEngine {
   }
 
   private _handleCircuitBreaker(error: Error, chatKey: string, laneHandle: ExecutionLaneHandle): void {
-    if (!isAgentKind(this.kind)) return;
+    if (!isManagedBotKind(this.kind)) return;
     const msg = error.message ?? "";
     if (/timeout|killed by signal/i.test(msg)) {
       this._runWithFence(laneHandle, () => {
@@ -1855,7 +1862,7 @@ export class BridgeEngine {
   async handleCallback(callbackQuery: TelegramCallbackQuery, providedChatKey?: string): Promise<void> {
     const fromId = callbackQuery?.from?.id;
     if (!this.opts.allowedUserIds.has(String(fromId))) return;
-    if (!isAgentKind(this.kind) || !this.opts.fullConfig) return;
+    if (!isRouteableKind(this.kind) || !this.opts.fullConfig) return;
 
     const data = String(callbackQuery?.data || "");
     const acpSelection = resolveAcpTelegramConfigCallback(data);
@@ -2003,8 +2010,8 @@ export class BridgeEngine {
     return resolveLaneBusyMessageMode(this.db, this.surfaceIdentity, chatKey, this.opts.busyMessageMode ?? "augment");
   }
 
-  private _executionKind(): BotKind {
-    return isAgentKind(this.kind) ? this.kind : (this.opts.executionKind ?? "claude");
+  private _executionKind(): RouteableBotKind {
+    return isRouteableKind(this.kind) ? this.kind : (this.opts.executionKind ?? "claude");
   }
 
   private _deliveryKind(): string {
@@ -2018,7 +2025,7 @@ export class BridgeEngine {
     return {
       allowedUserIds: this.opts.allowedUserIds,
       serviceEnvFile: null,
-      serviceKind: isAgentKind(this.kind) ? kind : null,
+      serviceKind: isManagedBotKind(this.kind) ? kind : null,
       pollIntervalMs: this.opts.pollIntervalMs,
       executionMode: this.opts.executionMode,
       dbPath: "",
@@ -2061,14 +2068,14 @@ export function isInvalidProviderSessionError(error: unknown): boolean {
   return providerSessionErrorTexts(error).some((text) => INVALID_PROVIDER_SESSION_RE.test(text));
 }
 
-export function lookupEngineProviderSession(db: BridgeDb, chatKey: string, kind: BotKind): string | null {
+export function lookupEngineProviderSession(db: BridgeDb, chatKey: string, kind: RouteableBotKind): string | null {
   return lookupProviderSession(db, chatKey, kind);
 }
 
 export function persistEngineProviderSession(
   db: BridgeDb,
   chatKey: string,
-  kind: BotKind,
+  kind: RouteableBotKind,
   sessionId: string | null,
   runId: string | null = null,
 ): void {

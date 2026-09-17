@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { RunTelemetry } from "../types.js";
 
 export type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
+export type RouteableBotKind = BotKind | "custom-acp";
 
 export interface BridgeEventBase {
   version: 1;
   id: string;
   runId: string;
   timestamp: string;
-  bot: BotKind;
+  bot: RouteableBotKind;
   chatId: string;
   chatKey: string;
   threadId?: string;
@@ -92,7 +93,7 @@ export type BridgeEvent =
   | RunCancelledEvent
   | AcpEventObservedEvent;
 
-function base(fields: { runId: string; bot: BotKind; chatId: string; chatKey: string; threadId?: string }): BridgeEventBase {
+function base(fields: { runId: string; bot: RouteableBotKind; chatId: string; chatKey: string; threadId?: string }): BridgeEventBase {
   return {
     version: 1,
     id: randomUUID(),
@@ -104,7 +105,7 @@ function base(fields: { runId: string; bot: BotKind; chatId: string; chatKey: st
 export const type = {
   runStarted(fields: {
     runId: string;
-    bot: BotKind;
+    bot: RouteableBotKind;
     chatId: string;
     chatKey: string;
     command: string;
@@ -117,7 +118,7 @@ export const type = {
 
   textDelta(fields: {
     runId: string;
-    bot: BotKind;
+    bot: RouteableBotKind;
     chatId: string;
     chatKey: string;
     text: string;
@@ -129,7 +130,7 @@ export const type = {
 
   runCompleted(fields: {
     runId: string;
-    bot: BotKind;
+    bot: RouteableBotKind;
     chatId: string;
     chatKey: string;
     text: string;
@@ -148,7 +149,7 @@ export const type = {
 
   runFailed(fields: {
     runId: string;
-    bot: BotKind;
+    bot: RouteableBotKind;
     chatId: string;
     chatKey: string;
     error: string;
@@ -160,7 +161,7 @@ export const type = {
 
   runDiagnostic(fields: {
     runId: string;
-    bot: BotKind;
+    bot: RouteableBotKind;
     chatId: string;
     chatKey: string;
     boundary: RunDiagnosticEvent["boundary"];
@@ -193,7 +194,7 @@ export const type = {
 
   runCancelled(fields: {
     runId: string;
-    bot: BotKind;
+    bot: RouteableBotKind;
     chatId: string;
     chatKey: string;
     reason: "user" | "shutdown" | "timeout" | "provider";
@@ -204,7 +205,7 @@ export const type = {
 
   acpEvent(fields: {
     runId: string;
-    bot: BotKind;
+    bot: RouteableBotKind;
     chatId: string;
     chatKey: string;
     sessionId?: string | null;
