@@ -17,6 +17,7 @@ const DEFAULTS: Record<BotKind, PerKindDefaults> = {
   claude:      { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
   grok:        { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
   cursor:      { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
+  "custom-acp": { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
 };
 
 const DEFAULT_FETCH_TIMEOUT_MS = 45_000;
