@@ -11,6 +11,7 @@ import {
   type ProviderApiKeyProbeExecutor,
   type VerifyProviderApiKeyOptions,
 } from "./providers/apiKeyAuth.js";
+import { resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import {
   isCursorRouteable,
@@ -77,14 +78,14 @@ if (process.env.NODE_ENV !== "test") {
   await prepareInteractiveCliAuthStartup();
 }
 
-export function resolveInteractiveCliAuthPaths(homeDir: string = homedir()): InteractiveCliAuthPaths {
+export function resolveInteractiveCliAuthPaths(
+  homeDir: string = homedir(),
+  env: Record<string, string | undefined> = process.env,
+): InteractiveCliAuthPaths {
   return {
     codex: join(homeDir, ".codex", "auth.json"),
     claude: join(homeDir, ".claude", ".credentials.json"),
-    antigravity: [
-      join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
-      join(homeDir, ".gemini", "oauth_creds.json"),
-    ],
+    antigravity: resolveAgyAcpAuthPaths(homeDir, env),
     grok: resolveGrokAuthPaths(homeDir),
     cursor: resolveCursorAuthPaths(homeDir),
   };
@@ -105,7 +106,7 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const commandExists = options.commandExists ?? commandExistsOnPath;
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
   const env = options.env ?? process.env;
-  const paths = resolveInteractiveCliAuthPaths(home);
+  const paths = resolveInteractiveCliAuthPaths(home, env);
   const available = new Set<CliKind>();
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>
     isProviderApiKeyVerified(provider, env));
