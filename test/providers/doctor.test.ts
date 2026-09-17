@@ -15,7 +15,12 @@ const acpInspectVersion = (executable: string): string | null => {
 
 describe("doctor diagnostics", () => {
   it("reports provider commands as available when the executable resolves", () => {
-    const report = runDoctor({ env: {}, commandExists: allFound, inspectVersion: acpInspectVersion, inspectVoiceRuntime: voiceReady });
+    const report = runDoctor({
+      env: { CUSTOM_ACP_COMMAND: "/bin/custom" },
+      commandExists: allFound,
+      inspectVersion: acpInspectVersion,
+      inspectVoiceRuntime: voiceReady,
+    });
     for (const p of report.providers) {
       expect(p.status).toBe("available");
     }

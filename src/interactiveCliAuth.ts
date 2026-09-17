@@ -141,6 +141,12 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
     verifyApiKey: () => verifyApiKey("cursor"),
   })) available.add("cursor");
 
+  try {
+    if (hasRuntime("custom-acp")) available.add("custom-acp");
+  } catch {
+    // Unconfigured or invalid custom ACP is unavailable; startup/doctor owns diagnostics.
+  }
+
   return available;
 }
 

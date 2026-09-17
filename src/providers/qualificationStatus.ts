@@ -1,4 +1,4 @@
-import { getProviderAdapters, resolveProviderExecutable } from "./registry.js";
+import { getProviderAdapter, resolveProviderExecutable } from "./registry.js";
 import {
   PROVIDER_CONTRACT_VERSION,
   qualificationHealthCheck,
@@ -8,7 +8,7 @@ import {
   isQualificationCurrent,
   type QualificationHealthResult,
 } from "./qualification.js";
-import type { ProviderId } from "./types.js";
+import { PROVIDER_IDS, type ProviderId } from "./types.js";
 
 export interface InstalledProviderQualificationStatus extends QualificationHealthResult {
   provider: ProviderId;
@@ -25,7 +25,8 @@ function readInstalledProviderVersion(providerId: ProviderId): string | undefine
 
 export function readInstalledProviderVersions(): Partial<Record<ProviderId, string>> {
   const versions: Partial<Record<ProviderId, string>> = {};
-  for (const adapter of getProviderAdapters()) {
+  for (const providerId of PROVIDER_IDS) {
+    const adapter = getProviderAdapter(providerId);
     const version = readInstalledProviderVersion(adapter.id);
     if (version) versions[adapter.id] = version;
   }

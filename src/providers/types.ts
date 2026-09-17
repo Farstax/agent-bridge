@@ -1,5 +1,11 @@
 export const PROVIDER_IDS = ["codex", "claude", "agy", "grok", "cursor"] as const;
-export type ProviderId = (typeof PROVIDER_IDS)[number];
+export type ManagedProviderId = (typeof PROVIDER_IDS)[number];
+export const ROUTEABLE_PROVIDER_IDS = [...PROVIDER_IDS, "custom-acp"] as const;
+export type ProviderId = (typeof ROUTEABLE_PROVIDER_IDS)[number];
+
+export function isManagedProviderId(value: string): value is ManagedProviderId {
+  return (PROVIDER_IDS as readonly string[]).includes(value);
+}
 
 export type ProviderErrorClassification =
   | { readonly kind: "capacity_exhausted"; readonly reason: string }
@@ -31,7 +37,7 @@ export interface ProviderAdapter {
 }
 
 /** CLI kind vocabulary used in fallback-chain env vars; "antigravity" maps to provider id "agy". */
-export type ChainCliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor";
+export type ChainCliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
 
 // Issue #135 Phase 3B — provider runtime invocation/parsing boundary.
 // Shared request/result shapes for provider runtime modules. Deliberately narrower than

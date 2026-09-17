@@ -8,11 +8,12 @@
 import { execFileSync } from "node:child_process";
 import { inspectVoiceRuntimeReadiness, type VoiceRuntimeReadiness } from "../voiceRuntimeReadiness.js";
 import { resolveProviderRuntime, type ResolvedProviderRuntime } from "./acpRuntime.js";
-import { getProviderAdapters } from "./registry.js";
+import { hasCustomAcpConfiguration } from "./externalAcpLaunch.js";
+import { getRouteableProviderAdapters } from "./registry.js";
 import { interactiveChainKinds, parseCliChain } from "./selection.js";
 
 /** CLI kinds accepted in bridge fallback chains (chain vocabulary, not provider ids). */
-const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity", "grok", "cursor"]);
+const KNOWN_CHAIN_KINDS = new Set(["codex", "claude", "antigravity", "grok", "cursor", "custom-acp"]);
 
 /** Chain vocabulary differs from registry ids only for Antigravity (`agy`). */
 const CHAIN_KIND_TO_PROVIDER_ID: Readonly<Record<string, string>> = {
@@ -21,6 +22,7 @@ const CHAIN_KIND_TO_PROVIDER_ID: Readonly<Record<string, string>> = {
   antigravity: "agy",
   grok: "grok",
   cursor: "cursor",
+  "custom-acp": "custom-acp",
 };
 
 const CHAIN_ENV_VARS = [
@@ -86,10 +88,11 @@ export function inspectResolvedProviderRuntime(
   inspectVersion: (executable: string, versionArgs: readonly string[]) => string | null = defaultInspectVersion,
 ): ProviderCheck {
   const available = commandExists(runtime.executable);
-  const version = runtime.transport === "acp-stdio" && available
+  const releaseLockedAcp = runtime.transport === "acp-stdio" && runtime.selectedVersion !== null;
+  const version = releaseLockedAcp && available
     ? inspectVersion(runtime.executable, runtime.versionArgs)
     : null;
-  const versionInspectionFailed = runtime.transport === "acp-stdio" && available && !version;
+  const versionInspectionFailed = releaseLockedAcp && available && !version;
   const releaseVersionMismatch = Boolean(
     runtime.selectedVersion
     && version
@@ -103,7 +106,7 @@ export function inspectResolvedProviderRuntime(
       ? {
         runtime: "acp" as const,
         runtimeIdentity: runtime.runtimeIdentity,
-        ...(available ? { version } : {}),
+        ...(version ? { version } : {}),
         ...(versionInspectionFailed
           ? { reason: "unable to inspect ACP runtime version" }
           : releaseVersionMismatch
@@ -119,6 +122,37 @@ function normalizedVersion(raw: string): string {
   return match?.[0] ?? raw.trim();
 }
 
+function inspectProvider(
+  id: string,
+  env: Record<string, string | undefined>,
+  commandExists: (executable: string) => boolean,
+  inspectVersion: (executable: string, versionArgs: readonly string[]) => string | null,
+): ProviderCheck {
+  if (id !== "custom-acp") {
+    return inspectResolvedProviderRuntime(resolveProviderRuntime(id as Parameters<typeof resolveProviderRuntime>[0], env), commandExists, inspectVersion);
+  }
+  if (!hasCustomAcpConfiguration(env)) {
+    return {
+      id: "custom-acp",
+      executable: "(unconfigured)",
+      status: "missing",
+      runtime: "acp",
+      reason: "custom ACP is not configured (CUSTOM_ACP_COMMAND is not set)",
+    };
+  }
+  try {
+    return inspectResolvedProviderRuntime(resolveProviderRuntime("custom-acp", env), commandExists, inspectVersion);
+  } catch (error) {
+    return {
+      id: "custom-acp",
+      executable: env.CUSTOM_ACP_COMMAND?.trim() || "(unconfigured)",
+      status: "invalid",
+      runtime: "acp",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export function runDoctor({
   env = process.env,
   requiredEnv = [],
@@ -132,8 +166,8 @@ export function runDoctor({
   inspectVersion?: (executable: string, versionArgs: readonly string[]) => string | null;
   inspectVoiceRuntime?: (env: Record<string, string | undefined>) => VoiceRuntimeReadiness;
 } = {}): DoctorReport {
-  const providers: ProviderCheck[] = getProviderAdapters().map((adapter) =>
-    inspectResolvedProviderRuntime(resolveProviderRuntime(adapter.id, env), commandExists, inspectVersion));
+  const providers: ProviderCheck[] = getRouteableProviderAdapters().map((adapter) =>
+    inspectProvider(adapter.id, env, commandExists, inspectVersion));
 
   const effectiveEntries: Record<(typeof CHAIN_ENV_VARS)[number], string[]> = {
     INTERACTIVE_CLI_CHAIN: parseCliChain(

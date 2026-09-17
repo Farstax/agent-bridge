@@ -22,6 +22,7 @@ import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
 import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
 import { buildAcpFailureDiagnosticEvent } from "./acpFailureDiagnostic.js";
+import { hasCustomAcpConfiguration, resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
 import {
   getAcpProviderPolicy,
   getProviderAdapter,
@@ -59,7 +60,7 @@ export interface AcpProviderSessionSettings {
  */
 export interface AcpProviderPolicy {
   readonly providerId: string;
-  readonly registryAgentId: string;
+  readonly registryAgentId: string | null;
   readonly toolFree?: boolean;
   /**
    * Bridge-owned qualification gate for ACP mid-turn steering (issue #748):
@@ -197,6 +198,9 @@ export function resolveAcpProviderRuntime(
     args?: readonly string[];
   } = {},
 ): ResolvedProviderRuntime {
+  if (!policy.registryAgentId) {
+    throw new Error(`ACP provider ${policy.providerId} is externally managed and has no Registry lock`);
+  }
   if (entry.id !== policy.registryAgentId) {
     throw new Error(
       `ACP registry lock mismatch for ${policy.providerId}: expected ${policy.registryAgentId}, got ${entry.id}`,
@@ -229,10 +233,31 @@ export function resolveAcpProviderRuntime(
   };
 }
 
+export function resolveCustomAcpProviderRuntime(
+  env: Record<string, string | undefined> = process.env,
+): ResolvedProviderRuntime {
+  const launch = resolveCustomAcpLaunch(env);
+  if (!launch) throw new Error("CUSTOM_ACP_COMMAND is required before custom-acp is available");
+  return {
+    providerId: "custom-acp",
+    transport: "acp-stdio",
+    executable: launch.command,
+    args: launch.args,
+    versionArgs: [],
+    runtimeIdentity: launch.runtimeIdentity,
+    selectedVersion: null,
+    registryAgentId: null,
+    distribution: null,
+    toolFree: false,
+    provisionalAnswers: false,
+  };
+}
+
 export function resolveProviderRuntime(
   providerId: ProviderId,
   env: Record<string, string | undefined> = process.env,
 ): ResolvedProviderRuntime {
+  if (providerId === "custom-acp") return resolveCustomAcpProviderRuntime(env);
   const policy = getAcpProviderPolicy(providerId);
   if (policy) {
     const entry = getLockedAcpRegistryEntry(providerId);
@@ -272,7 +297,9 @@ export function resolveRuntimeForBotName(
   env: Record<string, string | undefined> = process.env,
 ): ResolvedProviderRuntime | null {
   const providerId = providerIdForBotName(bot);
-  return providerId ? resolveProviderRuntime(providerId, env) : null;
+  if (!providerId) return null;
+  if (providerId === "custom-acp" && !hasCustomAcpConfiguration(env)) return null;
+  return resolveProviderRuntime(providerId, env);
 }
 
 export function supportsProvisionalAnswers(

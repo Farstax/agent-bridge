@@ -7,6 +7,7 @@ import {
 import {
   getProviderAdapter,
   getProviderAdapters,
+  getRouteableProviderAdapters,
   isProviderId,
   assertProviderId,
   PROVIDER_IDS,
@@ -23,6 +24,11 @@ describe("provider registry", () => {
   it("returns all adapters in stable order", () => {
     const adapters = getProviderAdapters();
     expect(adapters.map((a) => a.id)).toEqual(["codex", "claude", "agy", "grok", "cursor"]);
+  });
+
+  it("returns all routeable adapters in stable order", () => {
+    const adapters = getRouteableProviderAdapters();
+    expect(adapters.map((a) => a.id)).toEqual(["codex", "claude", "agy", "grok", "cursor", "custom-acp"]);
   });
 
   it("returns the codex adapter", () => {
@@ -96,6 +102,7 @@ describe("provider registry", () => {
     expect(isProviderId("agy")).toBe(true);
     expect(isProviderId("grok")).toBe(true);
     expect(isProviderId("cursor")).toBe(true);
+    expect(isProviderId("custom-acp")).toBe(true);
     expect(isProviderId("not-a-provider")).toBe(false);
     expect(isProviderId("")).toBe(false);
   });
@@ -103,6 +110,7 @@ describe("provider registry", () => {
   it("asserts known provider ids", () => {
     expect(assertProviderId("codex")).toBe("codex");
     expect(assertProviderId("agy")).toBe("agy");
+    expect(assertProviderId("custom-acp")).toBe("custom-acp");
   });
 
   it("throws for unknown provider ids", () => {
@@ -117,6 +125,7 @@ describe("provider registry", () => {
   it("reports Codex ACP as not supporting strict tool-free execution", () => {
     expect(supportsToolFreeMode("codex")).toBe(false);
     expect(supportsToolFreeMode("claude")).toBe(true);
+    expect(supportsToolFreeMode("custom-acp")).toBe(false);
   });
 
   it("derives provisional-answer eligibility from the resolved ACP presentation policy, not a provider-name branch", () => {
@@ -124,6 +133,7 @@ describe("provider registry", () => {
     expect(supportsProvisionalAnswers("claude")).toBe(true);
     expect(supportsProvisionalAnswers("antigravity")).toBe(true);
     expect(supportsProvisionalAnswers("cursor")).toBe(true);
+    expect(supportsProvisionalAnswers("custom-acp", { CUSTOM_ACP_COMMAND: "/bin/custom" })).toBe(false);
     expect(supportsProvisionalAnswers("not-a-bot-kind")).toBe(false);
   });
 
@@ -132,6 +142,7 @@ describe("provider registry", () => {
     expect(acpProviderIdForBotName("claude")).toBe("claude");
     expect(acpProviderIdForBotName("antigravity")).toBe("agy");
     expect(acpProviderIdForBotName("cursor")).toBe("cursor");
+    expect(acpProviderIdForBotName("custom-acp", { CUSTOM_ACP_COMMAND: "/bin/custom" })).toBe("custom-acp");
     expect(acpProviderIdForBotName("not-a-bot-kind")).toBeNull();
   });
 
@@ -153,5 +164,6 @@ describe("provider registry", () => {
     const codex = getProviderAdapter("codex");
     expect(typeof codex.capabilities.fallbackTarget).toBe("boolean");
     expect(getProviderAdapter("grok").capabilities.fallbackTarget).toBe(true);
+    expect(getProviderAdapter("custom-acp").capabilities.fallbackTarget).toBe(true);
   });
 });

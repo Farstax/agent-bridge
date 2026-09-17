@@ -1,14 +1,17 @@
 import { isAbsolute } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
+import type { BotKind } from "./types.js";
 
 type Env = Record<string, string | undefined>;
 
+export type ProviderLockKind = "codex" | "claude" | "antigravity" | "grok";
+
 export interface TelegramRuntimePolicy {
-  providerLock: CliKind | null;
+  providerLock: ProviderLockKind | null;
   cliKinds: CliKind[];
   token: string | undefined;
   surfaceIdentity: string;
-  pollKind: CliKind;
+  pollKind: BotKind;
   cliSwitchingEnabled: boolean;
   databaseRole: "shared" | "interactive";
   databaseServiceId: "telegram:standalone" | "telegram:interactive";
@@ -23,18 +26,18 @@ export interface AutonomyRuntimeConfig {
   maxEpisodesPerDay: number;
 }
 
-const PROVIDERS = new Set<CliKind>(["codex", "claude", "antigravity", "grok"]);
+const PROVIDERS = new Set<ProviderLockKind>(["codex", "claude", "antigravity", "grok"]);
 export const DEFAULT_AUTONOMY_MAX_EPISODES_PER_DAY = 5;
 
-export function parseProviderLock(raw: string | undefined): CliKind | null {
+export function parseProviderLock(raw: string | undefined): ProviderLockKind | null {
   const value = raw?.trim();
   if (!value) return null;
-  if (!PROVIDERS.has(value as CliKind)) {
+  if (!PROVIDERS.has(value as ProviderLockKind)) {
     throw new Error(
       `Invalid BRIDGE_PROVIDER_LOCK: "${value}". Must be "codex", "claude", "antigravity" or "grok".`,
     );
   }
-  return value as CliKind;
+  return value as ProviderLockKind;
 }
 
 export function parseAutonomyRequireEpisodeApproval(raw: string | undefined): boolean {
@@ -92,7 +95,7 @@ export function resolveTelegramRuntimePolicy(
 
 export function resolveAutonomyRuntimeConfig(
   env: Env,
-  providerLock: CliKind | null,
+  providerLock: ProviderLockKind | string | null,
 ): AutonomyRuntimeConfig {
   // Provider-locked runtimes deliberately ignore inherited autonomy settings.
   // Keep that boundary fail-closed without validating values they never use.

@@ -49,7 +49,7 @@ export interface RunFailedEvent extends BridgeEventBase {
 export interface RunDiagnosticEvent extends BridgeEventBase {
   type: "run.diagnostic";
   boundary: "provider_execution" | "final_delivery_authority" | "final_delivery";
-  provider: BotKind;
+  provider: BotKind | "custom-acp";
   executionSurface: "acp" | "message_delivery";
   attempt: number;
   successorStarted: boolean;
@@ -164,7 +164,7 @@ export const type = {
     chatId: string;
     chatKey: string;
     boundary: RunDiagnosticEvent["boundary"];
-    provider: BotKind;
+    provider: BotKind | "custom-acp";
     executionSurface: RunDiagnosticEvent["executionSurface"];
     attempt: number;
     successorStarted: boolean;

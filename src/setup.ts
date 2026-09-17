@@ -3,10 +3,15 @@ import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 export { bootstrapSourceInteractiveDb } from "./db.js";
 import { getProviderAdapters, resolveProviderExecutable } from "./providers/registry.js";
-import type { ChainCliKind, ProviderId } from "./providers/types.js";
+import {
+  type ChainCliKind,
+  type ManagedProviderId,
+  type ProviderId,
+  isManagedProviderId,
+} from "./providers/types.js";
 import { TelegramClient } from "./telegram.js";
 
-const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
+const PROVIDER_TO_CHAIN_KIND: Record<ManagedProviderId, ChainCliKind> = {
   codex: "codex",
   claude: "claude",
   agy: "antigravity",
@@ -14,7 +19,7 @@ const PROVIDER_TO_CHAIN_KIND: Record<ProviderId, ChainCliKind> = {
   cursor: "cursor",
 };
 
-const PROVIDER_COMMAND_ENV: Record<ProviderId, string> = {
+const PROVIDER_COMMAND_ENV: Record<ManagedProviderId, string> = {
   codex: "CODEX_ACP_COMMAND",
   claude: "CLAUDE_ACP_COMMAND",
   agy: "AGY_ACP_COMMAND",
@@ -83,11 +88,13 @@ export function detectInteractiveProviders(options: {
       const configuredCommand = resolveProviderExecutable(adapter.id, env);
       const commandPath = resolvePath(configuredCommand);
       if (!commandPath) return [];
+      if (!isManagedProviderId(adapter.id)) return [];
+      const managedId = adapter.id;
       return [{
-        id: adapter.id,
+        id: managedId,
         displayName: adapter.displayName,
-        chainKind: PROVIDER_TO_CHAIN_KIND[adapter.id],
-        commandEnv: PROVIDER_COMMAND_ENV[adapter.id],
+        chainKind: PROVIDER_TO_CHAIN_KIND[managedId],
+        commandEnv: PROVIDER_COMMAND_ENV[managedId],
         commandPath,
       }];
     });
