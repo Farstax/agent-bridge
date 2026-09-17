@@ -14,4 +14,11 @@ describe("issue #821 provider authentication failure", () => {
   it("does not collapse the actionable authentication failure to Internal error", () => {
     expect(toUserMessage(claudeOAuthExpired)).toBe("Authentication required");
   });
+  it("sanitizes structured provider auth failures instead of exposing raw upstream text", () => {
+    const structured = new Error(
+      'CLI exited with code 1: {"type":"error","message":"Failed to authenticate: OAuth session expired and could not be refreshed"}',
+    );
+    expect(toUserMessage(structured)).toBe("Authentication required");
+  });
+
 });
