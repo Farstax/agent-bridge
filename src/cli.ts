@@ -236,9 +236,9 @@ function extractUpstreamCliError(raw: string): string | null {
 }
 
 export function toUserMessage(err: Error): string {
+  if (classifyAnyProviderError(err).kind === "auth_required") return "Authentication required";
   const upstream = extractUpstreamCliError(err.message);
   if (upstream) return upstream.trim();
-  if (classifyAnyProviderError(err).kind === "auth_required") return "Authentication required";
   return err.message.split(":")[0].trim();
 }
 
