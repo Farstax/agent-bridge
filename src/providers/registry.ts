@@ -4,6 +4,7 @@ import {
   type ProviderAdapter,
   type ProviderId,
   PROVIDER_IDS,
+  ROUTEABLE_PROVIDER_IDS,
 } from "./types.js";
 import type { AcpProviderPolicy } from "./acpRuntime.js";
 import { agyAcpPolicy } from "./agyAcpPolicy.js";
@@ -11,6 +12,7 @@ import { claudeAcpPolicy } from "./claudeAcpPolicy.js";
 import { codexAcpPolicy } from "./codexAcpPolicy.js";
 import { grokAcpPolicy } from "./grokAcpPolicy.js";
 import { cursorAcpPolicy } from "./cursorAcpPolicy.js";
+import { resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
 
 const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
   codex: {
@@ -53,6 +55,21 @@ const ADAPTERS: Readonly<Record<ProviderId, ProviderAdapter>> = {
       fallbackTarget: true,
     },
   },
+  "custom-acp": {
+    id: "custom-acp",
+    displayName: "Custom ACP",
+    capabilities: {
+      interactive: true,
+      fallbackTarget: true,
+    },
+  },
+};
+
+const customAcpPolicy: AcpProviderPolicy = {
+  providerId: "custom-acp",
+  registryAgentId: null,
+  presentation: { provisionalAnswers: false },
+  authenticateMethodId: (env) => resolveCustomAcpLaunch(env)?.authMethodId,
 };
 
 /** ACP-backed providers opt into one generic runtime with only provider-owned differences here. */
@@ -62,6 +79,7 @@ const ACP_POLICIES: Readonly<Partial<Record<ProviderId, AcpProviderPolicy>>> = {
   grok: grokAcpPolicy,
   agy: agyAcpPolicy,
   cursor: cursorAcpPolicy,
+  "custom-acp": customAcpPolicy,
 };
 
 /**
@@ -75,6 +93,7 @@ const BOT_NAME_TO_PROVIDER_ID: Readonly<Record<string, ProviderId>> = {
   antigravity: "agy",
   grok: "grok",
   cursor: "cursor",
+  "custom-acp": "custom-acp",
 };
 
 export function providerIdForBotName(bot: string): ProviderId | null {
@@ -130,7 +149,7 @@ export function getProviderAdapter(id: ProviderId): ProviderAdapter {
 }
 
 export function getProviderAdapters(): readonly ProviderAdapter[] {
-  return PROVIDER_IDS.map((id) => ADAPTERS[id]);
+  return ROUTEABLE_PROVIDER_IDS.map((id) => ADAPTERS[id]);
 }
 
 /** Resolve a native provider command or an ACP policy's explicit installed-command override. */
@@ -138,6 +157,11 @@ export function resolveProviderExecutable(
   id: ProviderId,
   env: Record<string, string | undefined> = process.env,
 ): string {
+  if (id === "custom-acp") {
+    const launch = resolveCustomAcpLaunch(env);
+    if (!launch) throw new Error("CUSTOM_ACP_COMMAND is required before custom-acp is available");
+    return launch.command;
+  }
   const acp = getAcpProviderPolicy(id);
   if (acp?.resolveExecutable) return acp.resolveExecutable(env);
   const bot = id === "agy" ? "antigravity" : id;
@@ -145,7 +169,7 @@ export function resolveProviderExecutable(
 }
 
 export function isProviderId(value: string): value is ProviderId {
-  return (PROVIDER_IDS as readonly string[]).includes(value);
+  return (ROUTEABLE_PROVIDER_IDS as readonly string[]).includes(value);
 }
 
 export function assertProviderId(value: string): ProviderId {
@@ -153,5 +177,5 @@ export function assertProviderId(value: string): ProviderId {
   return value;
 }
 
-export { PROVIDER_IDS } from "./types.js";
-export type { ProviderAdapter, ProviderCapabilities, ProviderErrorClassification, ProviderId } from "./types.js";
+export { PROVIDER_IDS, ROUTEABLE_PROVIDER_IDS } from "./types.js";
+export type { ManagedProviderId, ProviderAdapter, ProviderCapabilities, ProviderErrorClassification, ProviderId } from "./types.js";
