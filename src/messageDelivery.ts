@@ -1,5 +1,6 @@
 import { splitTelegramText, toTelegramEntitiesText } from "./render.js";
 import { toUserMessage, isCapacityExhaustedError, CliTimeoutError } from "./cli.js";
+import { classifyAnyProviderError } from "./providers/errorClassification.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import type { CliResult } from "./types.js";
 import { runActivityText, type ProgressReporter, type RunActivity } from "./runActivity.js";
@@ -719,7 +720,9 @@ export async function sendMessageWithProgress({
       await beginProgressCleanup();
       throw err;
     }
-    if (isCapacityExhaustedError(err instanceof Error ? err : new Error(String(err)))) {
+    const providerError = err instanceof Error ? err : new Error(String(err));
+    const authRequired = classifyAnyProviderError(providerError).kind === "auth_required";
+    if (authRequired || isCapacityExhaustedError(providerError)) {
       await beginProgressCleanup();
       throw err;
     }
