@@ -303,6 +303,7 @@ export interface InteractiveDispatchDeps {
   engines: Record<string, InteractiveDispatchEngine>;
   fallbackChain: ProviderFallbackChain;
   exhaustedChats: Set<string>;
+  authRequiredChats?: Set<string>;
   db: BridgeDb;
   notify: (msg: string) => Promise<void> | void;
   onCliSwitched?: (newCli: CliKind) => Promise<void> | void;
@@ -369,8 +370,9 @@ async function dispatchInteractiveExecutionWithFallback(
   tried: Set<string>,
 ): Promise<ExecutionOutcome> {
   const { chatKey } = execution;
-  const { engines, fallbackChain, exhaustedChats, db, notify, onCliSwitched } = deps;
+  const { engines, fallbackChain, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
   exhaustedChats.delete(chatKey);
+  authRequiredChats?.delete(chatKey);
   if (tried.size === 0) {
     const pref = getUserCliPreference(db, chatKey);
     fallbackChain.setActiveCli(chatKey, pref);
@@ -382,8 +384,11 @@ async function dispatchInteractiveExecutionWithFallback(
   if (!engine) throw new Error(`No engine configured for CLI ${activeCli}`);
   const outcome = await execution.execute(engine);
 
-  if (exhaustedChats.has(chatKey)) {
+  const authRequired = authRequiredChats?.has(chatKey) ?? false;
+  const fallbackRequired = authRequired || exhaustedChats.has(chatKey);
+  if (fallbackRequired) {
     exhaustedChats.delete(chatKey);
+    authRequiredChats?.delete(chatKey);
     let next: CliKind | null = null;
     for (const cli of fallbackChain.getChain()) {
       if (!tried.has(cli)) {
@@ -394,7 +399,9 @@ async function dispatchInteractiveExecutionWithFallback(
     if (next) {
       prepareCliHandoff(db, chatKey, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
-      await notify(`Switching to ${next} (${activeCli} at capacity)`);
+      await notify(authRequired
+        ? `${activeCli} needs re-authentication. Falling back to ${next}…`
+        : `Switching to ${next} (${activeCli} at capacity)`);
       if (onCliSwitched) await onCliSwitched(next);
       if (execution.recoverPendingQueue && engines[next].recoverPendingQueue) {
         markPendingFallbackResume(fallbackChain, chatKey, tried);
@@ -409,7 +416,9 @@ async function dispatchInteractiveExecutionWithFallback(
       }
       return dispatchInteractiveExecutionWithFallback(execution, deps, tried);
     }
-    await notify("All CLIs are currently unavailable. Please try again later.");
+    await notify(authRequired
+      ? `${activeCli} needs re-authentication. No remaining configured fallback provider is available.`
+      : "No remaining configured fallback provider is available. Please try again later.");
     return execution.exhaustedOutcome;
   }
 
