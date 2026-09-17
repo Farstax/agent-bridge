@@ -13,6 +13,7 @@ import { resolveCodexAcpCommand } from "./providers/codexAcpConfig.js";
 import { resolveClaudeAcpCommand } from "./providers/claudeAcpConfig.js";
 import { resolveGrokAcpCommand } from "./providers/grokAcpConfig.js";
 import { resolveCursorAcpCommand } from "./providers/cursorAcpConfig.js";
+import { resolveCustomAcpLaunch } from "./providers/externalAcpLaunch.js";
 import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 type Env = Record<string, string | undefined>;
@@ -58,6 +59,7 @@ export function parseAntigravityModelPreference(raw: string | undefined): string
  */
 export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): Record<BotKind, BotConfig> {
   const token = (v: string | undefined) => (opts.withTokens ? v : undefined);
+  const customAcp = resolveCustomAcpLaunch(env);
   return {
     codex: {
       token: token(env.TELEGRAM_BOT_TOKEN_CODEX),
@@ -82,6 +84,11 @@ export function loadBotsConfig(env: Env, opts: { withTokens?: boolean } = {}): R
     cursor: {
       token: token(env.TELEGRAM_BOT_TOKEN_CURSOR),
       command: resolveCursorAcpCommand(env),
+      modelPreference: [],
+    },
+    "custom-acp": {
+      token: undefined,
+      command: customAcp?.command ?? "",
       modelPreference: [],
     },
   };
@@ -114,7 +121,7 @@ export function resolveBusyMessageMode(env: Env): "augment" | "interrupt" | "que
 /** Fail startup when BRIDGE_BUSY_MESSAGE_MODE is set to anything other than augment|interrupt|queue. */
 export function validateBusyMessageModeEnv(env: Env): void {
   const raw = env.BRIDGE_BUSY_MESSAGE_MODE;
-  if (raw !== undefined && raw !== "augment" && raw !== "interrupt" && raw !== "queue") {
+  if (raw !== undefined && raw !== "interrupt" && raw !== "queue" && raw !== "augment") {
     throw new Error(
       `Invalid BRIDGE_BUSY_MESSAGE_MODE: "${raw}". Must be "augment", "interrupt" or "queue".`
     );
