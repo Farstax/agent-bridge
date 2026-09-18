@@ -4,7 +4,6 @@ import { dropLegacyPromptOverrides } from "./dropLegacyPromptOverridesMigration.
 import { applyRoleAssignmentsMigration } from "./roleAssignmentsMigration.js";
 import { applyReconciliationAuditMigration } from "./reconciliationAuditMigration.js";
 import { applyMemoryResolutionMigration } from "./memoryResolutionMigration.js";
-import { applyHealthSchemaMigration } from "./healthSchemaMigration.js";
 import { applyEventReceiptsMigration } from "./eventReceiptsMigration.js";
 import { applyAutonomousGoalsMigration } from "./autonomousGoalsMigration.js";
 import { dropLegacyWorkerTablesMigration } from "./dropLegacyWorkerTablesMigration.js";
@@ -152,10 +151,8 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * Version 4 adds schema-owned reconciliation evidence for Issue #193.
  * Version 5 adds memory resolution (Issue #304) and repairs the
  * project_memories_fts triggers' invalid delete-command syntax.
- * Version 6 adds the health report read model for health-role databases.
- * Version 7 adds authenticated health-event receipt persistence for
- * health-role databases (Issue #351), correlated to an ordinary owning
- * bridge_runs row rather than a work_item/work_job.
+ * Version 6 is retained as a historical no-op after removal of the retired health report read model.
+ * Version 7 is retained for schema continuity; version 8 immediately widens its receipt source for active autonomous/generic Run ingress use.
  * Version 8 widens the receipt source for autonomous wakes and adds durable
  * autonomous goal state (Issue #392).
  * Version 9 removes the obsolete Engineering Worker persistence model.
@@ -177,7 +174,7 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 3, name: "add-dormant-role-assignments", up: applyRoleAssignmentsMigration },
   { version: 4, name: "add-reconciliation-audit", up: applyReconciliationAuditMigration },
   { version: 5, name: "add-memory-resolution", up: applyMemoryResolutionMigration },
-  { version: 6, name: "add-health-report-read-model", up: applyHealthSchemaMigration },
+  { version: 6, name: "retired-health-report-read-model", up: () => {} },
   { version: 7, name: "add-health-event-receipts", up: applyEventReceiptsMigration },
   { version: 8, name: "add-autonomous-goals", up: applyAutonomousGoalsMigration },
   { version: 9, name: "drop-legacy-worker-tables", up: dropLegacyWorkerTablesMigration },
