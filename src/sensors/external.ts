@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import type { Sensor, SensorReport, SensorStatus } from "./types.js";
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
-const MAX_CHECKS = 64;
-const MAX_TEXT = 1000;
+const MAX_CHECKS = 32;
+const MAX_TEXT = 500;
 
 function bounded(value: unknown, max = MAX_TEXT): string {
   const text = typeof value === "string" ? value : String(value ?? "");
@@ -70,6 +70,7 @@ export class ExternalSensor implements Sensor {
       let settled = false;
       let stdout = "";
       let stderr = "";
+      let outputOverflow = false;
       const finish = (report: SensorReport) => {
         if (settled) return;
         settled = true;
@@ -83,12 +84,17 @@ export class ExternalSensor implements Sensor {
         return;
       }
       const timer = setTimeout(() => {
-        try { child.kill(); } catch { /* already gone */ }
+        try { child.kill("SIGKILL"); } catch { /* already gone */ }
         finish(failure(this.id, this.label, `Sensor timed out after ${this.timeoutMs}ms`));
       }, this.timeoutMs);
       const append = (current: string, chunk: Buffer) => {
         const next = current + chunk.toString();
-        return Buffer.byteLength(next, "utf8") > MAX_OUTPUT_BYTES ? next.slice(0, MAX_OUTPUT_BYTES) : next;
+        if (Buffer.byteLength(next, "utf8") > MAX_OUTPUT_BYTES) {
+          outputOverflow = true;
+          try { child.kill("SIGKILL"); } catch { /* already gone */ }
+          return current;
+        }
+        return next;
       };
       child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
       child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
@@ -99,12 +105,12 @@ export class ExternalSensor implements Sensor {
       child.once("close", (code) => {
         clearTimeout(timer);
         if (settled) return;
-        if (code !== 0) {
-          finish(failure(this.id, this.label, stderr.trim() || `Sensor exited with code ${code ?? "unknown"}`));
+        if (outputOverflow) {
+          finish(failure(this.id, this.label, "Sensor output exceeded the bounded output limit"));
           return;
         }
-        if (Buffer.byteLength(stdout, "utf8") >= MAX_OUTPUT_BYTES) {
-          finish(failure(this.id, this.label, "Sensor output exceeded the bounded output limit"));
+        if (code !== 0) {
+          finish(failure(this.id, this.label, stderr.trim() || `Sensor exited with code ${code ?? "unknown"}`));
           return;
         }
         finish(parseExternalReport(this.id, this.label, stdout));
