@@ -935,9 +935,13 @@ tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2)
     handle.write("\n")
-os.chmod(tmp, 0o600)
+os.chmod(tmp, 0o640)
 os.replace(tmp, path)
 PY
+    runtime_gid="$(/usr/bin/getent passwd "$runtime_user" | /usr/bin/cut -d: -f4)"
+    [[ "$runtime_gid" =~ ^[0-9]+$ ]] || die "runtime group is unavailable for Sensor configuration"
+    /usr/bin/chown "0:$runtime_gid" "$sensor_config_path"
+    /usr/bin/chmod 0640 "$sensor_config_path"
     set_private_env_key "$interactive_env" AGENT_BRIDGE_SENSOR_CONFIG "$sensor_config_path"
   fi
   health_retirement_config_prepared=1
