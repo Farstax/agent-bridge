@@ -16,7 +16,7 @@ if [[ -z "${NODE_BIN:-}" ]]; then
     NODE_BIN="$(find "${TARGET_HOME}/.nvm/versions/node" -maxdepth 3 -name node -type f 2>/dev/null | sort -t/ -k7 -V | tail -1 || true)"
   fi
 fi
-DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,health-troubleshooting,advisor,engineering-retro,scheduled-routines"
+DEFAULT_AGENT_BRIDGE_SKILLS="red-green-refactor-tdd,requirements-to-acceptance,release-readiness-review,systematic-debugging,delivery-directives,manage-skills,manage-mcp,ui-engineering,git-sandbox,cli-auth-telegram,autonomous-work,sensors,advisor,engineering-retro,scheduled-routines"
 
 # Parse flags
 NON_INTERACTIVE=0
@@ -30,7 +30,7 @@ done
 
 cat <<'EOF'
 agent-bridge install
-- shared config reads: /etc/default/agent-bridge-shared  (paths, health monitoring, allowed users)
+- shared config reads: /etc/default/agent-bridge-shared  (paths, sensors, allowed users)
 - codex service reads: /etc/default/agent-bridge-codex   (token, command, DB path)
 - antigravity service reads: /etc/default/agent-bridge-antigravity
 - claude service reads: /etc/default/agent-bridge-claude  (optional — skipped if no token provided)
@@ -88,7 +88,7 @@ seed_from_env_file() {
   local key value
   for key in BRIDGE_ROOT_DIR BRIDGE_PROJECT_DIR BRIDGE_CURRENT_RELEASE_DIR \
               TELEGRAM_ALLOWED_USER_IDS TELEGRAM_ALLOWED_USER_ID \
-               TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE TELEGRAM_BOT_TOKEN_HEALTH \
+               TELEGRAM_BOT_TOKEN_CODEX TELEGRAM_BOT_TOKEN_ANTIGRAVITY TELEGRAM_BOT_TOKEN_CLAUDE TELEGRAM_BOT_TOKEN_INTERACTIVE \
               AGY_ACP_COMMAND AGY_ACP_ARGS \
               CLAUDE_ACP_COMMAND CLAUDE_ACP_ARGS \
               CODEX_ACP_COMMAND CODEX_ACP_ARGS \
@@ -102,9 +102,7 @@ seed_from_env_file() {
               BRIDGE_ADVISOR_TIMEOUT_MS BRIDGE_ADVISOR_CONTEXT_MAX_CHARS \
               AGENT_BRIDGE_SOUL_PATH AGENT_BRIDGE_SOUL_MODE \
               AGENT_BRIDGE_AUTONOMY_DIR AGENT_BRIDGE_AUTONOMY_DB_PATH AGENT_BRIDGE_AUTONOMY_MAX_CYCLES \
-               HEALTH_BOT_MODE HEALTH_MONITOR_ENABLED HEALTH_MONITOR_CADENCE_SECONDS HEALTH_MONITOR_AUTONOMY \
-              HEALTH_MONITOR_CHAT_ID HEALTH_SUGGEST_BOT \
-              HEALTH_CONTENT_CRAWLER_ENABLED HEALTH_CONTENT_CRAWLER_SCRIPT \
+              AGENT_BRIDGE_SENSOR_CONFIG \
               DISCORD_BOT_TOKEN DISCORD_APPLICATION_ID DISCORD_GUILD_ID DISCORD_ALLOWED_USER_IDS \
               DISCORD_CLI CLI_COMMAND CLI_MODEL_PREFERENCE INTERACTIVE_DEFAULT_CLI INTERACTIVE_CLI_CHAIN; do
     value="$(env_file_get "${file}" "${key}")"
@@ -200,8 +198,6 @@ prompt TELEGRAM_BOT_TOKEN_CODEX       "Codex bot token"
 prompt TELEGRAM_BOT_TOKEN_ANTIGRAVITY "Antigravity bot token"
 prompt TELEGRAM_BOT_TOKEN_CLAUDE      "Claude bot token (leave blank to skip)"
 prompt TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token (leave blank to skip)"
-prompt TELEGRAM_BOT_TOKEN_HEALTH      "Health bot token (leave blank to skip)"
-prompt HEALTH_BOT_MODE                 "Health bot mode (standalone|integrated)" "standalone"
 prompt DISCORD_BOT_TOKEN              "Discord bot token (leave blank to skip)"
 prompt DISCORD_APPLICATION_ID         "Discord application ID (leave blank to skip)"
 prompt DISCORD_ALLOWED_USER_IDS       "Discord allowed user IDs (leave blank to skip)"
@@ -218,11 +214,6 @@ prompt AGENT_BRIDGE_SKILLS "Bundled skills to install (comma-separated, none = s
 prompt AGENT_BRIDGE_SKILL_LINK_MODE "Shared skill link mode (symlink|copy)" "symlink"
 prompt BRIDGE_EXECUTION_MODE "Execution mode (safe|trusted)" "trusted"
 prompt POLL_INTERVAL_MS      "Poll interval ms"               "1000"
-prompt HEALTH_MONITOR_ENABLED         "Enable health monitoring (true|false)"   "false"
-prompt HEALTH_MONITOR_CADENCE_SECONDS "Health check cadence (seconds)"           "3600"
-prompt HEALTH_MONITOR_AUTONOMY        "Health autonomy (report|suggest|auto)"    "report"
-prompt HEALTH_MONITOR_CHAT_ID         "Telegram chat ID for health reports (blank = skip)" ""
-prompt HEALTH_SUGGEST_BOT             "Bot to use for suggestions (claude|antigravity|codex)" "claude"
 
 ensure_var BRIDGE_ROOT_DIR           "Bridge root directory"
 ensure_var BRIDGE_PROJECT_DIR        "Bridge project directory"
@@ -246,6 +237,9 @@ install_shared_skills() {
   fi
   if [[ ",${skills_csv}," != *",scheduled-routines,"* ]]; then
     skills_csv="${skills_csv},scheduled-routines"
+  fi
+  if [[ ",${skills_csv}," != *",sensors,"* ]]; then
+    skills_csv="${skills_csv},sensors"
   fi
   if [[ "${link_mode}" != "symlink" && "${link_mode}" != "copy" ]]; then
     echo "Invalid AGENT_BRIDGE_SKILL_LINK_MODE: ${link_mode}" >&2
@@ -362,15 +356,7 @@ _write_shared_defaults() {
     [[ -n "${AGY_ACP_ARGS:-}" ]] && echo "AGY_ACP_ARGS=${AGY_ACP_ARGS}"
     [[ -n "${CURSOR_ACP_COMMAND:-}" ]] && echo "CURSOR_ACP_COMMAND=${CURSOR_ACP_COMMAND}"
     [[ -n "${CURSOR_ACP_ARGS:-}" ]] && echo "CURSOR_ACP_ARGS=${CURSOR_ACP_ARGS}"
-    echo "HEALTH_MONITOR_ENABLED=${HEALTH_MONITOR_ENABLED:-false}"
-    echo "HEALTH_BOT_MODE=${HEALTH_BOT_MODE:-standalone}"
-    echo "HEALTH_MONITOR_CADENCE_SECONDS=${HEALTH_MONITOR_CADENCE_SECONDS:-3600}"
-    echo "HEALTH_MONITOR_AUTONOMY=${HEALTH_MONITOR_AUTONOMY:-report}"
-    [[ -n "${HEALTH_MONITOR_CHAT_ID:-}" ]]          && echo "HEALTH_MONITOR_CHAT_ID=${HEALTH_MONITOR_CHAT_ID}"
-    [[ -n "${HEALTH_SUGGEST_BOT:-}" ]]               && echo "HEALTH_SUGGEST_BOT=${HEALTH_SUGGEST_BOT}"
-    echo "HEALTH_CONTENT_CRAWLER_ENABLED=${HEALTH_CONTENT_CRAWLER_ENABLED:-0}"
-    [[ -n "${HEALTH_CONTENT_CRAWLER_SCRIPT:-}" ]]   && echo "HEALTH_CONTENT_CRAWLER_SCRIPT=${HEALTH_CONTENT_CRAWLER_SCRIPT}"
-    [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" ]]        && echo "TELEGRAM_BOT_TOKEN_HEALTH=${TELEGRAM_BOT_TOKEN_HEALTH}"
+    [[ -n "${AGENT_BRIDGE_SENSOR_CONFIG:-}" ]] && echo "AGENT_BRIDGE_SENSOR_CONFIG=${AGENT_BRIDGE_SENSOR_CONFIG}"
     true
   } | sudo tee "${dest}" > /dev/null
   echo "  wrote ${dest}"
@@ -414,15 +400,6 @@ _write_release_defaults
 _write_shared_defaults
 _write_systemd_defaults codex       TELEGRAM_BOT_TOKEN_CODEX       CODEX_ACP_COMMAND   CODEX_PROJECT_DIR
 _write_systemd_defaults antigravity TELEGRAM_BOT_TOKEN_ANTIGRAVITY AGY_ACP_COMMAND ANTIGRAVITY_PROJECT_DIR
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
-  if [[ "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
-    ensure_var TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token required for integrated health"
-    _write_systemd_defaults health TELEGRAM_BOT_TOKEN_INTERACTIVE HEALTH_CLI_COMMAND HEALTH_CLI_BOT
-  else
-    _write_systemd_defaults health TELEGRAM_BOT_TOKEN_HEALTH HEALTH_CLI_COMMAND HEALTH_CLI_BOT
-  fi
-fi
-
 _write_interactive_defaults() {
   local dest="${DEFAULTS_DIR}/agent-bridge-interactive"
   {
@@ -482,10 +459,6 @@ if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
   _write_interactive_defaults
   install_unit agent-bridge-interactive
 fi
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
-  install_unit agent-bridge-health
-fi
-
 # Ops housekeeping — not gated by any bot token, always installed.
 install_unit agent-bridge-tmp-cleanup
 install_timer agent-bridge-tmp-cleanup
@@ -494,10 +467,6 @@ UNITS_TO_ENABLE="agent-bridge-codex agent-bridge-antigravity agent-bridge-tmp-cl
 if [[ -n "${TELEGRAM_BOT_TOKEN_INTERACTIVE:-}" ]]; then
   UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-interactive"
 fi
-if [[ -n "${TELEGRAM_BOT_TOKEN_HEALTH:-}" || "${HEALTH_BOT_MODE:-standalone}" == "integrated" ]]; then
-  UNITS_TO_ENABLE="${UNITS_TO_ENABLE} agent-bridge-health"
-fi
-
 if [[ -n "${TELEGRAM_BOT_TOKEN_CLAUDE:-}" ]]; then
   _write_systemd_defaults claude TELEGRAM_BOT_TOKEN_CLAUDE CLAUDE_ACP_COMMAND CLAUDE_PROJECT_DIR
   install_unit agent-bridge-claude
