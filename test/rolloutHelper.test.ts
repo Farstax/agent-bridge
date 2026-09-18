@@ -192,6 +192,8 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
   it("retires the legacy health service/database and migrates its generic capabilities after target acceptance", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
     const healthDefaults = join(fixture.envDir, "agent-bridge-health");
     writeFileSync(healthDefaults, [
       `HEALTH_DB_PATH=${fixture.dbPaths[2]}`,
