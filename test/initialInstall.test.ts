@@ -190,6 +190,7 @@ print(json.dumps({"calls": calls}))
       "git-sandbox",
       "cli-auth-telegram",
       "autonomous-work",
+      "scheduled-routines",
       "sensors",
       "advisor",
       "engineering-retro",
