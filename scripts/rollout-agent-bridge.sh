@@ -913,13 +913,23 @@ import json
 import os
 import sys
 path, command, script = sys.argv[1:]
-payload = {"external": [{
+payload = {"external": []}
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as handle:
+        existing = json.load(handle)
+    if not isinstance(existing, dict) or not isinstance(existing.get("external", []), list):
+        raise RuntimeError("existing sensor config has invalid external list")
+    payload["external"] = [
+        item for item in existing.get("external", [])
+        if isinstance(item, dict) and item.get("id") != "content-crawler"
+    ]
+payload["external"].append({
     "id": "content-crawler",
     "label": "Content Crawler health",
     "command": command,
     "args": [script],
     "timeoutMs": 30000,
-}]}
+})
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(payload, handle, indent=2)
