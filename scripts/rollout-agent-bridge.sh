@@ -992,7 +992,6 @@ PY
       { print }
     ' "$env_file" > "$tmp"
     /usr/bin/chmod 0600 "$tmp"
-    /usr/bin/chown 0:0 "$tmp"
     /usr/bin/mv -f -- "$tmp" "$env_file"
   done
   "$systemctl_cmd" daemon-reload
