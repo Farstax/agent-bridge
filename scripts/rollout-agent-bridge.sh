@@ -1623,6 +1623,9 @@ fi
 if [[ -n "$autonomy_bootstrap_path" ]]; then
   acceptance_args+=(--added "$autonomy_bootstrap_path")
 fi
+if (( retiring_health == 1 )); then
+  acceptance_args+=(--removed "$retired_health_database")
+fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
 if [[ -n "$health_relocation_source" ]]; then
