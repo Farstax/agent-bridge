@@ -110,7 +110,7 @@ export class ExternalSensor implements Sensor {
           return;
         }
         if (code !== 0) {
-          finish(failure(this.id, this.label, stderr.trim() || `Sensor exited with code ${code ?? "unknown"}`));
+          finish(failure(this.id, this.label, `Sensor exited with code ${code ?? "unknown"}`));
           return;
         }
         finish(parseExternalReport(this.id, this.label, stdout));
