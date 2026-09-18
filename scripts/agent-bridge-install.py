@@ -401,6 +401,10 @@ def service_values(
     for key in set(SERVICE_KEYS) - other_tokens:
         if env.get(key, "") != "":
             values[key] = env[key]
+    if defaults_path.name == "agent-bridge-interactive":
+        for key in ("BRIDGE_RUN_INGRESS_SOCKET", "BRIDGE_RUN_INGRESS_TOKEN"):
+            if env.get(key, "") != "":
+                values[key] = env[key]
     return values
 
 
