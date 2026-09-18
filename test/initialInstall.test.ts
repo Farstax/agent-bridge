@@ -56,7 +56,7 @@ print(json.dumps({
     expect(result.inside).toEqual([false, false]);
   });
 
-  it("configures sensors on the interactive service without creating a health service", () => {
+  it("keeps Sensors in shared configuration without creating a health service", () => {
     const result = probe(`
 services = module.selected_services({
   "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
@@ -74,7 +74,8 @@ print(json.dumps({"units": [service[0] for service in services], "values": value
 
     expect(result.units).toEqual(["agent-bridge-interactive.service"]);
     expect(result.values.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBe("interactive-token");
-    expect(result.values.AGENT_BRIDGE_SENSOR_CONFIG).toBe("/etc/agent-bridge/sensors.json");
+    expect(result.values.AGENT_BRIDGE_SENSOR_CONFIG).toBeUndefined();
+    expect(result.units).not.toContain("agent-bridge-health.service");
     expect(result.values.HEALTH_DB_PATH).toBeUndefined();
   });
 
