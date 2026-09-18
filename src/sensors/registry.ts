@@ -5,7 +5,7 @@ import { ServerSensor } from "./server.js";
 import { ExternalSensor } from "./external.js";
 import type { Sensor, SensorReport } from "./types.js";
 
-const ID = /^[a-z0-9][a-z0-9._-]{0,62}$/;
+const ID = /^[a-z0-9][a-z0-9._-]{0,56}$/;
 const MAX_EXTERNAL = 32;
 
 interface ExternalDefinition {
