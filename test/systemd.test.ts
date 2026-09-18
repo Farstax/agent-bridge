@@ -22,7 +22,6 @@ describe("systemd templates", () => {
       "agent-bridge-claude.service",
       "agent-bridge-codex.service",
       "agent-bridge-discord-interactive.service",
-      "agent-bridge-health.service",
       "agent-bridge-interactive.service",
     ];
 
@@ -50,7 +49,8 @@ describe("systemd templates", () => {
 
   it(".env.shared.example exists with shared vars", () => {
     const shared = readFileSync(new URL("../.env.shared.example", import.meta.url), "utf8");
-    expect(shared).toContain("HEALTH_MONITOR_ENABLED");
+    expect(shared).toContain("AGENT_BRIDGE_SENSOR_CONFIG");
+    expect(shared).not.toContain("HEALTH_MONITOR_ENABLED");
     expect(shared).toContain("TELEGRAM_ALLOWED_USER_IDS");
     expect(shared).toContain("BRIDGE_ROOT_DIR");
     expect(shared).toContain("NODE_BIN");
