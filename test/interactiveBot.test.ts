@@ -581,9 +581,10 @@ describe("buildInteractiveCommands", () => {
 // ── command registration scopes ───────────────────────────────────────────────
 
 describe("interactive command registration scopes", () => {
-  it("registers /health only when the interactive bot owns integrated health commands", () => {
-    expect(buildInteractiveCommands("codex").map((command) => command.command)).not.toContain("health");
-    expect(buildInteractiveCommands("codex", { integratedHealth: true }).map((command) => command.command)).toContain("health");
+  it("always registers /sensors on the interactive surface", () => {
+    const commands = buildInteractiveCommands("codex").map((command) => command.command);
+    expect(commands).toContain("sensors");
+    expect(commands).not.toContain("health");
   });
 
   it("registers global private, group, and group-admin command scopes", () => {
