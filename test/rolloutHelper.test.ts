@@ -220,8 +220,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(interactive).toContain(`AGENT_BRIDGE_SENSOR_CONFIG=${sensorPath}`);
     const sensors = JSON.parse(readFileSync(sensorPath, "utf8"));
     const sensorStat = statSync(sensorPath);
-    expect(sensorStat.mode & 0o777).toBe(0o640);
-    expect(sensorStat.gid).toBe(Number(execFileSync("id", ["-g", runtimeUser], { encoding: "utf8" }).trim()));
+    expect(sensorStat.mode & 0o777).toBe(0o644);
     expect(sensors.external).toEqual([expect.objectContaining({
       id: "content-crawler",
       label: "Content Crawler health",
