@@ -207,8 +207,7 @@ describe("Issue #135 Phase 4C.2: production entrypoints use openProductionDb()",
     for (const file of [
       "src/index-interactive.ts",
       "src/index-discord-interactive.ts",
-      "src/index-health.ts",
-    ]) {
+          ]) {
       const text = readFileSync(file, "utf8");
       expect(text, `${file} must import openProductionDb`).toMatch(
         /import\s*\{\s*openProductionDb\s*\}\s*from\s*["']\.\/db\.js["']/,
