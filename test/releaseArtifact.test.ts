@@ -7,8 +7,7 @@ import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
 const REQUIRED_ENTRYPOINTS = [
   "src/index-interactive.ts",
   "src/index-discord-interactive.ts",
-  "src/index-health.ts",
-];
+  ];
 
 function baseArgs(overrides = {}) {
   return {
