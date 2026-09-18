@@ -7,6 +7,7 @@ import type { Sensor, SensorReport } from "./types.js";
 
 const ID = /^[a-z0-9][a-z0-9._-]{0,56}$/;
 const MAX_EXTERNAL = 32;
+const RESERVED_IDS = new Set(["all", "agent-bridge", "server"]);
 
 interface ExternalDefinition {
   id: string;
@@ -25,7 +26,7 @@ function readExternalDefinitions(path: string | undefined): ExternalDefinition[]
   return parsed.external.map((value, index) => {
     if (!value || typeof value !== "object") throw new Error(`sensor config entry ${index} must be an object`);
     const item = value as Record<string, unknown>;
-    if (typeof item.id !== "string" || !ID.test(item.id) || item.id === "all") throw new Error(`invalid sensor id at entry ${index}`);
+    if (typeof item.id !== "string" || !ID.test(item.id) || RESERVED_IDS.has(item.id)) throw new Error(`invalid or reserved sensor id at entry ${index}`);
     if (seen.has(item.id)) throw new Error(`duplicate sensor id: ${item.id}`);
     seen.add(item.id);
     if (typeof item.label !== "string" || !item.label.trim() || item.label.length > 100) throw new Error(`invalid sensor label: ${item.id}`);
