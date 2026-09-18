@@ -79,6 +79,17 @@ describe("authenticated ordinary Run ingress", () => {
     db.close();
   });
 
+  it("preserves a custom ACP provider selected by the interactive runtime", () => {
+    const db = setup();
+    const accepted = acceptRunIngressRequest(db, request(), {
+      expectedToken: TOKEN,
+      bot: "custom-acp",
+      runId: () => "run-custom",
+    });
+    expect(db.getRun(accepted.runId).bot).toBe("custom-acp");
+    db.close();
+  });
+
   it("executes through the surface-neutral engine and returns its bounded terminal result", async () => {
     const db = setup();
     const accepted = acceptRunIngressRequest(db, request(), { expectedToken: TOKEN, runId: () => "run-1" });
