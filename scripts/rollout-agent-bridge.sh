@@ -863,6 +863,13 @@ prepare_health_retirement_config() {
   local interactive_env="$defaults_dir/agent-bridge-interactive"
   [[ -f "$interactive_env" && ! -L "$interactive_env" ]] || die "interactive defaults are required to retire the health service"
   /usr/bin/cp -a -- "$interactive_env" "$artifact_dir/pre-health-retirement-interactive.env"
+  /usr/bin/cp -a -- "$config_file" "$artifact_dir/pre-health-retirement-rollout.conf"
+  if [[ -f "$retired_health_defaults" && ! -L "$retired_health_defaults" ]]; then
+    /usr/bin/cp -a -- "$retired_health_defaults" "$artifact_dir/pre-health-retirement-health.env"
+  fi
+  if [[ -f "$retired_health_unit" && ! -L "$retired_health_unit" ]]; then
+    /usr/bin/cp -a -- "$retired_health_unit" "$artifact_dir/pre-health-retirement-health.service"
+  fi
   if [[ -e "$sensor_config_path" || -L "$sensor_config_path" ]]; then
     [[ -f "$sensor_config_path" && ! -L "$sensor_config_path" ]] || die "existing sensor config is unsafe"
     health_sensor_config_existed=1
@@ -930,6 +937,14 @@ restore_health_retirement_config() {
   (( health_retirement_config_prepared == 1 )) || return 0
   local interactive_env="$defaults_dir/agent-bridge-interactive"
   /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-interactive.env" "$interactive_env" || return 1
+  /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-rollout.conf" "$config_file" || return 1
+  if [[ -f "$artifact_dir/pre-health-retirement-health.env" ]]; then
+    /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-health.env" "$retired_health_defaults" || return 1
+  fi
+  if [[ -f "$artifact_dir/pre-health-retirement-health.service" ]]; then
+    /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-health.service" "$retired_health_unit" || return 1
+    "$systemctl_cmd" daemon-reload >/dev/null 2>&1 || return 1
+  fi
   if (( health_sensor_config_existed == 1 )); then
     /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-sensors.json" "$sensor_config_path" || return 1
   else
@@ -960,6 +975,19 @@ os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
   /usr/bin/chown 0:0 "$config_file"
+  local env_file tmp
+  for env_file in "$shared_env" "$defaults_dir/agent-bridge-interactive"; do
+    [[ -f "$env_file" && ! -L "$env_file" ]] || continue
+    tmp="$(/usr/bin/mktemp --tmpdir="$defaults_dir" .retire-health-env.XXXXXX)"
+    /usr/bin/awk -F= '
+      $1 == "TELEGRAM_BOT_TOKEN_HEALTH" { next }
+      $1 ~ /^HEALTH_/ { next }
+      { print }
+    ' "$env_file" > "$tmp"
+    /usr/bin/chmod 0600 "$tmp"
+    /usr/bin/chown 0:0 "$tmp"
+    /usr/bin/mv -f -- "$tmp" "$env_file"
+  done
   "$systemctl_cmd" daemon-reload
   record_phase HEALTH_STATE_RETIRED
 }
