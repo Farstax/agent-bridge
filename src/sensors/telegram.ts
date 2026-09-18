@@ -21,7 +21,7 @@ export function buildSensorsKeyboard(sensors: Array<{ id: string; label: string 
 export function parseSensorCallback(value: string): string | null {
   if (!value.startsWith(SENSOR_CALLBACK_PREFIX)) return null;
   const id = value.slice(SENSOR_CALLBACK_PREFIX.length);
-  return id && Buffer.byteLength(value, "utf8") < 64 ? id : null;
+  return id && Buffer.byteLength(value, "utf8") <= 64 ? id : null;
 }
 
 export function formatSensorReport(report: SensorReport): string {
