@@ -101,6 +101,28 @@ then enters the same ordinary Run and provider-agent path.
 - **Deterministic Sensors** — inspect Agent Bridge, host, and configured external health signals on demand; scheduled checks reuse ordinary routines.
 - **Guarded operations** — qualification, schema, install, and release helpers support long-running deployments.
 
+### External Sensors
+
+Set `AGENT_BRIDGE_SENSOR_CONFIG` to an optional static JSON file to add observation-only external Sensors. Each entry supplies a stable ID/label plus an absolute executable and structured args; Agent Bridge runs it without a shell and expects one bounded JSON Sensor report on stdout.
+
+Content Crawler is the reference extension:
+
+```json
+{
+  "external": [
+    {
+      "id": "content-crawler",
+      "label": "Content Crawler health",
+      "command": "/home/agentbridge/content-crawler/venv/bin/python3",
+      "args": ["/home/agentbridge/content-crawler/scripts/health_check.py"],
+      "timeoutMs": 30000
+    }
+  ]
+}
+```
+
+Additional external Sensors use the same file and automatically appear in `/sensors`; no Sensor daemon, scheduler, database, or plugin lifecycle is involved.
+
 ## Quick start from source
 
 Requirements:
