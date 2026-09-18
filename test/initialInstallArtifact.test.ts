@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("initial installation release contract", () => {
-  it("makes the legacy installer install the interactive poller for integrated health", () => {
+  it("makes the legacy installer install the interactive poller for sensors", () => {
     const installer = readFileSync("scripts/install.sh", "utf8");
     expect(installer).toContain('prompt TELEGRAM_BOT_TOKEN_INTERACTIVE "Interactive bot token (leave blank to skip)"');
     expect(installer).toContain("_write_interactive_defaults");
@@ -25,12 +25,15 @@ describe("initial installation release contract", () => {
       "systemd/agent-bridge-claude.service",
       "systemd/agent-bridge-codex.service",
       "systemd/agent-bridge-discord-interactive.service",
-      "systemd/agent-bridge-health.service",
       "systemd/agent-bridge-interactive.service",
+      "scripts/agent-bridge-sensors.ts",
+      "bin/agent-bridge-sensors",
       "systemd/agent-bridge-tmp-cleanup.service",
       "systemd/agent-bridge-tmp-cleanup.timer",
     ]) {
       expect(workflow).toContain(requiredPath);
     }
+    expect(workflow).not.toContain("systemd/agent-bridge-health.service");
+    expect(workflow).not.toContain("configure-health-mode.py");
   });
 });
