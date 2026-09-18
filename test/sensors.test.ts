@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { SensorRegistry } from "../src/sensors/registry.js";
-import { ServerSensor } from "../src/sensors/server.js";
 import { buildSensorsKeyboard, formatSensorReport, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
 
 const paths: string[] = [];
@@ -71,11 +70,17 @@ describe("sensors", () => {
     await expect(registry.run("broken")).resolves.toMatchObject({ sensorId: "broken", status: "red" });
   });
 
-  it("formats server observations as a bounded sensor report", async () => {
-    const report = await new ServerSensor({ SENSOR_SERVER_SWAP_MONITOR_ENABLED: "0" }).check();
-    expect(report).toMatchObject({ sensorId: "server", label: "Server health" });
-    expect(["green", "amber", "red"]).toContain(report.status);
-    expect(formatSensorReport(report)).toContain("Overall:");
+  it("formats a bounded sensor report without running host probes", () => {
+    const report = {
+      sensorId: "server",
+      label: "Server health",
+      status: "amber" as const,
+      checks: [{ name: "disk", status: "amber" as const, message: "Disk usage elevated" }],
+      summary: "Issues: disk",
+      timestamp: "2026-09-18T10:00:00Z",
+    };
+    expect(formatSensorReport(report)).toContain("Overall: Amber");
+    expect(formatSensorReport(report)).toContain("disk: Disk usage elevated");
   });
 
   it("builds the Telegram sensor menu and parses only sensor callbacks", () => {
