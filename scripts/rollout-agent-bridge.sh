@@ -1060,7 +1060,7 @@ stop_and_verify_all_services() {
   if ! "$systemctl_cmd" stop "${units[@]}"; then stop_ok=0; fi
   printf '{\n  "createdAt": "%s",\n  "stopCommandSucceeded": %s,\n  "units": [\n' \
     "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" "$([[ "$stop_ok" == 1 ]] && echo true || echo false)" > "$evidence_file"
-  for unit in "${recovery_units[@]}"; do
+  for unit in "${units[@]}"; do
     if ! active_state="$("$systemctl_cmd" show "$unit" --property=ActiveState --value 2>/dev/null)" \
       || ! sub_state="$("$systemctl_cmd" show "$unit" --property=SubState --value 2>/dev/null)" \
       || ! result="$("$systemctl_cmd" show "$unit" --property=Result --value 2>/dev/null)" \
@@ -1467,8 +1467,8 @@ run_db_tool() {
 }
 
 declare -A restart_baseline=()
-"$systemctl_cmd" reset-failed "${recovery_units[@]}"
-for unit in "${recovery_units[@]}"; do
+"$systemctl_cmd" reset-failed "${units[@]}"
+for unit in "${units[@]}"; do
   assert_service_ready_for_rollout "$unit"
   restart_baseline[$unit]="$("$systemctl_cmd" show "$unit" --property=NRestarts --value)"
   [[ "${restart_baseline[$unit]}" =~ ^[0-9]+$ ]] || die "invalid NRestarts for $unit"
@@ -1563,15 +1563,15 @@ journal_since="$(/usr/bin/date -u '+%Y-%m-%d %H:%M:%S UTC')"
 start_attempted=1
 record_phase SERVICES_STARTING
 restart_boundary="$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')"
-"$systemctl_cmd" start "${recovery_units[@]}"
-for unit in "${recovery_units[@]}"; do assert_service_active "$unit"; done
+"$systemctl_cmd" start "${units[@]}"
+for unit in "${units[@]}"; do assert_service_active "$unit"; done
 services_started=1
 if (( smoke_delay > 0 )); then /usr/bin/sleep "$smoke_delay"; fi
 journal_args=()
-for unit in "${recovery_units[@]}"; do journal_args+=(-u "$unit"); done
+for unit in "${units[@]}"; do journal_args+=(-u "$unit"); done
 startup_errors="$("$journalctl_cmd" --since "$journal_since" --priority err --no-pager "${journal_args[@]}" 2>&1)" || die "journal smoke command failed"
 [[ -z "$startup_errors" || "$startup_errors" == "-- No entries --" ]] || die "startup journal smoke found errors: $startup_errors"
-for unit in "${recovery_units[@]}"; do
+for unit in "${units[@]}"; do
   assert_service_active "$unit"
   current_restarts="$("$systemctl_cmd" show "$unit" --property=NRestarts --value)"
   [[ "$current_restarts" =~ ^[0-9]+$ && "$current_restarts" == "${restart_baseline[$unit]}" ]] || die "service restarted or crash-looped during smoke: $unit"
