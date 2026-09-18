@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,8 +7,7 @@ import { buildReleaseManifest } from "../scripts/releaseManifest.mjs";
 const REQUIRED_ENTRYPOINTS = [
   "src/index-interactive.ts",
   "src/index-discord-interactive.ts",
-  "src/index-health.ts",
-];
+  ];
 
 function baseArgs(overrides = {}) {
   return {
@@ -247,6 +246,8 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('scripts/skill-manager.ts');
     expect(workflow).toContain('scripts/agent-bridge-routines.ts');
     expect(workflow).toContain('bin/agent-bridge-routines');
+    expect(workflow).toContain('bin/agent-bridge-sensors');
+    expect(statSync(join(process.cwd(), "bin/agent-bridge-sensors")).mode & 0o111).not.toBe(0);
     expect(workflow).toContain('cp -a skills/. "$root/skills/"');
     expect(workflow).not.toContain('cp -a skills "$root/skills/"');
     expect(workflow).toContain('tsconfig.json');

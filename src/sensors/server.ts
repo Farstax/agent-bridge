@@ -2,14 +2,16 @@ import os from "node:os";
 import { existsSync, readFileSync, readdirSync, statSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
-import Database from "better-sqlite3";
-import type { HealthPlugin, HealthReport, CheckResult } from "../types.js";
+import type { Sensor, SensorReport, SensorCheck } from "./types.js";
 
-export class ServerPlugin implements HealthPlugin {
-  readonly name = "server";
+export class ServerSensor implements Sensor {
+  readonly id = "server";
+  readonly label = "Server health";
 
-  async check(): Promise<HealthReport> {
-    const checks: CheckResult[] = [];
+  constructor(private readonly env: Record<string, string | undefined> = process.env) {}
+
+  async check(): Promise<SensorReport> {
+    const checks: SensorCheck[] = [];
 
     // ── Performance Checks ───────────────────────────────────────────────────
 
@@ -18,18 +20,18 @@ export class ServerPlugin implements HealthPlugin {
     const loadAvg = os.loadavg();
     const load1m = loadAvg[0] ?? 0;
     
-    const amberMultiplier = process.env.HEALTH_CPU_LOAD_AMBER_MULTIPLIER
-      ? Number(process.env.HEALTH_CPU_LOAD_AMBER_MULTIPLIER)
+    const amberMultiplier = this.env.SENSOR_SERVER_CPU_LOAD_AMBER_MULTIPLIER
+      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_AMBER_MULTIPLIER)
       : 1.0;
-    const redMultiplier = process.env.HEALTH_CPU_LOAD_RED_MULTIPLIER
-      ? Number(process.env.HEALTH_CPU_LOAD_RED_MULTIPLIER)
+    const redMultiplier = this.env.SENSOR_SERVER_CPU_LOAD_RED_MULTIPLIER
+      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_RED_MULTIPLIER)
       : 1.5;
 
-    const amberThreshold = process.env.HEALTH_CPU_LOAD_AMBER_THRESHOLD
-      ? Number(process.env.HEALTH_CPU_LOAD_AMBER_THRESHOLD)
+    const amberThreshold = this.env.SENSOR_SERVER_CPU_LOAD_AMBER_THRESHOLD
+      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_AMBER_THRESHOLD)
       : cpus * amberMultiplier;
-    const redThreshold = process.env.HEALTH_CPU_LOAD_RED_THRESHOLD
-      ? Number(process.env.HEALTH_CPU_LOAD_RED_THRESHOLD)
+    const redThreshold = this.env.SENSOR_SERVER_CPU_LOAD_RED_THRESHOLD
+      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_RED_THRESHOLD)
       : cpus * redMultiplier;
 
     let loadStatus: "green" | "amber" | "red" = "green";
@@ -37,27 +39,6 @@ export class ServerPlugin implements HealthPlugin {
       loadStatus = "red";
     } else if (load1m >= amberThreshold) {
       loadStatus = "amber";
-    }
-
-    // Suppress CPU alert when the heavy lane worker is intentionally using resources
-    let heavyLaneActive = false;
-    if (loadStatus !== "green") {
-      const heavyLaneDbPath = process.env.HEALTH_HEAVY_LANE_DB_PATH
-        ?? join(os.homedir(), "runtime", "content-crawler", "state", "content-queue.db");
-      if (existsSync(heavyLaneDbPath)) {
-        try {
-          const queueDb = new Database(heavyLaneDbPath, { readonly: true });
-          try {
-            const row = queueDb.prepare(
-              "SELECT COUNT(*) as n FROM queue_items WHERE status='processing' AND lane='heavy'"
-            ).get() as { n: number };
-            heavyLaneActive = row.n > 0;
-          } finally {
-            queueDb.close();
-          }
-        } catch { /* non-fatal — queue DB may be locked or schema differs */ }
-      }
-      if (heavyLaneActive) loadStatus = "green";
     }
 
     let topProcessesMsg = "";
@@ -72,11 +53,10 @@ export class ServerPlugin implements HealthPlugin {
 
     const load5m = loadAvg[1] ?? 0;
     const load15m = loadAvg[2] ?? 0;
-    const heavyLaneNote = heavyLaneActive ? " (heavy lane active — load expected)" : "";
     checks.push({
       name: "cpu-load",
       status: loadStatus,
-      message: `1m: ${load1m.toFixed(2)}  5m: ${load5m.toFixed(2)}  15m: ${load15m.toFixed(2)} (${cpus} CPUs)${topProcessesMsg}${heavyLaneNote}`,
+      message: `1m: ${load1m.toFixed(2)}  5m: ${load5m.toFixed(2)}  15m: ${load15m.toFixed(2)} (${cpus} CPUs)${topProcessesMsg}`,
       value: Number(load1m.toFixed(2)),
     });
 
@@ -86,8 +66,8 @@ export class ServerPlugin implements HealthPlugin {
     const usedMem = totalMem - freeMem;
     const memPct = (usedMem / totalMem) * 100;
     
-    const memAmberPct = process.env.HEALTH_MEMORY_AMBER_PCT ? Number(process.env.HEALTH_MEMORY_AMBER_PCT) : 80;
-    const memRedPct = process.env.HEALTH_MEMORY_RED_PCT ? Number(process.env.HEALTH_MEMORY_RED_PCT) : 95;
+    const memAmberPct = this.env.SENSOR_SERVER_MEMORY_AMBER_PCT ? Number(this.env.SENSOR_SERVER_MEMORY_AMBER_PCT) : 80;
+    const memRedPct = this.env.SENSOR_SERVER_MEMORY_RED_PCT ? Number(this.env.SENSOR_SERVER_MEMORY_RED_PCT) : 95;
     let memStatus: "green" | "amber" | "red" = "green";
     if (memPct >= memRedPct) {
       memStatus = "red";
@@ -109,9 +89,9 @@ export class ServerPlugin implements HealthPlugin {
     let swapStatus: "green" | "amber" | "red" = "green";
     let swapMsg = "Swap disabled";
     let swapPct: number | undefined = undefined;
-    const swapMonitorEnabled = process.env.HEALTH_SWAP_MONITOR_ENABLED !== "0" && process.env.HEALTH_SWAP_MONITOR_ENABLED !== "false";
-    const swapAmberPct = process.env.HEALTH_SWAP_AMBER_PCT ? Number(process.env.HEALTH_SWAP_AMBER_PCT) : 80;
-    const swapRedPct = process.env.HEALTH_SWAP_RED_PCT ? Number(process.env.HEALTH_SWAP_RED_PCT) : 95;
+    const swapMonitorEnabled = this.env.SENSOR_SERVER_SWAP_MONITOR_ENABLED !== "0" && this.env.SENSOR_SERVER_SWAP_MONITOR_ENABLED !== "false";
+    const swapAmberPct = this.env.SENSOR_SERVER_SWAP_AMBER_PCT ? Number(this.env.SENSOR_SERVER_SWAP_AMBER_PCT) : 80;
+    const swapRedPct = this.env.SENSOR_SERVER_SWAP_RED_PCT ? Number(this.env.SENSOR_SERVER_SWAP_RED_PCT) : 95;
     try {
       if (swapMonitorEnabled) {
         if (existsSync("/proc/meminfo")) {
@@ -427,7 +407,8 @@ export class ServerPlugin implements HealthPlugin {
                 : "green";
 
     return {
-      pluginName: this.name,
+      sensorId: this.id,
+      label: this.label,
       status: worst,
       checks,
       summary: worst === "green" ? "Server stats and security policies nominal" : "Server resource or security policy warning",

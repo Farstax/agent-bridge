@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, unlinkSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
-import type { BotKind } from "./types.js";
+import type { RouteableBotKind } from "./types.js";
 import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeEvent } from "./events/types.js";
@@ -36,11 +36,6 @@ export interface RunIngressRequest {
   prompt: string;
   token: string;
   occurredAt?: string;
-}
-
-export interface RunIngressOwnerActionRequest extends RunIngressRequest {
-  ownerAction: "investigate";
-  recovery: unknown;
 }
 
 export interface AcceptedRunIngressRequest {
@@ -90,7 +85,7 @@ function runChatKey(scopeKey: string): string {
 export function acceptRunIngressRequest(
   db: BridgeDb,
   input: RunIngressRequest,
-  options: { expectedToken?: string; bot?: BotKind; runId?: () => string; now?: () => string },
+  options: { expectedToken?: string; bot?: RouteableBotKind; runId?: () => string; now?: () => string },
 ): AcceptedRunIngressRequest {
   if (!options.expectedToken || input.token !== options.expectedToken) {
     throw new RunIngressAuthenticationError("run ingress authentication failed");
@@ -146,7 +141,7 @@ export async function executeRunIngressRequest(
   db: BridgeDb,
   receiptId: number,
   engine: RunIngressEngine,
-  options: { bot?: BotKind } = {},
+  options: { bot?: RouteableBotKind } = {},
 ): Promise<RunIngressResponse> {
   const receipt = db.getEventReceipt(receiptId);
   if (!receipt?.run_id) throw new Error("run ingress receipt has no linked Run");
@@ -235,7 +230,6 @@ export class RunIngressServer {
     expectedToken: string;
     accept: (request: RunIngressRequest) => AcceptedRunIngressRequest;
     execute: (receiptId: number) => Promise<RunIngressResponse>;
-    ownerAction?: (request: RunIngressOwnerActionRequest) => Promise<RunIngressResponse>;
   }) {}
 
   async start(): Promise<void> {
@@ -291,12 +285,8 @@ export class RunIngressServer {
 
   private async handle(raw: string): Promise<WireResponse> {
     try {
-      const request = JSON.parse(raw) as RunIngressRequest & { ownerAction?: string; recovery?: unknown };
+      const request = JSON.parse(raw) as RunIngressRequest;
       if (request.token !== this.options.expectedToken) throw new RunIngressAuthenticationError("run ingress authentication failed");
-      if (request.ownerAction !== undefined) {
-        if (request.ownerAction !== "investigate" || !this.options.ownerAction || !request.recovery) throw new RunIngressRequestError("unsupported owner action");
-        return { ok: true, response: await this.options.ownerAction(request as RunIngressOwnerActionRequest) };
-      }
       const accepted = this.options.accept(request);
       return { ok: true, response: await this.options.execute(accepted.receiptId) };
     } catch (error) {

@@ -192,13 +192,11 @@ sudo -n /usr/local/sbin/restart-agent-bridge
 
 Direct restarts are for an external operator/session. Keep helper sudo narrow; do not replace broader runtime sudo policy or grant ad-hoc raw `systemctl` rules for this purpose.
 
-### Health authority
+### Sensors
 
-Health events are evidence, not mutation authority. Health event Runs use `health:report-only`; they do not grant deploy/restart/credential/permission/repository mutation authority. `HEALTH_EVENT_TOKEN` is required for authenticated scheduler-to-agent event execution and the path fails closed when absent.
+Sensors are deterministic observation-only checks. They may read current Agent Bridge, host, or configured external state and return bounded structured observations. Sensors do not schedule themselves, persist health history, notify, investigate, remediate, upgrade providers, create Runs, or grant mutation authority.
 
-Health suggestions must execute through the configured agent/provider kind so invocation, parsing, and rendering use the same provider contract as normal Runs; the health service must not invent a parallel provider invocation path.
-
-Manual `/health` returns one combined report; plugin reports may be persisted silently for status context rather than double-sent. `HEALTH_SUGGEST_*` is the documented suggestion config family; `HEALTH_CLI_*` remains compatibility-only.
+`/sensors` on the interactive Telegram surface owns manual discovery/execution. Scheduled observation uses the existing scheduled-routines path and therefore ordinary Runs. Investigation uses ordinary conversation/Run authority and `systematic-debugging`. External sensors are statically configured commands using the shared Sensor contract; do not add a sensor daemon, database, scheduler, registry service, or event bus.
 
 ### CLI effort
 

@@ -48,10 +48,9 @@ import { getExecutionProcessState } from "./cliSupervisor.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
-import { parseHealthBotMode } from "./health/config.js";
-import { createHealthRuntime } from "./health/runtime.js";
-import { handleIntegratedHealthCommand } from "./health/integrated.js";
-import { autoUpdateClis } from "./health/autoRemediate.js";
+import { SensorRegistry } from "./sensors/registry.js";
+import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, isSensorsCommand, parseSensorCallback } from "./sensors/telegram.js";
+import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } from "./runIngress.js";
 import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { loadWorkspaceContext } from "./workspaceContext.js";
@@ -91,7 +90,6 @@ const pollIntervalMs = Number(process.env.POLL_INTERVAL_MS || 1000);
 const executionMode = resolveExecutionMode(providerLock ?? "codex", process.env);
 validateBusyMessageModeEnv(process.env);
 const busyMessageMode = resolveBusyMessageMode(process.env);
-const integratedHealth = !providerLock && parseHealthBotMode(process.env) === "integrated";
 const {
   enabled: autonomyEnabled,
   dir: autonomyDir,
@@ -155,34 +153,8 @@ const ownerNotificationIngress = ownerNotificationSocketPath
   : null;
 if (ownerNotificationIngress) {
   console.log(`[interactive] owner notification ingress listening on ${ownerNotificationSocketPath}`);
-  let stopping = false;
-  const stopOwnerNotificationIngress = () => {
-    if (stopping) return;
-    stopping = true;
-    void ownerNotificationIngress.stop().finally(() => process.exit(0));
-  };
-  process.once("SIGINT", stopOwnerNotificationIngress);
-  process.once("SIGTERM", stopOwnerNotificationIngress);
 }
-const healthDbPath = process.env.HEALTH_DB_PATH || "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
-const healthDb = integratedHealth ? openProductionDb(healthDbPath, {
-  serviceId: "telegram:interactive-health",
-  installationId: process.env.AGENT_BRIDGE_INSTALLATION_ID,
-  requireInstallationIdentity: process.env.NODE_ENV === "production" && Boolean(process.env.AGENT_BRIDGE_INSTALLATION_ID?.trim()),
-  databaseRole: "health",
-}) : null;
-const integratedHealthRuntime = healthDb ? createHealthRuntime({
-  bridgeDb: healthDb,
-  dbPath: healthDbPath,
-  env: process.env,
-  chatId: 0,
-  sendText: async () => {},
-  onReport: (report, sendNotification) => autoUpdateClis(report, {
-    upgradeScript: `${process.env.BRIDGE_PROJECT_DIR ?? process.cwd()}/scripts/upgrade.sh`,
-    sendNotification,
-    bridgeCommit: process.env.AGENT_BRIDGE_COMMIT ?? process.env.BRIDGE_COMMIT ?? process.env.BRIDGE_RELEASE_COMMIT,
-  }),
-}) : null;
+const sensorRegistry = new SensorRegistry({ db, dbPath, env: process.env });
 
 await db.reconcileOrphanedRuns({
   minAgeMs: Number(process.env.ORPHAN_RECONCILIATION_MIN_AGE_MS || 10 * 60 * 1000),
@@ -293,6 +265,33 @@ const defaultPref = providerLock
   ?? resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds())
   ?? "codex";
 
+const runIngressSocket = process.env.BRIDGE_RUN_INGRESS_SOCKET?.trim();
+const runIngressToken = process.env.BRIDGE_RUN_INGRESS_TOKEN?.trim();
+const runIngress = !providerLock && runIngressSocket && runIngressToken
+  ? new RunIngressServer({
+      socketPath: runIngressSocket,
+      expectedToken: runIngressToken,
+      accept: (request) => acceptRunIngressRequest(db, request, { expectedToken: runIngressToken, bot: defaultPref }),
+      execute: (receiptId) => executeRunIngressRequest(db, receiptId, engines[defaultPref], { bot: defaultPref }),
+    })
+  : null;
+if (runIngress) {
+  await runIngress.start();
+  console.log(`[interactive] run ingress listening on ${runIngressSocket}`);
+}
+
+let shuttingDown = false;
+const shutdownInteractive = () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  void Promise.allSettled([
+    ownerNotificationIngress?.stop() ?? Promise.resolve(),
+    runIngress?.close() ?? Promise.resolve(),
+  ]).finally(() => process.exit(0));
+};
+process.once("SIGINT", shutdownInteractive);
+process.once("SIGTERM", shutdownInteractive);
+
 const AUTONOMY_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const autonomyWorkspaceContext = autonomyDir
   ? loadWorkspaceContext({ ...process.env, AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE: join(autonomyDir, "CONTEXT.md") })
@@ -339,7 +338,7 @@ const autonomyController = autonomyDb && autonomyDir && autonomyEngines ? new Au
 autonomyController?.resumeActive();
 
 async function registerGlobalCommands(pref: CliKind, label: string): Promise<void> {
-  for (const body of buildGlobalInteractiveCommandRegistrations(pref, { integratedHealth, autonomy: autonomyEnabled })) {
+  for (const body of buildGlobalInteractiveCommandRegistrations(pref, { autonomy: autonomyEnabled })) {
     const scopeName = body.scope?.type ?? "default";
     await client.setMyCommands(body)
       .catch((err: unknown) => console.warn(`[interactive] setMyCommands (${scopeName}) failed${label}`, err));
@@ -347,7 +346,7 @@ async function registerGlobalCommands(pref: CliKind, label: string): Promise<voi
 }
 
 async function registerGroupChatCommands(pref: CliKind, chatId: number): Promise<void> {
-  for (const body of buildChatInteractiveCommandRegistrations(pref, chatId, { integratedHealth, autonomy: autonomyEnabled })) {
+  for (const body of buildChatInteractiveCommandRegistrations(pref, chatId, { autonomy: autonomyEnabled })) {
     const scopeName = body.scope?.type ?? "chat";
     await client.setMyCommands(body)
       .catch((err: unknown) => console.warn(`[interactive] setMyCommands (${scopeName} ${chatId}) failed`, err));
@@ -566,34 +565,60 @@ for (;;) {
           })) {
             continue;
           }
-          if (integratedHealthRuntime && await handleIntegratedHealthCommand({
-            rawText,
-            botUsername,
-            chatId,
-            runCheck: () => integratedHealthRuntime.runChecks(async (text) => {
-              await sendTelegramMessage({
-                client,
-                kind: "interactive",
-                chatId,
-                body: { text, message_thread_id: message.message_thread_id },
-              });
-            }),
-            getStatus: () => integratedHealthRuntime.statusText(),
-            sendText: async (text) => {
-              await sendTelegramMessage({
-                client,
-                kind: "interactive",
-                chatId,
-                body: { text, message_thread_id: message.message_thread_id },
-              });
-            },
-          })) {
+          if (isSensorsCommand(rawText, botUsername)) {
+            await sendTelegramMessage({
+              client,
+              kind: "interactive",
+              chatId,
+              body: {
+                text: "Sensors",
+                reply_markup: buildSensorsKeyboard(sensorRegistry.list()),
+                message_thread_id: message.message_thread_id,
+              },
+            });
             continue;
           }
         }
 
         const cbq = typedUpdate.callback_query;
         if (cbq?.data) {
+          const sensorId = parseSensorCallback(cbq.data);
+          if (sensorId !== null) {
+            const known = sensorId === "all" || sensorRegistry.list().some((sensor) => sensor.id === sensorId);
+            await client.answerCallbackQuery({
+              callback_query_id: cbq.id,
+              text: known ? "Running sensor…" : "Unknown sensor",
+            });
+            if (!known) continue;
+            const callbackChatId = cbq.message?.chat?.id;
+            const callbackThreadId = cbq.message?.message_thread_id;
+            if (callbackChatId != null) {
+              setTimeout(() => {
+                const run = sensorId === "all"
+                  ? sensorRegistry.runAll().then(formatSensorReports)
+                  : sensorRegistry.run(sensorId).then(formatSensorReport);
+                void run
+                  .then((text) => sendTelegramMessage({
+                    client,
+                    kind: "interactive",
+                    chatId: callbackChatId,
+                    body: { text, message_thread_id: callbackThreadId },
+                  }))
+                  .catch((error: unknown) => sendTelegramMessage({
+                    client,
+                    kind: "interactive",
+                    chatId: callbackChatId,
+                    body: {
+                      text: `Sensor check failed: ${error instanceof Error ? error.message : String(error)}`,
+                      message_thread_id: callbackThreadId,
+                    },
+                  }))
+                  .catch((error: unknown) => console.error("[interactive] failed to send sensor result", error));
+              }, 0);
+            }
+            continue;
+          }
+
           const newCli = handleCliSwitchCallback(cbq.data);
           if (newCli !== null) {
             if (providerLock) {

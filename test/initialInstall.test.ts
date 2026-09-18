@@ -56,44 +56,27 @@ print(json.dumps({
     expect(result.inside).toEqual([false, false]);
   });
 
-  it("installs health as a send-only scheduler with the interactive token in integrated mode", () => {
+  it("keeps Sensors in shared configuration without creating a health service", () => {
     const result = probe(`
 services = module.selected_services({
-  "HEALTH_BOT_MODE": "integrated",
   "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
+  "AGENT_BRIDGE_SENSOR_CONFIG": "/etc/agent-bridge/sensors.json",
 })
-health = next(service for service in services if service[0] == "agent-bridge-health.service")
 interactive = next(service for service in services if service[0] == "agent-bridge-interactive.service")
-health_path = pathlib.Path("/custom-state/health/bridge.sqlite")
-health_values = module.service_values(
-  {"HEALTH_BOT_MODE": "integrated", "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token"},
-  pathlib.Path("/etc/default/agent-bridge-health"), health_path, health[2], health_path,
+values = module.service_values(
+  {"TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token", "AGENT_BRIDGE_SENSOR_CONFIG": "/etc/agent-bridge/sensors.json"},
+  pathlib.Path("/etc/default/agent-bridge-interactive"),
+  pathlib.Path("/custom-state/interactive/bridge.sqlite"),
+  interactive[2],
 )
-interactive_values = module.service_values(
-  {"HEALTH_BOT_MODE": "integrated", "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token"},
-  pathlib.Path("/etc/default/agent-bridge-interactive"), pathlib.Path("/custom-state/interactive/bridge.sqlite"), interactive[2], health_path,
-)
-print(json.dumps({"units": [service[0] for service in services], "health_values": health_values, "interactive_values": interactive_values}))
-`) as { units: string[]; health_values: Record<string, string>; interactive_values: Record<string, string> };
+print(json.dumps({"units": [service[0] for service in services], "values": values}))
+`) as { units: string[]; values: Record<string, string> };
 
-    expect(result.units).toEqual([
-      "agent-bridge-interactive.service",
-      "agent-bridge-health.service",
-    ]);
-    expect(result.health_values.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBe("interactive-token");
-    expect(result.health_values.TELEGRAM_BOT_TOKEN_HEALTH).toBeUndefined();
-    expect(result.health_values.HEALTH_DB_PATH).toBe("/custom-state/health/bridge.sqlite");
-    expect(result.interactive_values.HEALTH_DB_PATH).toBe("/custom-state/health/bridge.sqlite");
-  });
-
-  it("rejects integrated health without its interactive polling token", () => {
-    const result = probe(`
-try:
-  module.selected_services({"HEALTH_BOT_MODE": "integrated"})
-except Exception as error:
-  print(json.dumps({"error": str(error)}))
-`) as { error: string };
-    expect(result.error).toContain("TELEGRAM_BOT_TOKEN_INTERACTIVE is required");
+    expect(result.units).toEqual(["agent-bridge-interactive.service"]);
+    expect(result.values.TELEGRAM_BOT_TOKEN_INTERACTIVE).toBe("interactive-token");
+    expect(result.values.AGENT_BRIDGE_SENSOR_CONFIG).toBeUndefined();
+    expect(result.units).not.toContain("agent-bridge-health.service");
+    expect(result.values.HEALTH_DB_PATH).toBeUndefined();
   });
 
   it("bootstraps every selected fresh database with its fixed database role", () => {
@@ -107,7 +90,6 @@ account = type("Account", (), {"pw_name": "agentbridge"})()
 services = module.selected_services({
   "TELEGRAM_BOT_TOKEN_CODEX": "codex-token",
   "TELEGRAM_BOT_TOKEN_INTERACTIVE": "interactive-token",
-  "TELEGRAM_BOT_TOKEN_HEALTH": "health-token",
 })
 paths = [module.database_path(pathlib.Path("/var/lib/agent-bridge"), service) for service in services]
 with tempfile.TemporaryDirectory() as directory:
@@ -132,12 +114,6 @@ print(json.dumps({"calls": calls}))
         expect.stringMatching(/\/release\/node_modules\/tsx\/dist\/cli\.mjs$/), expect.stringMatching(/\/release\/scripts\/rollout-db\.ts$/), "bootstrap",
         "--db", "/var/lib/agent-bridge/interactive/bridge.sqlite", "--role", "interactive",
         "--confirm-new-role", "/var/lib/agent-bridge/interactive/bridge.sqlite",
-      ],
-      [
-        "/usr/sbin/runuser", "--user", "agentbridge", "--", "/usr/bin/node",
-        expect.stringMatching(/\/release\/node_modules\/tsx\/dist\/cli\.mjs$/), expect.stringMatching(/\/release\/scripts\/rollout-db\.ts$/), "bootstrap",
-        "--db", "/var/lib/agent-bridge/health/bridge.sqlite", "--role", "health",
-        "--confirm-new-role", "/var/lib/agent-bridge/health/bridge.sqlite",
       ],
     ]);
   });
@@ -215,7 +191,8 @@ print(json.dumps({"calls": calls}))
       "git-sandbox",
       "cli-auth-telegram",
       "autonomous-work",
-      "health-troubleshooting",
+      "scheduled-routines",
+      "sensors",
       "advisor",
       "engineering-retro",
     ];

@@ -12,14 +12,13 @@ import { fileURLToPath } from "node:url";
 const rolloutScript = fileURLToPath(new URL("../scripts/rollout-db.ts", import.meta.url));
 
 describe("canonical production schema contract", () => {
-  it("derives the health table from the health migration contract", () => {
+  it("keeps the retired health role on the canonical shared schema without a health-owned table", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-schema-contract-"));
     const db = new Database(join(root, "health.sqlite"));
     try {
       applyMigrations(db, undefined, "health");
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'health_plugin_reports'").get()).toBeTruthy();
-      expect(canonicalSchemaTablesForRole("health")).toContain("health_plugin_reports");
-      expect(canonicalSchemaTablesForRole("shared")).not.toContain("health_plugin_reports");
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'health_plugin_reports'").get()).toBeUndefined();
+      expect(canonicalSchemaTablesForRole("health")).not.toContain("health_plugin_reports");
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -37,7 +36,7 @@ describe("canonical production schema contract", () => {
     expect(canonicalSchemaTablesForRole("health")).not.toContain("unmanaged_table");
   });
 
-  it("accepts a canonical health table without a rollout-validator table-list edit", () => {
+  it("accepts the historical health database role without any health-owned tables", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-schema-contract-rollout-"));
     const path = join(root, "health.sqlite");
     try {
@@ -62,14 +61,4 @@ describe("canonical production schema contract", () => {
     }
   });
 
-  it("does not let the health report feature create its durable table", async () => {
-    const { HealthReportStore } = await import("../src/health/reports.js");
-    const db = new Database(":memory:");
-    try {
-      new HealthReportStore(db);
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'health_plugin_reports'").get()).toBeUndefined();
-    } finally {
-      db.close();
-    }
-  });
 });

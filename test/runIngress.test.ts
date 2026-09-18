@@ -79,6 +79,17 @@ describe("authenticated ordinary Run ingress", () => {
     db.close();
   });
 
+  it("preserves a custom ACP provider selected by the interactive runtime", () => {
+    const db = setup();
+    const accepted = acceptRunIngressRequest(db, request(), {
+      expectedToken: TOKEN,
+      bot: "custom-acp",
+      runId: () => "run-custom",
+    });
+    expect(db.getRun(accepted.runId).bot).toBe("custom-acp");
+    db.close();
+  });
+
   it("executes through the surface-neutral engine and returns its bounded terminal result", async () => {
     const db = setup();
     const accepted = acceptRunIngressRequest(db, request(), { expectedToken: TOKEN, runId: () => "run-1" });
@@ -132,31 +143,6 @@ describe("authenticated ordinary Run ingress", () => {
     });
     expect(JSON.parse(await send(request({ token: "wrong" })))).toMatchObject({ ok: false });
     expect(JSON.parse(await send(request()))).toMatchObject({ ok: true, response: { status: "done", result: "bounded" } });
-    await server.close();
-  });
-
-  it("routes an explicit authenticated owner action to its existing execution owner", async () => {
-    const socketPath = join(tmpdir(), `run-ingress-owner-${Date.now()}-${Math.random()}.sock`);
-    let calls = 0;
-    const server = new RunIngressServer({
-      socketPath,
-      expectedToken: TOKEN,
-      accept: (input) => ({ receiptId: 1, runId: input.requestId, created: true }),
-      execute: async () => ({ runId: "run-1", status: "done", result: "ordinary" }),
-      ownerAction: async (input) => { calls += 1; expect(input.ownerAction).toBe("investigate"); return { runId: "run-owner", status: "done", result: "accepted" }; },
-    });
-    await server.start();
-    const output = await new Promise<string>((resolve, reject) => {
-      const socket = createConnection(socketPath);
-      let body = "";
-      socket.setEncoding("utf8");
-      socket.on("data", (chunk) => { body += chunk; });
-      socket.once("error", reject);
-      socket.on("end", () => resolve(body));
-      socket.end(JSON.stringify({ ...request(), ownerAction: "investigate", recovery: { ownerAction: "investigate" } }));
-    });
-    expect(JSON.parse(output)).toMatchObject({ ok: true, response: { runId: "run-owner" } });
-    expect(calls).toBe(1);
     await server.close();
   });
 

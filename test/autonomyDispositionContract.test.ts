@@ -134,26 +134,6 @@ describe("run-scoped autonomous disposition contract", () => {
     }
   });
 
-  it("keeps external-observation goals active when the provider declares done", async () => {
-    const { db, dbPath } = makeDb();
-    try {
-      createAutonomousGoal(db, {
-        goalId: "external-done",
-        prompt: "Investigate health",
-        constraints: ["autonomous-policy:external-health-observation"],
-        bot: "claude",
-        maxCycles: 3,
-      });
-      await runNextAutonomousGoal(db, "external-done", engineWithDisposition("done", "Repair applied; awaiting health observation."));
-      expect(getAutonomousGoal(db, "external-done").status).toBe("active");
-      const pending = db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = 'autonomous' AND event_kind = 'goal_wake' AND status = 'received'").get() as any;
-      expect(pending.count).toBe(0);
-    } finally {
-      db.close();
-      removeDb(dbPath);
-    }
-  });
-
   it("projects --notify only after a successful reconciliation", async () => {
     const { db, dbPath } = makeDb();
     try {

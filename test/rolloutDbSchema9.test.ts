@@ -11,7 +11,6 @@ import { applyMigrationsUpTo, CURRENT_SCHEMA_VERSION } from "../src/db/schema.js
 import { applyRoleAssignmentsMigration } from "../src/db/roleAssignmentsMigration.js";
 import { applyReconciliationAuditMigration } from "../src/db/reconciliationAuditMigration.js";
 import { applyMemoryResolutionMigration } from "../src/db/memoryResolutionMigration.js";
-import { applyHealthSchemaMigration } from "../src/db/healthSchemaMigration.js";
 import { applyEventReceiptsMigration } from "../src/db/eventReceiptsMigration.js";
 import { applyAutonomousGoalsMigration } from "../src/db/autonomousGoalsMigration.js";
 
@@ -29,7 +28,7 @@ function createVersion8Database(): string {
     { version: 3, name: "add-dormant-role-assignments", up: applyRoleAssignmentsMigration },
     { version: 4, name: "add-reconciliation-audit", up: applyReconciliationAuditMigration },
     { version: 5, name: "add-memory-resolution", up: applyMemoryResolutionMigration },
-    { version: 6, name: "add-health-report-read-model", up: applyHealthSchemaMigration },
+    { version: 6, name: "retired-health-report-read-model", up: () => {} },
     { version: 7, name: "add-health-event-receipts", up: applyEventReceiptsMigration },
     { version: 8, name: "add-autonomous-goals", up: applyAutonomousGoalsMigration },
   ], 8);

@@ -12,6 +12,7 @@ readonly -a ALLOWED_UNITS=(
   agent-bridge-claude.service
   agent-bridge-codex.service
   agent-bridge-discord-interactive.service
+  # Legacy input only: removed from the target cohort when the release no longer carries it.
   agent-bridge-health.service
   agent-bridge-interactive.service
 )
@@ -149,6 +150,16 @@ done < "$config_file"
 
 health_relocation_source=""
 health_relocation_target=""
+retiring_health=0
+retired_health_database=""
+retired_health_defaults="$defaults_dir/agent-bridge-health"
+retired_health_unit="$systemd_unit_dir/agent-bridge-health.service"
+sensor_config_path="$(/usr/bin/realpath -m "$defaults_dir/../agent-bridge/sensors.json")"
+declare -a rollback_units=("${units[@]}")
+declare -a backup_database_inventory=("${databases[@]}")
+declare -a recovery_db_args=()
+health_retirement_config_prepared=0
+health_sensor_config_existed=0
 
 release_mode=0
 if [[ -n "$release_root" || -n "$current_pointer" ]]; then
@@ -438,6 +449,9 @@ for unit in "${units[@]}"; do
   [[ -z "${selected_units[$unit]:-}" ]] || die "duplicate selected unit: $unit"
   selected_units[$unit]=1
 done
+if (( release_mode == 1 ))   && [[ -n "${selected_units[agent-bridge-health.service]:-}" ]]   && [[ ! -f "$release_dir/systemd/agent-bridge-health.service" ]]; then
+  retiring_health=1
+fi
 
 shared_env="$defaults_dir/agent-bridge-shared"
 if [[ -e "$shared_env" ]]; then validate_secure_path "$shared_env" file; fi
@@ -524,6 +538,10 @@ for unit in "${units[@]}"; do
   esac
   discovered_databases[$canonical]=1
 done
+if (( retiring_health == 1 )); then
+  retired_health_database="${unit_databases[agent-bridge-health.service]:-}"
+  [[ -n "$retired_health_database" ]] || die "legacy health unit has no resolved database"
+fi
 
 # The interactive service may own a second production database for the
 # autonomy runtime (issue #498). Resolve it from the same validated
@@ -593,6 +611,12 @@ done
 (( ${#canonical_databases[@]} == ${#discovered_databases[@]} )) || die "configured and discovered database inventory counts differ"
 for database in "${!canonical_databases[@]}"; do [[ -n "${discovered_databases[$database]:-}" ]] || die "extra configured database not selected by any unit: $database"; done
 for database in "${!discovered_databases[@]}"; do [[ -n "${canonical_databases[$database]:-}" ]] || die "discovered database missing from root allowlist: $database"; done
+backup_database_inventory=("${databases[@]}")
+recovery_db_args=()
+for database in "${backup_database_inventory[@]}"; do recovery_db_args+=(--db "$database"); done
+for unit in "${!unit_databases[@]}"; do recovery_db_args+=(--resolving-unit "${unit_databases[$unit]}=$unit"); done
+for unit in "${!unit_databases[@]}"; do recovery_db_args+=(--database-role "${unit_databases[$unit]}=${unit_roles[$unit]}"); done
+
 if [[ -n "$autonomy_bootstrap_path" ]]; then
   autonomy_parent_dir="$(/usr/bin/dirname -- "$autonomy_bootstrap_path")"
   [[ -d "$autonomy_parent_dir" && ! -L "$autonomy_parent_dir" && "$(/usr/bin/realpath -e "$autonomy_parent_dir")" == "$autonomy_parent_dir" ]] \
@@ -766,8 +790,8 @@ backup_databases() {
   printf 'index\tsource\tbackup\tuid\tgid\tmode\tsize\tsource_sha256\tbackup_sha256\tparent_device\tparent_inode\tparent_uid\tparent_gid\tparent_mode\n' > "$manifest"
   local index source source_dir backup uid gid mode size source_hash backup_hash backup_canonical
   local parent_device parent_inode parent_uid parent_gid parent_mode
-  for index in "${!databases[@]}"; do
-    source="${databases[$index]}"
+  for index in "${!backup_database_inventory[@]}"; do
+    source="${backup_database_inventory[$index]}"
     source_dir="$(/usr/bin/dirname "$source")"
     [[ -d "$source_dir" && ! -L "$source_dir" && "$(/usr/bin/realpath -e "$source_dir")" == "$source_dir" ]] || die "database parent is unsafe: $source_dir"
     [[ ! -e "${source}-wal" && ! -e "${source}-shm" ]] || die "database has live WAL/SHM sidecars after service stop: $source"
@@ -804,7 +828,7 @@ restore_backups() {
   while IFS=$'\t' read -r index source backup uid gid mode size source_hash backup_hash parent_device parent_inode parent_uid parent_gid parent_mode; do
     [[ "$index" == "index" ]] && continue
     [[ "$index" =~ ^[0-9]+$ && "$index" == "$restored_count" ]] || { echo "invalid rollback manifest index: $index" >&2; restore_failed=1; continue; }
-    [[ "$source" == "${databases[$index]:-}" && "$backup" == "${expected_backups[$index]:-}" ]] || { echo "rollback manifest path mismatch at index $index" >&2; restore_failed=1; continue; }
+    [[ "$source" == "${backup_database_inventory[$index]:-}" && "$backup" == "${expected_backups[$index]:-}" ]] || { echo "rollback manifest path mismatch at index $index" >&2; restore_failed=1; continue; }
     source_dir="$(/usr/bin/dirname "$source")"
     [[ -f "$source" && ! -L "$source" && -f "$backup" && ! -L "$backup" ]] || { echo "unsafe rollback source or backup at index $index" >&2; restore_failed=1; continue; }
     [[ "$(/usr/bin/realpath -e "$source")" == "$source" && "$(/usr/bin/realpath -e "$backup")" == "$backup" && "$(/usr/bin/dirname "$backup")" == "$backup_set" ]] || { echo "rollback path escaped fixed inventory at index $index" >&2; restore_failed=1; continue; }
@@ -818,13 +842,169 @@ restore_backups() {
     [[ "$(/usr/bin/sha256sum "$source" | /usr/bin/cut -d' ' -f1)" == "$source_hash" && "$(/usr/bin/stat -c %u "$source")" == "$uid" && "$(/usr/bin/stat -c %g "$source")" == "$gid" && "$(/usr/bin/stat -c %a "$source")" == "$mode" && "$(/usr/bin/stat -c %s "$source")" == "$size" ]] || { echo "restored database verification failed: $source" >&2; restore_failed=1; continue; }
     restored_count=$((restored_count + 1))
   done < "$manifest"
-  (( restored_count == ${#databases[@]} )) || restore_failed=1
+  (( restored_count == ${#backup_database_inventory[@]} )) || restore_failed=1
   (( restore_failed == 0 )) || { echo "ROLLBACK INCOMPLETE; services remain stopped" >&2; return 1; }
   echo "database rollback completed with metadata and hashes verified"
 }
 
+set_private_env_key() {
+  local file="$1" key="$2" value="$3" tmp
+  [[ -f "$file" && ! -L "$file" ]] || die "private environment file is missing or unsafe: $file"
+  tmp="$(/usr/bin/mktemp --tmpdir="$defaults_dir" ".${key}.XXXXXX")"
+  /usr/bin/awk -F= -v key="$key" '$1 != key { print }' "$file" > "$tmp"
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  /usr/bin/chmod 0600 "$tmp"
+  /usr/bin/mv -f -- "$tmp" "$file"
+}
+
+prepare_health_retirement_config() {
+  (( retiring_health == 1 )) || return 0
+  local interactive_env="$defaults_dir/agent-bridge-interactive"
+  [[ -f "$interactive_env" && ! -L "$interactive_env" ]] || die "interactive defaults are required to retire the health service"
+  /usr/bin/cp -a -- "$interactive_env" "$artifact_dir/pre-health-retirement-interactive.env"
+  /usr/bin/cp -a -- "$config_file" "$artifact_dir/pre-health-retirement-rollout.conf"
+  if [[ -f "$retired_health_defaults" && ! -L "$retired_health_defaults" ]]; then
+    /usr/bin/cp -a -- "$retired_health_defaults" "$artifact_dir/pre-health-retirement-health.env"
+  fi
+  if [[ -f "$retired_health_unit" && ! -L "$retired_health_unit" ]]; then
+    /usr/bin/cp -a -- "$retired_health_unit" "$artifact_dir/pre-health-retirement-health.service"
+  fi
+  if [[ -e "$sensor_config_path" || -L "$sensor_config_path" ]]; then
+    [[ -f "$sensor_config_path" && ! -L "$sensor_config_path" ]] || die "existing sensor config is unsafe"
+    health_sensor_config_existed=1
+    /usr/bin/cp -a -- "$sensor_config_path" "$artifact_dir/pre-health-retirement-sensors.json"
+  fi
+
+  local ingress_socket="" ingress_token="" crawler_enabled="" crawler_script="" runtime_home python_path
+  if [[ -f "$retired_health_defaults" && ! -L "$retired_health_defaults" ]]; then
+    resolved_env_value=""
+    read_env_key "$retired_health_defaults" BRIDGE_RUN_INGRESS_SOCKET ""
+    ingress_socket="$resolved_env_value"
+    resolved_env_value=""
+    read_env_key "$retired_health_defaults" BRIDGE_RUN_INGRESS_TOKEN ""
+    ingress_token="$resolved_env_value"
+  fi
+  if [[ -n "$ingress_socket" ]]; then set_private_env_key "$interactive_env" BRIDGE_RUN_INGRESS_SOCKET "$ingress_socket"; fi
+  if [[ -n "$ingress_token" ]]; then set_private_env_key "$interactive_env" BRIDGE_RUN_INGRESS_TOKEN "$ingress_token"; fi
+
+  resolved_env_value=""
+  read_env_key "$shared_env" HEALTH_CONTENT_CRAWLER_ENABLED ""
+  crawler_enabled="$resolved_env_value"
+  if [[ -f "$retired_health_defaults" && ! -L "$retired_health_defaults" ]]; then
+    read_env_key "$retired_health_defaults" HEALTH_CONTENT_CRAWLER_ENABLED "$crawler_enabled"
+    crawler_enabled="$resolved_env_value"
+  fi
+  if [[ "$crawler_enabled" == "1" ]]; then
+    resolved_env_value=""
+    read_env_key "$shared_env" HEALTH_CONTENT_CRAWLER_SCRIPT ""
+    crawler_script="$resolved_env_value"
+    if [[ -f "$retired_health_defaults" && ! -L "$retired_health_defaults" ]]; then
+      read_env_key "$retired_health_defaults" HEALTH_CONTENT_CRAWLER_SCRIPT "$crawler_script"
+      crawler_script="$resolved_env_value"
+    fi
+    runtime_home="$(/usr/bin/getent passwd "$runtime_user" | /usr/bin/cut -d: -f6)"
+    [[ "$runtime_home" == /* ]] || die "runtime home is unavailable for Content Crawler sensor migration"
+    [[ -n "$crawler_script" ]] || crawler_script="$runtime_home/content-crawler/scripts/health_check.py"
+    python_path="$runtime_home/content-crawler/venv/bin/python3"
+    /usr/bin/mkdir -p -- "$(/usr/bin/dirname "$sensor_config_path")"
+    /usr/bin/python3 - "$sensor_config_path" "$python_path" "$crawler_script" <<'PY'
+import json
+import os
+import sys
+path, command, script = sys.argv[1:]
+payload = {"external": []}
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as handle:
+        existing = json.load(handle)
+    if not isinstance(existing, dict) or not isinstance(existing.get("external", []), list):
+        raise RuntimeError("existing sensor config has invalid external list")
+    payload["external"] = [
+        item for item in existing.get("external", [])
+        if isinstance(item, dict) and item.get("id") != "content-crawler"
+    ]
+payload["external"].append({
+    "id": "content-crawler",
+    "label": "Content Crawler health",
+    "command": command,
+    "args": [script],
+    "timeoutMs": 30000,
+})
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o644)
+os.replace(tmp, path)
+PY
+    /usr/bin/chmod 0644 "$sensor_config_path"
+    set_private_env_key "$interactive_env" AGENT_BRIDGE_SENSOR_CONFIG "$sensor_config_path"
+  fi
+  health_retirement_config_prepared=1
+}
+
+restore_health_retirement_config() {
+  (( health_retirement_config_prepared == 1 )) || return 0
+  local interactive_env="$defaults_dir/agent-bridge-interactive"
+  /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-interactive.env" "$interactive_env" || return 1
+  /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-rollout.conf" "$config_file" || return 1
+  if [[ -f "$artifact_dir/pre-health-retirement-health.env" ]]; then
+    /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-health.env" "$retired_health_defaults" || return 1
+  fi
+  if [[ -f "$artifact_dir/pre-health-retirement-health.service" ]]; then
+    /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-health.service" "$retired_health_unit" || return 1
+    "$systemctl_cmd" daemon-reload >/dev/null 2>&1 || return 1
+  fi
+  if (( health_sensor_config_existed == 1 )); then
+    /usr/bin/cp -a -- "$artifact_dir/pre-health-retirement-sensors.json" "$sensor_config_path" || return 1
+  else
+    /usr/bin/rm -f -- "$sensor_config_path" || return 1
+  fi
+  return 0
+}
+
+retire_health_state_after_acceptance() {
+  (( retiring_health == 1 )) || return 0
+  "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || true
+  /usr/bin/rm -f -- "$retired_health_unit" "$retired_health_defaults"
+  /usr/bin/rm -f -- "$retired_health_database" "${retired_health_database}-wal" "${retired_health_database}-shm"
+  [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database could not be removed"
+  /usr/bin/python3 - "$config_file" "$retired_health_database" "$health_relocation_target" <<'PY'
+import os
+import sys
+path, health_db, relocation_target = sys.argv[1:]
+drop_prefixes = ("unit=agent-bridge-health.service", "legacy_database=")
+drop_exact = {f"database={health_db}"}
+if relocation_target:
+    drop_exact.add(f"database={relocation_target}")
+with open(path, encoding="utf-8") as handle:
+    lines = handle.read().splitlines()
+kept = [line for line in lines if line not in drop_exact and not any(line.startswith(prefix) for prefix in drop_prefixes)]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(kept) + "\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+  local env_file tmp
+  for env_file in "$shared_env" "$defaults_dir/agent-bridge-interactive"; do
+    [[ -f "$env_file" && ! -L "$env_file" ]] || continue
+    tmp="$(/usr/bin/mktemp --tmpdir="$defaults_dir" .retire-health-env.XXXXXX)"
+    /usr/bin/awk -F= '
+      $1 == "TELEGRAM_BOT_TOKEN_HEALTH" { next }
+      $1 ~ /^HEALTH_/ { next }
+      { print }
+    ' "$env_file" > "$tmp"
+    /usr/bin/chmod 0600 "$tmp"
+    /usr/bin/mv -f -- "$tmp" "$env_file"
+  done
+  "$systemctl_cmd" daemon-reload
+  record_phase HEALTH_STATE_RETIRED
+}
+
 restore_previous_release_and_start() {
   (( release_mode == 1 )) || return 0
+  restore_health_retirement_config || { echo "health retirement config rollback failed" >&2; return 1; }
+  local -a recovery_units=("${rollback_units[@]}")
   [[ "$previous_pointer_target" =~ ^[0-9a-f]{40}$ ]] || { echo "previous release pointer target is unavailable" >&2; return 1; }
   record_recovery_phase POINTER_ROLLBACK_STARTED || return 1
   "$activation_cmd" --release-root "$release_root" --current "$current_pointer" --expected-commit "$previous_pointer_target" || { recontain_after_recovery_failure; return 1; }
@@ -835,9 +1015,9 @@ restore_previous_release_and_start() {
   fi
   record_recovery_phase POINTER_ROLLED_BACK || return 1
   echo "restarting verified previous release commit=$previous_pointer_target"
-  "$systemctl_cmd" reset-failed "${units[@]}" || { recontain_after_recovery_failure; return 1; }
+  "$systemctl_cmd" reset-failed "${recovery_units[@]}" || { recontain_after_recovery_failure; return 1; }
   declare -A recovery_restart_baseline=()
-  for unit in "${units[@]}"; do
+  for unit in "${recovery_units[@]}"; do
     if ! recovery_restart_baseline[$unit]="$( "$systemctl_cmd" show "$unit" --property=NRestarts --value )" \
       || [[ ! "${recovery_restart_baseline[$unit]}" =~ ^[0-9]+$ ]]; then
       echo "invalid recovery NRestarts baseline for $unit" >&2
@@ -847,16 +1027,16 @@ restore_previous_release_and_start() {
   done
   local recovery_since startup_errors current_restarts recovery_evidence recovery_queue_evidence
   local -a recovery_journal_args=()
-  for unit in "${units[@]}"; do recovery_journal_args+=(-u "$unit"); done
+  for unit in "${recovery_units[@]}"; do recovery_journal_args+=(-u "$unit"); done
   recovery_since="$(/usr/bin/date -u '+%Y-%m-%d %H:%M:%S UTC')"
   record_recovery_phase PREVIOUS_RELEASE_STARTING || return 1
-  "$systemctl_cmd" start "${units[@]}" || { recontain_after_recovery_failure; return 1; }
-  for unit in "${units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
+  "$systemctl_cmd" start "${recovery_units[@]}" || { recontain_after_recovery_failure; return 1; }
+  for unit in "${recovery_units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
   (( smoke_delay > 0 )) && /usr/bin/sleep "$smoke_delay"
-  for unit in "${units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
+  for unit in "${recovery_units[@]}"; do assert_service_active "$unit" || { recontain_after_recovery_failure; return 1; }; done
   startup_errors="$($journalctl_cmd --since "$recovery_since" --priority err --no-pager "${recovery_journal_args[@]}" 2>&1)" || { recontain_after_recovery_failure; return 1; }
   [[ -z "$startup_errors" || "$startup_errors" == "-- No entries --" ]] || { echo "previous release journal smoke failed" >&2; recontain_after_recovery_failure; return 1; }
-  for unit in "${units[@]}"; do
+  for unit in "${recovery_units[@]}"; do
     if ! current_restarts="$($systemctl_cmd show "$unit" --property=NRestarts --value)" \
       || [[ ! "$current_restarts" =~ ^[0-9]+$ ]]; then
       echo "invalid recovery NRestarts reading for $unit" >&2
@@ -870,14 +1050,14 @@ restore_previous_release_and_start() {
     fi
   done
   recovery_evidence="$artifact_dir/recovery-acceptance-evidence.json"
-  run_db_tool inspect --evidence - "${db_args[@]}" > "$recovery_evidence" || { recontain_after_recovery_failure; return 1; }
+  run_db_tool inspect --evidence - "${recovery_db_args[@]}" > "$recovery_evidence" || { recontain_after_recovery_failure; return 1; }
   if ! hash_evidence_file "$recovery_evidence"; then
     echo "recovery acceptance evidence hashing failed" >&2
     recontain_after_recovery_failure
     return 1
   fi
   recovery_queue_evidence="$artifact_dir/recovery-queue-evidence.json"
-  run_db_tool inspect --evidence - "${db_args[@]}" > "$recovery_queue_evidence" || { recontain_after_recovery_failure; return 1; }
+  run_db_tool inspect --evidence - "${recovery_db_args[@]}" > "$recovery_queue_evidence" || { recontain_after_recovery_failure; return 1; }
   if ! hash_evidence_file "$recovery_queue_evidence"; then
     echo "recovery queue evidence hashing failed" >&2
     recontain_after_recovery_failure
@@ -1367,7 +1547,21 @@ backup_completed=1
 /usr/bin/sha256sum "$manifest" > "$artifact_dir/backup-manifest.sha256"
 record_phase BACKED_UP
 
-if [[ -n "$health_relocation_source" ]]; then
+if (( retiring_health == 1 )); then
+  prepare_health_retirement_config
+  target_units=()
+  for unit in "${units[@]}"; do [[ "$unit" == "agent-bridge-health.service" ]] || target_units+=("$unit"); done
+  units=("${target_units[@]}")
+  target_databases=()
+  for database in "${databases[@]}"; do [[ "$database" == "$retired_health_database" ]] || target_databases+=("$database"); done
+  databases=("${target_databases[@]}")
+  unset 'unit_databases[agent-bridge-health.service]'
+  unset 'unit_roles[agent-bridge-health.service]'
+  build_db_args
+  record_phase HEALTH_TARGET_SUBTRACTED
+fi
+
+if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "relocating legacy health database source=$health_relocation_source target=$health_relocation_target"
   run_db_tool relocate --from "$health_relocation_source" --to "$health_relocation_target"
   for database_index in "${!databases[@]}"; do
@@ -1422,21 +1616,25 @@ done
 run_db_tool validate --restart-boundary "$restart_boundary" --evidence - "${db_args[@]}" > "$artifact_dir/post-start-evidence.json"
 hash_evidence_file "$artifact_dir/post-start-evidence.json"
 acceptance_args=(--before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --reconciliation-evidence "$artifact_dir/reconciliation-evidence.json" --output "$artifact_dir/acceptance-evidence.json")
-if [[ -n "$health_relocation_source" ]]; then
+if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   acceptance_args+=(--relocated-from "$health_relocation_source" --relocated-to "$health_relocation_target")
 fi
 if [[ -n "$autonomy_bootstrap_path" ]]; then
   acceptance_args+=(--added "$autonomy_bootstrap_path")
 fi
+if (( retiring_health == 1 )); then
+  acceptance_args+=(--removed "$retired_health_database")
+fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
-if [[ -n "$health_relocation_source" ]]; then
+if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "retiring legacy health database path=$health_relocation_source"
   /usr/bin/rm -f -- "$health_relocation_source" "${health_relocation_source}-wal" "${health_relocation_source}-shm"
   [[ ! -e "$health_relocation_source" && ! -L "$health_relocation_source" ]] || die "legacy health database could not be retired"
   record_phase HEALTH_DB_RELOCATED
 fi
 record_phase ACCEPTED
+retire_health_state_after_acceptance
 
 completed=1
 record_phase COMPLETE

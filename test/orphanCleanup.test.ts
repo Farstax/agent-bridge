@@ -13,8 +13,7 @@ describe("startup orphan reconciliation", () => {
     const entrypoints = [
       "src/index-interactive.ts",
       "src/index-discord-interactive.ts",
-      "src/index-health.ts",
-    ];
+          ];
 
     for (const entrypoint of entrypoints) {
       const source = readSource(entrypoint);

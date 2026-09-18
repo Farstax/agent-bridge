@@ -189,9 +189,105 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
   }, 15_000);
 
+  it("retires the legacy health service/database and migrates its generic capabilities after target acceptance", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+    const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+    writeFileSync(healthDefaults, [
+      `HEALTH_DB_PATH=${fixture.dbPaths[2]}`,
+      "HEALTH_CONTENT_CRAWLER_ENABLED=1",
+      "HEALTH_CONTENT_CRAWLER_SCRIPT=/srv/content-crawler/health_check.py",
+      "BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock",
+      "BRIDGE_RUN_INGRESS_TOKEN=fixture-secret",
+      "",
+    ].join("\n"), { mode: 0o600 });
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(fixture.dbPaths[2])).toBe(false);
+    expect(existsSync(healthDefaults)).toBe(false);
+    expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
+    const config = readFileSync(fixture.configFile, "utf8");
+    expect(config).not.toContain("unit=agent-bridge-health.service");
+    expect(config).not.toContain(`database=${fixture.dbPaths[2]}`);
+    const interactive = readFileSync(join(fixture.envDir, "agent-bridge-interactive"), "utf8");
+    expect(interactive).toContain("BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock");
+    expect(interactive).toContain("BRIDGE_RUN_INGRESS_TOKEN=fixture-secret");
+    const sensorPath = join(fixture.root, "etc", "agent-bridge", "sensors.json");
+    expect(interactive).toContain(`AGENT_BRIDGE_SENSOR_CONFIG=${sensorPath}`);
+    const sensors = JSON.parse(readFileSync(sensorPath, "utf8"));
+    const sensorStat = statSync(sensorPath);
+    expect(sensorStat.mode & 0o777).toBe(0o644);
+    expect(sensors.external).toEqual([expect.objectContaining({
+      id: "content-crawler",
+      label: "Content Crawler health",
+      command: expect.stringContaining("/content-crawler/venv/bin/python3"),
+      args: ["/srv/content-crawler/health_check.py"],
+    })]);
+  }, 15_000);
+
+  it("restores legacy health state when retirement fails before target acceptance", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+    const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+    const originalDefaults = [
+      `HEALTH_DB_PATH=${fixture.dbPaths[2]}`,
+      "HEALTH_CONTENT_CRAWLER_ENABLED=1",
+      "HEALTH_CONTENT_CRAWLER_SCRIPT=/srv/content-crawler/health_check.py",
+      "BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock",
+      "BRIDGE_RUN_INGRESS_TOKEN=fixture-secret",
+      "",
+    ].join("\n");
+    writeFileSync(healthDefaults, originalDefaults, { mode: 0o600 });
+    const beforeDb = sha256(fixture.dbPaths[2]);
+    const beforeConfig = readFileSync(fixture.configFile, "utf8");
+
+    const result = runRollout(fixture, "migrate");
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/FAILED_RESTORED/);
+    expect(readlinkSync(currentPointer)).toBe(fixture.previousCommit);
+    expect(sha256(fixture.dbPaths[2])).toBe(beforeDb);
+    expect(readFileSync(healthDefaults, "utf8")).toBe(originalDefaults);
+    expect(readFileSync(fixture.configFile, "utf8")).toBe(beforeConfig);
+    expect(readFileSync(fixture.stateFile, "utf8").trim().split("\n")).toEqual(units);
+  }, 15_000);
+
+  it("retires a legacy health database in place instead of relocating it into the removed target", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => {
+      const target = join(dirname(fixture.dbPaths[2]), "retired-health-target.sqlite");
+      return [
+        ...lines.map((line) => line === `database=${fixture.dbPaths[2]}` ? `database=${target}` : line)
+          .map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line),
+        `legacy_database=${fixture.dbPaths[2]}`,
+      ];
+    });
+    const target = join(dirname(fixture.dbPaths[2]), "retired-health-target.sqlite");
+    const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+    writeFileSync(healthDefaults, `HEALTH_DB_PATH=${target}\n`, { mode: 0o600 });
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(fixture.dbPaths[2])).toBe(false);
+    expect(existsSync(target)).toBe(false);
+    const config = readFileSync(fixture.configFile, "utf8");
+    expect(config).not.toContain("legacy_database=");
+    expect(config).not.toContain(`database=${target}`);
+  }, 15_000);
+
   it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
+    const authorizedRolloutConfigSha256 = sha256(fixture.configFile);
     const approval = writeAuthorization(fixture);
 
     const result = runAuthorizedRollout(fixture, approval);
@@ -202,7 +298,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       environment: "production-content-crawler",
       artifactSha256: "b".repeat(64),
       qualificationEvidenceSha256: sha256(join(fixture.root, "qualification-evidence.json")),
-      rolloutConfigSha256: sha256(fixture.configFile),
+      rolloutConfigSha256: authorizedRolloutConfigSha256,
       authorizationValidatorSha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
       acceptanceValidatorSha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
     }));
@@ -441,7 +537,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       .map((entry: { path: string; pendingQueueCount: number }) => [entry.path, entry.pendingQueueCount]);
     const afterQueue = JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).databases
       .map((entry: { path: string; pendingQueueCount: number }) => [entry.path, entry.pendingQueueCount]);
-    expect(afterQueue).toEqual(beforeQueue);
+    expect(afterQueue).toEqual(beforeQueue.filter(([path]: [string, number]) => path !== fixture.dbPaths[2]));
     const beforeEvidence = JSON.parse(readFileSync(join(artifacts, "preflight-evidence.json"), "utf8"));
     expect(beforeEvidence.databases[0]).toEqual(expect.objectContaining({
       queueStateCounts: expect.any(Object),

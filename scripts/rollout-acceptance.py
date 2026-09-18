@@ -23,13 +23,22 @@ def load(path: Path) -> dict:
     return value
 
 
-def compare(before: dict, after: dict, reconciliation_evidence: dict | None = None, relocated_from: str | None = None, relocated_to: str | None = None, added: list[str] | None = None) -> dict:
+def compare(before: dict, after: dict, reconciliation_evidence: dict | None = None, relocated_from: str | None = None, relocated_to: str | None = None, added: list[str] | None = None, removed: list[str] | None = None) -> dict:
     left = {entry.get("path"): entry for entry in before["databases"]}
     right = {entry.get("path"): entry for entry in after["databases"]}
     if relocated_from or relocated_to:
         if not relocated_from or not relocated_to or relocated_from not in left or relocated_to in left:
             fail("invalid database relocation evidence")
         left[relocated_to] = {**left.pop(relocated_from), "path": relocated_to}
+    removed_paths = set(removed or [])
+    for path in removed_paths:
+        if path not in left:
+            fail(f"declared removed database was not present before rollout: {path}")
+        if path in right:
+            fail(f"declared removed database is still present in after evidence: {path}")
+    for path in removed_paths:
+        left.pop(path)
+
     added_paths = set(added or [])
     # A database bootstrapped mid-rollout (issue #498) is legitimately
     # absent from the pre-containment "before" evidence (it doesn't exist on
@@ -65,6 +74,7 @@ def compare(before: dict, after: dict, reconciliation_evidence: dict | None = No
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "databaseCount": len(results),
         "databases": results,
+        "removedDatabases": sorted(removed_paths),
         "deploymentBoundary": "containment-backup-restore",
     }
 
@@ -77,6 +87,7 @@ def main() -> int:
     parser.add_argument("--relocated-from")
     parser.add_argument("--relocated-to")
     parser.add_argument("--added", action="append", default=[])
+    parser.add_argument("--removed", action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = compare(
@@ -86,6 +97,7 @@ def main() -> int:
         args.relocated_from,
         args.relocated_to,
         args.added,
+        args.removed,
     )
     args.output.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     args.output.chmod(0o600)
