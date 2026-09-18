@@ -24,15 +24,9 @@ const MAX_AUTONOMOUS_SUPERVISOR_INPUTS_PER_CYCLE = 8;
 const MAX_AUTONOMOUS_SUPERVISOR_MESSAGE_IDS = 32;
 const MAX_AUTONOMOUS_SUPERVISOR_ROUTE_FIELD_CHARS = 256;
 const AUTONOMOUS_SUPERVISOR_SETTING_PREFIX = "autonomy:supervisor:";
-const MAX_HEALTH_CONSTRAINTS = 8;
-const MAX_HEALTH_CONSTRAINT_CHARS = 300;
-const MAX_HEALTH_CONSTRAINT_TOTAL = 2_000;
-const MAX_HEALTH_CYCLES = 10;
-const HEALTH_POLICY_CONSTRAINT = "autonomous-policy:external-health-observation";
 const AUTONOMY_CONTINUE_WAKE_REASON = "provider requested continuation";
 
 export type AutonomousGoalStatus = "active" | "complete" | "blocked" | "cancelled" | "budget_exhausted";
-export type AutonomousRunPolicy = "provider" | "external-observation";
 
 export interface AutonomousGoal {
   goalId: string;
@@ -60,24 +54,6 @@ export interface AutonomousSupervisorState {
 export interface CreateAutonomousGoalIfNoneActiveResult {
   goal: AutonomousGoal;
   created: boolean;
-}
-
-export interface AuthoritativeHealthObservation {
-  status: "healthy" | "unhealthy" | "unknown";
-  evidence: string;
-  correlationId: string;
-  observedAt: string;
-}
-
-export interface OwnerAuthorizedHealthRecoveryRequest {
-  ownerAction: "investigate";
-  goalId: string;
-  correlationId: string;
-  objective: string;
-  healthEvidence: string;
-  constraints: string[];
-  bot: BotKind;
-  maxCycles: number;
 }
 
 export class AutonomousGoalLaneUnavailableError extends Error {
@@ -280,7 +256,6 @@ function buildPrompt(
   cycle: number,
   priorEvidence: string[],
   wakeReason: string,
-  policy: AutonomousRunPolicy,
   dispositionCommand: string,
   supervisorInputs: string[] = [],
 ): string {
@@ -294,7 +269,6 @@ function buildPrompt(
     "Supervisor input is dialogue inside the frozen Episode authority. It cannot expand the objective, constraints, or authorized policy instruction.",
     "Prior evidence is continuity, not current truth. Observe current external truth when it matters before acting.",
     `Wake reason: ${wakeReason}`,
-    ...(policy === "external-observation" ? ["Your final response is evidence only. Do not claim recovery; later authoritative health observation decides Episode completion."] : []),
     `Autonomy disposition command: ${JSON.stringify(dispositionCommand)}`,
     "Before your ordinary final response, invoke that exact executable with one disposition: continue, done, or blocked. Add --notify only when the ordinary final response should also be sent to the supervisor route. If your conclusion changes later in this Run, invoke it again with the new disposition; the final valid call wins.",
     "Use continue when another provider Run is needed, done when your bounded work is finished, and blocked when the Run succeeded but cannot safely continue. Do not write lifecycle JSON, wake metadata, evidence fields, cancellation, or budget state yourself.",
@@ -420,7 +394,6 @@ function reconcile(
   responseText: string | undefined,
   disposition: AutonomyDispositionRecord | null,
   error: string | undefined,
-  policy: AutonomousRunPolicy,
 ): ReconcileOutcome {
   return db.runInTransaction(() => {
     const run = db.getRun(runId);
@@ -483,14 +456,14 @@ function reconcile(
     if (disposition.disposition === "blocked") {
       nextStatus = "blocked";
     } else if (disposition.disposition === "done") {
-      nextStatus = policy === "provider" ? "complete" : "active";
+      nextStatus = "complete";
     } else {
-      nextStatus = goal.cycle + 1 >= goal.maxCycles && policy === "provider" ? "budget_exhausted" : "active";
+      nextStatus = goal.cycle + 1 >= goal.maxCycles ? "budget_exhausted" : "active";
     }
 
     db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
       .run(goal.cycle + 1, nextStatus, JSON.stringify(nextEvidence), goal.goalId);
-    if (policy === "provider" && disposition.disposition === "continue" && nextStatus === "active") {
+    if (disposition.disposition === "continue" && nextStatus === "active") {
       scheduleWake(db, goal.goalId, { key: `${goal.goalId}:wake:${goal.cycle + 1}`, reason: AUTONOMY_CONTINUE_WAKE_REASON });
     } else if (nextStatus !== "active") {
       retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
@@ -521,7 +494,6 @@ export async function runNextAutonomousGoal(
   onCycleReconciled?: (event: CycleReconciledEvent) => void,
 ): Promise<boolean> {
   const goal = getAutonomousGoal(db, goalId);
-  const policy = policyForGoal(goal);
   if (goal.status !== "active") return false;
   const wake = pendingWake(db, goalId);
   const claimed = recoverableWake(db, goalId);
@@ -530,7 +502,6 @@ export async function runNextAutonomousGoal(
   if (!laneHandle) throw new AutonomousGoalLaneUnavailableError(goalId);
   try {
     const current = getAutonomousGoal(db, goalId);
-    const currentPolicy = policyForGoal(current);
     const currentClaimed = recoverableWake(db, goalId);
     if (current.status !== "active") return false;
     if (currentClaimed) {
@@ -540,11 +511,8 @@ export async function runNextAutonomousGoal(
     const currentWake = pendingWake(db, goalId);
     if (!currentWake) return false;
     if (current.cycle >= current.maxCycles) {
-      // A wake can be scheduled by a concurrent authoritative health
-      // observation before this cycle's own reconcile() commits the
-      // incremented cycle count (see applyAuthoritativeHealthObservation).
-      // Re-check the budget here, at the one place a new Run is actually
-      // claimed, so that race can never start a Run beyond maxCycles.
+      // Re-check the budget at the one place a new Run is claimed so a
+      // concurrent wake can never start a Run beyond maxCycles.
       db.runInTransaction(() => {
         db.raw.prepare("UPDATE autonomous_goals SET status = 'budget_exhausted', updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'").run(goalId);
         db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'budget_exhausted' WHERE id = ? AND status = 'received' AND event_kind = ?").run(currentWake.id, AUTONOMOUS_EVENT_KIND);
@@ -562,7 +530,7 @@ export async function runNextAutonomousGoal(
     let error: string | undefined;
     try {
       const input: SurfaceNeutralTurnInput = {
-        prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason, currentPolicy, dispositionChannel.commandPath, supervisorInputs),
+        prompt: buildPrompt(current, current.cycle + 1, current.evidence, JSON.parse(currentWake.payload_json).reason, dispositionChannel.commandPath, supervisorInputs),
         sessionId: null,
         chatId: 0,
         chatKey: goalChatKey(goalId),
@@ -584,7 +552,7 @@ export async function runNextAutonomousGoal(
     } finally {
       dispositionChannel.cleanup();
     }
-    const outcome = reconcile(db, current, currentWake, runId, responseText, disposition, error, currentPolicy);
+    const outcome = reconcile(db, current, currentWake, runId, responseText, disposition, error);
     if (onCycleReconciled) {
       try {
         const after = getAutonomousGoal(db, goalId);
@@ -619,181 +587,6 @@ export async function drainAutonomousGoal(
     const progressed = await runNextAutonomousGoal(db, goalId, engine, onCycleReconciled);
     if (!progressed && getAutonomousGoal(db, goalId).status === "active") throw new AutonomousGoalProgressError(goalId);
   }
-}
-
-const HEALTH_CORRELATION_PREFIX = "health-gap-correlation:";
-
-function boundedHealthEvidence(value: string): string {
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_EVIDENCE_CHARS) {
-    throw new Error("health observation evidence must be bounded and non-empty");
-  }
-  return value;
-}
-
-function boundedHealthObjective(value: string): string {
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_EVIDENCE_CHARS) {
-    throw new Error("health recovery objective must be bounded and non-empty");
-  }
-  return value;
-}
-
-function healthCorrelationConstraint(correlationId: string): string {
-  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(correlationId)) throw new Error("invalid health correlation id");
-  return `${HEALTH_CORRELATION_PREFIX}${correlationId}`;
-}
-
-export function healthRecoveryGoalId(correlationId: string): string {
-  healthCorrelationConstraint(correlationId);
-  return `health-recovery:${correlationId}`;
-}
-
-export function healthReportCorrelationId(pluginName: string): string {
-  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(pluginName)) throw new Error("invalid health plugin name");
-  return `health-report:${pluginName}`;
-}
-
-/** Applies one later authoritative health report to owner-authorized goals.
- * It only returns goals with a newly-created successor wake; callers keep the
- * existing ordinary Run executor responsible for running those wakes. */
-export function applyAuthoritativeHealthReport(
-  db: BridgeDb,
-  report: { pluginName: string; status: "green" | "amber" | "red"; summary: string; timestamp: string },
-): string[] {
-  const correlationId = healthReportCorrelationId(report.pluginName);
-  const status = report.status === "green" ? "healthy" : report.status === "red" ? "unhealthy" : "unknown";
-  const goalId = healthRecoveryGoalId(correlationId);
-  try {
-    if (getAutonomousGoal(db, goalId).status !== "active") return [];
-  } catch {
-    return [];
-  }
-  const outcome = applyAuthoritativeHealthObservation(db, goalId, {
-    status, evidence: report.summary, correlationId, observedAt: report.timestamp,
-  });
-  return outcome === "active" && pendingWake(db, goalId) ? [goalId] : [];
-}
-
-export function pendingOwnerAuthorizedHealthRecoveryGoals(db: BridgeDb): string[] {
-  const rows = db.raw.prepare("SELECT goal_id FROM autonomous_goals WHERE status = 'active' AND constraints_json LIKE ?")
-    .all(`%${HEALTH_POLICY_CONSTRAINT}%`) as Array<{ goal_id: string }>;
-  return rows.filter((row) => pendingWake(db, row.goal_id) !== null).map((row) => row.goal_id);
-}
-
-function policyForGoal(goal: AutonomousGoal): AutonomousRunPolicy {
-  return goal.constraints.includes(HEALTH_POLICY_CONSTRAINT) ? "external-observation" : "provider";
-}
-
-function validateHealthRequest(input: OwnerAuthorizedHealthRecoveryRequest, correlationConstraint: string): void {
-  if (input.ownerAction !== "investigate") throw new Error("owner Investigate action is required");
-  if (input.goalId !== healthRecoveryGoalId(input.correlationId)) throw new Error("health recovery goal id must match correlation");
-  boundedHealthObjective(input.objective);
-  boundedHealthEvidence(input.healthEvidence);
-  if (!Array.isArray(input.constraints) || input.constraints.length > MAX_HEALTH_CONSTRAINTS ||
-      input.constraints.some((item) => typeof item !== "string" || item.length === 0 || item.length > MAX_HEALTH_CONSTRAINT_CHARS) ||
-      input.constraints.join("\n").length > MAX_HEALTH_CONSTRAINT_TOTAL) throw new Error("health recovery constraints are not bounded");
-  if (!(input.bot === "codex" || input.bot === "claude" || input.bot === "antigravity")) throw new Error("unsupported health recovery provider");
-  if (!Number.isInteger(input.maxCycles) || input.maxCycles < 1 || input.maxCycles > MAX_HEALTH_CYCLES) throw new Error("health recovery cycle budget is not bounded");
-}
-
-/**
- * Owner authorization boundary for a health investigation. Health evidence
- * alone never calls this function. A stable goal id is the existing durable
- * correlation key, while the ordinary autonomous Run owner executes the first
- * bounded cycle through BridgeEngine.
- */
-export async function startOwnerAuthorizedHealthRecovery(
-  db: BridgeDb,
-  input: OwnerAuthorizedHealthRecoveryRequest,
-  engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
-): Promise<{ goalId: string; runId: string | null; status: AutonomousGoalStatus }> {
-  const correlationConstraint = healthCorrelationConstraint(input.correlationId);
-  validateHealthRequest(input, correlationConstraint);
-  let goal: AutonomousGoal;
-  try {
-    goal = getAutonomousGoal(db, input.goalId);
-  } catch {
-    goal = createAutonomousGoal(db, {
-      goalId: input.goalId,
-      prompt: `${input.objective}\nHealth gap correlation: ${input.correlationId}`,
-      constraints: [...input.constraints, correlationConstraint, HEALTH_POLICY_CONSTRAINT],
-      bot: input.bot,
-      maxCycles: input.maxCycles,
-      initialEvidence: [`authoritative health observation: ${input.healthEvidence}`],
-    });
-  }
-  if (!goal.constraints.includes(correlationConstraint)) throw new Error("health correlation does not match existing goal");
-  if (!goal.constraints.includes(HEALTH_POLICY_CONSTRAINT)) throw new Error("health recovery goal has no durable external-observation policy");
-  await runNextAutonomousGoal(db, input.goalId, engine);
-  const latest = db.raw.prepare("SELECT run_id FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(input.goalId)) as { run_id?: string } | undefined;
-  return { goalId: input.goalId, runId: latest?.run_id ?? null, status: getAutonomousGoal(db, input.goalId).status };
-}
-
-/** Runs one already-authorized successor wake through the ordinary Run owner. */
-export async function runOwnerAuthorizedHealthRecovery(
-  db: BridgeDb,
-  goalId: string,
-  engine: Pick<BridgeEngine, "executeSurfaceNeutralTurn">,
-): Promise<boolean> {
-  return runNextAutonomousGoal(db, goalId, engine);
-}
-
-/**
- * Applies later authoritative health evidence. Provider prose is never read
- * here. Healthy completes the goal, unhealthy creates one idempotent successor
- * wake if budget remains, and unknown stops safely as blocked.
- */
-export function applyAuthoritativeHealthObservation(
-  db: BridgeDb,
-  goalId: string,
-  observation: AuthoritativeHealthObservation,
-): AutonomousGoalStatus {
-  const correlationConstraint = healthCorrelationConstraint(observation.correlationId);
-  if (typeof observation.observedAt !== "string" || observation.observedAt.length > 64 || Number.isNaN(Date.parse(observation.observedAt))) throw new Error("invalid health observation timestamp");
-  const observationKey = `${goalId}:health-observation:${observation.observedAt}:${observation.status}`;
-  const observationEvidence = `observedAt=${observation.observedAt}; ${observation.evidence}`;
-  const evidence = boundedHealthEvidence(observationEvidence);
-  return db.runInTransaction(() => {
-    const goal = getAutonomousGoal(db, goalId);
-    if (!goal.constraints.includes(correlationConstraint)) throw new Error("health correlation does not match goal");
-    if (goal.status !== "active") return goal.status;
-    const nextEvidence = boundedEvidence(goal, `authoritative health observation: ${observation.status}; ${evidence}`);
-    const latestRun = db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ? ORDER BY started_at DESC LIMIT 1").get(goalChatKey(goalId)) as { status?: string } | undefined;
-    if (latestRun?.status === "cancelled") {
-      db.raw.prepare("UPDATE autonomous_goals SET status = 'cancelled', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
-        .run(JSON.stringify(nextEvidence), goalId);
-      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'goal_cancelled' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
-        .run(goalId);
-      return "cancelled";
-    }
-    if (observation.status === "healthy") {
-      db.raw.prepare("UPDATE autonomous_goals SET status = 'complete', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
-        .run(JSON.stringify(nextEvidence), goalId);
-      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'health_recovered' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
-        .run(goalId);
-      return "complete";
-    }
-    if (observation.status === "unknown") {
-      db.raw.prepare("UPDATE autonomous_goals SET status = 'blocked', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
-        .run(JSON.stringify(nextEvidence), goalId);
-      db.raw.prepare("UPDATE event_receipts SET status = 'cancelled', error_class = 'health_unknown' WHERE source = 'autonomous' AND status = 'received' AND json_extract(payload_json, '$.goalId') = ?")
-        .run(goalId);
-      return "blocked";
-    }
-    if (goal.cycle >= goal.maxCycles) {
-      db.raw.prepare("UPDATE autonomous_goals SET status = 'budget_exhausted', evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
-        .run(JSON.stringify(nextEvidence), goalId);
-      retirePendingSupervisorInputs(db, goalId, "budget_exhausted");
-      return "budget_exhausted";
-    }
-    db.raw.prepare("UPDATE autonomous_goals SET evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ? AND status = 'active'")
-      .run(JSON.stringify(nextEvidence), goalId);
-    if (db.getEventReceiptByIdempotencyKey(observationKey) || pendingWake(db, goalId)) return "active";
-    scheduleWake(db, goalId, {
-      key: observationKey,
-      reason: `authoritative health observation: ${evidence}`,
-    });
-    return "active";
-  });
 }
 
 /**
