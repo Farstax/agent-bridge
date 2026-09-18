@@ -1,6 +1,11 @@
 import type { SensorReport } from "./types.js";
 
 export const SENSOR_CALLBACK_PREFIX = "sensor:";
+const MAX_SENSOR_MESSAGE_CHARS = 3900;
+
+function boundedMessage(text: string): string {
+  return text.length <= MAX_SENSOR_MESSAGE_CHARS ? text : `${text.slice(0, MAX_SENSOR_MESSAGE_CHARS - 1)}…`;
+}
 
 export function isSensorsCommand(rawText: string, botUsername?: string | null): boolean {
   const command = rawText.trim().split(/\s+/, 1)[0]?.toLowerCase();
@@ -27,9 +32,9 @@ export function parseSensorCallback(value: string): string | null {
 export function formatSensorReport(report: SensorReport): string {
   const mark = (status: SensorReport["status"]) => status === "green" ? "🟢" : status === "amber" ? "🟠" : "🔴";
   const checks = report.checks.map((check) => `${mark(check.status)} ${check.name}: ${check.message}`);
-  return [report.label, "", ...checks, "", `Overall: ${report.status[0].toUpperCase() + report.status.slice(1)}`].join("\n");
+  return boundedMessage([report.label, "", ...checks, "", `Overall: ${report.status[0].toUpperCase() + report.status.slice(1)}`].join("\n"));
 }
 
 export function formatSensorReports(reports: SensorReport[]): string {
-  return reports.map(formatSensorReport).join("\n\n---\n\n");
+  return boundedMessage(reports.map(formatSensorReport).join("\n\n---\n\n"));
 }
