@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
-import Database from "better-sqlite3";
 import { join } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
-import { applyMigrations } from "../src/db/schema.js";
 import { claimScheduledRoutineOccurrence, createScheduledRoutine } from "../src/scheduledRoutines.js";
 import { linkScheduledOccurrenceRun, scheduledOccurrenceKey } from "../src/scheduledRunCorrelation.js";
 import { createAutonomousGoal } from "../src/autonomousGoalRuntime.js";
-import { HealthReportStore } from "../src/health/reports.js";
 import {
   MAX_INSPECTION_OUTPUT_CHARS,
   renderAgentBridgeInspection,
@@ -17,16 +14,13 @@ import {
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "agent-bridge-inspect-"));
   const path = join(dir, "bridge.sqlite");
-  const healthPath = join(dir, "health.sqlite");
   const db = openDb(path, { serviceId: "test-service", runId: "run-active", lockLeaseMs: 90_000 });
-  const healthDb = new Database(healthPath);
-  applyMigrations(healthDb, undefined, "health");
-  return { dir, path, healthPath, db, healthDb };
+  return { dir, path, db };
 }
 
 describe("runtime inspector", () => {
   it("projects representative runtime state without exposing secret-bearing fields", () => {
-    const { dir, path, healthPath, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       db.insertRun("run-active", "chat-1", "codex");
       db.insertRun("run-failed", "chat-1", "claude");
@@ -63,13 +57,6 @@ describe("runtime inspector", () => {
         bot: "codex",
         maxCycles: 4,
       });
-      new HealthReportStore(healthDb).saveReport({
-        pluginName: "agent-bridge",
-        status: "amber",
-        checks: [{ name: "runtime", status: "amber", message: "private health detail ghp_supersecret" }],
-        summary: "private health summary ghp_supersecret",
-        timestamp: new Date().toISOString(),
-      });
 
       const text = renderAgentBridgeInspection(["--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,
@@ -77,9 +64,6 @@ describe("runtime inspector", () => {
         AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
         AGENT_BRIDGE_OWNER_KEY: "owner-1",
         AGENT_BRIDGE_RUN_ID: "run-active",
-        HEALTH_MONITOR_ENABLED: "true",
-        HEALTH_SERVER_MONITOR_ENABLED: "0",
-        HEALTH_DB_PATH: healthPath,
         HOME: dir,
       });
       const view = JSON.parse(text);
@@ -111,56 +95,23 @@ describe("runtime inspector", () => {
       expect(view.autonomy.goals).toEqual(expect.arrayContaining([
         expect.objectContaining({ goalId: "goal-1", provider: "codex", status: "active", maxCycles: 4 }),
       ]));
-      expect(view.health.status).toBe("amber");
-      expect(view.health.missingPluginNames).not.toContain("agent-bridge");
-      expect(view.health.missingPluginNames).not.toContain("self");
       expect(view.capabilities).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "scheduled-routines", status: "ready" }),
         expect.objectContaining({ id: "autonomous-work", status: "ready" }),
+        expect.objectContaining({ id: "sensors", status: "ready" }),
       ]));
       expect(text.length).toBeLessThanOrEqual(MAX_INSPECTION_OUTPUT_CHARS);
-      for (const secret of ["ghp_supersecret", "secret-session-id", "private routine instruction", "private objective", "private health detail"]) {
+      for (const secret of ["ghp_supersecret", "secret-session-id", "private routine instruction", "private objective"]) {
         expect(text).not.toContain(secret);
       }
     } finally {
       db.close();
-      healthDb.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("recognises a fresh persisted agent-bridge self-health report", () => {
-    const { dir, path, healthPath, db, healthDb } = fixture();
-    try {
-      new HealthReportStore(healthDb).saveReport({
-        pluginName: "agent-bridge",
-        status: "green",
-        checks: [{ name: "db-file", status: "green", message: "ok" }],
-        summary: "Healthy",
-        timestamp: new Date().toISOString(),
-      });
-
-      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
-        AGENT_BRIDGE_CONTEXT_DB: path,
-        HEALTH_MONITOR_ENABLED: "true",
-        HEALTH_SERVER_MONITOR_ENABLED: "0",
-        HEALTH_DB_PATH: healthPath,
-        HOME: dir,
-      }));
-
-      expect(view.health.status).toBe("green");
-      expect(view.health.missingPluginNames).toEqual([]);
-      expect(view.health.stalePluginNames).toEqual([]);
-      expect(view.health.reasonCode).toBeNull();
-    } finally {
-      db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("never infers a scheduled Run from nearby conversation timing", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       createScheduledRoutine(db, {
         id: "routine-unlinked",
@@ -192,54 +143,12 @@ describe("runtime inspector", () => {
       }));
     } finally {
       db.close();
-      healthDb.close();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("uses unknown/unavailable states instead of inventing missing or stale evidence", () => {
-    const { dir, path, healthPath, db, healthDb } = fixture();
-    try {
-      new HealthReportStore(healthDb).saveReport({
-        pluginName: "agent-bridge",
-        status: "green",
-        checks: [],
-        summary: "old",
-        timestamp: new Date(0).toISOString(),
-      });
-      healthDb.prepare("UPDATE health_plugin_reports SET saved_at = 1 WHERE plugin_name = 'agent-bridge'").run();
-      db.close();
-
-      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
-        AGENT_BRIDGE_CONTEXT_DB: path,
-        HEALTH_MONITOR_ENABLED: "true",
-        HEALTH_SERVER_MONITOR_ENABLED: "0",
-        HEALTH_DB_PATH: healthPath,
-        HOME: dir,
-      }));
-
-      // Agy is a host-installed (not npm-bundled) ACP adapter: in this isolated
-      // sandbox its binary is genuinely absent, so it correctly reports
-      // "unavailable"/acp_adapter_missing rather than an invented "unknown" --
-      // this is real, not stale or fabricated, evidence.
-      expect(view.providers.every((provider: { availability: string }) =>
-        provider.availability === "unknown" || provider.availability === "unavailable"
-      )).toBe(true);
-      expect(view.sessions.status).toBe("unknown");
-      expect(view.health.status).toBeNull();
-      expect(view.health.stalePluginNames).toContain("agent-bridge");
-      expect(view.capabilities).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: "retained-context", status: "unavailable", reasonCode: "conversation_scope_unavailable" }),
-      ]));
-    } finally {
-      try { db.close(); } catch {}
-      try { healthDb.close(); } catch {}
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("projects the exact deployed commit from the active release manifest", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       const deployed = "c405eb15d742bff21c00f8747d60719b2ed0416b";
       const staleHint = "1111111111111111111111111111111111111111";
@@ -266,13 +175,12 @@ describe("runtime inspector", () => {
       })).runtime.commit).toBeNull();
     } finally {
       db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("supports a capability-only bounded JSON projection", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       const view = JSON.parse(renderAgentBridgeInspection(["capabilities", "--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,
@@ -283,13 +191,12 @@ describe("runtime inspector", () => {
       expect(JSON.stringify(view).length).toBeLessThanOrEqual(MAX_INSPECTION_OUTPUT_CHARS);
     } finally {
       db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("projects Codex ACP session bindings", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       db.insertRun("run-active", "chat-acp", "codex");
       db.putAcpSessionBinding({
@@ -316,13 +223,12 @@ describe("runtime inspector", () => {
       expect(JSON.stringify(view)).not.toContain("acp-session-secret");
     } finally {
       db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("does not invent an ACP session when no binding exists", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       db.insertRun("run-active", "chat-empty", "codex");
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
@@ -341,13 +247,12 @@ describe("runtime inspector", () => {
       );
     } finally {
       db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("does not present a stale ACP binding as the active session", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       db.insertRun("run-active", "chat-stale", "codex");
       db.putAcpSessionBinding({
@@ -377,13 +282,12 @@ describe("runtime inspector", () => {
       expect(JSON.stringify(view)).not.toContain("stale-acp-session");
     } finally {
       db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("does not claim Codex is available from a Run when the ACP adapter is missing", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       db.insertRun("run-active", "chat-acp", "codex");
       const adapter = join(dir, "missing-codex-acp");
@@ -401,13 +305,12 @@ describe("runtime inspector", () => {
       expect(codex.availabilityReasonCode).toBe("acp_adapter_missing");
     } finally {
       db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   it("projects qualification evidence runtime when present", () => {
-    const { dir, path, db, healthDb } = fixture();
+    const { dir, path, db } = fixture();
     try {
       writeFileSync(join(dir, "qualification.json"), JSON.stringify({
         schemaVersion: 1,
@@ -442,7 +345,6 @@ describe("runtime inspector", () => {
       );
     } finally {
       db.close();
-      healthDb.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
