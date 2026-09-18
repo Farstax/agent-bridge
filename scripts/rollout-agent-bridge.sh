@@ -971,12 +971,14 @@ retire_health_state_after_acceptance() {
   /usr/bin/rm -f -- "$retired_health_unit" "$retired_health_defaults"
   /usr/bin/rm -f -- "$retired_health_database" "${retired_health_database}-wal" "${retired_health_database}-shm"
   [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database could not be removed"
-  /usr/bin/python3 - "$config_file" "$retired_health_database" <<'PY'
+  /usr/bin/python3 - "$config_file" "$retired_health_database" "$health_relocation_target" <<'PY'
 import os
 import sys
-path, health_db = sys.argv[1:]
+path, health_db, relocation_target = sys.argv[1:]
 drop_prefixes = ("unit=agent-bridge-health.service", "legacy_database=")
 drop_exact = {f"database={health_db}"}
+if relocation_target:
+    drop_exact.add(f"database={relocation_target}")
 with open(path, encoding="utf-8") as handle:
     lines = handle.read().splitlines()
 kept = [line for line in lines if line not in drop_exact and not any(line.startswith(prefix) for prefix in drop_prefixes)]
