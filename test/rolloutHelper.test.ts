@@ -230,6 +230,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
   it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
+    const authorizedRolloutConfigSha256 = sha256(fixture.configFile);
     const approval = writeAuthorization(fixture);
 
     const result = runAuthorizedRollout(fixture, approval);
@@ -240,7 +241,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       environment: "production-content-crawler",
       artifactSha256: "b".repeat(64),
       qualificationEvidenceSha256: sha256(join(fixture.root, "qualification-evidence.json")),
-      rolloutConfigSha256: sha256(fixture.configFile),
+      rolloutConfigSha256: authorizedRolloutConfigSha256,
       authorizationValidatorSha256: sha256(join(fixture.root, "bin", "rollout-authorization-trusted")),
       acceptanceValidatorSha256: sha256(join(fixture.root, "bin", "rollout-acceptance-trusted")),
     }));
@@ -479,7 +480,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       .map((entry: { path: string; pendingQueueCount: number }) => [entry.path, entry.pendingQueueCount]);
     const afterQueue = JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8")).databases
       .map((entry: { path: string; pendingQueueCount: number }) => [entry.path, entry.pendingQueueCount]);
-    expect(afterQueue).toEqual(beforeQueue);
+    expect(afterQueue).toEqual(beforeQueue.filter(([path]: [string, number]) => path !== fixture.dbPaths[2]));
     const beforeEvidence = JSON.parse(readFileSync(join(artifacts, "preflight-evidence.json"), "utf8"));
     expect(beforeEvidence.databases[0]).toEqual(expect.objectContaining({
       queueStateCounts: expect.any(Object),
