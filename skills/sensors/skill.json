@@ -1,0 +1,5 @@
+{
+  "name": "sensors",
+  "version": "1.0.0",
+  "description": "Run deterministic built-in or configured external sensors."
+}
