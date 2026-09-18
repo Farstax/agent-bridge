@@ -522,8 +522,10 @@ for unit in "${units[@]}"; do
   if [[ "$unit" == "agent-bridge-health.service" && ! -f "$discovered" && -n "$legacy_health_database" ]]; then
     [[ ! -e "$discovered" && ! -L "$discovered" ]] || die "health database target is occupied by a non-regular path: $discovered"
     [[ "$legacy_health_database" == /* && -f "$legacy_health_database" && ! -L "$legacy_health_database" ]] || die "legacy health database is missing or symlinked: $legacy_health_database"
-    health_relocation_source="$legacy_health_database"
-    health_relocation_target="$discovered"
+    if (( retiring_health == 0 )); then
+      health_relocation_source="$legacy_health_database"
+      health_relocation_target="$discovered"
+    fi
     discovered="$legacy_health_database"
   fi
   [[ -f "$discovered" && ! -L "$discovered" ]] || die "missing database or symlinked database for $unit: $discovered"
