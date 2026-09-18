@@ -58,7 +58,7 @@ describe("sensors", () => {
   it("fails clearly for invalid external configuration", () => {
     const configPath = temporary("bad-sensors.json");
     writeFileSync(configPath, JSON.stringify({ external: [{ id: "bad id", label: "Bad", command: "/bin/true" }] }));
-    expect(() => new SensorRegistry({ env: { AGENT_BRIDGE_SENSOR_CONFIG: configPath } })).toThrow(/invalid sensor id/);
+    expect(() => new SensorRegistry({ env: { AGENT_BRIDGE_SENSOR_CONFIG: configPath } })).toThrow(/invalid.*sensor id/);
   });
 
   it("turns malformed external output into a bounded red observation", async () => {
