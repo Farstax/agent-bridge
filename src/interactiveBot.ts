@@ -166,10 +166,10 @@ export function buildCliKeyboard(
   };
 }
 
-export function buildInteractiveCommands(pref: CliKind, options: { integratedHealth?: boolean; autonomy?: boolean } = {}): Array<{ command: string; description: string }> {
+export function buildInteractiveCommands(pref: CliKind, options: { autonomy?: boolean } = {}): Array<{ command: string; description: string }> {
   const interactiveOnly = [
     { command: "cli", description: "Show active CLI and switch with one tap" },
-    ...(options.integratedHealth ? [{ command: "health", description: "Run health checks or show the latest report" }] : []),
+    { command: "sensors", description: "Inspect Agent Bridge, server, and configured sensors" },
     ...(options.autonomy ? [{ command: "autonomy", description: "Approve, inspect, or stop autonomy" }] : []),
   ];
   const cliCmds = buildTelegramCommands(pref);
@@ -184,7 +184,7 @@ export function buildInteractiveCommands(pref: CliKind, options: { integratedHea
   return merged;
 }
 
-export function buildGlobalInteractiveCommandRegistrations(pref: CliKind, options: { integratedHealth?: boolean; autonomy?: boolean } = {}): InteractiveCommandRegistration[] {
+export function buildGlobalInteractiveCommandRegistrations(pref: CliKind, options: { autonomy?: boolean } = {}): InteractiveCommandRegistration[] {
   const commands = buildInteractiveCommands(pref, options);
   return [
     { commands },
@@ -193,7 +193,7 @@ export function buildGlobalInteractiveCommandRegistrations(pref: CliKind, option
   ];
 }
 
-export function buildChatInteractiveCommandRegistrations(pref: CliKind, chatId: number, options: { integratedHealth?: boolean; autonomy?: boolean } = {}): InteractiveCommandRegistration[] {
+export function buildChatInteractiveCommandRegistrations(pref: CliKind, chatId: number, options: { autonomy?: boolean } = {}): InteractiveCommandRegistration[] {
   const commands = buildInteractiveCommands(pref, options);
   return [
     { commands, scope: { type: "chat", chat_id: chatId } },
