@@ -60,8 +60,9 @@ describe("rollout acceptance evidence", () => {
   });
 
   it("accepts an explicitly declared retired database and rejects undeclared inventory loss", () => {
-    const health = { ...evidence().databases[0], path: "/tmp/health.sqlite" };
-    const before = { ...evidence(), databases: [...evidence().databases, health] };
+    const base = evidence() as { databases: Array<Record<string, unknown>> };
+    const health = { ...base.databases[0], path: "/tmp/health.sqlite" };
+    const before = { ...base, databases: [...base.databases, health] };
     const after = evidence();
     expect(run(before, after, undefined, ["--removed", "/tmp/health.sqlite"])).toContain("accepted");
     expect(() => run(before, after)).toThrow(/inventory changed/i);
