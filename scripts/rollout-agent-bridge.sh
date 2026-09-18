@@ -854,7 +854,6 @@ set_private_env_key() {
   /usr/bin/awk -F= -v key="$key" '$1 != key { print }' "$file" > "$tmp"
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
   /usr/bin/chmod 0600 "$tmp"
-  /usr/bin/chown 0:0 "$tmp"
   /usr/bin/mv -f -- "$tmp" "$file"
 }
 
@@ -937,7 +936,6 @@ with open(tmp, "w", encoding="utf-8") as handle:
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
-    /usr/bin/chown 0:0 "$sensor_config_path"
     set_private_env_key "$interactive_env" AGENT_BRIDGE_SENSOR_CONFIG "$sensor_config_path"
   fi
   health_retirement_config_prepared=1
@@ -984,7 +982,6 @@ with open(tmp, "w", encoding="utf-8") as handle:
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
-  /usr/bin/chown 0:0 "$config_file"
   local env_file tmp
   for env_file in "$shared_env" "$defaults_dir/agent-bridge-interactive"; do
     [[ -f "$env_file" && ! -L "$env_file" ]] || continue
