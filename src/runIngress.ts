@@ -38,11 +38,6 @@ export interface RunIngressRequest {
   occurredAt?: string;
 }
 
-export interface RunIngressOwnerActionRequest extends RunIngressRequest {
-  ownerAction: "investigate";
-  recovery: unknown;
-}
-
 export interface AcceptedRunIngressRequest {
   receiptId: number;
   runId: string;
@@ -235,7 +230,6 @@ export class RunIngressServer {
     expectedToken: string;
     accept: (request: RunIngressRequest) => AcceptedRunIngressRequest;
     execute: (receiptId: number) => Promise<RunIngressResponse>;
-    ownerAction?: (request: RunIngressOwnerActionRequest) => Promise<RunIngressResponse>;
   }) {}
 
   async start(): Promise<void> {
@@ -291,12 +285,8 @@ export class RunIngressServer {
 
   private async handle(raw: string): Promise<WireResponse> {
     try {
-      const request = JSON.parse(raw) as RunIngressRequest & { ownerAction?: string; recovery?: unknown };
+      const request = JSON.parse(raw) as RunIngressRequest;
       if (request.token !== this.options.expectedToken) throw new RunIngressAuthenticationError("run ingress authentication failed");
-      if (request.ownerAction !== undefined) {
-        if (request.ownerAction !== "investigate" || !this.options.ownerAction || !request.recovery) throw new RunIngressRequestError("unsupported owner action");
-        return { ok: true, response: await this.options.ownerAction(request as RunIngressOwnerActionRequest) };
-      }
       const accepted = this.options.accept(request);
       return { ok: true, response: await this.options.execute(accepted.receiptId) };
     } catch (error) {
