@@ -153,14 +153,6 @@ const ownerNotificationIngress = ownerNotificationSocketPath
   : null;
 if (ownerNotificationIngress) {
   console.log(`[interactive] owner notification ingress listening on ${ownerNotificationSocketPath}`);
-  let stopping = false;
-  const stopOwnerNotificationIngress = () => {
-    if (stopping) return;
-    stopping = true;
-    void ownerNotificationIngress.stop().finally(() => process.exit(0));
-  };
-  process.once("SIGINT", stopOwnerNotificationIngress);
-  process.once("SIGTERM", stopOwnerNotificationIngress);
 }
 const sensorRegistry = new SensorRegistry({ db, dbPath, env: process.env });
 
@@ -287,6 +279,18 @@ if (runIngress) {
   await runIngress.start();
   console.log(`[interactive] run ingress listening on ${runIngressSocket}`);
 }
+
+let shuttingDown = false;
+const shutdownInteractive = () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  void Promise.allSettled([
+    ownerNotificationIngress?.stop() ?? Promise.resolve(),
+    runIngress?.close() ?? Promise.resolve(),
+  ]).finally(() => process.exit(0));
+};
+process.once("SIGINT", shutdownInteractive);
+process.once("SIGTERM", shutdownInteractive);
 
 const AUTONOMY_CLI_KINDS: CliKind[] = ["codex", "claude", "antigravity"];
 const autonomyWorkspaceContext = autonomyDir
