@@ -323,7 +323,7 @@ function capabilityIndex(s: ReturnType<typeof scope>, env: Env, sk: ReturnType<t
   const routine = runtimeCommand(env, "agent-bridge-routines", env.AGENT_BRIDGE_ROUTINES_COMMAND);
   const routineExecutable = isExecutable(routine);
   const sensors = runtimeCommand(env, "agent-bridge-sensors", env.AGENT_BRIDGE_SENSORS_COMMAND);
-  const sensorsExecutable = isExecutable(sensors);
+  const sensorsAvailable = existsSync(sensors);
   const scoped=Boolean(s.chatKey&&s.surface);
   const cap=(id:string,status:string,reasonCode:string|null,scope:string,risk:string,authorityRequired:string,iface:string)=>({id,owner:"agent-bridge",status,reasonCode,scope,risk,authorityRequired,interface:iface});
   return [
@@ -332,7 +332,7 @@ function capabilityIndex(s: ReturnType<typeof scope>, env: Env, sk: ReturnType<t
     cap("advisor",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?"ready":"unavailable",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?null:"turn_capability_unavailable","turn","read-only-advice","turn capability",env.AGENT_BRIDGE_ADVISOR_COMMAND?.trim()||"agent-bridge-advisor"),
     cap("scheduled-routines",scoped&&routineExecutable?"ready":"unavailable",!scoped?"conversation_scope_unavailable":routineExecutable?null:"routine_command_unavailable","conversation","state-change","authenticated owner",routine),
     cap("autonomous-work",s.surface==="telegram:interactive"&&a.status==="ready"?"ready":"unavailable",s.surface!=="telegram:interactive"?"surface_not_supported":a.status==="ready"?null:a.reasonCode,"goal","execution","authenticated owner","first-class autonomy"),
-    cap("sensors",sensorsExecutable?"ready":"unavailable",sensorsExecutable?null:"sensor_command_unavailable","runtime","read-only","none",sensors),
+    cap("sensors",sensorsAvailable?"ready":"unavailable",sensorsAvailable?null:"sensor_command_unavailable","runtime","read-only","none",`bash ${sensors}`),
     cap("installed-skills",sk.installedStatus,sk.installedReasonCode,"runtime","read-only","none",sk.root),
     cap("chat-surfaces","ready",null,"runtime","read-only","none","telegram,discord"),
     cap("provider-execution",ps.some((p)=>p.selected)?"ready":"unknown",ps.some((p)=>p.selected)?null:"no_current_run_context","run","execution","existing bridge authority","resolved provider runtime"),
