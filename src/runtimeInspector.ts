@@ -12,7 +12,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadBotsConfig } from "./config.js";
 import { CURRENT_SCHEMA_VERSION } from "./db/schema.js";
-import { parseCadenceSeconds } from "./health/config.js";
 import { resolveProviderRuntime } from "./providers/acpRuntime.js";
 import { PROVIDER_CONTRACT_VERSION, qualificationEvidencePath, readQualificationEvidence } from "./providers/qualification.js";
 import { getProviderAdapters } from "./providers/registry.js";
@@ -22,7 +21,6 @@ import { getSharedSkillsHomeDir, listLocalCatalog, resolveSkillPaths } from "./s
 
 export const MAX_INSPECTION_OUTPUT_CHARS = 32_000;
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DEFAULT_HEALTH_DB_PATH = "/home/content-crawler/runtime/agent-bridge/health/health.sqlite";
 const ROUTINE_PREFIX = "scheduled-routine:v1:";
 const HOUR_MS = 60 * 60 * 1_000;
 const WEEKLY_PROJECTION_HORIZON_MS = 8 * 24 * HOUR_MS;
@@ -243,36 +241,6 @@ function autonomy(main: Database.Database, mainPath: string, env: Env) {
   });
 }
 
-function health(main: Database.Database, mainPath: string, env: Env) {
-  const freshnessSeconds = parseCadenceSeconds(env) * 2;
-  if (env.HEALTH_MONITOR_ENABLED !== "true") return { enabled: false, status: null, reasonCode: "health_monitor_disabled", freshnessSeconds, nonGreen: [] as Row[], stalePluginNames: [] as string[], missingPluginNames: [] as string[] };
-  const explicitHealthPath = text(env.HEALTH_DB_PATH, 500);
-  const healthPath = explicitHealthPath ?? (existsSync(DEFAULT_HEALTH_DB_PATH) ? DEFAULT_HEALTH_DB_PATH : mainPath);
-  return withOptionalDb(healthPath, mainPath, main, { enabled: true, status: null, reasonCode: "health_db_unavailable", freshnessSeconds, nonGreen: [] as Row[], stalePluginNames: [] as string[], missingPluginNames: [] as string[] }, (db) => {
-    if (!hasTable(db, "health_plugin_reports")) return { enabled: true, status: null, reasonCode: "health_store_unavailable", freshnessSeconds, nonGreen: [] as Row[], stalePluginNames: [] as string[], missingPluginNames: [] as string[] };
-    const names = ["agent-bridge", ...(env.HEALTH_SERVER_MONITOR_ENABLED === "0" ? [] : ["server"]), ...(env.HEALTH_CONTENT_CRAWLER_ENABLED === "1" ? ["content-crawler"] : [])];
-    const rows = db.prepare(`SELECT plugin_name,report_json,saved_at FROM health_plugin_reports WHERE plugin_name IN (${names.map(()=>"?").join(",")})`).all(...names) as Row[];
-    const byName = new Map(rows.map((row) => [String(row.plugin_name), row]));
-    const stale: string[] = [];
-    const missing: string[] = [];
-    const fresh: Array<{pluginName:string;status:"green"|"amber"|"red";savedAt:string}> = [];
-    const now = Math.floor(Date.now()/1000);
-    for (const name of names) {
-      const row = byName.get(name);
-      if (!row) { missing.push(name); continue; }
-      const saved = Number(row.saved_at);
-      if (!Number.isFinite(saved) || now-saved>freshnessSeconds) { stale.push(name); continue; }
-      try {
-        const report = JSON.parse(String(row.report_json)) as Row;
-        if (report.status!=="green"&&report.status!=="amber"&&report.status!=="red") { missing.push(name); continue; }
-        fresh.push({pluginName:name,status:report.status,savedAt:new Date(saved*1000).toISOString()});
-      } catch { missing.push(name); }
-    }
-    const status = fresh.some((x)=>x.status==="red") ? "red" : fresh.some((x)=>x.status==="amber") ? "amber" : fresh.length ? "green" : null;
-    return { enabled: true, status, reasonCode: status ? null : stale.length ? "health_evidence_stale" : "health_evidence_missing", freshnessSeconds, nonGreen: fresh.filter((x)=>x.status!=="green"), stalePluginNames: stale, missingPluginNames: missing };
-  });
-}
-
 function providers(s: ReturnType<typeof scope>, env: Env, commit: string | null) {
   const bots = loadBotsConfig(env);
   const path = env.AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH?.trim() || qualificationEvidencePath(env.HOME?.trim() || homedir());
@@ -349,11 +317,13 @@ function isExecutable(path: string): boolean {
   }
 }
 
-function capabilityIndex(s: ReturnType<typeof scope>, env: Env, h: ReturnType<typeof health>, sk: ReturnType<typeof skills>, a: ReturnType<typeof autonomy>, ps: ReturnType<typeof providers>) {
+function capabilityIndex(s: ReturnType<typeof scope>, env: Env, sk: ReturnType<typeof skills>, a: ReturnType<typeof autonomy>, ps: ReturnType<typeof providers>) {
   const inspect = runtimeCommand(env, "agent-bridge-inspect");
   const context = runtimeCommand(env, "agent-bridge-context");
   const routine = runtimeCommand(env, "agent-bridge-routines", env.AGENT_BRIDGE_ROUTINES_COMMAND);
   const routineExecutable = isExecutable(routine);
+  const sensors = runtimeCommand(env, "agent-bridge-sensors", env.AGENT_BRIDGE_SENSORS_COMMAND);
+  const sensorsExecutable = isExecutable(sensors);
   const scoped=Boolean(s.chatKey&&s.surface);
   const cap=(id:string,status:string,reasonCode:string|null,scope:string,risk:string,authorityRequired:string,iface:string)=>({id,owner:"agent-bridge",status,reasonCode,scope,risk,authorityRequired,interface:iface});
   return [
@@ -362,7 +332,7 @@ function capabilityIndex(s: ReturnType<typeof scope>, env: Env, h: ReturnType<ty
     cap("advisor",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?"ready":"unavailable",env.AGENT_BRIDGE_ADVISOR_COMMAND&&env.AGENT_BRIDGE_ADVISOR_CAPABILITY?null:"turn_capability_unavailable","turn","read-only-advice","turn capability",env.AGENT_BRIDGE_ADVISOR_COMMAND?.trim()||"agent-bridge-advisor"),
     cap("scheduled-routines",scoped&&routineExecutable?"ready":"unavailable",!scoped?"conversation_scope_unavailable":routineExecutable?null:"routine_command_unavailable","conversation","state-change","authenticated owner",routine),
     cap("autonomous-work",s.surface==="telegram:interactive"&&a.status==="ready"?"ready":"unavailable",s.surface!=="telegram:interactive"?"surface_not_supported":a.status==="ready"?null:a.reasonCode,"goal","execution","authenticated owner","first-class autonomy"),
-    cap("health-investigation",h.enabled?"ready":"unavailable",h.enabled?null:"health_monitor_disabled","runtime","read-only","none","runtime inspector health projection"),
+    cap("sensors",sensorsExecutable?"ready":"unavailable",sensorsExecutable?null:"sensor_command_unavailable","runtime","read-only","none",sensors),
     cap("installed-skills",sk.installedStatus,sk.installedReasonCode,"runtime","read-only","none",sk.root),
     cap("chat-surfaces","ready",null,"runtime","read-only","none","telegram,discord"),
     cap("provider-execution",ps.some((p)=>p.selected)?"ready":"unknown",ps.some((p)=>p.selected)?null:"no_current_run_context","run","execution","existing bridge authority","resolved provider runtime"),
@@ -380,10 +350,9 @@ export function buildAgentBridgeInspection(env: Env = process.env) {
     const ss=sessions(db,s,env);
     const rs=routines(db,s,env);
     const a=autonomy(db,mainPath,env);
-    const h=health(db,mainPath,env);
     const sk=skills(env);
     const ps=providers(s,env,commit);
-    const caps=capabilityIndex(s,env,h,sk,a,ps);
+    const caps=capabilityIndex(s,env,sk,a,ps);
     let version: string|null=null;
     try { version=text((JSON.parse(readFileSync(join(projectRoot(env),"package.json"),"utf8")) as Row).version,40); } catch {}
     const currentSurface=s.surface?.startsWith("telegram:")?"telegram":s.surface?.startsWith("discord:")?"discord":null;
@@ -396,7 +365,7 @@ export function buildAgentBridgeInspection(env: Env = process.env) {
         commit,
         service:serviceStatus,
         database:{status:schema===CURRENT_SCHEMA_VERSION?"ready":"unavailable",schemaVersion:schema,expectedSchemaVersion:CURRENT_SCHEMA_VERSION},
-        degradations:[schema===CURRENT_SCHEMA_VERSION?null:"database_schema_mismatch",h.status==="red"?"health_red":h.status==="amber"?"health_amber":null,sk.installedStatus==="unknown"?"skill_index_unreadable":null].filter(Boolean),
+        degradations:[schema===CURRENT_SCHEMA_VERSION?null:"database_schema_mismatch",sk.installedStatus==="unknown"?"skill_index_unreadable":null].filter(Boolean),
       },
       providers:ps,
       execution:ex,
@@ -404,7 +373,6 @@ export function buildAgentBridgeInspection(env: Env = process.env) {
       scheduledRoutines:rs,
       autonomy:a,
       surfaces:["telegram","discord"].map((id)=>({id,status:currentSurface===id?"ready":"unknown",reasonCode:currentSurface===id?null:"not_current_surface",current:currentSurface===id})),
-      health:h,
       knowledge:{
         skills:{installedStatus:sk.installedStatus,installedReasonCode:sk.installedReasonCode,installed:sk.installed,bundled:sk.bundled},
         retainedContext:{interface:runtimeCommand(env,"agent-bridge-context"),scopeKnown:Boolean(s.chatKey&&s.surface)},
