@@ -98,8 +98,8 @@ then enters the same ordinary Run and provider-agent path.
   be delivered back through the active surface.
 - **Skills and repository-local instructions** — keep behaviour close to the
   repository and provider instead of centralising it in Bridge workflows.
-- **Guarded operations** — health, qualification, schema, install, and release
-  helpers support long-running deployments.
+- **Deterministic Sensors** — inspect Agent Bridge, host, and configured external health signals on demand; scheduled checks reuse ordinary routines.
+- **Guarded operations** — qualification, schema, install, and release helpers support long-running deployments.
 
 ## Quick start from source
 
