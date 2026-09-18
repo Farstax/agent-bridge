@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { SensorRegistry } from "../src/sensors/registry.js";
-import { buildSensorsKeyboard, formatSensorReport, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
+import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
 
 const paths: string[] = [];
 const temporary = (name: string) => {
@@ -61,6 +61,57 @@ describe("sensors", () => {
     expect(() => new SensorRegistry({ env: { AGENT_BRIDGE_SENSOR_CONFIG: configPath } })).toThrow(/invalid.*sensor id/);
   });
 
+  it("rejects external Sensors that collide with built-in IDs", () => {
+    const configPath = temporary("reserved-sensors.json");
+    writeFileSync(configPath, JSON.stringify({
+      external: [{ id: "server", label: "Spoofed server", command: "/bin/true" }],
+    }));
+    expect(() => new SensorRegistry({ env: { AGENT_BRIDGE_SENSOR_CONFIG: configPath } })).toThrow(/reserved sensor id/);
+  });
+
+  it("does not expose stderr from a failing external Sensor", async () => {
+    const configPath = temporary("stderr-sensors.json");
+    writeFileSync(configPath, JSON.stringify({
+      external: [{
+        id: "failing",
+        label: "Failing",
+        command: process.execPath,
+        args: ["-e", "process.stderr.write('secret diagnostic'); process.exit(7)"],
+      }],
+    }));
+    const registry = new SensorRegistry({ env: { AGENT_BRIDGE_SENSOR_CONFIG: configPath } });
+    const report = await registry.run("failing");
+    expect(report).toMatchObject({ sensorId: "failing", status: "red" });
+    expect(report.summary).toContain("code 7");
+    expect(JSON.stringify(report)).not.toContain("secret diagnostic");
+  });
+
+  it("turns external timeout and oversized output into bounded red observations", async () => {
+    const configPath = temporary("bounded-sensors.json");
+    writeFileSync(configPath, JSON.stringify({
+      external: [
+        {
+          id: "slow",
+          label: "Slow",
+          command: process.execPath,
+          args: ["-e", "setTimeout(() => {}, 10000)"],
+          timeoutMs: 100,
+        },
+        {
+          id: "noisy",
+          label: "Noisy",
+          command: process.execPath,
+          args: ["-e", "process.stdout.write('x'.repeat(70000))"],
+        },
+      ],
+    }));
+    const registry = new SensorRegistry({ env: { AGENT_BRIDGE_SENSOR_CONFIG: configPath } });
+    await expect(registry.run("slow")).resolves.toMatchObject({ sensorId: "slow", status: "red" });
+    const noisy = await registry.run("noisy");
+    expect(noisy).toMatchObject({ sensorId: "noisy", status: "red" });
+    expect(JSON.stringify(noisy).length).toBeLessThan(2000);
+  }, 5000);
+
   it("turns malformed external output into a bounded red observation", async () => {
     const configPath = temporary("malformed-sensors.json");
     writeFileSync(configPath, JSON.stringify({
@@ -90,5 +141,21 @@ describe("sensors", () => {
     expect(keyboard.inline_keyboard.flat().map((button) => button.callback_data)).toEqual(["sensor:server", "sensor:all"]);
     expect(parseSensorCallback("sensor:server")).toBe("server");
     expect(parseSensorCallback("cli:codex")).toBeNull();
+  });
+
+  it("bounds combined Telegram Sensor output", () => {
+    const report = {
+      sensorId: "example",
+      label: "Example health",
+      status: "red" as const,
+      checks: Array.from({ length: 32 }, (_, index) => ({
+        name: `check-${index}`,
+        status: "red" as const,
+        message: "x".repeat(500),
+      })),
+      summary: "red",
+      timestamp: "2026-09-18T10:00:00Z",
+    };
+    expect(formatSensorReports([report, report])).toHaveLength(3900);
   });
 });
