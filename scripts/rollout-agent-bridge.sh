@@ -522,10 +522,8 @@ for unit in "${units[@]}"; do
   if [[ "$unit" == "agent-bridge-health.service" && ! -f "$discovered" && -n "$legacy_health_database" ]]; then
     [[ ! -e "$discovered" && ! -L "$discovered" ]] || die "health database target is occupied by a non-regular path: $discovered"
     [[ "$legacy_health_database" == /* && -f "$legacy_health_database" && ! -L "$legacy_health_database" ]] || die "legacy health database is missing or symlinked: $legacy_health_database"
-    if (( retiring_health == 0 )); then
-      health_relocation_source="$legacy_health_database"
-      health_relocation_target="$discovered"
-    fi
+    health_relocation_source="$legacy_health_database"
+    health_relocation_target="$discovered"
     discovered="$legacy_health_database"
   fi
   [[ -f "$discovered" && ! -L "$discovered" ]] || die "missing database or symlinked database for $unit: $discovered"
@@ -1564,7 +1562,7 @@ if (( retiring_health == 1 )); then
   record_phase HEALTH_TARGET_SUBTRACTED
 fi
 
-if [[ -n "$health_relocation_source" ]]; then
+if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "relocating legacy health database source=$health_relocation_source target=$health_relocation_target"
   run_db_tool relocate --from "$health_relocation_source" --to "$health_relocation_target"
   for database_index in "${!databases[@]}"; do
@@ -1619,7 +1617,7 @@ done
 run_db_tool validate --restart-boundary "$restart_boundary" --evidence - "${db_args[@]}" > "$artifact_dir/post-start-evidence.json"
 hash_evidence_file "$artifact_dir/post-start-evidence.json"
 acceptance_args=(--before "$artifact_dir/preflight-evidence.json" --after "$artifact_dir/post-start-evidence.json" --reconciliation-evidence "$artifact_dir/reconciliation-evidence.json" --output "$artifact_dir/acceptance-evidence.json")
-if [[ -n "$health_relocation_source" ]]; then
+if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   acceptance_args+=(--relocated-from "$health_relocation_source" --relocated-to "$health_relocation_target")
 fi
 if [[ -n "$autonomy_bootstrap_path" ]]; then
@@ -1630,7 +1628,7 @@ if (( retiring_health == 1 )); then
 fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
 hash_evidence_file "$artifact_dir/acceptance-evidence.json"
-if [[ -n "$health_relocation_source" ]]; then
+if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   echo "retiring legacy health database path=$health_relocation_source"
   /usr/bin/rm -f -- "$health_relocation_source" "${health_relocation_source}-wal" "${health_relocation_source}-shm"
   [[ ! -e "$health_relocation_source" && ! -L "$health_relocation_source" ]] || die "legacy health database could not be retired"
