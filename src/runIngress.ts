@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, unlinkSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import type { BridgeDb, ExecutionLaneHandle } from "./db.js";
-import type { BotKind } from "./types.js";
+import type { RouteableBotKind } from "./types.js";
 import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import { EventStore } from "./events/store.js";
 import type { BridgeEvent } from "./events/types.js";
@@ -85,7 +85,7 @@ function runChatKey(scopeKey: string): string {
 export function acceptRunIngressRequest(
   db: BridgeDb,
   input: RunIngressRequest,
-  options: { expectedToken?: string; bot?: BotKind; runId?: () => string; now?: () => string },
+  options: { expectedToken?: string; bot?: RouteableBotKind; runId?: () => string; now?: () => string },
 ): AcceptedRunIngressRequest {
   if (!options.expectedToken || input.token !== options.expectedToken) {
     throw new RunIngressAuthenticationError("run ingress authentication failed");
@@ -141,7 +141,7 @@ export async function executeRunIngressRequest(
   db: BridgeDb,
   receiptId: number,
   engine: RunIngressEngine,
-  options: { bot?: BotKind } = {},
+  options: { bot?: RouteableBotKind } = {},
 ): Promise<RunIngressResponse> {
   const receipt = db.getEventReceipt(receiptId);
   if (!receipt?.run_id) throw new Error("run ingress receipt has no linked Run");
