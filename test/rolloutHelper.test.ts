@@ -189,6 +189,42 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
   }, 15_000);
 
+  it("retires the legacy health service/database and migrates its generic capabilities after target acceptance", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+    writeFileSync(healthDefaults, [
+      `HEALTH_DB_PATH=${fixture.dbPaths[2]}`,
+      "HEALTH_CONTENT_CRAWLER_ENABLED=1",
+      "HEALTH_CONTENT_CRAWLER_SCRIPT=/srv/content-crawler/health_check.py",
+      "BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock",
+      "BRIDGE_RUN_INGRESS_TOKEN=fixture-secret",
+      "",
+    ].join("\n"), { mode: 0o600 });
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(fixture.dbPaths[2])).toBe(false);
+    expect(existsSync(healthDefaults)).toBe(false);
+    expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
+    const config = readFileSync(fixture.configFile, "utf8");
+    expect(config).not.toContain("unit=agent-bridge-health.service");
+    expect(config).not.toContain(`database=${fixture.dbPaths[2]}`);
+    const interactive = readFileSync(join(fixture.envDir, "agent-bridge-interactive"), "utf8");
+    expect(interactive).toContain("BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock");
+    expect(interactive).toContain("BRIDGE_RUN_INGRESS_TOKEN=fixture-secret");
+    const sensorPath = join(fixture.root, "etc", "agent-bridge", "sensors.json");
+    expect(interactive).toContain(`AGENT_BRIDGE_SENSOR_CONFIG=${sensorPath}`);
+    const sensors = JSON.parse(readFileSync(sensorPath, "utf8"));
+    expect(sensors.external).toEqual([expect.objectContaining({
+      id: "content-crawler",
+      label: "Content Crawler health",
+      command: expect.stringContaining("/content-crawler/venv/bin/python3"),
+      args: ["/srv/content-crawler/health_check.py"],
+    })]);
+  }, 15_000);
+
   it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
