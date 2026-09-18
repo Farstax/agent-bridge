@@ -227,6 +227,35 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     })]);
   }, 15_000);
 
+  it("restores legacy health state when retirement fails before target acceptance", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+    const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+    const originalDefaults = [
+      `HEALTH_DB_PATH=${fixture.dbPaths[2]}`,
+      "HEALTH_CONTENT_CRAWLER_ENABLED=1",
+      "HEALTH_CONTENT_CRAWLER_SCRIPT=/srv/content-crawler/health_check.py",
+      "BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock",
+      "BRIDGE_RUN_INGRESS_TOKEN=fixture-secret",
+      "",
+    ].join("\n");
+    writeFileSync(healthDefaults, originalDefaults, { mode: 0o600 });
+    const beforeDb = sha256(fixture.dbPaths[2]);
+    const beforeConfig = readFileSync(fixture.configFile, "utf8");
+
+    const result = runRollout(fixture, "migrate");
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/FAILED_RESTORED/);
+    expect(readlinkSync(currentPointer)).toBe(fixture.previousCommit);
+    expect(sha256(fixture.dbPaths[2])).toBe(beforeDb);
+    expect(readFileSync(healthDefaults, "utf8")).toBe(originalDefaults);
+    expect(readFileSync(fixture.configFile, "utf8")).toBe(beforeConfig);
+    expect(readFileSync(fixture.stateFile, "utf8").trim().split("\n")).toEqual(units);
+  }, 15_000);
+
   it("retires a legacy health database in place instead of relocating it into the removed target", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
