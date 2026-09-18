@@ -41,6 +41,7 @@ DEFAULT_AGENT_BRIDGE_SKILLS = (
     "git-sandbox",
     "cli-auth-telegram",
     "autonomous-work",
+    "scheduled-routines",
     "sensors",
     "advisor",
     "engineering-retro",
