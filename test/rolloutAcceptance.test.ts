@@ -27,7 +27,7 @@ function evidence(overrides: Record<string, unknown> = {}): object {
   };
 }
 
-function run(before: object, after: object, reconciliation?: object): string {
+function run(before: object, after: object, reconciliation?: object, extraArgs: string[] = []): string {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-acceptance-"));
   const beforePath = join(root, "before.json");
   const afterPath = join(root, "after.json");
@@ -40,6 +40,7 @@ function run(before: object, after: object, reconciliation?: object): string {
     writeFileSync(reconciliationPath, JSON.stringify(reconciliation));
     args.push("--reconciliation-evidence", reconciliationPath);
   }
+  args.push(...extraArgs);
   return execFileSync("python3", args, { encoding: "utf8" });
 }
 
@@ -56,6 +57,14 @@ describe("rollout acceptance evidence", () => {
       executionLockState: { total: 0, active: 0 },
       deliveryState: { failed: 6 },
     }))).toContain("accepted");
+  });
+
+  it("accepts an explicitly declared retired database and rejects undeclared inventory loss", () => {
+    const health = { ...evidence().databases[0], path: "/tmp/health.sqlite" };
+    const before = { ...evidence(), databases: [...evidence().databases, health] };
+    const after = evidence();
+    expect(run(before, after, undefined, ["--removed", "/tmp/health.sqlite"])).toContain("accepted");
+    expect(() => run(before, after)).toThrow(/inventory changed/i);
   });
 
   it("rejects an unhealthy or non-current post-start database", () => {
