@@ -227,6 +227,32 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     })]);
   }, 15_000);
 
+  it("retires a legacy health database in place instead of relocating it into the removed target", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => {
+      const target = join(dirname(fixture.dbPaths[2]), "retired-health-target.sqlite");
+      return [
+        ...lines.map((line) => line === `database=${fixture.dbPaths[2]}` ? `database=${target}` : line)
+          .map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line),
+        `legacy_database=${fixture.dbPaths[2]}`,
+      ];
+    });
+    const target = join(dirname(fixture.dbPaths[2]), "retired-health-target.sqlite");
+    const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+    writeFileSync(healthDefaults, `HEALTH_DB_PATH=${target}\n`, { mode: 0o600 });
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(fixture.dbPaths[2])).toBe(false);
+    expect(existsSync(target)).toBe(false);
+    const config = readFileSync(fixture.configFile, "utf8");
+    expect(config).not.toContain("legacy_database=");
+    expect(config).not.toContain(`database=${target}`);
+  }, 15_000);
+
   it("binds authorization to the exact artifact, evidence, environment and trusted identities before stopping services", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
