@@ -8,7 +8,7 @@ function openContextDb(): { db?: BridgeDb; close: () => void } {
   const path = process.env.AGENT_BRIDGE_CONTEXT_DB?.trim();
   if (!path) return { close: () => {} };
   const raw = new Database(path, { readonly: true, fileMustExist: true });
-  return { db: new BridgeDb(raw, { serviceId: "sensor-helper", runId: `sensor-helper-${process.pid}` }), close: () => raw.close() };
+  return { db: new BridgeDb(raw, { serviceId: "sensor-helper", runId: `sensor-helper-${process.pid}`, leaseMs: 90_000 }), close: () => raw.close() };
 }
 
 async function main(args: string[]): Promise<string> {
