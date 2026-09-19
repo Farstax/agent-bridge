@@ -174,6 +174,10 @@ if [ "\${FAKE_RESTORE_FAIL:-}" = 1 ]; then
 fi
 exec sudo -n env AGENT_BRIDGE_RESTORE_TEST_MODE=1 "${restoreHelperPath}" "$@"
 `);
+  executable(join(bin, "rollout-sentinel-clear"), `#!/usr/bin/env bash
+set -euo pipefail
+echo "rollout-sentinel-clear:$*" >> "${fixture.actionLog}"
+`);
   copyFileSync(authorizationScript, join(bin, "rollout-authorization-trusted"));
   copyFileSync(acceptanceScript, join(bin, "rollout-acceptance-trusted"));
   chmodSync(join(bin, "rollout-authorization-trusted"), 0o755);
@@ -471,6 +475,7 @@ function getSharedTemplate(): SharedTemplate {
   if (existsSync(migrationScript)) copyFileSync(migrationScript, join(project, "scripts", "rollout-db.ts"));
   if (existsSync(migrationImplScript)) copyFileSync(migrationImplScript, join(project, "scripts", "rollout-db-impl.ts"));
   copyFileSync(cleanupScript, join(project, "scripts", "reap-tmp-artifacts.sh"));
+  copyFileSync(sentinelClearPath, join(project, "scripts", "rollout-sentinel-clear.sh"));
   copyFileSync(cleanupServiceTemplate, join(project, "systemd", "agent-bridge-tmp-cleanup.service"));
   copyFileSync(cleanupTimerTemplate, join(project, "systemd", "agent-bridge-tmp-cleanup.timer"));
   if (existsSync(authorizationScript)) copyFileSync(authorizationScript, join(project, "scripts", "rollout-authorization.py"));

@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -515,6 +516,20 @@ def detached_command(release: Path, approval: Path | None, owner_request: Path |
     return command
 
 
+def retry_command(release: Path, approval: Path | None, owner_request: Path | None) -> str:
+    command = [
+        SUDO,
+        "/usr/local/sbin/agent-bridge-deploy",
+        "--release",
+        str(absolute_input(release)),
+    ]
+    if approval:
+        command.extend(["--approval", str(absolute_input(approval))])
+    if owner_request:
+        command.extend(["--owner-request", str(absolute_input(owner_request))])
+    return " ".join(shlex.quote(value) for value in command)
+
+
 def launch_detached(release: Path, approval: Path | None, owner_request: Path | None) -> int:
     unit = f"agent-bridge-deploy-{os.getpid()}.service"
     print(f"deployment continuing in transient unit {unit}", flush=True)
@@ -532,6 +547,7 @@ def launch_detached(release: Path, approval: Path | None, owner_request: Path | 
                 print(f"deployment failed in {unit}; underlying rollout output:\n{output}", file=sys.stderr)
         except OSError as error:
             print(f"deployment failed in {unit}; unable to read rollout journal: {error}", file=sys.stderr)
+        print(f"retry with: {retry_command(release, approval, owner_request)}", file=sys.stderr)
     return result.returncode
 
 

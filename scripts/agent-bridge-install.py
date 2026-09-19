@@ -71,6 +71,7 @@ DATABASE_ROLES = {
 HELPERS: tuple[tuple[str, Path, str], ...] = (
     ("scripts/agent-bridge-deploy.py", Path("/usr/local/sbin/agent-bridge-deploy"), "deployer"),
     ("scripts/rollout-agent-bridge.sh", Path("/usr/local/sbin/rollout-agent-bridge"), "rollout"),
+    ("scripts/rollout-sentinel-clear.sh", Path("/usr/local/sbin/rollout-sentinel-clear"), "sentinel_clear"),
     ("scripts/release-stage.py", Path("/usr/local/libexec/agent-bridge-release-stage"), "stage"),
     ("scripts/release-activate.py", Path("/usr/local/libexec/agent-bridge-release-activate"), "activate"),
     ("scripts/rollout-restore.py", Path("/usr/local/libexec/agent-bridge-rollout-restore"), "restore"),

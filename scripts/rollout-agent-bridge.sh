@@ -69,6 +69,7 @@ if [[ -n "$test_root" ]]; then
   activation_cmd="$test_root/bin/release-activate"
   authorization_validator="$test_root/bin/rollout-authorization-trusted"
   acceptance_validator="$test_root/bin/rollout-acceptance-trusted"
+  sentinel_clear_cmd="$test_root/bin/rollout-sentinel-clear"
   defaults_dir="$test_root/etc/default"
   systemd_dir="$test_root/etc/systemd/system"
   cgroup_root="$test_root/sys/fs/cgroup"
@@ -88,6 +89,7 @@ else
   activation_cmd="/usr/local/libexec/agent-bridge-release-activate"
   authorization_validator="/usr/local/libexec/agent-bridge-rollout-authorization.py"
   acceptance_validator="/usr/local/libexec/agent-bridge-rollout-acceptance.py"
+  sentinel_clear_cmd="/usr/local/sbin/rollout-sentinel-clear"
   defaults_dir="/etc/default"
   systemd_dir="/etc/systemd/system"
   cgroup_root="/sys/fs/cgroup"
@@ -153,6 +155,8 @@ health_relocation_target=""
 retiring_health=0
 health_already_retired=0
 retired_health_database=""
+retired_health_database_present=0
+retired_health_config_database=""
 retired_health_defaults="$defaults_dir/agent-bridge-health"
 retired_health_unit="$systemd_unit_dir/agent-bridge-health.service"
 sensor_config_path="$(/usr/bin/realpath -m "$defaults_dir/../agent-bridge/sensors.json")"
@@ -376,6 +380,54 @@ authorization_identity_args=(
 
 secure_owner_uid="$EUID"
 if (( test_mode == 0 )); then secure_owner_uid=0; fi
+converge_sentinel_clear_helper() {
+  (( release_mode == 1 )) || return 0
+  local source="$release_dir/scripts/rollout-sentinel-clear.sh"
+  local destination="$sentinel_clear_cmd"
+  local destination_dir temporary expected_hash actual_hash destination_mode destination_dir_mode
+  [[ -f "$source" && ! -L "$source" ]] || die "release sentinel-clear helper is missing or unsafe: $source"
+  expected_hash="$(/usr/bin/sha256sum "$source" | /usr/bin/cut -d' ' -f1)"
+  destination_dir="$(/usr/bin/dirname -- "$destination")"
+  [[ -d "$destination_dir" && ! -L "$destination_dir" && "$(/usr/bin/realpath -e "$destination_dir")" == "$destination_dir" ]] || die "sentinel-clear helper destination directory is unsafe: $destination_dir"
+  if (( test_mode == 0 )); then
+    [[ "$(/usr/bin/stat -c %u "$destination_dir")" == "0" ]] || die "sentinel-clear helper destination directory must be root-owned"
+    destination_dir_mode="$(/usr/bin/stat -c %a "$destination_dir")"
+    (( (8#$destination_dir_mode & 022) == 0 )) || die "sentinel-clear helper destination directory must not be group/world writable"
+  fi
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    [[ -f "$destination" && ! -L "$destination" ]] || die "installed sentinel-clear helper is unsafe: $destination"
+    if (( test_mode == 0 )); then
+      [[ "$(/usr/bin/stat -c %u "$destination")" == "0" ]] || die "installed sentinel-clear helper must be root-owned"
+      destination_mode="$(/usr/bin/stat -c %a "$destination")"
+      (( (8#$destination_mode & 022) == 0 )) || die "installed sentinel-clear helper must not be group/world writable"
+    fi
+    actual_hash="$(/usr/bin/sha256sum "$destination" | /usr/bin/cut -d' ' -f1)"
+    if [[ "$actual_hash" == "$expected_hash" && -x "$destination" ]]; then
+      return 0
+    fi
+  fi
+  temporary="$(/usr/bin/mktemp --tmpdir="$destination_dir" .rollout-sentinel-clear.XXXXXX)"
+  if ! /usr/bin/cp --no-dereference -- "$source" "$temporary" || ! /usr/bin/chmod 0750 "$temporary"; then
+    /usr/bin/rm -f -- "$temporary"
+    die "failed to stage sentinel-clear helper"
+  fi
+  if (( test_mode == 0 )) && ! /usr/bin/chown 0:0 "$temporary"; then
+    /usr/bin/rm -f -- "$temporary"
+    die "failed to set sentinel-clear helper ownership"
+  fi
+  if [[ "$(/usr/bin/sha256sum "$temporary" | /usr/bin/cut -d' ' -f1)" != "$expected_hash" ]]; then
+    /usr/bin/rm -f -- "$temporary"
+    die "staged sentinel-clear helper hash mismatch"
+  fi
+  /usr/bin/mv -f -- "$temporary" "$destination"
+  [[ -f "$destination" && ! -L "$destination" && -x "$destination" ]] || die "sentinel-clear helper convergence failed"
+  [[ "$(/usr/bin/sha256sum "$destination" | /usr/bin/cut -d' ' -f1)" == "$expected_hash" ]] || die "installed sentinel-clear helper hash mismatch"
+  if (( test_mode == 0 )); then
+    [[ "$(/usr/bin/stat -c %u "$destination")" == "0" ]] || die "installed sentinel-clear helper must be root-owned"
+  fi
+  echo "sentinel-clear helper converged path=$destination"
+}
+
 validate_secure_path() {
   local path="$1" kind="$2" mode owner canonical
   if [[ "$kind" == directory ]]; then [[ -d "$path" && ! -L "$path" ]] || die "$path must be a non-symlink directory"
@@ -552,6 +604,7 @@ done
 if (( retiring_health == 1 && health_already_retired == 0 )); then
   retired_health_database="${unit_databases[agent-bridge-health.service]:-}"
   [[ -n "$retired_health_database" ]] || die "legacy health unit has no resolved database"
+  retired_health_database_present=1
 fi
 
 # The interactive service may own a second production database for the
@@ -597,17 +650,47 @@ fi
 if (( health_already_retired == 1 )); then
   target_databases=()
   for database in "${databases[@]}"; do
-    if [[ -z "${discovered_databases[$database]:-}" && ! -e "$database" && ! -L "$database" ]]; then
-      if [[ "$database" == "$legacy_health_database" || "$database" == */health/health.sqlite || "$database" == */.data-health/health.sqlite ]]; then
-        [[ -z "$retired_health_database" ]] || die "multiple stale databases remain after retired health unit disappeared"
-        retired_health_database="$database"
-        echo "retired health database is already absent; removing stale inventory path=$database"
-        continue
-      fi
+    if [[ -z "${discovered_databases[$database]:-}" ]] && [[ "$database" == "$legacy_health_database" || "$database" == */health/health.sqlite || "$database" == */.data-health/health.sqlite ]]; then
+      [[ -z "$retired_health_config_database" ]] || die "multiple stale health database inventory entries remain after retired health unit disappeared"
+      retired_health_config_database="$database"
+      echo "removing retired health database from active rollout inventory path=$database"
+      continue
     fi
     target_databases+=("$database")
   done
   databases=("${target_databases[@]}")
+
+  stale_health_candidates=()
+  [[ -z "$retired_health_config_database" ]] || stale_health_candidates+=("$retired_health_config_database")
+  if [[ -n "$legacy_health_database" && "$legacy_health_database" != "$retired_health_config_database" ]]; then
+    stale_health_candidates+=("$legacy_health_database")
+  fi
+  for database in "${stale_health_candidates[@]}"; do
+    [[ "$database" == /* && "$database" != *[[:space:]]* ]] || die "retired health database path is invalid: $database"
+    if [[ -e "$database" || -L "$database" ]]; then
+      [[ -f "$database" && ! -L "$database" ]] || die "retired health database is unsafe: $database"
+      canonical="$(/usr/bin/realpath -e "$database")"
+      [[ "$canonical" == "$database" ]] || die "retired health database path is not canonical: $database"
+      [[ -z "${discovered_databases[$canonical]:-}" ]] || die "retired health database is still selected by an active unit: $canonical"
+      if (( retired_health_database_present == 1 )) && [[ "$retired_health_database" != "$canonical" ]]; then
+        die "multiple surviving retired health databases require manual review"
+      fi
+      retired_health_database="$canonical"
+      retired_health_database_present=1
+    elif [[ -z "$retired_health_database" ]]; then
+      retired_health_database="$database"
+    fi
+  done
+
+  if (( retired_health_database_present == 1 )); then
+    databases+=("$retired_health_database")
+    unit_databases[agent-bridge-health.service]="$retired_health_database"
+    unit_roles[agent-bridge-health.service]=health
+    discovered_databases[$retired_health_database]=1
+    echo "retired health database remains; backing it up before retirement path=$retired_health_database"
+  elif [[ -n "$retired_health_database" ]]; then
+    echo "retired health database is already absent; removing stale inventory path=$retired_health_database"
+  fi
 fi
 
 declare -A canonical_databases=()
@@ -1008,40 +1091,31 @@ restore_health_retirement_config() {
 
 retire_health_state_after_acceptance() {
   (( retiring_health == 1 )) || return 0
-  if (( health_already_retired == 1 )); then
-    /usr/bin/python3 - "$config_file" "$retired_health_database" <<'PY'
-import os
-import sys
-path, health_db = sys.argv[1:]
-drop_prefixes = ("unit=agent-bridge-health.service", "legacy_database=")
-drop_exact = {f"database={health_db}"} if health_db else set()
-with open(path, encoding="utf-8") as handle:
-    lines = handle.read().splitlines()
-kept = [line for line in lines if line not in drop_exact and not any(line.startswith(prefix) for prefix in drop_prefixes)]
-tmp = path + ".tmp"
-with open(tmp, "w", encoding="utf-8") as handle:
-    handle.write("\n".join(kept) + "\n")
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
-PY
-    echo "persisted converged rollout inventory for already-absent retired health service"
-    return 0
-  fi
-  "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || die "failed to disable retired health service"
-  if "$systemctl_cmd" is-enabled --quiet agent-bridge-health.service >/dev/null 2>&1; then
-    die "retired health service remains enabled"
+  if (( health_already_retired == 0 )); then
+    "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || die "failed to disable retired health service"
+    if "$systemctl_cmd" is-enabled --quiet agent-bridge-health.service >/dev/null 2>&1; then
+      die "retired health service remains enabled"
+    fi
   fi
   /usr/bin/rm -f -- "$retired_health_unit" "$retired_health_defaults"
-  /usr/bin/rm -f -- "$retired_health_database" "${retired_health_database}-wal" "${retired_health_database}-shm"
-  [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database could not be removed"
-  /usr/bin/python3 - "$config_file" "$retired_health_database" "$health_relocation_target" <<'PY'
+  if (( retired_health_database_present == 1 )); then
+    /usr/bin/rm -f -- "$retired_health_database" "${retired_health_database}-wal" "${retired_health_database}-shm"
+    [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database could not be removed"
+  elif [[ -n "$retired_health_database" ]]; then
+    [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database unexpectedly exists after acceptance"
+  fi
+  /usr/bin/python3 - "$config_file" "$retired_health_database" "$health_relocation_target" "$retired_health_config_database" <<'PY'
 import os
 import sys
-path, health_db, relocation_target = sys.argv[1:]
+path, health_db, relocation_target, config_health_db = sys.argv[1:]
 drop_prefixes = ("unit=agent-bridge-health.service", "legacy_database=")
-drop_exact = {f"database={health_db}"}
+drop_exact = set()
+if health_db:
+    drop_exact.add(f"database={health_db}")
 if relocation_target:
     drop_exact.add(f"database={relocation_target}")
+if config_health_db:
+    drop_exact.add(f"database={config_health_db}")
 with open(path, encoding="utf-8") as handle:
     lines = handle.read().splitlines()
 kept = [line for line in lines if line not in drop_exact and not any(line.startswith(prefix) for prefix in drop_prefixes)]
@@ -1064,6 +1138,9 @@ PY
     /usr/bin/mv -f -- "$tmp" "$env_file"
   done
   "$systemctl_cmd" daemon-reload
+  if (( health_already_retired == 1 )); then
+    echo "persisted converged rollout inventory for already-absent retired health service"
+  fi
   record_phase HEALTH_STATE_RETIRED
 }
 
@@ -1473,6 +1550,8 @@ sentinel_identity=""
 previous_pointer_target=""
 declare -a expected_backups=()
 
+converge_sentinel_clear_helper
+
 trap on_exit EXIT
 
 # Interrupted-rollout sentinel (Phase 4C.4, issue #135). Checked and, if
@@ -1494,7 +1573,7 @@ if [[ -e "$sentinel_path" || -L "$sentinel_path" ]]; then
   [[ "$sentinel_check_owner" == "$secure_owner_uid" && "$sentinel_check_mode" == "600" ]] || die "existing rollout sentinel has unsafe ownership or mode: $sentinel_path — manual review required"
   sentinel_prior_commit="$(/usr/bin/sed -n 's/^expected_commit=//p' "$sentinel_path")"
   sentinel_prior_artifact_dir="$(/usr/bin/sed -n 's/^artifact_dir=//p' "$sentinel_path")"
-  die "an interrupted rollout sentinel already exists: $sentinel_path (expected_commit=${sentinel_prior_commit:-unknown} artifact_dir=${sentinel_prior_artifact_dir:-unknown}) — review that evidence; clear with: sudo rollout-sentinel-clear --expected-commit ${sentinel_prior_commit:-unknown} --artifact-dir ${sentinel_prior_artifact_dir:-unknown} ; then re-run the same agent-bridge-deploy command"
+  die "an interrupted rollout sentinel already exists: $sentinel_path (expected_commit=${sentinel_prior_commit:-unknown} artifact_dir=${sentinel_prior_artifact_dir:-unknown}) — review that evidence; clear with: sudo $sentinel_clear_cmd --expected-commit ${sentinel_prior_commit:-unknown} --artifact-dir ${sentinel_prior_artifact_dir:-unknown} ; then re-run the same agent-bridge-deploy command"
 fi
 sentinel_tmp="$(/usr/bin/mktemp --tmpdir="$log_dir" .rollout-in-progress.XXXXXX)"
 {
@@ -1578,7 +1657,7 @@ build_db_args() {
 build_db_args
 preflight_db_args=("${db_args[@]}")
 inspect_db_flags=()
-if (( retiring_health == 1 && health_already_retired == 0 )); then inspect_db_flags+=(--allow-retired-health); fi
+if (( retiring_health == 1 && retired_health_database_present == 1 )); then inspect_db_flags+=(--allow-retired-health); fi
 run_db_tool() {
   run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
 }
@@ -1632,14 +1711,16 @@ run_db_tool prune "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "$arti
 hash_evidence_file "$artifact_dir/acp-telemetry-retention-evidence.json"
 record_phase TELEMETRY_PRUNED
 
-if (( retiring_health == 1 && health_already_retired == 0 )); then
+if (( retiring_health == 1 )); then
   prepare_health_retirement_config
   target_units=()
   for unit in "${units[@]}"; do [[ "$unit" == "agent-bridge-health.service" ]] || target_units+=("$unit"); done
   units=("${target_units[@]}")
-  target_databases=()
-  for database in "${databases[@]}"; do [[ "$database" == "$retired_health_database" ]] || target_databases+=("$database"); done
-  databases=("${target_databases[@]}")
+  if (( retired_health_database_present == 1 )); then
+    target_databases=()
+    for database in "${databases[@]}"; do [[ "$database" == "$retired_health_database" ]] || target_databases+=("$database"); done
+    databases=("${target_databases[@]}")
+  fi
   unset 'unit_databases[agent-bridge-health.service]'
   unset 'unit_roles[agent-bridge-health.service]'
   build_db_args
@@ -1708,7 +1789,7 @@ fi
 if [[ -n "$autonomy_bootstrap_path" ]]; then
   acceptance_args+=(--added "$autonomy_bootstrap_path")
 fi
-if (( retiring_health == 1 && health_already_retired == 0 )); then
+if (( retiring_health == 1 && retired_health_database_present == 1 )); then
   acceptance_args+=(--removed "$retired_health_database")
 fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
