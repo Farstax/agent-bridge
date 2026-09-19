@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { getAvailableCliKinds } from "../src/interactiveCliAuth.js";
 import { claudeAcpPolicy } from "../src/providers/claudeAcpPolicy.js";
 import {
   CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS,
@@ -71,6 +72,48 @@ describe("Claude OAuth refresh contention", () => {
       expect(getQualificationFailedProviders("/nonexistent/provider-qualification.json")).not.toContain("claude");
     } finally {
       clearProviderRuntimeAuthDegraded("claude");
+    }
+  });
+
+  it("persists Claude auth degradation in the shared credential coordination file", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-state-"));
+    const lockFile = join(home, ".agent-bridge", "locks", "claude-credentials.lock");
+    try {
+      markProviderRuntimeAuthDegraded("claude", home);
+      expect(readFileSync(lockFile, "utf8")).toContain("runtime-auth-degraded");
+      clearProviderRuntimeAuthDegraded("claude", home);
+      expect(readFileSync(lockFile, "utf8")).toBe("");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("restores Claude availability after bounded native auth status proves re-authentication", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-recovery-"));
+    const bin = join(home, "bin");
+    const claude = join(bin, "claude");
+    const credentials = join(home, ".claude", ".credentials.json");
+    try {
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      writeFileSync(claude, "#!/bin/sh\nexit 0\n");
+      chmodSync(claude, 0o755);
+      writeFileSync(credentials, "{}\n");
+
+      markProviderRuntimeAuthDegraded("claude", home);
+      const available = getAvailableCliKinds({
+        homeDir: home,
+        env: { HOME: home, PATH: bin },
+        commandExists: () => true,
+        agyRuntimeReady: () => false,
+        exists: (path) => path === credentials,
+        readCursorStatus: () => ({ isAuthenticated: false }),
+      });
+
+      expect(available.has("claude")).toBe(true);
+      expect(readFileSync(join(home, ".agent-bridge", "locks", "claude-credentials.lock"), "utf8")).toBe("");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });
