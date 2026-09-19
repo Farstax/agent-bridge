@@ -98,7 +98,7 @@ else
   test_mode=0
 fi
 
-for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" "$sentinel_clear_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/chown /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
+for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/chown /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
   [[ -x "$command_path" ]] || die "required command is unavailable: $command_path"
 done
 [[ -f "$config_file" && ! -L "$config_file" ]] || die "missing fixed rollout config: $config_file"
@@ -112,7 +112,6 @@ project_dir=""
 release_root=""
 current_pointer=""
 rollout_helper_sha256=""
-sentinel_clear_sha256=""
 activation_helper_sha256=""
 authorization_validator_sha256=""
 acceptance_validator_sha256=""
@@ -134,7 +133,6 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     release_root) [[ -z "$release_root" ]] || die "duplicate release_root"; release_root="$value" ;;
     current_pointer) [[ -z "$current_pointer" ]] || die "duplicate current_pointer"; current_pointer="$value" ;;
     rollout_helper_sha256) [[ -z "$rollout_helper_sha256" ]] || die "duplicate rollout_helper_sha256"; rollout_helper_sha256="$value" ;;
-    sentinel_clear_sha256) [[ -z "$sentinel_clear_sha256" ]] || die "duplicate sentinel_clear_sha256"; sentinel_clear_sha256="$value" ;;
     activation_helper_sha256) [[ -z "$activation_helper_sha256" ]] || die "duplicate activation_helper_sha256"; activation_helper_sha256="$value" ;;
     authorization_validator_sha256) [[ -z "$authorization_validator_sha256" ]] || die "duplicate authorization_validator_sha256"; authorization_validator_sha256="$value" ;;
     acceptance_validator_sha256) [[ -z "$acceptance_validator_sha256" ]] || die "duplicate acceptance_validator_sha256"; acceptance_validator_sha256="$value" ;;
@@ -355,15 +353,10 @@ converge_deployer_autonomy_config
 rollout_config_sha256="$(/usr/bin/sha256sum "$config_file" | /usr/bin/cut -d' ' -f1)"
 installed_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d' ' -f1)"
 if (( test_mode == 1 )); then
-  [[ -n "$sentinel_clear_sha256" ]] || sentinel_clear_sha256="$(/usr/bin/sha256sum "$sentinel_clear_cmd" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$authorization_validator_sha256" ]] || authorization_validator_sha256="$(/usr/bin/sha256sum "$authorization_validator" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$acceptance_validator_sha256" ]] || acceptance_validator_sha256="$(/usr/bin/sha256sum "$acceptance_validator" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$release_stage_sha256" ]] || release_stage_sha256="$(/usr/bin/sha256sum "$release_stage_cmd" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$rollout_restore_sha256" ]] || rollout_restore_sha256="$(/usr/bin/sha256sum "$restore_cmd" | /usr/bin/cut -d' ' -f1)"
-fi
-if (( release_mode == 1 )); then
-  [[ "$sentinel_clear_sha256" =~ ^[0-9a-f]{64}$ ]] || die "sentinel-clear SHA-256 pin is missing or malformed"
-  [[ "$(/usr/bin/sha256sum "$sentinel_clear_cmd" | /usr/bin/cut -d' ' -f1)" == "$sentinel_clear_sha256" ]] || die "sentinel-clear SHA-256 mismatch"
 fi
 if [[ "$deployer_mode" == 1 ]]; then
   [[ -n "$deployer_artifact_sha256" && "$deployer_artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || die "deployer artifact SHA-256 is missing or malformed"
@@ -387,6 +380,41 @@ authorization_identity_args=(
 
 secure_owner_uid="$EUID"
 if (( test_mode == 0 )); then secure_owner_uid=0; fi
+converge_sentinel_clear_helper() {
+  (( release_mode == 1 )) || return 0
+  local source="$release_dir/scripts/rollout-sentinel-clear.sh"
+  local destination="$sentinel_clear_cmd"
+  local destination_dir temporary expected_hash actual_hash destination_mode
+  [[ -f "$source" && ! -L "$source" ]] || die "release sentinel-clear helper is missing or unsafe: $source"
+  expected_hash="$(/usr/bin/sha256sum "$source" | /usr/bin/cut -d' ' -f1)"
+  destination_dir="$(/usr/bin/dirname -- "$destination")"
+  [[ -d "$destination_dir" && ! -L "$destination_dir" && "$(/usr/bin/realpath -e "$destination_dir")" == "$destination_dir" ]] || die "sentinel-clear helper destination directory is unsafe: $destination_dir"
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    [[ -f "$destination" && ! -L "$destination" ]] || die "installed sentinel-clear helper is unsafe: $destination"
+    if (( test_mode == 0 )); then
+      [[ "$(/usr/bin/stat -c %u "$destination")" == "0" ]] || die "installed sentinel-clear helper must be root-owned"
+      destination_mode="$(/usr/bin/stat -c %a "$destination")"
+      (( (8#$destination_mode & 022) == 0 )) || die "installed sentinel-clear helper must not be group/world writable"
+    fi
+    actual_hash="$(/usr/bin/sha256sum "$destination" | /usr/bin/cut -d' ' -f1)"
+    if [[ "$actual_hash" == "$expected_hash" && -x "$destination" ]]; then
+      return 0
+    fi
+  fi
+  temporary="$(/usr/bin/mktemp --tmpdir="$destination_dir" .rollout-sentinel-clear.XXXXXX)"
+  /usr/bin/cp --no-dereference -- "$source" "$temporary"
+  /usr/bin/chmod 0750 "$temporary"
+  if (( test_mode == 0 )); then /usr/bin/chown 0:0 "$temporary"; fi
+  [[ "$(/usr/bin/sha256sum "$temporary" | /usr/bin/cut -d' ' -f1)" == "$expected_hash" ]] || die "staged sentinel-clear helper hash mismatch"
+  /usr/bin/mv -f -- "$temporary" "$destination"
+  [[ -f "$destination" && ! -L "$destination" && -x "$destination" ]] || die "sentinel-clear helper convergence failed"
+  [[ "$(/usr/bin/sha256sum "$destination" | /usr/bin/cut -d' ' -f1)" == "$expected_hash" ]] || die "installed sentinel-clear helper hash mismatch"
+  if (( test_mode == 0 )); then
+    [[ "$(/usr/bin/stat -c %u "$destination")" == "0" ]] || die "installed sentinel-clear helper must be root-owned"
+  fi
+  echo "sentinel-clear helper converged path=$destination"
+}
+
 validate_secure_path() {
   local path="$1" kind="$2" mode owner canonical
   if [[ "$kind" == directory ]]; then [[ -d "$path" && ! -L "$path" ]] || die "$path must be a non-symlink directory"
@@ -1510,6 +1538,8 @@ previous_pointer_target=""
 declare -a expected_backups=()
 
 trap on_exit EXIT
+
+converge_sentinel_clear_helper
 
 # Interrupted-rollout sentinel (Phase 4C.4, issue #135). Checked and, if
 # absent, created here — immediately after the lock is acquired and before
