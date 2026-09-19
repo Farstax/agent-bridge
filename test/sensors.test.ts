@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { chmodSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import { SensorRegistry } from "../src/sensors/registry.js";
 import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, handleSensorCallback, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
@@ -232,6 +234,33 @@ describe("sensors", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(runs).toBe(0);
     expect(acknowledgements).toEqual(["Unknown sensor"]);
+  });
+
+  it("uses the same bounded redacted contract through the packaged helper path", () => {
+    const configPath = temporary("helper-sensors.json");
+    const rawReport = JSON.stringify({
+      status: "red",
+      checks: [{ name: "auth", status: "red", message: "token=helper-secret" }],
+      summary: "password=helper-password",
+      timestamp: "2026-09-18T10:00:00Z",
+    });
+    writeFileSync(configPath, JSON.stringify({
+      external: [{
+        id: "example",
+        label: "Example",
+        command: process.execPath,
+        args: ["-e", `process.stdout.write(${JSON.stringify(rawReport)})`],
+      }],
+    }));
+    const helper = fileURLToPath(new URL("../scripts/agent-bridge-sensors.ts", import.meta.url));
+    const output = execFileSync(process.execPath, ["--import", "tsx", helper, "run", "example", "--json"], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_SENSOR_CONFIG: configPath, AGENT_BRIDGE_CONTEXT_DB: "" },
+    });
+    const report = JSON.parse(output);
+    expect(report.sensorId).toBe("example");
+    expect(output).not.toContain("helper-secret");
+    expect(output).not.toContain("helper-password");
   });
 
   it("bounds combined Telegram Sensor output", () => {
