@@ -18,7 +18,7 @@ import type { CliOptions } from "./types.js";
 import { type as evtType } from "./events/types.js";
 import type { BridgeEvent } from "./events/types.js";
 import type { ExecutionLaneHandle } from "./db.js";
-import { buildWorkspaceLockedInvocation } from "./workspaceLock.js";
+import { buildFileLockedInvocation, buildWorkspaceLockedInvocation } from "./workspaceLock.js";
 import { validateSuccessfulCliExit } from "./cliSuccessfulExitValidation.js";
 import {
   filterProviderCredentialEnv,
@@ -609,7 +609,15 @@ export async function runSupervisedStdioSession<T>(
   if (options.chatId != null && activeExecutions.get(options.chatId)?.abortRequested) {
     throw new Error(`Execution already aborted for chatId=${String(options.chatId)}`);
   }
-  const spawnInvocation = buildWorkspaceLockedInvocation(command, args, cwd, {
+  const providerInvocation = options.providerCredentialLock
+    ? buildFileLockedInvocation(
+        command,
+        args,
+        options.providerCredentialLock.lockFile,
+        options.providerCredentialLock.mode,
+      )
+    : { command, args };
+  const spawnInvocation = buildWorkspaceLockedInvocation(providerInvocation.command, providerInvocation.args, cwd, {
     bypassWorkspaceLock: options.bypassWorkspaceLock,
   });
   console.log(formatSpawnLog(command, args, cwd, options.chatId, undefined, redactionEnv));
