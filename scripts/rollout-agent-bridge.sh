@@ -1628,7 +1628,7 @@ backup_completed=1
 record_phase BACKED_UP
 
 echo "pruning expired ACP telemetry from terminal runs"
-run_db_tool prune --evidence - "${db_args[@]}" > "$artifact_dir/acp-telemetry-retention-evidence.json"
+run_db_tool prune "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "$artifact_dir/acp-telemetry-retention-evidence.json"
 hash_evidence_file "$artifact_dir/acp-telemetry-retention-evidence.json"
 record_phase TELEMETRY_PRUNED
 
