@@ -1010,7 +1010,17 @@ restore_previous_release_and_start() {
   local -a recovery_units=("${rollback_units[@]}")
   [[ "$previous_pointer_target" =~ ^[0-9a-f]{40}$ ]] || { echo "previous release pointer target is unavailable" >&2; return 1; }
   record_recovery_phase POINTER_ROLLBACK_STARTED || return 1
-  "$activation_cmd" --release-root "$release_root" --current "$current_pointer" --expected-commit "$previous_pointer_target" || { recontain_after_recovery_failure; return 1; }
+  local current_recovery_target
+  current_recovery_target="$(/usr/bin/readlink -- "$current_pointer")" || { echo "current release pointer cannot be read during recovery" >&2; recontain_after_recovery_failure; return 1; }
+  if [[ "$current_recovery_target" == "$previous_pointer_target" ]]; then
+    "$activation_cmd" --release-root "$release_root" --current "$current_pointer" --converge-active-host-components || { recontain_after_recovery_failure; return 1; }
+  elif [[ "$current_recovery_target" == "$expected_commit" ]]; then
+    "$activation_cmd" --release-root "$release_root" --current "$current_pointer" --expected-commit "$previous_pointer_target" || { recontain_after_recovery_failure; return 1; }
+  else
+    echo "current release pointer mismatch during recovery: expected active target $expected_commit or previous target $previous_pointer_target, got $current_recovery_target" >&2
+    recontain_after_recovery_failure
+    return 1
+  fi
   if [[ "$(/usr/bin/readlink -- "$current_pointer")" != "$previous_pointer_target" ]]; then
     echo "previous release pointer verification failed" >&2
     recontain_after_recovery_failure
@@ -1053,14 +1063,14 @@ restore_previous_release_and_start() {
     fi
   done
   recovery_evidence="$artifact_dir/recovery-acceptance-evidence.json"
-  run_db_tool inspect --evidence - "${recovery_db_args[@]}" > "$recovery_evidence" || { recontain_after_recovery_failure; return 1; }
+  run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${recovery_db_args[@]}" > "$recovery_evidence" || { recontain_after_recovery_failure; return 1; }
   if ! hash_evidence_file "$recovery_evidence"; then
     echo "recovery acceptance evidence hashing failed" >&2
     recontain_after_recovery_failure
     return 1
   fi
   recovery_queue_evidence="$artifact_dir/recovery-queue-evidence.json"
-  run_db_tool inspect --evidence - "${recovery_db_args[@]}" > "$recovery_queue_evidence" || { recontain_after_recovery_failure; return 1; }
+  run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${recovery_db_args[@]}" > "$recovery_queue_evidence" || { recontain_after_recovery_failure; return 1; }
   if ! hash_evidence_file "$recovery_queue_evidence"; then
     echo "recovery queue evidence hashing failed" >&2
     recontain_after_recovery_failure
@@ -1503,8 +1513,8 @@ build_db_args() {
 }
 build_db_args
 preflight_db_args=("${db_args[@]}")
-preflight_db_flags=()
-if (( retiring_health == 1 )); then preflight_db_flags+=(--allow-retired-health); fi
+inspect_db_flags=()
+if (( retiring_health == 1 )); then inspect_db_flags+=(--allow-retired-health); fi
 run_db_tool() {
   run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
 }
@@ -1516,7 +1526,7 @@ for unit in "${units[@]}"; do
   restart_baseline[$unit]="$("$systemctl_cmd" show "$unit" --property=NRestarts --value)"
   [[ "${restart_baseline[$unit]}" =~ ^[0-9]+$ ]] || die "invalid NRestarts for $unit"
 done
-run_db_tool inspect "${preflight_db_flags[@]}" --evidence - "${preflight_db_args[@]}" > "$artifact_dir/preflight-evidence.json"
+run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${preflight_db_args[@]}" > "$artifact_dir/preflight-evidence.json"
 hash_evidence_file "$artifact_dir/preflight-evidence.json"
 record_phase PREFLIGHT
 
@@ -1538,7 +1548,7 @@ if [[ -n "$autonomy_bootstrap_path" ]]; then
 fi
 
 code_check
-run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
+run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
 hash_evidence_file "$artifact_dir/stopped-evidence.json"
 validate_sqlite_sidecars
 echo "draining SQLite WAL sidecars offline"

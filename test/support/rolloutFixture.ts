@@ -184,16 +184,29 @@ echo "release-activate:$*" >> "${fixture.actionLog}"
 current=""
 expected=""
 validate_only=0
+converge_active=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --current) current="$2"; shift 2 ;;
     --expected-commit) expected="$2"; shift 2 ;;
     --release-root) shift 2 ;;
     --validate-only) validate_only=1; shift ;;
+    --converge-active-host-components) converge_active=1; shift ;;
     *) echo "unknown release activation argument: $1" >&2; exit 2 ;;
   esac
 done
 if [ "$validate_only" = 1 ]; then exit 0; fi
+if [ "$converge_active" = 1 ]; then
+  [ -n "$current" ] && [ -L "$current" ] || exit 1
+  if [ "\${FAKE_RECOVERY_RESTART_COUNTER_EMPTY:-}" = 1 ]; then
+    : > "${fixture.root}/recovery-pointer-activated"
+  fi
+  exit 0
+fi
+if [ "$(readlink -- "$current")" = "$expected" ]; then
+  echo "release-activate: same target pointer is a no-op activation; refusing POINTER_SWITCHED" >&2
+  exit 1
+fi
 tmp="\${current}.test-new"
 rm -f -- "$tmp"
 ln -s "$expected" "$tmp"

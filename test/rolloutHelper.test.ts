@@ -284,6 +284,31 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(actions(fixture)).toContain("systemctl:disable agent-bridge-health.service");
   }, 15_000);
 
+  it("accepts the retired health table through preflight, stopped inspection, and previous-release recovery", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+    const healthDb = new Database(fixture.dbPaths[2]);
+    healthDb.exec("CREATE TABLE health_plugin_reports(id INTEGER PRIMARY KEY, payload TEXT)");
+    healthDb.close();
+
+    const result = runRollout(fixture, "backup");
+    const output = `${result.stdout}\n${result.stderr}`;
+    const actionLog = actions(fixture);
+    const inspectCalls = actionLog.split("\n").filter((line) => line.startsWith("runuser:") && line.includes(" inspect "));
+
+    expect(result.status).not.toBe(0);
+    expect(output).toMatch(/STATE: PRE_BACKUP_RECOVERED/);
+    expect(output).toMatch(/previous release services running and recovery health verified/);
+    expect(readlinkSync(currentPointer)).toBe(fixture.previousCommit);
+    expect(readFileSync(fixture.stateFile, "utf8").trim().split("\n")).toEqual(units);
+    expect(inspectCalls).toHaveLength(4);
+    expect(inspectCalls.every((line) => line.includes("--allow-retired-health"))).toBe(true);
+    expect(actionLog).toContain("--converge-active-host-components");
+    expect(actionLog).not.toContain(`--expected-commit ${fixture.previousCommit}`);
+  }, 15_000);
+
   it("restores legacy health state when retirement fails before target acceptance", () => {
     const fixture = createFixture();
     const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
