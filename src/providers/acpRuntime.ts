@@ -21,6 +21,11 @@ import type { ProviderId, ProviderInvocation, ProviderInvocationRequest } from "
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
 import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
+import { classifyProviderError, isClaudeOAuthRefreshContention } from "./errorClassification.js";
+import {
+  clearProviderRuntimeAuthDegraded,
+  markProviderRuntimeAuthDegraded,
+} from "./runtimeAvailability.js";
 import { buildAcpFailureDiagnosticEvent } from "./acpFailureDiagnostic.js";
 import { hasCustomAcpConfiguration, resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
 import {
@@ -111,6 +116,11 @@ export interface AcpProviderPolicy {
   ) => Promise<void>;
   /** Provider extension for structured run activity; generic ACP lifecycle remains here. */
   readonly createActivityProjector?: () => AcpActivityProjector;
+  /** Optional provider-owned credential-store coordination acquired by the shared supervisor. */
+  readonly credentialExecutionLock?: (
+    env: Record<string, string | undefined>,
+    attempt: 1 | 2,
+  ) => { lockFile: string; mode: "shared" | "exclusive" } | null;
   /** Provider-specific in-band failure recognition when ACP itself returns a normal terminal response. */
   readonly detectTurnError?: (result: AcpTurnResult) => Error | null;
   readonly selectAnswer?: (
@@ -517,12 +527,18 @@ export async function runResolvedAcpProviderTurn(
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
   const abortRequested = () => chatId != null && isAbortRequested(chatId);
-  const runTurn = async (): Promise<AcpTurnResult> => {
+  const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
+    const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
     const turn = await runSupervisedStdioSession(
       runtime.executable,
       [...runtime.args],
       cwd,
-      { ...options, contextEnv, bot: options.bot ?? providerBotKind(providerId) },
+      {
+        ...options,
+        contextEnv,
+        bot: options.bot ?? providerBotKind(providerId),
+        ...(credentialExecutionLock ? { providerCredentialLock: credentialExecutionLock } : {}),
+      },
       async (io) => runAcpTurn({
         stream: nodeStdioStream(
           io.stdin as import("node:stream").Writable,
@@ -604,8 +620,21 @@ export async function runResolvedAcpProviderTurn(
         { attempt: currentAttempt, successorStarted: false, retryEligible: false },
       ));
     }
+    const classifiedError = redacted instanceof Error || typeof redacted === "string"
+      ? redacted
+      : new Error(String(redacted));
+    if (
+      providerId === "claude"
+      && (
+        classifyProviderError("claude", classifiedError).kind === "auth_required"
+        || isClaudeOAuthRefreshContention(classifiedError)
+      )
+    ) {
+      markProviderRuntimeAuthDegraded("claude");
+    }
     throw redacted;
   }
+  if (providerId === "claude") clearProviderRuntimeAuthDegraded("claude");
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);

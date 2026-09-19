@@ -153,6 +153,8 @@ export interface CliOptions {
    * set this for a normal writable execution.
    */
   bypassWorkspaceLock?: boolean;
+  /** Optional provider-owned shared credential-store lock, acquired by the supervisor. */
+  providerCredentialLock?: { lockFile: string; mode: "shared" | "exclusive" };
   /**
    * Live ACP steering handle registration, forwarded from the shared ACP
    * boundary only when the connected agent advertises steering support AND

@@ -37,7 +37,7 @@ async function defaultWait(delayMs: number, abortRequested: () => boolean): Prom
  */
 export async function runWithAcpTransientRetry<T>(
   providerId: ProviderId,
-  operation: () => Promise<T>,
+  operation: (attempt: 1 | 2) => Promise<T>,
   options: {
     abortRequested: () => boolean;
     wait?: AcpTransientRetryWait;
@@ -45,7 +45,7 @@ export async function runWithAcpTransientRetry<T>(
   },
 ): Promise<T> {
   try {
-    return await operation();
+    return await operation(1);
   } catch (error) {
     const normalized = error instanceof Error ? error : new Error(String(error));
     if (providerId !== "claude" || !isClaudeOAuthRefreshContention(normalized)) throw error;
@@ -63,7 +63,7 @@ export async function runWithAcpTransientRetry<T>(
       await options.onRetryDecision?.(normalized, false);
       throw new AcpTransientRetryCancelledError();
     }
-    const successor = operation();
+    const successor = operation(2);
     await options.onRetryDecision?.(normalized, true);
     return successor;
   }

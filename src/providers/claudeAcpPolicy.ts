@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
@@ -19,6 +21,22 @@ const REPOSITORY_GROUNDING_APPEND = [
 const CLAUDE_DISABLE_BACKGROUND_TASKS_ENV = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS";
 const CLAUDE_REFRESH_DIAGNOSTIC_PREFIX = `Failed to refresh OAuth token: ${CLAUDE_OAUTH_REFRESH_CONTENTION_MARKER}`;
 const CLAUDE_REFRESH_DIAGNOSTIC_LEAD = "failed to refresh oauth token:";
+const CLAUDE_CREDENTIAL_LOCK_NAME = "claude-credentials.lock";
+
+function claudeCredentialExecutionLock(
+  env: Record<string, string | undefined>,
+  attempt: 1 | 2,
+): { lockFile: string; mode: "shared" | "exclusive" } {
+  const home = env.HOME?.trim() || homedir();
+  const lockDir = join(home, ".agent-bridge", "locks");
+  mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+  return {
+    lockFile: join(lockDir, CLAUDE_CREDENTIAL_LOCK_NAME),
+    // Ordinary turns share the credential store concurrently. Only the bounded
+    // successor after observed refresh contention excludes other Claude users.
+    mode: attempt === 2 ? "exclusive" : "shared",
+  };
+}
 
 function splitPreference(raw: string | undefined): string[] {
   return raw ? raw.split(",").map((value) => value.trim()).filter(Boolean) : [];
@@ -194,5 +212,6 @@ export const claudeAcpPolicy: AcpProviderPolicy = {
   qualificationEnvKeys: CLAUDE_QUALIFICATION_ENV_KEYS,
   verifyApiKey: verifyClaudeAcpApiKey,
   sessionSettings,
+  credentialExecutionLock: claudeCredentialExecutionLock,
   detectTurnError: detectClaudeAcpTurnError,
 };

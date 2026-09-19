@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { loadBotsConfig } from "./config.js";
 import { CURRENT_SCHEMA_VERSION } from "./db/schema.js";
 import { resolveProviderRuntime } from "./providers/acpRuntime.js";
+import { isProviderRuntimeAuthDegraded } from "./providers/runtimeAvailability.js";
 import { PROVIDER_CONTRACT_VERSION, qualificationEvidencePath, readQualificationEvidence } from "./providers/qualification.js";
 import { getProviderAdapters } from "./providers/registry.js";
 import { latestDueScheduledOccurrence, type ScheduledRoutine } from "./scheduledRoutines.js";
@@ -254,7 +255,10 @@ function providers(s: ReturnType<typeof scope>, env: Env, commit: string | null)
     const selected = s.provider === adapter.id;
     let availability: "available" | "unknown" | "unavailable" = selected ? "available" : "unknown";
     let availabilityReasonCode: string | null = selected ? null : "not_live_probed";
-    if (runtime.transport === "acp-stdio" && !isExecutable(runtime.executable)) {
+    if (isProviderRuntimeAuthDegraded(adapter.id)) {
+      availability = "unavailable";
+      availabilityReasonCode = "runtime_auth_degraded";
+    } else if (runtime.transport === "acp-stdio" && !isExecutable(runtime.executable)) {
       availability = "unavailable";
       availabilityReasonCode = "acp_adapter_missing";
     }
