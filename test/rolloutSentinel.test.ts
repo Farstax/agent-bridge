@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -39,6 +40,22 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_
       env: { ...process.env, AGENT_BRIDGE_ROLLOUT_TEST_ROOT: fixture.root, ...env },
     });
   }
+
+  it("never removes a pre-existing sentinel when recovery-helper convergence fails before sentinel ownership", () => {
+    const fixture = createFixture();
+    const { releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const sentinel = sentinelPath(fixture);
+    const original = "pre-existing-sentinel\n";
+    writeFileSync(sentinel, original, { mode: 0o600 });
+    rmSync(join(releaseDir, "scripts", "rollout-sentinel-clear.sh"));
+
+    const result = runRollout(fixture);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/release sentinel-clear helper is missing or unsafe/i);
+    expect(existsSync(sentinel)).toBe(true);
+    expect(readFileSync(sentinel, "utf8")).toBe(original);
+  });
 
   it("creates the sentinel immediately and removes it on a fully successful rollout", () => {
     const fixture = useMinimalInventory(createFixture());
