@@ -1,15 +1,12 @@
 import type { CliOptions } from "../types.js";
 import { type as bridgeEventType, type BotKind, type RunDiagnosticEvent } from "../events/types.js";
-import { redactProviderApiKeySecrets } from "./apiKeyAuth.js";
 import {
   classifyProviderError,
   isFallbackEligibleProviderError,
   isRetryEligibleProviderError,
 } from "./errorClassification.js";
+import { boundedProviderFailureDiagnostic } from "./providerFailureDetail.js";
 import type { ProviderId } from "./types.js";
-
-const ACP_FAILURE_DIAGNOSTIC_MAX_CHARS = 1_200;
-const ACP_FAILURE_CAUSE_DEPTH = 3;
 const diagnosedAcpFailures = new WeakSet<object>();
 
 type ErrorWithData = Error & {
@@ -27,33 +24,6 @@ export function hasAcpFailureDiagnostic(error: unknown): boolean {
 
 function botKindForProvider(providerId: ProviderId): BotKind | "custom-acp" {
   return providerId === "agy" ? "antigravity" : providerId;
-}
-
-function structuredProviderMessage(error: ErrorWithData): string | null {
-  const data = error.data;
-  if (!data || typeof data !== "object") return null;
-  const message = (data as { message?: unknown }).message;
-  return typeof message === "string" && message.trim() ? message.trim() : null;
-}
-
-function boundedDiagnosticMessage(error: ErrorWithData, env: NodeJS.ProcessEnv): string {
-  const parts: string[] = [];
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-
-  for (let depth = 0; depth < ACP_FAILURE_CAUSE_DEPTH && current != null && !seen.has(current); depth += 1) {
-    seen.add(current);
-    const normalized = normalizeError(current);
-    const label = `${normalized.name}: ${normalized.message}`.trim();
-    if (label) parts.push(label);
-    const structured = structuredProviderMessage(normalized);
-    if (structured && !label.includes(structured)) parts.push(`provider: ${structured}`);
-    current = normalized.cause;
-  }
-
-  const bounded = (parts.join("\ncaused by: ") || "Unknown ACP provider failure")
-    .slice(0, ACP_FAILURE_DIAGNOSTIC_MAX_CHARS);
-  return redactProviderApiKeySecrets(bounded, env);
 }
 
 /** Durable, reducer-inert evidence for one failed ACP provider attempt. */
@@ -83,7 +53,7 @@ export function buildAcpFailureDiagnosticEvent(
     successorStarted: attemptState.successorStarted ?? false,
     retryEligible,
     errorName: normalized.name,
-    message: boundedDiagnosticMessage(normalized, env),
+    message: boundedProviderFailureDiagnostic(normalized, env, "Unknown ACP provider failure"),
     classification: classification.kind,
     fallbackEligible: isFallbackEligibleProviderError(classification),
   });
