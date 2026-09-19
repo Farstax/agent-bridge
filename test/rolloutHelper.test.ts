@@ -229,6 +229,21 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     })]);
   }, 15_000);
 
+  it("fails deployment if the retired health service cannot be disabled", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_FAIL_HEALTH_DISABLE: "1" });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/failed to disable retired health service/i);
+    expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    expect(existsSync(join(fixture.envDir, "agent-bridge-health"))).toBe(true);
+    expect(actions(fixture)).toContain("systemctl:disable agent-bridge-health.service");
+  }, 15_000);
+
   it("restores legacy health state when retirement fails before target acceptance", () => {
     const fixture = createFixture();
     const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
