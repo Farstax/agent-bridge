@@ -10,7 +10,7 @@ export function readAptUpdateStatus(aptCheckPath = "/usr/lib/update-notifier/apt
   const result = spawnSync(aptCheckPath, [], { encoding: "utf8", timeout: 5000 });
   if (result.error) throw result.error;
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-  const match = output.match(/^(\d+);(\d+)/);
+  const match = output.match(/(\d+);(\d+)/);
   if (!match) throw new Error("apt-check returned an invalid result");
   return { total: Number(match[1]), security: Number(match[2]) };
 }
