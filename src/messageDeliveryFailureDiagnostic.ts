@@ -1,14 +1,11 @@
 import { type as bridgeEventType, type BotKind, type RunDiagnosticEvent } from "./events/types.js";
-import { redactProviderApiKeySecrets } from "./providers/apiKeyAuth.js";
 import { hasAcpFailureDiagnostic } from "./providers/acpFailureDiagnostic.js";
 import {
   classifyProviderError,
   isFallbackEligibleProviderError,
 } from "./providers/errorClassification.js";
+import { boundedProviderFailureDiagnostic } from "./providers/providerFailureDetail.js";
 import type { ProviderId } from "./providers/types.js";
-
-const FAILURE_DIAGNOSTIC_MAX_CHARS = 1_200;
-const FAILURE_CAUSE_DEPTH = 3;
 
 type ErrorWithData = Error & {
   readonly cause?: unknown;
@@ -29,34 +26,6 @@ function botKindForKind(kind: string): BotKind | null {
   return kind === "codex" || kind === "claude" || kind === "antigravity" || kind === "grok" || kind === "cursor"
     ? kind
     : null;
-}
-
-function structuredProviderMessage(error: ErrorWithData): string | null {
-  const data = error.data;
-  if (!data || typeof data !== "object") return null;
-  const message = (data as { message?: unknown }).message;
-  return typeof message === "string" && message.trim() ? message.trim() : null;
-}
-
-function boundedDiagnosticMessage(error: ErrorWithData, env: NodeJS.ProcessEnv): string {
-  const parts: string[] = [];
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-
-  for (let depth = 0; depth < FAILURE_CAUSE_DEPTH && current != null && !seen.has(current); depth += 1) {
-    seen.add(current);
-    const normalized = normalizeError(current);
-    const label = `${normalized.name}: ${normalized.message}`.trim();
-    if (label) parts.push(label);
-    const structured = structuredProviderMessage(normalized);
-    if (structured && !label.includes(structured)) parts.push(`provider: ${structured}`);
-    current = normalized.cause;
-  }
-
-  return redactProviderApiKeySecrets(
-    (parts.join("\ncaused by: ") || "Unknown interactive failure").slice(0, FAILURE_DIAGNOSTIC_MAX_CHARS),
-    env,
-  );
 }
 
 export function buildMessageDeliveryFailureDiagnostic({
@@ -99,7 +68,7 @@ export function buildMessageDeliveryFailureDiagnostic({
     successorStarted: false,
     retryEligible: false,
     errorName: normalized.name,
-    message: boundedDiagnosticMessage(normalized, env),
+    message: boundedProviderFailureDiagnostic(normalized, env, "Unknown interactive failure"),
     classification: classification.kind,
     fallbackEligible: isFallbackEligibleProviderError(classification),
   });
