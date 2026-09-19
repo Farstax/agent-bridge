@@ -104,4 +104,18 @@ describe("ACP failure diagnostics", () => {
     expect(diagnostic.message).toContain("usage limit");
     expect(diagnostic.classification).toBe("capacity_exhausted");
   });
+
+  it("retains bounded ACP data.details used by providers such as Antigravity", () => {
+    const error = Object.assign(new Error("Internal error"), {
+      data: { details: "Could not find default localharness binary. Set ANTIGRAVITY_HARNESS_PATH." },
+    });
+    const diagnostic = buildAcpFailureDiagnosticEvent("agy", error, {
+      ...eventContext,
+      bot: "antigravity",
+    }, {});
+
+    expect(diagnostic.message).toContain("Internal error");
+    expect(diagnostic.message).toContain("localharness");
+    expect(diagnostic.message).toContain("ANTIGRAVITY_HARNESS_PATH");
+  });
 });
