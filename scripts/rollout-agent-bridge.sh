@@ -453,7 +453,7 @@ done
 if (( release_mode == 1 ))   && [[ -n "${selected_units[agent-bridge-health.service]:-}" ]]   && [[ ! -f "$release_dir/systemd/agent-bridge-health.service" ]]; then
   retiring_health=1
   health_load_state="$("$systemctl_cmd" show agent-bridge-health.service --property=LoadState --value 2>/dev/null || true)"
-  if [[ "$health_load_state" == "not-found" || -z "$health_load_state" ]]; then
+  if [[ "$health_load_state" == "not-found" ]]; then
     health_already_retired=1
     target_units=()
     for unit in "${units[@]}"; do [[ "$unit" == "agent-bridge-health.service" ]] || target_units+=("$unit"); done
@@ -598,10 +598,12 @@ if (( health_already_retired == 1 )); then
   target_databases=()
   for database in "${databases[@]}"; do
     if [[ -z "${discovered_databases[$database]:-}" && ! -e "$database" && ! -L "$database" ]]; then
-      [[ -z "$retired_health_database" ]] || die "multiple stale databases remain after retired health unit disappeared"
-      retired_health_database="$database"
-      echo "retired health database is already absent; removing stale inventory path=$database"
-      continue
+      if [[ "$database" == "$legacy_health_database" || "$database" == */health/health.sqlite || "$database" == */.data-health/health.sqlite ]]; then
+        [[ -z "$retired_health_database" ]] || die "multiple stale databases remain after retired health unit disappeared"
+        retired_health_database="$database"
+        echo "retired health database is already absent; removing stale inventory path=$database"
+        continue
+      fi
     fi
     target_databases+=("$database")
   done
@@ -668,7 +670,6 @@ verify_runtime_assets_readable() {
     run_as_runtime /usr/bin/test -r "$sensor_config_path" || die "runtime user cannot read sensor configuration: $sensor_config_path"
   fi
 }
-converge_runtime_config_directory
 git_check() {
   [[ "$(run_as_runtime /usr/bin/git -C "$project_dir" rev-parse --is-inside-work-tree)" == "true" ]] || die "project is not a Git worktree"
   [[ "$(run_as_runtime /usr/bin/git -C "$project_dir" branch --show-current)" == "main" ]] || die "project must be on main"
@@ -1521,6 +1522,7 @@ sentinel_identity="$(/usr/bin/stat -c '%d:%i' "$sentinel_path")"
 touch "$phase_ledger"
 chmod 0600 "$phase_ledger"
 record_phase PRECHECK_STARTED
+converge_runtime_config_directory
 log_file="$artifact_dir/rollout.log"
 latest_tmp="$(/usr/bin/mktemp --tmpdir="$log_dir" .latest.XXXXXX)"
 printf '%s\n' "$artifact_dir" > "$latest_tmp"
