@@ -1563,6 +1563,11 @@ backup_completed=1
 /usr/bin/sha256sum "$manifest" > "$artifact_dir/backup-manifest.sha256"
 record_phase BACKED_UP
 
+echo "pruning expired ACP telemetry from terminal runs"
+run_db_tool prune --evidence - "${db_args[@]}" > "$artifact_dir/acp-telemetry-retention-evidence.json"
+hash_evidence_file "$artifact_dir/acp-telemetry-retention-evidence.json"
+record_phase TELEMETRY_PRUNED
+
 if (( retiring_health == 1 )); then
   prepare_health_retirement_config
   target_units=()
