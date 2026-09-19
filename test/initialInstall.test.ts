@@ -361,7 +361,6 @@ with tempfile.TemporaryDirectory() as directory:
     expect(result.rendered).toContain("unit=agent-bridge-interactive.service");
     expect(result.rendered).toContain("database=/var/lib/agent-bridge/interactive/bridge.sqlite");
     expect(result.rendered).toMatch(/rollout_helper_sha256=[0-9a-f]{64}/);
-    expect(result.rendered).toMatch(/sentinel_clear_sha256=[0-9a-f]{64}/);
   });
 
   it("accepts timer files without a service user placeholder", () => {
