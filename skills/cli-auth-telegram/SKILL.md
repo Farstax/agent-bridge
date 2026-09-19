@@ -34,9 +34,11 @@ DISPLAY= <resolved-claude-bin> auth login
 Prints an OAuth URL, then may prompt for a pasted code. Because this must run in the background while you keep chatting, run it detached with output captured to a log file and stdin wired through a named pipe you control:
 
 ```bash
-mkdir -p "$RUNTIME_DIR"
+mkdir -p "$RUNTIME_DIR" "$HOME/.agent-bridge/locks"
 mkfifo "$RUNTIME_DIR/claude-auth.pipe" 2>/dev/null || true
-( exec 3<>"$RUNTIME_DIR/claude-auth.pipe"; DISPLAY= "$CLAUDE_BIN" auth login <&3 >"$RUNTIME_DIR/claude-auth.log" 2>&1 & )
+FLOCK_BIN="$(command -v flock)"
+CLAUDE_CREDENTIAL_LOCK="$HOME/.agent-bridge/locks/claude-credentials.lock"
+( exec 3<>"$RUNTIME_DIR/claude-auth.pipe"; DISPLAY= "$FLOCK_BIN" --exclusive --no-fork "$CLAUDE_CREDENTIAL_LOCK" "$CLAUDE_BIN" auth login <&3 >"$RUNTIME_DIR/claude-auth.log" 2>&1 & )
 ```
 
 Poll the log briefly for the URL line, then reply to the user with it as a Markdown link plus: "After approving, reply here with the code shown." When their next message arrives, write it to the pipe (`printf '%s\n' "$CODE" > "$RUNTIME_DIR/claude-auth.pipe"`) and confirm the credential file now exists before telling them it worked.
@@ -79,6 +81,7 @@ Do not use plain `grok login` in a headless/Telegram context because its default
 - Never print the raw device/auth code or URL query secrets into anything other than the single chat reply meant for the user — do not echo them again in later messages, status updates, or error text.
 - Set a bounded wait (15 minutes) for the user's code reply or for the credential file to appear. On timeout, kill the background login process, remove its pipe/log/PID files, and tell the user the attempt expired and how to retry.
 - Only one login attempt per CLI at a time. If one is already in flight when asked again for the same CLI, tell the user and offer to cancel it rather than starting a second one silently.
+- Claude login must keep the exclusive Agent Bridge credential lock shown above for the full provider-owned login. Do not delete or manipulate Claude's own `.oauth_refresh.lock`; ordinary Claude turns use the same Agent Bridge lock in shared mode and remain concurrent with each other.
 - Clean up the log, pipe, and PID files once the flow finishes (success, failure, or timeout) — do not leave credential-adjacent artifacts on disk.
 - Confirm success by checking the credential file actually appeared/updated, not merely that the login process exited zero.
 
