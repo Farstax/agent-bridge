@@ -18,7 +18,7 @@ import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from
 /** The active database roles. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive"]);
 
-type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "relocate" | "bootstrap";
+type Mode = "inspect" | "checkpoint" | "prune" | "migrate" | "validate" | "reconcile" | "relocate" | "bootstrap";
 
 interface Options {
   mode: Mode;
@@ -62,6 +62,20 @@ interface DbEvidence {
   };
   deliveryState: Record<string, number>;
   role?: string;
+  acpTelemetryRetention?: {
+    cutoff: string;
+    deletedRows: number;
+    pageSize: number;
+    pageCountBefore: number;
+    freePagesBefore: number;
+    pageCountAfterDelete: number;
+    freePagesAfterDelete: number;
+    reclaimableBytesAfterDelete: number;
+    compacted: boolean;
+    pageCountAfter: number;
+    freePagesAfter: number;
+    fileBytesAfter: number;
+  };
 }
 
 const REQUIRED_TABLES = new Set(["bridge_state", "pending_messages", "settings"]);
@@ -83,8 +97,8 @@ const CURRENT_LOCK_COLUMNS = new Set([
 
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
-  if (!mode || !["inspect", "checkpoint", "migrate", "validate", "reconcile", "relocate"].includes(mode)) {
-    throw new Error("usage: rollout-db.ts <inspect|checkpoint|migrate|validate|reconcile> --db PATH [--db PATH ...]");
+  if (!mode || !["inspect", "checkpoint", "prune", "migrate", "validate", "reconcile", "relocate"].includes(mode)) {
+    throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|migrate|validate|reconcile> --db PATH [--db PATH ...]");
   }
   const databases: string[] = [];
   let evidencePath: string | null = null;
@@ -428,6 +442,80 @@ function checkpointDatabase(path: string, resolvingUnits: string[] = [], role: D
     walBytesBefore,
     walBytesAfter,
     checkpointedPages: result.checkpointed,
+  };
+}
+
+const ACP_EVENT_RETENTION_DAYS = 14;
+const MIN_COMPACTION_RECLAIMABLE_BYTES = 64 * 1024 * 1024;
+const MIN_COMPACTION_FREE_RATIO = 0.20;
+
+function pragmaNumber(db: Database.Database, name: "page_size" | "page_count" | "freelist_count"): number {
+  return Number(db.pragma(name, { simple: true }));
+}
+
+function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared"): DbEvidence {
+  const cutoff = new Date(Date.now() - ACP_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const raw = new Database(path, { fileMustExist: true });
+  raw.pragma("foreign_keys = ON");
+  const pageSize = pragmaNumber(raw, "page_size");
+  const pageCountBefore = pragmaNumber(raw, "page_count");
+  const freePagesBefore = pragmaNumber(raw, "freelist_count");
+  let deletedRows = 0;
+  let pageCountAfterDelete = pageCountBefore;
+  let freePagesAfterDelete = freePagesBefore;
+  let compacted = false;
+  try {
+    const remove = raw.transaction(() => raw.prepare(`
+      DELETE FROM bridge_events
+      WHERE type = 'acp.event'
+        AND timestamp < ?
+        AND EXISTS (
+          SELECT 1
+          FROM bridge_runs
+          WHERE bridge_runs.run_id = bridge_events.run_id
+            AND bridge_runs.status IN ('done', 'failed', 'cancelled')
+        )
+    `).run(cutoff));
+    deletedRows = Number(remove().changes);
+    pageCountAfterDelete = pragmaNumber(raw, "page_count");
+    freePagesAfterDelete = pragmaNumber(raw, "freelist_count");
+    const reclaimableBytesAfterDelete = freePagesAfterDelete * pageSize;
+    const freeRatio = pageCountAfterDelete === 0 ? 0 : freePagesAfterDelete / pageCountAfterDelete;
+    if (reclaimableBytesAfterDelete >= MIN_COMPACTION_RECLAIMABLE_BYTES && freeRatio >= MIN_COMPACTION_FREE_RATIO) {
+      raw.exec("VACUUM");
+      compacted = true;
+    }
+    const integrity = String(raw.pragma("integrity_check", { simple: true }));
+    if (integrity !== "ok") throw new Error(`integrity check failed after ACP telemetry retention for ${path}: ${integrity}`);
+  } finally {
+    raw.close();
+  }
+
+  const pageCountAfter = (() => {
+    const reopened = new Database(path, { readonly: true, fileMustExist: true });
+    try { return pragmaNumber(reopened, "page_count"); } finally { reopened.close(); }
+  })();
+  const freePagesAfter = (() => {
+    const reopened = new Database(path, { readonly: true, fileMustExist: true });
+    try { return pragmaNumber(reopened, "freelist_count"); } finally { reopened.close(); }
+  })();
+
+  return {
+    ...inspectDatabase(path, true, resolvingUnits, role),
+    acpTelemetryRetention: {
+      cutoff,
+      deletedRows,
+      pageSize,
+      pageCountBefore,
+      freePagesBefore,
+      pageCountAfterDelete,
+      freePagesAfterDelete,
+      reclaimableBytesAfterDelete: freePagesAfterDelete * pageSize,
+      compacted,
+      pageCountAfter,
+      freePagesAfter,
+      fileBytesAfter: statSync(path).size,
+    },
   };
 }
 
@@ -1009,6 +1097,11 @@ async function main(): Promise<void> {
   }
   if (options.mode === "checkpoint") {
     const evidence = options.databases.map((path) => checkpointDatabase(path, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
+    writeEvidence(options.evidencePath, options.mode, evidence);
+    return;
+  }
+  if (options.mode === "prune") {
+    const evidence = options.databases.map((path) => pruneAcpTelemetry(path, unitsFor(path), roleFor(path)));
     writeEvidence(options.evidencePath, options.mode, evidence);
     return;
   }
