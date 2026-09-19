@@ -11,7 +11,7 @@ import {
   type ProviderApiKeyProbeExecutor,
   type VerifyProviderApiKeyOptions,
 } from "./providers/apiKeyAuth.js";
-import { resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
+import { hasAgyRuntimePrerequisites, resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
 import {
   isCursorRouteable,
@@ -34,6 +34,7 @@ export interface AvailableCliOptions {
   homeDir?: string;
   exists?: (path: string) => boolean;
   commandExists?: (command: string) => boolean;
+  agyRuntimeReady?: () => boolean;
   failedProviders?: ReadonlySet<ProviderId>;
   env?: Record<string, string | undefined>;
   readCursorStatus?: () => CursorStatusSnapshot;
@@ -123,7 +124,10 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
 
   const agyAuthenticated = paths.antigravity.some(exists)
     || (isProviderApiKeyConfigured("agy", env) && verifyApiKey("agy"));
-  if (agyAuthenticated && hasRuntime("agy") && !failedProviders.has("agy")) available.add("antigravity");
+  const agyRuntimeReady = options.agyRuntimeReady?.() ?? hasAgyRuntimePrerequisites({ env });
+  if (agyAuthenticated && hasRuntime("agy") && agyRuntimeReady && !failedProviders.has("agy")) {
+    available.add("antigravity");
+  }
 
   if (hasRuntime("grok") && isGrokRouteable({
     homeDir: home,
