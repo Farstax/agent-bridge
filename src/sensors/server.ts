@@ -4,6 +4,16 @@ import { join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import type { Sensor, SensorReport, SensorCheck } from "./types.js";
 
+export function readAptUpdateStatus(aptCheckPath = "/usr/lib/update-notifier/apt-check"): { total: number; security: number } | null {
+  if (!existsSync(aptCheckPath)) return null;
+  const result = spawnSync(aptCheckPath, [], { encoding: "utf8", timeout: 5000 });
+  if (result.error) return null;
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  const match = output.match(/^(\d+);(\d+)/);
+  if (!match) return null;
+  return { total: Number(match[1]), security: Number(match[2]) };
+}
+
 export class ServerSensor implements Sensor {
   readonly id = "server";
   readonly label = "Server health";
@@ -338,20 +348,13 @@ export class ServerSensor implements Sensor {
     let updatesMsg = "All packages up to date";
     if (os.platform() === "linux") {
       try {
-        const aptCheckPath = "/usr/lib/update-notifier/apt-check";
-        if (existsSync(aptCheckPath)) {
-          const result = spawnSync(aptCheckPath, [], { encoding: "utf8", timeout: 5000 });
-          const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
-          const match = output.match(/^(\d+);(\d+)/);
-          if (match) {
-            const totalUpdates = parseInt(match[1], 10);
-            const securityUpdates = parseInt(match[2], 10);
-            if (securityUpdates > 0) {
-              updatesStatus = "amber";
-              updatesMsg = `${totalUpdates} update(s) available (${securityUpdates} security update(s))`;
-            } else if (totalUpdates > 0) {
-              updatesMsg = `${totalUpdates} update(s) available (0 security updates)`;
-            }
+        const updates = readAptUpdateStatus();
+        if (updates) {
+          if (updates.security > 0) {
+            updatesStatus = "amber";
+            updatesMsg = `${updates.total} update(s) available (${updates.security} security update(s))`;
+          } else if (updates.total > 0) {
+            updatesMsg = `${updates.total} update(s) available (0 security updates)`;
           }
         }
       } catch {
