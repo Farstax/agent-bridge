@@ -484,7 +484,7 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
     freePagesAfterDelete = pragmaNumber(raw, "freelist_count");
     const reclaimableBytesAfterDelete = freePagesAfterDelete * pageSize;
     const freeRatio = pageCountAfterDelete === 0 ? 0 : freePagesAfterDelete / pageCountAfterDelete;
-    if (reclaimableBytesAfterDelete >= MIN_COMPACTION_RECLAIMABLE_BYTES && freeRatio >= MIN_COMPACTION_FREE_RATIO) {
+    if (deletedRows > 0 && reclaimableBytesAfterDelete >= MIN_COMPACTION_RECLAIMABLE_BYTES && freeRatio >= MIN_COMPACTION_FREE_RATIO) {
       raw.exec("VACUUM");
       compacted = true;
     }
