@@ -4,6 +4,7 @@ import { AgentBridgeSensor } from "./agentBridge.js";
 import { ServerSensor } from "./server.js";
 import { ExternalSensor } from "./external.js";
 import type { Sensor, SensorReport } from "./types.js";
+import { normalizeSensorReport } from "./report.js";
 
 const ID = /^[a-z0-9][a-z0-9._-]{0,56}$/;
 const MAX_EXTERNAL = 32;
@@ -47,7 +48,7 @@ export class SensorRegistry {
     const env = options.env ?? process.env;
     this.sensors = [
       new AgentBridgeSensor(options.db, options.dbPath),
-      new ServerSensor(env),
+      new ServerSensor(),
       ...readExternalDefinitions(env.AGENT_BRIDGE_SENSOR_CONFIG).map((item) =>
         new ExternalSensor(item.id, item.label, item.command, item.args, item.timeoutMs)),
     ];
@@ -60,10 +61,10 @@ export class SensorRegistry {
   async run(id: string): Promise<SensorReport> {
     const sensor = this.sensors.find((candidate) => candidate.id === id);
     if (!sensor) throw new Error(`unknown sensor: ${id}`);
-    return await sensor.check();
+    return normalizeSensorReport(await sensor.check());
   }
 
   async runAll(): Promise<SensorReport[]> {
-    return await Promise.all(this.sensors.map((sensor) => sensor.check()));
+    return await Promise.all(this.sensors.map(async (sensor) => normalizeSensorReport(await sensor.check())));
   }
 }
