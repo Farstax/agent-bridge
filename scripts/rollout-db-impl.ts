@@ -26,6 +26,7 @@ interface Options {
   evidencePath: string | null;
   resolvingUnits: Map<string, string[]>;
   databaseRoles: Map<string, DatabaseRole>;
+  allowRetiredHealthTable: boolean;
   reason: string | null;
   restartBoundary: string | null;
 }
@@ -89,10 +90,15 @@ function parseArgs(argv: string[]): Options {
   let evidencePath: string | null = null;
   const resolvingUnits = new Map<string, string[]>();
   const databaseRoles = new Map<string, DatabaseRole>();
+  let allowRetiredHealthTable = false;
   let reason: string | null = null;
   let restartBoundary: string | null = null;
   while (argv.length > 0) {
     const flag = argv.shift();
+    if (flag === "--allow-retired-health") {
+      allowRetiredHealthTable = true;
+      continue;
+    }
     const value = argv.shift();
     if (!value) throw new Error(`missing value for ${flag}`);
     if (flag === "--db") databases.push(value);
@@ -123,7 +129,7 @@ function parseArgs(argv: string[]): Options {
   if (databases.length === 0) throw new Error("at least one --db path is required");
   if (mode === "reconcile" && !reason?.trim()) throw new Error("reconcile requires --reason");
   if (restartBoundary && !/^[0-9T:.Z-]+$/.test(restartBoundary)) throw new Error("invalid --restart-boundary");
-  return { mode, databases, evidencePath, resolvingUnits, databaseRoles, reason, restartBoundary };
+  return { mode, databases, evidencePath, resolvingUnits, databaseRoles, allowRetiredHealthTable, reason, restartBoundary };
 }
 
 function parseRelocationArgs(argv: string[]): { source: string; target: string } {
@@ -279,7 +285,7 @@ function digestRows(rows: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
-function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = [], role: DatabaseRole = "shared"): DbEvidence {
+function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: string[] = [], role: DatabaseRole = "shared", allowRetiredHealthTable = false): DbEvidence {
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
     const integrity = String(db.pragma("integrity_check", { simple: true }));
@@ -294,6 +300,7 @@ function inspectDatabase(path: string, requireCurrent: boolean, resolvingUnits: 
     const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
     const canonicalTables = new Set(canonicalSchemaTablesForRole(role));
     const unknownTables = tables.filter((table) => !canonicalTables.has(table)
+      && !(allowRetiredHealthTable && role === "health" && table === "health_plugin_reports")
       && !(userVersion < CURRENT_SCHEMA_VERSION && LEGACY_WORKER_TABLES.has(table)));
     const missingTables = [...REQUIRED_TABLES].filter((table) => !tables.includes(table));
     if (unknownTables.length > 0 || missingTables.length > 0) {
@@ -965,7 +972,7 @@ async function main(): Promise<void> {
   const unitsFor = (path: string) => options.resolvingUnits.get(path) ?? [];
   const roleFor = (path: string): DatabaseRole => options.databaseRoles.get(path) ?? "shared";
   if (options.mode === "inspect") {
-    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path), roleFor(path)));
+    const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
     const legacyQueues = evidence.reduce((sum, database) => sum + database.legacyQueueCount, 0);
     if (legacyQueues !== 0) throw new Error(`legacy queue count is nonzero: ${legacyQueues}`);
     writeEvidence(options.evidencePath, options.mode, evidence);

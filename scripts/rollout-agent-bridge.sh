@@ -1502,6 +1502,9 @@ build_db_args() {
   done
 }
 build_db_args
+preflight_db_args=("${db_args[@]}")
+preflight_db_flags=()
+if (( retiring_health == 1 )); then preflight_db_flags+=(--allow-retired-health); fi
 run_db_tool() {
   run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
 }
@@ -1513,7 +1516,7 @@ for unit in "${units[@]}"; do
   restart_baseline[$unit]="$("$systemctl_cmd" show "$unit" --property=NRestarts --value)"
   [[ "${restart_baseline[$unit]}" =~ ^[0-9]+$ ]] || die "invalid NRestarts for $unit"
 done
-run_db_tool inspect --evidence - "${db_args[@]}" > "$artifact_dir/preflight-evidence.json"
+run_db_tool inspect "${preflight_db_flags[@]}" --evidence - "${preflight_db_args[@]}" > "$artifact_dir/preflight-evidence.json"
 hash_evidence_file "$artifact_dir/preflight-evidence.json"
 record_phase PREFLIGHT
 
