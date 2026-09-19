@@ -256,6 +256,10 @@ print(json.dumps({"status": status, "stdout": stdout.getvalue(), "stderr": stder
     expect(observed.status).toBe(1);
     expect(observed.stderr).toContain("underlying rollout output");
     expect(observed.stderr).toContain("interrupted rollout sentinel already exists");
+    expect(observed.stderr).toContain("retry with: /usr/bin/sudo /usr/local/sbin/agent-bridge-deploy --release");
+    expect(observed.stderr).toContain("--approval");
+    expect(observed.stderr).toContain(resolve("relative-release.tar.gz"));
+    expect(observed.stderr).toContain(resolve("relative-approval.json"));
     expect(observed.calls[1]).toEqual([
       "/usr/bin/journalctl",
       "--unit",
