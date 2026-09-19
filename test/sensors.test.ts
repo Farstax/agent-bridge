@@ -156,7 +156,7 @@ describe("sensors", () => {
         name: `check-${index}`,
         status: "red" as const,
         message: index === 0
-          ? "token=super-secret-value Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
+          ? '"token":"super-secret-value" Authorization: Bearer abcdefghijklmnopqrstuvwxyz https://user:pass@example.invalid eyJabcdefghijklmno.abcdefghijklmnop.abcdefghijklmnop'
           : "x".repeat(800),
         value: index === 0 ? "password=hunter2" : "y".repeat(500),
       })),
@@ -171,6 +171,8 @@ describe("sensors", () => {
     expect(JSON.stringify(report)).not.toContain("super-secret-value");
     expect(JSON.stringify(report)).not.toContain("hunter2");
     expect(JSON.stringify(report)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+    expect(JSON.stringify(report)).not.toContain("user:pass");
+    expect(JSON.stringify(report)).not.toContain("eyJabcdefghijklmno");
   });
 
   it("captures apt-check counts even when apt-check writes to stderr", () => {
