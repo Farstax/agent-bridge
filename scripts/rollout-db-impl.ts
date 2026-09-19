@@ -453,7 +453,7 @@ function pragmaNumber(db: Database.Database, name: "page_size" | "page_count" | 
   return Number(db.pragma(name, { simple: true }));
 }
 
-function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared"): DbEvidence {
+function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared", allowRetiredHealthTable = false): DbEvidence {
   const cutoff = new Date(Date.now() - ACP_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const raw = new Database(path, { fileMustExist: true });
   raw.pragma("foreign_keys = ON");
@@ -501,7 +501,7 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
   })();
 
   return {
-    ...inspectDatabase(path, true, resolvingUnits, role),
+    ...inspectDatabase(path, false, resolvingUnits, role, allowRetiredHealthTable),
     acpTelemetryRetention: {
       cutoff,
       deletedRows,
@@ -1101,7 +1101,7 @@ async function main(): Promise<void> {
     return;
   }
   if (options.mode === "prune") {
-    const evidence = options.databases.map((path) => pruneAcpTelemetry(path, unitsFor(path), roleFor(path)));
+    const evidence = options.databases.map((path) => pruneAcpTelemetry(path, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
     writeEvidence(options.evidencePath, options.mode, evidence);
     return;
   }
