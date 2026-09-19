@@ -947,11 +947,11 @@ interface MaintenanceEvidence {
   integrity: string;
 }
 
-function sqliteSpace(db: Database.Database): { pageCount: number; pageSize: number; freePages: number; fileBytes: number } {
+function sqliteSpace(db: Database.Database, path: string): { pageCount: number; pageSize: number; freePages: number; fileBytes: number } {
   const pageCount = Number(db.pragma("page_count", { simple: true }));
   const pageSize = Number(db.pragma("page_size", { simple: true }));
   const freePages = Number(db.pragma("freelist_count", { simple: true }));
-  return { pageCount, pageSize, freePages, fileBytes: pageCount * pageSize };
+  return { pageCount, pageSize, freePages, fileBytes: statSync(path).size };
 }
 
 function maintainDatabase(path: string): MaintenanceEvidence {
@@ -962,7 +962,7 @@ function maintainDatabase(path: string): MaintenanceEvidence {
     if (integrityBefore !== "ok") throw new Error(`integrity check failed before maintenance for ${path}: ${integrityBefore}`);
 
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
-    const before = sqliteSpace(db);
+    const before = sqliteSpace(db, path);
     const cutoff = new Date(Date.now() - ACP_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
     let deletedAcpEvents = 0;
 
@@ -982,7 +982,7 @@ function maintainDatabase(path: string): MaintenanceEvidence {
       })();
     }
 
-    const afterDelete = sqliteSpace(db);
+    const afterDelete = sqliteSpace(db, path);
     const reclaimableBytes = afterDelete.freePages * afterDelete.pageSize;
     const reclaimableRatio = afterDelete.pageCount > 0 ? afterDelete.freePages / afterDelete.pageCount : 0;
     const vacuumed = deletedAcpEvents > 0
@@ -993,7 +993,7 @@ function maintainDatabase(path: string): MaintenanceEvidence {
 
     const integrity = String(db.pragma("integrity_check", { simple: true }));
     if (integrity !== "ok") throw new Error(`integrity check failed after maintenance for ${path}: ${integrity}`);
-    const after = sqliteSpace(db);
+    const after = sqliteSpace(db, path);
     return { path, cutoff, deletedAcpEvents, vacuumed, before, afterDelete, after, integrity };
   } finally {
     db.close();
