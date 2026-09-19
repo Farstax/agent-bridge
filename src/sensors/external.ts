@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { Sensor, SensorReport, SensorStatus } from "./types.js";
+import { normalizeSensorReport } from "./report.js";
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_CHECKS = 32;
@@ -15,14 +16,14 @@ function status(value: unknown): SensorStatus | null {
 }
 
 function failure(id: string, label: string, message: string): SensorReport {
-  return {
+  return normalizeSensorReport({
     sensorId: id,
     label,
     status: "red",
     checks: [{ name: "external", status: "red", message: bounded(message) }],
     summary: bounded(message),
     timestamp: new Date().toISOString(),
-  };
+  });
 }
 
 function parseExternalReport(id: string, label: string, raw: string): SensorReport {
@@ -44,7 +45,7 @@ function parseExternalReport(id: string, label: string, raw: string): SensorRepo
     const value = typeof check.value === "number" || typeof check.value === "string" ? check.value : undefined;
     return { name, status: checkStatus, message, ...(value === undefined ? {} : { value }) };
   });
-  return {
+  return normalizeSensorReport({
     sensorId: id,
     label,
     status: overall,
@@ -53,7 +54,7 @@ function parseExternalReport(id: string, label: string, raw: string): SensorRepo
     timestamp: typeof record.timestamp === "string" && !Number.isNaN(Date.parse(record.timestamp))
       ? record.timestamp
       : new Date().toISOString(),
-  };
+  });
 }
 
 export class ExternalSensor implements Sensor {

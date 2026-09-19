@@ -964,7 +964,10 @@ restore_health_retirement_config() {
 
 retire_health_state_after_acceptance() {
   (( retiring_health == 1 )) || return 0
-  "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || true
+  "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || die "failed to disable retired health service"
+  if "$systemctl_cmd" is-enabled --quiet agent-bridge-health.service >/dev/null 2>&1; then
+    die "retired health service remains enabled"
+  fi
   /usr/bin/rm -f -- "$retired_health_unit" "$retired_health_defaults"
   /usr/bin/rm -f -- "$retired_health_database" "${retired_health_database}-wal" "${retired_health_database}-shm"
   [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database could not be removed"

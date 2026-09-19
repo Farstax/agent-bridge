@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { openDb } from "../src/db.js";
 import { type as eventType } from "../src/events/types.js";
 import {
@@ -55,6 +56,16 @@ afterEach(() => {
 });
 
 describe("authenticated ordinary Run ingress", () => {
+  it("is hosted by the interactive runtime after the health entrypoint is removed", () => {
+    const interactive = fileURLToPath(new URL("../src/index-interactive.ts", import.meta.url));
+    const health = fileURLToPath(new URL("../src/index-health.ts", import.meta.url));
+    const source = readFileSync(interactive, "utf8");
+    expect(source).toContain("new RunIngressServer");
+    expect(source).toContain("BRIDGE_RUN_INGRESS_SOCKET");
+    expect(source).toContain("BRIDGE_RUN_INGRESS_TOKEN");
+    expect(existsSync(health)).toBe(false);
+  });
+
   it("rejects unauthenticated requests before creating durable state", () => {
     const db = setup();
     expect(() => acceptRunIngressRequest(db, request({ token: "wrong" }), { expectedToken: TOKEN })).toThrow(RunIngressAuthenticationError);

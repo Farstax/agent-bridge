@@ -222,7 +222,12 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && : > "${fixture.root}/cleanup-timer-enabled"
     ;;
   disable)
-    [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && rm -f "${fixture.root}/cleanup-timer-enabled"
+    if [ "\${1:-}" = agent-bridge-health.service ]; then
+      if [ "\${FAKE_FAIL_HEALTH_DISABLE:-}" = 1 ]; then exit 1; fi
+      rm -f "${fixture.root}/health-service-enabled"
+    fi
+    if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then rm -f "${fixture.root}/cleanup-timer-enabled"; fi
+    exit 0
     ;;
   stop)
     if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then rm -f "${fixture.root}/cleanup-timer-active"; exit 0; fi
@@ -286,6 +291,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     ;;
   is-enabled)
     if [ "\${1:-}" = --quiet ]; then shift; fi
+    if [ "\${1:-}" = agent-bridge-health.service ]; then [ -f "${fixture.root}/health-service-enabled" ]; exit $?; fi
     [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-enabled" ]
     exit $?
     ;;
@@ -567,6 +573,7 @@ export function createFixture(options: { pending?: number; unknownSchema?: boole
   ].join("\n"), { mode: 0o600 });
   writeFileSync(stateFile, options.initiallyStopped ? "" : `${units.join("\n")}\n`);
   writeFileSync(actionLog, "");
+  writeFileSync(join(root, "health-service-enabled"), "");
   const fixture = { root, project, expectedCommit, previousCommit, dbPaths, actionLog, stateFile, backupDir, logDir, lockFile, configFile, envDir, cgroupRoot };
   writeFakeCommands(fixture);
   return fixture;

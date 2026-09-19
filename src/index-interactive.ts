@@ -49,7 +49,7 @@ import { resolveTimeoutsForKind } from "./timeouts.js";
 import type { BridgeConfig, BotKind, TelegramUpdate } from "./types.js";
 import { startConfiguredAdvisorBroker } from "./advisorBroker.js";
 import { SensorRegistry } from "./sensors/registry.js";
-import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, isSensorsCommand, parseSensorCallback } from "./sensors/telegram.js";
+import { buildSensorsKeyboard, handleSensorCallback, isSensorsCommand } from "./sensors/telegram.js";
 import { RunIngressServer, acceptRunIngressRequest, executeRunIngressRequest } from "./runIngress.js";
 import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
@@ -582,40 +582,23 @@ for (;;) {
 
         const cbq = typedUpdate.callback_query;
         if (cbq?.data) {
-          const sensorId = parseSensorCallback(cbq.data);
-          if (sensorId !== null) {
-            const known = sensorId === "all" || sensorRegistry.list().some((sensor) => sensor.id === sensorId);
-            await client.answerCallbackQuery({
-              callback_query_id: cbq.id,
-              text: known ? "Running sensor…" : "Unknown sensor",
-            });
-            if (!known) continue;
-            const callbackChatId = cbq.message?.chat?.id;
-            const callbackThreadId = cbq.message?.message_thread_id;
-            if (callbackChatId != null) {
-              setTimeout(() => {
-                const run = sensorId === "all"
-                  ? sensorRegistry.runAll().then(formatSensorReports)
-                  : sensorRegistry.run(sensorId).then(formatSensorReport);
-                void run
-                  .then((text) => sendTelegramMessage({
-                    client,
-                    kind: "interactive",
-                    chatId: callbackChatId,
-                    body: { text, message_thread_id: callbackThreadId },
-                  }))
-                  .catch((error: unknown) => sendTelegramMessage({
-                    client,
-                    kind: "interactive",
-                    chatId: callbackChatId,
-                    body: {
-                      text: `Sensor check failed: ${error instanceof Error ? error.message : String(error)}`,
-                      message_thread_id: callbackThreadId,
-                    },
-                  }))
-                  .catch((error: unknown) => console.error("[interactive] failed to send sensor result", error));
-              }, 0);
-            }
+          if (await handleSensorCallback({
+            data: cbq.data,
+            chatId: cbq.message?.chat?.id,
+            threadId: cbq.message?.message_thread_id,
+            runner: sensorRegistry,
+            acknowledge: (text) => client.answerCallbackQuery({ callback_query_id: cbq.id, text }).then(() => undefined),
+            send: (text, threadId) => {
+              const callbackChatId = cbq.message?.chat?.id;
+              if (callbackChatId === undefined) return Promise.resolve();
+              return sendTelegramMessage({
+                client,
+                kind: "interactive",
+                chatId: callbackChatId,
+                body: { text, message_thread_id: threadId },
+              }).then(() => undefined);
+            },
+          })) {
             continue;
           }
 

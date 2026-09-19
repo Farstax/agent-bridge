@@ -229,6 +229,61 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     })]);
   }, 15_000);
 
+  it("runs a true second release rollout without re-entering health retirement", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+
+    const first = runRollout(fixture, undefined, undefined, { AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: "20260919T000000Z" });
+    expect(first.status, `${first.stdout}\n${first.stderr}`).toBe(0);
+    const disablesAfterFirst = actions(fixture).match(/systemctl:disable agent-bridge-health\.service/g)?.length ?? 0;
+    expect(disablesAfterFirst).toBe(1);
+
+    execFileSync("git", ["-C", fixture.project, "config", "user.email", "rollout-test@example.invalid"]);
+    execFileSync("git", ["-C", fixture.project, "config", "user.name", "Rollout Test"]);
+    execFileSync("git", ["-C", fixture.project, "commit", "--allow-empty", "-m", "second sensor release"], { stdio: "ignore" });
+    const secondCommit = execFileSync("git", ["-C", fixture.project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const releaseRoot = dirname(currentPointer);
+    const firstRelease = join(releaseRoot, fixture.expectedCommit);
+    const secondRelease = join(releaseRoot, secondCommit);
+    execFileSync("cp", ["-a", firstRelease, secondRelease]);
+    execFileSync("chmod", ["-R", "u+w", secondRelease]);
+    const manifestPath = join(secondRelease, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.commit = secondCommit;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    execFileSync("chmod", ["-R", "a-w", secondRelease]);
+    writeFileSync(join(releaseRoot, `.${secondCommit}.staging-provenance.json`), JSON.stringify({
+      schema_version: 1,
+      commit: secondCommit,
+      archive_sha256: "b".repeat(64),
+      release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")),
+    }) + "\n", { mode: 0o444 });
+    fixture.expectedCommit = secondCommit;
+
+    const second = runRollout(fixture, undefined, undefined, { AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: "20260919T000001Z" });
+    expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
+    expect(actions(fixture).match(/systemctl:disable agent-bridge-health\.service/g)?.length ?? 0).toBe(1);
+    expect(readlinkSync(currentPointer)).toBe(secondCommit);
+    expect(readFileSync(fixture.configFile, "utf8")).not.toContain("agent-bridge-health.service");
+  }, 20_000);
+
+  it("fails deployment if the retired health service cannot be disabled", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_FAIL_HEALTH_DISABLE: "1" });
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/failed to disable retired health service/i);
+    expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    expect(existsSync(join(fixture.envDir, "agent-bridge-health"))).toBe(true);
+    expect(actions(fixture)).toContain("systemctl:disable agent-bridge-health.service");
+  }, 15_000);
+
   it("restores legacy health state when retirement fails before target acceptance", () => {
     const fixture = createFixture();
     const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
