@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { Sensor, SensorReport, SensorCheck } from "./types.js";
+import { normalizeSensorReport } from "./report.js";
 import type { BridgeDb } from "../db.js";
 import { readInstalledProviderVersions } from "../providers/qualificationStatus.js";
 import { resolveProviderRuntime } from "../providers/acpRuntime.js";
@@ -95,14 +96,14 @@ export class AgentBridgeSensor implements Sensor {
       ? "All systems nominal"
       : `Issues: ${failingChecks.join(", ")}`;
 
-    return {
+    return normalizeSensorReport({
       sensorId: this.id,
       label: this.label,
       status: worst,
       checks,
       summary,
       timestamp: new Date().toISOString(),
-    };
+    });
   }
 }
 
