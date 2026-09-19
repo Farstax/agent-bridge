@@ -101,6 +101,23 @@ describe("toUserMessage — structured ACP failures", () => {
     expect(toUserMessage(error)).toBe("Authentication required");
   });
 
+  it("redacts credentials before bounding so truncated secrets cannot leak", () => {
+    const previous = process.env.CODEX_API_KEY;
+    process.env.CODEX_API_KEY = "secret-boundary-key";
+    try {
+      const error = Object.assign(new Error("Internal error"), {
+        data: { details: `${"x".repeat(1195)}secret-boundary-key` },
+      });
+      const message = toUserMessage(error);
+      expect(message.length).toBeLessThanOrEqual(1200);
+      expect(message).not.toContain("secret-");
+      expect(message).not.toContain("secret-boundary");
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_API_KEY;
+      else process.env.CODEX_API_KEY = previous;
+    }
+  });
+
   it("redacts configured provider credentials from structured detail", () => {
     const previous = process.env.CODEX_API_KEY;
     process.env.CODEX_API_KEY = "secret-829-key";
