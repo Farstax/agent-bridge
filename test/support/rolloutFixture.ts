@@ -395,7 +395,7 @@ echo "runuser:$*" >> "${fixture.actionLog}"
 if [ "\${1:-}" = --user ]; then shift 2; fi
 if [ "\${1:-}" = -- ]; then shift; fi
 phase=""
-for arg in "$@"; do case "$arg" in inspect|checkpoint|backup|migrate|validate) phase="$arg";; esac; done
+for arg in "$@"; do case "$arg" in inspect|checkpoint|prune|backup|migrate|validate) phase="$arg";; esac; done
 cmd=("$@")
 if [[ "\${cmd[1]:-}" == */tsx/dist/cli.mjs && "\${cmd[2]:-}" == */scripts/rollout-db.ts ]]; then
   cmd=("\${cmd[0]}" "${fixture.root}/rollout-db-bundled.mjs" "\${cmd[@]:3}")
