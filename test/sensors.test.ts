@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -301,6 +301,13 @@ describe("sensors", () => {
     }));
     expect(report.checks.find((check: { name: string }) => check.name === "db-file")?.status).toBe("green");
     expect(report.checks.find((check: { name: string }) => check.name === "db-read")?.status).toBe("green");
+  });
+
+  it("delegates scheduled Sensor execution to the existing routines capability", () => {
+    const skill = readFileSync(fileURLToPath(new URL("../skills/sensors/SKILL.md", import.meta.url)), "utf8");
+    expect(skill).toContain("scheduled-routines");
+    expect(skill).toContain('agent-bridge-sensors');
+    expect(skill).toContain("Do not create a second schedule");
   });
 
   it("uses the same bounded redacted contract through the packaged helper path", () => {
