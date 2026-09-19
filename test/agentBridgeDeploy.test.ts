@@ -222,6 +222,50 @@ print(json.dumps({"status": status, "command": calls[0]}))
     expect(observed.command[observed.command.indexOf("--approval") + 1]).toBe(resolve("relative-approval.json"));
   });
 
+  it("surfaces the underlying rollout journal when the transient deployment unit fails", () => {
+    const probe = String.raw`
+import contextlib
+import importlib.util
+import io
+import json
+import sys
+import types
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.os.geteuid = lambda: 0
+calls = []
+def fake_run(command, check=False, **kwargs):
+    calls.append(command)
+    if command[0] == module.SYSTEMD_RUN:
+        return types.SimpleNamespace(returncode=1)
+    if command[0] == module.JOURNALCTL:
+        return types.SimpleNamespace(returncode=0, stdout="rollout-agent-bridge: interrupted rollout sentinel already exists", stderr="")
+    raise AssertionError(command)
+module.subprocess.run = fake_run
+sys.argv = ["agent-bridge-deploy", "--release", "relative-release.tar.gz", "--approval", "relative-approval.json"]
+stdout = io.StringIO()
+stderr = io.StringIO()
+with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+    status = module.main()
+print(json.dumps({"status": status, "stdout": stdout.getvalue(), "stderr": stderr.getvalue(), "calls": calls}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const observed = JSON.parse(result.stdout);
+    expect(observed.status).toBe(1);
+    expect(observed.stderr).toContain("underlying rollout output");
+    expect(observed.stderr).toContain("interrupted rollout sentinel already exists");
+    expect(observed.calls[1]).toEqual([
+      "/usr/bin/journalctl",
+      "--unit",
+      expect.stringMatching(/^agent-bridge-deploy-\d+\.service$/),
+      "--no-pager",
+      "--lines",
+      "80",
+    ]);
+  });
+
   it("accepts the internal worker only in its assigned transient service cgroup", () => {
     const probe = String.raw`
 import importlib.util
