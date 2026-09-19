@@ -42,7 +42,6 @@ SUDO_CHECK_TIMEOUT_SECONDS = 5
 # as a change to agent-bridge-deploy.py.
 HELPER_REFRESH_MAP = (
     ("scripts/rollout-agent-bridge.sh", "/usr/local/sbin/rollout-agent-bridge", "rollout_helper_sha256"),
-    ("scripts/rollout-sentinel-clear.sh", "/usr/local/sbin/rollout-sentinel-clear", "sentinel_clear_sha256"),
     ("scripts/release-activate.py", "/usr/local/libexec/agent-bridge-release-activate", "activation_helper_sha256"),
     ("scripts/rollout-restore.py", "/usr/local/libexec/agent-bridge-rollout-restore", "rollout_restore_sha256"),
     ("scripts/rollout-authorization.py", "/usr/local/libexec/agent-bridge-rollout-authorization.py", "authorization_validator_sha256"),
@@ -242,15 +241,10 @@ def validate_private_helper(path: Path) -> None:
 
 
 def preserve_metadata(tmp_path: Path, destination: Path) -> None:
-    if destination.exists():
-        metadata = destination.stat()
-        os.chmod(tmp_path, metadata.st_mode & 0o777)
-        if os.geteuid() == 0:
-            os.chown(tmp_path, metadata.st_uid, metadata.st_gid)
-        return
-    os.chmod(tmp_path, 0o750)
+    metadata = destination.stat()
+    os.chmod(tmp_path, metadata.st_mode & 0o777)
     if os.geteuid() == 0:
-        os.chown(tmp_path, 0, 0)
+        os.chown(tmp_path, metadata.st_uid, metadata.st_gid)
 
 
 def stage_bytes_for_destination(data: bytes, destination: Path, prefix: str) -> tuple[Path, str]:
@@ -273,8 +267,8 @@ def stage_bytes_for_destination(data: bytes, destination: Path, prefix: str) -> 
 def stage_installed_helper(source: Path, destination: Path) -> tuple[Path, str]:
     if source.is_symlink() or not source.is_file():
         fail(f"release helper source is missing or not a regular file: {source}")
-    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
-        fail(f"privileged helper destination is not a regular file: {destination}")
+    if destination.is_symlink() or not destination.is_file():
+        fail(f"privileged helper destination is missing or not a regular file: {destination}")
     return stage_bytes_for_destination(source.read_bytes(), destination, f".{destination.name}.new-")
 
 
@@ -344,19 +338,14 @@ def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Pa
             destination = Path(destination_str)
             if install_root is not None:
                 destination = install_root / destination.relative_to("/")
-            destination_existed = destination.exists()
             replacement, replacement_sha256 = stage_installed_helper(source, destination)
-            backup: Path | None = None
-            backup_sha256 = ""
-            if destination_existed:
-                backup, backup_sha256 = stage_snapshot(destination)
+            backup, backup_sha256 = stage_snapshot(destination)
             staged.append({
                 "replacement": replacement,
                 "replacement_sha256": replacement_sha256,
                 "backup": backup,
                 "backup_sha256": backup_sha256,
                 "destination": destination,
-                "destination_existed": destination_existed,
                 "pin_key": pin_key,
             })
 
@@ -394,14 +383,9 @@ def refresh_privileged_helpers(release_dir: Path, config: Path, install_root: Pa
                 backup = item["backup"]
                 destination = item["destination"]
                 try:
-                    if item.get("destination_existed") is True:
-                        if not isinstance(backup, Path) or not backup.exists():
-                            raise RuntimeError("rollback snapshot is missing")
-                        publish_staged_file(backup, destination, str(item["backup_sha256"]))  # type: ignore[arg-type]
-                    else:
-                        destination.unlink(missing_ok=True)  # type: ignore[union-attr]
-                        if destination.exists() or destination.is_symlink():  # type: ignore[union-attr]
-                            raise RuntimeError("new helper could not be removed during rollback")
+                    if not isinstance(backup, Path) or not backup.exists():
+                        raise RuntimeError("rollback snapshot is missing")
+                    publish_staged_file(backup, destination, str(item["backup_sha256"]))  # type: ignore[arg-type]
                 except Exception as rollback_error:
                     rollback_errors.append(f"{destination}: {rollback_error}")
             if config_backup is not None:
