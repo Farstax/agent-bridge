@@ -32,6 +32,16 @@ function unwrapGenericFailurePrefix(message: string): string | null {
   return detail || null;
 }
 
+function structuredDetails(error: ErrorWithData): string[] {
+  const parts: string[] = [];
+  const data = error.data;
+  if (!data || typeof data !== "object") return parts;
+  for (const field of STRUCTURED_DETAIL_FIELDS) {
+    uniquePush(parts, (data as Record<string, unknown>)[field]);
+  }
+  return parts;
+}
+
 /** Structured provider-owned details retained across ACP wrappers and causes. */
 export function collectProviderFailureDetails(error: unknown): string[] {
   const parts: string[] = [];
@@ -40,14 +50,8 @@ export function collectProviderFailureDetails(error: unknown): string[] {
 
   for (let depth = 0; depth < PROVIDER_FAILURE_CAUSE_DEPTH && current != null && !seen.has(current); depth += 1) {
     seen.add(current);
-    const normalized = normalizeError(current);
-    const data = normalized.data;
-    if (data && typeof data === "object") {
-      for (const field of STRUCTURED_DETAIL_FIELDS) {
-        uniquePush(parts, (data as Record<string, unknown>)[field]);
-      }
-    }
-    current = normalized.cause;
+    for (const detail of structuredDetails(normalizeError(current))) uniquePush(parts, detail);
+    current = normalizeError(current).cause;
   }
 
   return parts;
@@ -63,16 +67,6 @@ export function actionableProviderFailureDetail(error: unknown): string | null {
     .find((detail) => !isGenericProviderFailureMessage(detail));
   if (structured) return structured;
 
-  const seen = new Set<unknown>();
-  let current: unknown = normalizedTop.cause;
-  for (let depth = 0; depth < PROVIDER_FAILURE_CAUSE_DEPTH - 1 && current != null && !seen.has(current); depth += 1) {
-    seen.add(current);
-    const normalized = normalizeError(current);
-    if (normalized.message.trim() && !isGenericProviderFailureMessage(normalized.message)) {
-      return normalized.message.trim();
-    }
-    current = normalized.cause;
-  }
   return null;
 }
 
@@ -90,7 +84,7 @@ export function boundedProviderFailureDiagnostic(
     seen.add(current);
     const normalized = normalizeError(current);
     uniquePush(parts, `${normalized.name}: ${normalized.message}`);
-    const structured = collectProviderFailureDetails(normalized);
+    const structured = structuredDetails(normalized);
     for (const detail of structured) {
       if (!parts.some((part) => part.includes(detail))) uniquePush(parts, `provider: ${detail}`);
     }
