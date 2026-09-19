@@ -79,18 +79,10 @@ export function buildFileLockedInvocation(
   args: string[],
   lockFile: string,
   mode: "shared" | "exclusive",
-  options: { nonBlocking?: boolean } = {},
 ): { command: string; args: string[] } {
   return {
     command: resolveFlockCommand(),
-    args: [
-      mode === "shared" ? "--shared" : "--exclusive",
-      ...(options.nonBlocking ? ["--nonblock"] : []),
-      "--no-fork",
-      lockFile,
-      command,
-      ...args,
-    ],
+    args: [mode === "shared" ? "--shared" : "--exclusive", "--no-fork", lockFile, command, ...args],
   };
 }
 
