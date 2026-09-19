@@ -255,7 +255,7 @@ function providers(s: ReturnType<typeof scope>, env: Env, commit: string | null)
     const selected = s.provider === adapter.id;
     let availability: "available" | "unknown" | "unavailable" = selected ? "available" : "unknown";
     let availabilityReasonCode: string | null = selected ? null : "not_live_probed";
-    if (isProviderRuntimeAuthDegraded(adapter.id)) {
+    if (isProviderRuntimeAuthDegraded(adapter.id, env.HOME?.trim() || homedir())) {
       availability = "unavailable";
       availabilityReasonCode = "runtime_auth_degraded";
     } else if (runtime.transport === "acp-stdio" && !isExecutable(runtime.executable)) {
