@@ -27,6 +27,8 @@ Each CLI behaves differently. Do not send the same instructions for all four.
 
 ### Claude
 
+If the current owning Run is itself Claude, do not launch Claude re-authentication from inside that Run. Ordinary Claude execution holds the shared credential lock for its lifetime, so an exclusive login launched as its descendant would wait on its own parent. Switch the conversation to another authenticated provider first; if no other provider is available, the operator must run the provider-owned Claude login outside the Claude Run.
+
 ```bash
 DISPLAY= <resolved-claude-bin> auth login
 ```
