@@ -44,6 +44,19 @@ with tempfile.TemporaryDirectory() as directory:
     expect(result.calls).toEqual([[expect.stringContaining("/etc/agent-bridge"), 0, 1001]]);
   });
 
+  it("installs the guarded sentinel recovery helper through the canonical helper cohort", () => {
+    const result = probe(`
+entry = next(entry for entry in module.HELPERS if entry[0] == "scripts/rollout-sentinel-clear.sh")
+print(json.dumps({"source": entry[0], "destination": str(entry[1]), "identity": entry[2]}))
+`) as { source: string; destination: string; identity: string };
+
+    expect(result).toEqual({
+      source: "scripts/rollout-sentinel-clear.sh",
+      destination: "/usr/local/sbin/rollout-sentinel-clear",
+      identity: "sentinel_clear",
+    });
+  });
+
   it("selects configured services and keeps their databases outside releases", () => {
     const result = probe(`
 services = module.selected_services({
