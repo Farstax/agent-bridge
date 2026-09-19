@@ -85,6 +85,7 @@ describe("provider error classification", () => {
     expect(isProviderFallbackEligibleError(new Error("MODEL_CAPACITY_EXHAUSTED"))).toBe(true);
   });
 
+  // #832: retryability and terminal availability classification are separate contracts.
   it("marks Claude OAuth refresh contention retry-eligible only on the first attempt", () => {
     const refreshContention = new Error(
       "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
