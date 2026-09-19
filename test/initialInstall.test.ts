@@ -29,6 +29,21 @@ ${body}
 }
 
 describe("exact-release initial installer", () => {
+  it("makes shared configuration traversable by the runtime account without broadening file access", () => {
+    const result = probe(`
+calls = []
+module.os.chown = lambda path, uid, gid: calls.append([str(path), uid, gid])
+with tempfile.TemporaryDirectory() as directory:
+  config = pathlib.Path(directory) / "etc" / "agent-bridge"
+  account = type("Account", (), {"pw_uid": 1001, "pw_gid": 1001})()
+  module.ensure_config_directory(config, account)
+  print(json.dumps({"mode": oct(config.stat().st_mode & 0o777), "calls": calls}))
+`) as { mode: string; calls: string[][] };
+
+    expect(result.mode).toBe("0o750");
+    expect(result.calls).toEqual([[expect.stringContaining("/etc/agent-bridge"), 0, 1001]]);
+  });
+
   it("selects configured services and keeps their databases outside releases", () => {
     const result = probe(`
 services = module.selected_services({
