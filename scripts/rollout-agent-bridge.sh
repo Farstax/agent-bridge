@@ -153,6 +153,7 @@ health_relocation_target=""
 retiring_health=0
 health_already_retired=0
 retired_health_database=""
+retired_health_database_present=0
 retired_health_defaults="$defaults_dir/agent-bridge-health"
 retired_health_unit="$systemd_unit_dir/agent-bridge-health.service"
 sensor_config_path="$(/usr/bin/realpath -m "$defaults_dir/../agent-bridge/sensors.json")"
@@ -552,6 +553,7 @@ done
 if (( retiring_health == 1 && health_already_retired == 0 )); then
   retired_health_database="${unit_databases[agent-bridge-health.service]:-}"
   [[ -n "$retired_health_database" ]] || die "legacy health unit has no resolved database"
+  retired_health_database_present=1
 fi
 
 # The interactive service may own a second production database for the
@@ -597,13 +599,24 @@ fi
 if (( health_already_retired == 1 )); then
   target_databases=()
   for database in "${databases[@]}"; do
-    if [[ -z "${discovered_databases[$database]:-}" && ! -e "$database" && ! -L "$database" ]]; then
-      if [[ "$database" == "$legacy_health_database" || "$database" == */health/health.sqlite || "$database" == */.data-health/health.sqlite ]]; then
-        [[ -z "$retired_health_database" ]] || die "multiple stale databases remain after retired health unit disappeared"
-        retired_health_database="$database"
+    if [[ -z "${discovered_databases[$database]:-}" ]] && [[ "$database" == "$legacy_health_database" || "$database" == */health/health.sqlite || "$database" == */.data-health/health.sqlite ]]; then
+      [[ -z "$retired_health_database" ]] || die "multiple stale databases remain after retired health unit disappeared"
+      retired_health_database="$database"
+      if [[ -e "$database" || -L "$database" ]]; then
+        [[ -f "$database" && ! -L "$database" ]] || die "retired health database is unsafe: $database"
+        canonical="$(/usr/bin/realpath -e "$database")"
+        [[ "$canonical" == "$database" ]] || die "retired health database path is not canonical: $database"
+        retired_health_database="$canonical"
+        retired_health_database_present=1
+        unit_databases[agent-bridge-health.service]="$canonical"
+        unit_roles[agent-bridge-health.service]=health
+        discovered_databases[$canonical]=1
+        target_databases+=("$canonical")
+        echo "retired health database remains; backing it up before retirement path=$canonical"
+      else
         echo "retired health database is already absent; removing stale inventory path=$database"
-        continue
       fi
+      continue
     fi
     target_databases+=("$database")
   done
@@ -1494,7 +1507,7 @@ if [[ -e "$sentinel_path" || -L "$sentinel_path" ]]; then
   [[ "$sentinel_check_owner" == "$secure_owner_uid" && "$sentinel_check_mode" == "600" ]] || die "existing rollout sentinel has unsafe ownership or mode: $sentinel_path — manual review required"
   sentinel_prior_commit="$(/usr/bin/sed -n 's/^expected_commit=//p' "$sentinel_path")"
   sentinel_prior_artifact_dir="$(/usr/bin/sed -n 's/^artifact_dir=//p' "$sentinel_path")"
-  die "an interrupted rollout sentinel already exists: $sentinel_path (expected_commit=${sentinel_prior_commit:-unknown} artifact_dir=${sentinel_prior_artifact_dir:-unknown}) — review that evidence; clear with: sudo rollout-sentinel-clear --expected-commit ${sentinel_prior_commit:-unknown} --artifact-dir ${sentinel_prior_artifact_dir:-unknown} ; then re-run the same agent-bridge-deploy command"
+  die "an interrupted rollout sentinel already exists: $sentinel_path (expected_commit=${sentinel_prior_commit:-unknown} artifact_dir=${sentinel_prior_artifact_dir:-unknown}) — review that evidence; clear with: sudo /usr/local/sbin/rollout-sentinel-clear --expected-commit ${sentinel_prior_commit:-unknown} --artifact-dir ${sentinel_prior_artifact_dir:-unknown} ; then re-run the same agent-bridge-deploy command"
 fi
 sentinel_tmp="$(/usr/bin/mktemp --tmpdir="$log_dir" .rollout-in-progress.XXXXXX)"
 {
@@ -1578,7 +1591,7 @@ build_db_args() {
 build_db_args
 preflight_db_args=("${db_args[@]}")
 inspect_db_flags=()
-if (( retiring_health == 1 && health_already_retired == 0 )); then inspect_db_flags+=(--allow-retired-health); fi
+if (( retiring_health == 1 && retired_health_database_present == 1 )); then inspect_db_flags+=(--allow-retired-health); fi
 run_db_tool() {
   run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
 }
@@ -1632,14 +1645,16 @@ run_db_tool prune "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "$arti
 hash_evidence_file "$artifact_dir/acp-telemetry-retention-evidence.json"
 record_phase TELEMETRY_PRUNED
 
-if (( retiring_health == 1 && health_already_retired == 0 )); then
+if (( retiring_health == 1 )); then
   prepare_health_retirement_config
   target_units=()
   for unit in "${units[@]}"; do [[ "$unit" == "agent-bridge-health.service" ]] || target_units+=("$unit"); done
   units=("${target_units[@]}")
-  target_databases=()
-  for database in "${databases[@]}"; do [[ "$database" == "$retired_health_database" ]] || target_databases+=("$database"); done
-  databases=("${target_databases[@]}")
+  if (( retired_health_database_present == 1 )); then
+    target_databases=()
+    for database in "${databases[@]}"; do [[ "$database" == "$retired_health_database" ]] || target_databases+=("$database"); done
+    databases=("${target_databases[@]}")
+  fi
   unset 'unit_databases[agent-bridge-health.service]'
   unset 'unit_roles[agent-bridge-health.service]'
   build_db_args
@@ -1708,7 +1723,7 @@ fi
 if [[ -n "$autonomy_bootstrap_path" ]]; then
   acceptance_args+=(--added "$autonomy_bootstrap_path")
 fi
-if (( retiring_health == 1 && health_already_retired == 0 )); then
+if (( retiring_health == 1 && retired_health_database_present == 1 )); then
   acceptance_args+=(--removed "$retired_health_database")
 fi
 "$acceptance_validator" "${acceptance_args[@]}" || die "bounded queue/claim/lock acceptance failed"
