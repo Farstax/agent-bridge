@@ -384,7 +384,7 @@ converge_sentinel_clear_helper() {
   (( release_mode == 1 )) || return 0
   local source="$release_dir/scripts/rollout-sentinel-clear.sh"
   local destination="$sentinel_clear_cmd"
-  local destination_dir temporary expected_hash actual_hash destination_mode
+  local destination_dir temporary expected_hash actual_hash destination_mode destination_dir_mode
   [[ -f "$source" && ! -L "$source" ]] || die "release sentinel-clear helper is missing or unsafe: $source"
   expected_hash="$(/usr/bin/sha256sum "$source" | /usr/bin/cut -d' ' -f1)"
   destination_dir="$(/usr/bin/dirname -- "$destination")"
