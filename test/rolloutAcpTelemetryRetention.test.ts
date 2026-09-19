@@ -4,7 +4,7 @@ import { actions, createFixture, prepareImmutableRelease, runRollout } from "./s
 describe("guarded rollout ACP telemetry retention", () => {
   it("runs retention only after the verified database backup", () => {
     const fixture = createFixture();
-    prepareImmutableRelease(fixture);
+    prepareImmutableRelease(fixture, fixture.previousCommit);
 
     const result = runRollout(fixture);
     expect(result.status, result.stderr || result.stdout).toBe(0);
