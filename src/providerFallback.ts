@@ -7,6 +7,7 @@
  */
 
 import type { BridgeDb } from "./db.js";
+import { hasAgyRuntimePrerequisites } from "./providers/agyAvailability.js";
 import { isCursorRouteable } from "./providers/cursorAvailability.js";
 import { isGrokRouteable } from "./providers/grokAvailability.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
@@ -22,6 +23,7 @@ function qualificationAllowsCli(cli: string): boolean {
   if (cli === "grok") return isGrokRouteable();
   if (cli === "cursor") return isCursorRouteable();
   const providerId = providerIdForCli(cli);
+  if (providerId === "agy" && !hasAgyRuntimePrerequisites()) return false;
   return providerId == null || !getQualificationFailedProviders().has(providerId);
 }
 
