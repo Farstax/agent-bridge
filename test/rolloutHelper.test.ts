@@ -212,7 +212,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
     const config = readFileSync(fixture.configFile, "utf8");
     expect(config).not.toContain("unit=agent-bridge-health.service");
-    expect(config).not.toContain(`database=${fixture.dbPaths[2]}`);
+    expect(config).not.toContain(`database=${staleHealthDb}`);
     const interactive = readFileSync(join(fixture.envDir, "agent-bridge-interactive"), "utf8");
     expect(interactive).toContain("BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock");
     expect(interactive).toContain("BRIDGE_RUN_INGRESS_TOKEN=fixture-secret");
@@ -234,7 +234,10 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
     const runtimeUser = process.env.USER ?? "root";
-    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+    const staleHealthDb = join(fixture.root, "runtime", "agent-bridge", "health", "health.sqlite");
+    rewriteConfig(fixture, (lines) => lines
+      .map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line)
+      .map((line) => line === `database=${fixture.dbPaths[2]}` ? `database=${staleHealthDb}` : line));
     rmSync(fixture.dbPaths[2], { force: true });
     rmSync(join(fixture.envDir, "agent-bridge-health"), { force: true });
     writeFileSync(fixture.stateFile, `${units.filter((unit) => unit !== "agent-bridge-health.service").join("\n")}\n`);
