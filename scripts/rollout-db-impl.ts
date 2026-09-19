@@ -18,7 +18,7 @@ import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from
 /** The active database roles. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive"]);
 
-type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "relocate" | "bootstrap";
+type Mode = "inspect" | "checkpoint" | "migrate" | "validate" | "reconcile" | "maintain" | "relocate" | "bootstrap";
 
 interface Options {
   mode: Mode;
@@ -83,8 +83,8 @@ const CURRENT_LOCK_COLUMNS = new Set([
 
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
-  if (!mode || !["inspect", "checkpoint", "migrate", "validate", "reconcile", "relocate"].includes(mode)) {
-    throw new Error("usage: rollout-db.ts <inspect|checkpoint|migrate|validate|reconcile> --db PATH [--db PATH ...]");
+  if (!mode || !["inspect", "checkpoint", "migrate", "validate", "reconcile", "maintain", "relocate"].includes(mode)) {
+    throw new Error("usage: rollout-db.ts <inspect|checkpoint|migrate|validate|reconcile|maintain> --db PATH [--db PATH ...]");
   }
   const databases: string[] = [];
   let evidencePath: string | null = null;
@@ -932,6 +932,85 @@ async function bootstrapDatabase(path: string, role: string, evidencePath: strin
   }
 }
 
+const ACP_EVENT_RETENTION_DAYS = 14;
+const VACUUM_MIN_RECLAIM_BYTES = 16 * 1024 * 1024;
+const VACUUM_MIN_RECLAIM_RATIO = 0.20;
+
+interface MaintenanceEvidence {
+  path: string;
+  cutoff: string;
+  deletedAcpEvents: number;
+  vacuumed: boolean;
+  before: { pageCount: number; pageSize: number; freePages: number; fileBytes: number };
+  afterDelete: { pageCount: number; pageSize: number; freePages: number; fileBytes: number };
+  after: { pageCount: number; pageSize: number; freePages: number; fileBytes: number };
+  integrity: string;
+}
+
+function sqliteSpace(db: Database.Database): { pageCount: number; pageSize: number; freePages: number; fileBytes: number } {
+  const pageCount = Number(db.pragma("page_count", { simple: true }));
+  const pageSize = Number(db.pragma("page_size", { simple: true }));
+  const freePages = Number(db.pragma("freelist_count", { simple: true }));
+  return { pageCount, pageSize, freePages, fileBytes: pageCount * pageSize };
+}
+
+function maintainDatabase(path: string): MaintenanceEvidence {
+  const db = new Database(path, { fileMustExist: true });
+  try {
+    db.pragma("foreign_keys = ON");
+    const integrityBefore = String(db.pragma("integrity_check", { simple: true }));
+    if (integrityBefore !== "ok") throw new Error(`integrity check failed before maintenance for ${path}: ${integrityBefore}`);
+
+    const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
+    const before = sqliteSpace(db);
+    const cutoff = new Date(Date.now() - ACP_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    let deletedAcpEvents = 0;
+
+    if (tables.has("bridge_events") && tables.has("bridge_runs")) {
+      deletedAcpEvents = db.transaction(() => {
+        const result = db.prepare(`
+          DELETE FROM bridge_events
+          WHERE type = 'acp.event'
+            AND timestamp < ?
+            AND run_id IN (
+              SELECT run_id
+              FROM bridge_runs
+              WHERE status IN ('done', 'failed', 'cancelled')
+            )
+        `).run(cutoff);
+        return result.changes;
+      })();
+    }
+
+    const afterDelete = sqliteSpace(db);
+    const reclaimableBytes = afterDelete.freePages * afterDelete.pageSize;
+    const reclaimableRatio = afterDelete.pageCount > 0 ? afterDelete.freePages / afterDelete.pageCount : 0;
+    const vacuumed = deletedAcpEvents > 0
+      && reclaimableBytes >= VACUUM_MIN_RECLAIM_BYTES
+      && reclaimableRatio >= VACUUM_MIN_RECLAIM_RATIO;
+
+    if (vacuumed) db.exec("VACUUM");
+
+    const integrity = String(db.pragma("integrity_check", { simple: true }));
+    if (integrity !== "ok") throw new Error(`integrity check failed after maintenance for ${path}: ${integrity}`);
+    const after = sqliteSpace(db);
+    return { path, cutoff, deletedAcpEvents, vacuumed, before, afterDelete, after, integrity };
+  } finally {
+    db.close();
+  }
+}
+
+function writeMaintenanceEvidence(path: string | null, databases: MaintenanceEvidence[]): void {
+  if (!path) return;
+  const content = `${JSON.stringify({ mode: "maintain", createdAt: new Date().toISOString(), retentionDays: ACP_EVENT_RETENTION_DAYS, databases }, null, 2)}\n`;
+  if (path === "-") {
+    process.stdout.write(content);
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content, { mode: 0o600 });
+}
+
 function writeEvidence(path: string | null, mode: Mode, databases: DbEvidence[], metadata: Record<string, unknown> = {}): void {
   if (!path) return;
   const content = `${JSON.stringify({ mode, createdAt: new Date().toISOString(), ...metadata, databases }, null, 2)}\n`;
@@ -1010,6 +1089,11 @@ async function main(): Promise<void> {
   if (options.mode === "checkpoint") {
     const evidence = options.databases.map((path) => checkpointDatabase(path, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
     writeEvidence(options.evidencePath, options.mode, evidence);
+    return;
+  }
+  if (options.mode === "maintain") {
+    const evidence = options.databases.map((path) => maintainDatabase(path));
+    writeMaintenanceEvidence(options.evidencePath, evidence);
     return;
   }
   if (options.mode === "migrate") {
