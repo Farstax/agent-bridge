@@ -92,6 +92,9 @@ describe("toUserMessage — structured ACP failures", () => {
     expect(toUserMessage(new Error("ACP connection closed"))).toBe(
       "Provider connection failed; retry or inspect run diagnostics.",
     );
+    expect(toUserMessage(new Error("RequestError: ACP connection closed"))).toBe(
+      "Provider connection failed; retry or inspect run diagnostics.",
+    );
   });
 
   it("preserves auth masking when the actionable text exists only in data.details", () => {
