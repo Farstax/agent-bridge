@@ -21,6 +21,13 @@ describe("Agy ACP managed host component", () => {
     expect(installer).toContain("getLockedAcpRegistryEntry");
     expect(installer).toContain("binary.sha256");
     expect(installer).toContain("host_component_status=");
+    expect(installer).toContain("localharness_external");
+    expect(installer).toContain("harnessSha256");
+    expect(installer).toContain("harnessPath");
+    expect(installer).toContain("harnessVersion");
+    expect(installer).toContain("harnessArchiveUrl");
+    expect(installer).toContain("archiveSha256");
+    expect(installer).toContain("AGENT_BRIDGE_AGY_HARNESS_LINK");
     expect(installer).not.toMatch(/antigravity-acp@\d/);
   });
 
