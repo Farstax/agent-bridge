@@ -332,7 +332,7 @@ with tempfile.TemporaryDirectory() as directory:
 with tempfile.TemporaryDirectory() as directory:
   root = pathlib.Path(directory)
   helpers = {}
-  for name in ("rollout", "activate", "authorization", "acceptance", "stage", "restore"):
+  for name in ("rollout", "sentinel_clear", "activate", "authorization", "acceptance", "stage", "restore"):
     path = root / name
     path.write_text(name, encoding="utf-8")
     helpers[name] = path
