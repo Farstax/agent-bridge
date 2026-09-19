@@ -72,7 +72,13 @@ describe("ACP telemetry retention", () => {
     expect(after.getEventsForRun("running-old").map((row) => row.type)).toEqual(["acp.event"]);
     expect(after.getEventsForRun("terminal-diagnostic").map((row) => row.type)).toEqual(["run.diagnostic"]);
 
-    const reconciled = new RunRepository(after.raw).reconcileOrphanedRun("running-old", new Date().toISOString(), {
+    after.close();
+
+    const second = JSON.parse(execFileSync(process.execPath, [tool, "maintain", "--db", dbPath, "--evidence", "-"], { encoding: "utf8" }));
+    expect(second.databases[0].deletedAcpEvents).toBe(0);
+
+    const reconciledDb = openDb(dbPath);
+    const reconciled = new RunRepository(reconciledDb.raw).reconcileOrphanedRun("running-old", new Date().toISOString(), {
       reason: "test-reconcile",
       reconciledAt: new Date().toISOString(),
       processState: "absent",
@@ -80,11 +86,11 @@ describe("ACP telemetry retention", () => {
       cutoffMs: Date.now(),
     });
     expect(reconciled).toBe(true);
-    expect(after.getEventsForRun("running-old").map((row) => row.seq)).toEqual([1, 2, 3, 4]);
-    after.close();
+    expect(reconciledDb.getEventsForRun("running-old").map((row) => row.seq)).toEqual([1, 2, 3, 4]);
+    reconciledDb.close();
 
-    const second = JSON.parse(execFileSync(process.execPath, [tool, "maintain", "--db", dbPath, "--evidence", "-"], { encoding: "utf8" }));
-    expect(second.databases[0].deletedAcpEvents).toBe(0);
+    const third = JSON.parse(execFileSync(process.execPath, [tool, "maintain", "--db", dbPath, "--evidence", "-"], { encoding: "utf8" }));
+    expect(third.databases[0].deletedAcpEvents).toBe(1);
   });
 
   it("is invoked by guarded rollout after service containment and before restart", () => {
