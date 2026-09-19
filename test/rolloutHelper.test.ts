@@ -189,6 +189,22 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
   }, 15_000);
 
+  it("converges a missing sentinel recovery helper from the immutable release before rollout", () => {
+    const fixture = createFixture();
+    const { releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const installedHelper = join(fixture.root, "bin", "rollout-sentinel-clear");
+    rmSync(installedHelper, { force: true });
+
+    const result = runRollout(fixture);
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toContain(`sentinel-clear helper converged path=${installedHelper}`);
+    expect(existsSync(installedHelper)).toBe(true);
+    expect(sha256(installedHelper)).toBe(sha256(join(releaseDir, "scripts", "rollout-sentinel-clear.sh")));
+    expect(statSync(installedHelper).mode & 0o777).toBe(0o750);
+  }, 15_000);
+
   it("retires the legacy health service/database and migrates its generic capabilities after target acceptance", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
