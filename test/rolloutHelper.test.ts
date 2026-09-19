@@ -221,12 +221,34 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     const sensors = JSON.parse(readFileSync(sensorPath, "utf8"));
     const sensorStat = statSync(sensorPath);
     expect(sensorStat.mode & 0o777).toBe(0o644);
+    expect(statSync(dirname(sensorPath)).mode & 0o777).toBe(0o750);
     expect(sensors.external).toEqual([expect.objectContaining({
       id: "content-crawler",
       label: "Content Crawler health",
       command: expect.stringContaining("/content-crawler/venv/bin/python3"),
       args: ["/srv/content-crawler/health_check.py"],
     })]);
+  }, 15_000);
+
+  it("converges stale health inventory when the retired unit and database are already absent", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+    rmSync(fixture.dbPaths[2], { force: true });
+    rmSync(join(fixture.envDir, "agent-bridge-health"), { force: true });
+    writeFileSync(fixture.stateFile, `${units.filter((unit) => unit !== "agent-bridge-health.service").join("\n")}\n`);
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_ABSENT_HEALTH: "1" });
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toMatch(/retired health unit is already absent/i);
+    expect(output).toMatch(/persisted converged rollout inventory/i);
+    expect(actions(fixture)).not.toMatch(/systemctl:reset-failed .*agent-bridge-health\.service/);
+    const config = readFileSync(fixture.configFile, "utf8");
+    expect(config).not.toContain("unit=agent-bridge-health.service");
+    expect(config).not.toContain(`database=${fixture.dbPaths[2]}`);
   }, 15_000);
 
   it("runs a true second release rollout without re-entering health retirement", () => {
