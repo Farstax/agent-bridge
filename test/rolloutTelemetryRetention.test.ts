@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -113,6 +113,6 @@ describe("ACP telemetry retention", () => {
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/FAILED_RESTORED|PRE_BACKUP_RECOVERED/);
     expect(readFileSync(fixture.dbPaths[0])).toEqual(before);
-    expect(readFileSync(currentPointer, "utf8")).toBeDefined();
+    expect(readlinkSync(currentPointer)).toBe(fixture.previousCommit);
   }, 20_000);
 });
