@@ -1598,6 +1598,9 @@ record_phase LIFECYCLE_RECONCILED
 echo "validating migrated databases"
 run_db_tool validate --evidence - "${db_args[@]}" > "$artifact_dir/validation-evidence.json"
 hash_evidence_file "$artifact_dir/validation-evidence.json"
+echo "maintaining bounded ACP telemetry while database writers are contained"
+run_db_tool maintain --evidence - "${db_args[@]}" > "$artifact_dir/maintenance-evidence.json"
+hash_evidence_file "$artifact_dir/maintenance-evidence.json"
 
 if (( release_mode == 1 )); then
   echo "activating immutable release commit=$expected_commit previous=$previous_pointer_target"
