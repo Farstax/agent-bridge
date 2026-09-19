@@ -50,8 +50,9 @@ export function collectProviderFailureDetails(error: unknown): string[] {
 
   for (let depth = 0; depth < PROVIDER_FAILURE_CAUSE_DEPTH && current != null && !seen.has(current); depth += 1) {
     seen.add(current);
-    for (const detail of structuredDetails(normalizeError(current))) uniquePush(parts, detail);
-    current = normalizeError(current).cause;
+    const normalized = normalizeError(current);
+    for (const detail of structuredDetails(normalized)) uniquePush(parts, detail);
+    current = normalized.cause;
   }
 
   return parts;
@@ -60,12 +61,12 @@ export function collectProviderFailureDetails(error: unknown): string[] {
 /** First useful provider/cause detail for user presentation, excluding generic transport wrappers. */
 export function actionableProviderFailureDetail(error: unknown): string | null {
   const normalizedTop = normalizeError(error);
-  const wrappedTop = unwrapGenericFailurePrefix(normalizedTop.message);
-  if (wrappedTop && !isGenericProviderFailureMessage(wrappedTop)) return wrappedTop;
-
   const structured = collectProviderFailureDetails(error)
     .find((detail) => !isGenericProviderFailureMessage(detail));
   if (structured) return structured;
+
+  const wrappedTop = unwrapGenericFailurePrefix(normalizedTop.message);
+  if (wrappedTop && !isGenericProviderFailureMessage(wrappedTop)) return wrappedTop;
 
   return null;
 }
@@ -91,13 +92,13 @@ export function boundedProviderFailureDiagnostic(
     current = normalized.cause;
   }
 
-  const bounded = (parts.join("\ncaused by: ") || fallback).slice(0, PROVIDER_FAILURE_DETAIL_MAX_CHARS);
-  return redactProviderApiKeySecrets(bounded, env);
+  const redacted = redactProviderApiKeySecrets(parts.join("\ncaused by: ") || fallback, env);
+  return redacted.slice(0, PROVIDER_FAILURE_DETAIL_MAX_CHARS);
 }
 
 export function sanitizeProviderFailureText(
   text: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return redactProviderApiKeySecrets(text.trim().slice(0, PROVIDER_FAILURE_DETAIL_MAX_CHARS), env);
+  return redactProviderApiKeySecrets(text.trim(), env).slice(0, PROVIDER_FAILURE_DETAIL_MAX_CHARS);
 }
