@@ -35,6 +35,7 @@ describe("interactive CLI availability filtering", () => {
 
   it("does not treat Codex as available when ACP is selected and only the legacy executable exists", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => true,
       commandExists: (command) => command === "codex" || command === "/opt/codex/bin/codex",
@@ -50,6 +51,7 @@ describe("interactive CLI availability filtering", () => {
   it("treats Codex as available when ACP is selected and the adapter exists", () => {
     const adapter = "/opt/agent-bridge/releases/current/node_modules/.bin/codex-acp";
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => true,
       commandExists: (command) => command === adapter,
@@ -64,6 +66,7 @@ describe("interactive CLI availability filtering", () => {
 
   it("does not keep unavailable providers when no runtime check passes", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/tmp/no-creds",
       exists: () => false,
       commandExists: () => false,
@@ -82,6 +85,7 @@ describe("interactive CLI availability filtering", () => {
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const existing = new Set([paths.codex, paths.claude]);
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       exists: (path) => existing.has(path),
       commandExists: () => true,
@@ -100,6 +104,7 @@ describe("interactive CLI availability filtering", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       exists: (path) => path === paths.antigravity[0],
       commandExists: () => true,
@@ -114,6 +119,7 @@ describe("interactive CLI availability filtering", () => {
     const env = { GEMINI_HOME: "/srv/gemini" };
     const paths = resolveInteractiveCliAuthPaths(homeDir, env);
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       env,
       exists: (path) => path === paths.antigravity[0],
@@ -134,6 +140,7 @@ describe("interactive CLI availability filtering", () => {
       "/home/tester/.gemini/oauth_creds.json",
     ]);
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       env: {},
       exists: (path) => legacyPaths.has(path),
@@ -150,6 +157,7 @@ describe("interactive CLI availability filtering", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       exists: (path) => path === paths.grok[0],
       commandExists: () => true,
@@ -169,6 +177,7 @@ describe("interactive CLI availability filtering", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       exists: (path) => path === paths.grok[0],
       commandExists: () => true,
@@ -188,6 +197,7 @@ describe("interactive CLI availability filtering", () => {
   ] as const)("accepts only a verified %s API key when its runtime exists", (provider, cliKind, envVar) => {
     const env = { [envVar]: `candidate-${provider}-key` };
     const verified = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -198,6 +208,7 @@ describe("interactive CLI availability filtering", () => {
       readCursorVersion: () => "2026.09.08-6caf4ff",
     });
     const rejected = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -220,6 +231,7 @@ describe("interactive CLI availability filtering", () => {
     ["cursor", "CURSOR_API_KEY"],
   ] as const)("does not advertise %s from a verified API key when its executable is missing", (provider, envVar) => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => false,
@@ -234,6 +246,7 @@ describe("interactive CLI availability filtering", () => {
 
   it("does not advertise executable providers without valid authentication", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -258,6 +271,7 @@ describe("interactive CLI availability filtering", () => {
     } as const;
     const seen: string[] = [];
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0]].includes(path),
       commandExists: (command) => {
@@ -290,6 +304,7 @@ describe("interactive CLI availability filtering", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       exists: (path) => [paths.codex, paths.claude, paths.antigravity[0], paths.grok[0]].includes(path),
       commandExists: (command) => command !== missingCommand,
@@ -327,6 +342,7 @@ describe("interactive CLI availability filtering", () => {
           : [paths.grok[0]];
     const expected = provider === "agy" ? "antigravity" : provider;
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir,
       exists: (path) => accountPaths.includes(path),
       commandExists: () => true,
@@ -341,6 +357,7 @@ describe("interactive CLI availability filtering", () => {
 
   it("keeps an authenticated Cursor account available when its optional key is invalid and runtime exists", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -355,6 +372,7 @@ describe("interactive CLI availability filtering", () => {
 
   it("treats Cursor as available only when account status reports authenticated without a verified API key", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => false,
       commandExists: () => true,
@@ -365,6 +383,7 @@ describe("interactive CLI availability filtering", () => {
     expect(available).toEqual(new Set<CliKind>(["cursor"]));
 
     const unavailable = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/home/tester",
       exists: () => true,
       commandExists: () => true,
