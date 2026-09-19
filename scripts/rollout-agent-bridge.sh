@@ -1552,7 +1552,7 @@ run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "$ar
 hash_evidence_file "$artifact_dir/stopped-evidence.json"
 validate_sqlite_sidecars
 echo "draining SQLite WAL sidecars offline"
-run_db_tool checkpoint --evidence - "${db_args[@]}" > "$artifact_dir/checkpoint-evidence.json"
+run_db_tool checkpoint "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "$artifact_dir/checkpoint-evidence.json"
 hash_evidence_file "$artifact_dir/checkpoint-evidence.json"
 clear_stale_sqlite_sidecars
 record_phase WAL_DRAINED
