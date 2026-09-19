@@ -23,7 +23,7 @@ function uniquePush(parts: string[], value: unknown): void {
 export function isGenericProviderFailureMessage(message: string): boolean {
   const normalized = message.trim();
   return /^(?:(?:RequestError|Error|AcpError):\s*)?Internal error$/i.test(normalized)
-    || /^(?:query stream error:\s*)?ACP connection closed$/i.test(normalized);
+    || /^(?:(?:RequestError|Error|AcpError):\s*)?(?:query stream error:\s*)?ACP connection closed$/i.test(normalized);
 }
 
 function unwrapGenericFailurePrefix(message: string): string | null {
