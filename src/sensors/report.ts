@@ -15,7 +15,9 @@ export function redactSensorText(input: string): string {
   return input
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,})\b/g, "[redacted]")
-    .replace(/((?:api[_-]?key|token|secret|password|passwd|authorization|credential)[A-Za-z0-9_.-]*\s*[:=]\s*)([^\s,;]+)/gi, "$1[redacted]");
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[redacted]")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s\/:@]+:[^\s\/@]+@/gi, "$1[redacted]@")
+    .replace(/((?:["']?)(?:api[_-]?key|token|secret|password|passwd|authorization|credential)[A-Za-z0-9_.-]*(?:["']?)\s*[:=]\s*["']?)([^"'\s,;}]+)/gi, "$1[redacted]");
 }
 
 function safeText(value: unknown, max: number): string {
