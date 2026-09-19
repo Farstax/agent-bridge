@@ -1021,38 +1021,27 @@ restore_health_retirement_config() {
 
 retire_health_state_after_acceptance() {
   (( retiring_health == 1 )) || return 0
-  if (( health_already_retired == 1 )); then
-    /usr/bin/python3 - "$config_file" "$retired_health_database" <<'PY'
-import os
-import sys
-path, health_db = sys.argv[1:]
-drop_prefixes = ("unit=agent-bridge-health.service", "legacy_database=")
-drop_exact = {f"database={health_db}"} if health_db else set()
-with open(path, encoding="utf-8") as handle:
-    lines = handle.read().splitlines()
-kept = [line for line in lines if line not in drop_exact and not any(line.startswith(prefix) for prefix in drop_prefixes)]
-tmp = path + ".tmp"
-with open(tmp, "w", encoding="utf-8") as handle:
-    handle.write("\n".join(kept) + "\n")
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
-PY
-    echo "persisted converged rollout inventory for already-absent retired health service"
-    return 0
-  fi
-  "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || die "failed to disable retired health service"
-  if "$systemctl_cmd" is-enabled --quiet agent-bridge-health.service >/dev/null 2>&1; then
-    die "retired health service remains enabled"
+  if (( health_already_retired == 0 )); then
+    "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || die "failed to disable retired health service"
+    if "$systemctl_cmd" is-enabled --quiet agent-bridge-health.service >/dev/null 2>&1; then
+      die "retired health service remains enabled"
+    fi
   fi
   /usr/bin/rm -f -- "$retired_health_unit" "$retired_health_defaults"
-  /usr/bin/rm -f -- "$retired_health_database" "${retired_health_database}-wal" "${retired_health_database}-shm"
-  [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database could not be removed"
+  if (( retired_health_database_present == 1 )); then
+    /usr/bin/rm -f -- "$retired_health_database" "${retired_health_database}-wal" "${retired_health_database}-shm"
+    [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database could not be removed"
+  elif [[ -n "$retired_health_database" ]]; then
+    [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database unexpectedly exists after acceptance"
+  fi
   /usr/bin/python3 - "$config_file" "$retired_health_database" "$health_relocation_target" <<'PY'
 import os
 import sys
 path, health_db, relocation_target = sys.argv[1:]
 drop_prefixes = ("unit=agent-bridge-health.service", "legacy_database=")
-drop_exact = {f"database={health_db}"}
+drop_exact = set()
+if health_db:
+    drop_exact.add(f"database={health_db}")
 if relocation_target:
     drop_exact.add(f"database={relocation_target}")
 with open(path, encoding="utf-8") as handle:
@@ -1077,6 +1066,9 @@ PY
     /usr/bin/mv -f -- "$tmp" "$env_file"
   done
   "$systemctl_cmd" daemon-reload
+  if (( health_already_retired == 1 )); then
+    echo "persisted converged rollout inventory for already-absent retired health service"
+  fi
   record_phase HEALTH_STATE_RETIRED
 }
 
