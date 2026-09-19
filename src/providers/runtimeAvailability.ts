@@ -6,6 +6,7 @@ import { buildFileLockedInvocation } from "../workspaceLock.js";
 import type { ProviderId } from "./types.js";
 
 const CLAUDE_RUNTIME_AUTH_DEGRADED = "runtime-auth-degraded";
+const CLAUDE_RUNTIME_AUTH_RECOVERY_PROBE_INTERVAL_MS = 60_000;
 const localRuntimeAuthDegradedProviders = new Set<ProviderId>();
 
 interface CredentialFingerprint {
@@ -20,6 +21,7 @@ interface ClaudeRuntimeAuthDegradedRecord {
   provider: "claude";
   markedAt: string;
   credential: CredentialFingerprint | null;
+  lastProbeAt?: string | null;
 }
 
 export function claudeCredentialLockFile(homeDir: string = homedir()): string {
@@ -85,6 +87,7 @@ export function markProviderRuntimeAuthDegraded(
     provider: "claude",
     markedAt: new Date().toISOString(),
     credential: credentialFingerprint(homeDir),
+    lastProbeAt: null,
   };
   writeFileSync(lockFile, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
 }
@@ -134,7 +137,15 @@ export function recoverClaudeRuntimeAuthDegradation(options: {
   if (!degraded) return true;
 
   const currentCredential = credentialFingerprint(homeDir);
-  if (sameFingerprint(degraded.credential, currentCredential)) return false;
+  const credentialChanged = !sameFingerprint(degraded.credential, currentCredential);
+  const lastProbeMs = degraded.lastProbeAt ? Date.parse(degraded.lastProbeAt) : Number.NaN;
+  if (
+    !credentialChanged
+    && Number.isFinite(lastProbeMs)
+    && Date.now() - lastProbeMs < CLAUDE_RUNTIME_AUTH_RECOVERY_PROBE_INTERVAL_MS
+  ) {
+    return false;
+  }
 
   const env = { ...process.env, ...(options.env ?? {}), HOME: homeDir };
   const claude = env.CLAUDE_CODE_EXECUTABLE?.trim() || "claude";
@@ -154,6 +165,14 @@ export function recoverClaudeRuntimeAuthDegradation(options: {
     clearProviderRuntimeAuthDegraded("claude", homeDir);
     return true;
   } catch {
+    const stillDegraded = readClaudeRuntimeAuthDegraded(homeDir);
+    if (stillDegraded) {
+      writeFileSync(
+        claudeCredentialLockFile(homeDir),
+        `${JSON.stringify({ ...stillDegraded, lastProbeAt: new Date().toISOString() })}\n`,
+        { encoding: "utf8", mode: 0o600 },
+      );
+    }
     return false;
   }
 }
