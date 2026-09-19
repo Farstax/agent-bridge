@@ -30,7 +30,11 @@ import {
   CliTimeoutError,
 } from "./cli.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
-import { classifyAnyProviderError, classifyProviderError } from "./providers/errorClassification.js";
+import {
+  classifyAnyProviderError,
+  classifyProviderError,
+  isClaudeOAuthRefreshContention,
+} from "./providers/errorClassification.js";
 import { isAcpBackedBot, providerIdForBotName, supportsToolFreeMode } from "./providers/registry.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
@@ -718,7 +722,8 @@ export class BridgeEngine {
         ? classifyProviderError(executionProvider, providerError)
         : classifyAnyProviderError(providerError);
       const capacityExhausted = isCapacityExhaustedError(providerError);
-      const authRequired = classification.kind === "auth_required";
+      const authRequired = classification.kind === "auth_required"
+        || (executionProvider === "claude" && isClaudeOAuthRefreshContention(providerError));
       if (authRequired && this.hooks.onAuthRequired) {
         await this.hooks.onAuthRequired(chatKey);
       } else if (capacityExhausted && this.hooks.onCapacityExhausted) {
