@@ -222,6 +222,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && : > "${fixture.root}/cleanup-timer-enabled"
     ;;
   disable)
+    if [ "\${1:-}" = agent-bridge-health.service ] && [ "\${FAKE_FAIL_HEALTH_DISABLE:-}" = 1 ]; then exit 1; fi
     [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && rm -f "${fixture.root}/cleanup-timer-enabled"
     ;;
   stop)
