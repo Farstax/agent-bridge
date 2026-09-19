@@ -8,7 +8,8 @@ import { openDb } from "../src/db.js";
 import { SensorRegistry } from "../src/sensors/registry.js";
 import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, handleSensorCallback, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
 import { normalizeSensorReport } from "../src/sensors/report.js";
-import { readAptUpdateStatus } from "../src/sensors/server.js";
+import { readAptUpdateStatus, ServerSensor } from "../src/sensors/server.js";
+import { AgentBridgeSensor } from "../src/sensors/agentBridge.js";
 
 const paths: string[] = [];
 const temporary = (name: string) => {
@@ -30,6 +31,33 @@ describe("sensors", () => {
       { id: "agent-bridge", label: "Agent Bridge health" },
       { id: "server", label: "Server health" },
     ]);
+    db.close();
+  });
+
+  it("returns bounded structured observations from both built-in Sensors", async () => {
+    const dbPath = temporary("built-in-sensors.sqlite");
+    const db = openDb(dbPath, { serviceId: "sensor-test", runId: "sensor-test" });
+    const bridge = await new AgentBridgeSensor(db, dbPath).check();
+    const server = await new ServerSensor().check();
+
+    for (const report of [bridge, server]) {
+      expect(["green", "amber", "red"]).toContain(report.status);
+      expect(report.checks.length).toBeLessThanOrEqual(32);
+      expect(report.checks.every((check) => check.name.length <= 120 && check.message.length <= 500)).toBe(true);
+      expect(report.summary.length).toBeLessThanOrEqual(500);
+    }
+    expect(bridge.checks.find((check) => check.name === "db-read")?.status).toBe("green");
+    db.close();
+  }, 10_000);
+
+  it("does not write Sensor or health history while observing the interactive DB", async () => {
+    const dbPath = temporary("sensor-readonly.sqlite");
+    const db = openDb(dbPath, { serviceId: "sensor-test", runId: "sensor-test" });
+    const before = (db.raw.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    await new SensorRegistry({ db, dbPath, env: {} }).run("agent-bridge");
+    const after = (db.raw.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    expect(after).toBe(before);
+    expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='health_plugin_reports'").get()).toBeUndefined();
     db.close();
   });
 
@@ -56,6 +84,9 @@ describe("sensors", () => {
       label: "Content Crawler health",
       status: "green",
     });
+    const all = await registry.runAll();
+    expect(all.map((report) => report.sensorId)).toEqual(["agent-bridge", "server", "content-crawler", "example"]);
+    expect(new Set(all.map((report) => report.sensorId)).size).toBe(all.length);
     db.close();
   });
 
@@ -236,6 +267,40 @@ describe("sensors", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(runs).toBe(0);
     expect(acknowledgements).toEqual(["Unknown sensor"]);
+  });
+
+  it("lists and runs all Sensors through the same packaged helper implementation", () => {
+    const configPath = temporary("helper-list-sensors.json");
+    const rawReport = JSON.stringify({
+      status: "green", checks: [{ name: "external", status: "green", message: "ok" }],
+      summary: "ok", timestamp: "2026-09-18T10:00:00Z",
+    });
+    writeFileSync(configPath, JSON.stringify({
+      external: [{ id: "example", label: "Example", command: process.execPath, args: ["-e", `process.stdout.write(${JSON.stringify(rawReport)})`] }],
+    }));
+    const helper = fileURLToPath(new URL("../scripts/agent-bridge-sensors.ts", import.meta.url));
+    const env = { ...process.env, AGENT_BRIDGE_SENSOR_CONFIG: configPath, AGENT_BRIDGE_CONTEXT_DB: "" };
+    const listed = execFileSync(process.execPath, ["--import", "tsx", helper, "list"], { encoding: "utf8", env });
+    expect(listed).toContain("agent-bridge\tAgent Bridge health");
+    expect(listed).toContain("server\tServer health");
+    expect(listed).toContain("example\tExample");
+    const all = JSON.parse(execFileSync(process.execPath, ["--import", "tsx", helper, "run", "--all", "--json"], {
+      encoding: "utf8", env,
+    }));
+    expect(all.map((report: { sensorId: string }) => report.sensorId)).toEqual(["agent-bridge", "server", "example"]);
+  }, 10_000);
+
+  it("reads the current interactive DB through AGENT_BRIDGE_CONTEXT_DB", () => {
+    const dbPath = temporary("helper-context.sqlite");
+    const db = openDb(dbPath, { serviceId: "sensor-test", runId: "sensor-test" });
+    db.close();
+    const helper = fileURLToPath(new URL("../scripts/agent-bridge-sensors.ts", import.meta.url));
+    const report = JSON.parse(execFileSync(process.execPath, ["--import", "tsx", helper, "run", "agent-bridge", "--json"], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_CONTEXT_DB: dbPath, AGENT_BRIDGE_SENSOR_CONFIG: "" },
+    }));
+    expect(report.checks.find((check: { name: string }) => check.name === "db-file")?.status).toBe("green");
+    expect(report.checks.find((check: { name: string }) => check.name === "db-read")?.status).toBe("green");
   });
 
   it("uses the same bounded redacted contract through the packaged helper path", () => {
