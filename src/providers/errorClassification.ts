@@ -166,7 +166,11 @@ export function classifyProviderError(providerId: ProviderId, error: Error | str
     if (structured) return structured;
   }
   if (providerId === "claude" && isClaudeOAuthRefreshContention(error)) {
-    return { kind: "transient", reason: CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN.source };
+    // The retry owner handles the first occurrence before classification reaches
+    // routing. If contention survives that bounded retry, the shared credential
+    // store is not currently usable and must follow the existing auth-required
+    // availability path rather than remain selectable as a transient failure.
+    return { kind: "auth_required", reason: CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN.source };
   }
   const message = data
     ? [typeof error === "string" ? error : error.message, data.message, data.additionalDetails]
