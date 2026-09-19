@@ -333,6 +333,14 @@ def safe_write(path: Path, content: str, mode: int) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def ensure_config_directory(path: Path, account: pwd.struct_passwd) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        fail(f"configuration directory must be a canonical directory: {path}")
+    os.chown(path, 0, account.pw_gid)
+    os.chmod(path, 0o750)
+
+
 def install_file(source: Path, destination: Path, mode: int) -> None:
     if source.is_symlink() or not source.is_file():
         fail(f"release is missing required regular file: {source}")
@@ -422,6 +430,7 @@ def configure_host(
     environment: str,
 ) -> tuple[list[str], list[Path]]:
     current = release_root / "current"
+    ensure_config_directory(ROLLOUT_CONFIG.parent, account)
     shared = {
         "BRIDGE_ROOT_DIR": account.pw_dir,
         "BRIDGE_PROJECT_DIR": str(current),
