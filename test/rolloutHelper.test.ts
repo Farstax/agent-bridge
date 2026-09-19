@@ -254,6 +254,44 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(config).not.toContain(`database=${staleHealthDb}`);
   }, 15_000);
 
+  it("backs up and retires a surviving health database when the retired unit is already absent", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    const staleHealthDb = join(fixture.root, "runtime", "agent-bridge", "health", "health.sqlite");
+    mkdirSync(dirname(staleHealthDb), { recursive: true });
+    renameSync(fixture.dbPaths[2], staleHealthDb);
+    rewriteConfig(fixture, (lines) => lines
+      .map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line)
+      .map((line) => line === `database=${fixture.dbPaths[2]}` ? `database=${staleHealthDb}` : line));
+    const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+    writeFileSync(healthDefaults, [
+      `HEALTH_DB_PATH=${staleHealthDb}`,
+      "HEALTH_CONTENT_CRAWLER_ENABLED=1",
+      "HEALTH_CONTENT_CRAWLER_SCRIPT=/srv/content-crawler/health_check.py",
+      "BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock",
+      "BRIDGE_RUN_INGRESS_TOKEN=fixture-secret",
+      "",
+    ].join("\n"), { mode: 0o600 });
+    writeFileSync(fixture.stateFile, `${units.filter((unit) => unit !== "agent-bridge-health.service").join("\n")}\n`);
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_ABSENT_HEALTH: "1" });
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    expect(output).toMatch(/retired health database remains; backing it up before retirement/i);
+    expect(actions(fixture)).toContain(`root: backup --preserve=all --no-dereference -- ${staleHealthDb}`);
+    expect(existsSync(staleHealthDb)).toBe(false);
+    expect(existsSync(healthDefaults)).toBe(false);
+    const config = readFileSync(fixture.configFile, "utf8");
+    expect(config).not.toContain("unit=agent-bridge-health.service");
+    expect(config).not.toContain(`database=${staleHealthDb}`);
+    const interactive = readFileSync(join(fixture.envDir, "agent-bridge-interactive"), "utf8");
+    expect(interactive).toContain("BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock");
+    expect(interactive).toContain("BRIDGE_RUN_INGRESS_TOKEN=fixture-secret");
+    expect(existsSync(join(fixture.root, "etc", "agent-bridge", "sensors.json"))).toBe(true);
+  }, 20_000);
+
   it("runs a true second release rollout without re-entering health retirement", () => {
     const fixture = createFixture();
     const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
