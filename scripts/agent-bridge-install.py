@@ -302,7 +302,6 @@ def render_rollout_config(
         f"release_root={release_root}",
         f"current_pointer={release_root / 'current'}",
         f"rollout_helper_sha256={digest(helpers['rollout'])}",
-        f"sentinel_clear_sha256={digest(helpers['sentinel_clear'])}",
         f"activation_helper_sha256={digest(helpers['activate'])}",
         f"authorization_validator_sha256={digest(helpers['authorization'])}",
         f"acceptance_validator_sha256={digest(helpers['acceptance'])}",
