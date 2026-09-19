@@ -157,7 +157,7 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_
     expect(second.status).not.toBe(0);
     expect(output).toMatch(/interrupted rollout sentinel already exists/i);
     expect(output).toContain(fixture.expectedCommit);
-    expect(output).toContain("sudo /usr/local/sbin/rollout-sentinel-clear --expected-commit");
+    expect(output).toContain(`sudo ${join(fixture.root, "bin", "rollout-sentinel-clear")} --expected-commit`);
     expect(output).toContain("--artifact-dir");
     expect(output).toContain("re-run the same agent-bridge-deploy command");
     // The second invocation must never have reached the stop phase — the
