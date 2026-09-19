@@ -1550,9 +1550,9 @@ sentinel_identity=""
 previous_pointer_target=""
 declare -a expected_backups=()
 
-trap on_exit EXIT
-
 converge_sentinel_clear_helper
+
+trap on_exit EXIT
 
 # Interrupted-rollout sentinel (Phase 4C.4, issue #135). Checked and, if
 # absent, created here — immediately after the lock is acquired and before
