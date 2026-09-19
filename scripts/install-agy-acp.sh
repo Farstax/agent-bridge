@@ -43,13 +43,15 @@ fi
 
 ROOT="${AGENT_BRIDGE_AGY_ACP_ROOT:-/opt/agent-bridge/host-components/agy-acp}"
 LINK="${AGENT_BRIDGE_AGY_ACP_LINK:-/usr/local/bin/agy_acp_server.par}"
+HARNESS_LINK="${AGENT_BRIDGE_AGY_HARNESS_LINK:-/usr/local/bin/agy_localharness_external}"
 VERSION_DIR="${ROOT}/components/${VERSION}"
 COMPONENT_DIR="${VERSION_DIR}/${registry_platform}"
 BINARY="${COMPONENT_DIR}/agy_acp_server.par"
+HARNESS="${COMPONENT_DIR}/localharness_external"
 MANIFEST="${COMPONENT_DIR}/manifest.json"
 CHANGED=0
 
-[[ "${ROOT}" == /* && "${LINK}" == /* ]] || fail "managed paths must be absolute"
+[[ "${ROOT}" == /* && "${LINK}" == /* && "${HARNESS_LINK}" == /* ]] || fail "managed paths must be absolute"
 [[ ! -L "${ROOT}" ]] || fail "Agy ACP root must not be a symlink"
 mkdir -p "${ROOT}/components"
 chown root:root "${ROOT}" "${ROOT}/components"
@@ -75,27 +77,38 @@ if [[ -e "${COMPONENT_DIR}" ]]; then
 fi
 
 valid_component() {
-  [[ -d "${COMPONENT_DIR}" && ! -L "${COMPONENT_DIR}" && -x "${BINARY}" && -f "${MANIFEST}" && ! -L "${MANIFEST}" ]] || return 1
+  [[ -d "${COMPONENT_DIR}" && ! -L "${COMPONENT_DIR}" && -x "${BINARY}" && -x "${HARNESS}" && -f "${MANIFEST}" && ! -L "${MANIFEST}" ]] || return 1
   [[ "$(stat -c '%u:%g:%a' "${VERSION_DIR}")" == "0:0:755" ]] || return 1
   [[ "$(stat -c '%u:%g:%a' "${COMPONENT_DIR}")" == "0:0:755" ]] || return 1
-  python3 - "${MANIFEST}" "${BINARY}" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${ARCHIVE_SHA}" <<'PY'
+  python3 - "${MANIFEST}" "${BINARY}" "${HARNESS}" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${ARCHIVE_SHA}" <<'PY'
 import hashlib, json, pathlib, stat, sys
 manifest_path = pathlib.Path(sys.argv[1])
 binary = pathlib.Path(sys.argv[2])
-version, archive_url, platform, archive_sha = sys.argv[3:7]
+harness = pathlib.Path(sys.argv[3])
+version, archive_url, platform, archive_sha = sys.argv[4:8]
 try:
     manifest_stat = manifest_path.lstat()
     binary_stat = binary.lstat()
-    if not stat.S_ISREG(manifest_stat.st_mode) or not stat.S_ISREG(binary_stat.st_mode):
+    harness_stat = harness.lstat()
+    if not stat.S_ISREG(manifest_stat.st_mode) or not stat.S_ISREG(binary_stat.st_mode) or not stat.S_ISREG(harness_stat.st_mode):
         raise ValueError("managed files must be regular")
-    if manifest_stat.st_uid != 0 or binary_stat.st_uid != 0:
+    if manifest_stat.st_uid != 0 or binary_stat.st_uid != 0 or harness_stat.st_uid != 0:
         raise ValueError("managed files must be root-owned")
-    if manifest_stat.st_mode & 0o022 or binary_stat.st_mode & 0o022:
+    if manifest_stat.st_mode & 0o022 or binary_stat.st_mode & 0o022 or harness_stat.st_mode & 0o022:
         raise ValueError("managed files must not be group/world writable")
-    if not binary_stat.st_mode & 0o111:
-        raise ValueError("managed binary is not executable")
+    if not binary_stat.st_mode & 0o111 or not harness_stat.st_mode & 0o111:
+        raise ValueError("managed runtime executable is not executable")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected = {"schemaVersion": 1, "version": version, "archiveUrl": archive_url, "platform": platform}
+    expected = {
+        "schemaVersion": 2,
+        "version": version,
+        "archiveUrl": archive_url,
+        "platform": platform,
+        "harnessName": "localharness_external",
+        "harnessVersion": version,
+        "harnessArchiveUrl": archive_url,
+        "harnessPath": str(harness),
+    }
     if any(manifest.get(key) != value for key, value in expected.items()):
         raise ValueError("manifest identity mismatch")
     if archive_sha and manifest.get("archiveSha256") != archive_sha:
@@ -103,6 +116,9 @@ try:
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     if manifest.get("binarySha256") != digest:
         raise ValueError("binary checksum mismatch")
+    harness_digest = hashlib.sha256(harness.read_bytes()).hexdigest()
+    if manifest.get("harnessSha256") != harness_digest:
+        raise ValueError("harness checksum mismatch")
 except Exception:
     raise SystemExit(1)
 PY
@@ -119,32 +135,45 @@ if ! valid_component; then
   if [[ -n "${ARCHIVE_SHA}" && "${downloaded_archive_sha}" != "${ARCHIVE_SHA}" ]]; then
     fail "release-locked Agy ACP archive checksum mismatch"
   fi
-  python3 - "${archive}" "${staging}/agy_acp_server.par" "${REGISTRY_CMD}" <<'PY'
+  python3 - "${archive}" "${staging}/agy_acp_server.par" "${staging}/localharness_external" "${REGISTRY_CMD}" <<'PY'
 import pathlib, sys, zipfile
 archive = pathlib.Path(sys.argv[1])
 destination = pathlib.Path(sys.argv[2])
-registry_cmd = pathlib.PurePosixPath(sys.argv[3]).name
+harness_destination = pathlib.Path(sys.argv[3])
+registry_cmd = pathlib.PurePosixPath(sys.argv[4]).name
 with zipfile.ZipFile(archive) as bundle:
-    matches = [item for item in bundle.infolist() if not item.is_dir() and pathlib.PurePosixPath(item.filename).name == registry_cmd]
+    files = [item for item in bundle.infolist() if not item.is_dir()]
+    matches = [item for item in files if pathlib.PurePosixPath(item.filename).name == registry_cmd]
+    harness_matches = [item for item in files if pathlib.PurePosixPath(item.filename).name == "localharness_external"]
     if len(matches) != 1:
         raise SystemExit(f"expected exactly one {registry_cmd} in Agy ACP archive, found {len(matches)}")
+    if len(harness_matches) != 1:
+        raise SystemExit(f"expected exactly one localharness_external in Agy ACP archive, found {len(harness_matches)}")
     destination.write_bytes(bundle.read(matches[0]))
+    harness_destination.write_bytes(bundle.read(harness_matches[0]))
 PY
-  chmod 0555 "${staging}/agy_acp_server.par"
-  chown root:root "${staging}/agy_acp_server.par"
+  chmod 0555 "${staging}/agy_acp_server.par" "${staging}/localharness_external"
+  chown root:root "${staging}/agy_acp_server.par" "${staging}/localharness_external"
   binary_sha="$(sha256sum "${staging}/agy_acp_server.par" | awk '{print $1}')"
-  python3 - "${staging}/manifest.json" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${binary_sha}" "${ARCHIVE_SHA}" <<'PY'
+  harness_sha="$(sha256sum "${staging}/localharness_external" | awk '{print $1}')"
+  python3 - "${staging}/manifest.json" "${VERSION}" "${ARCHIVE_URL}" "${registry_platform}" "${binary_sha}" "${harness_sha}" "${downloaded_archive_sha}" "${ARCHIVE_SHA}" "${HARNESS}" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "version": sys.argv[2],
     "archiveUrl": sys.argv[3],
     "platform": sys.argv[4],
     "binarySha256": sys.argv[5],
+    "harnessName": "localharness_external",
+    "harnessVersion": sys.argv[2],
+    "harnessArchiveUrl": sys.argv[3],
+    "harnessPath": sys.argv[9],
+    "harnessSha256": sys.argv[6],
+    "archiveSha256": sys.argv[7],
 }
-if sys.argv[6]:
-    manifest["archiveSha256"] = sys.argv[6]
+if sys.argv[8] and sys.argv[8] != sys.argv[7]:
+    raise SystemExit("downloaded archive checksum does not match release lock")
 path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 PY
   chmod 0444 "${staging}/manifest.json"
@@ -158,7 +187,7 @@ PY
 fi
 
 valid_component || fail "installed Agy ACP component failed identity/checksum validation"
-mkdir -p "$(dirname "${LINK}")"
+mkdir -p "$(dirname "${LINK}")" "$(dirname "${HARNESS_LINK}")"
 current_target="$(readlink -f "${LINK}" 2>/dev/null || true)"
 if [[ "${current_target}" != "${BINARY}" ]]; then
   ln -sfn "${BINARY}" "${LINK}.new"
@@ -167,6 +196,15 @@ if [[ "${current_target}" != "${BINARY}" ]]; then
 fi
 [[ -x "${LINK}" ]] || fail "managed Agy ACP link is not executable"
 [[ "$(readlink -f "${LINK}")" == "${BINARY}" ]] || fail "managed Agy ACP link points outside the release-locked component"
+
+current_harness_target="$(readlink -f "${HARNESS_LINK}" 2>/dev/null || true)"
+if [[ "${current_harness_target}" != "${HARNESS}" ]]; then
+  ln -sfn "${HARNESS}" "${HARNESS_LINK}.new"
+  mv -Tf "${HARNESS_LINK}.new" "${HARNESS_LINK}"
+  CHANGED=1
+fi
+[[ -x "${HARNESS_LINK}" ]] || fail "managed Agy harness link is not executable"
+[[ "$(readlink -f "${HARNESS_LINK}")" == "${HARNESS}" ]] || fail "managed Agy harness link points outside the release-locked component"
 
 if (( CHANGED )); then
   echo "host_component_status=converged"
