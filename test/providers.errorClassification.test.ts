@@ -90,7 +90,7 @@ describe("provider error classification", () => {
     const refreshContention = new Error(
       "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
     );
-    expect(classifyProviderError("claude", refreshContention)).toMatchObject({ kind: "auth_required" });
+    expect(classifyProviderError("claude", refreshContention)).toMatchObject({ kind: "transient" });
     expect(isRetryEligibleProviderError("claude", refreshContention, 1)).toBe(true);
     expect(isRetryEligibleProviderError("claude", refreshContention, 2)).toBe(false);
     expect(isRetryEligibleProviderError("codex", refreshContention, 1)).toBe(false);
