@@ -310,7 +310,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     ;;
   is-failed) exit 1 ;;
   reset-failed)
-    if [ "${FAKE_ABSENT_HEALTH:-}" = 1 ]; then
+    if [ "\${FAKE_ABSENT_HEALTH:-}" = 1 ]; then
       for unit in "$@"; do
         if [ "$unit" = agent-bridge-health.service ]; then
           echo "Failed to reset failed state of unit agent-bridge-health.service: Unit agent-bridge-health.service not loaded." >&2
@@ -327,7 +327,7 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     for property in "\${properties[@]}"; do
       case "$property" in
         LoadState)
-          if [ "${FAKE_ABSENT_HEALTH:-}" = 1 ] && [ "$unit" = agent-bridge-health.service ]; then echo not-found; else echo loaded; fi
+          if [ "\${FAKE_ABSENT_HEALTH:-}" = 1 ] && [ "$unit" = agent-bridge-health.service ]; then echo not-found; else echo loaded; fi
           ;;
         EnvironmentFiles)
           case "\${FAKE_ENVIRONMENT_FILES_MODE:-correct}" in
