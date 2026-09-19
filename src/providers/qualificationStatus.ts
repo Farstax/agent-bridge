@@ -8,6 +8,7 @@ import {
   isQualificationCurrent,
   type QualificationHealthResult,
 } from "./qualification.js";
+import { getProviderRuntimeAuthDegradedProviders } from "./runtimeAvailability.js";
 import { PROVIDER_IDS, type ProviderId } from "./types.js";
 
 export interface InstalledProviderQualificationStatus extends QualificationHealthResult {
@@ -39,7 +40,7 @@ export function getQualificationFailedProviders(
 ): Set<ProviderId> {
   try {
     const evidence = readQualificationEvidence(evidencePath);
-    const failed = new Set<ProviderId>();
+    const failed = new Set<ProviderId>(getProviderRuntimeAuthDegradedProviders());
     for (const [provider, record] of Object.entries(evidence.providers)) {
       if (record?.overall !== "fail") continue;
       const providerId = provider as ProviderId;
@@ -54,7 +55,7 @@ export function getQualificationFailedProviders(
   } catch {
     // Health/doctor surface unreadable evidence explicitly. Routing must not
     // infer that every provider is bad merely because its evidence file broke.
-    return new Set<ProviderId>();
+    return new Set<ProviderId>(getProviderRuntimeAuthDegradedProviders());
   }
 }
 
