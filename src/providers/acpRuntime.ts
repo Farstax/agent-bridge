@@ -21,7 +21,7 @@ import type { ProviderId, ProviderInvocation, ProviderInvocationRequest } from "
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
 import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
-import { classifyProviderError } from "./errorClassification.js";
+import { classifyProviderError, isClaudeOAuthRefreshContention } from "./errorClassification.js";
 import {
   clearProviderRuntimeAuthDegraded,
   markProviderRuntimeAuthDegraded,
@@ -622,7 +622,10 @@ export async function runResolvedAcpProviderTurn(
     }
     if (
       providerId === "claude"
-      && classifyProviderError("claude", redacted).kind === "auth_required"
+      && (
+        classifyProviderError("claude", redacted).kind === "auth_required"
+        || isClaudeOAuthRefreshContention(redacted)
+      )
     ) {
       markProviderRuntimeAuthDegraded("claude");
     }
