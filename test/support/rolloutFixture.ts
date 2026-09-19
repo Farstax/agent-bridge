@@ -174,6 +174,10 @@ if [ "\${FAKE_RESTORE_FAIL:-}" = 1 ]; then
 fi
 exec sudo -n env AGENT_BRIDGE_RESTORE_TEST_MODE=1 "${restoreHelperPath}" "$@"
 `);
+  executable(join(bin, "rollout-sentinel-clear"), `#!/usr/bin/env bash
+set -euo pipefail
+echo "rollout-sentinel-clear:$*" >> "${fixture.actionLog}"
+`);
   copyFileSync(authorizationScript, join(bin, "rollout-authorization-trusted"));
   copyFileSync(acceptanceScript, join(bin, "rollout-acceptance-trusted"));
   chmodSync(join(bin, "rollout-authorization-trusted"), 0o755);
