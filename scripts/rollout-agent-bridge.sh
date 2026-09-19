@@ -154,6 +154,7 @@ retiring_health=0
 health_already_retired=0
 retired_health_database=""
 retired_health_database_present=0
+retired_health_config_database=""
 retired_health_defaults="$defaults_dir/agent-bridge-health"
 retired_health_unit="$systemd_unit_dir/agent-bridge-health.service"
 sensor_config_path="$(/usr/bin/realpath -m "$defaults_dir/../agent-bridge/sensors.json")"
@@ -600,27 +601,46 @@ if (( health_already_retired == 1 )); then
   target_databases=()
   for database in "${databases[@]}"; do
     if [[ -z "${discovered_databases[$database]:-}" ]] && [[ "$database" == "$legacy_health_database" || "$database" == */health/health.sqlite || "$database" == */.data-health/health.sqlite ]]; then
-      [[ -z "$retired_health_database" ]] || die "multiple stale databases remain after retired health unit disappeared"
-      retired_health_database="$database"
-      if [[ -e "$database" || -L "$database" ]]; then
-        [[ -f "$database" && ! -L "$database" ]] || die "retired health database is unsafe: $database"
-        canonical="$(/usr/bin/realpath -e "$database")"
-        [[ "$canonical" == "$database" ]] || die "retired health database path is not canonical: $database"
-        retired_health_database="$canonical"
-        retired_health_database_present=1
-        unit_databases[agent-bridge-health.service]="$canonical"
-        unit_roles[agent-bridge-health.service]=health
-        discovered_databases[$canonical]=1
-        target_databases+=("$canonical")
-        echo "retired health database remains; backing it up before retirement path=$canonical"
-      else
-        echo "retired health database is already absent; removing stale inventory path=$database"
-      fi
+      [[ -z "$retired_health_config_database" ]] || die "multiple stale health database inventory entries remain after retired health unit disappeared"
+      retired_health_config_database="$database"
+      echo "removing retired health database from active rollout inventory path=$database"
       continue
     fi
     target_databases+=("$database")
   done
   databases=("${target_databases[@]}")
+
+  stale_health_candidates=()
+  [[ -z "$retired_health_config_database" ]] || stale_health_candidates+=("$retired_health_config_database")
+  if [[ -n "$legacy_health_database" && "$legacy_health_database" != "$retired_health_config_database" ]]; then
+    stale_health_candidates+=("$legacy_health_database")
+  fi
+  for database in "${stale_health_candidates[@]}"; do
+    [[ "$database" == /* && "$database" != *[[:space:]]* ]] || die "retired health database path is invalid: $database"
+    if [[ -e "$database" || -L "$database" ]]; then
+      [[ -f "$database" && ! -L "$database" ]] || die "retired health database is unsafe: $database"
+      canonical="$(/usr/bin/realpath -e "$database")"
+      [[ "$canonical" == "$database" ]] || die "retired health database path is not canonical: $database"
+      [[ -z "${discovered_databases[$canonical]:-}" ]] || die "retired health database is still selected by an active unit: $canonical"
+      if (( retired_health_database_present == 1 )) && [[ "$retired_health_database" != "$canonical" ]]; then
+        die "multiple surviving retired health databases require manual review"
+      fi
+      retired_health_database="$canonical"
+      retired_health_database_present=1
+    elif [[ -z "$retired_health_database" ]]; then
+      retired_health_database="$database"
+    fi
+  done
+
+  if (( retired_health_database_present == 1 )); then
+    databases+=("$retired_health_database")
+    unit_databases[agent-bridge-health.service]="$retired_health_database"
+    unit_roles[agent-bridge-health.service]=health
+    discovered_databases[$retired_health_database]=1
+    echo "retired health database remains; backing it up before retirement path=$retired_health_database"
+  elif [[ -n "$retired_health_database" ]]; then
+    echo "retired health database is already absent; removing stale inventory path=$retired_health_database"
+  fi
 fi
 
 declare -A canonical_databases=()
@@ -1034,16 +1054,18 @@ retire_health_state_after_acceptance() {
   elif [[ -n "$retired_health_database" ]]; then
     [[ ! -e "$retired_health_database" && ! -L "$retired_health_database" ]] || die "retired health database unexpectedly exists after acceptance"
   fi
-  /usr/bin/python3 - "$config_file" "$retired_health_database" "$health_relocation_target" <<'PY'
+  /usr/bin/python3 - "$config_file" "$retired_health_database" "$health_relocation_target" "$retired_health_config_database" <<'PY'
 import os
 import sys
-path, health_db, relocation_target = sys.argv[1:]
+path, health_db, relocation_target, config_health_db = sys.argv[1:]
 drop_prefixes = ("unit=agent-bridge-health.service", "legacy_database=")
 drop_exact = set()
 if health_db:
     drop_exact.add(f"database={health_db}")
 if relocation_target:
     drop_exact.add(f"database={relocation_target}")
+if config_health_db:
+    drop_exact.add(f"database={config_health_db}")
 with open(path, encoding="utf-8") as handle:
     lines = handle.read().splitlines()
 kept = [line for line in lines if line not in drop_exact and not any(line.startswith(prefix) for prefix in drop_prefixes)]
