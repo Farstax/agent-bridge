@@ -1,4 +1,5 @@
 import type { SensorReport } from "./types.js";
+import { redactSensorText } from "./report.js";
 
 export const SENSOR_CALLBACK_PREFIX = "sensor:";
 const MAX_SENSOR_MESSAGE_CHARS = 3900;
@@ -67,7 +68,7 @@ export async function handleSensorCallback(input: {
     void result
       .then((text) => input.send(text, input.threadId))
       .catch((error: unknown) => input.send(
-        `Sensor check failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Sensor check failed: ${redactSensorText(error instanceof Error ? error.message : String(error)).slice(0, 500)}`,
         input.threadId,
       ))
       .catch((error: unknown) => console.error("[interactive] failed to send sensor result", error));
