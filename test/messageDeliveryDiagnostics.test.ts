@@ -16,7 +16,7 @@ function createClient() {
 }
 
 describe("interactive failure diagnostics", () => {
-  it("durably retains the redacted cause before presenting a generic Internal error", async () => {
+  it("durably retains and safely presents an actionable nested cause", async () => {
     const previous = process.env.CODEX_API_KEY;
     process.env.CODEX_API_KEY = "secret-diagnostic-key";
     const db = openDb(":memory:");
@@ -65,13 +65,54 @@ describe("interactive failure diagnostics", () => {
       const delivered = client.sendMessage.mock.calls
         .map((call: any[]) => String(call[0]?.text ?? ""))
         .join("\n");
-      expect(delivered).toContain("Internal error");
-      expect(delivered).not.toContain("bridge orchestration exploded");
+      expect(delivered).toContain("bridge orchestration exploded");
+      expect(delivered).not.toContain("Internal error");
       expect(delivered).not.toContain("secret-diagnostic-key");
+      expect(delivered).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
     } finally {
       db.close();
       if (previous === undefined) delete process.env.CODEX_API_KEY;
       else process.env.CODEX_API_KEY = previous;
     }
+  });
+});
+
+
+describe("interactive structured ACP failure delivery", () => {
+  it("delivers data.details instead of a bare Internal error", async () => {
+    const client = createClient();
+    const error = Object.assign(new Error("Internal error"), {
+      data: { details: "Could not find default localharness binary. Set ANTIGRAVITY_HARNESS_PATH." },
+    });
+
+    await sendMessageWithProgress({
+      client,
+      kind: "antigravity",
+      chatId: 123,
+      execution: async () => { throw error; },
+    });
+
+    const delivered = client.sendMessage.mock.calls
+      .map((call: any[]) => String(call[0]?.text ?? ""))
+      .join("\n");
+    expect(delivered).toContain("localharness");
+    expect(delivered).not.toContain("❌ Internal error");
+  });
+
+  it("delivers an explicit transport failure when structured detail is unavailable", async () => {
+    const client = createClient();
+
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      execution: async () => { throw new Error("ACP connection closed"); },
+    });
+
+    const delivered = client.sendMessage.mock.calls
+      .map((call: any[]) => String(call[0]?.text ?? ""))
+      .join("\n");
+    expect(delivered).toContain("Provider connection failed; retry or inspect run diagnostics.");
+    expect(delivered).not.toContain("Internal error");
   });
 });
