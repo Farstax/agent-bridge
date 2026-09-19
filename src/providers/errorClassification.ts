@@ -124,6 +124,7 @@ export function isClaudeOAuthRefreshContention(error: Error | string): boolean {
 
 interface AcpStructuredErrorData {
   readonly message?: string;
+  readonly details?: string;
   readonly codexErrorInfo?: string | Readonly<Record<string, unknown>>;
   readonly additionalDetails?: string;
 }
@@ -169,7 +170,7 @@ export function classifyProviderError(providerId: ProviderId, error: Error | str
     return { kind: "transient", reason: CLAUDE_OAUTH_REFRESH_CONTENTION_PATTERN.source };
   }
   const message = data
-    ? [typeof error === "string" ? error : error.message, data.message, data.additionalDetails]
+    ? [typeof error === "string" ? error : error.message, data.message, data.details, data.additionalDetails]
       .filter((part): part is string => Boolean(part))
       .join("\n")
     : typeof error === "string" ? error : error.message;
