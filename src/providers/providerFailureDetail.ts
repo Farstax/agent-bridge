@@ -26,6 +26,12 @@ export function isGenericProviderFailureMessage(message: string): boolean {
     || /^(?:query stream error:\s*)?ACP connection closed$/i.test(normalized);
 }
 
+function unwrapGenericFailurePrefix(message: string): string | null {
+  const match = message.trim().match(/^(?:(?:RequestError|Error|AcpError):\s*)?Internal error:\s*(.+)$/is);
+  const detail = match?.[1]?.trim();
+  return detail || null;
+}
+
 /** Structured provider-owned details retained across ACP wrappers and causes. */
 export function collectProviderFailureDetails(error: unknown): string[] {
   const parts: string[] = [];
@@ -49,12 +55,16 @@ export function collectProviderFailureDetails(error: unknown): string[] {
 
 /** First useful provider/cause detail for user presentation, excluding generic transport wrappers. */
 export function actionableProviderFailureDetail(error: unknown): string | null {
+  const normalizedTop = normalizeError(error);
+  const wrappedTop = unwrapGenericFailurePrefix(normalizedTop.message);
+  if (wrappedTop && !isGenericProviderFailureMessage(wrappedTop)) return wrappedTop;
+
   const structured = collectProviderFailureDetails(error)
     .find((detail) => !isGenericProviderFailureMessage(detail));
   if (structured) return structured;
 
   const seen = new Set<unknown>();
-  let current: unknown = normalizeError(error).cause;
+  let current: unknown = normalizedTop.cause;
   for (let depth = 0; depth < PROVIDER_FAILURE_CAUSE_DEPTH - 1 && current != null && !seen.has(current); depth += 1) {
     seen.add(current);
     const normalized = normalizeError(current);
