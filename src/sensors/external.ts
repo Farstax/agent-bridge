@@ -54,7 +54,7 @@ function parseExternalReport(id: string, label: string, raw: string): SensorRepo
     timestamp: typeof record.timestamp === "string" && !Number.isNaN(Date.parse(record.timestamp))
       ? record.timestamp
       : new Date().toISOString(),
-  };
+  });
 }
 
 export class ExternalSensor implements Sensor {
