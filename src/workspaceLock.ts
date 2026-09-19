@@ -74,6 +74,18 @@ function resolveFlockCommand(): string {
   return command;
 }
 
+export function buildFileLockedInvocation(
+  command: string,
+  args: string[],
+  lockFile: string,
+  mode: "shared" | "exclusive",
+): { command: string; args: string[] } {
+  return {
+    command: resolveFlockCommand(),
+    args: [mode === "shared" ? "--shared" : "--exclusive", "--no-fork", lockFile, command, ...args],
+  };
+}
+
 export function buildWorkspaceLockedInvocation(
   command: string,
   args: string[],
