@@ -71,6 +71,7 @@ DATABASE_ROLES = {
 HELPERS: tuple[tuple[str, Path, str], ...] = (
     ("scripts/agent-bridge-deploy.py", Path("/usr/local/sbin/agent-bridge-deploy"), "deployer"),
     ("scripts/rollout-agent-bridge.sh", Path("/usr/local/sbin/rollout-agent-bridge"), "rollout"),
+    ("scripts/rollout-sentinel-clear.sh", Path("/usr/local/sbin/rollout-sentinel-clear"), "sentinel_clear"),
     ("scripts/release-stage.py", Path("/usr/local/libexec/agent-bridge-release-stage"), "stage"),
     ("scripts/release-activate.py", Path("/usr/local/libexec/agent-bridge-release-activate"), "activate"),
     ("scripts/rollout-restore.py", Path("/usr/local/libexec/agent-bridge-rollout-restore"), "restore"),
@@ -301,6 +302,7 @@ def render_rollout_config(
         f"release_root={release_root}",
         f"current_pointer={release_root / 'current'}",
         f"rollout_helper_sha256={digest(helpers['rollout'])}",
+        f"sentinel_clear_sha256={digest(helpers['sentinel_clear'])}",
         f"activation_helper_sha256={digest(helpers['activate'])}",
         f"authorization_validator_sha256={digest(helpers['authorization'])}",
         f"acceptance_validator_sha256={digest(helpers['acceptance'])}",
