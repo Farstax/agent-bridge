@@ -310,6 +310,14 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     ;;
   is-failed) exit 1 ;;
   reset-failed)
+    if [ "\${FAKE_ABSENT_HEALTH:-}" = 1 ]; then
+      for unit in "$@"; do
+        if [ "$unit" = agent-bridge-health.service ]; then
+          echo "Failed to reset failed state of unit agent-bridge-health.service: Unit agent-bridge-health.service not loaded." >&2
+          exit 1
+        fi
+      done
+    fi
     : > "${fixture.root}/restart-counters-reset"
     ;;
   show)
@@ -318,6 +326,9 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     for arg in "$@"; do case "$arg" in --property=*) properties+=("\${arg#--property=}");; esac; done
     for property in "\${properties[@]}"; do
       case "$property" in
+        LoadState)
+          if [ "\${FAKE_ABSENT_HEALTH:-}" = 1 ] && [ "$unit" = agent-bridge-health.service ]; then echo not-found; else echo loaded; fi
+          ;;
         EnvironmentFiles)
           case "\${FAKE_ENVIRONMENT_FILES_MODE:-correct}" in
             missing) printf '%s\n%s\n' "${fixture.envDir}/agent-bridge-shared (ignore_errors=yes)" "${fixture.envDir}/\${unit%.service} (ignore_errors=no)" ;;
