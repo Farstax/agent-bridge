@@ -401,7 +401,7 @@ function sidecarSize(path: string): number {
   }
 }
 
-function checkpointDatabase(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared"): DbEvidence & {
+function checkpointDatabase(path: string, resolvingUnits: string[] = [], role: DatabaseRole = "shared", allowRetiredHealthTable = false): DbEvidence & {
   walBytesBefore: number;
   walBytesAfter: number;
   checkpointedPages: number;
@@ -424,7 +424,7 @@ function checkpointDatabase(path: string, resolvingUnits: string[] = [], role: D
     throw new Error(`SQLite WAL checkpoint did not drain the WAL for ${path}: ${walBytesAfter} bytes remain`);
   }
   return {
-    ...inspectDatabase(path, false, resolvingUnits, role),
+    ...inspectDatabase(path, false, resolvingUnits, role, allowRetiredHealthTable),
     walBytesBefore,
     walBytesAfter,
     checkpointedPages: result.checkpointed,
@@ -1008,7 +1008,7 @@ async function main(): Promise<void> {
     return;
   }
   if (options.mode === "checkpoint") {
-    const evidence = options.databases.map((path) => checkpointDatabase(path, unitsFor(path), roleFor(path)));
+    const evidence = options.databases.map((path) => checkpointDatabase(path, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
     writeEvidence(options.evidencePath, options.mode, evidence);
     return;
   }

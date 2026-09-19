@@ -297,6 +297,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     const output = `${result.stdout}\n${result.stderr}`;
     const actionLog = actions(fixture);
     const inspectCalls = actionLog.split("\n").filter((line) => line.startsWith("runuser:") && line.includes(" inspect "));
+    const checkpointCalls = actionLog.split("\n").filter((line) => line.startsWith("runuser:") && line.includes(" checkpoint "));
 
     expect(result.status).not.toBe(0);
     expect(output).toMatch(/STATE: PRE_BACKUP_RECOVERED/);
@@ -305,6 +306,8 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(readFileSync(fixture.stateFile, "utf8").trim().split("\n")).toEqual(units);
     expect(inspectCalls).toHaveLength(4);
     expect(inspectCalls.every((line) => line.includes("--allow-retired-health"))).toBe(true);
+    expect(checkpointCalls).toHaveLength(1);
+    expect(checkpointCalls.every((line) => line.includes("--allow-retired-health"))).toBe(true);
     expect(actionLog).toContain("--converge-active-host-components");
     expect(actionLog).not.toContain(`--expected-commit ${fixture.previousCommit}`);
   }, 15_000);
@@ -1545,4 +1548,3 @@ fi
     expect(restart).not.toContain("rollout-db");
   });
 });
-
