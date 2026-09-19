@@ -20,6 +20,11 @@ import { appendEffortArgs, type EffortLevel } from "./effort.js";
 import { isProviderFallbackEligibleError } from "./providers/fallbackEligibility.js";
 import { classifyAnyProviderError } from "./providers/errorClassification.js";
 import {
+  actionableProviderFailureDetail,
+  isGenericProviderFailureMessage,
+  sanitizeProviderFailureText,
+} from "./providers/providerFailureDetail.js";
+import {
   getProcessWatchForCommand,
   providerIdForBotName,
   supportsToolFreeMode,
@@ -237,9 +242,20 @@ function extractUpstreamCliError(raw: string): string | null {
 
 export function toUserMessage(err: Error): string {
   if (classifyAnyProviderError(err).kind === "auth_required") return "Authentication required";
+
+  const detail = actionableProviderFailureDetail(err);
+  if (detail) return sanitizeProviderFailureText(detail);
+
   const upstream = extractUpstreamCliError(err.message);
-  if (upstream) return upstream.trim();
-  return err.message.split(":")[0].trim();
+  if (upstream && !isGenericProviderFailureMessage(upstream)) {
+    return sanitizeProviderFailureText(upstream);
+  }
+
+  if (isGenericProviderFailureMessage(err.message)) {
+    return "Provider connection failed; retry or inspect run diagnostics.";
+  }
+
+  return sanitizeProviderFailureText(err.message.split(":")[0]);
 }
 
 export function isCapacityExhaustedError(err: Error): boolean {
