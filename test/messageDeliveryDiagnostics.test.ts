@@ -16,7 +16,7 @@ function createClient() {
 }
 
 describe("interactive failure diagnostics", () => {
-  it("durably retains and safely presents an actionable nested cause", async () => {
+  it("durably retains an internal cause without exposing it to the user", async () => {
     const previous = process.env.CODEX_API_KEY;
     process.env.CODEX_API_KEY = "secret-diagnostic-key";
     const db = openDb(":memory:");
@@ -65,10 +65,9 @@ describe("interactive failure diagnostics", () => {
       const delivered = client.sendMessage.mock.calls
         .map((call: any[]) => String(call[0]?.text ?? ""))
         .join("\n");
-      expect(delivered).toContain("bridge orchestration exploded");
-      expect(delivered).not.toContain("Internal error");
+      expect(delivered).toContain("Provider connection failed; retry or inspect run diagnostics.");
+      expect(delivered).not.toContain("bridge orchestration exploded");
       expect(delivered).not.toContain("secret-diagnostic-key");
-      expect(delivered).toContain("[REDACTED_PROVIDER_CREDENTIAL]");
     } finally {
       db.close();
       if (previous === undefined) delete process.env.CODEX_API_KEY;
