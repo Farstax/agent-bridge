@@ -43,16 +43,18 @@ describe("interrupted-rollout sentinel (Phase 4C.4, issue #135)", { timeout: 30_
 
   it("never removes a pre-existing sentinel when recovery-helper convergence fails before sentinel ownership", () => {
     const fixture = createFixture();
-    const { releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    prepareImmutableRelease(fixture, fixture.previousCommit);
     const sentinel = sentinelPath(fixture);
     const original = "pre-existing-sentinel\n";
     writeFileSync(sentinel, original, { mode: 0o600 });
-    rmSync(join(releaseDir, "scripts", "rollout-sentinel-clear.sh"));
+    const installedHelper = join(fixture.root, "bin", "rollout-sentinel-clear");
+    rmSync(installedHelper, { force: true });
+    symlinkSync(join(fixture.root, "missing-sentinel-helper"), installedHelper);
 
     const result = runRollout(fixture);
 
     expect(result.status).not.toBe(0);
-    expect(`${result.stdout}\n${result.stderr}`).toMatch(/release sentinel-clear helper is missing or unsafe/i);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/installed sentinel-clear helper is unsafe/i);
     expect(existsSync(sentinel)).toBe(true);
     expect(readFileSync(sentinel, "utf8")).toBe(original);
   });
