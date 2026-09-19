@@ -1,14 +1,13 @@
 import os from "node:os";
 import { existsSync, readFileSync, readdirSync, statSync, statfsSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import type { Sensor, SensorReport, SensorCheck } from "./types.js";
 
 export class ServerSensor implements Sensor {
   readonly id = "server";
   readonly label = "Server health";
 
-  constructor(private readonly env: Record<string, string | undefined> = process.env) {}
 
   async check(): Promise<SensorReport> {
     const checks: SensorCheck[] = [];
@@ -20,19 +19,8 @@ export class ServerSensor implements Sensor {
     const loadAvg = os.loadavg();
     const load1m = loadAvg[0] ?? 0;
     
-    const amberMultiplier = this.env.SENSOR_SERVER_CPU_LOAD_AMBER_MULTIPLIER
-      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_AMBER_MULTIPLIER)
-      : 1.0;
-    const redMultiplier = this.env.SENSOR_SERVER_CPU_LOAD_RED_MULTIPLIER
-      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_RED_MULTIPLIER)
-      : 1.5;
-
-    const amberThreshold = this.env.SENSOR_SERVER_CPU_LOAD_AMBER_THRESHOLD
-      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_AMBER_THRESHOLD)
-      : cpus * amberMultiplier;
-    const redThreshold = this.env.SENSOR_SERVER_CPU_LOAD_RED_THRESHOLD
-      ? Number(this.env.SENSOR_SERVER_CPU_LOAD_RED_THRESHOLD)
-      : cpus * redMultiplier;
+    const amberThreshold = cpus * 1.0;
+    const redThreshold = cpus * 1.5;
 
     let loadStatus: "green" | "amber" | "red" = "green";
     if (load1m >= redThreshold) {
@@ -66,8 +54,8 @@ export class ServerSensor implements Sensor {
     const usedMem = totalMem - freeMem;
     const memPct = (usedMem / totalMem) * 100;
     
-    const memAmberPct = this.env.SENSOR_SERVER_MEMORY_AMBER_PCT ? Number(this.env.SENSOR_SERVER_MEMORY_AMBER_PCT) : 80;
-    const memRedPct = this.env.SENSOR_SERVER_MEMORY_RED_PCT ? Number(this.env.SENSOR_SERVER_MEMORY_RED_PCT) : 95;
+    const memAmberPct = 80;
+    const memRedPct = 95;
     let memStatus: "green" | "amber" | "red" = "green";
     if (memPct >= memRedPct) {
       memStatus = "red";
@@ -89,12 +77,10 @@ export class ServerSensor implements Sensor {
     let swapStatus: "green" | "amber" | "red" = "green";
     let swapMsg = "Swap disabled";
     let swapPct: number | undefined = undefined;
-    const swapMonitorEnabled = this.env.SENSOR_SERVER_SWAP_MONITOR_ENABLED !== "0" && this.env.SENSOR_SERVER_SWAP_MONITOR_ENABLED !== "false";
-    const swapAmberPct = this.env.SENSOR_SERVER_SWAP_AMBER_PCT ? Number(this.env.SENSOR_SERVER_SWAP_AMBER_PCT) : 80;
-    const swapRedPct = this.env.SENSOR_SERVER_SWAP_RED_PCT ? Number(this.env.SENSOR_SERVER_SWAP_RED_PCT) : 95;
+    const swapAmberPct = 80;
+    const swapRedPct = 95;
     try {
-      if (swapMonitorEnabled) {
-        if (existsSync("/proc/meminfo")) {
+      if (existsSync("/proc/meminfo")) {
           const content = readFileSync("/proc/meminfo", "utf8");
           const totalMatch = content.match(/^SwapTotal:\s+(\d+)\s+kB/m);
           const freeMatch = content.match(/^SwapFree:\s+(\d+)\s+kB/m);
@@ -117,9 +103,6 @@ export class ServerSensor implements Sensor {
               }
             }
           }
-        }
-      } else {
-        swapMsg = "Swap monitoring disabled";
       }
     } catch (err) {
       swapStatus = "amber";
@@ -357,7 +340,8 @@ export class ServerSensor implements Sensor {
       try {
         const aptCheckPath = "/usr/lib/update-notifier/apt-check";
         if (existsSync(aptCheckPath)) {
-          const output = execSync(aptCheckPath, { stdio: ["ignore", "ignore", "pipe"], timeout: 5000 }).toString().trim();
+          const result = spawnSync(aptCheckPath, [], { encoding: "utf8", timeout: 5000 });
+          const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
           const match = output.match(/^(\d+);(\d+)/);
           if (match) {
             const totalUpdates = parseInt(match[1], 10);
