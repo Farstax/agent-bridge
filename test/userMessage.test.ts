@@ -94,6 +94,13 @@ describe("toUserMessage — structured ACP failures", () => {
     );
   });
 
+  it("preserves auth masking when the actionable text exists only in data.details", () => {
+    const error = Object.assign(new Error("Internal error"), {
+      data: { details: "Authentication required: please log in again." },
+    });
+    expect(toUserMessage(error)).toBe("Authentication required");
+  });
+
   it("redacts configured provider credentials from structured detail", () => {
     const previous = process.env.CODEX_API_KEY;
     process.env.CODEX_API_KEY = "secret-829-key";
