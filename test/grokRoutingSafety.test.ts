@@ -9,7 +9,7 @@ import { getUserCliPreference, setUserCliPreference } from "../src/interactiveBo
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { clearProviderApiKeyVerificationCache, verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
-import { resolveGrokAuthPaths } from "../src/providers/grokAvailability.js";
+import { isGrokRouteable, resolveGrokAuthPaths } from "../src/providers/grokAvailability.js";
 import { PROVIDER_CONTRACT_VERSION, writeQualificationRecord } from "../src/providers/qualification.js";
 
 // Routing now requires a bounded ACP probe rather than trusting a non-empty
@@ -102,7 +102,11 @@ describe("Grok routing safety", () => {
   it("allows authenticated Grok through fallback without qualification evidence", () => {
     withGrokEnvironment(() => {
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "grok", "antigravity"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "grok", "antigravity"],
+        db,
+        (cli) => cli === "grok" ? isGrokRouteable() : true,
+      );
       expect(chain.getActiveCli("chat:1")).toBe("codex");
       expect(chain.advance("chat:1")).toBe("grok");
       expect(chain.getChain()).toEqual(["codex", "grok", "antigravity"]);
@@ -113,7 +117,11 @@ describe("Grok routing safety", () => {
     withGrokEnvironment((_root, evidencePath) => {
       writeFailedGrokQualification(evidencePath);
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "grok", "antigravity"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "grok", "antigravity"],
+        db,
+        (cli) => cli === "grok" ? isGrokRouteable() : true,
+      );
       expect(chain.advance("chat:1")).toBe("antigravity");
       expect(chain.getChain()).toEqual(["codex", "antigravity"]);
     });

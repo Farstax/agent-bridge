@@ -94,7 +94,7 @@ export interface AcpProviderPolicy {
     entry: AcpRegistryAgentEntry,
   ) => string[];
   /** Fail closed before starting a provider process when the selected executable drifts. */
-  readonly validateRuntime?: (runtime: ResolvedProviderRuntime) => void;
+  readonly validateRuntime?: (runtime: ResolvedProviderRuntime, env: Record<string, string | undefined>) => void;
   readonly buildChildEnv?: (
     request: ProviderInvocationRequest,
     env: Record<string, string | undefined>,
@@ -509,7 +509,7 @@ export async function runResolvedAcpProviderTurn(
   }
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
-  policy.validateRuntime?.(runtime);
+  policy.validateRuntime?.(runtime, effectiveEnv);
   const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
   const sessionSettings = policy.sessionSettings?.(request, effectiveEnv);
   const contextEnv = { ...(options.contextEnv ?? {}), ...providerEnv };

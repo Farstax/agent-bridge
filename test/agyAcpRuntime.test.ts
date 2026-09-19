@@ -1,5 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,6 +15,7 @@ import {
 } from "../src/acp/sessionConfig.js";
 import { openDb } from "../src/db.js";
 import { agyAcpPolicy } from "../src/providers/agyAcpPolicy.js";
+import { hasAgyRuntimePrerequisites, resolveAgyHarnessPath } from "../src/providers/agyAvailability.js";
 import { getAcpProviderPolicy, isAcpBackedBot, supportsToolFreeMode } from "../src/providers/registry.js";
 import type { ProviderInvocationRequest } from "../src/providers/types.js";
 
@@ -43,12 +45,15 @@ describe("Agy ACP provider", () => {
         binary: expect.objectContaining({
           "linux-x86_64": {
             archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip",
+            sha256: "38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df",
             cmd: "./agy_acp_server.par",
             args: ["--uid="],
           },
         }),
       },
     }));
+    expect(getLockedAcpRegistryEntry("agy")?.distribution.binary?.["linux-aarch64"]?.sha256)
+      .toBe("ed69e64b308fcb123ab54bf3277bf9cb0d651064f885ea5aab0ff520c7175398");
     expect(getAcpProviderPolicy("agy")).toBe(agyAcpPolicy);
     expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" })).toEqual(expect.objectContaining({
       providerId: "agy",
@@ -92,6 +97,52 @@ describe("Agy ACP provider", () => {
       args: ["--uid="],
       transport: "acp-stdio",
     }));
+  });
+
+  it("fails closed when the required local harness is missing or non-executable and injects its absolute path", () => {
+    const root = mkdtempSync(join(tmpdir(), "agy-runtime-helper-"));
+    const harness = join(root, "localharness_external");
+    try {
+      expect(hasAgyRuntimePrerequisites({
+        env: { ANTIGRAVITY_HARNESS_PATH: harness },
+        exists: () => false,
+        isExecutable: () => false,
+      })).toBe(false);
+      writeFileSync(harness, "#!/bin/sh\n", "utf8");
+      chmodSync(harness, 0o644);
+      expect(hasAgyRuntimePrerequisites({
+        env: { ANTIGRAVITY_HARNESS_PATH: harness },
+        exists: existsSync,
+        isExecutable: () => false,
+      })).toBe(false);
+      chmodSync(harness, 0o755);
+      const harnessSha256 = createHash("sha256").update(readFileSync(harness)).digest("hex");
+      writeFileSync(join(root, "manifest.json"), JSON.stringify({
+        schemaVersion: 2,
+        harnessName: "localharness_external",
+        harnessSha256,
+      }) + "\n", "utf8");
+      expect(hasAgyRuntimePrerequisites({
+        env: { ANTIGRAVITY_HARNESS_PATH: harness },
+        exists: existsSync,
+        isExecutable: () => true,
+      })).toBe(true);
+      expect(hasAgyRuntimePrerequisites({
+        env: {},
+        exists: () => true,
+        isExecutable: () => true,
+        isValid: () => false,
+      })).toBe(false);
+      expect(resolveAgyHarnessPath({ ANTIGRAVITY_HARNESS_PATH: harness })).toBe(harness);
+      expect(agyAcpPolicy.buildChildEnv?.(request(), { ANTIGRAVITY_HARNESS_PATH: harness }))
+        .toEqual({ ANTIGRAVITY_HARNESS_PATH: harness });
+      expect(() => agyAcpPolicy.validateRuntime?.(
+        resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" }),
+        { ANTIGRAVITY_HARNESS_PATH: join(root, "missing") },
+      )).toThrow(/localharness_external/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("expresses model and effort as semantic ACP intents without provider-id translation", () => {

@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import { resolveAgyAcpArgs, resolveAgyAcpCommand } from "./agyAcpConfig.js";
-import { hasAgyAcpCachedAuth } from "./agyAvailability.js";
+import { assertAgyRuntimePrerequisites, hasAgyAcpCachedAuth, resolveAgyHarnessPath } from "./agyAvailability.js";
 import type { ProviderInvocationRequest } from "./types.js";
 
 function splitPreference(raw: string | undefined): string[] {
@@ -24,6 +24,7 @@ const AGY_QUALIFICATION_ENV_KEYS = [
   "AGY_ACP_COMMAND",
   "AGY_ACP_ARGS",
   "GEMINI_HOME",
+  "ANTIGRAVITY_HARNESS_PATH",
   "ANTIGRAVITY_MODEL_PREFERENCE",
   "ANTIGRAVITY_EFFORT",
   "BRIDGE_CURRENT_RELEASE_DIR",
@@ -42,6 +43,10 @@ export const agyAcpPolicy: AcpProviderPolicy = {
   },
   resolveExecutable: resolveAgyAcpCommand,
   resolveArgs: (env, entry) => resolveAgyAcpArgs(env, entry),
+  validateRuntime: (_runtime, env) => assertAgyRuntimePrerequisites(env),
+  buildChildEnv: (_request, env) => ({
+    ANTIGRAVITY_HARNESS_PATH: resolveAgyHarnessPath(env),
+  }),
   qualificationEnvKeys: AGY_QUALIFICATION_ENV_KEYS,
   // `authenticate({ methodId: "oauth-personal" })` launches an interactive
   // Google OAuth browser flow when no cached antigravity-acp credential

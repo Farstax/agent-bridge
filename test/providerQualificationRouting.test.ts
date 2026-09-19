@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { getAvailableCliKinds } from "../src/interactiveCliAuth.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
@@ -121,6 +121,7 @@ describe("provider qualification routing", () => {
 
   it("excludes only providers with hard qualification failures from interactive selection", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/qualification-test-home",
       exists: () => true,
       commandExists: () => true,
@@ -132,8 +133,23 @@ describe("provider qualification routing", () => {
     expect([...available]).toEqual(["claude", "grok", "cursor"]);
   });
 
+  it("excludes Agy from interactive selection when its local harness is unavailable", () => {
+    const available = getAvailableCliKinds({
+      agyRuntimeReady: () => false,
+      homeDir: "/qualification-test-home",
+      exists: () => true,
+      commandExists: () => true,
+      failedProviders: new Set(["codex", "grok", "cursor"]),
+      readCursorStatus: () => ({ isAuthenticated: true }),
+      readCursorVersion: () => "2026.09.08-6caf4ff",
+    });
+
+    expect([...available]).toEqual(["claude"]);
+  });
+
   it("excludes grok from interactive selection when it has a hard qualification failure", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/qualification-test-home",
       exists: () => true,
       commandExists: () => true,
@@ -147,6 +163,7 @@ describe("provider qualification routing", () => {
 
   it("excludes cursor from interactive selection when it has a hard qualification failure", () => {
     const available = getAvailableCliKinds({
+      agyRuntimeReady: () => true,
       homeDir: "/qualification-test-home",
       exists: () => true,
       commandExists: () => true,
@@ -155,6 +172,17 @@ describe("provider qualification routing", () => {
     });
 
     expect([...available]).toEqual(["claude"]);
+  });
+
+  it("excludes Agy from the default fallback chain when its managed harness is unavailable", () => {
+    vi.stubEnv("ANTIGRAVITY_HARNESS_PATH", "/definitely/missing/agy_localharness_external");
+    try {
+      const db = openDb(":memory:");
+      const chain = new ProviderFallbackChain(["antigravity"], db);
+      expect(chain.getChain()).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("skips unavailable providers when advancing the fallback chain", () => {

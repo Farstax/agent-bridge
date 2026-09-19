@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -31,6 +32,7 @@ describe("full CLI update qualification", () => {
     const agy = join(root, "agy");
     const grok = join(root, "grok");
     const cursor = join(root, "cursor-agent");
+    const agyHarness = join(root, "localharness_external");
 
     try {
       writeFileSync(hostInvocationLog, hostLogSentinel);
@@ -57,6 +59,13 @@ printf '%s\\n' "$0 $*" >> "${qualificationLog}"
 if [ "\${1:-}" = --version ]; then echo 'agy_acp_server.par 1.1.1'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
+      script(agyHarness, "exit 0\n");
+      const agyHarnessSha256 = createHash("sha256").update(readFileSync(agyHarness)).digest("hex");
+      writeFileSync(join(root, "manifest.json"), JSON.stringify({
+        schemaVersion: 2,
+        harnessName: "localharness_external",
+        harnessSha256: agyHarnessSha256,
+      }) + "\n", "utf8");
       script(grok, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
 if [ "\${1:-}" = --version ]; then echo 'grok 1.0.30'; exit 0; fi
@@ -112,6 +121,7 @@ exit 97
           FAKE_ACP_STORE: join(root, "codex-acp-sessions.json"),
           FAKE_ACP_RESUME: "1",
           AGY_ACP_COMMAND: agy,
+          ANTIGRAVITY_HARNESS_PATH: agyHarness,
           GROK_ACP_COMMAND: grok,
           GROK_ACP_ARGS: "",
           CURSOR_ACP_COMMAND: cursor,
