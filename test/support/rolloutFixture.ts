@@ -223,10 +223,11 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
     ;;
   disable)
     if [ "\${1:-}" = agent-bridge-health.service ]; then
-      [ "\${FAKE_FAIL_HEALTH_DISABLE:-}" = 1 ] && exit 1
+      if [ "\${FAKE_FAIL_HEALTH_DISABLE:-}" = 1 ]; then exit 1; fi
       rm -f "${fixture.root}/health-service-enabled"
     fi
-    [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ] && rm -f "${fixture.root}/cleanup-timer-enabled"
+    if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then rm -f "${fixture.root}/cleanup-timer-enabled"; fi
+    exit 0
     ;;
   stop)
     if [ "\${1:-}" = agent-bridge-tmp-cleanup.timer ]; then rm -f "${fixture.root}/cleanup-timer-active"; exit 0; fi
