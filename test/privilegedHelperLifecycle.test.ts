@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ const TREE = "5".repeat(40);
 
 const AUTO_REFRESH_HELPERS = [
   { relative: "scripts/rollout-agent-bridge.sh", pinKey: "rollout_helper_sha256", installed: "usr/local/sbin/rollout-agent-bridge" },
+  { relative: "scripts/rollout-sentinel-clear.sh", pinKey: "sentinel_clear_sha256", installed: "usr/local/sbin/rollout-sentinel-clear" },
   { relative: "scripts/release-activate.py", pinKey: "activation_helper_sha256", installed: "usr/local/libexec/agent-bridge-release-activate" },
   { relative: "scripts/rollout-restore.py", pinKey: "rollout_restore_sha256", installed: "usr/local/libexec/agent-bridge-rollout-restore" },
   { relative: "scripts/rollout-authorization.py", pinKey: "authorization_validator_sha256", installed: "usr/local/libexec/agent-bridge-rollout-authorization.py" },
@@ -225,6 +226,24 @@ describe("privileged helper lifecycle", () => {
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/release helper source is missing/i);
     expectOldCohort(originals, configFile, originalConfig);
+  }, 20_000);
+
+  it("converges a newly introduced privileged helper when the installed destination is absent", () => {
+    const release = makeRelease();
+    const installedRoot = mkdtempSync(join(tmpdir(), "agent-bridge-helper-lifecycle-installed-"));
+    installOldCohort(installedRoot);
+    const sentinel = AUTO_REFRESH_HELPERS.find((helper) => helper.pinKey === "sentinel_clear_sha256")!;
+    rmSync(join(installedRoot, sentinel.installed));
+    const configFile = join(installedRoot, "rollout.conf");
+    writeFileSync(configFile, "runtime_user=content-crawler\nenvironment=production-content-crawler\nrelease_stage_sha256=bootstrap-trust-anchor\n");
+
+    const result = runDeploy({ release, installedRoot, configFile });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const installed = readFileSync(join(installedRoot, sentinel.installed));
+    const released = readFileSync(join(release.root, sentinel.relative));
+    expect(installed.equals(released)).toBe(true);
+    expect(readFileSync(configFile, "utf8")).toContain(`sentinel_clear_sha256=${sha256(released)}`);
   }, 20_000);
 
   it("treats release-stage as bootstrap trust instead of executing or self-refreshing the release-owned copy", () => {
