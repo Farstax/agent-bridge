@@ -1,11 +1,68 @@
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface AgyAvailabilityOptions {
   homeDir?: string;
   exists?: (path: string) => boolean;
+  isExecutable?: (path: string) => boolean;
+  isValid?: (path: string) => boolean;
   env?: Record<string, string | undefined>;
+}
+
+export const DEFAULT_AGY_HARNESS_PATH = "/usr/local/bin/agy_localharness_external";
+
+export function resolveAgyHarnessPath(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return env.ANTIGRAVITY_HARNESS_PATH?.trim() || DEFAULT_AGY_HARNESS_PATH;
+}
+
+function executable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function managedHarnessValid(path: string): boolean {
+  try {
+    const target = realpathSync(path);
+    const manifest = JSON.parse(readFileSync(join(dirname(target), "manifest.json"), "utf8")) as {
+      schemaVersion?: number;
+      harnessName?: string;
+      harnessSha256?: string;
+    };
+    if (manifest.schemaVersion !== 2 || manifest.harnessName !== "localharness_external") return false;
+    if (!manifest.harnessSha256?.match(/^[0-9a-f]{64}$/)) return false;
+    const digest = createHash("sha256").update(readFileSync(target)).digest("hex");
+    return digest === manifest.harnessSha256;
+  } catch {
+    return false;
+  }
+}
+
+export function hasAgyRuntimePrerequisites(options: AgyAvailabilityOptions = {}): boolean {
+  const env = options.env ?? process.env;
+  const path = resolveAgyHarnessPath(env);
+  const exists = options.exists ?? existsSync;
+  const isExecutable = options.isExecutable ?? executable;
+  const isValid = options.isValid ?? managedHarnessValid;
+  return exists(path) && isExecutable(path) && isValid(path);
+}
+
+export function assertAgyRuntimePrerequisites(
+  env: Record<string, string | undefined> = process.env,
+): void {
+  const path = resolveAgyHarnessPath(env);
+  if (!hasAgyRuntimePrerequisites({ env })) {
+    throw new Error(
+      `Antigravity managed runtime is incomplete: required executable localharness_external is unavailable at ${path}`,
+    );
+  }
 }
 
 /**
