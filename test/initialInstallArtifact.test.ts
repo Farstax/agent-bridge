@@ -18,6 +18,7 @@ describe("initial installation release contract", () => {
       "scripts/rollout-db-impl.ts",
       "scripts/agent-bridge-deploy.py",
       "scripts/rollout-agent-bridge.sh",
+      "scripts/rollout-sentinel-clear.sh",
       "scripts/release-activate.py",
       "scripts/rollout-authorization.py",
       "scripts/rollout-acceptance.py",
