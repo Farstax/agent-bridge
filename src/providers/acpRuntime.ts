@@ -620,11 +620,14 @@ export async function runResolvedAcpProviderTurn(
         { attempt: currentAttempt, successorStarted: false, retryEligible: false },
       ));
     }
+    const classifiedError = redacted instanceof Error || typeof redacted === "string"
+      ? redacted
+      : new Error(String(redacted));
     if (
       providerId === "claude"
       && (
-        classifyProviderError("claude", redacted).kind === "auth_required"
-        || isClaudeOAuthRefreshContention(redacted)
+        classifyProviderError("claude", classifiedError).kind === "auth_required"
+        || isClaudeOAuthRefreshContention(classifiedError)
       )
     ) {
       markProviderRuntimeAuthDegraded("claude");
