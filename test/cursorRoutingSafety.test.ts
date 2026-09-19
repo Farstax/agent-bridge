@@ -84,7 +84,11 @@ describe("Cursor routing safety", () => {
     process.env.CURSOR_API_KEY = "not-supported";
     try {
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "cursor", "antigravity"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "cursor", "antigravity"],
+        db,
+        (cli) => cli === "cursor" ? isCursorRouteable() : true,
+      );
       expect(chain.getChain()).toEqual(["codex", "antigravity"]);
       expect(chain.advance("chat:1")).toBe("antigravity");
     } finally {
@@ -100,7 +104,11 @@ describe("Cursor routing safety", () => {
   it("allows authenticated Cursor through an explicit chain without qualification evidence", () => {
     withCursorEnvironment(() => {
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "cursor", "antigravity"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "cursor", "antigravity"],
+        db,
+        (cli) => cli === "cursor" ? isCursorRouteable() : true,
+      );
       expect(isCursorRouteable({ readVersion: () => CURSOR_ACP_VERSION })).toBe(true);
       expect(chain.getActiveCli("chat:1")).toBe("codex");
       expect(chain.advance("chat:1")).toBe("cursor");
@@ -128,7 +136,11 @@ describe("Cursor routing safety", () => {
     withCursorEnvironment((_root, evidencePath) => {
       writeFailedCursorQualification(evidencePath);
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["codex", "cursor", "antigravity"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "cursor", "antigravity"],
+        db,
+        (cli) => cli === "cursor" ? isCursorRouteable() : true,
+      );
       expect(chain.advance("chat:1")).toBe("antigravity");
       expect(chain.getChain()).toEqual(["codex", "antigravity"]);
     });
