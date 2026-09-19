@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { writeFileSync, rmSync } from "node:fs";
+import { chmodSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { SensorRegistry } from "../src/sensors/registry.js";
-import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
+import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, handleSensorCallback, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
+import { normalizeSensorReport } from "../src/sensors/report.js";
+import { readAptUpdateStatus } from "../src/sensors/server.js";
 
 const paths: string[] = [];
 const temporary = (name: string) => {
@@ -141,6 +143,95 @@ describe("sensors", () => {
     expect(keyboard.inline_keyboard.flat().map((button) => button.callback_data)).toEqual(["sensor:server", "sensor:all"]);
     expect(parseSensorCallback("sensor:server")).toBe("server");
     expect(parseSensorCallback("cli:codex")).toBeNull();
+  });
+
+  it("normalizes every report to a bounded credential-redacted contract", () => {
+    const report = normalizeSensorReport({
+      sensorId: "example",
+      label: "Example health",
+      status: "red",
+      checks: Array.from({ length: 40 }, (_, index) => ({
+        name: `check-${index}`,
+        status: "red" as const,
+        message: index === 0
+          ? "token=super-secret-value Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
+          : "x".repeat(800),
+        value: index === 0 ? "password=hunter2" : "y".repeat(500),
+      })),
+      summary: "api_key=abcdef1234567890 " + "z".repeat(800),
+      timestamp: "2026-09-18T10:00:00Z",
+    });
+
+    expect(report.checks).toHaveLength(32);
+    expect(report.checks.every((check) => check.name.length <= 120 && check.message.length <= 500)).toBe(true);
+    expect(report.checks.every((check) => typeof check.value !== "string" || check.value.length <= 200)).toBe(true);
+    expect(report.summary.length).toBeLessThanOrEqual(500);
+    expect(JSON.stringify(report)).not.toContain("super-secret-value");
+    expect(JSON.stringify(report)).not.toContain("hunter2");
+    expect(JSON.stringify(report)).not.toContain("abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("captures apt-check counts even when apt-check writes to stderr", () => {
+    const script = temporary("apt-check");
+    writeFileSync(script, "#!/bin/sh\nprintf '12;3' >&2\n");
+    chmodSync(script, 0o755);
+    expect(readAptUpdateStatus(script)).toEqual({ total: 12, security: 3 });
+  });
+
+  it("acknowledges a Sensor callback before slow execution and returns to the same topic exactly once", async () => {
+    const events: string[] = [];
+    let runs = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sent: Array<{ text: string; threadId?: number }> = [];
+    const handled = await handleSensorCallback({
+      data: "sensor:server",
+      chatId: -100123,
+      threadId: 42,
+      runner: {
+        list: () => [{ id: "server", label: "Server health" }],
+        run: async () => {
+          runs += 1;
+          events.push("run");
+          await gate;
+          return {
+            sensorId: "server", label: "Server health", status: "green",
+            checks: [], summary: "ok", timestamp: new Date().toISOString(),
+          };
+        },
+        runAll: async () => [],
+      },
+      acknowledge: async () => { events.push("ack"); },
+      send: async (text, threadId) => { sent.push({ text, threadId }); },
+    });
+    expect(handled).toBe(true);
+    expect(events).toEqual(["ack"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events).toEqual(["ack", "run"]);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runs).toBe(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].threadId).toBe(42);
+  });
+
+  it("rejects forged Sensor callbacks without running a Sensor", async () => {
+    let runs = 0;
+    const acknowledgements: string[] = [];
+    expect(await handleSensorCallback({
+      data: "sensor:not-configured",
+      chatId: 1,
+      runner: {
+        list: () => [{ id: "server", label: "Server health" }],
+        run: async () => { runs += 1; throw new Error("must not run"); },
+        runAll: async () => { runs += 1; return []; },
+      },
+      acknowledge: async (text) => { acknowledgements.push(text); },
+      send: async () => {},
+    })).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runs).toBe(0);
+    expect(acknowledgements).toEqual(["Unknown sensor"]);
   });
 
   it("bounds combined Telegram Sensor output", () => {
