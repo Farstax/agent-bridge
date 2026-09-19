@@ -13,7 +13,10 @@ import {
 } from "./providers/apiKeyAuth.js";
 import { hasAgyRuntimePrerequisites, resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
-import { isProviderRuntimeAuthDegraded } from "./providers/runtimeAvailability.js";
+import {
+  isProviderRuntimeAuthDegraded,
+  recoverClaudeRuntimeAuthDegradation,
+} from "./providers/runtimeAvailability.js";
 import {
   isCursorRouteable,
   resolveCursorAuthPaths,
@@ -107,6 +110,12 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const exists = options.exists ?? existsSync;
   const commandExists = options.commandExists ?? commandExistsOnPath;
   const env = options.env ?? process.env;
+  if (
+    options.failedProviders === undefined
+    && isProviderRuntimeAuthDegraded("claude", home)
+  ) {
+    recoverClaudeRuntimeAuthDegradation({ homeDir: home, env });
+  }
   const failedProviders = new Set(options.failedProviders ?? getQualificationFailedProviders());
   if (
     options.failedProviders === undefined
