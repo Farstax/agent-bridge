@@ -31,6 +31,7 @@ DEPLOY_LOCK = Path("/run/lock/agent-bridge-deploy.lock")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 RUNUSER = "/usr/sbin/runuser"
 SUDO = "/usr/bin/sudo"
+JOURNALCTL = "/usr/bin/journalctl"
 SUDO_CHECK_TIMEOUT_SECONDS = 5
 
 # These helpers are safe to converge only after the release archive has been
@@ -518,6 +519,19 @@ def launch_detached(release: Path, approval: Path | None, owner_request: Path | 
     unit = f"agent-bridge-deploy-{os.getpid()}.service"
     print(f"deployment continuing in transient unit {unit}", flush=True)
     result = subprocess.run(detached_command(release, approval, owner_request, unit), check=False)
+    if result.returncode != 0:
+        try:
+            diagnostic = subprocess.run(
+                [JOURNALCTL, "--unit", unit, "--no-pager", "--lines", "80"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            output = (diagnostic.stdout or diagnostic.stderr or "").strip()
+            if output:
+                print(f"deployment failed in {unit}; underlying rollout output:\n{output}", file=sys.stderr)
+        except OSError as error:
+            print(f"deployment failed in {unit}; unable to read rollout journal: {error}", file=sys.stderr)
     return result.returncode
 
 
