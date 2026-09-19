@@ -69,6 +69,7 @@ if [[ -n "$test_root" ]]; then
   activation_cmd="$test_root/bin/release-activate"
   authorization_validator="$test_root/bin/rollout-authorization-trusted"
   acceptance_validator="$test_root/bin/rollout-acceptance-trusted"
+  sentinel_clear_cmd="$test_root/bin/rollout-sentinel-clear"
   defaults_dir="$test_root/etc/default"
   systemd_dir="$test_root/etc/systemd/system"
   cgroup_root="$test_root/sys/fs/cgroup"
@@ -88,6 +89,7 @@ else
   activation_cmd="/usr/local/libexec/agent-bridge-release-activate"
   authorization_validator="/usr/local/libexec/agent-bridge-rollout-authorization.py"
   acceptance_validator="/usr/local/libexec/agent-bridge-rollout-acceptance.py"
+  sentinel_clear_cmd="/usr/local/sbin/rollout-sentinel-clear"
   defaults_dir="/etc/default"
   systemd_dir="/etc/systemd/system"
   cgroup_root="/sys/fs/cgroup"
@@ -96,7 +98,7 @@ else
   test_mode=0
 fi
 
-for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/chown /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
+for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" "$sentinel_clear_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/chown /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
   [[ -x "$command_path" ]] || die "required command is unavailable: $command_path"
 done
 [[ -f "$config_file" && ! -L "$config_file" ]] || die "missing fixed rollout config: $config_file"
@@ -110,6 +112,7 @@ project_dir=""
 release_root=""
 current_pointer=""
 rollout_helper_sha256=""
+sentinel_clear_sha256=""
 activation_helper_sha256=""
 authorization_validator_sha256=""
 acceptance_validator_sha256=""
@@ -131,6 +134,7 @@ while IFS='=' read -r key value || [[ -n "$key$value" ]]; do
     release_root) [[ -z "$release_root" ]] || die "duplicate release_root"; release_root="$value" ;;
     current_pointer) [[ -z "$current_pointer" ]] || die "duplicate current_pointer"; current_pointer="$value" ;;
     rollout_helper_sha256) [[ -z "$rollout_helper_sha256" ]] || die "duplicate rollout_helper_sha256"; rollout_helper_sha256="$value" ;;
+    sentinel_clear_sha256) [[ -z "$sentinel_clear_sha256" ]] || die "duplicate sentinel_clear_sha256"; sentinel_clear_sha256="$value" ;;
     activation_helper_sha256) [[ -z "$activation_helper_sha256" ]] || die "duplicate activation_helper_sha256"; activation_helper_sha256="$value" ;;
     authorization_validator_sha256) [[ -z "$authorization_validator_sha256" ]] || die "duplicate authorization_validator_sha256"; authorization_validator_sha256="$value" ;;
     acceptance_validator_sha256) [[ -z "$acceptance_validator_sha256" ]] || die "duplicate acceptance_validator_sha256"; acceptance_validator_sha256="$value" ;;
@@ -351,10 +355,15 @@ converge_deployer_autonomy_config
 rollout_config_sha256="$(/usr/bin/sha256sum "$config_file" | /usr/bin/cut -d' ' -f1)"
 installed_helper_sha256="$(/usr/bin/sha256sum "$0" | /usr/bin/cut -d' ' -f1)"
 if (( test_mode == 1 )); then
+  [[ -n "$sentinel_clear_sha256" ]] || sentinel_clear_sha256="$(/usr/bin/sha256sum "$sentinel_clear_cmd" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$authorization_validator_sha256" ]] || authorization_validator_sha256="$(/usr/bin/sha256sum "$authorization_validator" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$acceptance_validator_sha256" ]] || acceptance_validator_sha256="$(/usr/bin/sha256sum "$acceptance_validator" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$release_stage_sha256" ]] || release_stage_sha256="$(/usr/bin/sha256sum "$release_stage_cmd" | /usr/bin/cut -d' ' -f1)"
   [[ -n "$rollout_restore_sha256" ]] || rollout_restore_sha256="$(/usr/bin/sha256sum "$restore_cmd" | /usr/bin/cut -d' ' -f1)"
+fi
+if (( release_mode == 1 )); then
+  [[ "$sentinel_clear_sha256" =~ ^[0-9a-f]{64}$ ]] || die "sentinel-clear SHA-256 pin is missing or malformed"
+  [[ "$(/usr/bin/sha256sum "$sentinel_clear_cmd" | /usr/bin/cut -d' ' -f1)" == "$sentinel_clear_sha256" ]] || die "sentinel-clear SHA-256 mismatch"
 fi
 if [[ "$deployer_mode" == 1 ]]; then
   [[ -n "$deployer_artifact_sha256" && "$deployer_artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || die "deployer artifact SHA-256 is missing or malformed"
@@ -1521,7 +1530,7 @@ if [[ -e "$sentinel_path" || -L "$sentinel_path" ]]; then
   [[ "$sentinel_check_owner" == "$secure_owner_uid" && "$sentinel_check_mode" == "600" ]] || die "existing rollout sentinel has unsafe ownership or mode: $sentinel_path — manual review required"
   sentinel_prior_commit="$(/usr/bin/sed -n 's/^expected_commit=//p' "$sentinel_path")"
   sentinel_prior_artifact_dir="$(/usr/bin/sed -n 's/^artifact_dir=//p' "$sentinel_path")"
-  die "an interrupted rollout sentinel already exists: $sentinel_path (expected_commit=${sentinel_prior_commit:-unknown} artifact_dir=${sentinel_prior_artifact_dir:-unknown}) — review that evidence; clear with: sudo /usr/local/sbin/rollout-sentinel-clear --expected-commit ${sentinel_prior_commit:-unknown} --artifact-dir ${sentinel_prior_artifact_dir:-unknown} ; then re-run the same agent-bridge-deploy command"
+  die "an interrupted rollout sentinel already exists: $sentinel_path (expected_commit=${sentinel_prior_commit:-unknown} artifact_dir=${sentinel_prior_artifact_dir:-unknown}) — review that evidence; clear with: sudo $sentinel_clear_cmd --expected-commit ${sentinel_prior_commit:-unknown} --artifact-dir ${sentinel_prior_artifact_dir:-unknown} ; then re-run the same agent-bridge-deploy command"
 fi
 sentinel_tmp="$(/usr/bin/mktemp --tmpdir="$log_dir" .rollout-in-progress.XXXXXX)"
 {
