@@ -212,7 +212,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
     const config = readFileSync(fixture.configFile, "utf8");
     expect(config).not.toContain("unit=agent-bridge-health.service");
-    expect(config).not.toContain(`database=${staleHealthDb}`);
+    expect(config).not.toContain(`database=${fixture.dbPaths[2]}`);
     const interactive = readFileSync(join(fixture.envDir, "agent-bridge-interactive"), "utf8");
     expect(interactive).toContain("BRIDGE_RUN_INGRESS_SOCKET=/run/agent-bridge/run-ingress.sock");
     expect(interactive).toContain("BRIDGE_RUN_INGRESS_TOKEN=fixture-secret");
@@ -251,7 +251,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(actions(fixture)).not.toMatch(/systemctl:reset-failed .*agent-bridge-health\.service/);
     const config = readFileSync(fixture.configFile, "utf8");
     expect(config).not.toContain("unit=agent-bridge-health.service");
-    expect(config).not.toContain(`database=${fixture.dbPaths[2]}`);
+    expect(config).not.toContain(`database=${staleHealthDb}`);
   }, 15_000);
 
   it("runs a true second release rollout without re-entering health retirement", () => {
