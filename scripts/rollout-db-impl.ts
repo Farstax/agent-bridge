@@ -465,18 +465,21 @@ function pruneAcpTelemetry(path: string, resolvingUnits: string[] = [], role: Da
   let freePagesAfterDelete = freePagesBefore;
   let compacted = false;
   try {
-    const remove = raw.transaction(() => raw.prepare(`
-      DELETE FROM bridge_events
-      WHERE type = 'acp.event'
-        AND timestamp < ?
-        AND EXISTS (
-          SELECT 1
-          FROM bridge_runs
-          WHERE bridge_runs.run_id = bridge_events.run_id
-            AND bridge_runs.status IN ('done', 'failed', 'cancelled')
-        )
-    `).run(cutoff));
-    deletedRows = Number(remove().changes);
+    const tables = new Set((raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name));
+    if (tables.has("bridge_events") && tables.has("bridge_runs")) {
+      const remove = raw.transaction(() => raw.prepare(`
+        DELETE FROM bridge_events
+        WHERE type = 'acp.event'
+          AND timestamp < ?
+          AND EXISTS (
+            SELECT 1
+            FROM bridge_runs
+            WHERE bridge_runs.run_id = bridge_events.run_id
+              AND bridge_runs.status IN ('done', 'failed', 'cancelled')
+          )
+      `).run(cutoff));
+      deletedRows = Number(remove().changes);
+    }
     pageCountAfterDelete = pragmaNumber(raw, "page_count");
     freePagesAfterDelete = pragmaNumber(raw, "freelist_count");
     const reclaimableBytesAfterDelete = freePagesAfterDelete * pageSize;
