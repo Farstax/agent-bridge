@@ -30,8 +30,8 @@ import {
   CliTimeoutError,
 } from "./cli.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
-import { classifyAnyProviderError } from "./providers/errorClassification.js";
-import { isAcpBackedBot, supportsToolFreeMode } from "./providers/registry.js";
+import { classifyAnyProviderError, classifyProviderError } from "./providers/errorClassification.js";
+import { isAcpBackedBot, providerIdForBotName, supportsToolFreeMode } from "./providers/registry.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
@@ -713,7 +713,10 @@ export class BridgeEngine {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
       }
       const providerError = error instanceof Error ? error : new Error(String(error));
-      const classification = classifyAnyProviderError(providerError);
+      const executionProvider = providerIdForBotName(this._executionKind());
+      const classification = executionProvider
+        ? classifyProviderError(executionProvider, providerError)
+        : classifyAnyProviderError(providerError);
       const capacityExhausted = isCapacityExhaustedError(providerError);
       const authRequired = classification.kind === "auth_required";
       if (authRequired && this.hooks.onAuthRequired) {
