@@ -389,6 +389,11 @@ converge_sentinel_clear_helper() {
   expected_hash="$(/usr/bin/sha256sum "$source" | /usr/bin/cut -d' ' -f1)"
   destination_dir="$(/usr/bin/dirname -- "$destination")"
   [[ -d "$destination_dir" && ! -L "$destination_dir" && "$(/usr/bin/realpath -e "$destination_dir")" == "$destination_dir" ]] || die "sentinel-clear helper destination directory is unsafe: $destination_dir"
+  if (( test_mode == 0 )); then
+    [[ "$(/usr/bin/stat -c %u "$destination_dir")" == "0" ]] || die "sentinel-clear helper destination directory must be root-owned"
+    destination_dir_mode="$(/usr/bin/stat -c %a "$destination_dir")"
+    (( (8#$destination_dir_mode & 022) == 0 )) || die "sentinel-clear helper destination directory must not be group/world writable"
+  fi
   if [[ -e "$destination" || -L "$destination" ]]; then
     [[ -f "$destination" && ! -L "$destination" ]] || die "installed sentinel-clear helper is unsafe: $destination"
     if (( test_mode == 0 )); then
@@ -402,10 +407,18 @@ converge_sentinel_clear_helper() {
     fi
   fi
   temporary="$(/usr/bin/mktemp --tmpdir="$destination_dir" .rollout-sentinel-clear.XXXXXX)"
-  /usr/bin/cp --no-dereference -- "$source" "$temporary"
-  /usr/bin/chmod 0750 "$temporary"
-  if (( test_mode == 0 )); then /usr/bin/chown 0:0 "$temporary"; fi
-  [[ "$(/usr/bin/sha256sum "$temporary" | /usr/bin/cut -d' ' -f1)" == "$expected_hash" ]] || die "staged sentinel-clear helper hash mismatch"
+  if ! /usr/bin/cp --no-dereference -- "$source" "$temporary" || ! /usr/bin/chmod 0750 "$temporary"; then
+    /usr/bin/rm -f -- "$temporary"
+    die "failed to stage sentinel-clear helper"
+  fi
+  if (( test_mode == 0 )) && ! /usr/bin/chown 0:0 "$temporary"; then
+    /usr/bin/rm -f -- "$temporary"
+    die "failed to set sentinel-clear helper ownership"
+  fi
+  if [[ "$(/usr/bin/sha256sum "$temporary" | /usr/bin/cut -d' ' -f1)" != "$expected_hash" ]]; then
+    /usr/bin/rm -f -- "$temporary"
+    die "staged sentinel-clear helper hash mismatch"
+  fi
   /usr/bin/mv -f -- "$temporary" "$destination"
   [[ -f "$destination" && ! -L "$destination" && -x "$destination" ]] || die "sentinel-clear helper convergence failed"
   [[ "$(/usr/bin/sha256sum "$destination" | /usr/bin/cut -d' ' -f1)" == "$expected_hash" ]] || die "installed sentinel-clear helper hash mismatch"
