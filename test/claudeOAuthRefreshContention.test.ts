@@ -12,7 +12,6 @@ import {
   clearProviderRuntimeAuthDegraded,
   isProviderRuntimeAuthDegraded,
   markProviderRuntimeAuthDegraded,
-  recoverClaudeRuntimeAuthDegradation,
 } from "../src/providers/runtimeAvailability.js";
 
 const contention = () => new Error(
@@ -114,109 +113,27 @@ describe("Claude OAuth refresh contention", () => {
     }
   });
 
-  it("can recover unchanged credentials after transient refresh contention clears", () => {
-    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-stale-lock-cleared-"));
+  it("restores Claude availability only after explicit successful execution evidence clears degradation", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-cleared-"));
+    const credentials = join(home, ".claude", ".credentials.json");
     try {
       mkdirSync(join(home, ".claude"), { recursive: true });
-      writeFileSync(join(home, ".claude", ".credentials.json"), "{}\n");
+      writeFileSync(credentials, "{}\n");
       markProviderRuntimeAuthDegraded("claude", home);
 
-      let calls = 0;
-      const recovered = recoverClaudeRuntimeAuthDegradation({
-        homeDir: home,
-        env: { HOME: home },
-        execFile: ((_command, _args, _options) => {
-          calls += 1;
-          return Buffer.from("");
-        }) as typeof import("node:child_process").execFileSync,
-      });
-
-      expect(recovered).toBe(true);
-      expect(calls).toBe(1);
-      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("throttles repeated failed native auth-status recovery probes", () => {
-    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-throttle-"));
-    try {
-      mkdirSync(join(home, ".claude"), { recursive: true });
-      writeFileSync(join(home, ".claude", ".credentials.json"), "{}\n");
-      markProviderRuntimeAuthDegraded("claude", home);
-
-      let calls = 0;
-      const execFile = ((_command, _args, _options) => {
-        calls += 1;
-        throw new Error("not authenticated");
-      }) as typeof import("node:child_process").execFileSync;
-
-      expect(recoverClaudeRuntimeAuthDegradation({ homeDir: home, env: { HOME: home }, execFile })).toBe(false);
-      expect(recoverClaudeRuntimeAuthDegradation({ homeDir: home, env: { HOME: home }, execFile })).toBe(false);
-      expect(calls).toBe(1);
       expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(true);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
+      clearProviderRuntimeAuthDegraded("claude", home);
+      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(false);
 
-  it("restores Claude availability after bounded native auth status proves re-authentication", () => {
-    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-recovery-"));
-    const bin = join(home, "bin");
-    const claude = join(bin, "claude");
-    const credentials = join(home, ".claude", ".credentials.json");
-    try {
-      mkdirSync(bin, { recursive: true });
-      mkdirSync(join(home, ".claude"), { recursive: true });
-      writeFileSync(claude, "#!/bin/sh\nexit 0\n");
-      chmodSync(claude, 0o755);
-      writeFileSync(credentials, "{}\n");
-
-      markProviderRuntimeAuthDegraded("claude", home);
-      writeFileSync(credentials, "{\"reauthenticated\":true}\n");
       const available = getAvailableCliKinds({
         homeDir: home,
-        env: { HOME: home, PATH: bin },
         commandExists: () => true,
         agyRuntimeReady: () => false,
         exists: (path) => path === credentials,
+        failedProviders: new Set(),
         readCursorStatus: () => ({ isAuthenticated: false }),
       });
-
       expect(available.has("claude")).toBe(true);
-      expect(readFileSync(join(home, ".agent-bridge", "locks", "claude-credentials.lock"), "utf8")).toBe("");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Claude degraded when changed credentials fail native auth status", () => {
-    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-rejected-"));
-    const bin = join(home, "bin");
-    const claude = join(bin, "claude");
-    const credentials = join(home, ".claude", ".credentials.json");
-    try {
-      mkdirSync(bin, { recursive: true });
-      mkdirSync(join(home, ".claude"), { recursive: true });
-      writeFileSync(claude, "#!/bin/sh\nexit 1\n");
-      chmodSync(claude, 0o755);
-      writeFileSync(credentials, "{}\n");
-
-      markProviderRuntimeAuthDegraded("claude", home);
-      writeFileSync(credentials, "{\"candidate\":true}\n");
-      const available = getAvailableCliKinds({
-        homeDir: home,
-        env: { HOME: home, PATH: bin },
-        commandExists: () => true,
-        agyRuntimeReady: () => false,
-        exists: (path) => path === credentials,
-        readCursorStatus: () => ({ isAuthenticated: false }),
-      });
-
-      expect(available.has("claude")).toBe(false);
-      expect(readFileSync(join(home, ".agent-bridge", "locks", "claude-credentials.lock"), "utf8"))
-        .toContain("runtime-auth-degraded");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
