@@ -7,10 +7,10 @@ import type { Sensor, SensorReport, SensorCheck } from "./types.js";
 export function readAptUpdateStatus(aptCheckPath = "/usr/lib/update-notifier/apt-check"): { total: number; security: number } | null {
   if (!existsSync(aptCheckPath)) return null;
   const result = spawnSync(aptCheckPath, [], { encoding: "utf8", timeout: 5000 });
-  if (result.error) return null;
+  if (result.error) throw result.error;
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   const match = output.match(/^(\d+);(\d+)/);
-  if (!match) return null;
+  if (!match) throw new Error("apt-check returned an invalid result");
   return { total: Number(match[1]), security: Number(match[2]) };
 }
 
@@ -358,7 +358,8 @@ export class ServerSensor implements Sensor {
           }
         }
       } catch {
-        // ignore
+        updatesStatus = "amber";
+        updatesMsg = "Could not query package update state";
       }
     }
     checks.push({ name: "pending-updates", status: updatesStatus, message: updatesMsg });
