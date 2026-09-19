@@ -31,7 +31,7 @@ export async function discoverAcpProviderConfig(input: AcpProviderConfigDiscover
   const effectiveEnv = { ...process.env, ...(input.env ?? {}) };
   const runtime = resolveProviderRuntime(providerId, effectiveEnv);
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
-  policy.validateRuntime?.(runtime);
+  policy.validateRuntime?.(runtime, effectiveEnv);
   const request: ProviderInvocationRequest = {
     prompt: "", sessionId: input.existingAcpSessionId, command: runtime.executable, model: null,
     executionMode: input.executionMode, outputFormat: null, soulContext: null, attachments: [],
