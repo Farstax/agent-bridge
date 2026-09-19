@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync, statfsSync } from "nod
 import { join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
 import type { Sensor, SensorReport, SensorCheck } from "./types.js";
+import { normalizeSensorReport } from "./report.js";
 
 export function readAptUpdateStatus(aptCheckPath = "/usr/lib/update-notifier/apt-check"): { total: number; security: number } | null {
   if (!existsSync(aptCheckPath)) return null;
@@ -394,13 +395,13 @@ export class ServerSensor implements Sensor {
                 : checks.some(c => c.status === "amber") ? "amber"
                 : "green";
 
-    return {
+    return normalizeSensorReport({
       sensorId: this.id,
       label: this.label,
       status: worst,
       checks,
       summary: worst === "green" ? "Server stats and security policies nominal" : "Server resource or security policy warning",
       timestamp: new Date().toISOString(),
-    };
+    });
   }
 }
