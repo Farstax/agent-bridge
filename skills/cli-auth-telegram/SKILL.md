@@ -16,7 +16,7 @@ Use this skill whenever a user chatting over Telegram asks to connect, sign in, 
    - Agy: `~/.gemini/antigravity-cli/antigravity-oauth-token` (fall back to `~/.gemini/oauth_creds.json` only if the primary file is absent)
    - Grok Build: `~/.grok/auth.json` (also accept `~/.config/grok/auth.json`, which Agent Bridge retains as a compatibility path)
 
-   If the file exists and is non-empty, tell the user it looks already connected and ask whether they want to re-authenticate anyway before proceeding.
+   If the file exists and is non-empty, treat that as credential presence rather than proof of usability. If Claude was explicitly reported as needing re-authentication, continue the re-auth flow instead of treating the file alone as connected. For the other file-backed account flows, tell the user it looks already connected and ask whether they want to re-authenticate anyway before proceeding.
 
    For Grok, a non-empty `XAI_API_KEY` is only a candidate automation credential, not proof that Grok is connected. Agent Bridge's shared API-key auth path verifies it with a bounded native headless request before routing. Never print the value. If the user asked to connect their own Grok account, continue with device authentication instead of substituting the operator key.
 3. Resolve the CLI binary with `command -v <cli>` (`claude`, `codex`, `agy`, or `grok`) rather than assuming a hardcoded install path — it can vary by environment.
@@ -89,4 +89,4 @@ Do not use plain `grok login` in a headless/Telegram context because its default
 
 ## Verification
 
-After the credential file is confirmed present, tell the user the CLI is connected, without repeating any secret material from the exchange.
+After the credential file is confirmed present, verify Claude through Agent Bridge's existing bounded provider qualification owner from `$BRIDGE_PROJECT_DIR`: `npm run qualify:provider -- --provider claude`. Require a passing qualification before declaring Claude connected. This uses a real bounded provider turn, so it also clears any runtime-auth degradation only when Claude actually works again. For the other covered CLIs, retain their provider-specific verification above. Never repeat secret material from the exchange.

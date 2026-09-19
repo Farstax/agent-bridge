@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
 import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
 import type { AcpRetainedEvent, AcpSessionConfigRequest, AcpTurnResult } from "../acp/client.js";
@@ -508,6 +509,7 @@ export async function runResolvedAcpProviderTurn(
     throw new Error(`ACP runtime/policy mismatch: ${providerId} != ${policy.providerId}`);
   }
   const effectiveEnv = { ...process.env, ...(options.contextEnv ?? {}) };
+  const runtimeHome = effectiveEnv.HOME?.trim() || homedir();
   if (runtime.transport !== "acp-stdio") throw new Error(`Provider ${providerId} is not an ACP runtime`);
   policy.validateRuntime?.(runtime, effectiveEnv);
   const providerEnv = policy.buildChildEnv?.(request, effectiveEnv) ?? {};
@@ -630,11 +632,11 @@ export async function runResolvedAcpProviderTurn(
         || isClaudeOAuthRefreshContention(classifiedError)
       )
     ) {
-      markProviderRuntimeAuthDegraded("claude");
+      markProviderRuntimeAuthDegraded("claude", runtimeHome);
     }
     throw redacted;
   }
-  if (providerId === "claude") clearProviderRuntimeAuthDegraded("claude");
+  if (providerId === "claude") clearProviderRuntimeAuthDegraded("claude", runtimeHome);
   const flushed = liveRedactor.flush();
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);
