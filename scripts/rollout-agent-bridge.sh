@@ -12,9 +12,9 @@ readonly -a ALLOWED_UNITS=(
   agent-bridge-claude.service
   agent-bridge-codex.service
   agent-bridge-discord-interactive.service
-  # Legacy Farstax unified-bot unit. Existing hosts may retain this unit name
-  # while Platform adopts its next-start definition into the release-pointer
-  # contract; fresh installs continue to use agent-bridge-interactive.service.
+  # Legacy unified-bot unit. Existing hosted deployments may retain this unit
+  # name while their lifecycle owner adopts the next-start definition into the
+  # release-pointer contract; fresh installs use agent-bridge-interactive.service.
   agent-bridge-bot.service
   # Legacy input only: removed from the target cohort when the release no longer carries it.
   agent-bridge-health.service
