@@ -168,6 +168,37 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     }
   }, 15_000);
 
+  it("rolls out the legacy Farstax bot unit as the interactive database owner", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const legacyUnit = "agent-bridge-bot.service";
+    const legacyDefaults = join(fixture.envDir, "agent-bridge-bot");
+    writeFileSync(legacyDefaults, `DB_PATH=${fixture.dbPaths[3]}\n`, { mode: 0o600 });
+    mkdirSync(join(fixture.cgroupRoot, "agent-bridge-test", legacyUnit), { recursive: true });
+    writeFileSync(join(fixture.cgroupRoot, "agent-bridge-test", legacyUnit, "cgroup.procs"), "");
+    rewriteConfig(fixture, (lines) => [
+      ...lines.filter((line) => !line.startsWith("unit=") && !line.startsWith("database=")),
+      `unit=${legacyUnit}`,
+      `database=${fixture.dbPaths[3]}`,
+    ]);
+    writeFileSync(fixture.stateFile, `${legacyUnit}\n`);
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(actions(fixture)).toContain(`systemctl:stop ${legacyUnit}`);
+    expect(readFileSync(fixture.stateFile, "utf8")).toContain(legacyUnit);
+    const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
+    const postStart = JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8"));
+    expect(postStart.databases).toEqual([
+      expect.objectContaining({
+        path: fixture.dbPaths[3],
+        role: "interactive",
+        resolving_units: [legacyUnit],
+      }),
+    ]);
+  }, 15_000);
+
   it("captures inventory for every configured unit when multiple units are selected", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
