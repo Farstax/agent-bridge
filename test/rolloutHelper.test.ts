@@ -194,7 +194,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
       expect.objectContaining({
         path: fixture.dbPaths[3],
         role: "interactive",
-        resolving_units: [legacyUnit],
+        resolvingUnits: [legacyUnit],
       }),
     ]);
   }, 15_000);
