@@ -247,15 +247,26 @@ read_convergence_env_key() {
 
 converge_deployer_autonomy_config() {
   [[ "$deployer_mode" == "1" ]] || return 0
-  local autonomy_unit="agent-bridge-interactive.service" unit selected=0
+  local autonomy_unit="" unit
   for unit in "${units[@]}"; do
-    [[ "$unit" == "$autonomy_unit" ]] && selected=1
+    if [[ "$unit" == "agent-bridge-interactive.service" ]]; then
+      autonomy_unit="$unit"
+      break
+    fi
   done
-  (( selected == 1 )) || return 0
+  if [[ -z "$autonomy_unit" ]]; then
+    for unit in "${units[@]}"; do
+      if [[ "$unit" == "agent-bridge-bot.service" ]]; then
+        autonomy_unit="$unit"
+        break
+      fi
+    done
+  fi
+  [[ -n "$autonomy_unit" ]] || return 0
 
   local shared_env="$defaults_dir/agent-bridge-shared"
   local release_env="$defaults_dir/agent-bridge-release"
-  local unit_env="$defaults_dir/agent-bridge-interactive"
+  local unit_env="$defaults_dir/${autonomy_unit%.service}"
   local expected_environment_files actual_environment_files explicit_environment
   expected_environment_files="$shared_env (ignore_errors=yes)"$'\n'"$release_env (ignore_errors=no)"$'\n'"$unit_env (ignore_errors=no)"
   actual_environment_files="$("$systemctl_cmd" show "$autonomy_unit" --property=EnvironmentFiles --value)"

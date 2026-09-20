@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   cleanupRoots,
   createFixture,
+  rewriteConfig,
   runRollout,
 } from "./support/rolloutFixture";
 
@@ -17,6 +18,24 @@ const DEPLOYER_ENV = {
   AGENT_BRIDGE_DEPLOY_ENVIRONMENT: "production-content-crawler",
   AGENT_BRIDGE_DEPLOY_APPROVAL_REFERENCE: "issue-498-test",
 };
+
+function configureLegacyBotOnly(fixture: ReturnType<typeof createFixture>, autonomyConfig: string): void {
+  const botUnit = "agent-bridge-bot.service";
+  const botCgroup = join(fixture.cgroupRoot, "agent-bridge-test", botUnit);
+  mkdirSync(botCgroup, { recursive: true });
+  writeFileSync(join(botCgroup, "cgroup.procs"), "");
+  writeFileSync(
+    join(fixture.envDir, "agent-bridge-bot"),
+    `DB_PATH=${fixture.dbPaths[3]}\n${autonomyConfig}`,
+    { mode: 0o600 },
+  );
+  rewriteConfig(fixture, (lines) => [
+    ...lines.filter((line) => !line.startsWith("unit=") && !line.startsWith("database=")),
+    `unit=${botUnit}`,
+    `database=${fixture.dbPaths[3]}`,
+  ]);
+  writeFileSync(fixture.stateFile, `${botUnit}\n`);
+}
 
 describe("autonomy database production config convergence (#498)", () => {
   it("converges a legacy deployer-managed rollout config before strict inventory validation", () => {
@@ -38,6 +57,39 @@ describe("autonomy database production config convergence (#498)", () => {
     expect(existsSync(autonomyParent)).toBe(true);
     const config = readFileSync(fixture.configFile, "utf8");
     expect(config.match(new RegExp(`^database=${autonomyPath.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}$`, "gm"))?.length).toBe(1);
+  }, 20_000);
+
+  it("converges a bot-only legacy rollout from bot defaults and records both DBs as interactive", () => {
+    const fixture = createFixture();
+    const autonomyPath = join(fixture.root, "company-autonomy", "bridge.sqlite");
+    configureLegacyBotOnly(fixture, `AGENT_BRIDGE_AUTONOMY_DB_PATH=${autonomyPath}\n`);
+
+    const result = runRollout(fixture, undefined, undefined, DEPLOYER_ENV);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(autonomyPath)).toBe(true);
+    const config = readFileSync(fixture.configFile, "utf8");
+    expect(config).toContain(`database=${autonomyPath}`);
+    const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
+    const postStart = JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8"));
+    expect(postStart.databases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: fixture.dbPaths[3], role: "interactive" }),
+      expect.objectContaining({ path: autonomyPath, role: "interactive" }),
+    ]));
+    expect(readFileSync(fixture.actionLog, "utf8")).toContain(`systemctl:stop ${"agent-bridge-bot.service"}`);
+  }, 20_000);
+
+  it("rejects malformed bot autonomy configuration before stopping services", () => {
+    const fixture = createFixture();
+    const autonomyPath = join(fixture.root, "company-autonomy", "bridge.sqlite");
+    configureLegacyBotOnly(fixture, "AGENT_BRIDGE_AUTONOMY_DB_PATH=relative/autonomy.sqlite\n");
+
+    const result = runRollout(fixture, undefined, undefined, DEPLOYER_ENV);
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/autonomy convergence database paths must be absolute/i);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
+    expect(existsSync(autonomyPath)).toBe(false);
   }, 20_000);
 
   it("keeps ordinary manually-authorized rollout fail-closed when the fixed allowlist was not converged", () => {
