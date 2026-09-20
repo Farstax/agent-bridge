@@ -12,6 +12,10 @@ readonly -a ALLOWED_UNITS=(
   agent-bridge-claude.service
   agent-bridge-codex.service
   agent-bridge-discord-interactive.service
+  # Legacy unified-bot unit. Existing hosted deployments may retain this unit
+  # name while their lifecycle owner adopts the next-start definition into the
+  # release-pointer contract; fresh installs use agent-bridge-interactive.service.
+  agent-bridge-bot.service
   # Legacy input only: removed from the target cohort when the release no longer carries it.
   agent-bridge-health.service
   agent-bridge-interactive.service
@@ -596,7 +600,7 @@ for unit in "${units[@]}"; do
   case "$unit" in
     agent-bridge-health.service) unit_roles[$unit]=health ;;
     agent-bridge-discord-interactive.service) unit_roles[$unit]=discord ;;
-    agent-bridge-interactive.service) unit_roles[$unit]=interactive ;;
+    agent-bridge-bot.service|agent-bridge-interactive.service) unit_roles[$unit]=interactive ;;
     *) unit_roles[$unit]=shared ;;
   esac
   discovered_databases[$canonical]=1
@@ -617,8 +621,13 @@ fi
 # already-present database).
 declare -A unit_autonomy_databases=()
 autonomy_bootstrap_path=""
-autonomy_unit="agent-bridge-interactive.service"
-if [[ -n "${selected_units[$autonomy_unit]:-}" ]]; then
+autonomy_unit=""
+if [[ -n "${selected_units[agent-bridge-interactive.service]:-}" ]]; then
+  autonomy_unit="agent-bridge-interactive.service"
+elif [[ -n "${selected_units[agent-bridge-bot.service]:-}" ]]; then
+  autonomy_unit="agent-bridge-bot.service"
+fi
+if [[ -n "$autonomy_unit" ]]; then
   autonomy_unit_env="$defaults_dir/${autonomy_unit%.service}"
   autonomy_key=AGENT_BRIDGE_AUTONOMY_DB_PATH
   autonomy_explicit_environment="$("$systemctl_cmd" show "$autonomy_unit" --property=Environment --value)"
