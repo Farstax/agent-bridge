@@ -44,6 +44,14 @@ def _regular(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def _load_manifest(release: Path) -> dict:
     manifest_path = release / "manifest.json"
     if manifest_path.is_symlink() or not manifest_path.is_file():
@@ -94,7 +102,7 @@ def _manifest_files(release: Path, manifest: dict) -> dict[str, dict]:
         if entry.get("type", "file") != kind:
             fail(f"release manifest type mismatch: {relative}")
         if kind == "file":
-            if entry.get("sha256") != hashlib.sha256(path.read_bytes()).hexdigest():
+            if entry.get("sha256") != _sha256_file(path):
                 fail(f"release manifest hash mismatch: {relative}")
             if entry.get("size") != path.stat().st_size:
                 fail(f"release manifest size mismatch: {relative}")
@@ -287,9 +295,9 @@ def main() -> int:
         return 0
     if not args.expected_commit:
         fail("--expected-commit is required for validation or activation")
-    validate_release_root(args.release_root)
-    validate_release(args.release_root / args.expected_commit, args.expected_commit, strict=args.validate_only or production_mode())
     if args.validate_only:
+        validate_release_root(args.release_root)
+        validate_release(args.release_root / args.expected_commit, args.expected_commit, strict=True)
         print(f"validated {args.expected_commit}")
     else:
         print(activate(args.release_root, args.current, args.expected_commit))

@@ -86,6 +86,14 @@ manifest_path = pathlib.Path(sys.argv[1])
 binary = pathlib.Path(sys.argv[2])
 harness = pathlib.Path(sys.argv[3])
 version, archive_url, platform, archive_sha = sys.argv[4:8]
+
+def sha256_file(path):
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
 try:
     manifest_stat = manifest_path.lstat()
     binary_stat = binary.lstat()
@@ -113,10 +121,10 @@ try:
         raise ValueError("manifest identity mismatch")
     if archive_sha and manifest.get("archiveSha256") != archive_sha:
         raise ValueError("archive checksum identity mismatch")
-    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    digest = sha256_file(binary)
     if manifest.get("binarySha256") != digest:
         raise ValueError("binary checksum mismatch")
-    harness_digest = hashlib.sha256(harness.read_bytes()).hexdigest()
+    harness_digest = sha256_file(harness)
     if manifest.get("harnessSha256") != harness_digest:
         raise ValueError("harness checksum mismatch")
 except Exception:
@@ -136,11 +144,16 @@ if ! valid_component; then
     fail "release-locked Agy ACP archive checksum mismatch"
   fi
   python3 - "${archive}" "${staging}/agy_acp_server.par" "${staging}/localharness_external" "${REGISTRY_CMD}" <<'PY'
-import pathlib, sys, zipfile
+import pathlib, shutil, sys, zipfile
 archive = pathlib.Path(sys.argv[1])
 destination = pathlib.Path(sys.argv[2])
 harness_destination = pathlib.Path(sys.argv[3])
 registry_cmd = pathlib.PurePosixPath(sys.argv[4]).name
+
+def extract_member(bundle, member, destination):
+    with bundle.open(member, "r") as source, destination.open("xb") as output:
+        shutil.copyfileobj(source, output, length=1024 * 1024)
+
 with zipfile.ZipFile(archive) as bundle:
     files = [item for item in bundle.infolist() if not item.is_dir()]
     matches = [item for item in files if pathlib.PurePosixPath(item.filename).name == registry_cmd]
@@ -149,8 +162,8 @@ with zipfile.ZipFile(archive) as bundle:
         raise SystemExit(f"expected exactly one {registry_cmd} in Agy ACP archive, found {len(matches)}")
     if len(harness_matches) != 1:
         raise SystemExit(f"expected exactly one localharness_external in Agy ACP archive, found {len(harness_matches)}")
-    destination.write_bytes(bundle.read(matches[0]))
-    harness_destination.write_bytes(bundle.read(harness_matches[0]))
+    extract_member(bundle, matches[0], destination)
+    extract_member(bundle, harness_matches[0], harness_destination)
 PY
   chmod 0555 "${staging}/agy_acp_server.par" "${staging}/localharness_external"
   chown root:root "${staging}/agy_acp_server.par" "${staging}/localharness_external"
