@@ -29,23 +29,12 @@ export function wrapPromptContext(
 export function prependProviderFallbackContinuation(prompt: string): string {
   return [
     "[Agent Bridge provider fallback]",
-    "The previous provider became unavailable while working on this same user action. Continue the existing work rather than restarting it blindly. Previous providers may have left valid progress in the current shared working directory. Before repeating work, inspect the repository, worktree and generated artifacts, preserve valid existing work, and continue the remaining requested scope.",
+    "The previous provider became unavailable while working on this same user action. Continue from the current state rather than restarting blindly. Inspect existing workspace/repository progress, generated artifacts, and externally observable results before repeating side-effecting actions. Preserve valid progress and finish what remains.",
     "",
     prompt,
   ].join("\n");
 }
 
-const PROVIDER_RECOVERY_MARKER = "[Agent Bridge automatic recovery]";
-
-export function prependProviderRecoveryContinuation(prompt: string): string {
-  if (prompt.startsWith(PROVIDER_RECOVERY_MARKER)) return prompt;
-  return [
-    PROVIDER_RECOVERY_MARKER,
-    "The previous provider process stopped making progress and was restarted. Continue the same user action from the current state. Inspect the current workspace, repository, existing changes and generated artifacts before repeating work. Preserve valid completed work, finish the remaining scope, verify the result, and respond normally.",
-    "",
-    prompt,
-  ].join("\n");
-}
 
 export function prependHandoffModel(prompt: string, model: string | null): string {
   return [
