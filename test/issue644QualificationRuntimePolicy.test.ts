@@ -14,7 +14,7 @@ describe("issue #644 qualification runtime policy", () => {
     })).toEqual({
       executionMode: "trusted",
       timeoutMs: 240_000,
-      idleTimeoutMs: 0,
+      idleTimeoutMs: 15 * 60_000,
     });
   });
 
@@ -26,15 +26,15 @@ describe("issue #644 qualification runtime policy", () => {
     })).toEqual({
       executionMode: "trusted",
       timeoutMs: 3_600_000,
-      idleTimeoutMs: 0,
+      idleTimeoutMs: 15 * 60_000,
     });
   });
 
-  it("keeps safe/no-timeout runtime defaults when no overrides exist", () => {
+  it("keeps safe/no-hard-timeout runtime defaults with the provider stall threshold", () => {
     expect(resolveQualificationRuntimePolicy("codex", {})).toEqual({
       executionMode: "safe",
       timeoutMs: 0,
-      idleTimeoutMs: 0,
+      idleTimeoutMs: 15 * 60_000,
     });
   });
 

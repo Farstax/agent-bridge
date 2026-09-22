@@ -24,7 +24,7 @@ describe("Execution path contracts", () => {
 });
 
 describe("Idle Timeout Config", () => {
-  it("buildExecutionOptions returns per-kind timeouts (antigravity idle/hard disabled by default)", async () => {
+  it("buildExecutionOptions returns the default recoverable idle threshold with hard timeout disabled", async () => {
     const { buildExecutionOptions } = await import("../src/cli.js");
     const savedAntigravityIdle = process.env.ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS;
     const savedGlobalIdle = process.env.CLI_IDLE_TIMEOUT_MS;
@@ -36,7 +36,7 @@ describe("Idle Timeout Config", () => {
     delete process.env.CLI_TIMEOUT_MS;
     try {
       const opts = buildExecutionOptions("antigravity");
-      expect(opts.idleTimeoutMs).toBe(0);
+      expect(opts.idleTimeoutMs).toBe(15 * 60_000);
       expect(opts.timeoutMs).toBe(0);
     } finally {
       if (savedAntigravityIdle !== undefined) process.env.ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS = savedAntigravityIdle;

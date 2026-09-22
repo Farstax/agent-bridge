@@ -35,6 +35,18 @@ export function prependProviderFallbackContinuation(prompt: string): string {
   ].join("\n");
 }
 
+const PROVIDER_RECOVERY_MARKER = "[Agent Bridge automatic recovery]";
+
+export function prependProviderRecoveryContinuation(prompt: string): string {
+  if (prompt.startsWith(PROVIDER_RECOVERY_MARKER)) return prompt;
+  return [
+    PROVIDER_RECOVERY_MARKER,
+    "The previous provider process stopped making progress and was restarted. Continue the same user action from the current state. Inspect the current workspace, repository, existing changes and generated artifacts before repeating work. Preserve valid completed work, finish the remaining scope, verify the result, and respond normally.",
+    "",
+    prompt,
+  ].join("\n");
+}
+
 export function prependHandoffModel(prompt: string, model: string | null): string {
   return [
     "[Agent Bridge handoff]",
