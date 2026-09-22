@@ -740,7 +740,10 @@ export class BridgeEngine {
       const capacityExhausted = isCapacityExhaustedError(providerError);
       const authRequired = classification.kind === "auth_required"
         || (executionProvider === "claude" && isClaudeOAuthRefreshContention(providerError));
-      const providerFallbackReason = providerFallbackReasonForError(this._executionKind(), providerError);
+      const executionKind = this._executionKind();
+      const providerFallbackReason = isRouteableKind(executionKind)
+        ? providerFallbackReasonForError(executionKind, providerError)
+        : null;
       if (providerFallbackReason && isRouteableKind(this.kind)) {
         this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind, null));
       }
