@@ -668,8 +668,8 @@ export async function runSupervisedStdioSession<T>(
       if (settled) return;
       pendingError = new ProviderStallError(`ACP provider idle timeout: stalled after ${idleTimeoutMs}ms without protocol activity`);
       console.warn(`[PROVIDER STALL] ${pendingError.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
-      // Do not emit run.failed here. The owning engine gets a bounded chance
-      // to restart this same logical run before terminal lifecycle is decided.
+      // Do not emit run.failed here. The interactive owner may continue the
+      // admitted action through provider fallback before terminal lifecycle is decided.
       stdioAbort.abort(pendingError);
       void killChild(child, killGraceMs);
     }, idleTimeoutMs);
