@@ -661,8 +661,7 @@ for (;;) {
               await dispatchInteractiveTurnWithFallback(turn, {
                 engines,
                 fallbackChain,
-                exhaustedChats,
-                authRequiredChats,
+                fallbackRequests,
                 db,
                 notify: async (msg) => {
                   await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: msg, message_thread_id: threadId } });
