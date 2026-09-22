@@ -163,4 +163,76 @@ describe("provider stall fallback", () => {
       db.close();
     }
   });
+
+  it("keeps ordinary task errors on the existing delivery path without provider fallback", async () => {
+    const db = openDb(":memory:");
+    const chatKey = "860";
+    const fallbackRequests = new Map<string, ProviderFallbackReason>();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, () => true);
+    const telegram = client();
+    const notices: string[] = [];
+    const sourceRun = vi.fn(async () => {
+      throw new Error("ordinary task failure");
+    });
+    const targetRun = vi.fn(async () => ({
+      text: "must not run",
+      sessionId: "unexpected",
+      stopReason: "end_turn",
+    }));
+
+    const makeEngine = (kind: "codex" | "claude", runProviderInvocation: any) => new BridgeEngine({
+      surfaceIdentity: "telegram:interactive",
+      kind,
+      botConfig: { command: kind, modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+      hooks: {
+        onProviderFallbackRequested: async (key, reason) => {
+          fallbackRequests.set(key, reason);
+        },
+      },
+    }, db, telegram, { runProviderInvocation } as any);
+
+    const engines = {
+      codex: makeEngine("codex", sourceRun),
+      claude: makeEngine("claude", targetRun),
+    };
+    const deps = {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      db,
+      notify: async (message: string) => { notices.push(message); },
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) =>
+        dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    try {
+      setUserCliPreference(db, chatKey, "codex");
+      await dispatchInteractiveWithFallback({
+        update_id: 862,
+        message: {
+          message_id: 3,
+          chat: { id: 860, type: "private" },
+          from: { id: 42, first_name: "Test" },
+          text: "run task",
+        },
+      }, chatKey, deps);
+
+      expect(sourceRun).toHaveBeenCalledTimes(1);
+      expect(targetRun).not.toHaveBeenCalled();
+      expect(fallbackRequests.has(chatKey)).toBe(false);
+      expect(notices).toEqual([]);
+      expect(telegram.sendMessage.mock.calls.some(([body]: [any]) =>
+        String(body?.text ?? "").includes("ordinary task failure"))).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
 });
