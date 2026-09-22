@@ -824,7 +824,9 @@ export class BridgeEngine {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
-        propagateExecutionErrors: false,
+        // Provider execution policy belongs to the engine so stall/runtime failures can
+        // enter the same cross-provider fallback path as capacity/auth failures.
+        propagateExecutionErrors: true,
         propagateTimeoutErrors: true,
         runId: input.runId,
         onEvent: input.collect,
