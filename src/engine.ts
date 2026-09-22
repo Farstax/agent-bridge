@@ -744,8 +744,9 @@ export class BridgeEngine {
       const providerFallbackReason = isRouteableKind(executionKind)
         ? providerFallbackReasonForError(executionKind, providerError)
         : null;
-      if (providerFallbackReason && isRouteableKind(this.kind)) {
-        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind, null));
+      const sourceKind = this.kind;
+      if (providerFallbackReason && isRouteableKind(sourceKind)) {
+        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
       }
       if (authRequired && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
@@ -827,9 +828,10 @@ export class BridgeEngine {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
-        // Provider execution policy belongs to the engine so stall/runtime failures can
-        // enter the same cross-provider fallback path as capacity/auth failures.
-        propagateExecutionErrors: true,
+        // Only provider-level failures deliberately classified as fallback-eligible
+        // escape this delivery boundary. Ordinary task/code errors retain the prior
+        // in-place error delivery semantics.
+        propagateExecutionError: (error) => providerFallbackReasonForError(this._executionKind(), error) !== null,
         propagateTimeoutErrors: true,
         runId: input.runId,
         onEvent: input.collect,
