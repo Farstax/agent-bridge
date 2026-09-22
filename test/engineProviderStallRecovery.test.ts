@@ -1,26 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
-import { BridgeEngine } from "../src/engine.js";
+import { BridgeEngine, type ProviderFallbackReason } from "../src/engine.js";
 import { ProviderStallError } from "../src/cli.js";
-import type { TelegramMessage } from "../src/types.js";
-
-function message(id: number, text: string): TelegramMessage {
-  return {
-    message_id: id,
-    chat: { id: 858, type: "private" },
-    from: { id: 42, first_name: "Test" },
-    text,
-  };
-}
+import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
+import { lookupProviderSession, persistProviderSession } from "../src/providers/sessionRuntime.js";
+import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 function client() {
   return {
-    capabilities: {
-      maxMessageLength: 4096, editMessages: true, deleteMessages: true,
-      previewStreaming: true, threads: true, attachments: true, typing: true,
-      polling: true, remoteFileDownload: true, richMessages: true,
-      passiveSurroundingContext: false, formatting: "telegram-html",
-    },
+    capabilities: TELEGRAM_SURFACE_CAPABILITIES,
     getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),
     sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
     sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
@@ -33,73 +22,143 @@ function client() {
   } as any;
 }
 
-describe("same-run provider stall recovery", () => {
-  it("retries under the same run and session with a recovery continuation", async () => {
+describe("provider stall fallback", () => {
+  it("abandons the stalled source session and continues once through a fresh fallback provider", async () => {
     const db = openDb(":memory:");
-    const calls: Array<{ request: any; identities: any }> = [];
-    let invocation = 0;
-    const runProviderInvocation = vi.fn(async (
+    const surface = "telegram:interactive";
+    const chatKey = "858";
+    const fallbackRequests = new Map<string, ProviderFallbackReason>();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, () => true);
+    const telegram = client();
+    const notices: string[] = [];
+    const sourceRun = vi.fn(async () => {
+      throw new ProviderStallError("stalled");
+    });
+    const targetRequests: any[] = [];
+    const targetRun = vi.fn(async (
       _kind: string,
       _invocation: any,
       _cwd: string,
       _options: any,
       request: any,
-      identities: any,
     ) => {
-      invocation += 1;
-      calls.push({ request, identities });
-      if (invocation === 1) return { text: "seed", sessionId: "session-858", stopReason: "end_turn" };
-      if (invocation === 2) throw new ProviderStallError("stalled");
-      return { text: "recovered", sessionId: "session-858", stopReason: "end_turn" };
+      targetRequests.push(request);
+      return { text: "authoritative fallback answer", sessionId: "claude-fresh", stopReason: "end_turn" };
     });
 
+    const makeEngine = (kind: "codex" | "claude", runProviderInvocation: any) => new BridgeEngine({
+      surfaceIdentity: surface,
+      kind,
+      botConfig: { command: kind, modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      busyMessageMode: "augment",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+      hooks: {
+        onProviderFallbackRequested: async (key, reason) => {
+          fallbackRequests.set(key, reason);
+        },
+      },
+    }, db, telegram, { runProviderInvocation } as any);
+
+    const engines = {
+      codex: makeEngine("codex", sourceRun),
+      claude: makeEngine("claude", targetRun),
+    };
+    const deps = {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      db,
+      notify: async (message: string) => { notices.push(message); },
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) =>
+        dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
     try {
-      const engine = new BridgeEngine({
-        surfaceIdentity: "test",
-        kind: "codex",
-        botConfig: { command: "codex", modelPreference: [] },
-        allowedUserIds: new Set(["42"]),
-        executionMode: "safe",
-        pollIntervalMs: 1000,
-        workingDir: process.cwd(),
-      }, db, client(), { runProviderInvocation } as any);
+      setUserCliPreference(db, chatKey, "codex");
+      persistProviderSession(db, chatKey, "codex", "poisoned-codex-session");
+      persistProviderSession(db, chatKey, "claude", "stale-claude-session");
 
-      await engine.handleMessages([message(1, "seed request")]);
-      await engine.handleMessages([message(2, "finish the task")]);
+      await dispatchInteractiveWithFallback({
+        update_id: 860,
+        message: {
+          message_id: 1,
+          chat: { id: 858, type: "private" },
+          from: { id: 42, first_name: "Test" },
+          text: "finish the task",
+        },
+      }, chatKey, deps);
 
-      expect(calls).toHaveLength(3);
-      expect(calls[1].request.sessionId).toBe("session-858");
-      expect(calls[2].request.sessionId).toBe("session-858");
-      expect(calls[2].request.prompt).toContain("[Agent Bridge automatic recovery]");
-      expect(calls[2].request.prompt).toContain("finish the task");
-      expect(calls[2].identities.runId).toBe(calls[1].identities.runId);
-      expect(calls[2].identities.runId).not.toBe(calls[0].identities.runId);
+      expect(sourceRun).toHaveBeenCalledTimes(1);
+      expect(targetRun).toHaveBeenCalledTimes(1);
+      expect(lookupProviderSession(db, chatKey, "codex")).toBeNull();
+      expect(targetRequests[0].sessionId).toBeNull();
+      expect(targetRequests[0].prompt).toContain("[Agent Bridge provider fallback]");
+      expect(targetRequests[0].prompt).toContain("externally observable results");
+      expect(targetRequests[0].prompt).toContain("finish the task");
+      expect(lookupProviderSession(db, chatKey, "claude")).toBe("claude-fresh");
+      expect(notices).toEqual(["Switching to claude after codex became unavailable."]);
+
+      const finalAnswers = telegram.sendMessage.mock.calls
+        .map(([body]: [any]) => body?.text)
+        .filter((text: unknown) => text === "authoritative fallback answer");
+      expect(finalAnswers).toHaveLength(1);
     } finally {
       db.close();
     }
   });
 
-  it("bounds automatic stall retries at two", async () => {
+  it("does not retry a stalled provider when no fallback remains", async () => {
     const db = openDb(":memory:");
-    let attempts = 0;
-    const runProviderInvocation = vi.fn(async () => {
-      attempts += 1;
+    const fallbackRequests = new Map<string, ProviderFallbackReason>();
+    const fallbackChain = new ProviderFallbackChain(["codex"], db, () => true);
+    const telegram = client();
+    const sourceRun = vi.fn(async () => {
       throw new ProviderStallError("still stalled");
     });
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive",
+      kind: "codex",
+      botConfig: { command: "codex", modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+      hooks: {
+        onProviderFallbackRequested: async (key, reason) => {
+          fallbackRequests.set(key, reason);
+        },
+      },
+    }, db, telegram, { runProviderInvocation: sourceRun } as any);
+    const notices: string[] = [];
+    const deps = {
+      engines: { codex: engine },
+      fallbackChain,
+      fallbackRequests,
+      db,
+      notify: async (message: string) => { notices.push(message); },
+    };
+    engine.setQueuedMessageHandler(async (queued) =>
+      dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
 
     try {
-      const engine = new BridgeEngine({
-        surfaceIdentity: "test",
-        kind: "codex",
-        botConfig: { command: "codex", modelPreference: [] },
-        allowedUserIds: new Set(["42"]),
-        executionMode: "safe",
-        pollIntervalMs: 1000,
-        workingDir: process.cwd(),
-      }, db, client(), { runProviderInvocation } as any);
+      await dispatchInteractiveWithFallback({
+        update_id: 861,
+        message: {
+          message_id: 2,
+          chat: { id: 858, type: "private" },
+          from: { id: 42, first_name: "Test" },
+          text: "do work",
+        },
+      }, "858", deps);
 
-      await engine.handleMessages([message(3, "do work")]);
-      expect(attempts).toBe(3);
+      expect(sourceRun).toHaveBeenCalledTimes(1);
+      expect(notices).toEqual(["No remaining configured fallback provider is available. Please try again later."]);
     } finally {
       db.close();
     }
