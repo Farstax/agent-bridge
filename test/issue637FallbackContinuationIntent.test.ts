@@ -46,7 +46,7 @@ describe("Issue #637 provider fallback continuation intent", () => {
     const prompt = await buildPrompt(makeEngine(db, "claude"), "fresh");
 
     expect(prompt).toContain(FALLBACK_NOTE);
-    expect(prompt).toContain("inspect the repository, worktree and generated artifacts");
+    expect(prompt).toContain("externally observable results");
     expect(prompt).toContain("continue this action");
     expect(db.getConvStatus("100", "telegram:interactive").turnCount).toBe(0);
   });
@@ -57,7 +57,7 @@ describe("Issue #637 provider fallback continuation intent", () => {
     const prompt = await buildPrompt(makeEngine(db, "antigravity"), "fresh");
 
     expect(prompt).toContain(FALLBACK_NOTE);
-    expect(prompt).toContain("preserve valid existing work");
+    expect(prompt).toContain("Preserve valid progress");
   });
 
   it("does not imply interrupted work for a manual provider switch", async () => {
