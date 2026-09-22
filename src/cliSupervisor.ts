@@ -666,7 +666,7 @@ export async function runSupervisedStdioSession<T>(
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
       if (settled) return;
-      pendingError = new ProviderStallError(`ACP provider stalled after ${idleTimeoutMs}ms without protocol activity`);
+      pendingError = new ProviderStallError(`ACP provider idle timeout: stalled after ${idleTimeoutMs}ms without protocol activity`);
       console.warn(`[PROVIDER STALL] ${pendingError.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
       // Do not emit run.failed here. The owning engine gets a bounded chance
       // to restart this same logical run before terminal lifecycle is decided.
