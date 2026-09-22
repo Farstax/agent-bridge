@@ -144,6 +144,15 @@ export class CliTimeoutError extends Error {
   }
 }
 
+/** ACP stdio inactivity is recoverable by the owning logical run. */
+export class ProviderStallError extends Error {
+  public readonly category = "provider_stall";
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderStallError";
+  }
+}
+
 function killChild(child: ChildProcess, graceMs: number = defaultKillGraceMs()): Promise<void> {
   abortedChildren.add(child);
   return killChildTree(child, graceMs);
@@ -657,21 +666,25 @@ export async function runSupervisedStdioSession<T>(
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
       if (settled) return;
-      pendingError = new CliTimeoutError(`CLI idle timeout after ${idleTimeoutMs}ms`, "idle");
-      if (evtCtx) onEvent?.(evtType.runFailed({ ...evtCtx, error: pendingError.message, category: "timeout" }));
+      pendingError = new ProviderStallError(`ACP provider stalled after ${idleTimeoutMs}ms without protocol activity`);
+      console.warn(`[PROVIDER STALL] ${pendingError.message}${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""}`);
+      // Do not emit run.failed here. The owning engine gets a bounded chance
+      // to restart this same logical run before terminal lifecycle is decided.
       stdioAbort.abort(pendingError);
       void killChild(child, killGraceMs);
     }, idleTimeoutMs);
   };
   resetIdleTimer();
 
+  // ACP stdout is protocol traffic and therefore authoritative liveness.
+  // stderr is diagnostic only: periodic logging must not keep a wedged
+  // provider alive forever.
   child.stdout.on("data", () => { resetIdleTimer(); });
   child.stderr.on("data", (data) => {
     const safeChunk = stderrRedactor.push(data.toString());
     if (safeChunk) {
       console.error(`[stderr]${options.chatId != null ? ` chatId=${String(options.chatId)}` : ""} pid=${child.pid ?? "?"} ${redact(safeChunk).trimEnd()}`);
     }
-    resetIdleTimer();
   });
 
   // A spawn failure (e.g. a missing ACP adapter binary, ENOENT) surfaces

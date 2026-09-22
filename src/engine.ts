@@ -28,6 +28,7 @@ import {
   toUserMessage,
   scrubOutputDir,
   CliTimeoutError,
+  ProviderStallError,
 } from "./cli.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
 import {
@@ -63,7 +64,7 @@ import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from 
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
+import { prependHandoffModel, prependProviderFallbackContinuation, prependProviderRecoveryContinuation } from "./promptWrapping.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
 import {
   executionLaneCoordinator,
@@ -115,6 +116,7 @@ type StagedCliResult = CliResult & {
 type InvocationContextMode = "fresh" | "resume" | "fresh_without_history";
 
 const MAX_QUEUE_RECOVERY_ATTEMPTS = 3;
+const MAX_PROVIDER_STALL_RECOVERIES = 2;
 
 class LostExecutionLeaseError extends Error {
   constructor() { super("execution lane ownership lost"); }
@@ -1556,6 +1558,8 @@ export class BridgeEngine {
     collect: ((e: BridgeEvent) => void) | null,
     chatKey: string,
     laneHandle: ExecutionLaneHandle,
+    recoveryAttempt = 0,
+    recoveryOutDir: string | null = null,
   ): Promise<StagedCliResult> {
     if (!laneHandle) throw new Error("execution lane handle is required");
     const threadId = body.message_thread_id;
@@ -1567,7 +1571,7 @@ export class BridgeEngine {
     const logFile: string | null = null;
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
-    const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
+    const outDir = recoveryOutDir ?? await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
     const cwd = this._workingDir(executionKind);
     const nativeSessionMode = buildCliInvocation({
       bot: executionKind,
@@ -1714,6 +1718,32 @@ export class BridgeEngine {
         await this._cleanTerminalOutputDir(outDir, "lease loss");
         throw error;
       }
+      if (error instanceof ProviderStallError && recoveryAttempt < MAX_PROVIDER_STALL_RECOVERIES) {
+        this._assertLaneOwned(laneHandle);
+        console.warn(`[${this.kind}] recovering stalled provider run attempt=${recoveryAttempt + 1}/${MAX_PROVIDER_STALL_RECOVERIES} runId=${runId ?? "unknown"}`);
+        return this._executeProviderAttempt(
+          prependProviderRecoveryContinuation(prompt),
+          sessionId,
+          chatId,
+          body,
+          onProgress,
+          attachments,
+          eventContext,
+          runId,
+          collect,
+          chatKey,
+          laneHandle,
+          recoveryAttempt + 1,
+          outDir,
+        );
+      }
+      if (error instanceof ProviderStallError && collect && runId && eventContext) {
+        collect(eventType.runFailed({
+          ...eventContext,
+          error: `Provider remained stalled after ${MAX_PROVIDER_STALL_RECOVERIES} automatic recoveries`,
+          category: "timeout",
+        }));
+      }
       const canPublish = this._canPublish(laneHandle);
       if (canPublish) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
@@ -1722,6 +1752,23 @@ export class BridgeEngine {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
         if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, kind, null));
+        if (recoveryAttempt > 0) {
+          return this._executeProviderAttempt(
+            prompt,
+            null,
+            chatId,
+            body,
+            onProgress,
+            attachments,
+            eventContext,
+            runId,
+            collect,
+            chatKey,
+            laneHandle,
+            recoveryAttempt,
+            outDir,
+          );
+        }
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {

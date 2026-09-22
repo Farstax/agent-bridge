@@ -7,17 +7,17 @@ interface PerKindDefaults {
 
 type Env = Record<string, string | undefined>;
 
-// Per-CLI built-in defaults.
-// Canonical default (Issue #177): both hard and idle timeouts are disabled
-// (0) unless explicitly configured. 0 means "no timeout" throughout this
-// module and in runSupervisedProcess().
+// Provider hard timeouts remain disabled by default. ACP providers now use a
+// bounded idle threshold so a live-but-wedged adapter can be restarted by the
+// owning logical run (Issue #858). Explicit 0 still disables either timeout.
+const DEFAULT_PROVIDER_IDLE_TIMEOUT_MS = 15 * 60_000;
 const DEFAULTS: Record<BotKind | "custom-acp", PerKindDefaults> = {
-  codex:       { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
-  antigravity: { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
-  claude:      { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
-  grok:        { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
-  cursor:      { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
-  "custom-acp": { cliTimeoutMs: 0, cliIdleTimeoutMs: 0 },
+  codex:       { cliTimeoutMs: 0, cliIdleTimeoutMs: DEFAULT_PROVIDER_IDLE_TIMEOUT_MS },
+  antigravity: { cliTimeoutMs: 0, cliIdleTimeoutMs: DEFAULT_PROVIDER_IDLE_TIMEOUT_MS },
+  claude:      { cliTimeoutMs: 0, cliIdleTimeoutMs: DEFAULT_PROVIDER_IDLE_TIMEOUT_MS },
+  grok:        { cliTimeoutMs: 0, cliIdleTimeoutMs: DEFAULT_PROVIDER_IDLE_TIMEOUT_MS },
+  cursor:      { cliTimeoutMs: 0, cliIdleTimeoutMs: DEFAULT_PROVIDER_IDLE_TIMEOUT_MS },
+  "custom-acp": { cliTimeoutMs: 0, cliIdleTimeoutMs: DEFAULT_PROVIDER_IDLE_TIMEOUT_MS },
 };
 
 const DEFAULT_FETCH_TIMEOUT_MS = 45_000;

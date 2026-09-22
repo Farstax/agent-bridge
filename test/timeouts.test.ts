@@ -27,11 +27,11 @@ afterEach(() => {
 });
 
 describe("resolveTimeoutsForKind — built-in defaults", () => {
-  it("all kinds get idle timeout disabled (0) by default", () => {
+  it("all kinds get a 15-minute recoverable idle threshold by default", () => {
     setEnv({ CODEX_CLI_IDLE_TIMEOUT_MS: undefined, ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS: undefined, CLAUDE_CLI_IDLE_TIMEOUT_MS: undefined, CLI_IDLE_TIMEOUT_MS: undefined });
-    expect(resolveTimeoutsForKind("codex").cliIdleTimeoutMs).toBe(0);
-    expect(resolveTimeoutsForKind("antigravity").cliIdleTimeoutMs).toBe(0);
-    expect(resolveTimeoutsForKind("claude").cliIdleTimeoutMs).toBe(0);
+    expect(resolveTimeoutsForKind("codex").cliIdleTimeoutMs).toBe(15 * 60_000);
+    expect(resolveTimeoutsForKind("antigravity").cliIdleTimeoutMs).toBe(15 * 60_000);
+    expect(resolveTimeoutsForKind("claude").cliIdleTimeoutMs).toBe(15 * 60_000);
   });
 
   it("all kinds get hard timeout disabled (0) by default", () => {
@@ -60,7 +60,7 @@ describe("resolveTimeoutsForKind — env precedence", () => {
 
   it("per-CLI env var does not affect other kinds", () => {
     setEnv({ ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS: "99000", CODEX_CLI_IDLE_TIMEOUT_MS: undefined, CLI_IDLE_TIMEOUT_MS: undefined });
-    expect(resolveTimeoutsForKind("codex").cliIdleTimeoutMs).toBe(0);
+    expect(resolveTimeoutsForKind("codex").cliIdleTimeoutMs).toBe(15 * 60_000);
   });
 
   it("global CLI_TIMEOUT_MS applies to all kinds when no per-CLI override", () => {
@@ -88,7 +88,7 @@ describe("resolveTimeoutsForKind — env precedence", () => {
 
   it("ignores non-numeric values and falls back to the built-in default", () => {
     setEnv({ ANTIGRAVITY_CLI_IDLE_TIMEOUT_MS: "not-a-number", CLI_IDLE_TIMEOUT_MS: undefined });
-    expect(resolveTimeoutsForKind("antigravity").cliIdleTimeoutMs).toBe(0);
+    expect(resolveTimeoutsForKind("antigravity").cliIdleTimeoutMs).toBe(15 * 60_000);
     setEnv({ ANTIGRAVITY_CLI_TIMEOUT_MS: "not-a-number", CLI_TIMEOUT_MS: undefined });
     expect(resolveTimeoutsForKind("antigravity").cliTimeoutMs).toBe(0);
   });
@@ -122,7 +122,7 @@ describe("buildExecutionOptions", () => {
       CLI_TIMEOUT_MS: undefined,
     });
     const opts = buildExecutionOptions("antigravity");
-    expect(opts.idleTimeoutMs).toBe(0);
+    expect(opts.idleTimeoutMs).toBe(15 * 60_000);
     expect(opts.timeoutMs).toBe(0);
   });
 
