@@ -342,7 +342,7 @@ async function handleMessage(d: any): Promise<void> {
   await dispatchInteractiveTurnWithFallback(turn, {
     engines,
     fallbackChain,
-    exhaustedChats,
+    fallbackRequests,
     db,
     notify: async (msg) => {
       await client.sendMessage({ chat_id: channelId, text: msg });
