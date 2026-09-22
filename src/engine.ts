@@ -64,7 +64,7 @@ import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from 
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { prependHandoffModel, prependProviderFallbackContinuation, prependProviderRecoveryContinuation } from "./promptWrapping.js";
+import { prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
 import {
   executionLaneCoordinator,
@@ -94,6 +94,7 @@ export interface BridgeEngineHooks {
   onBeforeExecute?: (prompt: string, ctx: HookContext) => Promise<string>;
   onCapacityExhausted?: (chatKey: string) => void | Promise<void>;
   onAuthRequired?: (chatKey: string) => void | Promise<void>;
+  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason) => void | Promise<void>;
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
   onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
 }
@@ -108,6 +109,7 @@ export interface PendingMessage {
 }
 
 export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
+export type ProviderFallbackReason = "capacity" | "auth_required" | "provider_stall" | "provider_unavailable" | "provider_transport_failure";
 
 type StagedCliResult = CliResult & {
   nativeSessionMode?: "fresh" | "resume";
@@ -116,7 +118,6 @@ type StagedCliResult = CliResult & {
 type InvocationContextMode = "fresh" | "resume" | "fresh_without_history";
 
 const MAX_QUEUE_RECOVERY_ATTEMPTS = 3;
-const MAX_PROVIDER_STALL_RECOVERIES = 2;
 
 class LostExecutionLeaseError extends Error {
   constructor() { super("execution lane ownership lost"); }
@@ -167,6 +168,19 @@ function isManagedBotKind(kind: string): kind is BotKind {
 const ROUTEABLE_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor", "custom-acp"]);
 function isRouteableKind(kind: string): kind is RouteableBotKind {
   return ROUTEABLE_KINDS.has(kind);
+}
+
+function providerFallbackReasonForError(executionKind: RouteableBotKind, error: Error): ProviderFallbackReason | null {
+  if (error instanceof ProviderStallError) return "provider_stall";
+  if (error instanceof CliTimeoutError) return null;
+  const provider = providerIdForBotName(executionKind);
+  const classification = provider ? classifyProviderError(provider, error) : classifyAnyProviderError(error);
+  if (classification.kind === "transient") {
+    if (provider === "claude" && isClaudeOAuthRefreshContention(error)) return null;
+    return "provider_transport_failure";
+  }
+  if (classification.kind === "fatal" && !/not a git repository/i.test(classification.reason)) return "provider_unavailable";
+  return null;
 }
 
 function topicChatKey(chatId: number | string, chatType: string, threadId?: number | string): string {
@@ -726,11 +740,25 @@ export class BridgeEngine {
       const capacityExhausted = isCapacityExhaustedError(providerError);
       const authRequired = classification.kind === "auth_required"
         || (executionProvider === "claude" && isClaudeOAuthRefreshContention(providerError));
-      if (authRequired && this.hooks.onAuthRequired) {
+      const executionKind = this._executionKind();
+      const providerFallbackReason = isRouteableKind(executionKind)
+        ? providerFallbackReasonForError(executionKind, providerError)
+        : null;
+      const sourceKind = this.kind;
+      if (providerFallbackReason && isRouteableKind(sourceKind)) {
+        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
+      }
+      if (authRequired && this.hooks.onProviderFallbackRequested) {
+        await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
+      } else if (capacityExhausted && this.hooks.onProviderFallbackRequested) {
+        await this.hooks.onProviderFallbackRequested(chatKey, "capacity");
+      } else if (providerFallbackReason && this.hooks.onProviderFallbackRequested) {
+        await this.hooks.onProviderFallbackRequested(chatKey, providerFallbackReason);
+      } else if (authRequired && this.hooks.onAuthRequired) {
         await this.hooks.onAuthRequired(chatKey);
       } else if (capacityExhausted && this.hooks.onCapacityExhausted) {
         await this.hooks.onCapacityExhausted(chatKey);
-      } else if (!capacityExhausted || notifyCapacityFailure) {
+      } else if ((!capacityExhausted && !providerFallbackReason) || notifyCapacityFailure) {
         let userText = authRequired ? `${this._executionKind()} needs re-authentication.` : toUserMessage(providerError);
         if (capacityExhausted) userText += `\n\n💡 All models for ${this.kind} are currently exhausted. Please try again later.`;
         await sendSurfaceMessage({
@@ -800,7 +828,10 @@ export class BridgeEngine {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
-        propagateExecutionErrors: false,
+        // Only provider-level failures deliberately classified as fallback-eligible
+        // escape this delivery boundary. Ordinary task/code errors retain the prior
+        // in-place error delivery semantics.
+        propagateExecutionError: (error) => providerFallbackReasonForError(this._executionKind(), error) !== null,
         propagateTimeoutErrors: true,
         runId: input.runId,
         onEvent: input.collect,
@@ -1558,8 +1589,6 @@ export class BridgeEngine {
     collect: ((e: BridgeEvent) => void) | null,
     chatKey: string,
     laneHandle: ExecutionLaneHandle,
-    recoveryAttempt = 0,
-    recoveryOutDir: string | null = null,
   ): Promise<StagedCliResult> {
     if (!laneHandle) throw new Error("execution lane handle is required");
     const threadId = body.message_thread_id;
@@ -1571,7 +1600,7 @@ export class BridgeEngine {
     const logFile: string | null = null;
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
-    const outDir = recoveryOutDir ?? await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
+    const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
     const cwd = this._workingDir(executionKind);
     const nativeSessionMode = buildCliInvocation({
       bot: executionKind,
@@ -1718,57 +1747,17 @@ export class BridgeEngine {
         await this._cleanTerminalOutputDir(outDir, "lease loss");
         throw error;
       }
-      if (error instanceof ProviderStallError && recoveryAttempt < MAX_PROVIDER_STALL_RECOVERIES) {
-        this._assertLaneOwned(laneHandle);
-        console.warn(`[${this.kind}] recovering stalled provider run attempt=${recoveryAttempt + 1}/${MAX_PROVIDER_STALL_RECOVERIES} runId=${runId ?? "unknown"}`);
-        return this._executeProviderAttempt(
-          prependProviderRecoveryContinuation(prompt),
-          sessionId,
-          chatId,
-          body,
-          onProgress,
-          attachments,
-          eventContext,
-          runId,
-          collect,
-          chatKey,
-          laneHandle,
-          recoveryAttempt + 1,
-          outDir,
-        );
-      }
-      if (error instanceof ProviderStallError && collect && runId && eventContext) {
-        collect(eventType.runFailed({
-          ...eventContext,
-          error: `Provider remained stalled after ${MAX_PROVIDER_STALL_RECOVERIES} automatic recoveries`,
-          category: "timeout",
-        }));
-      }
+      const providerFallbackReason = providerFallbackReasonForError(executionKind, error instanceof Error ? error : new Error(String(error)));
       const canPublish = this._canPublish(laneHandle);
-      if (canPublish) {
+      if (providerFallbackReason) {
+        await this._cleanTerminalOutputDir(outDir, "provider fallback");
+      } else if (canPublish) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       }
       if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
         if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, kind, null));
-        if (recoveryAttempt > 0) {
-          return this._executeProviderAttempt(
-            prompt,
-            null,
-            chatId,
-            body,
-            onProgress,
-            attachments,
-            eventContext,
-            runId,
-            collect,
-            chatKey,
-            laneHandle,
-            recoveryAttempt,
-            outDir,
-          );
-        }
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {

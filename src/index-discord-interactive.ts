@@ -26,6 +26,7 @@ import { DiscordClient, type DiscordUpdate } from "./discord.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
+import { getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
   getUserCliPreference,
   setUserCliPreference,
@@ -102,8 +103,8 @@ const cliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
   { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "grok", "cursor"] },
 );
-const fallbackChain = new ProviderFallbackChain(cliChain, db);
-const exhaustedChats = new Set<string>();
+const fallbackChain = new ProviderFallbackChain(cliChain, db, (cli) => getAvailableCliKinds().has(cli as CliKind));
+const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 // ── DiscordClient ─────────────────────────────────────────────────────────────
 
@@ -160,8 +161,8 @@ const engines = Object.fromEntries(
         fullConfig: config,
         advisorCapabilities: advisorBroker ?? undefined,
         hooks: {
-          onCapacityExhausted: async (chatKey: string) => {
-            exhaustedChats.add(chatKey);
+          onProviderFallbackRequested: async (chatKey, reason) => {
+            fallbackRequests.set(chatKey, reason);
           },
         },
       },
@@ -174,7 +175,7 @@ const engines = Object.fromEntries(
 for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     return dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
-      engines, fallbackChain, exhaustedChats, db,
+      engines, fallbackChain, fallbackRequests, db,
       notify: async (msg) => { await client.sendMessage({ chat_id: queued.chatKey, text: msg }); },
       onCliSwitched: async (newCli) => setUserCliPreference(db, queued.chatKey, newCli),
     });
@@ -205,7 +206,7 @@ if (scheduledOwnerKey && scheduledActorId) {
       await dispatchInteractiveTurnWithFallback(turn, {
         engines,
         fallbackChain,
-        exhaustedChats,
+        fallbackRequests,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: routine.chatKey, text: msg }); },
         onCliSwitched: async (newCli) => setUserCliPreference(db, routine.chatKey, newCli),
@@ -341,7 +342,7 @@ async function handleMessage(d: any): Promise<void> {
   await dispatchInteractiveTurnWithFallback(turn, {
     engines,
     fallbackChain,
-    exhaustedChats,
+    fallbackRequests,
     db,
     notify: async (msg) => {
       await client.sendMessage({ chat_id: channelId, text: msg });

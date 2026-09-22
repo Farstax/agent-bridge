@@ -9,7 +9,7 @@ import type { TelegramUpdate } from "./types.js";
 import { buildTelegramCommands } from "./commands.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { markHandoffRequired } from "./handoffState.js";
-import type { ExecutionOutcome, PendingMessage } from "./engine.js";
+import type { ExecutionOutcome, PendingMessage, ProviderFallbackReason } from "./engine.js";
 import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type InteractiveTurnInput } from "./interactiveIngress.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
@@ -302,7 +302,9 @@ export interface InteractiveDispatchEngine {
 export interface InteractiveDispatchDeps {
   engines: Record<string, InteractiveDispatchEngine>;
   fallbackChain: ProviderFallbackChain;
-  exhaustedChats: Set<string>;
+  fallbackRequests?: Map<string, ProviderFallbackReason>;
+  /** Legacy test/embedding compatibility; production uses fallbackRequests. */
+  exhaustedChats?: Set<string>;
   authRequiredChats?: Set<string>;
   db: BridgeDb;
   notify: (msg: string) => Promise<void> | void;
@@ -370,8 +372,9 @@ async function dispatchInteractiveExecutionWithFallback(
   tried: Set<string>,
 ): Promise<ExecutionOutcome> {
   const { chatKey } = execution;
-  const { engines, fallbackChain, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
-  exhaustedChats.delete(chatKey);
+  const { engines, fallbackChain, fallbackRequests, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
+  fallbackRequests?.delete(chatKey);
+  exhaustedChats?.delete(chatKey);
   authRequiredChats?.delete(chatKey);
   if (tried.size === 0) {
     const pref = getUserCliPreference(db, chatKey);
@@ -384,10 +387,13 @@ async function dispatchInteractiveExecutionWithFallback(
   if (!engine) throw new Error(`No engine configured for CLI ${activeCli}`);
   const outcome = await execution.execute(engine);
 
-  const authRequired = authRequiredChats?.has(chatKey) ?? false;
-  const fallbackRequired = authRequired || exhaustedChats.has(chatKey);
-  if (fallbackRequired) {
-    exhaustedChats.delete(chatKey);
+  const legacyAuthRequired = authRequiredChats?.has(chatKey) ?? false;
+  const legacyCapacity = exhaustedChats?.has(chatKey) ?? false;
+  const fallbackReason = fallbackRequests?.get(chatKey)
+    ?? (legacyAuthRequired ? "auth_required" : legacyCapacity ? "capacity" : null);
+  if (fallbackReason) {
+    fallbackRequests?.delete(chatKey);
+    exhaustedChats?.delete(chatKey);
     authRequiredChats?.delete(chatKey);
     let next: CliKind | null = null;
     for (const cli of fallbackChain.getChain()) {
@@ -399,9 +405,12 @@ async function dispatchInteractiveExecutionWithFallback(
     if (next) {
       prepareCliHandoff(db, chatKey, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
-      await notify(authRequired
+      const notice = fallbackReason === "auth_required"
         ? `${activeCli} needs re-authentication. Falling back to ${next}…`
-        : `Switching to ${next} (${activeCli} at capacity)`);
+        : fallbackReason === "capacity"
+          ? `Switching to ${next} (${activeCli} at capacity)`
+          : `Switching to ${next} after ${activeCli} became unavailable.`;
+      await notify(notice);
       if (onCliSwitched) await onCliSwitched(next);
       if (execution.recoverPendingQueue && engines[next].recoverPendingQueue) {
         markPendingFallbackResume(fallbackChain, chatKey, tried);
@@ -416,7 +425,7 @@ async function dispatchInteractiveExecutionWithFallback(
       }
       return dispatchInteractiveExecutionWithFallback(execution, deps, tried);
     }
-    await notify(authRequired
+    await notify(fallbackReason === "auth_required"
       ? `${activeCli} needs re-authentication. No remaining configured fallback provider is available.`
       : "No remaining configured fallback provider is available. Please try again later.");
     return execution.exhaustedOutcome;

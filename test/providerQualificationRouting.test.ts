@@ -174,11 +174,23 @@ describe("provider qualification routing", () => {
     expect([...available]).toEqual(["claude"]);
   });
 
-  it("excludes Agy from the default fallback chain when its managed harness is unavailable", () => {
+  it("uses canonical interactive availability to exclude Agy from fallback when its managed harness is unavailable", () => {
     vi.stubEnv("ANTIGRAVITY_HARNESS_PATH", "/definitely/missing/agy_localharness_external");
     try {
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["antigravity"], db);
+      const available = getAvailableCliKinds({
+        homeDir: "/qualification-test-home",
+        exists: () => true,
+        commandExists: () => true,
+        failedProviders: new Set(),
+        readCursorStatus: () => ({ isAuthenticated: false }),
+      });
+      const chain = new ProviderFallbackChain(
+        ["antigravity"],
+        db,
+        (cli) => available.has(cli as any),
+      );
+      expect(available.has("antigravity")).toBe(false);
       expect(chain.getChain()).toEqual([]);
     } finally {
       vi.unstubAllEnvs();

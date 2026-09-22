@@ -223,6 +223,7 @@ export async function sendMessageWithProgress({
   beforeFinalDelivery,
   afterFinalDelivery,
   propagateExecutionErrors = false,
+  propagateExecutionError,
   propagateTimeoutErrors = false,
   runId,
   onEvent,
@@ -240,6 +241,8 @@ export async function sendMessageWithProgress({
   beforeFinalDelivery?: () => boolean;
   afterFinalDelivery?: () => void | Promise<void>;
   propagateExecutionErrors?: boolean;
+  /** Selectively propagate provider execution failures while preserving ordinary error delivery. */
+  propagateExecutionError?: (error: Error) => boolean;
   propagateTimeoutErrors?: boolean;
   runId?: string;
   onEvent?: (event: BridgeEvent) => void;
@@ -712,7 +715,8 @@ export async function sendMessageWithProgress({
       await beginProgressCleanup();
       throw err;
     }
-    if (propagateExecutionErrors && !finalDeliveryPreparationFailed) {
+    const executionError = err instanceof Error ? err : new Error(String(err));
+    if (!finalDeliveryPreparationFailed && (propagateExecutionErrors || propagateExecutionError?.(executionError))) {
       await beginProgressCleanup();
       throw err;
     }

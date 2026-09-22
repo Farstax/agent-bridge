@@ -141,7 +141,11 @@ describe("Grok routing safety", () => {
       writeFailedGrokQualification(evidencePath);
       const db = openDb(":memory:");
       setUserCliPreference(db, "channel:1", "grok");
-      const chain = new ProviderFallbackChain(["codex", "grok"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "grok"],
+        db,
+        (cli) => cli === "grok" ? isGrokRouteable() : true,
+      );
       chain.setActiveCli("channel:1", "grok");
       expect(getUserCliPreference(db, "channel:1")).toBe("codex");
       expect(chain.getActiveCli("channel:1")).toBe("codex");

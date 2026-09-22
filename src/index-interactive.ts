@@ -190,9 +190,9 @@ if (!botUsername) {
 const fallbackChain = new ProviderFallbackChain(
   providerLock ? runtimePolicy.cliKinds : configuredCliChain,
   db,
+  (cli) => getAvailableCliKinds().has(cli as CliKind),
 );
-const exhaustedChats = new Set<string>();
-const authRequiredChats = new Set<string>();
+const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
   const detected = getAvailableCliKinds();
@@ -246,11 +246,8 @@ const engines = Object.fromEntries(
                 return { text: `Unable to load live ACP settings for ${kind}: ${userText}` };
               }
             },
-            onCapacityExhausted: async (chatKey: string) => {
-              exhaustedChats.add(chatKey);
-            },
-            onAuthRequired: async (chatKey: string) => {
-              authRequiredChats.add(chatKey);
+            onProviderFallbackRequested: async (chatKey, reason) => {
+              fallbackRequests.set(chatKey, reason);
             },
           },
         },
@@ -357,7 +354,7 @@ for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     const chatKey = queued.chatKey;
     return dispatchClaimedInteractiveWithFallback(queued, chatKey, {
-      engines, fallbackChain, exhaustedChats, authRequiredChats, db,
+      engines, fallbackChain, fallbackRequests, db,
       notify: async (msg) => {
         await sendTelegramMessage({ client, kind: "interactive", chatId: queued.chatId, body: { text: msg, message_thread_id: queued.threadId ?? undefined } });
       },
@@ -433,8 +430,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
     await dispatchInteractiveTurnWithFallback(turn, {
       engines,
       fallbackChain,
-      exhaustedChats,
-      authRequiredChats,
+      fallbackRequests,
       db,
       notify: sendNotice,
       onCliSwitched: async (newCli) => {
@@ -665,8 +661,7 @@ for (;;) {
               await dispatchInteractiveTurnWithFallback(turn, {
                 engines,
                 fallbackChain,
-                exhaustedChats,
-                authRequiredChats,
+                fallbackRequests,
                 db,
                 notify: async (msg) => {
                   await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: msg, message_thread_id: threadId } });

@@ -7,25 +7,6 @@
  */
 
 import type { BridgeDb } from "./db.js";
-import { hasAgyRuntimePrerequisites } from "./providers/agyAvailability.js";
-import { isCursorRouteable } from "./providers/cursorAvailability.js";
-import { isGrokRouteable } from "./providers/grokAvailability.js";
-import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
-import type { ProviderId } from "./providers/types.js";
-
-function providerIdForCli(cli: string): ProviderId | null {
-  if (cli === "antigravity" || cli === "agy") return "agy";
-  if (cli === "codex" || cli === "claude" || cli === "grok" || cli === "cursor" || cli === "custom-acp") return cli;
-  return null;
-}
-
-function qualificationAllowsCli(cli: string): boolean {
-  if (cli === "grok") return isGrokRouteable();
-  if (cli === "cursor") return isCursorRouteable();
-  const providerId = providerIdForCli(cli);
-  if (providerId === "agy" && !hasAgyRuntimePrerequisites()) return false;
-  return providerId == null || !getQualificationFailedProviders().has(providerId);
-}
 
 export class ProviderFallbackChain {
   private readonly chain: string[];
@@ -33,7 +14,7 @@ export class ProviderFallbackChain {
   private readonly db: BridgeDb;
   private readonly isCliAvailable: (cli: string) => boolean;
 
-  constructor(chain: string[], db: BridgeDb, isCliAvailable: (cli: string) => boolean = qualificationAllowsCli) {
+  constructor(chain: string[], db: BridgeDb, isCliAvailable: (cli: string) => boolean = () => true) {
     this.chain = chain;
     this.db = db;
     this.isCliAvailable = isCliAvailable;
@@ -55,9 +36,8 @@ export class ProviderFallbackChain {
       this.chatActiveIdx.set(chatKey, candidate);
       return this.chain[candidate];
     }
-    // Preserve the historical return type when every configured provider is
-    // unavailable. The execution boundary still rejects unavailable Grok or
-    // Cursor before spawn, allowing the normal engine path to deliver the error.
+    // Preserve the historical return type if a caller supplies no available
+    // provider. Production routing injects canonical interactive availability.
     return this.chain[idx];
   }
 

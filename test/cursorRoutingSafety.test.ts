@@ -151,7 +151,11 @@ describe("Cursor routing safety", () => {
       writeFailedCursorQualification(evidencePath);
       const db = openDb(":memory:");
       setUserCliPreference(db, "channel:1", "cursor");
-      const chain = new ProviderFallbackChain(["codex", "cursor"], db);
+      const chain = new ProviderFallbackChain(
+        ["codex", "cursor"],
+        db,
+        (cli) => cli === "cursor" ? isCursorRouteable() : true,
+      );
       chain.setActiveCli("channel:1", "cursor");
       expect(getUserCliPreference(db, "channel:1")).toBe("codex");
       expect(chain.getActiveCli("channel:1")).toBe("codex");
