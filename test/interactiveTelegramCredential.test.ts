@@ -90,7 +90,7 @@ describe("interactive Telegram systemd credential", () => {
     expect(helper).not.toContain("LoadCredential");
     expect(statSync(helperPath).mode & 0o111).not.toBe(0);
     expect(workflow).toContain("scripts/load-interactive-telegram-credential.sh");
-    expect(installDoc).toContain("custom systemd unit");
+    expect(installDoc).toContain("generates its own systemd unit");
     expect(installDoc).toContain("must also invoke the shipped helper");
     expect(installDoc).toContain("attaching the credential alone");
     expect(runtime).not.toContain("CREDENTIALS_DIRECTORY");
