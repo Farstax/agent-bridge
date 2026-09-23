@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyAnyProviderError,
   classifyProviderError,
+  isClaudeRuntimeAuthFailure,
   isFallbackEligibleProviderError,
   isRetryEligibleProviderError,
 } from "../src/providers/errorClassification.js";
@@ -10,6 +11,19 @@ import { isProviderFallbackEligibleError } from "../src/providers/fallbackEligib
 import { getNextFallbackModel, isCapacityExhaustedError } from "../src/cli.js";
 
 describe("provider error classification", () => {
+  it("does not treat Claude OAuth refresh contention as a verified auth failure", () => {
+    const contention = new Error(
+      "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh.",
+    );
+    expect(isClaudeRuntimeAuthFailure(contention)).toBe(false);
+  });
+
+  it("treats a verified Claude auth failure as an auth failure", () => {
+    const authRequired = new Error("Authentication required: please log in");
+    expect(isClaudeRuntimeAuthFailure(authRequired)).toBe(true);
+  });
+
+
   it("classifies Codex capacity and model-unavailable messages", () => {
     expect(classifyProviderError("codex", new Error("MODEL_CAPACITY_EXHAUSTED"))).toMatchObject({
       kind: "capacity_exhausted",

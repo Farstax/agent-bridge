@@ -193,6 +193,16 @@ export function classifyProviderError(providerId: ProviderId, error: Error | str
   return { kind: "unknown", reason: "no provider error pattern matched" };
 }
 
+/**
+ * Only a definitively verified auth failure should disable Claude for every
+ * chat. Refresh-lock contention is classified as transient above because it
+ * has been observed firing on an ordinary dropped ACP connection with a
+ * valid, working credential — it must never drive that global lockout.
+ */
+export function isClaudeRuntimeAuthFailure(error: Error | string): boolean {
+  return classifyProviderError("claude", error).kind === "auth_required";
+}
+
 export function classifyAnyProviderError(error: Error | string): ProviderErrorClassification {
   for (const providerId of PROVIDER_IDS) {
     const classification = classifyProviderError(providerId, error);

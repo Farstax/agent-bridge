@@ -22,7 +22,7 @@ import type { ProviderId, ProviderInvocation, ProviderInvocationRequest } from "
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
 import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
-import { classifyProviderError, isClaudeOAuthRefreshContention } from "./errorClassification.js";
+import { isClaudeRuntimeAuthFailure } from "./errorClassification.js";
 import {
   clearProviderRuntimeAuthDegraded,
   markProviderRuntimeAuthDegraded,
@@ -625,13 +625,7 @@ export async function runResolvedAcpProviderTurn(
     const classifiedError = redacted instanceof Error || typeof redacted === "string"
       ? redacted
       : new Error(String(redacted));
-    if (
-      providerId === "claude"
-      && (
-        classifyProviderError("claude", classifiedError).kind === "auth_required"
-        || isClaudeOAuthRefreshContention(classifiedError)
-      )
-    ) {
+    if (providerId === "claude" && isClaudeRuntimeAuthFailure(classifiedError)) {
       markProviderRuntimeAuthDegraded("claude", runtimeHome);
     }
     throw redacted;

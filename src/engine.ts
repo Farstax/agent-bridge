@@ -1891,23 +1891,31 @@ export class BridgeEngine {
     }
   }
 
+  /**
+   * Any execution error a managed bot throws counts toward the circuit
+   * breaker, not just timeout/killed-by-signal text. Provider adapters throw
+   * a wide and evolving variety of opaque transport/runtime errors (ACP
+   * connection drops, SDK-internal failures, etc.); enumerating patterns is a
+   * losing game and leaves the Bridge stuck on unrecognised error shapes.
+   * A genuinely invalid session is still cleared immediately, without waiting
+   * for a second failure.
+   */
   private _handleCircuitBreaker(error: Error, chatKey: string, laneHandle: ExecutionLaneHandle): void {
     if (!isManagedBotKind(this.kind)) return;
-    const msg = error.message ?? "";
-    if (/timeout|killed by signal/i.test(msg)) {
-      this._runWithFence(laneHandle, () => {
-        const failures = this.db.incrementFailures(chatKey, this.kind as BotKind);
-        if (failures >= 2) {
-          console.warn(`[${this.kind}] clearing session after ${failures} consecutive failures for ${chatKey}`);
-          persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null);
-          this.db.resetFailures(chatKey, this.kind as BotKind);
-        }
-      });
-    } else if (isInvalidProviderSessionError(error)) {
+    if (isInvalidProviderSessionError(error)) {
       console.warn(`[${this.kind}] clearing invalid session ID for ${chatKey}`);
       this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
       this.db.resetFailures(chatKey, this.kind);
+      return;
     }
+    this._runWithFence(laneHandle, () => {
+      const failures = this.db.incrementFailures(chatKey, this.kind as BotKind);
+      if (failures >= 2) {
+        console.warn(`[${this.kind}] clearing session after ${failures} consecutive failures for ${chatKey}`);
+        persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null);
+        this.db.resetFailures(chatKey, this.kind as BotKind);
+      }
+    });
   }
 
   async handleCallback(callbackQuery: TelegramCallbackQuery, providedChatKey?: string): Promise<void> {
