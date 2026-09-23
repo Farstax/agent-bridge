@@ -16,7 +16,9 @@ import { getQualificationFailedProviders } from "./providers/qualificationStatus
 import { isProviderRuntimeAuthDegraded } from "./providers/runtimeAvailability.js";
 import {
   isCursorRouteable,
+  isCursorRouteableCached,
   resolveCursorAuthPaths,
+  type CursorAvailabilityOptions,
   type CursorStatusSnapshot,
 } from "./providers/cursorAvailability.js";
 import { isGrokRouteable, resolveGrokAuthPaths } from "./providers/grokAvailability.js";
@@ -41,6 +43,7 @@ export interface AvailableCliOptions {
   readCursorStatus?: () => CursorStatusSnapshot;
   readCursorVersion?: () => string;
   verifyApiKey?: (provider: ProviderId) => boolean;
+  resolveCursorRouteable?: (options: CursorAvailabilityOptions) => boolean;
 }
 
 export interface InteractiveCliAuthStartupOptions extends VerifyProviderApiKeyOptions {
@@ -143,7 +146,8 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
     failedProviders,
     verifyApiKey: () => verifyApiKey("grok"),
   })) available.add("grok");
-  if (hasRuntime("cursor") && isCursorRouteable({
+  const resolveCursorRouteable = options.resolveCursorRouteable ?? isCursorRouteable;
+  if (hasRuntime("cursor") && resolveCursorRouteable({
     homeDir: home,
     exists,
     env,
@@ -163,3 +167,21 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
 }
 
 export const getAuthenticatedCliKinds = getAvailableCliKinds;
+
+/**
+ * Hot-path variant for every Telegram/Discord update. Every provider check in
+ * `getAvailableCliKinds` except Cursor's is a cheap file-existence/PATH read
+ * and stays fully fresh here -- caching those would risk exactly the
+ * staleness bug this function must not have (e.g. a user finishing Codex or
+ * Antigravity auth must show up on their very next message). Only Cursor's
+ * check shells out synchronously (`cursor-agent status` / `--version`, each
+ * up to a 10s timeout) and blocks the bot's single event loop for every
+ * in-flight chat, not just the caller, so only it is routed through
+ * `isCursorRouteableCached`'s short bounded TTL.
+ */
+export function getCachedAvailableCliKinds(options: AvailableCliOptions = {}): Set<CliKind> {
+  return getAvailableCliKinds({
+    resolveCursorRouteable: isCursorRouteableCached,
+    ...options,
+  });
+}
