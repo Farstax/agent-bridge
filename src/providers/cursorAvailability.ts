@@ -94,3 +94,36 @@ export function isCursorRouteable(options: CursorAvailabilityOptions = {}): bool
   const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
   return !failedProviders.has("cursor");
 }
+
+const CURSOR_ROUTEABLE_CACHE_TTL_MS = 5_000;
+
+let cursorRouteableCache: { expiresAt: number; result: boolean } | null = null;
+
+export function invalidateCursorRouteableCache(): void {
+  cursorRouteableCache = null;
+}
+
+/**
+ * `isCursorRouteable` is the only per-provider check in the interactive CLI
+ * availability probe that shells out synchronously (`cursor-agent status` /
+ * `--version`, each up to a 10s timeout), blocking the bot's single event
+ * loop. Every other provider check here is a cheap file-existence/PATH read,
+ * so only this one needs caching -- and there is no cheap signal for "the
+ * user just finished `cursor-agent login`" to invalidate on precisely, so a
+ * short bounded TTL (rather than the event-based invalidation used for
+ * cheaper checks) is the honest trade-off: it caps both the worst-case
+ * staleness after a fresh login and the worst-case repeated-probe cost
+ * during a burst of messages to the same window.
+ */
+export function isCursorRouteableCached(
+  options: CursorAvailabilityOptions = {},
+  now: () => number = Date.now,
+): boolean {
+  const nowMs = now();
+  if (cursorRouteableCache && cursorRouteableCache.expiresAt > nowMs) {
+    return cursorRouteableCache.result;
+  }
+  const result = isCursorRouteable(options);
+  cursorRouteableCache = { expiresAt: nowMs + CURSOR_ROUTEABLE_CACHE_TTL_MS, result };
+  return result;
+}
