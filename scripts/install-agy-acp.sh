@@ -133,6 +133,23 @@ PY
 }
 
 if ! valid_component; then
+  # Fail before downloading or disturbing anything if there is not enough
+  # headroom for the archive plus its extracted binary and harness to
+  # coexist during staging. Content-Length is a remote-reported estimate,
+  # so the required threshold applies a safety multiplier rather than
+  # trusting it exactly.
+  remote_length="$(curl --fail --location --silent --show-error --head "${ARCHIVE_URL}" \
+    | tr -d '\r' | awk 'tolower($1) == "content-length:" {print $2; exit}')" \
+    || fail "unable to determine Agy ACP archive size before download"
+  [[ "${remote_length}" =~ ^[0-9]+$ ]] || fail "Agy ACP archive did not report a numeric Content-Length"
+  safety_factor="${AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR:-4}"
+  required_bytes=$(( remote_length * safety_factor ))
+  available_bytes="$(df --output=avail -B1 "${ROOT}" 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  [[ "${available_bytes}" =~ ^[0-9]+$ ]] || fail "unable to determine available disk space at ${ROOT}"
+  if (( available_bytes < required_bytes )); then
+    fail "insufficient disk space to stage Agy ACP component: need ~${required_bytes} bytes (archive ${remote_length} bytes x${safety_factor} safety factor), have ${available_bytes} bytes available at ${ROOT}"
+  fi
+
   work="$(mktemp -d "${ROOT}/.install-${VERSION}.XXXXXX")"
   trap 'rm -rf -- "${work:-}"' EXIT
   archive="${work}/agy-acp.zip"
