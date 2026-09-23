@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CliKind } from "./interactiveBot.js";
@@ -13,7 +13,12 @@ import {
 } from "./providers/apiKeyAuth.js";
 import { hasAgyRuntimePrerequisites, resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
 import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
-import { isProviderRuntimeAuthDegraded } from "./providers/runtimeAvailability.js";
+import { qualificationEvidencePath } from "./providers/qualification.js";
+import {
+  claudeCredentialLockFile,
+  getProviderAvailabilityEpoch,
+  isProviderRuntimeAuthDegraded,
+} from "./providers/runtimeAvailability.js";
 import {
   isCursorRouteable,
   resolveCursorAuthPaths,
@@ -163,3 +168,49 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
 }
 
 export const getAuthenticatedCliKinds = getAvailableCliKinds;
+
+interface AvailabilityCacheEntry {
+  fingerprint: string;
+  result: Set<CliKind>;
+}
+
+let availabilityCache: AvailabilityCacheEntry | null = null;
+
+export function invalidateAvailableCliKindsCache(): void {
+  availabilityCache = null;
+}
+
+function readMtimeMs(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function computeAvailabilityFingerprint(home: string): string {
+  const lockMtime = readMtimeMs(claudeCredentialLockFile(home));
+  const evidenceMtime = readMtimeMs(qualificationEvidencePath(home));
+  return `${getProviderAvailabilityEpoch()}:${lockMtime ?? "none"}:${evidenceMtime ?? "none"}`;
+}
+
+/**
+ * Cached wrapper for hot call sites (every Telegram/Discord update). The
+ * underlying probe set includes synchronous, blocking CLI shell-outs (e.g.
+ * Cursor status/version, each up to a 10s timeout); recomputing it per
+ * message stalls the bot's single event loop for every in-flight chat, not
+ * just the caller. Cached until a provider's availability state actually
+ * changes -- tracked via the runtime-auth-degraded epoch, the Claude
+ * credential lock file's mtime (covers cross-process degrade/clear), and the
+ * qualification evidence file's mtime -- rather than a wall-clock TTL.
+ */
+export function getCachedAvailableCliKinds(options: AvailableCliOptions = {}): Set<CliKind> {
+  const home = options.homeDir ?? homedir();
+  const fingerprint = computeAvailabilityFingerprint(home);
+  if (availabilityCache && availabilityCache.fingerprint === fingerprint) {
+    return availabilityCache.result;
+  }
+  const result = getAvailableCliKinds(options);
+  availabilityCache = { fingerprint, result };
+  return result;
+}

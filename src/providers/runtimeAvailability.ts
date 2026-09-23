@@ -5,6 +5,19 @@ import type { ProviderId } from "./types.js";
 
 const CLAUDE_RUNTIME_AUTH_DEGRADED = "runtime-auth-degraded";
 const localRuntimeAuthDegradedProviders = new Set<ProviderId>();
+let providerAvailabilityEpoch = 0;
+
+/**
+ * Monotonic counter bumped on every in-process degrade/clear transition, for
+ * any provider. Callers that cache derived availability (e.g. the interactive
+ * bot's CLI-kind probe) key their cache on this so it invalidates exactly on
+ * a real state change rather than a wall-clock TTL. Cross-process Claude
+ * transitions are not visible here -- callers must also watch
+ * `claudeCredentialLockFile`'s mtime for that case.
+ */
+export function getProviderAvailabilityEpoch(): number {
+  return providerAvailabilityEpoch;
+}
 
 interface ClaudeRuntimeAuthDegradedRecord {
   schemaVersion: 1;
@@ -45,6 +58,7 @@ export function markProviderRuntimeAuthDegraded(
   providerId: ProviderId,
   homeDir: string = homedir(),
 ): void {
+  providerAvailabilityEpoch += 1;
   if (providerId !== "claude") {
     localRuntimeAuthDegradedProviders.add(providerId);
     return;
@@ -64,6 +78,7 @@ export function clearProviderRuntimeAuthDegraded(
   providerId: ProviderId,
   homeDir: string = homedir(),
 ): void {
+  providerAvailabilityEpoch += 1;
   if (providerId !== "claude") {
     localRuntimeAuthDegradedProviders.delete(providerId);
     return;

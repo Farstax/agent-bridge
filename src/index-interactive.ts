@@ -16,7 +16,7 @@ import { sendTelegramMessage } from "./messageDelivery.js";
 import { loadBotsConfig, resolveExecutionMode, resolveBusyMessageMode, validateBusyMessageModeEnv } from "./config.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
-import { getAvailableCliKinds } from "./interactiveCliAuth.js";
+import { getCachedAvailableCliKinds as getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
   getUserCliPreference,
   setUserCliPreference,
