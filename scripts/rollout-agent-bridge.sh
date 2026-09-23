@@ -1260,6 +1260,169 @@ record_phase() {
   /usr/bin/sha256sum "$phase_ledger" > "$phase_ledger.sha256"
 }
 
+# Keep the five newest proven terminal rollouts. Older proven terminal
+# evidence and its matching backup set are removed. Ambiguous, in-progress,
+# and sentinel-referenced artifacts are never deleted.
+ROLLOUT_TERMINAL_RETENTION_COUNT=5
+ROLLOUT_EVIDENCE_BUDGET_BYTES=16777216
+ROLLOUT_SAFETY_RESERVE_BYTES=268435456
+
+rollout_artifact_is_terminal() {
+  local dir="$1" ledger="$1/phase-ledger.log" last
+  [[ -f "$ledger" && ! -L "$ledger" && -f "$ledger.sha256" && ! -L "$ledger.sha256" ]] || return 1
+  /usr/bin/sha256sum -c "$ledger.sha256" >/dev/null 2>&1 || return 1
+  last="$(/usr/bin/grep '^phase=' "$ledger" | /usr/bin/tail -n 1 || true)"
+  case "$last" in
+    "phase=COMPLETE "*|"phase=FAILED_RESTORED "*|"phase=PRE_BACKUP_RECOVERED "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+remove_named_child_directory() {
+  local root="$1" name="$2" target canonical root_canonical
+  target="$root/$name"
+  [[ -d "$target" && ! -L "$target" ]] || return 1
+  canonical="$(/usr/bin/realpath -e -- "$target")"
+  root_canonical="$(/usr/bin/realpath -e -- "$root")"
+  [[ "$canonical" == "$root_canonical/$name" ]] || return 1
+  /usr/bin/rm -rf -- "$canonical"
+}
+
+prune_rollout_retention() {
+  local retention_count="$ROLLOUT_TERMINAL_RETENTION_COUNT"
+  [[ -n "${AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT:-}" ]] && retention_count="$AGENT_BRIDGE_ROLLOUT_RETENTION_COUNT"
+  [[ "$retention_count" =~ ^[0-9]+$ ]] || die "rollout retention count is not numeric"
+  local -a terminal=()
+  local entry base
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    [[ -d "$entry" && ! -L "$entry" ]] || continue
+    base="$(/usr/bin/basename -- "$entry")"
+    [[ "$base" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{40}$ ]] || continue
+    [[ "$entry" == "$artifact_dir" ]] && continue
+    rollout_artifact_is_terminal "$entry" || continue
+    terminal+=("$base")
+  done < <(/usr/bin/find "$log_dir" -mindepth 1 -maxdepth 1 -type d -print | /usr/bin/sort)
+  local pruned=0 retained=${#terminal[@]}
+  if (( ${#terminal[@]} > retention_count )); then
+    local index name backup
+    local remove_until=$(( ${#terminal[@]} - retention_count ))
+    for (( index=0; index<remove_until; index++ )); do
+      name="${terminal[$index]}"
+      remove_named_child_directory "$log_dir" "$name" || die "failed to prune proven terminal rollout evidence: $name"
+      backup="$backup_dir/$name"
+      if [[ -e "$backup" || -L "$backup" ]]; then
+        if [[ -d "$backup" && ! -L "$backup" ]]; then
+          remove_named_child_directory "$backup_dir" "$name" || die "failed to prune proven terminal rollout backup: $name"
+        fi
+      fi
+      pruned=$((pruned + 1))
+    done
+    retained=$(( ${#terminal[@]} - pruned ))
+  fi
+  echo "rollout retention pruned=${pruned} retained_terminal=${retained}"
+}
+
+regular_file_bytes() {
+  local path="$1"
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    printf '0'
+    return 0
+  fi
+  [[ -f "$path" && ! -L "$path" ]] || die "disk admission cannot measure a non-regular path"
+  /usr/bin/stat -c %s -- "$path"
+}
+
+measure_host_component_bytes() {
+  if [[ -n "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES:-}" ]]; then
+    [[ "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES}" =~ ^[0-9]+$ ]] || die "host component byte hook is not numeric"
+    printf '%s' "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES}"
+    return 0
+  fi
+  if (( release_mode == 0 )); then
+    printf '0'
+    return 0
+  fi
+  local total=0 installer bytes installers
+  [[ -f "$project_dir/package.json" && ! -L "$project_dir/package.json" ]] || die "target release package manifest is missing"
+  installers="$(/usr/bin/python3 - "$project_dir/package.json" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+components = manifest.get("agentBridge", {}).get("hostComponents", [])
+if not isinstance(components, list):
+    raise SystemExit("host component manifest is malformed")
+for component in components:
+    installer = component.get("installer") if isinstance(component, dict) else None
+    if not isinstance(installer, str) or not installer.startswith("scripts/") or ".." in installer.split("/"):
+        raise SystemExit("host component installer path is unsafe")
+    print(installer)
+PY
+)" || die "host component manifest is malformed"
+  while IFS= read -r installer; do
+    [[ -n "$installer" ]] || continue
+    [[ -f "$project_dir/$installer" && ! -L "$project_dir/$installer" ]] || die "host component installer is missing: $installer"
+    bytes="$(/usr/bin/bash "$project_dir/$installer" --print-required-bytes)" || die "host component byte preflight failed: $installer"
+    bytes="${bytes//$'\n'/}"
+    [[ "$bytes" =~ ^[0-9]+$ ]] || die "host component byte preflight was not numeric: $installer"
+    total=$((total + bytes))
+  done <<< "$installers"
+  printf '%s' "$total"
+}
+
+measure_available_bytes() {
+  if [[ -n "${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND:-}" ]]; then
+    local command_bytes
+    command_bytes="$("${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND}")" || die "available byte command failed"
+    command_bytes="${command_bytes//$'\n'/}"
+    [[ "$command_bytes" =~ ^[0-9]+$ ]] || die "available byte command did not return an integer"
+    printf '%s' "$command_bytes"
+    return 0
+  fi
+  if [[ -n "${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES:-}" ]]; then
+    [[ "${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES}" =~ ^[0-9]+$ ]] || die "available byte hook is not numeric"
+    printf '%s' "${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES}"
+    return 0
+  fi
+  local min="" path avail
+  local -a paths=("$backup_dir" "$log_dir")
+  local database
+  for database in "${databases[@]}"; do
+    paths+=("$(/usr/bin/dirname -- "$database")")
+  done
+  for path in "${paths[@]}"; do
+    avail="$(/usr/bin/df -B1 --output=avail -- "$path" | /usr/bin/tail -n 1 | /usr/bin/tr -d '[:space:]')" || die "unable to measure available disk"
+    [[ "$avail" =~ ^[0-9]+$ ]] || die "unable to measure available disk"
+    if [[ -z "$min" || "$avail" -lt "$min" ]]; then min="$avail"; fi
+  done
+  [[ -n "$min" ]] || die "unable to measure available disk"
+  printf '%s' "$min"
+}
+
+admit_rollout_disk() {
+  local database backup_bytes=0 slack_bytes=0 main_bytes wal_bytes
+  local evidence_bytes="$ROLLOUT_EVIDENCE_BUDGET_BYTES"
+  local reserve_bytes="$ROLLOUT_SAFETY_RESERVE_BYTES"
+  [[ -n "${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES:-}" ]] && reserve_bytes="${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES}"
+  [[ "$reserve_bytes" =~ ^[0-9]+$ && "$evidence_bytes" =~ ^[0-9]+$ ]] || die "disk admission budget is not numeric"
+  for database in "${databases[@]}"; do
+    main_bytes="$(regular_file_bytes "$database")"
+    wal_bytes="$(regular_file_bytes "${database}-wal")"
+    regular_file_bytes "${database}-shm" >/dev/null
+    backup_bytes=$((backup_bytes + main_bytes))
+    slack_bytes=$((slack_bytes + wal_bytes))
+  done
+  local restore_bytes="$backup_bytes"
+  local host_bytes available required
+  host_bytes="$(measure_host_component_bytes)"
+  available="$(measure_available_bytes)"
+  required=$((backup_bytes + slack_bytes + restore_bytes + evidence_bytes + host_bytes + reserve_bytes))
+  echo "disk admission available=${available} required=${required} reserve=${reserve_bytes} database_backup=${backup_bytes} checkpoint_slack=${slack_bytes} evidence=${evidence_bytes} host_component=${host_bytes} restore_scratch=${restore_bytes}"
+  if (( available < required )); then
+    die "insufficient disk for rollout and rollback: available=${available} required=${required}"
+  fi
+  record_phase DISK_ADMITTED
+}
+
 stop_and_verify_all_services() {
   local stop_ok=1 verify_ok=1 unit active_state sub_state result exec_main_code exec_main_status
   local main_pid control_pid control_group cgroup_path cgroup_file pid pair_ok value index
@@ -1613,6 +1776,8 @@ sentinel_tmp="$(/usr/bin/mktemp --tmpdir="$log_dir" .rollout-in-progress.XXXXXX)
 /usr/bin/rm -f -- "$sentinel_tmp"
 sentinel_identity="$(/usr/bin/stat -c '%d:%i' "$sentinel_path")"
 
+prune_rollout_retention
+
 [[ ! -e "$artifact_dir" ]] || die "rollout artifact directory already exists: $artifact_dir"
 /usr/bin/mkdir --mode=0700 -- "$artifact_dir"
 /usr/bin/chmod 0700 "$artifact_dir"
@@ -1692,6 +1857,7 @@ done
 run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${preflight_db_args[@]}" > "$artifact_dir/preflight-evidence.json"
 hash_evidence_file "$artifact_dir/preflight-evidence.json"
 record_phase PREFLIGHT
+admit_rollout_disk
 
 echo "stopping all services"
 stop_attempted=1

@@ -26,6 +26,30 @@ fail() {
   exit 1
 }
 
+content_length() {
+  local url="$1" length
+  length="$(curl --fail --location --silent --show-error --head "${url}" \
+    | tr -d '\r' | awk 'tolower($1) == "content-length:" {print $2; exit}')" \
+    || fail "unable to determine voice component size before download"
+  [[ "${length}" =~ ^[0-9]+$ ]] || fail "voice component did not report a numeric Content-Length"
+  printf '%s' "${length}"
+}
+
+if [[ "${1:-}" == "--print-required-bytes" ]]; then
+  model_path="${STT_ROOT}/models/${MODEL_NAME}"
+  whisper_path="${STT_ROOT}/components/${WHISPER_RELEASE}/whisper-cli"
+  manifest_path="${STT_ROOT}/components/${WHISPER_RELEASE}/manifest.json"
+  if [[ -f "${model_path}" && ! -L "${model_path}" && -x "${whisper_path}" && ! -L "${whisper_path}" && -f "${manifest_path}" && ! -L "${manifest_path}" ]] \
+    && [[ "$(sha256sum "${model_path}" | awk '{print $1}')" == "${MODEL_SHA256}" ]]; then
+    printf '0\n'
+    exit 0
+  fi
+  archive_length="$(content_length "${WHISPER_ARCHIVE_URL}")"
+  model_length="$(content_length "${MODEL_URL}")"
+  printf '%s\n' $(( (archive_length + model_length) * 2 ))
+  exit 0
+fi
+
 [[ "$(id -u)" == "0" ]] || fail "must run as root"
 [[ "$(uname -s)" == "Linux" ]] || fail "whisper.cpp appliance component is supported only on Linux"
 case "$(uname -m)" in
