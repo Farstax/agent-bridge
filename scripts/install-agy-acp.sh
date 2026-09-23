@@ -6,7 +6,13 @@ fail() {
   exit 1
 }
 
-[[ "$(id -u)" == "0" ]] || fail "must run as root"
+print_required_bytes=0
+if [[ "${1:-}" == "--print-required-bytes" ]]; then
+  print_required_bytes=1
+fi
+if (( print_required_bytes == 0 )); then
+  [[ "$(id -u)" == "0" ]] || fail "must run as root"
+fi
 [[ "$(uname -s)" == "Linux" ]] || fail "Agy ACP managed host component is supported only on Linux"
 
 case "$(uname -m)" in
@@ -53,10 +59,6 @@ CHANGED=0
 
 [[ "${ROOT}" == /* && "${LINK}" == /* && "${HARNESS_LINK}" == /* ]] || fail "managed paths must be absolute"
 [[ ! -L "${ROOT}" ]] || fail "Agy ACP root must not be a symlink"
-mkdir -p "${ROOT}/components"
-chown root:root "${ROOT}" "${ROOT}/components"
-chmod 0755 "${ROOT}" "${ROOT}/components"
-
 normalize_runtime_dir() {
   local path="$1"
   [[ -d "${path}" && ! -L "${path}" ]] || fail "managed Agy ACP directory is invalid: ${path}"
@@ -67,13 +69,18 @@ normalize_runtime_dir() {
   fi
 }
 
-if [[ ! -e "${VERSION_DIR}" ]]; then
-  mkdir -p "${VERSION_DIR}"
-  CHANGED=1
-fi
-normalize_runtime_dir "${VERSION_DIR}"
-if [[ -e "${COMPONENT_DIR}" ]]; then
-  normalize_runtime_dir "${COMPONENT_DIR}"
+if (( print_required_bytes == 0 )); then
+  mkdir -p "${ROOT}/components"
+  chown root:root "${ROOT}" "${ROOT}/components"
+  chmod 0755 "${ROOT}" "${ROOT}/components"
+  if [[ ! -e "${VERSION_DIR}" ]]; then
+    mkdir -p "${VERSION_DIR}"
+    CHANGED=1
+  fi
+  normalize_runtime_dir "${VERSION_DIR}"
+  if [[ -e "${COMPONENT_DIR}" ]]; then
+    normalize_runtime_dir "${COMPONENT_DIR}"
+  fi
 fi
 
 valid_component() {
@@ -144,6 +151,10 @@ if ! valid_component; then
   [[ "${remote_length}" =~ ^[0-9]+$ ]] || fail "Agy ACP archive did not report a numeric Content-Length"
   safety_factor="${AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR:-4}"
   required_bytes=$(( remote_length * safety_factor ))
+  if (( print_required_bytes == 1 )); then
+    printf '%s\n' "${required_bytes}"
+    exit 0
+  fi
   available_bytes="$(df --output=avail -B1 "${ROOT}" 2>/dev/null | tail -1 | tr -d '[:space:]')"
   [[ "${available_bytes}" =~ ^[0-9]+$ ]] || fail "unable to determine available disk space at ${ROOT}"
   if (( available_bytes < required_bytes )); then
@@ -214,6 +225,12 @@ PY
   mv "${COMPONENT_DIR}.new" "${COMPONENT_DIR}"
   normalize_runtime_dir "${COMPONENT_DIR}"
   CHANGED=1
+fi
+
+if (( print_required_bytes == 1 )); then
+  valid_component || fail "unable to measure Agy ACP component bytes"
+  printf '0\n'
+  exit 0
 fi
 
 valid_component || fail "installed Agy ACP component failed identity/checksum validation"

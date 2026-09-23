@@ -57,6 +57,8 @@ describe("Agy ACP managed host component", () => {
     expect(installer).toContain("df --output=avail -B1");
     expect(installer).toContain("insufficient disk space to stage Agy ACP component");
     expect(installer).toContain("AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR");
+    expect(installer).toContain("--print-required-bytes");
+    expect(installer.indexOf('printf \'%s\\n\' "${required_bytes}"')).toBeLessThan(workDirIndex);
   });
 
   it("keeps the installed binary path traversable by the unprivileged runtime user", () => {

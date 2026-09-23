@@ -31,6 +31,17 @@ target-bound approval record before handing off to the existing guarded flow.
 The `--approval` form remains supported during transition for older automation;
 it is an alternative input, not a second gate after an owner request.
 
+Before any selected service is stopped, the rollout prunes only proven terminal
+evidence and backup sets beyond the five newest, then admits the remaining
+transaction. Admission adds the database backup, WAL checkpoint slack, a second
+copy reserved for restore, 16 MiB of evidence, any host-component bytes still
+required by the target release, and a 256 MiB safety reserve. If that total
+exceeds the smallest available filesystem among the backup directory, log
+directory and database directories, the rollout stops before containment and
+leaves the running services in place. An attached credential or host-component
+installer may still apply its own later check. Those checks do not replace
+this pre-stop decision.
+
 The release archive is the single release identity. It contains the runtime,
 dependencies, migration code, exact commit/tree manifest, and embedded
 `qualification-evidence.json`. The approval is mode `0600` and binds only
