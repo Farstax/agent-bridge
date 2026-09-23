@@ -40,6 +40,25 @@ describe("Agy ACP managed host component", () => {
     expect(installer).not.toContain("bundle.read(");
   });
 
+  it("checks disk headroom against the remote archive size before downloading or staging", () => {
+    const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
+    const preflightIndex = installer.indexOf("remote_length=");
+    const workDirIndex = installer.indexOf('work="$(mktemp -d');
+    const curlDownloadIndex = installer.indexOf('--output "${archive}"');
+    expect(preflightIndex).toBeGreaterThan(-1);
+    expect(workDirIndex).toBeGreaterThan(-1);
+    expect(curlDownloadIndex).toBeGreaterThan(-1);
+    // The disk-space check must run before any staging directory is created
+    // or bytes are downloaded, so a failed check never leaves temporary
+    // material behind and never races a doomed download.
+    expect(preflightIndex).toBeLessThan(workDirIndex);
+    expect(preflightIndex).toBeLessThan(curlDownloadIndex);
+    expect(installer).toContain('--head "${ARCHIVE_URL}"');
+    expect(installer).toContain("df --output=avail -B1");
+    expect(installer).toContain("insufficient disk space to stage Agy ACP component");
+    expect(installer).toContain("AGENT_BRIDGE_AGY_ACP_DISK_SAFETY_FACTOR");
+  });
+
   it("keeps the installed binary path traversable by the unprivileged runtime user", () => {
     const installer = readFileSync(resolve(repoRoot, "scripts/install-agy-acp.sh"), "utf8");
     expect(installer).toContain('VERSION_DIR="${ROOT}/components/${VERSION}"');
