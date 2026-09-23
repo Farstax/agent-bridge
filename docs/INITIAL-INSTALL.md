@@ -36,6 +36,21 @@ sudo env \
 
 The platform may safely extract the installer and its sibling staging helper from the already resolved release archive, then invoke the command against the original archive. The installer independently verifies the archive manifest, every payload entry and the embedded qualification identity before changing the host.
 
+## Optional interactive Telegram credential
+
+A deployment owner can supply the interactive Telegram token with a systemd credential instead of leaving it in `/etc/default/agent-bridge-interactive`.
+
+The credential name is `telegram-bot-token-interactive`. When that regular file is present under `$CREDENTIALS_DIRECTORY`, the interactive service reads it at startup and exports `TELEGRAM_BOT_TOKEN_INTERACTIVE` for the service process. The value is not copied into an env file, a defaults file, or a log.
+
+An attached readable credential replaces a legacy environment assignment for that process. If the credential file is absent, the existing `TELEGRAM_BOT_TOKEN_INTERACTIVE` environment value is used unchanged. A present credential that is unreadable or malformed fails startup. Agent Bridge does not create a replacement copy.
+
+Agent Bridge does not create, encrypt, rotate, provision, or delete the credential. That lifecycle belongs to the deployment environment. The stock unit has no `LoadCredential=` or `LoadCredentialEncrypted=` dependency. A deployment owner binds the credential with a drop-in when needed:
+
+```ini
+[Service]
+LoadCredentialEncrypted=telegram-bot-token-interactive:/path/to/deployment-owned-credential
+```
+
 ## Installation result
 
 A successful installation:
