@@ -33,8 +33,9 @@ it is an alternative input, not a second gate after an owner request.
 
 Before any selected service is stopped, the rollout prunes only proven terminal
 evidence and backup sets beyond the five newest, then admits the remaining
-transaction. Admission adds the database backup, WAL checkpoint slack, a second
-copy reserved for restore, 16 MiB of evidence, any host-component bytes still
+transaction. Admission adds a post-checkpoint database backup, the same size again for the
+restore temporary, WAL checkpoint slack, an extra copy when a legacy health
+database is relocated, 16 MiB of evidence, any host-component bytes still
 required by the target release, and a 256 MiB safety reserve. If that total
 exceeds the smallest available filesystem among the backup directory, log
 directory and database directories, the rollout stops before containment and

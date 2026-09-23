@@ -1404,19 +1404,26 @@ admit_rollout_disk() {
   local reserve_bytes="$ROLLOUT_SAFETY_RESERVE_BYTES"
   [[ -n "${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES:-}" ]] && reserve_bytes="${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES}"
   [[ "$reserve_bytes" =~ ^[0-9]+$ && "$evidence_bytes" =~ ^[0-9]+$ ]] || die "disk admission budget is not numeric"
+  local post_checkpoint relocation_bytes=0
   for database in "${databases[@]}"; do
     main_bytes="$(regular_file_bytes "$database")"
     wal_bytes="$(regular_file_bytes "${database}-wal")"
     regular_file_bytes "${database}-shm" >/dev/null
-    backup_bytes=$((backup_bytes + main_bytes))
+    # Checkpoint can grow the main file by the WAL before the WAL is removed.
+    # The backup and the restore temporary are both that post-checkpoint size.
+    post_checkpoint=$((main_bytes + wal_bytes))
+    backup_bytes=$((backup_bytes + post_checkpoint))
     slack_bytes=$((slack_bytes + wal_bytes))
   done
   local restore_bytes="$backup_bytes"
+  if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
+    relocation_bytes="$(regular_file_bytes "$health_relocation_source")"
+  fi
   local host_bytes available required
   host_bytes="$(measure_host_component_bytes)"
   available="$(measure_available_bytes)"
-  required=$((backup_bytes + slack_bytes + restore_bytes + evidence_bytes + host_bytes + reserve_bytes))
-  echo "disk admission available=${available} required=${required} reserve=${reserve_bytes} database_backup=${backup_bytes} checkpoint_slack=${slack_bytes} evidence=${evidence_bytes} host_component=${host_bytes} restore_scratch=${restore_bytes}"
+  required=$((backup_bytes + slack_bytes + restore_bytes + relocation_bytes + evidence_bytes + host_bytes + reserve_bytes))
+  echo "disk admission available=${available} required=${required} reserve=${reserve_bytes} database_backup=${backup_bytes} checkpoint_slack=${slack_bytes} evidence=${evidence_bytes} host_component=${host_bytes} restore_scratch=${restore_bytes} relocation=${relocation_bytes}"
   if (( available < required )); then
     die "insufficient disk for rollout and rollback: available=${available} required=${required}"
   fi
