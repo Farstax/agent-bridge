@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -19,6 +20,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const helperPath = new URL("../scripts/load-interactive-telegram-credential.sh", import.meta.url);
 const unitPath = new URL("../systemd/agent-bridge-interactive.service", import.meta.url);
 const workflowPath = new URL("../.github/workflows/release-artifact.yml", import.meta.url);
+const installDocPath = new URL("../docs/INITIAL-INSTALL.md", import.meta.url);
 const interactiveRuntimePath = new URL("../src/index-interactive.ts", import.meta.url);
 const providerLockPath = new URL("../src/providerLock.ts", import.meta.url);
 const credentialName = "telegram-bot-token-interactive";
@@ -70,6 +72,7 @@ describe("interactive Telegram systemd credential", () => {
     const unit = readFileSync(unitPath, "utf8");
     const helper = readFileSync(helperPath, "utf8");
     const workflow = readFileSync(workflowPath, "utf8");
+    const installDoc = readFileSync(installDocPath, "utf8");
     const runtime = readFileSync(interactiveRuntimePath, "utf8");
     const providerLock = readFileSync(providerLockPath, "utf8");
 
@@ -85,7 +88,11 @@ describe("interactive Telegram systemd credential", () => {
     expect(unit).not.toMatch(/TELEGRAM_BOT_TOKEN_INTERACTIVE=/);
     expect(helper).toContain(credentialName);
     expect(helper).not.toContain("LoadCredential");
+    expect(statSync(helperPath).mode & 0o111).not.toBe(0);
     expect(workflow).toContain("scripts/load-interactive-telegram-credential.sh");
+    expect(installDoc).toContain("custom systemd unit");
+    expect(installDoc).toContain("must also invoke the shipped helper");
+    expect(installDoc).toContain("attaching the credential alone");
     expect(runtime).not.toContain("CREDENTIALS_DIRECTORY");
     expect(runtime).not.toContain(credentialName);
     expect(providerLock).not.toContain("CREDENTIALS_DIRECTORY");
