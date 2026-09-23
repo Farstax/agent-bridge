@@ -35,19 +35,9 @@ content_length() {
   printf '%s' "${length}"
 }
 
+print_required_bytes=0
 if [[ "${1:-}" == "--print-required-bytes" ]]; then
-  model_path="${STT_ROOT}/models/${MODEL_NAME}"
-  whisper_path="${STT_ROOT}/components/${WHISPER_RELEASE}/whisper-cli"
-  manifest_path="${STT_ROOT}/components/${WHISPER_RELEASE}/manifest.json"
-  if [[ -f "${model_path}" && ! -L "${model_path}" && -x "${whisper_path}" && ! -L "${whisper_path}" && -f "${manifest_path}" && ! -L "${manifest_path}" ]] \
-    && [[ "$(sha256sum "${model_path}" | awk '{print $1}')" == "${MODEL_SHA256}" ]]; then
-    printf '0\n'
-    exit 0
-  fi
-  archive_length="$(content_length "${WHISPER_ARCHIVE_URL}")"
-  model_length="$(content_length "${MODEL_URL}")"
-  printf '%s\n' $(( (archive_length + model_length) * 2 ))
-  exit 0
+  print_required_bytes=1
 fi
 
 [[ "$(id -u)" == "0" ]] || fail "must run as root"
@@ -65,6 +55,7 @@ for command in curl tar sha256sum python3 apt-get dpkg-query find readlink timeo
   command -v "${command}" >/dev/null 2>&1 || fail "required command is missing: ${command}"
 done
 
+if (( print_required_bytes == 0 )); then
 if [[ "${STT_ROOT}" == "${DEFAULT_STT_ROOT}" ]]; then
   for ancestor in /opt/agent-bridge /opt/agent-bridge/host-components; do
     [[ ! -e "${ancestor}" || ( -d "${ancestor}" && ! -L "${ancestor}" ) ]] \
@@ -105,6 +96,7 @@ cleanup() {
 }
 trap cleanup EXIT
 chmod 0700 "${work}"
+fi
 
 ensure_model() {
   local model_path="${MODELS_DIR}/${MODEL_NAME}"
@@ -265,6 +257,22 @@ publish_shared_runtime_contract() {
   SHARED_ENV_TMP=""
   CHANGED=1
 }
+
+if (( print_required_bytes == 1 )); then
+  component_bytes=0
+  ffmpeg_bytes=0
+  if ! valid_component; then
+    archive_length="$(content_length "${WHISPER_ARCHIVE_URL}")"
+    model_length="$(content_length "${MODEL_URL}")"
+    component_bytes=$(( (archive_length + model_length) * 2 ))
+  fi
+  installed_ffmpeg="$(dpkg-query -W -f='${Version}' ffmpeg 2>/dev/null || true)"
+  if [[ "${installed_ffmpeg}" != "${FFMPEG_PACKAGE_VERSION}" ]]; then
+    ffmpeg_bytes=67108864
+  fi
+  printf '%s\n' $((component_bytes + ffmpeg_bytes))
+  exit 0
+fi
 
 ensure_model
 if ! valid_component; then

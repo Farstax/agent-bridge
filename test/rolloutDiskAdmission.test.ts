@@ -54,6 +54,26 @@ describe("rollout disk admission", () => {
     expect(existsSync(join(fixture.logDir, ".rollout-in-progress"))).toBe(false);
   });
 
+  it("reserves post-checkpoint backup and restore copies when a WAL is present", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const walBytes = 2_000_000;
+    writeFileSync(`${fixture.dbPaths[0]}-wal`, "w".repeat(walBytes));
+    const mainBytes = statSync(fixture.dbPaths[0]).size;
+    const reserve = 1_048_576;
+    const previousBudget = mainBytes * 2 + walBytes + evidenceBytes + reserve;
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: String(previousBudget),
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: String(reserve),
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).not.toBe(0);
+    expect(output).toMatch(new RegExp(`database_backup=${mainBytes + walBytes}`));
+    expect(output).toMatch(new RegExp(`restore_scratch=${mainBytes + walBytes}`));
+    expect(output).toMatch(new RegExp(`checkpoint_slack=${walBytes}`));
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
   it("rejects activation headroom that does not also reserve rollback space", () => {
     const fixture = useMinimalInventory(createFixture());
     const numbers = budget(fixture);
