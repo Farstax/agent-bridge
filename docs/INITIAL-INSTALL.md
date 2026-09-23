@@ -51,6 +51,18 @@ Agent Bridge does not create, encrypt, rotate, provision, or delete the credenti
 LoadCredentialEncrypted=telegram-bot-token-interactive:/path/to/deployment-owned-credential
 ```
 
+That drop-in is sufficient when the service uses Agent Bridge's stock `agent-bridge-interactive.service`, because the stock unit already invokes `scripts/load-interactive-telegram-credential.sh` before the TypeScript runtime.
+
+A deployment owner that generates its own systemd unit and starts `src/index-interactive.ts` directly must also invoke the shipped helper in its `ExecStart`; attaching the credential alone only supplies `$CREDENTIALS_DIRECTORY` and does not populate `TELEGRAM_BOT_TOKEN_INTERACTIVE`. For example, with the release as the working directory:
+
+```ini
+[Service]
+LoadCredentialEncrypted=telegram-bot-token-interactive:/path/to/deployment-owned-credential
+ExecStart=/opt/agent-bridge-ux/scripts/load-interactive-telegram-credential.sh /usr/local/bin/npx tsx src/index-interactive.ts
+```
+
+The exact runtime command remains deployment-owned; the stable Agent Bridge contract is the helper path/name and the `telegram-bot-token-interactive` credential name.
+
 ## Installation result
 
 A successful installation:
