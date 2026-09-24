@@ -66,7 +66,7 @@ export function assertAgyRuntimePrerequisites(
 }
 
 /**
- * The selected antigravity-acp 1.1.1 runtime is a separate credential owner
+ * The selected antigravity-acp 1.2.1 runtime is a separate credential owner
  * from native Agy/antigravity-cli (`~/.gemini/oauth_creds.json`): it resolves
  * Gemini home to `~/.gemini` and persists its own oauth-personal exchange to
  * `~/.gemini/antigravity-acp/acp_token.json`. A cached native Agy login does

@@ -13,12 +13,12 @@ Pinned Grok ACP distribution: `@xai-official/grok@1.0.41` (`grok agent stdio`;
 official Registry `grok-build` 1.0.41). The package bin symlink is rewritten
 to a relative `grok-native` link at install so release artifacts stay
 self-contained.
-Pinned Agy ACP distribution: official Registry `antigravity-acp@1.1.1`
+Pinned Agy ACP distribution: official Registry `antigravity-acp@1.2.1`
 (`agy_acp_server.par` with args `--uid=`). The binary is not npm-bundled;
 ordinary Runs never download it. Set `AGY_ACP_COMMAND` to the installed
 server path.
-Pinned Cursor ACP distribution: official Registry `cursor` 2026.09.08-6caf4ff
-(`cursor-agent acp`; binary 2026.09.08-6caf4ff). The Cursor CLI is not
+Pinned Cursor ACP distribution: release lock `cursor` 2026.09.23-86fc751
+(`cursor-agent acp`; binary 2026.09.23-86fc751). The Cursor CLI is not
 vendored into git or npm; ordinary Runs use `CURSOR_ACP_COMMAND` or PATH
 `cursor-agent`.
 
@@ -137,7 +137,7 @@ AGY_ACP_COMMAND=...                 # optional override; default is agy_acp_serv
 AGY_ACP_ARGS=...                    # optional extra argv; default is --uid=
 ```
 
-The release locks official Registry `antigravity-acp@1.1.1`. The binary is
+The release locks official Registry `antigravity-acp@1.2.1`. The binary is
 host-installed, not npm-bundled; ordinary Runs never download it. Ordinary
 Runs authenticate with ACP `oauth-personal` only when a cached credential
 already exists at workspace-local `~/.gemini/antigravity-acp/acp_token.json`
@@ -157,8 +157,8 @@ CURSOR_ACP_COMMAND=...              # optional override of PATH `cursor-agent`
 CURSOR_ACP_ARGS=...                 # optional extra argv; default is `acp`
 ```
 
-The release locks official Registry `cursor@2026.09.08-6caf4ff` (binary archive
-`2026.09.08-6caf4ff`) and resolves the default executable as `cursor-agent`
+The release locks Cursor `2026.09.23-86fc751` (binary archive
+`2026.09.23-86fc751`) and resolves the default executable as `cursor-agent`
 with args `acp`. Ordinary Runs authenticate with ACP `cursor_login` only when
 a cached Cursor login already exists at workspace-local
 `~/.config/cursor/auth.json` or `~/.cursor/auth.json` --
@@ -168,7 +168,7 @@ account login is authoritative over an optional, unverified `CURSOR_API_KEY`
 (same account-auth precedence as Grok). Safe runs select the advertised `ask`
 mode and trusted runs select `agent`; the policy does not assume a provider
 default. The selected executable is version-checked against the locked
-`2026.09.08-6caf4ff` release before routing and before execution, so a stale or
+`2026.09.23-86fc751` release before routing and before execution, so a stale or
 unverifiable `cursor-agent` fails closed. The official binary distribution is
 recorded in the Registry lock; Agent Bridge does not download or vendor that
 archive.

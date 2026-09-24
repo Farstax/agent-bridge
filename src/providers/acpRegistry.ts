@@ -97,7 +97,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   agy: {
     id: "antigravity-acp",
     name: "Google Antigravity",
-    version: "1.1.1",
+    version: "1.2.1",
     description: "Google’s AI coding agent",
     website: "https://antigravity.google/docs/ide/extensions",
     authors: ["Google LLC"],
@@ -106,27 +106,25 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     distribution: {
       binary: {
         "darwin-aarch64": {
-          archive: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-agy_acp_server_1.1.1-darwin-arm64.zip",
+          archive: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.2.1-darwin-arm64.zip",
           cmd: "./agy_acp_server.par",
         },
         "linux-x86_64": {
-          archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip",
-          sha256: "38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df",
+          archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.2.1-linux-x86_64.zip",
           cmd: "./agy_acp_server.par",
           args: ["--uid="],
         },
         "linux-aarch64": {
-          archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-arm64.zip",
-          sha256: "ed69e64b308fcb123ab54bf3277bf9cb0d651064f885ea5aab0ff520c7175398",
+          archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.2.1-linux-arm64.zip",
           cmd: "./agy_acp_server.par",
           args: ["--uid="],
         },
         "windows-x86_64": {
-          archive: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-x86_64.zip",
+          archive: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.2.1-windows-x86_64.zip",
           cmd: "./agy_acp_server.exe",
         },
         "windows-aarch64": {
-          archive: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-agy_acp_server_1.1.1-windows-arm64.zip",
+          archive: "https://dl.google.com/agy-extensions/releases/windows/agy-acp-server-1.2.1-windows-arm64.zip",
           cmd: "./agy_acp_server.exe",
         },
       },
@@ -144,32 +142,32 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     distribution: {
       binary: {
         "darwin-aarch64": {
-          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/arm64/agent-cli-package.tar.gz",
+          archive: "https://downloads.cursor.com/lab/2026.09.23-86fc751/darwin/arm64/agent-cli-package.tar.gz",
           cmd: "./dist-package/cursor-agent",
           args: ["acp"],
         },
         "darwin-x86_64": {
-          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/darwin/x64/agent-cli-package.tar.gz",
+          archive: "https://downloads.cursor.com/lab/2026.09.23-86fc751/darwin/x64/agent-cli-package.tar.gz",
           cmd: "./dist-package/cursor-agent",
           args: ["acp"],
         },
         "linux-aarch64": {
-          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/arm64/agent-cli-package.tar.gz",
+          archive: "https://downloads.cursor.com/lab/2026.09.23-86fc751/linux/arm64/agent-cli-package.tar.gz",
           cmd: "./dist-package/cursor-agent",
           args: ["acp"],
         },
         "linux-x86_64": {
-          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/x64/agent-cli-package.tar.gz",
+          archive: "https://downloads.cursor.com/lab/2026.09.23-86fc751/linux/x64/agent-cli-package.tar.gz",
           cmd: "./dist-package/cursor-agent",
           args: ["acp"],
         },
         "windows-aarch64": {
-          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/arm64/agent-cli-package.zip",
+          archive: "https://downloads.cursor.com/lab/2026.09.23-86fc751/windows/arm64/agent-cli-package.zip",
           cmd: "./dist-package\\cursor-agent.cmd",
           args: ["acp"],
         },
         "windows-x86_64": {
-          archive: "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/x64/agent-cli-package.zip",
+          archive: "https://downloads.cursor.com/lab/2026.09.23-86fc751/windows/x64/agent-cli-package.zip",
           cmd: "./dist-package\\cursor-agent.cmd",
           args: ["acp"],
         },

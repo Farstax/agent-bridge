@@ -16,7 +16,7 @@ describe("provider qualification routing", () => {
     writeQualificationRecord({
       provider: "agy",
       executionRuntime: resolveProviderRuntime("agy", {}).runtimeIdentity,
-      providerVersion: "1.1.1",
+      providerVersion: "1.2.1",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -47,7 +47,7 @@ describe("provider qualification routing", () => {
     }, evidencePath);
 
     expect([...getQualificationFailedProviders(evidencePath, {
-      agy: "1.1.1",
+      agy: "1.2.1",
       claude: "2.3.4",
     })]).toEqual(["agy"]);
   });
@@ -127,7 +127,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.09.08-6caf4ff",
+      readCursorVersion: () => "2026.09.23-86fc751",
     });
 
     expect([...available]).toEqual(["claude", "grok", "cursor"]);
@@ -141,7 +141,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "grok", "cursor"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.09.08-6caf4ff",
+      readCursorVersion: () => "2026.09.23-86fc751",
     });
 
     expect([...available]).toEqual(["claude"]);
@@ -155,7 +155,7 @@ describe("provider qualification routing", () => {
       commandExists: () => true,
       failedProviders: new Set(["codex", "agy", "grok"]),
       readCursorStatus: () => ({ isAuthenticated: true }),
-      readCursorVersion: () => "2026.09.08-6caf4ff",
+      readCursorVersion: () => "2026.09.23-86fc751",
     });
 
     expect([...available]).toEqual(["claude", "cursor"]);

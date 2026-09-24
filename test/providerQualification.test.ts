@@ -148,7 +148,7 @@ describe("provider qualification contract", () => {
     const previousCommand = process.env.AGY_ACP_COMMAND;
     const previousArgs = process.env.AGY_ACP_ARGS;
     const acp = executable(join(root, "agy_acp_server.par"), `
-if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.1.1"; exit 0; fi
+if [[ "\${1:-}" == "--version" ]]; then echo "agy_acp_server 1.2.1"; exit 0; fi
 echo "acp should not be oneshot-parsed" >&2
 exit 7
 `);
@@ -174,8 +174,8 @@ exit 7
         AGY_ACP_COMMAND: acp,
         AGY_ACP_ARGS: "--uid=",
       }).runtimeIdentity);
-      expect(result.providerVersion).toBe("1.1.1");
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.1\.1/);
+      expect(result.providerVersion).toBe("1.2.1");
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/agy_acp_server 1\.2\.1/);
     } finally {
       if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
       else process.env.AGY_ACP_COMMAND = previousCommand;
@@ -264,7 +264,7 @@ exit 7
         CURSOR_ACP_ARGS: "acp",
       }).runtimeIdentity);
       expect(result.providerVersion).toBe(CURSOR_ACP_VERSION);
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/2026\.09\.08/);
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/2026\.09\.23/);
     } finally {
       if (previousCommand === undefined) delete process.env.CURSOR_ACP_COMMAND;
       else process.env.CURSOR_ACP_COMMAND = previousCommand;
