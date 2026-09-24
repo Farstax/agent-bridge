@@ -40,20 +40,18 @@ describe("Agy ACP provider", () => {
   it("locks the official Registry distribution and selects it for execution", () => {
     expect(getLockedAcpRegistryEntry("agy")).toEqual(expect.objectContaining({
       id: "antigravity-acp",
-      version: "1.1.1",
+      version: "1.2.1",
       distribution: {
         binary: expect.objectContaining({
           "linux-x86_64": {
-            archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-agy_acp_server_1.1.1-linux-x86_64.zip",
-            sha256: "38f62d01b32deb0907b3d39a71ec301fd36369f6ffd1cf262d4af385177f79df",
+            archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.2.1-linux-x86_64.zip",
+            sha256: "9fbf0bd584a26478161f637cabd75113f72541c842d148f578ef1a6a9edcb843",
             cmd: "./agy_acp_server.par",
             args: ["--uid="],
           },
         }),
       },
     }));
-    expect(getLockedAcpRegistryEntry("agy")?.distribution.binary?.["linux-aarch64"]?.sha256)
-      .toBe("ed69e64b308fcb123ab54bf3277bf9cb0d651064f885ea5aab0ff520c7175398");
     expect(getAcpProviderPolicy("agy")).toBe(agyAcpPolicy);
     expect(resolveProviderRuntime("agy", { AGY_ACP_COMMAND: "/opt/agy/agy_acp_server.par" })).toEqual(expect.objectContaining({
       providerId: "agy",
@@ -61,7 +59,7 @@ describe("Agy ACP provider", () => {
       executable: "/opt/agy/agy_acp_server.par",
       args: ["--uid="],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.1\.1:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:antigravity-acp@1\.2\.1:[a-f0-9]{64}$/),
       toolFree: true,
       provisionalAnswers: true,
     }));

@@ -73,7 +73,7 @@ export const grokAcpPolicy: AcpProviderPolicy = {
   providerId: "grok",
   registryAgentId: "grok-build",
   toolFree: false,
-  // Issue #748: do not enable steering from advertisement. Grok 1.0.30 did not
+  // Issue #748: do not enable steering from advertisement. Grok 1.0.41 has not
   // advertise a host-owned idle contract; keep the existing augment fallback.
   steeringSupported: false,
   presentation: {

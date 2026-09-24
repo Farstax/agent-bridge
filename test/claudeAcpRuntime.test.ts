@@ -29,9 +29,9 @@ describe("Claude ACP provider", () => {
   it("locks the official Registry distribution and selects it for execution", () => {
     expect(getLockedAcpRegistryEntry("claude")).toEqual(expect.objectContaining({
       id: "claude-acp",
-      version: "0.76.0",
+      version: "0.81.2",
       distribution: {
-        npx: { package: "@agentclientprotocol/claude-agent-acp@0.76.0" },
+        npx: { package: "@agentclientprotocol/claude-agent-acp@0.81.2" },
       },
     }));
     expect(getAcpProviderPolicy("claude")).toBe(claudeAcpPolicy);
@@ -41,7 +41,7 @@ describe("Claude ACP provider", () => {
       executable: "/opt/agent-bridge/node_modules/.bin/claude-agent-acp",
       args: [],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:claude-acp@0\.76\.0:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:claude-acp@0\.81\.2:[a-f0-9]{64}$/),
       toolFree: true,
       provisionalAnswers: true,
     }));

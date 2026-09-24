@@ -58,6 +58,33 @@ describe("declarative ACP provider runtime", () => {
     }));
   });
 
+  it("locks the Claude candidate adapter distribution to the qualified release", () => {
+    expect(getLockedAcpRegistryEntry("claude")).toEqual(expect.objectContaining({
+      id: "claude-acp",
+      version: "0.81.2",
+      distribution: {
+        npx: { package: "@agentclientprotocol/claude-agent-acp@0.81.2" },
+      },
+    }));
+  });
+
+  it("locks the Grok candidate adapter distribution to the qualified release", () => {
+    expect(getLockedAcpRegistryEntry("grok")).toEqual(expect.objectContaining({
+      id: "grok-build",
+      version: "1.0.41",
+      distribution: {
+        npx: { package: "@xai-official/grok@1.0.41", args: ["agent", "stdio"] },
+      },
+    }));
+  });
+
+  it("requires checksummed Agy and Cursor release archives", () => {
+    for (const providerId of ["agy", "cursor"] as const) {
+      const binary = getLockedAcpRegistryEntry(providerId)?.distribution.binary?.["linux-x86_64"];
+      expect(binary?.sha256).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
   it("resolves Codex execution, doctor, qualification and presentation from one runtime identity", () => {
     const runtime = resolveProviderRuntime("codex", {
       BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/current",

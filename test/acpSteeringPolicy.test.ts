@@ -4,7 +4,7 @@ import { codexAcpPolicy } from "../src/providers/codexAcpPolicy.js";
 import { cursorAcpPolicy } from "../src/providers/cursorAcpPolicy.js";
 
 describe("ACP steering qualification gate (issue #748)", () => {
-  it("qualifies Claude for steering (claude-agent-acp@0.76.0 carries the host-owned promptRequired fallback)", () => {
+  it("qualifies Claude for steering (claude-agent-acp@0.81.2 carries the host-owned promptRequired fallback)", () => {
     expect(claudeAcpPolicy.steeringSupported).toBe(true);
   });
 

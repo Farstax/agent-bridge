@@ -38,9 +38,9 @@ describe("Grok ACP provider", () => {
   it("locks the official Registry distribution and selects it for execution", () => {
     expect(getLockedAcpRegistryEntry("grok")).toEqual(expect.objectContaining({
       id: "grok-build",
-      version: "1.0.30",
+      version: "1.0.41",
       distribution: {
-        npx: { package: "@xai-official/grok@1.0.30", args: ["agent", "stdio"] },
+        npx: { package: "@xai-official/grok@1.0.41", args: ["agent", "stdio"] },
       },
     }));
     expect(getAcpProviderPolicy("grok")).toBe(grokAcpPolicy);
@@ -50,7 +50,7 @@ describe("Grok ACP provider", () => {
       executable: "/opt/agent-bridge/node_modules/.bin/grok",
       args: ["agent", "stdio"],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:grok-build@1\.0\.30:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:grok-build@1\.0\.41:[a-f0-9]{64}$/),
       toolFree: false,
       provisionalAnswers: true,
     }));
