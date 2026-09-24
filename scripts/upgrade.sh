@@ -237,9 +237,15 @@ if [[ "${1:-}" == "--update" ]]; then
     (cd "${REPO_DIR}" && npm run build)
   fi
   echo "[update] Agy ACP uses the host-installed agy_acp_server.par; not downloaded by upgrade."
-  echo "[update] Converging the release-locked Cursor ACP binary..."
-  run_as_target_user env AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" HOME="${TARGET_HOME}" \
-    /bin/bash "${REPO_DIR}/scripts/install-cursor-acp.sh"
+  if [[ -n "${CURSOR_ACP_COMMAND:-}" ]]; then
+    echo "[update] Cursor ACP uses configured CURSOR_ACP_COMMAND; leaving custom runtime unchanged."
+  elif [[ -f "${REPO_DIR}/dist/providers/acpRegistry.js" ]]; then
+    echo "[update] Converging the release-locked Cursor ACP binary..."
+    run_as_target_user env AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" HOME="${TARGET_HOME}" \
+      /bin/bash "${REPO_DIR}/scripts/install-cursor-acp.sh"
+  else
+    echo "[update] Cursor ACP installer unavailable until the release build exists; refusing mutable fallback." >&2
+  fi
 
   after_claude="$(cli_command_version claude)"
   if [[ -z "${after_claude}" ]]; then
