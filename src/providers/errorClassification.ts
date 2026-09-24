@@ -91,6 +91,23 @@ const TRANSIENT_PATTERNS: readonly RegExp[] = [
   /service unavailable/i,
 ];
 
+/**
+ * Provider-specific transient wordings, mirroring CAPACITY_PATTERNS' scoping.
+ * These are protocol/vendor-specific text shapes, not generic infrastructure
+ * failures, so they must not leak into every other provider's classification
+ * the way the shared TRANSIENT_PATTERNS list does.
+ */
+const TRANSIENT_PATTERNS_BY_PROVIDER: Partial<Readonly<Record<ProviderId, readonly RegExp[]>>> = {
+  codex: [
+    // Codex's in-band `threadStatus.type === "systemError"` diagnostic for an
+    // ordinary backend hiccup (see src/acp/client.ts's systemErrorDiagnostic).
+    // Distinct from a genuine quota condition, which Codex reports via its own
+    // "usageLimited"/"budgetLimited" thread status or a "usageLimitExceeded"
+    // codexErrorInfo -- both already classified as capacity_exhausted above.
+    /model is at capacity/i,
+  ],
+};
+
 const FATAL_PATTERNS: readonly RegExp[] = [
   /command not found/i,
   /ENOENT/i,
@@ -183,6 +200,9 @@ export function classifyProviderError(providerId: ProviderId, error: Error | str
 
   const modelReason = matchReason(message, MODEL_UNAVAILABLE_PATTERNS);
   if (modelReason) return { kind: "model_unavailable", reason: modelReason };
+
+  const providerTransientReason = matchReason(message, TRANSIENT_PATTERNS_BY_PROVIDER[providerId] ?? []);
+  if (providerTransientReason) return { kind: "transient", reason: providerTransientReason };
 
   const transientReason = matchReason(message, TRANSIENT_PATTERNS);
   if (transientReason) return { kind: "transient", reason: transientReason };
