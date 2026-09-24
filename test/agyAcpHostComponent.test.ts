@@ -74,6 +74,7 @@ describe("Agy ACP managed host component", () => {
   it("packages the installer and verifies every declared host component generically", () => {
     const workflow = readFileSync(resolve(repoRoot, ".github/workflows/release-artifact.yml"), "utf8");
     expect(workflow).toContain("scripts/install-agy-acp.sh");
+    expect(workflow).toContain("scripts/install-cursor-acp.sh");
     expect(workflow).toContain("for (const component of manifest.host_components ?? [])");
     expect(workflow).not.toContain('find((entry) => entry.id === "voice-stt")');
   });
