@@ -28,14 +28,22 @@ export type AcpSessionMode = "fresh" | "load" | "resume";
 const ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS = 2_000;
 
 export class AcpSystemError extends Error {
-  readonly data: { readonly acpSystemError: true; readonly message: string };
+  readonly data: { readonly acpSystemError: true; readonly message: string; readonly codexErrorInfo?: string };
 
-  constructor(diagnostic: string) {
+  /**
+   * `codexErrorInfo` routes this error through the same structured
+   * classification path as a real Codex error response (see
+   * ACP_CODEX_ERROR_INFO_KIND in errorClassification.ts) instead of
+   * free-text pattern matching, for the in-band thread statuses
+   * (`usageLimited`/`budgetLimited`) Codex's own protocol already
+   * distinguishes from a generic `systemError`.
+   */
+  constructor(diagnostic: string, codexErrorInfo?: string) {
     const bounded = diagnostic.trim().slice(0, ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS)
       || "ACP session reported a system error";
     super(bounded);
     this.name = "AcpSystemError";
-    this.data = { acpSystemError: true, message: bounded };
+    this.data = { acpSystemError: true, message: bounded, ...(codexErrorInfo ? { codexErrorInfo } : {}) };
   }
 }
 
@@ -206,7 +214,7 @@ function isSemanticConfigRequest(value: AcpSessionConfigRequest): value is AcpSe
   return "category" in value;
 }
 
-function systemErrorUpdate(notification: SessionNotification): boolean {
+function threadStatusType(notification: SessionNotification): string | undefined {
   const update = notification.update as unknown as {
     sessionUpdate?: string;
     threadStatus?: { type?: string };
@@ -215,22 +223,40 @@ function systemErrorUpdate(notification: SessionNotification): boolean {
       threadStatus?: { type?: string };
     };
   };
-  if (update.sessionUpdate !== "session_info_update") return false;
-  const threadStatusType = update.threadStatus?.type
+  if (update.sessionUpdate !== "session_info_update") return undefined;
+  return update.threadStatus?.type
     ?? update._meta?.codex?.threadStatus?.type
     ?? update._meta?.threadStatus?.type;
-  return threadStatusType === "systemError";
 }
 
-function systemErrorDiagnostic(
+function systemErrorUpdate(notification: SessionNotification): boolean {
+  return threadStatusType(notification) === "systemError";
+}
+
+/**
+ * Codex's own protocol distinguishes a genuine quota condition
+ * (`usageLimited`/`budgetLimited`) from a generic backend hiccup
+ * (`systemError`, handled separately by systemErrorDiagnostic). Detecting it
+ * structurally here -- rather than leaving it to fall through to
+ * systemErrorDiagnostic's free-text classification -- avoids the reverse of
+ * the #876 bug: a real quota condition getting misclassified as transient
+ * just because its accompanying message text doesn't match a capacity regex.
+ */
+function usageLimitedThreadStatus(notification: SessionNotification): boolean {
+  const status = threadStatusType(notification);
+  return status === "usageLimited" || status === "budgetLimited";
+}
+
+function diagnosticTextAfterMarker(
   updates: readonly AcpObservedUpdate[],
   sessionId: string,
+  isMarker: (notification: SessionNotification) => boolean,
 ): string | null {
   let seen = false;
   let diagnostic = "";
   for (const observed of updates) {
     if (observed.channel !== "live" || observed.notification.sessionId !== sessionId) continue;
-    if (systemErrorUpdate(observed.notification)) {
+    if (isMarker(observed.notification)) {
       seen = true;
       continue;
     }
@@ -241,6 +267,60 @@ function systemErrorDiagnostic(
     if (diagnostic.length >= ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS) break;
   }
   return seen ? diagnostic.slice(0, ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS) : null;
+}
+
+function systemErrorDiagnostic(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): string | null {
+  return diagnosticTextAfterMarker(updates, sessionId, systemErrorUpdate);
+}
+
+function usageLimitedDiagnostic(
+  updates: readonly AcpObservedUpdate[],
+  sessionId: string,
+): string | null {
+  return diagnosticTextAfterMarker(updates, sessionId, usageLimitedThreadStatus);
+}
+
+/**
+ * claude-agent-acp pushes live rate-limit telemetry via a `usage_update`
+ * notification carrying `_meta["_claude/rateLimit"]` (the Claude Agent SDK's
+ * SDKRateLimitInfo: `status: "allowed" | "allowed_warning" | "rejected"`),
+ * independent of whether the current turn ultimately succeeds or fails --
+ * unlike Codex's in-band systemError/usageLimited, this is proactive
+ * telemetry, not itself a failure signal. `status: "rejected"` is Claude's
+ * structured "you are currently rate-limited" signal; when a turn also then
+ * fails, that's stronger, unambiguous evidence than free-text matching on
+ * whatever error message the SDK/Anthropic API happens to surface.
+ */
+function claudeRateLimitRejected(notification: SessionNotification): boolean {
+  const update = notification.update as unknown as {
+    sessionUpdate?: string;
+    _meta?: { "_claude/rateLimit"?: { status?: string } };
+  };
+  return update.sessionUpdate === "usage_update"
+    && update._meta?.["_claude/rateLimit"]?.status === "rejected";
+}
+
+/**
+ * Reuses the same structured-error-kind channel classifyProviderError already
+ * trusts ahead of free-text matching (see ACP_CODEX_ERROR_INFO_KIND in
+ * errorClassification.ts) rather than inventing a second, provider-specific
+ * field -- that check is already provider-agnostic in practice (it fires
+ * before providerId is consulted), so this is a deliberate reuse, not a
+ * naming mistake.
+ */
+function withStructuredCapacityErrorInfo(error: unknown): Error {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  const existingData = (normalized as { data?: unknown }).data;
+  Object.assign(normalized, {
+    data: {
+      ...(existingData && typeof existingData === "object" ? existingData : {}),
+      codexErrorInfo: "usageLimitExceeded",
+    },
+  });
+  return normalized;
 }
 
 async function applySessionSettings(
@@ -375,6 +455,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   let currentAcpSessionId: string | undefined;
   let currentSessionMode: AcpSessionMode | undefined;
   let rootSystemErrorSeen = false;
+  let rootClaudeRateLimitRejectedSeen = false;
 
   const remember = (event: AcpRetainedEvent) => {
     const tagged: AcpRetainedEvent = {
@@ -397,6 +478,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
           && Boolean(currentAcpSessionId)
           && observed.notification.sessionId === currentAcpSessionId;
         if (isRootLive && systemErrorUpdate(observed.notification)) rootSystemErrorSeen = true;
+        if (isRootLive && claudeRateLimitRejected(observed.notification)) rootClaudeRateLimitRejectedSeen = true;
         const payload = observed.notification.update;
         const suppressPresentation = isRootLive
           && rootSystemErrorSeen
@@ -559,10 +641,16 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       input.onSteerReady((prompt) => steerAcpSession(agent, sessionIdForSteering, prompt));
     }
 
-    const promptResponse = await agent.request(acp.methods.agent.session.prompt, {
+    const requestPrompt = () => agent.request(acp.methods.agent.session.prompt, {
       sessionId: acpSessionId,
       prompt: blocks,
     }, input.signal ? { cancellationSignal: input.signal } : undefined);
+    let promptResponse: Awaited<ReturnType<typeof requestPrompt>>;
+    try {
+      promptResponse = await requestPrompt();
+    } catch (error) {
+      throw rootClaudeRateLimitRejectedSeen ? withStructuredCapacityErrorInfo(error) : error;
+    }
 
     remember({ kind: "stop", channel: "live", stopReason: promptResponse.stopReason });
 
@@ -570,6 +658,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     // that reports a systemError in-band must fail before answer selection so
     // diagnostic text cannot be promoted to an authoritative final answer.
     if (promptResponse.stopReason !== "cancelled") {
+      const usageLimited = usageLimitedDiagnostic(updates, acpSessionId);
+      if (usageLimited !== null) throw new AcpSystemError(usageLimited, "usageLimitExceeded");
       const diagnostic = systemErrorDiagnostic(updates, acpSessionId);
       if (diagnostic !== null) throw new AcpSystemError(diagnostic);
     }
