@@ -146,6 +146,59 @@ describe("host-component filesystem-aware disk admission", { timeout: 30_000 }, 
     expect(previousEvidence).toEqual({ status: "legacy_rollback_reserved" });
   });
 
+  it("reserves a legacy cursor-acp previous release's rollback allocation from its actual runtime-home install root, not the managed /opt root", () => {
+    // Current main declares cursor-acp without phase_protocol, so this is
+    // exactly the first-rollout-from-legacy-main scenario: install-cursor-acp.sh
+    // has always installed beneath the runtime user's home
+    // (~/.local/share/agent-bridge/cursor-acp), never under the root-owned
+    // /opt/agent-bridge/host-components tree every other managed component
+    // uses. Measuring the wrong root here would find nothing, report
+    // "unbounded", and refuse a rollout that should be safe to proceed.
+    const fixture = useMinimalInventory(createFixture());
+    const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const releaseRoot = dirname(currentPointer);
+    const previousDir = join(releaseRoot, fixture.previousCommit);
+    const cursorHome = join(fixture.root, "cursor-home");
+    const installedPayload = join(cursorHome, ".local", "share", "agent-bridge", "cursor-acp", "payload.bin");
+    mkdirSync(dirname(installedPayload), { recursive: true });
+    writeFileSync(installedPayload, Buffer.alloc(1000, "x"));
+    // The managed /opt root exists but is deliberately empty: if the fix
+    // regresses back to measuring this path for cursor-acp, this directory
+    // being present-but-empty still yields "unbounded" (no files to walk),
+    // proving the reservation genuinely comes from the runtime home.
+    const hostComponentRoot = join(fixture.root, "host-components");
+    mkdirSync(hostComponentRoot, { recursive: true });
+
+    // Target release is fully phased and declares nothing legacy.
+    writeFakeInstaller(releaseDir, "install-cursor-fake.sh");
+    writeHostComponentPackageJson(releaseDir, [{ id: "cursor-acp", installer: "scripts/install-cursor-fake.sh", phase_protocol: 1 }]);
+    // Previous (currently active) release predates the phase protocol -
+    // matching current main's actual cursor-acp declaration.
+    writeFakeInstaller(previousDir, "install-cursor-fake.sh");
+    writeHostComponentPackageJson(previousDir, [{ id: "cursor-acp", installer: "scripts/install-cursor-fake.sh" }]);
+
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_RUNTIME_HOME: cursorHome,
+      AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_ROOT: hostComponentRoot,
+      FAKE_REQUIRED_BYTES: "0",
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "999999999999",
+      AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: "20260924T000002Z",
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    expect(result.status, output).toBe(0);
+    // 1000 bytes on disk x the default 4x safety factor.
+    expect(output).toMatch(/host_component_previous_cursor-acp=4000/);
+    // Charged to the runtime home's filesystem, not the (empty) /opt root.
+    expect(output).toMatch(new RegExp(`host preparation admission device=\\S+ path=${cursorHome.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}`));
+    expect(actions(fixture)).not.toContain(`release-activate:--release-root ${releaseRoot} --current ${currentPointer} --expected-commit ${fixture.previousCommit} --prepare-host-components`);
+    const previousEvidence = JSON.parse(readFileSync(
+      join(fixture.logDir, `20260924T000002Z-${fixture.expectedCommit}`, "host-components-previous-prepared.json"),
+      "utf8",
+    ));
+    expect(previousEvidence).toEqual({ status: "legacy_rollback_reserved" });
+  });
+
   it("refuses before containment when a legacy previous release's rollback allocation cannot be conservatively bounded", () => {
     const fixture = useMinimalInventory(createFixture());
     const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
