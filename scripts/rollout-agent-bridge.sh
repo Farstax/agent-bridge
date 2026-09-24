@@ -1403,16 +1403,32 @@ host_component_required_bytes() {
   printf '%s' "$bytes"
 }
 
+# Where a component's payload actually lives on disk, for measuring an
+# already-installed legacy footprint. Must track each installer's own
+# managed root exactly - install-cursor-acp.sh has always installed beneath
+# the runtime user's home (~/.local/share/agent-bridge/cursor-acp), never
+# under the root-owned /opt tree that host_component_root_for's admission
+# bucket otherwise defaults to for every other component.
+legacy_host_component_installed_root() {
+  local id="$1"
+  if [[ "$id" == cursor-acp ]]; then
+    printf '%s/.local/share/agent-bridge/cursor-acp' "$(resolve_runtime_home)"
+  else
+    printf '%s/%s' "$ROLLOUT_HOST_COMPONENT_ROOT" "$id"
+  fi
+}
+
 # A legacy (pre-phase-protocol) previous release must never be invoked with
 # invented prepare/commit semantics. Its rollback allocation is instead
-# conservatively bounded from the bytes it already occupies on its
-# root-owned managed destination - the same footprint a from-scratch
-# reinstall would need to stage alongside, scaled by the same safety factor
-# the phased installers apply to a remote archive's Content-Length. When
-# nothing is installed yet there is nothing safe to bound, so admission
-# must refuse rather than guess.
+# conservatively bounded from the bytes it already occupies on its actual
+# installed root - the same footprint a from-scratch reinstall would need
+# to stage alongside, scaled by the same safety factor the phased
+# installers apply to a remote archive's Content-Length. When nothing is
+# installed yet there is nothing safe to bound, so admission must refuse
+# rather than guess.
 legacy_host_component_reserve_bytes() {
-  local id="$1" root="$ROLLOUT_HOST_COMPONENT_ROOT/${id}"
+  local id="$1" root
+  root="$(legacy_host_component_installed_root "$id")" || exit 1
   local safety_factor="${AGENT_BRIDGE_ROLLOUT_LEGACY_HOST_COMPONENT_SAFETY_FACTOR:-4}"
   [[ "$safety_factor" =~ ^[0-9]+$ ]] || die "legacy host component safety factor is not numeric"
   /usr/bin/python3 - "$root" "$safety_factor" <<'PY'
