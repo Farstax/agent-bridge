@@ -752,6 +752,7 @@ export class BridgeEngine {
         try {
           const retryResult = await this._executeAndDeliverTurn({
             prompt, sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
+            suppressTransientRetry: true,
           });
           if (retryResult) {
             finalize();
@@ -853,6 +854,7 @@ export class BridgeEngine {
     runId: string;
     eventContext: CliOptions["eventContext"];
     collect: (event: BridgeEvent) => void;
+    suppressTransientRetry?: boolean;
   }): Promise<StagedCliResult | null> {
     let result: StagedCliResult | null = null;
     let finalDeliveryPhase: FinalDeliveryPhase | null = null;
@@ -887,6 +889,7 @@ export class BridgeEngine {
           const body = {
             message_thread_id: input.threadId,
             onAnswerDelta: supportsProvisionalAnswers(executionKind) ? onAnswerDelta : undefined,
+            suppressTransientRetry: input.suppressTransientRetry,
           };
           result = await this.executePromptAsync(
             input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments,
@@ -1701,6 +1704,7 @@ export class BridgeEngine {
             eventContext,
             onEvent: collect ?? undefined,
             onSteerReady: (steer) => this.laneCoordinator.setSteerHandle(executionLane, steer),
+            suppressTransientRetry: (body as { suppressTransientRetry?: boolean }).suppressTransientRetry,
           },
           {
             prompt: invocation.prompt ?? promptForCli.prompt,

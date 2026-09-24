@@ -161,6 +161,14 @@ export interface CliOptions {
    * the provider's policy opts in (issue #748). Never invoked otherwise.
    */
   onSteerReady?: (steer: AcpSteerFn) => void;
+  /**
+   * Skip runWithAcpTransientRetry's own same-session retry for this attempt.
+   * Set by BridgeEngine's tier-2 same-provider fresh-session retry (after a
+   * tier-1 same-session retry already ran and failed) so a persistent
+   * transient error produces exactly one fresh-session attempt, not another
+   * full same-session retry cycle nested inside it.
+   */
+  suppressTransientRetry?: boolean;
 }
 
 export interface CliProcessWatchContext {
