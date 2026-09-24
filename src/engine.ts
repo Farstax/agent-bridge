@@ -53,7 +53,7 @@ import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBus
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel, type EffortLevel } from "./effort.js";
 import { resolveAcpTelegramConfigCallback } from "./acp/telegramConfigCallback.js";
 import { getCodexUsageText } from "./codexUsage.js";
-import { clearHandoffRequired, isProviderFallbackHandoffRequired } from "./handoffState.js";
+import { clearHandoffRequired, isProviderFallbackHandoffRequired, markHandoffRequired } from "./handoffState.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { prependWorkspaceContext } from "./workspaceContext.js";
 import type { BridgeEvent } from "./events/types.js";
@@ -726,17 +726,65 @@ export class BridgeEngine {
           this.db.deletePendingMsg(queued.id);
         }
       }
+      let providerError = error instanceof Error ? error : new Error(String(error));
+      const executionProvider = providerIdForBotName(this._executionKind());
+      let classification = executionProvider
+        ? classifyProviderError(executionProvider, providerError)
+        : classifyAnyProviderError(providerError);
+      const sourceKind = this.kind;
+
+      // Tier 2: one silent same-provider, fresh-session retry for a
+      // transient failure, before falling to cross-provider fallback (tier
+      // 3). Tier 1 (same-session retry) already ran and failed inside
+      // runWithAcpTransientRetry -- reaching here means the ACP layer gave
+      // up on this session entirely. Reuses the same handoff-context
+      // mechanism cross-provider fallback uses (markHandoffRequired plus a
+      // fresh nativeSessionMode triggers _buildPromptForCli's existing
+      // fallback-continuation prefix), just targeting this same provider
+      // instead of the next one in the chain -- so no new context-injection
+      // path is needed. Not attempted for any other classification
+      // (capacity_exhausted, auth_required, model_unavailable, fatal,
+      // unknown): those are account/config-level conditions a fresh session
+      // on this same account cannot fix.
+      if (classification.kind === "transient" && isRouteableKind(sourceKind)) {
+        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
+        markHandoffRequired(this.db, chatKey, sourceKind, `fallback_from_${sourceKind}`);
+        try {
+          const retryResult = await this._executeAndDeliverTurn({
+            prompt, sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
+          });
+          if (retryResult) {
+            finalize();
+            this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+            if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
+            activeTaskCommitted = true;
+            outcome = "committed";
+            return "committed";
+          }
+          if (!this.laneCoordinator.hasCancellation(executionLane)) finalize();
+          this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+          outcome = "fenced";
+          return "fenced";
+        } catch (retryError) {
+          if (retryError instanceof LostExecutionLeaseError) {
+            console.warn(`[${this.kind}] discarded fenced result surface=${this.surfaceIdentity} chatKey=${chatKey}`);
+            outcome = "fenced";
+            return "fenced";
+          }
+          console.error(`[${this.kind}] same-provider fresh-session retry also failed`, retryError);
+          providerError = retryError instanceof Error ? retryError : new Error(String(retryError));
+          classification = executionProvider
+            ? classifyProviderError(executionProvider, providerError)
+            : classifyAnyProviderError(providerError);
+        }
+      }
+
       try {
         finalize();
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
       } catch (linkError) {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
       }
-      const providerError = error instanceof Error ? error : new Error(String(error));
-      const executionProvider = providerIdForBotName(this._executionKind());
-      const classification = executionProvider
-        ? classifyProviderError(executionProvider, providerError)
-        : classifyAnyProviderError(providerError);
       const capacityExhausted = isCapacityExhaustedError(providerError);
       const authRequired = classification.kind === "auth_required"
         || (executionProvider === "claude" && isClaudeOAuthRefreshContention(providerError));
@@ -744,7 +792,6 @@ export class BridgeEngine {
       const providerFallbackReason = isRouteableKind(executionKind)
         ? providerFallbackReasonForError(executionKind, providerError)
         : null;
-      const sourceKind = this.kind;
       if (providerFallbackReason && isRouteableKind(sourceKind)) {
         this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
       }
