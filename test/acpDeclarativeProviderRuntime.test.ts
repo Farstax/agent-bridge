@@ -78,6 +78,13 @@ describe("declarative ACP provider runtime", () => {
     }));
   });
 
+  it("requires checksummed Agy and Cursor release archives", () => {
+    for (const providerId of ["agy", "cursor"] as const) {
+      const binary = getLockedAcpRegistryEntry(providerId)?.distribution.binary?.["linux-x86_64"];
+      expect(binary?.sha256).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
   it("resolves Codex execution, doctor, qualification and presentation from one runtime identity", () => {
     const runtime = resolveProviderRuntime("codex", {
       BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/current",

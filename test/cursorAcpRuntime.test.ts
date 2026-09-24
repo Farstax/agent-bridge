@@ -44,6 +44,7 @@ describe("Cursor ACP provider", () => {
         binary: expect.objectContaining({
           "linux-x86_64": {
             archive: "https://downloads.cursor.com/lab/2026.09.23-86fc751/linux/x64/agent-cli-package.tar.gz",
+            sha256: "740dd9d6eb5aec36ca90eaedf9fd5e2c489cd674d69b5147b3c2670f02d9776d",
             cmd: "./dist-package/cursor-agent",
             args: ["acp"],
           },

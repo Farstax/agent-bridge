@@ -45,6 +45,7 @@ describe("Agy ACP provider", () => {
         binary: expect.objectContaining({
           "linux-x86_64": {
             archive: "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.2.1-linux-x86_64.zip",
+            sha256: "9fbf0bd584a26478161f637cabd75113f72541c842d148f578ef1a6a9edcb843",
             cmd: "./agy_acp_server.par",
             args: ["--uid="],
           },
