@@ -34,8 +34,13 @@ describe("ACP provider installation paths", () => {
       id: "cursor-acp",
       installer: "scripts/install-cursor-acp.sh",
     });
-    expect(readFileSync(resolve(repoRoot, "scripts/install-cursor-acp.sh"), "utf8"))
-      .toContain("AGENT_BRIDGE_CURSOR_ACP_USER");
+    const cursorInstaller = readFileSync(resolve(repoRoot, "scripts/install-cursor-acp.sh"), "utf8");
+    expect(cursorInstaller).toContain("AGENT_BRIDGE_CURSOR_ACP_USER");
+    expect(cursorInstaller).toContain("sha256sum");
+    expect(cursorInstaller).toContain("binary?.sha256");
+    expect(cursorInstaller).toContain('id -un');
+    expect(cursorInstaller).not.toContain('$(id -u)" == "0"');
+    expect(activation).toContain('"/usr/sbin/runuser"');
     expect(install).toContain("install-cursor-acp.sh");
     expect(upgrade).toContain("install-cursor-acp.sh");
     expect(activation).toContain('component["id"] == "cursor-acp"');

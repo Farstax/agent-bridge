@@ -238,7 +238,7 @@ if [[ "${1:-}" == "--update" ]]; then
   fi
   echo "[update] Agy ACP uses the host-installed agy_acp_server.par; not downloaded by upgrade."
   echo "[update] Converging the release-locked Cursor ACP binary..."
-  sudo /usr/bin/env AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" \
+  run_as_target_user env AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" HOME="${TARGET_HOME}" \
     /bin/bash "${REPO_DIR}/scripts/install-cursor-acp.sh"
 
   after_claude="$(cli_command_version claude)"

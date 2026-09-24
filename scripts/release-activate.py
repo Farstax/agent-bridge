@@ -208,8 +208,11 @@ def converge_release_host_components(release: Path) -> dict:
             component_environment["AGENT_BRIDGE_CURSOR_ACP_USER"] = runtime_user
         installer = release / component["installer"]
         try:
+            command = ["/bin/bash", str(installer)]
+            if component["id"] == "cursor-acp":
+                command = ["/usr/sbin/runuser", "--preserve-environment", "--user", runtime_user, "--", *command]
             completed = subprocess.run(
-                ["/bin/bash", str(installer)],
+                command,
                 check=True,
                 capture_output=True,
                 text=True,
