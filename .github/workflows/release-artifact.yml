@@ -137,8 +137,8 @@ jobs:
           mkdir -p "$verify_root"
           tar -xzf "$archive" -C "$verify_root"
           test -f "$verify_root/scripts/install-voice-stt.sh"
-           test -f "$verify_root/scripts/install-agy-acp.sh"
-           test -f "$verify_root/scripts/install-cursor-acp.sh"
+          test -f "$verify_root/scripts/install-agy-acp.sh"
+          test -f "$verify_root/scripts/install-cursor-acp.sh"
           test -f "$verify_root/scripts/rollout-sentinel-clear.sh"
           test -f "$verify_root/scripts/load-interactive-telegram-credential.sh"
           node --input-type=module - "$verify_root/manifest.json" <<'NODE'
