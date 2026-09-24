@@ -11,15 +11,18 @@
     "hostComponents": [
       {
         "id": "voice-stt",
-        "installer": "scripts/install-voice-stt.sh"
+        "installer": "scripts/install-voice-stt.sh",
+        "phase_protocol": 1
       },
       {
         "id": "agy-acp",
-        "installer": "scripts/install-agy-acp.sh"
+        "installer": "scripts/install-agy-acp.sh",
+        "phase_protocol": 1
       },
       {
         "id": "cursor-acp",
-        "installer": "scripts/install-cursor-acp.sh"
+        "installer": "scripts/install-cursor-acp.sh",
+        "phase_protocol": 1
       }
     ]
   },

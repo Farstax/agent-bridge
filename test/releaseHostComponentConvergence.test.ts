@@ -17,7 +17,7 @@ function fileEntry(path: string) {
   };
 }
 
-function releaseFixture(options: { declared?: boolean; installer?: boolean; componentId?: string } = {}) {
+function releaseFixture(options: { declared?: boolean; installer?: boolean; componentId?: string; phaseProtocol?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "agent-bridge-host-components-"));
   const release = join(root, COMMIT);
   const scripts = join(release, "scripts");
@@ -31,7 +31,7 @@ function releaseFixture(options: { declared?: boolean; installer?: boolean; comp
   writeFileSync(rolloutDb, "export {};\n");
   writeFileSync(rolloutImpl, "export {};\n");
   if (options.installer !== false) {
-    writeFileSync(installer, `#!/bin/sh\nset -eu\nprintf '%s\\n' "\${AGENT_BRIDGE_STT_ROOT:-}" > "\${HOST_COMPONENT_STATE}.stt-root"\nif [ -f "$HOST_COMPONENT_STATE" ]; then\n  echo host_component_status=no_op\nelse\n  : > "$HOST_COMPONENT_STATE"\n  echo host_component_status=converged\nfi\n`);
+    writeFileSync(installer, `#!/bin/sh\nset -eu\nprintf '%s\\n' "\${AGENT_BRIDGE_STT_ROOT:-}" > "\${HOST_COMPONENT_STATE}.stt-root"\nif [ "\${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-}" = commit ] && [ ! -f "$HOST_COMPONENT_STATE" ]; then exit 7; fi\nif [ -f "$HOST_COMPONENT_STATE" ]; then\n  echo host_component_status=no_op\nelse\n  : > "$HOST_COMPONENT_STATE"\n  echo host_component_status=converged\nfi\n`);
   }
 
   const files = [
@@ -51,7 +51,7 @@ function releaseFixture(options: { declared?: boolean; installer?: boolean; comp
     files,
   };
   if (options.declared !== false) {
-    manifest.host_components = [{ id: options.componentId ?? "test-component", installer: "scripts/install-test-component.sh" }];
+    manifest.host_components = [{ id: options.componentId ?? "test-component", installer: "scripts/install-test-component.sh", ...(options.phaseProtocol === false ? {} : { phase_protocol: 1 }) }];
   }
   const manifestPath = join(release, "manifest.json");
   writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
@@ -133,5 +133,49 @@ describe("active release host-component convergence", () => {
       status: "no_op",
       components: [],
     });
+  });
+});
+
+describe("prepared host-component receipts", () => {
+  it("re-runs phase preparation when a matching receipt survives but its payload does not", () => {
+    const fixture = releaseFixture();
+    chmodSync(fixture.root, 0o755);
+    const program = `
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('release_activate', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.production_mode = lambda: True
+m.validate_release_root = lambda path: path
+m.validate_release = lambda *args, **kwargs: None
+m.os.chown = lambda *args: None
+root, release, state = map(Path, sys.argv[2:])
+first = m.prepare_release_host_components(root, release, '${COMMIT}')
+state.unlink()
+second = m.prepare_release_host_components(root, release, '${COMMIT}')
+print(json.dumps([first, second, state.exists()]))
+`;
+    const result = JSON.parse(execFileSync("python3", ["-c", program, ACTIVATE, fixture.root, join(fixture.root, COMMIT), fixture.state], {
+      encoding: "utf8", env: { ...process.env, HOST_COMPONENT_STATE: fixture.state },
+    })) as Array<{ status: string } | boolean>;
+    expect(result[0]).toMatchObject({ status: "prepared" });
+    expect(result[1]).toMatchObject({ status: "prepared" });
+    expect(result[2]).toBe(true);
+  });
+
+  it("refuses a legacy release without an explicit phase protocol before it can be used for rollback preparation", () => {
+    const fixture = releaseFixture({ phaseProtocol: false });
+    chmodSync(fixture.root, 0o755);
+    const program = `
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('release_activate', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.production_mode = lambda: True
+m.validate_release_root = lambda path: path
+m.validate_release = lambda *args, **kwargs: None
+m.prepare_release_host_components(Path(sys.argv[2]), Path(sys.argv[3]), '${COMMIT}')
+`;
+    expect(() => execFileSync("python3", ["-c", program, ACTIVATE, fixture.root, join(fixture.root, COMMIT)], { encoding: "utf8" })).toThrow(/does not declare phased/);
   });
 });

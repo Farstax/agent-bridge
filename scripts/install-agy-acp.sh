@@ -10,6 +10,8 @@ print_required_bytes=0
 if [[ "${1:-}" == "--print-required-bytes" ]]; then
   print_required_bytes=1
 fi
+phase="${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-converge}"
+[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge ]] || fail "invalid host component phase"
 if (( print_required_bytes == 0 )); then
   [[ "$(id -u)" == "0" ]] || fail "must run as root"
 fi
@@ -140,6 +142,7 @@ PY
 }
 
 if ! valid_component; then
+  [[ "$phase" != commit ]] || fail "prepared Agy ACP payload is missing or invalid"
   # Fail before downloading or disturbing anything if there is not enough
   # headroom for the archive plus its extracted binary and harness to
   # coexist during staging. Content-Length is a remote-reported estimate,
@@ -234,6 +237,10 @@ if (( print_required_bytes == 1 )); then
 fi
 
 valid_component || fail "installed Agy ACP component failed identity/checksum validation"
+if [[ "$phase" == prepare ]]; then
+  echo "host_component_status=converged"
+  exit 0
+fi
 mkdir -p "$(dirname "${LINK}")" "$(dirname "${HARNESS_LINK}")"
 current_target="$(readlink -f "${LINK}" 2>/dev/null || true)"
 if [[ "${current_target}" != "${BINARY}" ]]; then

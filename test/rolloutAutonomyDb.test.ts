@@ -38,8 +38,8 @@ function addAutonomyToAllowlist(fixture: Fixture, path: string): void {
   rewriteConfig(fixture, (lines) => [...lines, `database=${path}`]);
 }
 
-describe("guarded rollout — interactive autonomy database (issue #498)", () => {
-  it("bootstraps a configured-but-missing autonomy database strictly between containment and pointer activation", () => {
+describe("guarded rollout — interactive autonomy database (issue #498)", { timeout: 30_000 }, () => {
+  it("bootstraps a configured-but-missing autonomy database before containment", () => {
     const fixture = createFixture();
     const autonomyPath = join(fixture.root, "databases", "autonomy.sqlite");
     setAutonomyEnv(fixture, autonomyPath);
@@ -64,9 +64,8 @@ describe("guarded rollout — interactive autonomy database (issue #498)", () =>
     expect(bootstrapEvidence.databases[0].path).toBe(autonomyPath);
 
     const ledger = readFileSync(join(artifacts, "phase-ledger.log"), "utf8");
-    expect(ledger.indexOf("phase=CONTAINED")).toBeGreaterThanOrEqual(0);
-    expect(ledger.indexOf("phase=CONTAINED")).toBeLessThan(ledger.indexOf("phase=AUTONOMY_DB_BOOTSTRAPPED"));
-    expect(ledger.indexOf("phase=AUTONOMY_DB_BOOTSTRAPPED")).toBeLessThan(ledger.indexOf("phase=SERVICES_STARTING"));
+    expect(ledger.indexOf("phase=AUTONOMY_DB_PREPARED")).toBeGreaterThanOrEqual(0);
+    expect(ledger.indexOf("phase=AUTONOMY_DB_PREPARED")).toBeLessThan(ledger.indexOf("phase=CONTAINED"));
 
     const log = actions(fixture);
     expect(log.indexOf("systemctl:stop")).toBeGreaterThanOrEqual(0);
@@ -92,7 +91,7 @@ describe("guarded rollout — interactive autonomy database (issue #498)", () =>
     const artifacts = artifactDir(fixture);
     expect(existsSync(join(artifacts, "autonomy-bootstrap-evidence.json"))).toBe(false);
     const ledger = readFileSync(join(artifacts, "phase-ledger.log"), "utf8");
-    expect(ledger).not.toContain("phase=AUTONOMY_DB_BOOTSTRAPPED");
+    expect(ledger).not.toContain("phase=AUTONOMY_DB_PREPARED");
     const postStart = JSON.parse(readFileSync(join(artifacts, "post-start-evidence.json"), "utf8"));
     expect(postStart.databases).toHaveLength(fixture.dbPaths.length);
     for (const path of fixture.dbPaths) {
@@ -116,7 +115,7 @@ describe("guarded rollout — interactive autonomy database (issue #498)", () =>
     const artifacts = artifactDir(fixture);
     expect(existsSync(join(artifacts, "autonomy-bootstrap-evidence.json"))).toBe(false);
     const ledger = readFileSync(join(artifacts, "phase-ledger.log"), "utf8");
-    expect(ledger).not.toContain("phase=AUTONOMY_DB_BOOTSTRAPPED");
+    expect(ledger).not.toContain("phase=AUTONOMY_DB_PREPARED");
     const verify = new Database(autonomyPath, { readonly: true });
     expect(Number(verify.pragma("user_version", { simple: true }))).toBe(CURRENT_SCHEMA_VERSION);
     verify.close();

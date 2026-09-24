@@ -7,11 +7,12 @@ const repoRoot = resolve(import.meta.dirname, "..");
 describe("Agy ACP managed host component", () => {
   it("declares a release host component owned by the transactional activation lifecycle", () => {
     const pkg = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")) as {
-      agentBridge?: { hostComponents?: Array<{ id?: string; installer?: string }> };
+      agentBridge?: { hostComponents?: Array<{ id?: string; installer?: string; phase_protocol?: number }> };
     };
     expect(pkg.agentBridge?.hostComponents).toContainEqual({
       id: "agy-acp",
       installer: "scripts/install-agy-acp.sh",
+      phase_protocol: 1,
     });
   });
 

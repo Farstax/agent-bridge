@@ -109,7 +109,10 @@ function declaredHostComponents(packageJson, files) {
     if (!packaged || packaged.type === "symlink") {
       throw new Error(`host component ${component.id} installer is missing or not a regular packaged file: ${installer}`);
     }
-    return { id: component.id, installer };
+    if (component.phase_protocol !== 1) {
+      throw new Error(`host component ${component.id} must declare phase_protocol 1`);
+    }
+    return { id: component.id, installer, phase_protocol: 1 };
   });
 }
 
