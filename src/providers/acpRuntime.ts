@@ -594,23 +594,31 @@ export async function runResolvedAcpProviderTurn(
   let currentAttempt = 1;
   let priorAttemptRecorded = false;
   try {
-    result = await runWithAcpTransientRetry(providerId as ProviderId, runTurn, {
-      abortRequested,
-      onRetryDecision: (error, successorStarted) => {
-        priorAttemptRecorded = true;
-        if (eventContext && onEvent) {
-          const redacted = redactAcpFailure(error, redactionEnv);
-          onEvent(buildAcpFailureDiagnosticEvent(
-            providerId as ProviderId,
-            redacted,
-            eventContext,
-            redactionEnv,
-            { attempt: 1, successorStarted, retryEligible: true },
-          ));
-        }
-        if (successorStarted) currentAttempt = 2;
-      },
-    });
+    // BridgeEngine's tier-2 same-provider fresh-session retry sets this after
+    // its own same-session retry (tier 1, below) already ran and failed --
+    // without this guard, that fresh-session attempt would unconditionally
+    // re-enter runWithAcpTransientRetry and get its own same-session retry
+    // nested inside it, doubling the attempt/wait budget (up to 2x the OAuth
+    // contention delay) instead of the intended single fresh-session attempt.
+    result = options.suppressTransientRetry
+      ? await runTurn(1)
+      : await runWithAcpTransientRetry(providerId as ProviderId, runTurn, {
+        abortRequested,
+        onRetryDecision: (error, successorStarted) => {
+          priorAttemptRecorded = true;
+          if (eventContext && onEvent) {
+            const redacted = redactAcpFailure(error, redactionEnv);
+            onEvent(buildAcpFailureDiagnosticEvent(
+              providerId as ProviderId,
+              redacted,
+              eventContext,
+              redactionEnv,
+              { attempt: 1, successorStarted, retryEligible: true },
+            ));
+          }
+          if (successorStarted) currentAttempt = 2;
+        },
+      });
   } catch (error) {
     const redacted = redactAcpFailure(error, redactionEnv);
     if (eventContext && onEvent && !(priorAttemptRecorded && currentAttempt === 1)) {
