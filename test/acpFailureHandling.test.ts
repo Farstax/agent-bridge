@@ -44,6 +44,53 @@ function systemErrorAgent(diagnostic: string): acp.AgentApp {
     });
 }
 
+function usageLimitedAgent(statusType: "usageLimited" | "budgetLimited", diagnostic: string): acp.AgentApp {
+  return acp.agent({ name: "usage-limited-agent" })
+    .onRequest(acp.methods.agent.initialize, async () => ({
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: {},
+    }))
+    .onRequest(acp.methods.agent.session.new, async () => ({ sessionId: "acp-usage-limited" }))
+    .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "session_info_update",
+          threadStatus: { type: statusType },
+        } as any,
+      });
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: diagnostic },
+        },
+      });
+      return { stopReason: "end_turn" };
+    });
+}
+
+function claudeRateLimitRejectedAgent(requestFailureMessage: string): acp.AgentApp {
+  return acp.agent({ name: "claude-rate-limit-agent" })
+    .onRequest(acp.methods.agent.initialize, async () => ({
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: {},
+    }))
+    .onRequest(acp.methods.agent.session.new, async () => ({ sessionId: "acp-claude-rate-limit" }))
+    .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "usage_update",
+          used: 0,
+          size: 0,
+          _meta: { "_claude/rateLimit": { status: "rejected" } },
+        } as any,
+      });
+      throw new Error(requestFailureMessage);
+    });
+}
+
 function claudeMessageEvent(text: string): any {
   return {
     kind: "session_update",
@@ -110,6 +157,87 @@ describe("ACP provider failure handling", () => {
 
     expect(thrown).toBeInstanceOf(Error);
     expect(classifyProviderError("codex", thrown as Error)).toMatchObject({ kind: "unknown" });
+  });
+
+  for (const statusType of ["usageLimited", "budgetLimited"] as const) {
+    it(`classifies an in-band ACP ${statusType} thread status as capacity_exhausted from the structured signal alone`, async () => {
+      let thrown: unknown;
+      // Deliberately does not contain any CAPACITY_PATTERNS/TRANSIENT_PATTERNS
+      // wording -- this must classify as capacity_exhausted purely because
+      // Codex's own threadStatus said so, not because of text matching.
+      const diagnostic = "Please wait a moment before your next message.";
+
+      try {
+        await runAcpTurn({
+          peer: usageLimitedAgent(statusType, diagnostic),
+          cwd: process.cwd(),
+          conversationId: `conv-${statusType}`,
+          runId: `run-${statusType}`,
+          existingAcpSessionId: null,
+          prompt: "hello",
+          executionMode: "trusted",
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(classifyProviderError("codex", thrown as Error)).toMatchObject({ kind: "capacity_exhausted" });
+    });
+  }
+
+  it("classifies a Claude request failure as capacity_exhausted when preceded by a rate-limit 'rejected' status, even with ambiguous error text", async () => {
+    let thrown: unknown;
+    // Deliberately ambiguous -- would classify as "unknown" for claude on
+    // text alone (doesn't match any CAPACITY_PATTERNS.claude/AUTH/etc entry).
+    const ambiguousMessage = "the request could not be completed";
+
+    try {
+      await runAcpTurn({
+        peer: claudeRateLimitRejectedAgent(ambiguousMessage),
+        cwd: process.cwd(),
+        conversationId: "conv-claude-rate-limit",
+        runId: "run-claude-rate-limit",
+        existingAcpSessionId: null,
+        prompt: "hello",
+        executionMode: "trusted",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(classifyProviderError("claude", thrown as Error)).toMatchObject({ kind: "capacity_exhausted" });
+  });
+
+  it("leaves an ordinary Claude request failure unclassified when no rate-limit 'rejected' status preceded it", async () => {
+    let thrown: unknown;
+    const agent = acp.agent({ name: "claude-ordinary-failure-agent" })
+      .onRequest(acp.methods.agent.initialize, async () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: {},
+      }))
+      .onRequest(acp.methods.agent.session.new, async () => ({ sessionId: "acp-claude-ordinary" }))
+      .onRequest(acp.methods.agent.session.prompt, async () => {
+        throw new Error("the request could not be completed");
+      });
+
+    try {
+      await runAcpTurn({
+        peer: agent,
+        cwd: process.cwd(),
+        conversationId: "conv-claude-ordinary",
+        runId: "run-claude-ordinary",
+        existingAcpSessionId: null,
+        prompt: "hello",
+        executionMode: "trusted",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(classifyProviderError("claude", thrown as Error)).toMatchObject({ kind: "unknown" });
   });
 
   it("classifies Claude OAuth refresh contention as transient in direct and structured error shapes", () => {
