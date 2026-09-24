@@ -6,7 +6,7 @@ const noneFound = () => false;
 const voiceReady = () => ({ status: "ready" as const, reasonCode: null });
 const acpInspectVersion = (executable: string): string | null => {
   if (executable.includes("codex-acp")) return "1.10.0";
-  if (executable.includes("claude-agent-acp")) return "0.76.0";
+  if (executable.includes("claude-agent-acp")) return "0.81.2";
   if (executable.includes("agy_acp_server") || executable.includes("/agy")) return "1.2.1";
   if (executable.includes("grok")) return "1.0.41";
   if (executable.includes("cursor-agent")) return "2026.09.23-86fc751";

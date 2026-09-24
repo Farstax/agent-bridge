@@ -58,6 +58,16 @@ describe("declarative ACP provider runtime", () => {
     }));
   });
 
+  it("locks the Claude candidate adapter distribution to the qualified release", () => {
+    expect(getLockedAcpRegistryEntry("claude")).toEqual(expect.objectContaining({
+      id: "claude-acp",
+      version: "0.81.2",
+      distribution: {
+        npx: { package: "@agentclientprotocol/claude-agent-acp@0.81.2" },
+      },
+    }));
+  });
+
   it("locks the Grok candidate adapter distribution to the qualified release", () => {
     expect(getLockedAcpRegistryEntry("grok")).toEqual(expect.objectContaining({
       id: "grok-build",
