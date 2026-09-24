@@ -112,7 +112,10 @@ describe("Codex in-band systemError capacity wording falls back instead of dead-
         message: { message_id: 88, chat: { id: 100, type: "private" }, from: { id: 42, first_name: "Test" }, text: "answer this" },
       }, "100", deps);
 
-      expect(codexRun).toHaveBeenCalledTimes(1);
+      // Tier 2 (#877) retries codex once on a fresh session before falling
+      // back to the next CLI; both codex attempts fail here (the mock always
+      // rejects), so it still ends up on claude.
+      expect(codexRun).toHaveBeenCalledTimes(2);
       expect(claudeRun).toHaveBeenCalledTimes(1);
       expect(client.sendMessage.mock.calls.at(-1)?.[0]?.text).toContain("authoritative Claude fallback");
       expect(notifications).toEqual(["Switching to claude after codex became unavailable."]);
