@@ -200,7 +200,12 @@ def converge_release_host_components(release: Path) -> dict:
         return {"status": "no_op", "components": [{"id": entry["id"], "status": "no_op"} for entry in components]}
     component_environment = os.environ.copy()
     component_environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
+    runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER", "")
     for component in components:
+        if component["id"] == "cursor-acp":
+            if not runtime_user:
+                fail("Cursor ACP convergence requires AGENT_BRIDGE_RUNTIME_USER")
+            component_environment["AGENT_BRIDGE_CURSOR_ACP_USER"] = runtime_user
         installer = release / component["installer"]
         try:
             completed = subprocess.run(

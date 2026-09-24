@@ -218,6 +218,7 @@ fi
 [[ "$node_bin" == /* && "$backup_dir" == /* && "$log_dir" == /* ]] || die "configured paths must be absolute"
 [[ -x "$node_bin" && ! -L "$node_bin" ]] || die "configured Node binary is missing or symlinked"
 [[ "$runtime_user" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]] || die "invalid runtime user"
+export AGENT_BRIDGE_RUNTIME_USER="$runtime_user"
 if (( test_mode == 0 )); then /usr/bin/id -u "$runtime_user" >/dev/null || die "runtime user does not exist"; fi
 read_convergence_env_key() {
   local file="$1" target_key="$2" value="$3" required="$4" line mode owner expected_owner

@@ -234,9 +234,12 @@ if [[ "${1:-}" == "--update" ]]; then
   echo "[update] Updating CLI packages..."
   if command -v npm >/dev/null 2>&1; then
     (cd "${REPO_DIR}" && npm install --include=dev)
+    (cd "${REPO_DIR}" && npm run build)
   fi
   echo "[update] Agy ACP uses the host-installed agy_acp_server.par; not downloaded by upgrade."
-  echo "[update] Cursor ACP uses the host-installed cursor-agent; not downloaded by upgrade."
+  echo "[update] Converging the release-locked Cursor ACP binary..."
+  sudo /usr/bin/env AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" \
+    /bin/bash "${REPO_DIR}/scripts/install-cursor-acp.sh"
 
   after_claude="$(cli_command_version claude)"
   if [[ -z "${after_claude}" ]]; then
