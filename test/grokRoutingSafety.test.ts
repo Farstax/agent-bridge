@@ -30,7 +30,7 @@ function withGrokEnvironment<T>(run: (root: string, evidencePath: string) => T):
   const root = mkdtempSync(join(tmpdir(), "grok-routing-safety-"));
   const evidencePath = join(root, "qualification.json");
   const executable = join(root, "grok");
-  writeFileSync(executable, "#!/bin/sh\necho 'grok 1.0.30'\n", "utf8");
+  writeFileSync(executable, "#!/bin/sh\necho 'grok 1.0.41'\n", "utf8");
   chmodSync(executable, 0o755);
 
   const previous = {
@@ -68,7 +68,7 @@ function writeFailedGrokQualification(evidencePath: string): void {
   writeQualificationRecord({
     provider: "grok",
     executionRuntime: resolveProviderRuntime("grok").runtimeIdentity,
-    providerVersion: "1.0.30",
+    providerVersion: "1.0.41",
     previousVersion: null,
     bridgeCommit: "e".repeat(40),
     contractVersion: PROVIDER_CONTRACT_VERSION,

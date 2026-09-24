@@ -58,6 +58,16 @@ describe("declarative ACP provider runtime", () => {
     }));
   });
 
+  it("locks the Grok candidate adapter distribution to the qualified release", () => {
+    expect(getLockedAcpRegistryEntry("grok")).toEqual(expect.objectContaining({
+      id: "grok-build",
+      version: "1.0.41",
+      distribution: {
+        npx: { package: "@xai-official/grok@1.0.41", args: ["agent", "stdio"] },
+      },
+    }));
+  });
+
   it("resolves Codex execution, doctor, qualification and presentation from one runtime identity", () => {
     const runtime = resolveProviderRuntime("codex", {
       BRIDGE_CURRENT_RELEASE_DIR: "/opt/agent-bridge/current",

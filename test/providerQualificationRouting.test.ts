@@ -82,7 +82,7 @@ describe("provider qualification routing", () => {
     writeQualificationRecord({
       provider: "grok",
       executionRuntime: runtimeIdentity,
-      providerVersion: "1.0.30",
+      providerVersion: "1.0.41",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -96,12 +96,12 @@ describe("provider qualification routing", () => {
       ],
     }, evidencePath);
 
-    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.30" })]).toEqual([]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.41" })]).toEqual([]);
 
     writeQualificationRecord({
       provider: "grok",
       executionRuntime: runtimeIdentity,
-      providerVersion: "1.0.30",
+      providerVersion: "1.0.41",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -115,7 +115,7 @@ describe("provider qualification routing", () => {
       ],
     }, evidencePath);
 
-    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.30" })]).toEqual(["grok"]);
+    expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.41" })]).toEqual(["grok"]);
     expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.31" })]).toEqual([]);
   });
 

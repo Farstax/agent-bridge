@@ -68,7 +68,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
       }) + "\n", "utf8");
       script(grok, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo 'grok 1.0.30'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo 'grok 1.0.41'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(cursor, `

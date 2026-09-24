@@ -81,7 +81,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   grok: {
     id: "grok-build",
     name: "Grok Build",
-    version: "1.0.30",
+    version: "1.0.41",
     description: "xAI's coding agent and CLI",
     website: "https://x.ai/cli",
     authors: ["xAI"],
@@ -89,7 +89,7 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
     license_url: "https://x.ai/legal/terms-of-service",
     distribution: {
       npx: {
-        package: "@xai-official/grok@1.0.30",
+        package: "@xai-official/grok@1.0.41",
         args: ["agent", "stdio"],
       },
     },
