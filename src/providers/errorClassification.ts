@@ -89,6 +89,12 @@ const TRANSIENT_PATTERNS: readonly RegExp[] = [
   /temporar(?:y|ily)/i,
   /transient/i,
   /service unavailable/i,
+  // Codex's in-band `threadStatus.type === "systemError"` diagnostic for an
+  // ordinary backend hiccup (see src/acp/client.ts's systemErrorDiagnostic).
+  // Distinct from a genuine quota condition, which Codex reports via its own
+  // "usageLimited"/"budgetLimited" thread status or a "usageLimitExceeded"
+  // codexErrorInfo -- both already classified as capacity_exhausted above.
+  /model is at capacity/i,
 ];
 
 const FATAL_PATTERNS: readonly RegExp[] = [

@@ -24,6 +24,18 @@ describe("provider error classification", () => {
   });
 
 
+  it("classifies Codex's in-band 'model is at capacity' systemError as transient, not capacity_exhausted", () => {
+    // src/acp/client.ts's AcpSystemError for a threadStatus.type === "systemError"
+    // notification -- a generic backend hiccup, distinct from Codex's own
+    // "usageLimited"/"budgetLimited" thread status or "usageLimitExceeded"
+    // codexErrorInfo (both genuinely capacity_exhausted, tested above/below).
+    // Reproduced manually against the same model seconds after the incident;
+    // it worked normally, confirming this was never real usage exhaustion.
+    expect(classifyProviderError("codex", new Error("Selected model is at capacity. Please try a different model."))).toMatchObject({
+      kind: "transient",
+    });
+  });
+
   it("classifies Codex capacity and model-unavailable messages", () => {
     expect(classifyProviderError("codex", new Error("MODEL_CAPACITY_EXHAUSTED"))).toMatchObject({
       kind: "capacity_exhausted",
