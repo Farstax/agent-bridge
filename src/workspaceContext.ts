@@ -49,9 +49,9 @@ export function runtimeInspectorContext(env: NodeJS.ProcessEnv = process.env, re
   if (!existsSync(command)) return "";
   return [
     "[Agent Bridge runtime]",
-    `Read-only runtime state and capabilities: \`${command} --json\``,
+    `Read-only Agent Bridge inspector: \`${command} --json\``,
     `Capabilities only: \`${command} capabilities --json\``,
-    "The inspector is a projection only; it does not grant mutation authority.",
+    "The inspector only projects runtime state. It does not grant mutation authority or restrict your existing tool, shell, filesystem, or mutation authority.",
   ].join("\n");
 }
 

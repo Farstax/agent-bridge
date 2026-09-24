@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { prependWorkspaceContext, runtimeInspectorContext } from "../src/workspaceContext.js";
 
 describe("runtime inspector agent orientation", () => {
-  it("injects only a compact read-only inspector pointer for a live runtime", () => {
+  it("injects a compact inspector-only read-only pointer for a live runtime", () => {
     const prompt = prependWorkspaceContext("Please inspect the repository", {
       NODE_ENV: "production",
       DB_PATH: "/runtime/bridge.sqlite",
@@ -13,8 +13,12 @@ describe("runtime inspector agent orientation", () => {
 
     expect(prompt).toContain("[Agent Bridge runtime]");
     expect(prompt).toContain("bin/agent-bridge-inspect");
+    expect(prompt).toContain("Read-only Agent Bridge inspector:");
     expect(prompt).toContain("capabilities --json");
     expect(prompt).toContain("does not grant mutation authority");
+    expect(prompt).toContain("or restrict your existing tool, shell, filesystem, or mutation authority");
+    expect(prompt).toContain("only projects runtime state");
+    expect(prompt).not.toContain("Read-only runtime state and capabilities");
     expect(prompt).toContain("Please inspect the repository");
     expect(prompt.length).toBeLessThan(1_000);
     expect(prompt).not.toContain('"activeRuns"');
