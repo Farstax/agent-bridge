@@ -22,6 +22,27 @@ Pinned Cursor ACP distribution: release lock `cursor` 2026.09.23-86fc751
 vendored into git or npm; ordinary Runs use `CURSOR_ACP_COMMAND` or PATH
 `cursor-agent`.
 
+## Installation and update paths
+
+Every release-locked ACP provider has a declared installation owner:
+
+| Runtime | Installation path | Authority |
+| --- | --- | --- |
+| ACP SDK, Codex ACP, Claude ACP, Grok ACP | `npm install` in the immutable release | release deployment |
+| Agy ACP | `scripts/install-agy-acp.sh` | guarded root release activation |
+| Cursor ACP | `scripts/install-cursor-acp.sh` | guarded root release activation, writing only to the configured bridge user's home |
+
+Cursor is a release host component. During guarded rollout it is converged and
+version-checked before the release pointer may switch; an installation failure
+therefore aborts activation. The installer downloads the immutable archive
+named by the compiled release lock, rather than the vendor's mutable update
+channel, and refuses a binary whose `--version` does not match that lock.
+
+Fresh source installation and `scripts/upgrade.sh --update` use the same
+Cursor installer. They run `npm run build` first so every installer reads the
+compiled, release-locked registry. Ordinary Runs never install or update an
+ACP runtime.
+
 ## Ownership
 
 1. **Agent Bridge owns** durable Run/conversation identity, routing and

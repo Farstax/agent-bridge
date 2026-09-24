@@ -16,6 +16,10 @@
       {
         "id": "agy-acp",
         "installer": "scripts/install-agy-acp.sh"
+      },
+      {
+        "id": "cursor-acp",
+        "installer": "scripts/install-cursor-acp.sh"
       }
     ]
   },

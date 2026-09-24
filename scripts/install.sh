@@ -293,8 +293,16 @@ ensure_target_user
 
 if [[ "${SKIP_CLI_INSTALL}" != "1" ]]; then
   (cd "${REPO_DIR}" && npm install)
+  (cd "${REPO_DIR}" && npm run build)
+  if [[ "${USER}" == "${TARGET_USER}" ]]; then
+    AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" HOME="${TARGET_HOME}" \
+      /bin/bash "${REPO_DIR}/scripts/install-cursor-acp.sh"
+  else
+    sudo -u "${TARGET_USER}" env AGENT_BRIDGE_CURSOR_ACP_USER="${TARGET_USER}" HOME="${TARGET_HOME}" \
+      /bin/bash "${REPO_DIR}/scripts/install-cursor-acp.sh"
+  fi
   AGY_ACP_COMMAND="${AGY_ACP_COMMAND:-$(resolve_binary agy_acp_server.par)}"
-  CURSOR_ACP_COMMAND="${CURSOR_ACP_COMMAND:-$(resolve_binary cursor-agent)}"
+  CURSOR_ACP_COMMAND="${CURSOR_ACP_COMMAND:-${TARGET_HOME}/.local/bin/cursor-agent}"
   install_shared_skills
 elif [[ -n "${AGENT_BRIDGE_SKILLS:-}" ]]; then
   install_shared_skills
