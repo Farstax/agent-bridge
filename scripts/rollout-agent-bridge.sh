@@ -102,7 +102,7 @@ else
   test_mode=0
 fi
 
-for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/chown /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
+for command_path in "$systemctl_cmd" "$runuser_cmd" "$journalctl_cmd" "$cp_cmd" "$restore_cmd" "$release_stage_cmd" /usr/bin/find /usr/bin/flock /usr/bin/git /usr/bin/python3 /usr/bin/sha256sum /usr/bin/tee /usr/bin/realpath /usr/bin/stat /usr/bin/df /usr/bin/id /usr/bin/mv /usr/bin/rm /usr/bin/cut /usr/bin/sleep /usr/bin/mkdir /usr/bin/chmod /usr/bin/chown /usr/bin/dirname /usr/bin/date /usr/bin/mktemp /usr/bin/ln /usr/bin/hostname /usr/bin/sed /usr/bin/grep /usr/bin/readlink /usr/bin/cat; do
   [[ -x "$command_path" ]] || die "required command is unavailable: $command_path"
 done
 [[ -f "$config_file" && ! -L "$config_file" ]] || die "missing fixed rollout config: $config_file"
@@ -1267,6 +1267,8 @@ record_phase() {
 ROLLOUT_TERMINAL_RETENTION_COUNT=5
 ROLLOUT_EVIDENCE_BUDGET_BYTES=16777216
 ROLLOUT_SAFETY_RESERVE_BYTES=268435456
+ROLLOUT_SYSTEM_CONFIG_BUDGET_BYTES=1048576
+ROLLOUT_RELEASE_COMMIT_BUDGET_BYTES=1048576
 
 rollout_artifact_is_terminal() {
   local dir="$1" ledger="$1/phase-ledger.log" last
@@ -1334,46 +1336,195 @@ regular_file_bytes() {
   /usr/bin/stat -c %s -- "$path"
 }
 
-measure_host_component_bytes() {
-  if [[ -n "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES:-}" ]]; then
-    [[ "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES}" =~ ^[0-9]+$ ]] || die "host component byte hook is not numeric"
-    printf '%s' "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES}"
+# Managed host components are charged to their actual destination
+# filesystem, never a single hardcoded root. Cursor installs beneath the
+# runtime user's home directory; every other managed component installs
+# beneath the root-owned /opt/agent-bridge/host-components tree.
+resolve_runtime_home() {
+  if [[ -n "${AGENT_BRIDGE_ROLLOUT_RUNTIME_HOME:-}" ]]; then
+    printf '%s' "${AGENT_BRIDGE_ROLLOUT_RUNTIME_HOME}"
     return 0
   fi
-  if (( release_mode == 0 )); then
-    printf '0'
-    return 0
+  local home
+  home="$(/usr/bin/getent passwd "$runtime_user" | /usr/bin/cut -d: -f6)"
+  [[ "$home" == /* ]] || die "runtime user home directory is unavailable for host-component admission"
+  printf '%s' "$home"
+}
+
+ROLLOUT_HOST_COMPONENT_ROOT="${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_ROOT:-/opt/agent-bridge/host-components}"
+
+host_component_root_for() {
+  local id="$1"
+  if [[ "$id" == cursor-acp ]]; then
+    resolve_runtime_home
+  else
+    printf '%s' "$ROLLOUT_HOST_COMPONENT_ROOT"
   fi
-  local total=0 installer bytes installers
-  [[ -f "$project_dir/package.json" && ! -L "$project_dir/package.json" ]] || die "target release package manifest is missing"
-  installers="$(/usr/bin/python3 - "$project_dir/package.json" <<'PY'
+}
+
+# Prints "<id>\t<installer>\t<phase_protocol 0|1>" for every host component a
+# release declares.
+parse_release_host_components() {
+  local release_dir="$1"
+  [[ -f "$release_dir/package.json" && ! -L "$release_dir/package.json" ]] || die "release package manifest is missing: $release_dir"
+  /usr/bin/python3 - "$release_dir/package.json" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1], encoding="utf-8"))
 components = manifest.get("agentBridge", {}).get("hostComponents", [])
 if not isinstance(components, list):
     raise SystemExit("host component manifest is malformed")
 for component in components:
-    installer = component.get("installer") if isinstance(component, dict) else None
+    if not isinstance(component, dict):
+        raise SystemExit("host component manifest is malformed")
+    component_id = component.get("id")
+    installer = component.get("installer")
+    if not isinstance(component_id, str) or not component_id:
+        raise SystemExit("host component manifest entry is missing an id")
     if not isinstance(installer, str) or not installer.startswith("scripts/") or ".." in installer.split("/"):
         raise SystemExit("host component installer path is unsafe")
-    print(installer)
+    phase = 1 if component.get("phase_protocol") == 1 else 0
+    print(f"{component_id}\t{installer}\t{phase}")
 PY
-)" || die "host component manifest is malformed"
-  while IFS= read -r installer; do
-    [[ -n "$installer" ]] || continue
-    [[ -f "$project_dir/$installer" && ! -L "$project_dir/$installer" ]] || die "host component installer is missing: $installer"
-    bytes="$(/usr/bin/bash "$project_dir/$installer" --print-required-bytes)" || die "host component byte preflight failed: $installer"
-    bytes="${bytes//$'\n'/}"
-    [[ "$bytes" =~ ^[0-9]+$ ]] || die "host component byte preflight was not numeric: $installer"
-    total=$((total + bytes))
-  done <<< "$installers"
-  printf '%s' "$total"
+}
+
+# Cursor's installer enforces its unprivileged-runtime-user boundary on
+# every invocation, including this measurement call - never invoke it as
+# root.
+host_component_required_bytes() {
+  local release_dir="$1" installer="$2" id="$3" bytes
+  [[ -f "$release_dir/$installer" && ! -L "$release_dir/$installer" ]] || die "host component installer is missing: $release_dir/$installer"
+  if [[ "$id" == cursor-acp ]]; then
+    bytes="$(run_as_runtime /usr/bin/bash "$release_dir/$installer" --print-required-bytes)" || die "host component byte preflight failed: $release_dir/$installer"
+  else
+    bytes="$(/usr/bin/bash "$release_dir/$installer" --print-required-bytes)" || die "host component byte preflight failed: $release_dir/$installer"
+  fi
+  bytes="${bytes//$'\n'/}"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || die "host component byte preflight was not numeric: $release_dir/$installer"
+  printf '%s' "$bytes"
+}
+
+# A legacy (pre-phase-protocol) previous release must never be invoked with
+# invented prepare/commit semantics. Its rollback allocation is instead
+# conservatively bounded from the bytes it already occupies on its
+# root-owned managed destination - the same footprint a from-scratch
+# reinstall would need to stage alongside, scaled by the same safety factor
+# the phased installers apply to a remote archive's Content-Length. When
+# nothing is installed yet there is nothing safe to bound, so admission
+# must refuse rather than guess.
+legacy_host_component_reserve_bytes() {
+  local id="$1" root="$ROLLOUT_HOST_COMPONENT_ROOT/${id}"
+  local safety_factor="${AGENT_BRIDGE_ROLLOUT_LEGACY_HOST_COMPONENT_SAFETY_FACTOR:-4}"
+  [[ "$safety_factor" =~ ^[0-9]+$ ]] || die "legacy host component safety factor is not numeric"
+  /usr/bin/python3 - "$root" "$safety_factor" <<'PY'
+import os, stat, sys
+root, factor = sys.argv[1], int(sys.argv[2])
+if not os.path.isdir(root) or os.path.islink(root):
+    print("unbounded")
+    raise SystemExit(0)
+total = 0
+for current, _dirs, files in os.walk(root, followlinks=False):
+    for name in files:
+        path = os.path.join(current, name)
+        try:
+            info = os.lstat(path)
+        except OSError:
+            print("unbounded")
+            raise SystemExit(0)
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        total += info.st_size
+print(total * factor)
+PY
+}
+
+# Prints "<destination-path>\t<bytes>\t<category>" lines for one release's
+# declared host components. Legacy (non-phased) entries are tolerated only
+# for the previous release and are never executed with phase semantics.
+# A process-substitution consumer (`< <(cmd)`) runs `cmd` in its own
+# unmonitored subshell - a `die` inside it would only exit that subshell,
+# silently truncating the loop instead of aborting the rollout. Every call
+# here that can fail closed is therefore captured into a variable first and
+# explicitly checked, then read back via a here-string (no extra subshell).
+host_component_requirement_lines() {
+  local release_dir="$1" label="$2" id installer phase_protocol dest bytes parsed
+  parsed="$(parse_release_host_components "$release_dir")" || die "release host component manifest is malformed: $release_dir"
+  [[ -n "$parsed" ]] || return 0
+  while IFS=$'\t' read -r id installer phase_protocol; do
+    [[ -n "$id" ]] || continue
+    dest="$(host_component_root_for "$id")" || exit 1
+    if (( phase_protocol == 1 )); then
+      bytes="$(host_component_required_bytes "$release_dir" "$installer" "$id")" || exit 1
+    else
+      [[ "$label" == previous ]] || die "release does not declare phased host-component preparation support: $id"
+      bytes="$(legacy_host_component_reserve_bytes "$id")" || exit 1
+      [[ "$bytes" != unbounded ]] || die "cannot conservatively bound legacy host component rollback allocation for $id; refusing before containment"
+    fi
+    printf '%s\t%s\t%s\n' "$dest" "$bytes" "host_component_${label}_${id}"
+  done <<< "$parsed"
+}
+
+# Aggregate requirement lines covering every host component this rollout
+# transaction can still touch (target preparation plus previous-release
+# rollback), or the raw test override that bypasses invoking real
+# installers.
+host_component_disk_requirement_lines() {
+  if [[ -n "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES:-}" ]]; then
+    [[ "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES}" =~ ^[0-9]+$ ]] || die "host component byte hook is not numeric"
+    (( AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES == 0 )) && return 0
+    # IFS=$'\t' read (the only consumer of these lines) treats tab as IFS
+    # whitespace and strips a leading empty field, so the destination must
+    # never be empty - release_root is unset outside release mode.
+    printf '%s\t%s\t%s\n' "${release_root:-.}" "${AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES}" host_component
+    return 0
+  fi
+  (( release_mode == 1 )) || return 0
+  [[ "$previous_pointer_target" =~ ^[0-9a-f]{40}$ ]] || die "previous release pointer target is unavailable for host-component admission"
+  host_component_requirement_lines "$project_dir" target
+  host_component_requirement_lines "$release_root/$previous_pointer_target" previous
+}
+
+# True only when every component the previous release declares already
+# understands prepare/commit - the sole condition under which it is safe
+# to invoke its installer with phase semantics at all.
+previous_release_host_components_are_phased() {
+  local id installer phase_protocol parsed
+  parsed="$(parse_release_host_components "$release_root/$previous_pointer_target")" \
+    || die "previous release host component manifest is malformed: $release_root/$previous_pointer_target"
+  [[ -n "$parsed" ]] || return 0
+  while IFS=$'\t' read -r id installer phase_protocol; do
+    [[ -n "$id" ]] || continue
+    (( phase_protocol == 1 )) || return 1
+  done <<< "$parsed"
+  return 0
+}
+
+# Shared by admit_host_preparation and admit_rollout_disk (dynamic bash
+# scoping makes each caller's own `local -A device_*` arrays visible here).
+add_disk_requirement() {
+  local path="$1" bytes="$2" category="$3" device
+  [[ "$bytes" =~ ^[0-9]+$ ]] || die "disk admission requirement is not numeric: $category"
+  (( bytes == 0 )) && return 0
+  device="$(filesystem_identity "$path")"
+  device_required[$device]=$(( ${device_required[$device]:-0} + bytes ))
+  [[ -n "${device_path[$device]:-}" ]] || device_path[$device]="$path"
+  device_categories[$device]="${device_categories[$device]:-}${device_categories[$device]:+,}$category=$bytes"
+}
+
+filesystem_identity() {
+  local path="$1" probe="$1"
+  while [[ ! -e "$probe" && ! -L "$probe" ]]; do
+    probe="$(/usr/bin/dirname -- "$probe")"
+    [[ "$probe" != "/" ]] || break
+  done
+  [[ -d "$probe" && ! -L "$probe" ]] || die "disk admission cannot identify destination filesystem: $path"
+  /usr/bin/stat -c %d -- "$probe" || die "disk admission cannot identify destination filesystem: $path"
 }
 
 measure_available_bytes() {
+  local path="$1"
   if [[ -n "${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND:-}" ]]; then
     local command_bytes
-    command_bytes="$("${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND}")" || die "available byte command failed"
+    command_bytes="$("${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND}" "$path")" || die "available byte command failed"
     command_bytes="${command_bytes//$'\n'/}"
     [[ "$command_bytes" =~ ^[0-9]+$ ]] || die "available byte command did not return an integer"
     printf '%s' "$command_bytes"
@@ -1384,28 +1535,22 @@ measure_available_bytes() {
     printf '%s' "${AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES}"
     return 0
   fi
-  local min="" path avail
-  local -a paths=("$backup_dir" "$log_dir")
-  local database
-  for database in "${databases[@]}"; do
-    paths+=("$(/usr/bin/dirname -- "$database")")
-  done
-  for path in "${paths[@]}"; do
-    avail="$(/usr/bin/df -B1 --output=avail -- "$path" | /usr/bin/tail -n 1 | /usr/bin/tr -d '[:space:]')" || die "unable to measure available disk"
-    [[ "$avail" =~ ^[0-9]+$ ]] || die "unable to measure available disk"
-    if [[ -z "$min" || "$avail" -lt "$min" ]]; then min="$avail"; fi
-  done
-  [[ -n "$min" ]] || die "unable to measure available disk"
-  printf '%s' "$min"
+  local probe="$path"
+  while [[ ! -e "$probe" && ! -L "$probe" ]]; do probe="$(/usr/bin/dirname -- "$probe")"; done
+  local available
+  available="$(/usr/bin/df -B1 --output=avail -- "$probe" | /usr/bin/tail -n 1 | /usr/bin/tr -d '[:space:]')" || die "unable to measure available disk"
+  [[ "$available" =~ ^[0-9]+$ ]] || die "unable to measure available disk"
+  printf '%s' "$available"
 }
 
 admit_rollout_disk() {
-  local database backup_bytes=0 slack_bytes=0 main_bytes wal_bytes
+  local database backup_bytes=0 slack_bytes=0 main_bytes wal_bytes migration_bytes migration_class
   local evidence_bytes="$ROLLOUT_EVIDENCE_BUDGET_BYTES"
   local reserve_bytes="$ROLLOUT_SAFETY_RESERVE_BYTES"
   [[ -n "${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES:-}" ]] && reserve_bytes="${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES}"
   [[ "$reserve_bytes" =~ ^[0-9]+$ && "$evidence_bytes" =~ ^[0-9]+$ ]] || die "disk admission budget is not numeric"
   local post_checkpoint relocation_bytes=0
+  local -A device_required=() device_available=() device_path=() device_categories=()
   for database in "${databases[@]}"; do
     main_bytes="$(regular_file_bytes "$database")"
     wal_bytes="$(regular_file_bytes "${database}-wal")"
@@ -1415,20 +1560,72 @@ admit_rollout_disk() {
     post_checkpoint=$((main_bytes + wal_bytes))
     backup_bytes=$((backup_bytes + post_checkpoint))
     slack_bytes=$((slack_bytes + wal_bytes))
+    migration_class="${migration_growth_by_database[$database]:-}"
+    case "$migration_class" in
+      copy) migration_bytes="$post_checkpoint" ;;
+      none) migration_bytes=0 ;;
+      *) die "migration growth contract is missing for $database" ;;
+    esac
+    add_disk_requirement "$(/usr/bin/dirname -- "$database")" "$wal_bytes" checkpoint_slack
+    add_disk_requirement "$(/usr/bin/dirname -- "$database")" "$migration_bytes" migration_growth
+    add_disk_requirement "$(/usr/bin/dirname -- "$database")" "$post_checkpoint" restore_scratch
+    add_disk_requirement "$backup_dir" "$post_checkpoint" database_backup
   done
   local restore_bytes="$backup_bytes"
   if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
     relocation_bytes="$(regular_file_bytes "$health_relocation_source")"
+    add_disk_requirement "$(/usr/bin/dirname -- "$health_relocation_target")" "$relocation_bytes" health_relocation
   fi
-  local host_bytes available required
-  host_bytes="$(measure_host_component_bytes)"
-  available="$(measure_available_bytes)"
-  required=$((backup_bytes + slack_bytes + restore_bytes + relocation_bytes + evidence_bytes + host_bytes + reserve_bytes))
-  echo "disk admission available=${available} required=${required} reserve=${reserve_bytes} database_backup=${backup_bytes} checkpoint_slack=${slack_bytes} evidence=${evidence_bytes} host_component=${host_bytes} restore_scratch=${restore_bytes} relocation=${relocation_bytes}"
-  if (( available < required )); then
-    die "insufficient disk for rollout and rollback: available=${available} required=${required}"
+  add_disk_requirement "$log_dir" "$evidence_bytes" evidence
+  # Contained publication writes only bounded temporary unit/pointer/receipt
+  # files. Charge their actual destination filesystems explicitly.
+  add_disk_requirement "$systemd_dir" "$ROLLOUT_SYSTEM_CONFIG_BUDGET_BYTES" system_config
+  if (( release_mode == 1 )); then
+    add_disk_requirement "$release_root" "$ROLLOUT_RELEASE_COMMIT_BUDGET_BYTES" release_commit
   fi
+  # Host components are charged to their own real destination filesystem
+  # (Cursor to the runtime user's home, everything else to the managed
+  # /opt root) rather than a single assumed release-filesystem estimate.
+  local host_dest host_bytes host_category host_lines
+  host_lines="$(host_component_disk_requirement_lines)" || die "host component disk requirement enumeration failed"
+  while IFS=$'\t' read -r host_dest host_bytes host_category; do
+    [[ -n "$host_dest" ]] || continue
+    add_disk_requirement "$host_dest" "$host_bytes" "$host_category"
+  done <<< "$host_lines"
+  local device available required
+  for device in "${!device_required[@]}"; do
+    required=$(( device_required[$device] + reserve_bytes ))
+    available="$(measure_available_bytes "${device_path[$device]}")"
+    device_available[$device]="$available"
+    echo "disk admission device=$device path=${device_path[$device]} available=$available required=$required reserve=$reserve_bytes categories=${device_categories[$device]}"
+    if (( available < required )); then
+      die "insufficient disk for rollout and rollback on device=$device: available=$available required=$required"
+    fi
+  done
   record_phase DISK_ADMITTED
+}
+
+admit_host_preparation() {
+  (( release_mode == 1 )) || return 0
+  local reserve_bytes="$ROLLOUT_SAFETY_RESERVE_BYTES"
+  [[ -n "${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES:-}" ]] && reserve_bytes="${AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES}"
+  [[ "$reserve_bytes" =~ ^[0-9]+$ ]] || die "disk admission budget is not numeric"
+  local -A device_required=() device_available=() device_path=() device_categories=()
+  local host_dest host_bytes host_category host_lines
+  host_lines="$(host_component_disk_requirement_lines)" || die "host component disk requirement enumeration failed"
+  while IFS=$'\t' read -r host_dest host_bytes host_category; do
+    [[ -n "$host_dest" ]] || continue
+    add_disk_requirement "$host_dest" "$host_bytes" "$host_category"
+  done <<< "$host_lines"
+  local device available required
+  for device in "${!device_required[@]}"; do
+    required=$(( device_required[$device] + reserve_bytes ))
+    available="$(measure_available_bytes "${device_path[$device]}")"
+    device_available[$device]="$available"
+    echo "host preparation admission device=$device path=${device_path[$device]} available=$available required=$required reserve=$reserve_bytes categories=${device_categories[$device]}"
+    (( available >= required )) || die "insufficient disk for host-component preparation on device=$device: available=$available required=$required"
+  done
+  record_phase HOST_PREPARATION_ADMITTED
 }
 
 stop_and_verify_all_services() {
@@ -1855,6 +2052,22 @@ run_db_tool() {
   run_as_runtime "$node_bin" "$project_dir/node_modules/tsx/dist/cli.mjs" "$project_dir/scripts/rollout-db.ts" "$@"
 }
 
+# A configured autonomy database has no dependency on the old process.  Make
+# and validate it before containment so a missing file can never become an
+# unreserved post-stop allocator.
+if [[ -n "$autonomy_bootstrap_path" ]]; then
+  echo "bootstrapping configured autonomy database while services remain active path=$autonomy_bootstrap_path"
+  run_db_tool bootstrap --db "$autonomy_bootstrap_path" --role interactive --confirm-new-role "$autonomy_bootstrap_path" --evidence "$artifact_dir/autonomy-bootstrap-evidence.json"
+  hash_evidence_file "$artifact_dir/autonomy-bootstrap-evidence.json"
+  [[ -f "$autonomy_bootstrap_path" && ! -L "$autonomy_bootstrap_path" ]] || die "autonomy database bootstrap did not create a regular database: $autonomy_bootstrap_path"
+  autonomy_canonical_after_bootstrap="$(/usr/bin/realpath -e "$autonomy_bootstrap_path")"
+  [[ "$autonomy_canonical_after_bootstrap" == "$autonomy_bootstrap_path" ]] || die "bootstrapped autonomy database path is not canonical: $autonomy_bootstrap_path"
+  databases+=("$autonomy_bootstrap_path")
+  build_db_args
+  preflight_db_args=("${db_args[@]}")
+  record_phase AUTONOMY_DB_PREPARED
+fi
+
 declare -A restart_baseline=()
 "$systemctl_cmd" reset-failed "${units[@]}"
 for unit in "${units[@]}"; do
@@ -1865,24 +2078,43 @@ done
 run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${preflight_db_args[@]}" > "$artifact_dir/preflight-evidence.json"
 hash_evidence_file "$artifact_dir/preflight-evidence.json"
 record_phase PREFLIGHT
+declare -A migration_growth_by_database=()
+run_db_tool growth --evidence - "${preflight_db_args[@]}" > "$artifact_dir/migration-growth-evidence.json"
+hash_evidence_file "$artifact_dir/migration-growth-evidence.json"
+while IFS=$'\t' read -r growth_path growth_bytes; do
+  [[ "$growth_path" == /* && ( "$growth_bytes" == copy || "$growth_bytes" == none ) ]] || die "invalid migration growth evidence"
+  migration_growth_by_database[$growth_path]="$growth_bytes"
+done < <(/usr/bin/python3 - "$artifact_dir/migration-growth-evidence.json" <<'PY'
+import json, sys
+for item in json.load(open(sys.argv[1], encoding="utf-8")).get("databases", []):
+    print(f"{item['path']}\t{item['growthClass']}")
+PY
+)
+# Host payload downloads, extraction, package installation, and model writes
+# happen before containment.  Prepare both target and previous release so an
+# automatic restore only needs bounded pointer/state publication.
+if (( release_mode == 1 )); then
+  admit_host_preparation
+  "$activation_cmd" --release-root "$release_root" --current "$current_pointer" --expected-commit "$expected_commit" --prepare-host-components > "$artifact_dir/host-components-target-prepared.json"
+  hash_evidence_file "$artifact_dir/host-components-target-prepared.json"
+  # A legacy previous release predates prepare/commit and must never be
+  # invoked with invented phase semantics; admit_host_preparation already
+  # reserved its conservative rollback allocation above, and rollback
+  # reactivates it through the pre-existing full-converge path instead.
+  if previous_release_host_components_are_phased; then
+    "$activation_cmd" --release-root "$release_root" --current "$current_pointer" --expected-commit "$previous_pointer_target" --prepare-host-components > "$artifact_dir/host-components-previous-prepared.json"
+  else
+    printf '{"status":"legacy_rollback_reserved"}\n' > "$artifact_dir/host-components-previous-prepared.json"
+  fi
+  hash_evidence_file "$artifact_dir/host-components-previous-prepared.json"
+  record_phase HOST_COMPONENTS_PREPARED
+fi
 admit_rollout_disk
 
 echo "stopping all services"
 stop_attempted=1
 stop_and_verify_all_services || die "CONTAINMENT INCOMPLETE during primary stop"
 record_phase CONTAINED
-
-if [[ -n "$autonomy_bootstrap_path" ]]; then
-  echo "bootstrapping configured autonomy database while services are contained path=$autonomy_bootstrap_path"
-  run_db_tool bootstrap --db "$autonomy_bootstrap_path" --role interactive --confirm-new-role "$autonomy_bootstrap_path" --evidence "$artifact_dir/autonomy-bootstrap-evidence.json"
-  hash_evidence_file "$artifact_dir/autonomy-bootstrap-evidence.json"
-  [[ -f "$autonomy_bootstrap_path" && ! -L "$autonomy_bootstrap_path" ]] || die "autonomy database bootstrap did not create a regular database: $autonomy_bootstrap_path"
-  autonomy_canonical_after_bootstrap="$(/usr/bin/realpath -e "$autonomy_bootstrap_path")"
-  [[ "$autonomy_canonical_after_bootstrap" == "$autonomy_bootstrap_path" ]] || die "bootstrapped autonomy database path is not canonical: $autonomy_bootstrap_path"
-  databases+=("$autonomy_bootstrap_path")
-  record_phase AUTONOMY_DB_BOOTSTRAPPED
-  build_db_args
-fi
 
 code_check
 run_db_tool inspect "${inspect_db_flags[@]}" --evidence - "${db_args[@]}" > "$artifact_dir/stopped-evidence.json"
@@ -1980,9 +2212,9 @@ acceptance_args=(--before "$artifact_dir/preflight-evidence.json" --after "$arti
 if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   acceptance_args+=(--relocated-from "$health_relocation_source" --relocated-to "$health_relocation_target")
 fi
-if [[ -n "$autonomy_bootstrap_path" ]]; then
-  acceptance_args+=(--added "$autonomy_bootstrap_path")
-fi
+# The bootstrap is deliberately complete before the preflight snapshot, so it
+# is now an ordinary managed DB during acceptance rather than a post-stop
+# "added" database.
 if (( retiring_health == 1 && retired_health_database_present == 1 )); then
   acceptance_args+=(--removed "$retired_health_database")
 fi

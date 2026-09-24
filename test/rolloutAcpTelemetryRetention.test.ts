@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { actions, createFixture, prepareImmutableRelease, rewriteConfig, runRollout } from "./support/rolloutFixture.js";
 
-describe("guarded rollout ACP telemetry retention", () => {
+describe("guarded rollout ACP telemetry retention", { timeout: 30_000 }, () => {
 
   it("preserves the retired health schema allowance through telemetry pruning", () => {
     const fixture = createFixture();

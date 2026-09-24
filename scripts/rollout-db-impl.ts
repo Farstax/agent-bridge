@@ -11,14 +11,14 @@ import { closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mk
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { BridgeDb, openDb, openProductionDb } from "../src/db.js";
-import { CURRENT_SCHEMA_VERSION } from "../src/db/schema.js";
+import { CURRENT_SCHEMA_VERSION, migrationGrowthClass } from "../src/db/schema.js";
 import { assertDatabaseForeignKeyIntegrity } from "../src/db/roleAssignmentsMigration.js";
 import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from "../src/db/schemaContract.js";
 
 /** The active database roles. */
 const VALID_ROLES = new Set(["shared", "discord", "health", "interactive"]);
 
-type Mode = "inspect" | "checkpoint" | "prune" | "migrate" | "validate" | "reconcile" | "relocate" | "bootstrap";
+type Mode = "inspect" | "checkpoint" | "prune" | "migrate" | "validate" | "reconcile" | "growth" | "relocate" | "bootstrap";
 
 interface Options {
   mode: Mode;
@@ -97,7 +97,7 @@ const CURRENT_LOCK_COLUMNS = new Set([
 
 function parseArgs(argv: string[]): Options {
   const mode = argv.shift() as Mode | undefined;
-  if (!mode || !["inspect", "checkpoint", "prune", "migrate", "validate", "reconcile", "relocate"].includes(mode)) {
+  if (!mode || !["inspect", "checkpoint", "prune", "migrate", "validate", "reconcile", "growth", "relocate"].includes(mode)) {
     throw new Error("usage: rollout-db.ts <inspect|checkpoint|prune|migrate|validate|reconcile> --db PATH [--db PATH ...]");
   }
   const databases: string[] = [];
@@ -1062,6 +1062,19 @@ async function main(): Promise<void> {
   const options = parseArgs(argv);
   const unitsFor = (path: string) => options.resolvingUnits.get(path) ?? [];
   const roleFor = (path: string): DatabaseRole => options.databaseRoles.get(path) ?? "shared";
+  if (options.mode === "growth") {
+    const databases = options.databases.map((path) => {
+      const raw = new Database(path, { readonly: true, fileMustExist: true });
+      try {
+        const version = Number(raw.pragma("user_version", { simple: true }));
+        return { path, schemaVersion: version, growthClass: migrationGrowthClass(version) };
+      } finally { raw.close(); }
+    });
+    const content = `${JSON.stringify({ mode: "growth", databases }, null, 2)}\n`;
+    if (options.evidencePath === "-") process.stdout.write(content);
+    else if (options.evidencePath) writeFileSync(options.evidencePath, content, { mode: 0o600 });
+    return;
+  }
   if (options.mode === "inspect") {
     const evidence = options.databases.map((path) => inspectDatabase(path, false, unitsFor(path), roleFor(path), options.allowRetiredHealthTable));
     const legacyQueues = evidence.reduce((sum, database) => sum + database.legacyQueueCount, 0);

@@ -111,7 +111,7 @@ def _manifest_files(release: Path, manifest: dict) -> dict[str, dict]:
     return expected
 
 
-def _host_components(release: Path, manifest: dict, manifest_files: dict[str, dict] | None = None) -> list[dict[str, str]]:
+def _host_components(release: Path, manifest: dict, manifest_files: dict[str, dict] | None = None) -> list[dict[str, str | int]]:
     value = manifest.get("host_components")
     if value is None:
         return []
@@ -146,7 +146,8 @@ def _host_components(release: Path, manifest: dict, manifest_files: dict[str, di
             file_entry = manifest_files.get(installer)
             if not file_entry or file_entry.get("type", "file") != "file":
                 fail(f"host component {component_id} installer is not manifest-bound: {installer}")
-        components.append({"id": component_id, "installer": installer})
+        phase_protocol = entry.get("phase_protocol")
+        components.append({"id": component_id, "installer": installer, "phase_protocol": phase_protocol if phase_protocol == 1 else 0})
     return components
 
 
@@ -231,6 +232,69 @@ def converge_release_host_components(release: Path) -> dict:
     return {"status": aggregate, "components": results}
 
 
+def prepare_release_host_components(release_root: Path, release: Path, expected_commit: str) -> dict:
+    """Do all expensive component work while the old service is still live.
+
+    The immutable release itself is never used as mutable state.  A
+    root-owned, commit-addressed receipt beside the release pointer makes the
+    subsequent activation a fail-closed pointer/publication operation.
+    """
+    validate_release(release, expected_commit, strict=production_mode())
+    components = _host_components(release, _load_manifest(release))
+    if any(component["phase_protocol"] != 1 for component in components):
+        fail("release does not declare phased host-component preparation support")
+    state_root = release_root / ".host-components-prepared"
+    receipt = state_root / f"{expected_commit}.json"
+    if receipt.exists() or receipt.is_symlink():
+        if receipt.is_symlink() or not receipt.is_file():
+            fail("host-component preparation receipt is unsafe")
+        try:
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            fail(f"invalid host-component preparation receipt: {error}")
+        if value.get("commit") != expected_commit or value.get("components") != [entry["id"] for entry in components]:
+            fail("host-component preparation receipt identity mismatch")
+        # Receipt identity alone never proves payload durability. Re-run the
+        # phase-aware prepare validation before allowing containment; a valid
+        # installer returns no-op without downloading, while a missing or
+        # corrupt payload is repaired here while services still run.
+        value = None
+    if not production_mode():
+        return {"status": "prepared", "components": [entry["id"] for entry in components]}
+    state_root.mkdir(mode=0o700, exist_ok=True)
+    if state_root.is_symlink() or not state_root.is_dir():
+        fail("host-component preparation state root is unsafe")
+    environment = os.environ.copy()
+    environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
+    environment["AGENT_BRIDGE_HOST_COMPONENT_PHASE"] = "prepare"
+    runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER", "")
+    results: list[str] = []
+    for component in components:
+        component_env = environment.copy()
+        if component["id"] == "cursor-acp":
+            if not runtime_user:
+                fail("Cursor ACP preparation requires AGENT_BRIDGE_RUNTIME_USER")
+            component_env["AGENT_BRIDGE_CURSOR_ACP_USER"] = runtime_user
+        command = ["/bin/bash", str(release / component["installer"])]
+        if component["id"] == "cursor-acp":
+            command = ["/usr/sbin/runuser", "--preserve-environment", "--user", runtime_user, "--", *command]
+        try:
+            completed = subprocess.run(command, check=True,
+                capture_output=True, text=True, timeout=900, env=component_env)
+        except subprocess.TimeoutExpired as error:
+            fail(f"host component {component['id']} preparation timed out after {error.timeout}s")
+        except subprocess.CalledProcessError as error:
+            fail(f"host component {component['id']} preparation failed: {(error.stderr or '').strip()}")
+        _parse_component_status(completed.stdout, component["id"])
+        results.append(component["id"])
+    temporary = receipt.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"schema_version": 1, "commit": expected_commit, "components": results}, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o400)
+    if production_mode(): os.chown(temporary, 0, 0)
+    os.replace(temporary, receipt)
+    return {"status": "prepared", "components": results}
+
+
 def current_target(current: Path, release_root: Path) -> str | None:
     if not current.exists() and not current.is_symlink():
         return None
@@ -269,7 +333,30 @@ def activate(release_root: Path, current: Path, expected_commit: str) -> str:
     previous = current_target(current, release_root)
     if previous == expected_commit:
         fail("same target pointer is a no-op activation; refusing POINTER_SWITCHED")
-    converge_release_host_components(release)
+    receipt = release_root / ".host-components-prepared" / f"{expected_commit}.json"
+    if production_mode() and (not receipt.is_file() or receipt.is_symlink()):
+        fail("target host components were not prepared before containment")
+    # Installers receive commit mode only after their immutable preparation
+    # receipt exists.  They may publish links/state, but must not download,
+    # extract, install packages, or replace component payloads in this mode.
+    environment = os.environ.copy()
+    environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
+    environment["AGENT_BRIDGE_HOST_COMPONENT_PHASE"] = "commit"
+    runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER", "")
+    for component in _host_components(release, _load_manifest(release)):
+        if not production_mode():
+            continue
+        component_env = environment.copy()
+        if component["id"] == "cursor-acp":
+            if not runtime_user:
+                fail("Cursor ACP activation requires AGENT_BRIDGE_RUNTIME_USER")
+            component_env["AGENT_BRIDGE_CURSOR_ACP_USER"] = runtime_user
+        command = ["/bin/bash", str(release / component["installer"])]
+        if component["id"] == "cursor-acp":
+            command = ["/usr/sbin/runuser", "--preserve-environment", "--user", runtime_user, "--", *command]
+        completed = subprocess.run(command, check=True,
+            capture_output=True, text=True, timeout=120, env=component_env)
+        _parse_component_status(completed.stdout, component["id"])
 
     descriptor, temporary_name = tempfile.mkstemp(prefix=".current-", dir=release_root)
     os.close(descriptor)
@@ -293,6 +380,7 @@ def main() -> int:
     parser.add_argument("--expected-commit")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--converge-active-host-components", action="store_true")
+    parser.add_argument("--prepare-host-components", action="store_true")
     args = parser.parse_args()
     if os.geteuid() != 0 and production_mode():
         fail("release activation must run as root")
@@ -303,7 +391,10 @@ def main() -> int:
         return 0
     if not args.expected_commit:
         fail("--expected-commit is required for validation or activation")
-    if args.validate_only:
+    if args.prepare_host_components:
+        validate_release_root(args.release_root)
+        print(json.dumps(prepare_release_host_components(args.release_root, args.release_root / args.expected_commit, args.expected_commit), sort_keys=True))
+    elif args.validate_only:
         validate_release_root(args.release_root)
         validate_release(args.release_root / args.expected_commit, args.expected_commit, strict=True)
         print(f"validated {args.expected_commit}")

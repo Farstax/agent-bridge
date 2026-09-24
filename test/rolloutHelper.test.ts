@@ -448,7 +448,7 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(checkpointCalls).toHaveLength(1);
     expect(checkpointCalls.every((line) => line.includes("--allow-retired-health"))).toBe(true);
     expect(actionLog).toContain("--converge-active-host-components");
-    expect(actionLog).not.toContain(`--expected-commit ${fixture.previousCommit}`);
+    expect(actionLog).toContain(`--expected-commit ${fixture.previousCommit} --prepare-host-components`);
   }, 15_000);
 
   it("restores legacy health state when retirement fails before target acceptance", () => {
@@ -668,6 +668,39 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(ledger.indexOf("phase=SERVICES_STARTING")).toBeLessThan(ledger.indexOf("phase=ACCEPTED"));
   }, 15_000);
 
+  it("refuses host preparation capacity before invoking preparation or stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const probe = join(fixture.root, "low-host-space");
+    executable(probe, "#!/bin/sh\nprintf '1\\n'\n");
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_BYTES: "4096",
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND: probe,
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/insufficient disk for host-component preparation/);
+    expect(actions(fixture)).not.toContain("--prepare-host-components");
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  });
+
+  it("re-measures WAL growth created while preparation runs before containment", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const probe = join(fixture.root, "capacity-after-prepare");
+    executable(probe, `#!/bin/sh
+if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; else printf '999999999999\\n'; fi
+`);
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND: probe,
+      FAKE_PREPARE_GROW_DB: fixture.dbPaths[0],
+      FAKE_PREPARE_GROW_WAL_BYTES: "2000000",
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/migration_growth=2028672|migration_growth=/);
+    expect(actions(fixture)).toContain("--prepare-host-components");
+    expect(actions(fixture)).not.toContain("systemctl:stop");
+  }, 20_000);
+
   it("backs up and migrates a schema-3 database before reconciliation creates its audit table", () => {
     const fixture = useMinimalInventory(createFixture());
     const bridge = openDb(fixture.dbPaths[0], { serviceId: "telegram:interactive", runId: "schema-3-run" });
@@ -743,10 +776,17 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     execFileSync("find", [join(fixture.root, "releases"), "-type", "d", "-exec", "chmod", "u+w", "{}", "+"]);
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     const log = actions(fixture);
-    const activationLine = log.split("\n").find((line) => line.startsWith("release-activate:") && !line.includes("--validate-only"));
+    const activationLine = log.split("\n").find((line) => line.startsWith("release-activate:")
+      && line.includes(`--expected-commit ${fixture.expectedCommit}`)
+      && !line.includes("--validate-only")
+      && !line.includes("--prepare-host-components")
+      && !line.includes("--converge-active-host-components"));
+    const serviceStartLine = log.split("\n").filter((line) => line.startsWith("systemctl:start ")
+      && line.includes(units[0])).at(-1);
     expect(activationLine).toBeDefined();
-    expect(log.indexOf(" migrate ")).toBeLessThan(log.indexOf(activationLine!));
-    expect(log.indexOf(activationLine!)).toBeLessThan(log.indexOf("systemctl:start"));
+    expect(serviceStartLine).toBeDefined();
+    expect(log.indexOf(" migrate ")).toBeLessThan(log.lastIndexOf(activationLine!));
+    expect(log.lastIndexOf(activationLine!)).toBeLessThan(log.lastIndexOf(serviceStartLine!));
     expect(readlinkSync(currentPointer)).toBe(fixture.expectedCommit);
     const artifacts = readFileSync(join(fixture.logDir, "latest"), "utf8").trim();
     expect(JSON.parse(readFileSync(join(artifacts, "pointer-switch-evidence.json"), "utf8"))).toEqual(expect.objectContaining({

@@ -39,6 +39,8 @@ print_required_bytes=0
 if [[ "${1:-}" == "--print-required-bytes" ]]; then
   print_required_bytes=1
 fi
+phase="${AGENT_BRIDGE_HOST_COMPONENT_PHASE:-converge}"
+[[ "$phase" == prepare || "$phase" == commit || "$phase" == converge ]] || fail "invalid host component phase"
 
 [[ "$(id -u)" == "0" ]] || fail "must run as root"
 [[ "$(uname -s)" == "Linux" ]] || fail "whisper.cpp appliance component is supported only on Linux"
@@ -55,7 +57,7 @@ for command in curl tar sha256sum python3 apt-get dpkg-query find readlink timeo
   command -v "${command}" >/dev/null 2>&1 || fail "required command is missing: ${command}"
 done
 
-if (( print_required_bytes == 0 )); then
+if (( print_required_bytes == 0 )) && [[ "$phase" != commit ]]; then
 if [[ "${STT_ROOT}" == "${DEFAULT_STT_ROOT}" ]]; then
   for ancestor in /opt/agent-bridge /opt/agent-bridge/host-components; do
     [[ ! -e "${ancestor}" || ( -d "${ancestor}" && ! -L "${ancestor}" ) ]] \
@@ -274,23 +276,32 @@ if (( print_required_bytes == 1 )); then
   exit 0
 fi
 
-ensure_model
-if ! valid_component; then
-  install_component
+if [[ "$phase" != commit ]]; then
+  ensure_model
+  if ! valid_component; then
+    install_component
+  fi
 fi
 valid_component || fail "installed voice transcription component failed checksum validation"
+
+if [[ "$phase" == prepare ]]; then
+  echo "host_component_status=converged"
+  exit 0
+fi
 
 manifest_whisper="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["whisperExecutable"])' "${COMPONENT_DIR}/manifest.json")"
 whisper_path="${COMPONENT_DIR}/${manifest_whisper}"
 "${whisper_path}" --version >/dev/null 2>&1 || fail "whisper-cli version preflight failed"
 
-smoke_dir="${work}/smoke"
-mkdir -p "${smoke_dir}"
-/usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y -f lavfi -i anullsrc=r=16000:cl=mono -t 0.25 "${smoke_dir}/silence.wav"
-timeout 20s /usr/bin/nice -n 19 "${whisper_path}" \
-  -m "${MODELS_DIR}/${MODEL_NAME}" -f "${smoke_dir}/silence.wav" \
-  -t 1 -p 1 -bs 1 -bo 1 -l en -np >/dev/null 2>&1 \
-  || fail "whisper.cpp local smoke test failed"
+if [[ "$phase" != commit ]]; then
+  smoke_dir="${work}/smoke"
+  mkdir -p "${smoke_dir}"
+  /usr/bin/ffmpeg -nostdin -hide_banner -loglevel error -y -f lavfi -i anullsrc=r=16000:cl=mono -t 0.25 "${smoke_dir}/silence.wav"
+  timeout 20s /usr/bin/nice -n 19 "${whisper_path}" \
+    -m "${MODELS_DIR}/${MODEL_NAME}" -f "${smoke_dir}/silence.wav" \
+    -t 1 -p 1 -bs 1 -bo 1 -l en -np >/dev/null 2>&1 \
+    || fail "whisper.cpp local smoke test failed"
+fi
 
 new_target="components/${WHISPER_RELEASE}"
 old_target=""

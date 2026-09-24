@@ -29,10 +29,12 @@ describe("ACP provider installation paths", () => {
     expect(manifest.agentBridge?.hostComponents).toContainEqual({
       id: "agy-acp",
       installer: "scripts/install-agy-acp.sh",
+      phase_protocol: 1,
     });
     expect(manifest.agentBridge?.hostComponents).toContainEqual({
       id: "cursor-acp",
       installer: "scripts/install-cursor-acp.sh",
+      phase_protocol: 1,
     });
     const cursorInstaller = readFileSync(resolve(repoRoot, "scripts/install-cursor-acp.sh"), "utf8");
     expect(cursorInstaller).toContain("AGENT_BRIDGE_CURSOR_ACP_USER");

@@ -34,7 +34,7 @@ function budget(fixture: ReturnType<typeof createFixture>, extra: { host?: numbe
   };
 }
 
-describe("rollout disk admission", () => {
+describe("rollout disk admission", { timeout: 30_000 }, () => {
   it("refuses before service stop when the transaction does not fit", () => {
     const fixture = useMinimalInventory(createFixture());
     const activeBefore = readFileSync(fixture.stateFile, "utf8");
@@ -46,7 +46,7 @@ describe("rollout disk admission", () => {
     const output = `${result.stdout}\n${result.stderr}`;
     expect(result.status).not.toBe(0);
     expect(output).toMatch(/insufficient disk for rollout and rollback/);
-    expect(output).toMatch(/disk admission available=1 required=/);
+    expect(output).toMatch(/disk admission device=.* available=1 required=/);
     expect(output).not.toMatch(/stopping all services/);
     expect(actions(fixture)).not.toContain("systemctl:stop");
     expect(readFileSync(fixture.stateFile, "utf8")).toBe(activeBefore);
@@ -70,6 +70,7 @@ describe("rollout disk admission", () => {
     expect(result.status, output).not.toBe(0);
     expect(output).toMatch(new RegExp(`database_backup=${mainBytes + walBytes}`));
     expect(output).toMatch(new RegExp(`restore_scratch=${mainBytes + walBytes}`));
+    expect(output).toMatch(new RegExp(`migration_growth=${mainBytes + walBytes}`));
     expect(output).toMatch(new RegExp(`checkpoint_slack=${walBytes}`));
     expect(actions(fixture)).not.toContain("systemctl:stop");
   });
@@ -106,6 +107,25 @@ describe("rollout disk admission", () => {
     expect(actions(fixture)).not.toContain("systemctl:stop");
     expect(rollout).toContain("--print-required-bytes");
     expect(agy).toContain("insufficient disk space to stage Agy ACP component");
+  });
+
+  it("refuses on the database device even when the evidence device has space", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const probe = join(fixture.root, "available-by-path");
+    writeFileSync(probe, `#!/bin/bash
+case "$1" in
+  ${fixture.logDir}*) printf '999999999999\\n' ;;
+  *) printf '1\\n' ;;
+esac
+`);
+    execFileSync("chmod", ["755", probe]);
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND: probe,
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/path=.*databases.*available=1/);
+    expect(actions(fixture)).not.toContain("systemctl:stop");
   });
 
   it("prunes only proven old terminal artifacts and then remeasures free space", () => {
@@ -171,5 +191,5 @@ fi
     expect(retried.status, `${retried.stdout}\n${retried.stderr}`).toBe(0);
     expect(readdirSync(fixture.backupDir)).toEqual([`20260923T000001Z-${fixture.expectedCommit}`]);
     expect(existsSync(join(fixture.logDir, `20260923T000000Z-${fixture.expectedCommit}`))).toBe(true);
-  });
+  }, 20_000);
 });

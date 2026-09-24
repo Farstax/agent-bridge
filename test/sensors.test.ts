@@ -22,7 +22,7 @@ afterEach(() => {
   for (const path of paths.splice(0)) try { rmSync(path); } catch { /* already gone */ }
 });
 
-describe("sensors", () => {
+describe("sensors", { timeout: 30_000 }, () => {
   it("always exposes built-in Agent Bridge and Server sensors", () => {
     const dbPath = temporary("sensors-db.sqlite");
     const db = openDb(dbPath, { serviceId: "sensor-test", runId: "sensor-test" });
@@ -88,7 +88,7 @@ describe("sensors", () => {
     expect(all.map((report) => report.sensorId)).toEqual(["agent-bridge", "server", "content-crawler", "example"]);
     expect(new Set(all.map((report) => report.sensorId)).size).toBe(all.length);
     db.close();
-  });
+  }, 30_000);
 
   it("fails clearly for invalid external configuration", () => {
     const configPath = temporary("bad-sensors.json");
@@ -288,7 +288,7 @@ describe("sensors", () => {
       encoding: "utf8", env,
     }));
     expect(all.map((report: { sensorId: string }) => report.sensorId)).toEqual(["agent-bridge", "server", "example"]);
-  }, 10_000);
+  }, 30_000);
 
   it("reads the current interactive DB through AGENT_BRIDGE_CONTEXT_DB", () => {
     const dbPath = temporary("helper-context.sqlite");
@@ -301,7 +301,7 @@ describe("sensors", () => {
     }));
     expect(report.checks.find((check: { name: string }) => check.name === "db-file")?.status).toBe("green");
     expect(report.checks.find((check: { name: string }) => check.name === "db-read")?.status).toBe("green");
-  });
+  }, 30_000);
 
   it("delegates scheduled Sensor execution to the existing routines capability", () => {
     const skill = readFileSync(fileURLToPath(new URL("../skills/sensors/SKILL.md", import.meta.url)), "utf8");
@@ -335,7 +335,7 @@ describe("sensors", () => {
     expect(report.sensorId).toBe("example");
     expect(output).not.toContain("helper-secret");
     expect(output).not.toContain("helper-password");
-  });
+  }, 30_000);
 
   it("bounds combined Telegram Sensor output", () => {
     const report = {

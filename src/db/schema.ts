@@ -25,6 +25,31 @@ export interface Migration {
   up: (db: Database.Database, databaseRole?: string) => void;
 }
 
+/**
+ * Rollout admission contract. Every registered migration must declare its
+ * worst temporary allocation class here. `copy` means one complete current
+ * database image: it safely covers SQLite table rebuild/copy migrations, not
+ * only their final schema delta. Missing metadata is a release defect and is
+ * rejected before service containment.
+ */
+const MIGRATION_GROWTH: Readonly<Record<number, "none" | "copy">> = {
+  1: "copy", 2: "copy", 3: "copy", 4: "copy", 5: "copy", 6: "none",
+  7: "copy", 8: "copy", 9: "copy", 10: "copy", 11: "copy", 12: "copy",
+  13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy",
+};
+
+export function migrationGrowthClass(currentVersion: number): "none" | "copy" {
+  if (!Number.isSafeInteger(currentVersion) || currentVersion < 0 || currentVersion > CURRENT_SCHEMA_VERSION) {
+    throw new Error("invalid migration growth input");
+  }
+  for (let version = currentVersion + 1; version <= CURRENT_SCHEMA_VERSION; version += 1) {
+    const growth = MIGRATION_GROWTH[version];
+    if (!growth) throw new Error(`migration ${version} has no disk-growth contract`);
+    if (growth === "copy") return "copy";
+  }
+  return "none";
+}
+
 export class UnsupportedSchemaVersionError extends Error {
   constructor(version: number) {
     super(`unsupported database schema version ${version}`);

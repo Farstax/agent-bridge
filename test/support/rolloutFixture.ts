@@ -189,6 +189,7 @@ current=""
 expected=""
 validate_only=0
 converge_active=0
+prepare_components=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --current) current="$2"; shift 2 ;;
@@ -196,10 +197,15 @@ while [ "$#" -gt 0 ]; do
     --release-root) shift 2 ;;
     --validate-only) validate_only=1; shift ;;
     --converge-active-host-components) converge_active=1; shift ;;
+    --prepare-host-components) prepare_components=1; shift ;;
     *) echo "unknown release activation argument: $1" >&2; exit 2 ;;
   esac
 done
 if [ "$validate_only" = 1 ]; then exit 0; fi
+if [ "$prepare_components" = 1 ]; then
+  if [ -n "\${FAKE_PREPARE_GROW_WAL_BYTES:-}" ]; then /usr/bin/truncate -s "\${FAKE_PREPARE_GROW_WAL_BYTES}" "\${FAKE_PREPARE_GROW_DB}-wal"; fi
+  echo '{"status":"prepared"}'; exit 0
+fi
 if [ "$converge_active" = 1 ]; then
   [ -n "$current" ] && [ -L "$current" ] || exit 1
   if [ "\${FAKE_RECOVERY_RESTART_COUNTER_EMPTY:-}" = 1 ]; then
@@ -798,4 +804,3 @@ export function prepareImmutableRelease(fixture: Fixture, activeCommit = fixture
   chmodSync(join(releaseRoot, `.${fixture.expectedCommit}.staging-provenance.json`), 0o444);
   return { currentPointer, releaseDir };
 }
-

@@ -27,19 +27,19 @@ function manifest(root: string) {
 describe("release-owned host components", () => {
   it("binds a declared installer to the manifest file inventory", () => {
     const root = compiledRoot({
-      agentBridge: { hostComponents: [{ id: "voice-stt", installer: "scripts/install-voice-stt.sh" }] },
+      agentBridge: { hostComponents: [{ id: "voice-stt", installer: "scripts/install-voice-stt.sh", phase_protocol: 1 }] },
     });
     mkdirSync(join(root, "scripts"), { recursive: true });
     writeFileSync(join(root, "scripts", "install-voice-stt.sh"), "#!/bin/sh\nexit 0\n");
 
     const built = manifest(root);
-    expect(built.host_components).toEqual([{ id: "voice-stt", installer: "scripts/install-voice-stt.sh" }]);
+    expect(built.host_components).toEqual([{ id: "voice-stt", installer: "scripts/install-voice-stt.sh", phase_protocol: 1 }]);
     expect(built.files.find((entry: { path: string }) => entry.path === "scripts/install-voice-stt.sh")?.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("fails closed when a current source declaration loses its installer", () => {
     const root = compiledRoot({
-      agentBridge: { hostComponents: [{ id: "voice-stt", installer: "scripts/install-voice-stt.sh" }] },
+      agentBridge: { hostComponents: [{ id: "voice-stt", installer: "scripts/install-voice-stt.sh", phase_protocol: 1 }] },
     });
     expect(() => manifest(root)).toThrow(/installer is missing or not a regular packaged file/);
   });
