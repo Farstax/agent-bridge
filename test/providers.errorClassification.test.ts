@@ -36,6 +36,16 @@ describe("provider error classification", () => {
     });
   });
 
+  it("does not leak Codex's 'model is at capacity' transient wording into other providers' classification", () => {
+    // The pattern's justification (Codex's own systemError vs. usageLimited
+    // thread-status distinction) is Codex-ACP-specific; it must be scoped to
+    // codex, not the shared TRANSIENT_PATTERNS list every provider checks.
+    for (const providerId of ["claude", "grok", "cursor", "agy", "custom-acp"] as const) {
+      expect(classifyProviderError(providerId, new Error("Selected model is at capacity. Please try a different model.")).kind)
+        .not.toBe("transient");
+    }
+  });
+
   it("classifies Codex capacity and model-unavailable messages", () => {
     expect(classifyProviderError("codex", new Error("MODEL_CAPACITY_EXHAUSTED"))).toMatchObject({
       kind: "capacity_exhausted",
