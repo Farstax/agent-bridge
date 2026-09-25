@@ -1429,6 +1429,13 @@ legacy_host_component_installed_root() {
 legacy_host_component_reserve_bytes() {
   local id="$1" root
   root="$(legacy_host_component_installed_root "$id")" || exit 1
+  # A legacy component that has never created its managed root has no
+  # rollback footprint to reserve. This is distinct from an unsafe or
+  # uninspectable root: a dangling symlink still fails closed below.
+  if [[ ! -e "$root" && ! -L "$root" ]]; then
+    printf '0'
+    return 0
+  fi
   local safety_factor="${AGENT_BRIDGE_ROLLOUT_LEGACY_HOST_COMPONENT_SAFETY_FACTOR:-4}"
   [[ "$safety_factor" =~ ^[0-9]+$ ]] || die "legacy host component safety factor is not numeric"
   /usr/bin/python3 - "$root" "$safety_factor" <<'PY'

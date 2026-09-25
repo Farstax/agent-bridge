@@ -203,14 +203,15 @@ describe("host-component filesystem-aware disk admission", { timeout: 30_000 }, 
     expect(previousEvidence).toEqual({ status: "legacy_rollback_reserved" });
   });
 
-  it("refuses before containment when a legacy previous release's rollback allocation cannot be conservatively bounded", () => {
+  it("reserves zero rollback bytes for a legacy component that never created its managed root", () => {
     const fixture = useMinimalInventory(createFixture());
     const { currentPointer, releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
     const releaseRoot = dirname(currentPointer);
     const previousDir = join(releaseRoot, fixture.previousCommit);
     const hostComponentRoot = join(fixture.root, "host-components");
     mkdirSync(hostComponentRoot, { recursive: true });
-    // Nothing installed at all for this component id: nothing safe to bound.
+    // The component's managed root has never existed, so the legacy release
+    // has no installed footprint to restore on rollback.
 
     writeFakeInstaller(releaseDir, "install-agy-fake.sh");
     writeHostComponentPackageJson(releaseDir, [{ id: "agy-acp", installer: "scripts/install-agy-fake.sh", phase_protocol: 1 }]);
@@ -221,13 +222,17 @@ describe("host-component filesystem-aware disk admission", { timeout: 30_000 }, 
     const result = runRollout(fixture, undefined, undefined, {
       AGENT_BRIDGE_ROLLOUT_HOST_COMPONENT_ROOT: hostComponentRoot,
       AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES: "999999999999",
+      AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: "20260925T000003Z",
     });
     const output = `${result.stdout}\n${result.stderr}`;
 
-    expect(result.status).not.toBe(0);
-    expect(output).toMatch(/cannot conservatively bound legacy host component rollback allocation for agy-acp/);
-    expect(actions(fixture)).not.toContain("systemctl:stop");
+    expect(result.status, output).toBe(0);
     expect(readFileSync(fixture.stateFile, "utf8")).toBe(activeBefore);
+    const previousEvidence = JSON.parse(readFileSync(
+      join(fixture.logDir, `20260925T000003Z-${fixture.expectedCommit}`, "host-components-previous-prepared.json"),
+      "utf8",
+    ));
+    expect(previousEvidence).toEqual({ status: "legacy_rollback_reserved" });
   });
 
   it("refuses before containment when an inadequately provisioned legacy rollback allocation does not fit", () => {
