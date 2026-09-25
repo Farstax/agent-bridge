@@ -137,6 +137,44 @@ describe("active release host-component convergence", () => {
 });
 
 describe("prepared host-component receipts", () => {
+  it("passes Cursor preparation the configured runtime user's home despite a preserved root HOME", () => {
+    const fixture = releaseFixture({ componentId: "cursor-acp" });
+    chmodSync(fixture.root, 0o755);
+    const program = `
+import importlib.util, json, sys
+from pathlib import Path
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location('release_activate', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.production_mode = lambda: True
+m.validate_release_root = lambda path: path
+m.validate_release = lambda *args, **kwargs: None
+m.pwd.getpwnam = lambda user: SimpleNamespace(pw_dir='/home/rollout-test')
+m.os.chown = lambda *args: None
+captured = {}
+def fake_run(command, **kwargs):
+    captured['command'] = command
+    captured['home'] = kwargs['env'].get('HOME')
+    captured['runtime_user'] = kwargs['env'].get('AGENT_BRIDGE_CURSOR_ACP_USER')
+    return SimpleNamespace(stdout='host_component_status=no_op\\n')
+m.subprocess.run = fake_run
+m.prepare_release_host_components(Path(sys.argv[2]), Path(sys.argv[3]), '${COMMIT}')
+print(json.dumps(captured, sort_keys=True))
+`;
+    const result = JSON.parse(execFileSync("python3", ["-c", program, ACTIVATE, fixture.root, join(fixture.root, COMMIT)], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AGENT_BRIDGE_RUNTIME_USER: "rollout-test",
+        HOME: "/root",
+      },
+    })) as { command: string[]; home: string; runtime_user: string };
+
+    expect(result.runtime_user).toBe("rollout-test");
+    expect(result.home).toBe("/home/rollout-test");
+    expect(result.command).toContain("--preserve-environment");
+  });
+
   it("re-runs phase preparation when a matching receipt survives but its payload does not", () => {
     const fixture = releaseFixture();
     chmodSync(fixture.root, 0o755);
