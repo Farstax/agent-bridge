@@ -17,6 +17,10 @@ afterEach(cleanupRoots);
 const FAKE_INSTALLER = `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = --print-required-bytes ]; then
+  if [[ "\${0##*/}" == install-cursor-* && "\${AGENT_BRIDGE_CURSOR_ACP_USER:-}" != rollout-test ]]; then
+    echo "cursor preflight did not receive its configured runtime user" >&2
+    exit 1
+  fi
   printf '%s\\n' "\${FAKE_REQUIRED_BYTES:-0}"
   exit 0
 fi
