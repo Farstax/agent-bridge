@@ -1394,7 +1394,7 @@ host_component_required_bytes() {
   local release_dir="$1" installer="$2" id="$3" bytes
   [[ -f "$release_dir/$installer" && ! -L "$release_dir/$installer" ]] || die "host component installer is missing: $release_dir/$installer"
   if [[ "$id" == cursor-acp ]]; then
-    bytes="$(run_as_runtime /usr/bin/bash "$release_dir/$installer" --print-required-bytes)" || die "host component byte preflight failed: $release_dir/$installer"
+    bytes="$(run_as_runtime /usr/bin/env "AGENT_BRIDGE_CURSOR_ACP_USER=$runtime_user" /usr/bin/bash "$release_dir/$installer" --print-required-bytes)" || die "host component byte preflight failed: $release_dir/$installer"
   else
     bytes="$(/usr/bin/bash "$release_dir/$installer" --print-required-bytes)" || die "host component byte preflight failed: $release_dir/$installer"
   fi
