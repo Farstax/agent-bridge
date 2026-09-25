@@ -52,11 +52,11 @@ function makeRelease(commit = COMMIT): { archive: string; approval: string; root
   return { archive, approval, root, releaseSha };
 }
 
-function makeOwnerRequest(root: string, commit = COMMIT): string {
+function makeOwnerRequest(root: string, commit = COMMIT, repository = "Farstax/agent-bridge", owner = "Farstax"): string {
   const request = join(root, "owner-deployment-request.json");
   writeFileSync(request, `${JSON.stringify({
-    repository: "nickconstantinou/agent-bridge",
-    owner: "nickconstantinou",
+    repository,
+    owner,
     authenticated: true,
     reference: "owner-deploy-239",
     requested_at: "2026-07-30T12:00:00Z",
@@ -96,17 +96,70 @@ describe("single-input deployer contract", () => {
     }));
   }, 15_000);
 
-  it("rejects an owner request for a different repository or target", () => {
+  it("accepts structurally valid repository audit metadata without an OSS owner allowlist", () => {
     const release = makeRelease();
-    const request = JSON.parse(readFileSync(makeOwnerRequest(release.root), "utf8"));
-    request.repository = "someone-else/agent-bridge";
-    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
-    const result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+    const request = makeOwnerRequest(release.root, COMMIT, "another-owner/another-repository", "another-owner");
+    const result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", request, "--validate-only"], {
       encoding: "utf8",
       env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
     });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  });
+
+  it("still rejects malformed repository metadata and mismatched target commits", () => {
+    const release = makeRelease();
+    const request = JSON.parse(readFileSync(makeOwnerRequest(release.root), "utf8"));
+    request.repository = "not-a-repository";
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    let result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
     expect(result.status).not.toBe(0);
-    expect(`${result.stdout}\n${result.stderr}`).toMatch(/different repository owner/i);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/repository/i);
+    request.repository = "Farstax/agent-bridge";
+    request.owner = "someone-else";
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/repository and owner/i);
+    request.owner = "Farstax";
+    request.target_commit = "3".repeat(40);
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/target commit/i);
+  });
+
+  it("still rejects unauthenticated and expired owner requests", () => {
+    const release = makeRelease();
+    const request = JSON.parse(readFileSync(makeOwnerRequest(release.root), "utf8"));
+    request.authenticated = false;
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    let result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/authenticated/i);
+    request.authenticated = true;
+    request.expires_at = "2020-07-28T13:00:00Z";
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/expired/i);
+    request.expires_at = "2099-07-28T13:00:00Z";
+    request.requested_at = "2099-07-30T12:00:00Z";
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/not yet valid/i);
   });
 
   it("validates one archive and minimal approval without an evidence file", () => {

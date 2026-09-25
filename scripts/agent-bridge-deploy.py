@@ -24,8 +24,8 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
 USERNAME = re.compile(r"^[a-z_][a-z0-9_-]*[$]?$")
-REPOSITORY = "nickconstantinou/agent-bridge"
-REPOSITORY_OWNER = "nickconstantinou"
+REPOSITORY_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+REPOSITORY_OWNER_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
 DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
 DEPLOY_LOCK = Path("/run/lock/agent-bridge-deploy.lock")
@@ -158,8 +158,14 @@ def parse_owner_request(path: Path, expected_commit: str, now: datetime, product
     required = ("repository", "owner", "authenticated", "reference", "requested_at", "expires_at", "target_commit")
     if not isinstance(document, dict) or set(document) != set(required):
         fail("owner deployment request has an invalid shape")
-    if document["repository"] != REPOSITORY or document["owner"] != REPOSITORY_OWNER:
-        fail("owner deployment request is for a different repository owner")
+    repository = document["repository"]
+    owner = document["owner"]
+    if not isinstance(repository, str) or not REPOSITORY_IDENTIFIER.fullmatch(repository):
+        fail("owner deployment request repository is invalid")
+    if not isinstance(owner, str) or not REPOSITORY_OWNER_IDENTIFIER.fullmatch(owner):
+        fail("owner deployment request owner is invalid")
+    if repository.partition("/")[0] != owner:
+        fail("owner deployment request repository and owner do not match")
     if document["authenticated"] is not True:
         fail("owner deployment request is not authenticated")
     if not TOKEN.fullmatch(document["reference"]):

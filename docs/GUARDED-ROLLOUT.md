@@ -23,9 +23,12 @@ sudo agent-bridge-deploy \
 
 An explicit deployment instruction from the repository owner authorizes
 deployment of the resolved exact target. Do not add a second approval boundary.
-The protected request file is root-owned, mode `0600`, and binds the exact
-repository, owner, authenticated principal, request reference, validity window
-and target commit. The deployer automatically creates the mode-`0600`
+The protected request file is root-owned, mode `0600`, and binds supplied
+repository/owner audit metadata, authenticated principal, request reference,
+validity window and target commit. The deployer structurally validates this
+metadata and its internal owner/repository consistency, but does not contain a
+repository allowlist. The deployment environment or Platform decides which
+release source is authorised for its appliance. The deployer automatically creates the mode-`0600`
 target-bound approval record before handing off to the existing guarded flow.
 
 The `--approval` form remains supported during transition for older automation;
