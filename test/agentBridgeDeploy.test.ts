@@ -117,6 +117,13 @@ describe("single-input deployer contract", () => {
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/repository/i);
     request.repository = "Farstax/agent-bridge";
+    request.owner = "someone-else";
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/repository and owner/i);
     request.owner = "Farstax";
     request.target_commit = "3".repeat(40);
     writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
@@ -145,6 +152,14 @@ describe("single-input deployer contract", () => {
     });
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/expired/i);
+    request.expires_at = "2099-07-28T13:00:00Z";
+    request.requested_at = "2099-07-30T12:00:00Z";
+    writeFileSync(join(release.root, "owner-deployment-request.json"), `${JSON.stringify(request)}\n`);
+    result = spawnSync("python3", [DEPLOYER, "--release", release.archive, "--owner-request", join(release.root, "owner-deployment-request.json"), "--validate-only"], {
+      encoding: "utf8", env: { ...process.env, AGENT_BRIDGE_DEPLOY_TEST: "1", AGENT_BRIDGE_DEPLOY_TEST_ENVIRONMENT: "production-content-crawler" },
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/not yet valid/i);
   });
 
   it("validates one archive and minimal approval without an evidence file", () => {
