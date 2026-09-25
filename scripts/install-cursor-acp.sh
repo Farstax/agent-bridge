@@ -25,7 +25,7 @@ case "$(uname -s):$(uname -m)" in
   Darwin:x86_64) PLATFORM="darwin-x86_64" ;;
   *) fail "unsupported platform: $(uname -s) $(uname -m)" ;;
 esac
-for command in node curl tar mktemp install sha256sum readlink df; do command -v "${command}" >/dev/null || fail "missing ${command}"; done
+for command in node curl tar mktemp install sha256sum readlink df find cp rm; do command -v "${command}" >/dev/null || fail "missing ${command}"; done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RELEASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -86,9 +86,15 @@ else
   curl --fail --location --silent --show-error --output "${ARCHIVE}" "${ARCHIVE_URL}"
   [[ "$(sha256sum "${ARCHIVE}" | cut -d' ' -f1)" == "${ARCHIVE_SHA}" ]] || fail "Cursor archive SHA-256 mismatch"
   tar -xzf "${ARCHIVE}" -C "${STAGING}"
+  PACKAGE_DIR="${STAGING}/dist-package"
+  [[ -d "${PACKAGE_DIR}" && ! -L "${PACKAGE_DIR}" ]] || fail "archive omitted dist-package runtime"
   [[ -f "${STAGING}/${RELATIVE_CMD}" && ! -L "${STAGING}/${RELATIVE_CMD}" ]] || fail "archive omitted ${RELATIVE_CMD}"
-  install -d -m 0755 "${VERSION_DIR}/$(dirname "${RELATIVE_CMD}")"
-  install -m 0755 "${STAGING}/${RELATIVE_CMD}" "${BINARY}"
+  archive_symlink="$(find "${PACKAGE_DIR}" -type l -print -quit)"
+  [[ -z "${archive_symlink}" ]] || fail "Cursor archive package contains a symlink"
+  [[ ! -e "${VERSION_DIR}" || ( -d "${VERSION_DIR}" && ! -L "${VERSION_DIR}" ) ]] || fail "unsafe Cursor version directory"
+  install -d -m 0755 "${VERSION_DIR}"
+  rm -rf -- "${VERSION_DIR}/dist-package"
+  cp -a -- "${PACKAGE_DIR}" "${VERSION_DIR}/"
   [[ "$("${BINARY}" --version 2>/dev/null || true)" == *"${VERSION}"* ]] || fail "installed binary did not report ${VERSION}"
   CHANGED=1
 fi
