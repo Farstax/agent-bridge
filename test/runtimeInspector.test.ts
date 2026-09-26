@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { claimScheduledRoutineOccurrence, createScheduledRoutine } from "../src/scheduledRoutines.js";
@@ -280,6 +280,30 @@ describe("runtime inspector", () => {
         }),
       );
       expect(JSON.stringify(view)).not.toContain("stale-acp-session");
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a bare ACP adapter command through PATH", () => {
+    const { dir, path, db } = fixture();
+    try {
+      db.insertRun("run-active", "chat-acp", "codex");
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "path-codex-acp"), "#!/bin/sh\n", { mode: 0o755 });
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        AGENT_BRIDGE_CHAT_KEY: "chat-acp",
+        AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
+        AGENT_BRIDGE_RUN_ID: "run-active",
+        CODEX_ACP_COMMAND: "path-codex-acp",
+        PATH: bin,
+        HOME: dir,
+      }));
+      const codex = view.providers.find((p: { id: string }) => p.id === "codex");
+      expect(codex.availabilityReasonCode).not.toBe("acp_adapter_missing");
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });

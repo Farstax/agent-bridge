@@ -8,7 +8,7 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadBotsConfig } from "./config.js";
 import { CURRENT_SCHEMA_VERSION } from "./db/schema.js";
@@ -258,7 +258,7 @@ function providers(s: ReturnType<typeof scope>, env: Env, commit: string | null)
     if (isProviderRuntimeAuthDegraded(adapter.id, env.HOME?.trim() || homedir())) {
       availability = "unavailable";
       availabilityReasonCode = "runtime_auth_degraded";
-    } else if (runtime.transport === "acp-stdio" && !isExecutable(runtime.executable)) {
+    } else if (runtime.transport === "acp-stdio" && !isExecutable(resolveCommandPath(runtime.executable, env.PATH))) {
       availability = "unavailable";
       availabilityReasonCode = "acp_adapter_missing";
     }
@@ -310,6 +310,14 @@ function runtimeCommand(env: Env, name: string, configured?: string): string {
   const requested = configured?.trim();
   if (requested) return requested;
   return join(projectRoot(env), "bin", name);
+}
+
+function resolveCommandPath(command: string, pathEnv: string | undefined): string {
+  if (command.includes("/")) return command;
+  for (const dir of (pathEnv ?? "").split(delimiter)) {
+    if (dir && isExecutable(join(dir, command))) return join(dir, command);
+  }
+  return command;
 }
 
 function isExecutable(path: string): boolean {
