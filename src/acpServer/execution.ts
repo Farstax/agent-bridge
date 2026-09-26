@@ -78,6 +78,11 @@ function isBridgeAuthoritativeTextUpdate(update: OutwardUpdate): boolean {
  * Bridge owns human-facing answer authority: provider message/thought chunks
  * may contain replay, commentary, provisional text, or cancelled partials, so
  * the outward client receives only Bridge's final selected answer below.
+ *
+ * This is protocol forwarding: non-text updates pass through unmodified and
+ * provider message chunks are never rewritten. Paragraph rendering of
+ * logical messages (src/acp/logicalMessages.ts) belongs to the human-readable
+ * answer selected upstream, not to raw ACP chunks.
  */
 function liveRootProviderUpdate(event: BridgeEvent): OutwardUpdate | null {
   if (event.type !== "acp.event" || !event.event || typeof event.event !== "object") return null;

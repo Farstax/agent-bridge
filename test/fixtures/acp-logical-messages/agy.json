@@ -1,0 +1,32 @@
+{
+ "provider": "agy",
+ "note": "no messageId; pre-tool message may be absent (separate defect)",
+ "updates": [
+  {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "c1",
+   "title": "Run",
+   "status": "pending"
+  },
+  {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "c1",
+   "status": "completed"
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Answer"
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": " text."
+   }
+  }
+ ],
+ "expected": "Answer text."
+}

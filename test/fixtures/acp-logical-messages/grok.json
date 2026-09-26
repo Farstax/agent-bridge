@@ -1,0 +1,46 @@
+{
+ "provider": "grok",
+ "note": "no messageId; tool events separate runs",
+ "updates": [
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Reading"
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": " the file."
+   }
+  },
+  {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "c1",
+   "title": "Run",
+   "status": "pending"
+  },
+  {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "c1",
+   "status": "completed"
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Step"
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": " two done."
+   }
+  }
+ ],
+ "expected": "Reading the file.\n\nStep two done."
+}

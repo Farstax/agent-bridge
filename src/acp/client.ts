@@ -17,6 +17,7 @@ import { Readable, Writable } from "node:stream";
 import { bridgeInitializeRequest } from "./capabilities.js";
 import { mapAcpPermissionRequest } from "./permissions.js";
 import { AcpReplayGate, liveDeliveryText, type AcpObservedUpdate } from "./replay.js";
+import { createLogicalPreviewTextStream, reconstructLogicalMessages, renderLogicalMessages } from "./logicalMessages.js";
 import {
   planAcpSessionConfig,
   type AcpSessionConfigIntent,
@@ -253,20 +254,17 @@ function diagnosticTextAfterMarker(
   isMarker: (notification: SessionNotification) => boolean,
 ): string | null {
   let seen = false;
-  let diagnostic = "";
+  const after: SessionNotification["update"][] = [];
   for (const observed of updates) {
     if (observed.channel !== "live" || observed.notification.sessionId !== sessionId) continue;
     if (isMarker(observed.notification)) {
       seen = true;
       continue;
     }
-    if (!seen) continue;
-    const update = observed.notification.update;
-    if (update.sessionUpdate !== "agent_message_chunk" || update.content.type !== "text") continue;
-    diagnostic += update.content.text;
-    if (diagnostic.length >= ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS) break;
+    if (seen) after.push(observed.notification.update);
   }
-  return seen ? diagnostic.slice(0, ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS) : null;
+  if (!seen) return null;
+  return renderLogicalMessages(reconstructLogicalMessages(after)).slice(0, ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS);
 }
 
 function systemErrorDiagnostic(
@@ -446,7 +444,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   const gate = new AcpReplayGate();
   const updates: AcpObservedUpdate[] = [];
   const events: AcpRetainedEvent[] = [];
-  let liveEmitted = "";
+  const liveMessages = createLogicalPreviewTextStream();
   let latestConfigOptions: readonly AcpSessionConfigOptionSnapshot[] = [];
   // Set by execute() before any notification/permission request can arrive
   // for the corresponding parent session, so remember() can tag child events
@@ -506,9 +504,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         if (!isRootLive || suppressPresentation) return;
         // Native subagent output is retained for structured lifecycle/activity,
         // but only the parent/root ACP session may feed human-facing live text.
-        if (payload.sessionUpdate !== "agent_message_chunk" || payload.content.type !== "text") return;
-        liveEmitted += payload.content.text;
-        input.onLiveText?.(payload.content.text);
+        const liveFragment = liveMessages(payload);
+        if (liveFragment) input.onLiveText?.(liveFragment);
       },
     )
     .onRequest(acp.methods.client.session.requestPermission, (ctx) => {
@@ -621,7 +618,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
         acpSessionId,
         sessionMode,
         stopReason: "cancelled",
-        liveText: liveDeliveryText(updates, acpSessionId) || liveEmitted,
+        liveText: liveDeliveryText(updates, acpSessionId),
         events,
         updates,
         configOptions: latestConfigOptions,
@@ -664,7 +661,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       if (diagnostic !== null) throw new AcpSystemError(diagnostic);
     }
 
-    const liveText = liveDeliveryText(updates, acpSessionId) || liveEmitted;
+    const liveText = liveDeliveryText(updates, acpSessionId);
     return {
       conversationId: input.conversationId,
       runId: input.runId,

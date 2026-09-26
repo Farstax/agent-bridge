@@ -1,4 +1,5 @@
 import type { AcpRetainedEvent } from "../acp/client.js";
+import { createLogicalPreviewTextStream } from "../acp/logicalMessages.js";
 import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 
 type MetaCarrier = { _meta?: unknown };
@@ -35,6 +36,11 @@ export function createCodexAcpAnswerPreview(
 ): CodexAcpAnswerPreview {
   const redactor = createStreamingSecretRedactor(secrets);
   let phaseSemanticsSeen = false;
+  let allowChunk = false;
+  const nextText = createLogicalPreviewTextStream({
+    groupOf: (update) => validUpdatePhase(update),
+    accept: () => allowChunk,
+  });
 
   const emit = (text: string): void => {
     const safe = redactor.push(text);
@@ -56,22 +62,22 @@ export function createCodexAcpAnswerPreview(
       const updateCodexMarker = hasOwnCodexMarker(update._meta);
       if (misplacedCodexMarker || updateCodexMarker) phaseSemanticsSeen = true;
 
-      if (update.sessionUpdate !== "agent_message_chunk" || update.content.type !== "text") return;
-
-      // A Codex marker on the notification envelope is misplaced. Its presence
-      // is still explicit phase semantics, so fail closed for this and later
-      // unphased chunks.
-      if (misplacedCodexMarker) return;
-
-      if (updateCodexMarker) {
-        if (validUpdatePhase(update) === "final_answer") emit(update.content.text);
-        return;
+      // Every parent-session update feeds boundary reconstruction; only the
+      // decision below controls whether a text chunk may be shown.
+      allowChunk = false;
+      if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
+        // A Codex marker on the notification envelope is misplaced. Its presence
+        // is still explicit phase semantics, so fail closed for this and later
+        // unphased chunks.
+        if (misplacedCodexMarker) allowChunk = false;
+        else if (updateCodexMarker) allowChunk = validUpdatePhase(update) === "final_answer";
+        // ACP exposes thoughts on agent_thought_chunk, so an unphased live
+        // agent_message_chunk is safe provisional answer text until Codex phase
+        // semantics appear. After that point, missing phase is ambiguous.
+        else allowChunk = !phaseSemanticsSeen;
       }
-
-      // ACP exposes thoughts on agent_thought_chunk, so an unphased live
-      // agent_message_chunk is safe provisional answer text until Codex phase
-      // semantics appear. After that point, missing phase is ambiguous.
-      if (!phaseSemanticsSeen) emit(update.content.text);
+      const text = nextText(update);
+      if (text) emit(text);
     },
 
     finish(stopReason): void {

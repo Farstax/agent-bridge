@@ -1,0 +1,83 @@
+{
+ "provider": "codex",
+ "note": "messageId + _meta.codex.phase",
+ "updates": [
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Checking "
+   },
+   "messageId": "m1",
+   "_meta": {
+    "codex": {
+     "phase": "commentary"
+    }
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "main first."
+   },
+   "messageId": "m1",
+   "_meta": {
+    "codex": {
+     "phase": "commentary"
+    }
+   }
+  },
+  {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "c1",
+   "title": "Run",
+   "status": "pending"
+  },
+  {
+   "sessionUpdate": "tool_call_update",
+   "toolCallId": "c1",
+   "status": "completed"
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Issue #825 "
+   },
+   "messageId": "m2",
+   "_meta": {
+    "codex": {
+     "phase": "final_answer"
+    }
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "is merged."
+   },
+   "messageId": "m2",
+   "_meta": {
+    "codex": {
+     "phase": "final_answer"
+    }
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Ship it."
+   },
+   "messageId": "m3",
+   "_meta": {
+    "codex": {
+     "phase": "final_answer"
+    }
+   }
+  }
+ ],
+ "expected": "Issue #825 is merged.\n\nShip it."
+}

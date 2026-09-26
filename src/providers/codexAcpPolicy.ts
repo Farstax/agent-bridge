@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import type { ContentBlock } from "@agentclientprotocol/sdk";
+import type { ContentBlock, SessionUpdate } from "@agentclientprotocol/sdk";
 import type { AcpTurnResult } from "../acp/client.js";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpObservedUpdate } from "../acp/replay.js";
+import { reconstructLogicalMessages, renderLogicalMessages } from "../acp/logicalMessages.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
 import { runAcpApiKeyProbe } from "./acpAuthProbe.js";
@@ -86,17 +87,6 @@ function hasOwnCodexMarker(meta: unknown): boolean {
     && Object.prototype.hasOwnProperty.call(meta, "codex");
 }
 
-function codexMetaOf(payload: CodexAgentMessageChunk): { phase?: unknown } | undefined {
-  const meta = payload._meta as { codex?: unknown } | null | undefined;
-  const codex = meta?.codex;
-  return codex !== null && typeof codex === "object" ? codex as { phase?: unknown } : undefined;
-}
-
-function codexPhaseOf(payload: CodexAgentMessageChunk): "commentary" | "final_answer" | undefined {
-  const phase = codexMetaOf(payload)?.phase;
-  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
-}
-
 function liveAgentMessageChunk(
   update: AcpObservedUpdate,
   sessionId: string,
@@ -123,18 +113,26 @@ function turnHasCodexPhaseSemantics(
   });
 }
 
+function codexPhaseGroup(update: SessionUpdate): string | undefined {
+  const codex = ((update as MetaCarrier)._meta as { codex?: unknown } | null | undefined)?.codex;
+  const phase = codex !== null && typeof codex === "object" ? (codex as { phase?: unknown }).phase : undefined;
+  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+}
+
+/**
+ * Phase is Codex authority; boundaries come from the shared reconstruction.
+ * Commentary text stays in the reconstruction so it separates final-answer
+ * messages, but only final_answer messages are rendered.
+ */
 function codexFinalAnswerText(
   updates: readonly AcpObservedUpdate[],
   sessionId: string,
 ): string {
-  let text = "";
-  for (const update of updates) {
-    const payload = liveAgentMessageChunk(update, sessionId);
-    if (!payload) continue;
-    if (codexPhaseOf(payload) !== "final_answer") continue;
-    text += payload.content.text;
-  }
-  return text;
+  const relevant = updates
+    .filter((update) => update.channel === "live" && update.notification.sessionId === sessionId)
+    .map((update) => update.notification.update);
+  const messages = reconstructLogicalMessages(relevant, { groupOf: codexPhaseGroup });
+  return renderLogicalMessages(messages.filter((message) => message.group === "final_answer"));
 }
 
 export function selectCodexAcpAnswer(result: AcpTurnResult): { text: string; missingDescription: string } {
