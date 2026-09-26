@@ -65,9 +65,22 @@ describe("Sensors are ordinary evidence for autonomy", () => {
   });
 
   it("keeps autonomy and Sensors independent in both import directions", () => {
-    for (const module of autonomyModules) expect(read(module)).not.toMatch(/from "\.\.?\/sensors\//);
+    // Any import form: static, bare side-effect, dynamic, or require.
+    const specifiers = (source: string) =>
+      [...source.matchAll(/(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']([^"']+)["']/g)].map((match) => match[1]);
+    for (const module of autonomyModules) {
+      expect(specifiers(read(module)).filter((specifier) => /(^|\/)sensors(\/|$)/.test(specifier)), module).toEqual([]);
+    }
     for (const file of sensorSourceFiles()) {
-      expect(readFileSync(file, "utf8")).not.toMatch(/from "\.\.\/(autonom|autonomy|runIngress|scheduledRoutines)/);
+      const reachesAutonomy = specifiers(readFileSync(file, "utf8")).filter((specifier) =>
+        /(autonom|runIngress|scheduledRoutines|interactiveBot)/.test(specifier));
+      expect(reachesAutonomy, file).toEqual([]);
+    }
+  });
+
+  it("gives Sensor code no goal, wake, trigger or remediation vocabulary", () => {
+    for (const file of sensorSourceFiles()) {
+      expect(readFileSync(file, "utf8"), file).not.toMatch(/\b(startGoal|createGoal|wakeGoal|autonomousGoal|enqueueRun|subscribe|subscription)\b/i);
     }
   });
 
