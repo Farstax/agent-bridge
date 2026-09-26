@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import type { ContentBlock, Usage } from "@agentclientprotocol/sdk";
 import { nodeStdioStream, runAcpTurn } from "../acp/index.js";
+import { createLogicalPreviewTextStream } from "../acp/logicalMessages.js";
 import type { AcpRetainedEvent, AcpSessionConfigRequest, AcpTurnResult } from "../acp/client.js";
 import { replaceAcpSessionConfigSnapshot } from "../acp/sessionConfig.js";
 import { isAbortRequested, runSupervisedStdioSession } from "../cliSupervisor.js";
@@ -478,14 +479,15 @@ function createStandardAnswerPreview(
   secrets: readonly string[],
 ): AcpAnswerPreview {
   const redactor = createStreamingSecretRedactor(secrets);
+  const nextText = createLogicalPreviewTextStream();
   return {
     observe(event): void {
       if (event.presentationSuppressed) return;
       if (event.kind !== "session_update" || event.channel !== "live" || !event.notification) return;
       if (event.acpSessionId && event.notification.sessionId !== event.acpSessionId) return;
-      const update = event.notification.update;
-      if (update.sessionUpdate !== "agent_message_chunk" || update.content.type !== "text") return;
-      const safe = redactor.push(update.content.text);
+      const text = nextText(event.notification.update);
+      if (!text) return;
+      const safe = redactor.push(text);
       if (safe) onAnswerDelta(safe);
     },
     finish(stopReason): void {

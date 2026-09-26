@@ -1,4 +1,5 @@
 import type { SessionNotification } from "@agentclientprotocol/sdk";
+import { reconstructLogicalMessages, renderLogicalMessages } from "./logicalMessages.js";
 
 export type AcpUpdateChannel = "replay" | "live";
 
@@ -33,19 +34,15 @@ export class AcpReplayGate {
 /**
  * Select live agent text, optionally scoped to one ACP session. Callers that
  * own a parent/root turn must provide its session id so native child-session
- * output remains observable without becoming parent delivery text.
+ * output remains observable without becoming parent delivery text. Text is
+ * reconstructed into logical messages so this and live preview share one
+ * boundary contract.
  */
 export function liveDeliveryText(
   updates: readonly AcpObservedUpdate[],
   sessionId?: string,
 ): string {
-  let text = "";
-  for (const update of updates) {
-    if (update.channel !== "live") continue;
-    if (sessionId && update.notification.sessionId !== sessionId) continue;
-    const payload = update.notification.update;
-    if (payload.sessionUpdate !== "agent_message_chunk") continue;
-    if (payload.content.type === "text") text += payload.content.text;
-  }
-  return text;
+  const relevant = updates.filter((update) =>
+    update.channel === "live" && (!sessionId || update.notification.sessionId === sessionId));
+  return renderLogicalMessages(reconstructLogicalMessages(relevant.map((update) => update.notification.update)));
 }

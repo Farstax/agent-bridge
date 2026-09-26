@@ -1,0 +1,45 @@
+{
+ "provider": "claude",
+ "note": "standard messageId",
+ "updates": [
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Looking"
+   },
+   "messageId": "a"
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": " at it."
+   },
+   "messageId": "a"
+  },
+  {
+   "sessionUpdate": "tool_call",
+   "toolCallId": "c1",
+   "title": "Run",
+   "status": "pending"
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Found"
+   },
+   "messageId": "b"
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": " the bug."
+   },
+   "messageId": "b"
+  }
+ ],
+ "expected": "Looking at it.\n\nFound the bug."
+}

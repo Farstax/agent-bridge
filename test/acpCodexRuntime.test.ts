@@ -227,14 +227,22 @@ describe("Codex ACP phase-aware final delivery", () => {
     expect(result.text).not.toContain("thinking out loud");
   });
 
-  it("preserves order and concatenates multiple final_answer chunks", () => {
+  it("preserves order and separates final_answer chunks across a commentary phase change", () => {
     const result = toCliResult(fixture([
       { channel: "live", phase: "commentary", text: "planning..." },
       { channel: "live", phase: "final_answer", text: "part one. " },
       { channel: "live", phase: "commentary", text: "more thinking..." },
       { channel: "live", phase: "final_answer", text: "part two." },
     ]));
-    expect(result.text).toBe("part one. part two.");
+    expect(result.text).toBe("part one. \n\npart two.");
+  });
+
+  it("concatenates adjacent final_answer fragments byte-for-byte", () => {
+    const result = toCliResult(fixture([
+      { channel: "live", phase: "final_answer", text: "Hel" },
+      { channel: "live", phase: "final_answer", text: "lo, world." },
+    ]));
+    expect(result.text).toBe("Hello, world.");
   });
 
   it("keeps concatenating all live text when the agent supplies no Codex phase metadata", () => {

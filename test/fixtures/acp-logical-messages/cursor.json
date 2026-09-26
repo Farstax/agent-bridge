@@ -1,0 +1,42 @@
+{
+ "provider": "cursor",
+ "note": "no messageId; thought separates runs",
+ "updates": [
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Plan"
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": " drafted."
+   }
+  },
+  {
+   "sessionUpdate": "agent_thought_chunk",
+   "content": {
+    "type": "text",
+    "text": "."
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": "Step"
+   }
+  },
+  {
+   "sessionUpdate": "agent_message_chunk",
+   "content": {
+    "type": "text",
+    "text": " one."
+   }
+  }
+ ],
+ "expected": "Plan drafted.\n\nStep one."
+}

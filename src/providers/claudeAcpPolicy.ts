@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { createLogicalPreviewTextStream } from "../acp/logicalMessages.js";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AcpRetainedEvent, AcpTurnResult } from "../acp/client.js";
@@ -113,6 +114,7 @@ export function createClaudeAcpAnswerPreview(
   secrets: readonly string[],
 ): AcpAnswerPreview {
   const redactor = createStreamingSecretRedactor(secrets);
+  const nextText = createLogicalPreviewTextStream();
   let pending = "";
   let normalAnswer = false;
   let suppressTurn = false;
@@ -146,9 +148,8 @@ export function createClaudeAcpAnswerPreview(
     observe(event: AcpRetainedEvent): void {
       if (event.presentationSuppressed || event.kind !== "session_update" || event.channel !== "live" || !event.notification) return;
       if (event.acpSessionId && event.notification.sessionId !== event.acpSessionId) return;
-      const update = event.notification.update;
-      if (update.sessionUpdate !== "agent_message_chunk" || update.content.type !== "text") return;
-      observeText(update.content.text);
+      const text = nextText(event.notification.update);
+      if (text) observeText(text);
     },
     finish(stopReason: string): void {
       if (stopReason === "cancelled" || suppressTurn) return;
