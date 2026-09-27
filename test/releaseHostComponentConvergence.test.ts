@@ -118,6 +118,38 @@ describe("active release host-component convergence", () => {
     expect(readFileSync(`${fixture.state}.stt-root`, "utf8").trim()).toBe(CANONICAL_STT_ROOT);
   });
 
+  it("resolves Cursor ACP's runtime user from the live bot unit outside rollout", () => {
+    const fixture = releaseFixture({ componentId: "cursor-acp" });
+    chmodSync(fixture.root, 0o755);
+    const program = `
+import importlib.util, json, sys
+from pathlib import Path
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location('release_activate', sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.production_mode = lambda: True
+m.validate_release_root = lambda path: path
+m.validate_release = lambda *args, **kwargs: None
+m.pwd.getpwnam = lambda user: SimpleNamespace(pw_dir='/home/live-bot-user')
+calls = []
+def fake_run(command, **kwargs):
+    calls.append(command)
+    if command[0] == '/usr/bin/systemctl':
+        return SimpleNamespace(stdout='live-bot-user\\n')
+    return SimpleNamespace(stdout='host_component_status=no_op\\n')
+m.subprocess.run = fake_run
+result = m.converge_active_release_host_components(Path(sys.argv[2]), Path(sys.argv[3]))
+print(json.dumps({'result': result, 'calls': calls}, sort_keys=True))
+`;
+    const output = JSON.parse(execFileSync("python3", ["-c", program, ACTIVATE, fixture.root, fixture.current], {
+      encoding: "utf8",
+      env: { ...process.env, AGENT_BRIDGE_RUNTIME_USER: "" },
+    })) as { result: { components: Array<{ id: string; status: string }> }; calls: string[][] };
+    expect(output.result.components).toEqual([{ id: "cursor-acp", status: "no_op" }]);
+    expect(output.calls).toContainEqual(["/usr/bin/systemctl", "show", "agent-bridge-bot.service", "--property=User", "--value"]);
+    expect(output.calls.at(-1)).toContain("live-bot-user");
+  });
+
   it("fails strict active-release validation when a declared installer is missing", () => {
     const fixture = releaseFixture({ installer: false });
     const before = readlinkSync(fixture.current);

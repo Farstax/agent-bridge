@@ -17,6 +17,7 @@ from pathlib import Path
 SHA = 40
 HOST_COMPONENT_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 DEFAULT_STT_ROOT = "/opt/agent-bridge/host-components/voice-stt"
+RUNTIME_USER_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-$")
 
 
 def fail(message: str) -> None:
@@ -206,6 +207,26 @@ def _cursor_component_environment(environment: dict[str, str], runtime_user: str
     return component_environment
 
 
+def _runtime_user() -> str:
+    """Read the rollout user or, for active convergence, the live bot owner."""
+    runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER", "").strip()
+    if not runtime_user:
+        try:
+            completed = subprocess.run(
+                ["/usr/bin/systemctl", "show", "agent-bridge-bot.service", "--property=User", "--value"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            fail("Cursor ACP runtime user is unavailable")
+        runtime_user = completed.stdout.strip()
+    if not runtime_user or any(character not in RUNTIME_USER_CHARS for character in runtime_user):
+        fail("Cursor ACP runtime user is unavailable")
+    return runtime_user
+
+
 def converge_release_host_components(release: Path) -> dict:
     """Converge the components explicitly declared by one immutable release."""
     manifest = _load_manifest(release)
@@ -215,12 +236,10 @@ def converge_release_host_components(release: Path) -> dict:
         return {"status": "no_op", "components": [{"id": entry["id"], "status": "no_op"} for entry in components]}
     component_environment = os.environ.copy()
     component_environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
-    runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER", "")
+    runtime_user = _runtime_user() if any(component["id"] == "cursor-acp" for component in components) else ""
     for component in components:
         installer_environment = component_environment
         if component["id"] == "cursor-acp":
-            if not runtime_user:
-                fail("Cursor ACP convergence requires AGENT_BRIDGE_RUNTIME_USER")
             installer_environment = _cursor_component_environment(component_environment, runtime_user)
         installer = release / component["installer"]
         try:
@@ -282,13 +301,11 @@ def prepare_release_host_components(release_root: Path, release: Path, expected_
     environment = os.environ.copy()
     environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
     environment["AGENT_BRIDGE_HOST_COMPONENT_PHASE"] = "prepare"
-    runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER", "")
+    runtime_user = _runtime_user() if any(component["id"] == "cursor-acp" for component in components) else ""
     results: list[str] = []
     for component in components:
         component_env = environment.copy()
         if component["id"] == "cursor-acp":
-            if not runtime_user:
-                fail("Cursor ACP preparation requires AGENT_BRIDGE_RUNTIME_USER")
             component_env = _cursor_component_environment(component_env, runtime_user)
         command = ["/bin/bash", str(release / component["installer"])]
         if component["id"] == "cursor-acp":
@@ -357,14 +374,13 @@ def activate(release_root: Path, current: Path, expected_commit: str) -> str:
     environment = os.environ.copy()
     environment["AGENT_BRIDGE_STT_ROOT"] = DEFAULT_STT_ROOT
     environment["AGENT_BRIDGE_HOST_COMPONENT_PHASE"] = "commit"
-    runtime_user = os.environ.get("AGENT_BRIDGE_RUNTIME_USER", "")
-    for component in _host_components(release, _load_manifest(release)):
+    components = _host_components(release, _load_manifest(release))
+    runtime_user = _runtime_user() if any(component["id"] == "cursor-acp" for component in components) else ""
+    for component in components:
         if not production_mode():
             continue
         component_env = environment.copy()
         if component["id"] == "cursor-acp":
-            if not runtime_user:
-                fail("Cursor ACP activation requires AGENT_BRIDGE_RUNTIME_USER")
             component_env = _cursor_component_environment(component_env, runtime_user)
         command = ["/bin/bash", str(release / component["installer"])]
         if component["id"] == "cursor-acp":
