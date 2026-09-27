@@ -44,7 +44,6 @@ compiled, release-locked registry. Ordinary Runs never install or update an
 ACP runtime.
 
 ## Ownership
-
 1. **Agent Bridge owns** durable Run/conversation identity, routing and
    fallback, queues and interrupt admission, `/stop`, cancellation and
    fencing, workspace locking, authority/policy, routines, context/soul
@@ -53,6 +52,23 @@ ACP runtime.
    `session/update`, cancel, stop reason, usage, and permission requests.
 3. **The provider agent owns** reasoning, tools, and native provider session
    state.
+
+## Opt-in ACP protocol traces
+
+For provider qualification or an adapter incident, set
+`AGENT_BRIDGE_ACP_TRACE_DIR` to an absolute, operator-owned directory before
+starting a Bridge process. Each ACP Run writes `<run-id>.jsonl` there with
+mode `0600`. Unset the variable to disable tracing; no trace state is created.
+
+Records contain only sequence, session id, update class, text chunks,
+message/tool identifiers and status, terminal stop reason, plus the Codex
+commentary/final-answer phase when present. Text fragments are kept as received
+except configured provider credentials are redacted. Trace files never include
+environment values, authentication data, arbitrary `_meta`, or tool inputs or
+outputs. Delete the operator-owned trace directory when the investigation is
+complete. `normalizeAcpTraceJsonl()` in `src/acp/eventTrace.ts` replaces session,
+request and tool-call identifiers with deterministic placeholders for a fixture;
+it preserves record order and sanitized text.
 
 Do not use a provider ACP session ID as Agent Bridge's durable identity.
 The mapping is:
