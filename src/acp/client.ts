@@ -18,6 +18,7 @@ import { bridgeInitializeRequest } from "./capabilities.js";
 import { mapAcpPermissionRequest } from "./permissions.js";
 import { AcpReplayGate, liveDeliveryText, type AcpObservedUpdate } from "./replay.js";
 import { createLogicalPreviewTextStream, reconstructLogicalMessages, renderLogicalMessages } from "./logicalMessages.js";
+import { createAcpEventTrace } from "./eventTrace.js";
 import {
   planAcpSessionConfig,
   type AcpSessionConfigIntent,
@@ -442,6 +443,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   }
 
   const gate = new AcpReplayGate();
+  const trace = createAcpEventTrace(input.runId);
   const updates: AcpObservedUpdate[] = [];
   const events: AcpRetainedEvent[] = [];
   const liveMessages = createLogicalPreviewTextStream();
@@ -471,6 +473,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       { parse: (params) => params as SessionNotification },
       (ctx) => {
         const observed = gate.observe(ctx.params);
+        // Parsed ACP update boundary: trace before replay/presentation policy or reconstruction.
+        trace?.observe(observed.notification.sessionId, observed.notification.update);
         updates.push(observed);
         const isRootLive = observed.channel === "live"
           && Boolean(currentAcpSessionId)
@@ -650,6 +654,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }
 
     remember({ kind: "stop", channel: "live", stopReason: promptResponse.stopReason });
+    trace?.terminal(acpSessionId, promptResponse.stopReason);
 
     // Cancellation/fencing wins over provider status. Otherwise an ACP agent
     // that reports a systemError in-band must fail before answer selection so
