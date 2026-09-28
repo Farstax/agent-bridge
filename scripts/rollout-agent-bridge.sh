@@ -1326,6 +1326,39 @@ prune_rollout_retention() {
   echo "rollout retention pruned=${pruned} retained_terminal=${retained}"
 }
 
+# The active pointer is the only rollback baseline for this transaction.  The
+# target has already been staged and is needed for activation.  Every other
+# immutable release is disposable only when it proves its own identity and is
+# not referenced by an in-progress host-component preparation receipt.
+prune_immutable_release_retention() {
+  (( release_mode == 1 )) || return 0
+  local entry name manifest receipt manifest_commit unsafe_entry unsafe_owner pruned=0
+  while IFS= read -r entry; do
+    [[ -d "$entry" && ! -L "$entry" ]] || continue
+    name="$(/usr/bin/basename -- "$entry")"
+    [[ "$name" =~ ^[0-9a-f]{40}$ ]] || continue
+    [[ "$name" != "$pointer_target" && "$name" != "$expected_commit" ]] || continue
+    receipt="$release_root/.host-components-prepared/$name.json"
+    [[ ! -e "$receipt" && ! -L "$receipt" ]] || continue
+    manifest="$entry/manifest.json"
+    [[ -f "$manifest" && ! -L "$manifest" ]] || continue
+    manifest_commit="$(/usr/bin/grep -m1 -oE '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]{40}"' "$manifest" | /usr/bin/sed -E 's/.*"([0-9a-f]{40})"/\1/')"
+    [[ "$manifest_commit" == "$name" ]] || continue
+    unsafe_entry="$(/usr/bin/find "$entry" \( -type f -o -type d \) -perm /222 -print -quit)"
+    unsafe_owner="$(/usr/bin/find "$entry" \( -type f -o -type d \) ! -uid "$secure_owner_uid" -print -quit)"
+    [[ -z "$unsafe_entry" && -z "$unsafe_owner" ]] || continue
+    /usr/bin/chmod -R u+w -- "$entry" || die "failed to make immutable release removable: $name"
+    remove_named_child_directory "$release_root" "$name" || die "failed to prune unreferenced immutable release: $name"
+    local provenance="$release_root/.${name}.staging-provenance.json"
+    if [[ -e "$provenance" || -L "$provenance" ]]; then
+      [[ -f "$provenance" && ! -L "$provenance" ]] || die "unsafe staging provenance for pruned release: $name"
+      /usr/bin/rm -f -- "$provenance" || die "failed to prune provenance for immutable release: $name"
+    fi
+    pruned=$((pruned + 1))
+  done < <(/usr/bin/find "$release_root" -mindepth 1 -maxdepth 1 -type d -print | /usr/bin/sort)
+  echo "immutable release retention pruned=${pruned} retained_active=${pointer_target} retained_target=${expected_commit}"
+}
+
 regular_file_bytes() {
   local path="$1"
   if [[ ! -e "$path" && ! -L "$path" ]]; then
@@ -2117,6 +2150,7 @@ PY
 # happen before containment.  Prepare both target and previous release so an
 # automatic restore only needs bounded pointer/state publication.
 if (( release_mode == 1 )); then
+  prune_immutable_release_retention
   admit_host_preparation
   "$activation_cmd" --release-root "$release_root" --current "$current_pointer" --expected-commit "$expected_commit" --prepare-host-components > "$artifact_dir/host-components-target-prepared.json"
   hash_evidence_file "$artifact_dir/host-components-target-prepared.json"

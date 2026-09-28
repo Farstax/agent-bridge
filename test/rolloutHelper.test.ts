@@ -236,6 +236,25 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(statSync(installedHelper).mode & 0o777).toBe(0o750);
   }, 15_000);
 
+  it("prunes only an unreferenced immutable release before host-component admission", () => {
+    const fixture = createFixture();
+    const { releaseDir } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const obsoleteCommit = "f".repeat(40);
+    const obsoleteDir = join(dirname(releaseDir), obsoleteCommit);
+    execFileSync("cp", ["-a", releaseDir, obsoleteDir]);
+    execFileSync("chmod", ["-R", "u+w", obsoleteDir]);
+    writeFileSync(join(obsoleteDir, "manifest.json"), JSON.stringify({ schema_version: 1, commit: obsoleteCommit, files: [] }));
+    execFileSync("chmod", ["-R", "a-w", obsoleteDir]);
+
+    const result = runRollout(fixture);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(existsSync(obsoleteDir)).toBe(false);
+    expect(existsSync(join(dirname(releaseDir), fixture.previousCommit))).toBe(true);
+    expect(existsSync(releaseDir)).toBe(true);
+    expect(`${result.stdout}\n${result.stderr}`).toContain(`immutable release retention pruned=1 retained_active=${fixture.previousCommit} retained_target=${fixture.expectedCommit}`);
+  }, 15_000);
+
   it("retires the legacy health service/database and migrates its generic capabilities after target acceptance", () => {
     const fixture = createFixture();
     prepareImmutableRelease(fixture, fixture.previousCommit);
