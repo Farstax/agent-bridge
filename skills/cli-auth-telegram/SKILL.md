@@ -89,4 +89,8 @@ Do not use plain `grok login` in a headless/Telegram context because its default
 
 ## Verification
 
-After the credential file is confirmed present, verify Claude through Agent Bridge's existing bounded provider qualification owner from `$BRIDGE_PROJECT_DIR`: `npm run qualify:provider -- --provider claude`. Require a passing qualification before declaring Claude connected. This uses a real bounded provider turn, so it also clears any runtime-auth degradation only when Claude actually works again. For the other covered CLIs, retain their provider-specific verification above. Never repeat secret material from the exchange.
+After the credential file is confirmed present and updated by the login:
+- For Claude, a refreshed non-empty `~/.claude/.credentials.json` readmits the provider for interactive routing. A full `npm run qualify:provider -- --provider claude` run is no longer required solely to make Claude routable again; the next Claude execution verifies recovery and will re-degrade and trigger existing fallback if auth is still invalid. Full provider qualification can still be run when runtime identity or contract evidence needs refreshing.
+- For the other covered CLIs, retain their provider-specific verification above.
+
+Never repeat secret material from the exchange.

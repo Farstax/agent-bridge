@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { claimScheduledRoutineOccurrence, createScheduledRoutine } from "../src/scheduledRoutines.js";
@@ -367,6 +367,53 @@ describe("runtime inspector", () => {
           executionRuntime: "acp",
         }),
       );
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("projects Claude availability based on credential freshness against degradation marker", () => {
+    const { dir, path, db } = fixture();
+    const credDir = join(dir, ".claude");
+    const credentials = join(credDir, ".credentials.json");
+    const lockDir = join(dir, ".agent-bridge", "locks");
+    const lockFile = join(lockDir, "claude-credentials.lock");
+    try {
+      mkdirSync(credDir, { recursive: true });
+      mkdirSync(lockDir, { recursive: true });
+
+      // Stale credentials written first
+      writeFileSync(credentials, "{\"token\":\"stale\"}\n");
+      const pastSeconds = (Date.now() - 10_000) / 1000;
+      utimesSync(credentials, pastSeconds, pastSeconds);
+
+      // Marker written after credentials
+      writeFileSync(lockFile, JSON.stringify({
+        schemaVersion: 1,
+        state: "runtime-auth-degraded",
+        provider: "claude",
+        markedAt: new Date().toISOString(),
+      }) + "\n");
+
+      const degradedView = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        HOME: dir,
+      }));
+      const claudeDegraded = degradedView.providers.find((p: { id: string }) => p.id === "claude");
+      expect(claudeDegraded.availability).toBe("unavailable");
+      expect(claudeDegraded.availabilityReasonCode).toBe("runtime_auth_degraded");
+
+      // Refreshed credentials written after marker
+      const futureSeconds = (Date.now() + 10_000) / 1000;
+      writeFileSync(credentials, "{\"token\":\"refreshed\"}\n");
+      utimesSync(credentials, futureSeconds, futureSeconds);
+
+      const recoveredView = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        HOME: dir,
+      }));
+      const claudeRecovered = recoveredView.providers.find((p: { id: string }) => p.id === "claude");
+      expect(claudeRecovered.availabilityReasonCode).not.toBe("runtime_auth_degraded");
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });

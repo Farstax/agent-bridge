@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProviderId } from "./types.js";
@@ -17,6 +17,10 @@ export function claudeCredentialLockFile(homeDir: string = homedir()): string {
   return join(homeDir, ".agent-bridge", "locks", "claude-credentials.lock");
 }
 
+export function claudeCredentialsFile(homeDir: string = homedir()): string {
+  return join(homeDir, ".claude", ".credentials.json");
+}
+
 function readClaudeRuntimeAuthDegraded(
   homeDir: string = homedir(),
 ): ClaudeRuntimeAuthDegradedRecord | null {
@@ -33,6 +37,19 @@ function readClaudeRuntimeAuthDegraded(
     return parsed as ClaudeRuntimeAuthDegradedRecord;
   } catch {
     return null;
+  }
+}
+
+function hasFreshClaudeCredentials(homeDir: string, markedAt: string): boolean {
+  try {
+    const credPath = claudeCredentialsFile(homeDir);
+    const stat = statSync(credPath);
+    if (!stat.isFile() || stat.size === 0) return false;
+    const markedAtMs = Date.parse(markedAt);
+    if (Number.isNaN(markedAtMs)) return false;
+    return Math.floor(stat.mtimeMs) > markedAtMs;
+  } catch {
+    return false;
   }
 }
 
@@ -76,7 +93,11 @@ export function isProviderRuntimeAuthDegraded(
   providerId: ProviderId,
   homeDir: string = homedir(),
 ): boolean {
-  if (providerId === "claude") return readClaudeRuntimeAuthDegraded(homeDir) !== null;
+  if (providerId === "claude") {
+    const record = readClaudeRuntimeAuthDegraded(homeDir);
+    if (!record) return false;
+    return !hasFreshClaudeCredentials(homeDir, record.markedAt);
+  }
   return localRuntimeAuthDegradedProviders.has(providerId);
 }
 
