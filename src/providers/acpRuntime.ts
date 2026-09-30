@@ -362,8 +362,11 @@ function providerBotKind(providerId: string): RouteableBotKind {
 }
 
 function promptBlocks(request: ProviderInvocationRequest): ContentBlock[] {
+  // The delegation/execution contract is seeded upstream in
+  // src/cli.ts::seedFreshExecutionContract() so it is present on ordinary
+  // tool-enabled turns regardless of fresh/resume; do not add it again here.
   const wrapped = appendOutputDirInstruction(
-    wrapPromptContext(request.prompt, request.soulContext, request.includeResponseContract),
+    wrapPromptContext(request.prompt, request.soulContext, request.includeResponseContract, false),
     request.outputDir,
   );
   const blocks: ContentBlock[] = [{ type: "text", text: wrapped }];

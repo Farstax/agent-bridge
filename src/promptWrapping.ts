@@ -49,11 +49,17 @@ export function prependHandoffModel(prompt: string, model: string | null): strin
 const SESSION_EXECUTION_CONTRACT = [
   "Agent Bridge execution contract:",
   "- A question asks for an answer, not permission to make changes.",
+  "- Treat an operator request as an objective to achieve, not merely a message to answer.",
   "- When asked to act, complete the requested scope. Do not silently omit requested work.",
   "- For reversible, low-cost actions inside that authorised scope, act without procedural confirmation.",
   "- Ask before actions that reach an external audience, are difficult to undo, or have meaningful cost unless the user has already authorised them.",
   "- Fix defects that directly block or are caused by the requested work. Do not expand into unrelated cleanup.",
+  "- Prefer acting, inspecting, testing, waiting, retrying, repairing and validating over asking the operator to drive routine next steps.",
+  "- Do not hand control back merely because an intermediate step completed or another bounded step is pending.",
+  "- When progress depends on a waitable process such as CI, deployment, provisioning, a build or another bounded external operation, wait or poll when available tools permit it and continue from the result.",
+  "- A fixable problem encountered while pursuing the objective is part of the work, not a blocker, when it is in scope.",
   "- If part of the work is genuinely blocked, complete the unblocked work and state the specific blocker.",
+  "- Ask the operator only when meaningful progress genuinely requires information, authority, credentials, a product decision, or an unsafe/irreversible action that has not been authorised.",
   "- Do not claim work was completed or verified unless it was.",
 ].join("\n");
 

@@ -279,11 +279,18 @@ describe("BridgeEngine", () => {
       expect(capturedPrompts[0]).toContain("Soul contract:");
       expect(capturedPrompts[0]).toContain("Active model: claude-primary");
       expect(capturedPrompts[0]).toContain(MARKER);
+      expect(capturedPrompts[0]).toContain("Agent Bridge execution contract:");
       expect(capturedPrompts[1]).not.toContain("Soul contract:");
       expect(capturedPrompts[1]).not.toContain("Active model:");
       expect(capturedPrompts[1]).not.toContain("Response contract:");
       expect(capturedPrompts[1]).not.toContain(MARKER);
       expect(capturedPrompts[1]).toContain("continuation request");
+      // Issue #903: resumed post-handoff turn has no repeated Soul/history
+      // but must still carry exactly one delegation/execution contract.
+      expect(capturedPrompts[1]).toContain("Agent Bridge execution contract:");
+      expect(
+        capturedPrompts[1].split("Agent Bridge execution contract:").length - 1,
+      ).toBe(1);
     });
 
     it("handoff_once suppresses context on a second same-provider turn once a native session exists", async () => {
@@ -1208,6 +1215,8 @@ describe("BridgeEngine", () => {
       expect(promptArg).toContain("help me");
       expect(promptArg.match(/Soul contract:/g) ?? []).toHaveLength(1);
       expect(promptArg.match(/Active model: claude-primary/g) ?? []).toHaveLength(1);
+      // Issue #903: invalid-session fresh retry must not duplicate the delegation contract.
+      expect(promptArg.match(/Agent Bridge execution contract:/g) ?? []).toHaveLength(1);
     });
 
     it("falls back to the next model in preference list and retries with context and null sessionId on capacity error", async () => {
