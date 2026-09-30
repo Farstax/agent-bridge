@@ -70,6 +70,27 @@ function usageLimitedAgent(statusType: "usageLimited" | "budgetLimited", diagnos
     });
 }
 
+function inBandTextOnlyAgent(text: string): acp.AgentApp {
+  return acp.agent({ name: "in-band-text-only-agent" })
+    .onRequest(acp.methods.agent.initialize, async () => ({
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: {},
+    }))
+    .onRequest(acp.methods.agent.session.new, async () => ({ sessionId: "acp-in-band-text-only" }))
+    .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+      // No threadStatus marker at all -- this replays the real captured Agy
+      // shape: plain agent_message_chunk text, then a clean end_turn stop.
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text },
+        },
+      });
+      return { stopReason: "end_turn" };
+    });
+}
+
 function claudeRateLimitRejectedAgent(requestFailureMessage: string): acp.AgentApp {
   return acp.agent({ name: "claude-rate-limit-agent" })
     .onRequest(acp.methods.agent.initialize, async () => ({
@@ -157,6 +178,54 @@ describe("ACP provider failure handling", () => {
 
     expect(thrown).toBeInstanceOf(Error);
     expect(classifyProviderError("codex", thrown as Error)).toMatchObject({ kind: "unknown" });
+  });
+
+  it("treats Agy's checkpoint-corruption text as a failure instead of promoting it to an answer", async () => {
+    let thrown: unknown;
+
+    try {
+      await runAcpTurn({
+        peer: inBandTextOnlyAgent("Agent execution error: could not find doneCh for checkpoint"),
+        cwd: process.cwd(),
+        conversationId: "conv-agy-donech",
+        runId: "run-agy-donech",
+        existingAcpSessionId: null,
+        prompt: "hello",
+        executionMode: "trusted",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    // The committed/final answer must never be this text -- runAcpTurn must
+    // throw rather than resolve with { liveText: "...could not find doneCh..." }.
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("AcpSystemError");
+    expect((thrown as Error).message).toContain("could not find doneCh for checkpoint");
+    expect(classifyProviderError("agy", thrown as Error)).toMatchObject({ kind: "transient" });
+  });
+
+  it("does not reclassify Agy's checkpoint-corruption wording as transient for a different provider", () => {
+    const error = new Error("Agent execution error: could not find doneCh for checkpoint");
+    expect(classifyProviderError("codex", error)).toMatchObject({ kind: "unknown" });
+    expect(classifyProviderError("claude", error)).toMatchObject({ kind: "unknown" });
+  });
+
+  it("does not misdetect an ordinary Agy answer that merely mentions a checkpoint", async () => {
+    const liveText: string[] = [];
+    const result = await runAcpTurn({
+      peer: inBandTextOnlyAgent("I saved a checkpoint before making these changes."),
+      cwd: process.cwd(),
+      conversationId: "conv-agy-normal-checkpoint",
+      runId: "run-agy-normal-checkpoint",
+      existingAcpSessionId: null,
+      prompt: "hello",
+      executionMode: "trusted",
+      onLiveText: (text) => liveText.push(text),
+    });
+
+    expect(result.liveText).toBe("I saved a checkpoint before making these changes.");
+    expect(liveText).toContain("I saved a checkpoint before making these changes.");
   });
 
   for (const statusType of ["usageLimited", "budgetLimited"] as const) {

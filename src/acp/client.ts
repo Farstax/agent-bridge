@@ -29,6 +29,24 @@ import {
 export type AcpSessionMode = "fresh" | "load" | "resume";
 const ACP_SYSTEM_ERROR_DIAGNOSTIC_MAX_CHARS = 2_000;
 
+/**
+ * Some ACP agents report an in-band failure as ordinary assistant text
+ * followed by a clean `end_turn` stop, with no structural marker equivalent
+ * to Codex's `threadStatus.type`. Left unhandled, that text is delivered to
+ * the user as if it were a genuine, successful answer, and the failure never
+ * reaches classification/fallback. This is a bounded list of exact known
+ * failure-text shapes, not a broad heuristic -- add an entry only for a
+ * confirmed, reproduced failure text, never a guessed pattern.
+ */
+const IN_BAND_FAILURE_TEXT_MARKERS: readonly RegExp[] = [
+  // Antigravity (Agy): the resumed session's checkpoint no longer exists.
+  /could not find doneCh for checkpoint/i,
+];
+
+function inBandFailureTextDiagnostic(liveText: string): string | null {
+  return IN_BAND_FAILURE_TEXT_MARKERS.some((marker) => marker.test(liveText)) ? liveText : null;
+}
+
 export class AcpSystemError extends Error {
   readonly data: { readonly acpSystemError: true; readonly message: string; readonly codexErrorInfo?: string };
 
@@ -667,6 +685,10 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }
 
     const liveText = liveDeliveryText(updates, acpSessionId);
+    if (promptResponse.stopReason !== "cancelled") {
+      const inBandFailure = inBandFailureTextDiagnostic(liveText);
+      if (inBandFailure !== null) throw new AcpSystemError(inBandFailure);
+    }
     return {
       conversationId: input.conversationId,
       runId: input.runId,
