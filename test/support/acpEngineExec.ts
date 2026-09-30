@@ -10,11 +10,12 @@ import { appendOutputDirInstruction, wrapPromptContext } from "../../src/promptW
  * providers: `runProviderInvocation`.
  *
  * The real ACP path (acpRuntime.ts's promptBlocks()) wraps the request's
- * bare prompt with Soul contract / execution contract / output-dir
- * instructions at request-build time -- BridgeEngine itself never bakes
- * those into request.prompt. Mirror that wrapping here so fixtures that
- * assert on the final wire content (Soul contract, output-dir stripping)
- * see the same text a real ACP agent would.
+ * prompt with Soul contract / response-style / output-dir instructions at
+ * request-build time. The delegation/execution contract is seeded earlier,
+ * into request.prompt itself, by src/cli.ts::seedFreshExecutionContract().
+ * Mirror that wrapping here so fixtures that assert on the final wire
+ * content (Soul contract, output-dir stripping) see the same text a real
+ * ACP agent would, without double-adding the execution contract.
  */
 
 export function parseAcpMockStdout(stdout: string): {
@@ -69,8 +70,12 @@ export function acpEngineExec(runCliOrExec: any = {}) {
       options: any,
       request: any,
     ) => {
+      // Issue #903: the delegation/execution contract is now seeded upstream
+      // in src/cli.ts::seedFreshExecutionContract() (into request.prompt
+      // itself) so it reaches both fresh and resumed sessions; promptBlocks()
+      // in acpRuntime.ts no longer adds it again here, so this mirror must not either.
       const wrappedPrompt = appendOutputDirInstruction(
-        wrapPromptContext(request.prompt, request.soulContext, request.includeResponseContract),
+        wrapPromptContext(request.prompt, request.soulContext, request.includeResponseContract, false),
         request.outputDir,
       );
       const args = ["-p", wrappedPrompt, "--output-format", "json"];

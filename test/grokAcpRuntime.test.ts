@@ -62,13 +62,17 @@ describe("Grok ACP provider", () => {
       command: "grok",
       model: null,
     });
+    // Issue #903: buildCliInvocation now seeds the delegation/execution
+    // contract onto the prompt directly (independent of response style), so
+    // the returned prompt is no longer the bare "hello" seed.
     expect(invocation).toEqual({
       command: expect.stringMatching(/node_modules\/\.bin\/grok$/),
       args: ["agent", "stdio"],
       nativeSessionMode: "fresh",
-      prompt: "hello",
+      prompt: expect.stringContaining("Agent Bridge execution contract:"),
       transport: "acp-stdio",
     });
+    expect(invocation.prompt).toContain("hello");
   });
 
   it("keeps the bundled Grok bin symlink relative so release artifacts stay self-contained", () => {

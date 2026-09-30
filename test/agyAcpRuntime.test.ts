@@ -71,13 +71,16 @@ describe("Agy ACP provider", () => {
       command: "agy_acp_server.par",
       model: null,
     });
+    // Issue #903: buildCliInvocation now seeds the delegation/execution
+    // contract onto the prompt directly (independent of response style).
     expect(invocation).toEqual({
       command: expect.stringMatching(/agy_acp_server\.par$/),
       args: ["--uid="],
       nativeSessionMode: "fresh",
-      prompt: "hello",
+      prompt: expect.stringContaining("Agent Bridge execution contract:"),
       transport: "acp-stdio",
     });
+    expect(invocation.prompt).toContain("hello");
     expect(invocation.args).not.toContain("--print");
   });
 

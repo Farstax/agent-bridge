@@ -352,6 +352,56 @@ describe("buildCliInvocation — attachment injection", () => {
     expect(invocation.prompt).toContain("hello");
     expect(invocation.prompt).not.toContain("Keep replies extremely concise");
   });
+
+  // Issue #903: the delegation/execution contract must reach ordinary
+  // tool-enabled turns independently of response style (fresh vs resumed),
+  // while tool-free/advisory callers (toolMode "none") stay excluded.
+  it("includes the delegation contract on a resumed session (includeResponseContract false, sessionId set)", () => {
+    const invocation = buildCliInvocation({
+      ...base,
+      bot: "antigravity",
+      command: "agy",
+      sessionId: "native-session-1",
+      includeResponseContract: false,
+    });
+    expect(invocation.prompt).toContain("Agent Bridge execution contract:");
+    expect(invocation.prompt).toContain("Treat an operator request as an objective to achieve");
+    expect(invocation.prompt).toContain("hello");
+  });
+
+  it("includes exactly one delegation contract regardless of response style", () => {
+    const fresh = buildCliInvocation({
+      ...base,
+      bot: "antigravity",
+      command: "agy",
+      sessionId: null,
+      includeResponseContract: true,
+    });
+    const resumed = buildCliInvocation({
+      ...base,
+      bot: "antigravity",
+      command: "agy",
+      sessionId: "native-session-2",
+      includeResponseContract: false,
+    });
+    for (const invocation of [fresh, resumed]) {
+      const occurrences = (invocation.prompt ?? "").split("Agent Bridge execution contract:").length - 1;
+      expect(occurrences).toBe(1);
+    }
+  });
+
+  it("omits the delegation contract for tool-free/advisory callers (toolMode none)", () => {
+    const invocation = buildCliInvocation({
+      ...base,
+      bot: "antigravity",
+      command: "agy",
+      sessionId: "native-session-3",
+      includeResponseContract: false,
+      toolMode: "none",
+    });
+    expect(invocation.prompt).not.toContain("Agent Bridge execution contract:");
+    expect(invocation.prompt).toContain("hello");
+  });
 });
 
 describe("buildCliInvocation — effort flags", () => {

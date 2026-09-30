@@ -81,10 +81,14 @@ describe("provider-native context lifecycle", () => {
       expect(capturedPrompts).toHaveLength(2);
       expect(capturedPrompts[0]).toContain(workspaceMarker);
       expect(capturedPrompts[0]).toContain("fresh passive evidence");
+      expect(capturedPrompts[0]).toContain("Agent Bridge execution contract:");
       expect(capturedPrompts[1]).not.toContain(workspaceMarker);
       expect(capturedPrompts[1]).toContain("[Passive Discord surrounding context]");
       expect(capturedPrompts[1]).toContain("resumed passive evidence");
       expect(capturedPrompts[1]).toContain("[Current authenticated request]\nsecond request");
+      // Issue #903: a resumed provider turn still receives the delegation
+      // contract even though fresh-only Soul/workspace/handoff context is not repeated.
+      expect(capturedPrompts[1]).toContain("Agent Bridge execution contract:");
       expect(capturedPrompts[1]).not.toContain("first request");
     } finally {
       if (previousWorkspaceFile === undefined) delete process.env.AGENT_BRIDGE_WORKSPACE_CONTEXT_FILE;

@@ -86,13 +86,23 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
   return filtered.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/**
+ * Seeds the delegation/execution contract on ordinary tool-enabled operator
+ * turns. Unlike the fresh-session-only response contract, this must apply on
+ * both fresh and resumed sessions (issue #903) so a resumed provider session
+ * still receives the objective-oriented execution posture for the new
+ * operator turn. Tool-free/advisory callers (toolMode "none": /btw, Advisor)
+ * are excluded.
+ */
 function seedFreshExecutionContract(
   prompt: string,
   sessionId: string | null,
   includeResponseContract: boolean,
+  toolMode: "default" | "none",
 ): string {
+  if (toolMode !== "none") return wrapPromptContext(prompt, null, false, true);
   if (includeResponseContract) return prompt;
-  if (!sessionId) return wrapPromptContext(prompt, null, false, true);
+  if (!sessionId) return prompt;
   return prompt.startsWith("/") ? `User request:\n${prompt}` : prompt;
 }
 
@@ -134,7 +144,7 @@ export function buildCliInvocation({
     throw new Error(`Tool-free mode is not supported for ${bot}`);
   }
 
-  const providerPrompt = seedFreshExecutionContract(prompt, sessionId, includeResponseContract);
+  const providerPrompt = seedFreshExecutionContract(prompt, sessionId, includeResponseContract, toolMode);
   const providerId = providerIdForBotName(bot);
   if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
     return buildAcpProviderInvocation(providerId, {
