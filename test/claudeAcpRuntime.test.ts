@@ -53,16 +53,16 @@ describe("Claude ACP provider", () => {
       command: "claude",
       model: null,
     });
-    // Issue #903: buildCliInvocation now seeds the delegation/execution
-    // contract onto the prompt directly (independent of response style).
+    // Issue #903: the delegation/execution contract is an explicit opt-in
+    // (includeExecutionContract), so a plain buildCliInvocation call keeps
+    // the bare prompt.
     expect(invocation).toEqual({
       command: expect.stringMatching(/node_modules\/\.bin\/claude-agent-acp$/),
       args: [],
       nativeSessionMode: "fresh",
-      prompt: expect.stringContaining("Agent Bridge execution contract:"),
+      prompt: "hello",
       transport: "acp-stdio",
     });
-    expect(invocation.prompt).toContain("hello");
   });
 
   it("keeps Bridge permission authority in Claude manual mode for safe and trusted Runs", () => {

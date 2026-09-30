@@ -1682,6 +1682,11 @@ export class BridgeEngine {
       includeResponseContract: promptForCli.includeResponseContract,
       attachments,
       outputDir: outDir,
+      // Issue #903: ordinary interactive main-lane turns opt into the
+      // delegation/execution contract; autonomous Episode cycles already own
+      // their Goal/Episode/Cycle authority contract and must not also
+      // receive operator delegation posture.
+      includeExecutionContract: this.kind !== "autonomous",
     });
     const executionLane = this._executionLane(chatKey);
     try {
@@ -1868,6 +1873,7 @@ export class BridgeEngine {
       includeResponseContract: fallbackPromptForCli.includeResponseContract,
       outputDir: outDir,
       attachments,
+      includeExecutionContract: this.kind !== "autonomous",
     });
     try {
       const fallbackCwd = this._workingDir(executionKind);

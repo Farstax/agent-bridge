@@ -70,16 +70,16 @@ describe("Cursor ACP provider", () => {
       command: "cursor-agent",
       model: null,
     });
-    // Issue #903: buildCliInvocation now seeds the delegation/execution
-    // contract onto the prompt directly (independent of response style).
+    // Issue #903: the delegation/execution contract is an explicit opt-in
+    // (includeExecutionContract), so a plain buildCliInvocation call keeps
+    // the bare prompt.
     expect(invocation).toEqual({
       command: "cursor-agent",
       args: ["acp"],
       nativeSessionMode: "fresh",
-      prompt: expect.stringContaining("Agent Bridge execution contract:"),
+      prompt: "hello",
       transport: "acp-stdio",
     });
-    expect(invocation.prompt).toContain("hello");
     expect(invocation.args).not.toContain("-p");
     expect(invocation.args).not.toContain("--output-format");
     expect(invocation.args).not.toContain("json");
