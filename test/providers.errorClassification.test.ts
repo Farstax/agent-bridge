@@ -46,6 +46,23 @@ describe("provider error classification", () => {
     }
   });
 
+  it("classifies Agy's in-band 'could not find doneCh for checkpoint' text as transient", () => {
+    // src/acp/client.ts's inBandFailureTextDiagnostic throws AcpSystemError
+    // when Agy reports a corrupted resumed-session checkpoint as ordinary
+    // assistant text (no structural threadStatus marker). A fresh session on
+    // the same account recovers (observed in production), so this is
+    // transient, not fatal/auth/capacity.
+    expect(classifyProviderError("agy", new Error("Agent execution error: could not find doneCh for checkpoint")))
+      .toMatchObject({ kind: "transient" });
+  });
+
+  it("does not leak Agy's checkpoint-corruption wording into other providers' classification", () => {
+    for (const providerId of ["codex", "claude", "grok", "cursor", "custom-acp"] as const) {
+      expect(classifyProviderError(providerId, new Error("Agent execution error: could not find doneCh for checkpoint")).kind)
+        .not.toBe("transient");
+    }
+  });
+
   it("classifies Codex capacity and model-unavailable messages", () => {
     expect(classifyProviderError("codex", new Error("MODEL_CAPACITY_EXHAUSTED"))).toMatchObject({
       kind: "capacity_exhausted",

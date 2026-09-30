@@ -106,6 +106,13 @@ const TRANSIENT_PATTERNS_BY_PROVIDER: Partial<Readonly<Record<ProviderId, readon
     // codexErrorInfo -- both already classified as capacity_exhausted above.
     /model is at capacity/i,
   ],
+  agy: [
+    // Antigravity reports a corrupted resumed-session checkpoint as ordinary
+    // assistant text with a clean end_turn stop (see src/acp/client.ts's
+    // inBandFailureTextDiagnostic). A fresh session on the same account
+    // recovers, so this is transient, not fatal/auth/capacity.
+    /could not find doneCh for checkpoint/i,
+  ],
 };
 
 const FATAL_PATTERNS: readonly RegExp[] = [
