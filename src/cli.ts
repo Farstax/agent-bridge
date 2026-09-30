@@ -91,16 +91,23 @@ export function scrubOutputDir(text: string, outDir: string | null | undefined):
  * turns. Unlike the fresh-session-only response contract, this must apply on
  * both fresh and resumed sessions (issue #903) so a resumed provider session
  * still receives the objective-oriented execution posture for the new
- * operator turn. Tool-free/advisory callers (toolMode "none": /btw, Advisor)
- * are excluded.
+ * operator turn.
+ *
+ * `includeExecutionContract` is an explicit per-caller decision, not a proxy
+ * for tool capability: ordinary interactive main-lane turns opt in; internal
+ * infrastructure (autonomous Episode cycles, provider qualification probes)
+ * and tool-free/advisory callers (/btw, Advisor) must not receive operator
+ * delegation posture, so they leave it false. `toolMode: "none"` remains a
+ * separate, mechanical prohibition on tool use and always forces it off too.
  */
 function seedFreshExecutionContract(
   prompt: string,
   sessionId: string | null,
   includeResponseContract: boolean,
   toolMode: "default" | "none",
+  includeExecutionContract: boolean,
 ): string {
-  if (toolMode !== "none") return wrapPromptContext(prompt, null, false, true);
+  if (toolMode !== "none" && includeExecutionContract) return wrapPromptContext(prompt, null, false, true);
   if (includeResponseContract) return prompt;
   if (!sessionId) return prompt;
   return prompt.startsWith("/") ? `User request:\n${prompt}` : prompt;
@@ -123,6 +130,7 @@ export function buildCliInvocation({
   effort = null,
   homeDir = homedir(),
   toolMode = "default",
+  includeExecutionContract = false,
 }: {
   bot: string;
   prompt: string;
@@ -139,12 +147,14 @@ export function buildCliInvocation({
   effort?: EffortLevel | null;
   homeDir?: string;
   toolMode?: "default" | "none";
+  /** Explicit opt-in for the operator delegation/execution contract (issue #903). Ordinary interactive main-lane turns set this true; internal/infrastructure callers must not. */
+  includeExecutionContract?: boolean;
 }): ProviderInvocation {
   if (toolMode === "none" && !supportsToolFreeMode(bot)) {
     throw new Error(`Tool-free mode is not supported for ${bot}`);
   }
 
-  const providerPrompt = seedFreshExecutionContract(prompt, sessionId, includeResponseContract, toolMode);
+  const providerPrompt = seedFreshExecutionContract(prompt, sessionId, includeResponseContract, toolMode, includeExecutionContract);
   const providerId = providerIdForBotName(bot);
   if (providerId && resolveProviderRuntime(providerId).transport === "acp-stdio") {
     return buildAcpProviderInvocation(providerId, {

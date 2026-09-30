@@ -143,6 +143,7 @@ describe("agent bridge MVP", () => {
       command: "agy_acp_server.par",
       model: null,
       includeResponseContract: false,
+      includeExecutionContract: true,
     });
 
     const printedPrompt = String(invocation.prompt);

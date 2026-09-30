@@ -188,6 +188,56 @@ describe("autonomous goal production runtime", () => {
     removeDb(dbPath);
   });
 
+  // Issue #903 follow-up: the operator delegation/execution contract must
+  // not leak into autonomous Episode cycles -- they already own their own
+  // Goal/Episode/Cycle authority contract (the "Autonomy disposition
+  // command:" block asserted above). This exercises the real,
+  // non-mocked BridgeEngine.executeSurfaceNeutralTurn -> buildCliInvocation
+  // path, not a stubbed seam.
+  it("does not inject the operator delegation contract into an autonomous cycle's provider prompt", async () => {
+    const { db, dbPath } = makeDb();
+    createAutonomousGoal(db, {
+      goalId: "no-delegation-leak",
+      prompt: "Bounded autonomous work",
+      constraints: [],
+      bot: "claude",
+      maxCycles: 1,
+    });
+    const capturedPrompts: string[] = [];
+    const runCliAsync = vi.fn();
+    const engine = new BridgeEngine(
+      {
+        surfaceIdentity: AUTONOMOUS_RUN_SURFACE,
+        kind: "autonomous",
+        executionKind: "claude",
+        botConfig: { command: "claude", modelPreference: ["default-model"] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+      },
+      db,
+      makeMockClient(),
+      {
+        runCliAsync,
+        runProviderInvocation: async (_kind: BotKind, invocation: any, _cwd: string, _options: any, request: any) => {
+          const prompt = invocation.prompt ?? request?.prompt ?? "";
+          capturedPrompts.push(prompt);
+          return { text: JSON.stringify({ disposition: "done" }), sessionId: null };
+        },
+      },
+    );
+
+    await drainAutonomousGoal(db, "no-delegation-leak", engine);
+
+    expect(capturedPrompts).toHaveLength(1);
+    expect(capturedPrompts[0]).toContain("Bounded autonomous work");
+    expect(capturedPrompts[0]).toContain("Autonomy disposition command: ");
+    expect(capturedPrompts[0]).not.toContain("Agent Bridge execution contract:");
+
+    db.close();
+    removeDb(dbPath);
+  });
+
   it.each([
     ["done", "complete"],
     ["blocked", "blocked"],

@@ -44,6 +44,7 @@ describe("fresh-session execution contract", () => {
         command: bot,
         model: null,
         includeResponseContract: false,
+        includeExecutionContract: true,
       });
       const invocationText = [...invocation.args, invocation.stdin ?? "", invocation.prompt ?? ""].join("\n");
 

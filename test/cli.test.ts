@@ -347,6 +347,7 @@ describe("buildCliInvocation — attachment injection", () => {
       bot: "antigravity",
       command: "agy",
       includeResponseContract: false,
+      includeExecutionContract: true,
     });
     expect(invocation.prompt).toContain("Agent Bridge execution contract:");
     expect(invocation.prompt).toContain("hello");
@@ -355,7 +356,20 @@ describe("buildCliInvocation — attachment injection", () => {
 
   // Issue #903: the delegation/execution contract must reach ordinary
   // tool-enabled turns independently of response style (fresh vs resumed),
-  // while tool-free/advisory callers (toolMode "none") stay excluded.
+  // but only when the caller explicitly opts in via includeExecutionContract
+  // — it is not a side effect of tool capability (toolMode) or response
+  // style, so internal/infrastructure callers default to excluded.
+  it("does not include the delegation contract by default (caller must opt in)", () => {
+    const invocation = buildCliInvocation({
+      ...base,
+      bot: "antigravity",
+      command: "agy",
+      sessionId: "native-session-0",
+      includeResponseContract: false,
+    });
+    expect(invocation.prompt).not.toContain("Agent Bridge execution contract:");
+  });
+
   it("includes the delegation contract on a resumed session (includeResponseContract false, sessionId set)", () => {
     const invocation = buildCliInvocation({
       ...base,
@@ -363,6 +377,7 @@ describe("buildCliInvocation — attachment injection", () => {
       command: "agy",
       sessionId: "native-session-1",
       includeResponseContract: false,
+      includeExecutionContract: true,
     });
     expect(invocation.prompt).toContain("Agent Bridge execution contract:");
     expect(invocation.prompt).toContain("Treat an operator request as an objective to achieve");
@@ -376,6 +391,7 @@ describe("buildCliInvocation — attachment injection", () => {
       command: "agy",
       sessionId: null,
       includeResponseContract: true,
+      includeExecutionContract: true,
     });
     const resumed = buildCliInvocation({
       ...base,
@@ -383,6 +399,7 @@ describe("buildCliInvocation — attachment injection", () => {
       command: "agy",
       sessionId: "native-session-2",
       includeResponseContract: false,
+      includeExecutionContract: true,
     });
     for (const invocation of [fresh, resumed]) {
       const occurrences = (invocation.prompt ?? "").split("Agent Bridge execution contract:").length - 1;
@@ -390,17 +407,31 @@ describe("buildCliInvocation — attachment injection", () => {
     }
   });
 
-  it("omits the delegation contract for tool-free/advisory callers (toolMode none)", () => {
+  it("omits the delegation contract for tool-free/advisory callers (toolMode none) even if opted in", () => {
     const invocation = buildCliInvocation({
       ...base,
       bot: "antigravity",
       command: "agy",
       sessionId: "native-session-3",
       includeResponseContract: false,
+      includeExecutionContract: true,
       toolMode: "none",
     });
     expect(invocation.prompt).not.toContain("Agent Bridge execution contract:");
     expect(invocation.prompt).toContain("hello");
+  });
+
+  it("omits the delegation contract for internal infrastructure callers such as provider qualification", async () => {
+    const { buildQualificationInvocation } = await import("../src/providers/qualification.js");
+    const invocation = buildQualificationInvocation({
+      providerId: "grok",
+      executable: "grok",
+      prompt: "qualification probe",
+      sessionId: null,
+      executionMode: "safe",
+      homeDir: "/tmp",
+    });
+    expect(invocation.prompt).not.toContain("Agent Bridge execution contract:");
   });
 });
 
