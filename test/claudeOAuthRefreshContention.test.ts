@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -134,6 +134,115 @@ describe("Claude OAuth refresh contention", () => {
         readCursorStatus: () => ({ isAuthenticated: false }),
       });
       expect(available.has("claude")).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+  it("readmits Claude when credentials are updated after runtime-auth degradation without manual clear", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-readmit-"));
+    const bin = join(home, "bin");
+    const claude = join(bin, "claude");
+    const credentials = join(home, ".claude", ".credentials.json");
+    try {
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      writeFileSync(claude, "#!/bin/sh\nexit 1\n");
+      chmodSync(claude, 0o755);
+      writeFileSync(credentials, "{\"token\":\"old\"}\n");
+
+      // 1. Terminal auth failure marks Claude degraded
+      markProviderRuntimeAuthDegraded("claude", home);
+      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(true);
+
+      // 2. Routing excludes Claude
+      const beforeRefresh = getAvailableCliKinds({
+        homeDir: home,
+        env: { HOME: home, PATH: bin },
+        commandExists: () => true,
+        agyRuntimeReady: () => false,
+        exists: (path) => path === credentials,
+        readCursorStatus: () => ({ isAuthenticated: false }),
+      });
+      expect(beforeRefresh.has("claude")).toBe(false);
+
+      // 3. To simulate an earlier failure timestamp:
+      const lockPath = join(home, ".agent-bridge", "locks", "claude-credentials.lock");
+      const pastMs = Date.now() - 10_000;
+      writeFileSync(lockPath, JSON.stringify({
+        schemaVersion: 1,
+        state: "runtime-auth-degraded",
+        provider: "claude",
+        markedAt: new Date(pastMs).toISOString(),
+      }) + "\n");
+      utimesSync(lockPath, pastMs / 1000, pastMs / 1000);
+
+      // User reauthenticates: credentials file is written with current timestamp (> past markedAt)
+      const credMs = Date.now() - 5_000;
+      writeFileSync(credentials, "{\"token\":\"refreshed\"}\n");
+      utimesSync(credentials, credMs / 1000, credMs / 1000);
+
+      // 4. Degradation is now considered superseded; readmitted for verification attempt
+      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(false);
+
+      // 5. Routing now includes Claude without explicit clearProviderRuntimeAuthDegraded
+      const afterRefresh = getAvailableCliKinds({
+        homeDir: home,
+        env: { HOME: home, PATH: bin },
+        commandExists: () => true,
+        agyRuntimeReady: () => false,
+        exists: (path) => path === credentials,
+        readCursorStatus: () => ({ isAuthenticated: false }),
+      });
+      expect(afterRefresh.has("claude")).toBe(true);
+
+      // 6. If execution fails again, re-marking sets current markedAt (> credMs) and excludes Claude again
+      markProviderRuntimeAuthDegraded("claude", home);
+      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(true);
+      const afterReFailure = getAvailableCliKinds({
+        homeDir: home,
+        env: { HOME: home, PATH: bin },
+        commandExists: () => true,
+        agyRuntimeReady: () => false,
+        exists: (path) => path === credentials,
+        readCursorStatus: () => ({ isAuthenticated: false }),
+      });
+      expect(afterReFailure.has("claude")).toBe(false);
+
+      // 7. Successful execution clears the lock file through existing clear path
+      clearProviderRuntimeAuthDegraded("claude", home);
+      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(false);
+      expect(readFileSync(lockPath, "utf8")).toBe("");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Claude degraded when credentials are empty or missing despite marker", () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-runtime-auth-empty-"));
+    const credentials = join(home, ".claude", ".credentials.json");
+    try {
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      markProviderRuntimeAuthDegraded("claude", home);
+      // No credentials file
+      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(true);
+
+      // Empty credentials file with newer mtime
+      writeFileSync(credentials, "");
+      const futureSeconds = (Date.now() + 5000) / 1000;
+      utimesSync(credentials, futureSeconds, futureSeconds);
+      expect(isProviderRuntimeAuthDegraded("claude", home)).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("does not apply Claude credential freshness semantics to other providers", () => {
+    const home = mkdtempSync(join(tmpdir(), "other-provider-runtime-auth-"));
+    try {
+      markProviderRuntimeAuthDegraded("codex", home);
+      expect(isProviderRuntimeAuthDegraded("codex", home)).toBe(true);
+      clearProviderRuntimeAuthDegraded("codex", home);
+      expect(isProviderRuntimeAuthDegraded("codex", home)).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
