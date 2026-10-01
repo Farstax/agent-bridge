@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./apiKeyAuth.js";
-import { getQualificationFailedProviders } from "./qualificationStatus.js";
+import { getProviderRuntimeAuthDegradedProviders } from "./runtimeAvailability.js";
 import type { ProviderId } from "./types.js";
 
 export interface GrokAvailabilityOptions {
@@ -39,6 +39,6 @@ export function isGrokAuthenticated(options: GrokAvailabilityOptions = {}): bool
 
 export function isGrokRouteable(options: GrokAvailabilityOptions = {}): boolean {
   if (!isGrokAuthenticated(options)) return false;
-  const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
+  const failedProviders = options.failedProviders ?? getProviderRuntimeAuthDegradedProviders(options.homeDir);
   return !failedProviders.has("grok");
 }

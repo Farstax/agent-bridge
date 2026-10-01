@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -75,6 +75,112 @@ describe("provider qualification routing", () => {
     expect([...getQualificationFailedProviders(evidencePath, { agy: "1.1.13" })]).toEqual([]);
   });
 
+  it("keeps a runnable provider selectable when its current qualification evidence fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "qualification-routing-availability-"));
+    const evidencePath = join(root, "qualification.json");
+    const claudeAcp = join(root, "claude-acp");
+    const env = {
+      ...process.env,
+      AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH: evidencePath,
+      CLAUDE_ACP_COMMAND: claudeAcp,
+    };
+    try {
+      writeFileSync(claudeAcp, "#!/usr/bin/env bash\nprintf '0.81.2\\n'\n", { mode: 0o755 });
+      chmodSync(claudeAcp, 0o755);
+      writeQualificationRecord({
+        provider: "claude",
+        executionRuntime: resolveProviderRuntime("claude", env).runtimeIdentity,
+        providerVersion: "0.81.2",
+        previousVersion: null,
+        bridgeCommit: "e".repeat(40),
+        contractVersion: PROVIDER_CONTRACT_VERSION,
+        qualifiedAt: "2026-10-01T00:00:00.000Z",
+        environment: "managed-appliance",
+        overall: "fail",
+        checks: [
+          { name: "version", status: "pass" },
+          { name: "fresh_prompt", status: "fail", diagnostic: "contract drift" },
+          { name: "session_resume", status: "not_applicable" },
+          { name: "repository_grounding", status: "not_applicable" },
+        ],
+      }, evidencePath);
+      vi.stubEnv("AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH", evidencePath);
+      vi.stubEnv("CLAUDE_ACP_COMMAND", claudeAcp);
+
+      expect(getQualificationFailedProviders()).toEqual(new Set(["claude"]));
+      const available = getAvailableCliKinds({
+        homeDir: root,
+        env,
+        exists: () => true,
+        commandExists: (command) => command === claudeAcp,
+        agyRuntimeReady: () => false,
+        readCursorStatus: () => ({ isAuthenticated: false }),
+      });
+
+      expect(available.has("claude")).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps every authenticated managed provider selectable when current qualification evidence fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "qualification-routing-provider-wide-"));
+    const evidencePath = join(root, "qualification.json");
+    const providers = [
+      ["codex", "CODEX_ACP_COMMAND"],
+      ["claude", "CLAUDE_ACP_COMMAND"],
+      ["agy", "AGY_ACP_COMMAND"],
+      ["grok", "GROK_ACP_COMMAND"],
+      ["cursor", "CURSOR_ACP_COMMAND"],
+    ] as const;
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH: evidencePath,
+    };
+    try {
+      for (const [provider, envKey] of providers) {
+        const command = join(root, `${provider}-acp`);
+        writeFileSync(command, `#!/usr/bin/env bash\nprintf '${resolveProviderRuntime(provider, env).selectedVersion}\\n'\n`, { mode: 0o755 });
+        chmodSync(command, 0o755);
+        env[envKey] = command;
+      }
+      for (const [, envKey] of providers) vi.stubEnv(envKey, env[envKey]!);
+      vi.stubEnv("AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH", evidencePath);
+      for (const [provider] of providers) {
+        const runtime = resolveProviderRuntime(provider, env);
+        writeQualificationRecord({
+          provider,
+          executionRuntime: runtime.runtimeIdentity,
+          providerVersion: runtime.selectedVersion!,
+          previousVersion: null,
+          bridgeCommit: "e".repeat(40),
+          contractVersion: PROVIDER_CONTRACT_VERSION,
+          qualifiedAt: "2026-10-01T00:00:00.000Z",
+          environment: "managed-appliance",
+          overall: "fail",
+          checks: [{ name: "fresh_prompt", status: "fail", diagnostic: "contract drift" }],
+        }, evidencePath);
+      }
+
+      expect([...getQualificationFailedProviders()]).toEqual(providers.map(([provider]) => provider));
+      const available = getAvailableCliKinds({
+        homeDir: root,
+        env,
+        exists: () => true,
+        commandExists: (command) => Object.values(env).includes(command),
+        agyRuntimeReady: () => true,
+        readCursorStatus: () => ({ isAuthenticated: true }),
+        readCursorVersion: () => "2026.09.23-86fc751",
+      });
+
+      expect([...available]).toEqual(["codex", "claude", "antigravity", "grok", "cursor"]);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("tracks current passing Grok evidence for health and diagnostics", () => {
     const root = mkdtempSync(join(tmpdir(), "qualification-routing-grok-pass-"));
     const evidencePath = join(root, "qualification.json");
@@ -119,7 +225,7 @@ describe("provider qualification routing", () => {
     expect([...getQualificationPassedProviders(evidencePath, { grok: "1.0.31" })]).toEqual([]);
   });
 
-  it("excludes only providers with hard qualification failures from interactive selection", () => {
+  it("excludes providers with direct runtime exclusions from interactive selection", () => {
     const available = getAvailableCliKinds({
       agyRuntimeReady: () => true,
       homeDir: "/qualification-test-home",
@@ -147,7 +253,7 @@ describe("provider qualification routing", () => {
     expect([...available]).toEqual(["claude"]);
   });
 
-  it("excludes grok from interactive selection when it has a hard qualification failure", () => {
+  it("excludes Grok from interactive selection when it has a runtime exclusion", () => {
     const available = getAvailableCliKinds({
       agyRuntimeReady: () => true,
       homeDir: "/qualification-test-home",
@@ -161,7 +267,7 @@ describe("provider qualification routing", () => {
     expect([...available]).toEqual(["claude", "cursor"]);
   });
 
-  it("excludes cursor from interactive selection when it has a hard qualification failure", () => {
+  it("excludes Cursor from interactive selection when it has a runtime exclusion", () => {
     const available = getAvailableCliKinds({
       agyRuntimeReady: () => true,
       homeDir: "/qualification-test-home",

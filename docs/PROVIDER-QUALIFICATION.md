@@ -43,7 +43,7 @@ npm run qualify:provider -- --provider grok
 npm run qualify:provider -- --provider cursor
 ```
 
-Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok or Cursor install can participate without a prior `pass` record. Cursor is the final target in the default interactive fallback chain, but it is routeable only when `cursor-agent status --format json` reports authenticated. A current deterministic `overall: fail` record for the installed provider version suppresses routing until the failure is resolved or the binary version changes.
+Qualification is diagnostic rather than a positive routing prerequisite. An authenticated Grok or Cursor install can participate without a prior `pass` record. Cursor is the final target in the default interactive fallback chain, but it is routeable only when `cursor-agent status --format json` reports authenticated and the selected ACP runtime is compatible. A current deterministic `overall: fail` record remains visible as qualification evidence without suppressing routing.
 
 Cursor Skills use the canonical managed projection `~/.cursor/skills/<name>/SKILL.md`. Managed skill install does not auto-project into Cursor alongside Claude/Codex. Explicit Cursor projection is available through `npm run skills -- project-cursor <name>` or `install`/`project-user --project-cursor`, and refuses to overwrite unmanaged Cursor skill paths. Cursor may still discover Claude/Codex skill directories; duplicate skill names across those paths are ambiguous and were observed to prefer the Claude-compatible copy during #552.
 
@@ -81,7 +81,7 @@ Managed upgrade output is consumed by the health auto-remediation path. A newly 
 
 On-demand `/health` and `/status` include the persistent qualification summary without adding the qualification record as a scheduled health plugin, avoiding repeated Telegram reports for the same known degraded version. `npm run doctor` prints the same concise qualification summary. Detailed per-check diagnostics remain in the evidence file.
 
-The runtime does not automatically downgrade a failed CLI. For all providers, current deterministic `overall: fail` evidence excludes that provider from interactive selection and fallback chains while missing, stale, or `degraded` prerequisite/transient evidence remains visible but routeable.
+Qualification is diagnostic evidence for interactive routing. A current deterministic `overall: fail` remains visible to health, doctor, release, and upgrade owners, but does not by itself exclude an authenticated provider with direct runtime prerequisites satisfied. Runtime-auth degradation, missing executables, and provider-specific execution prerequisites remain interactive availability gates.
 
 ## Regression policy
 

@@ -113,7 +113,7 @@ describe("Grok routing safety", () => {
     });
   });
 
-  it("skips Grok when current qualification evidence proves a deterministic failure", () => {
+  it("keeps Grok in fallback when current qualification evidence fails", () => {
     withGrokEnvironment((_root, evidencePath) => {
       writeFailedGrokQualification(evidencePath);
       const db = openDb(":memory:");
@@ -122,8 +122,8 @@ describe("Grok routing safety", () => {
         db,
         (cli) => cli === "grok" ? isGrokRouteable() : true,
       );
-      expect(chain.advance("chat:1")).toBe("antigravity");
-      expect(chain.getChain()).toEqual(["codex", "antigravity"]);
+      expect(chain.advance("chat:1")).toBe("grok");
+      expect(chain.getChain()).toEqual(["codex", "grok", "antigravity"]);
     });
   });
 
@@ -136,7 +136,7 @@ describe("Grok routing safety", () => {
     });
   });
 
-  it("undoes a Grok preference when current qualification evidence proves failure", () => {
+  it("keeps a Grok preference when current qualification evidence fails", () => {
     withGrokEnvironment((_root, evidencePath) => {
       writeFailedGrokQualification(evidencePath);
       const db = openDb(":memory:");
@@ -147,8 +147,8 @@ describe("Grok routing safety", () => {
         (cli) => cli === "grok" ? isGrokRouteable() : true,
       );
       chain.setActiveCli("channel:1", "grok");
-      expect(getUserCliPreference(db, "channel:1")).toBe("codex");
-      expect(chain.getActiveCli("channel:1")).toBe("codex");
+      expect(getUserCliPreference(db, "channel:1")).toBe("grok");
+      expect(chain.getActiveCli("channel:1")).toBe("grok");
     });
   });
 
@@ -158,10 +158,10 @@ describe("Grok routing safety", () => {
     });
   });
 
-  it("blocks direct Grok execution boundary after a current deterministic qualification failure", () => {
+  it("allows direct Grok execution when current qualification evidence fails", () => {
     withGrokEnvironment((_root, evidencePath) => {
       writeFailedGrokQualification(evidencePath);
-      expect(() => getCliWorkingDir("grok")).toThrow(/qualification failure/i);
+      expect(() => getCliWorkingDir("grok")).not.toThrow();
     });
   });
 });

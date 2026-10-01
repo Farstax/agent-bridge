@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { loadBotsConfig } from "../config.js";
 import { assertCursorAcpVersion, readCursorAcpVersion, resolveCursorAcpCommand } from "./cursorAcpConfig.js";
 import { isProviderApiKeyConfigured, isProviderApiKeyVerified } from "./apiKeyAuth.js";
-import { getQualificationFailedProviders } from "./qualificationStatus.js";
+import { getProviderRuntimeAuthDegradedProviders } from "./runtimeAvailability.js";
 import type { ProviderId } from "./types.js";
 
 export interface CursorStatusSnapshot {
@@ -78,9 +78,9 @@ export function isCursorAuthenticated(options: CursorAvailabilityOptions = {}): 
 }
 
 /**
- * Cursor is routeable when authenticated unless current qualification evidence
- * proves a deterministic failure. Missing/stale/degraded evidence is diagnostic,
- * not a routing prerequisite. Default-chain membership still defers to this gate.
+ * Cursor is routeable when authenticated and the selected ACP runtime is
+ * compatible. Qualification remains diagnostic evidence, not a routing
+ * prerequisite. Default-chain membership still defers to this gate.
  */
 export function isCursorRouteable(options: CursorAvailabilityOptions = {}): boolean {
   if (!isCursorAuthenticated(options)) return false;
@@ -91,7 +91,7 @@ export function isCursorRouteable(options: CursorAvailabilityOptions = {}): bool
   } catch {
     return false;
   }
-  const failedProviders = options.failedProviders ?? getQualificationFailedProviders();
+  const failedProviders = options.failedProviders ?? getProviderRuntimeAuthDegradedProviders(options.homeDir);
   return !failedProviders.has("cursor");
 }
 
