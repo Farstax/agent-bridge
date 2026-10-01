@@ -12,8 +12,7 @@ import {
   type VerifyProviderApiKeyOptions,
 } from "./providers/apiKeyAuth.js";
 import { hasAgyRuntimePrerequisites, resolveAgyAcpAuthPaths } from "./providers/agyAvailability.js";
-import { getQualificationFailedProviders } from "./providers/qualificationStatus.js";
-import { isProviderRuntimeAuthDegraded } from "./providers/runtimeAvailability.js";
+import { getProviderRuntimeAuthDegradedProviders } from "./providers/runtimeAvailability.js";
 import {
   isCursorRouteable,
   isCursorRouteableCached,
@@ -110,13 +109,10 @@ export function getAvailableCliKinds(options: AvailableCliOptions = {}): Set<Cli
   const exists = options.exists ?? existsSync;
   const commandExists = options.commandExists ?? commandExistsOnPath;
   const env = options.env ?? process.env;
-  const failedProviders = new Set(options.failedProviders ?? getQualificationFailedProviders());
-  if (
-    options.failedProviders === undefined
-    && isProviderRuntimeAuthDegraded("claude", home)
-  ) {
-    failedProviders.add("claude");
-  }
+  // Interactive availability is based on direct attempt prerequisites. Current
+  // qualification failures stay visible to health/doctor/release owners, but
+  // do not suppress an authenticated runnable provider before execution.
+  const failedProviders = new Set(options.failedProviders ?? getProviderRuntimeAuthDegradedProviders(home));
   const paths = resolveInteractiveCliAuthPaths(home, env);
   const available = new Set<CliKind>();
   const verifyApiKey = options.verifyApiKey ?? ((provider: ProviderId) =>

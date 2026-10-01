@@ -22,7 +22,7 @@ Successful verification is cached for the process by a SHA-256 fingerprint of th
 
 ## Routing and qualification
 
-Authentication method does not create a new provider identity. A provider authenticated by API key uses the same selection, fallback, qualification, session, execution-mode, and completion contracts as the same provider authenticated through its existing account flow. Current deterministic qualification failures still suppress routing.
+Authentication method does not create a new provider identity. A provider authenticated by API key uses the same selection, fallback, qualification, session, execution-mode, and completion contracts as the same provider authenticated through its existing account flow. Qualification failures remain diagnostic and acceptance evidence; direct runtime prerequisites determine routing.
 
 Account and API-key authentication are additive. If an optional API key is invalid but the provider's existing account/OAuth contract is authenticated, that provider remains available through the account path. An unverified issue-572 candidate key is also stripped before the real provider child is spawned, preventing an invalid environment key from overriding that valid account session.
 

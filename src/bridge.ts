@@ -34,10 +34,10 @@ export function getBridgeProjectDir(): string {
 
 export function getCliWorkingDir(bot?: RouteableBotKind): string {
   if (bot === "grok" && !isGrokRouteable()) {
-    throw new Error("Grok Build is unavailable: authenticate it or resolve its current qualification failure");
+    throw new Error("Grok Build is unavailable: authenticate it or resolve its runtime prerequisite");
   }
   if (bot === "cursor" && !isCursorRouteable()) {
-    throw new Error("Cursor is unavailable: authenticate it or resolve its current qualification failure");
+    throw new Error("Cursor is unavailable: authenticate it or resolve its runtime prerequisite");
   }
   if (bot === "codex" && process.env.CODEX_PROJECT_DIR) return process.env.CODEX_PROJECT_DIR;
   if (bot === "antigravity" && (process.env.ANTIGRAVITY_PROJECT_DIR || process.env.GEMINI_PROJECT_DIR)) {

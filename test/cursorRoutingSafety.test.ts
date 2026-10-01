@@ -132,7 +132,7 @@ describe("Cursor routing safety", () => {
     });
   });
 
-  it("skips Cursor when current qualification evidence proves a deterministic failure", () => {
+  it("keeps Cursor in fallback when current qualification evidence fails", () => {
     withCursorEnvironment((_root, evidencePath) => {
       writeFailedCursorQualification(evidencePath);
       const db = openDb(":memory:");
@@ -141,12 +141,12 @@ describe("Cursor routing safety", () => {
         db,
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
-      expect(chain.advance("chat:1")).toBe("antigravity");
-      expect(chain.getChain()).toEqual(["codex", "antigravity"]);
+      expect(chain.advance("chat:1")).toBe("cursor");
+      expect(chain.getChain()).toEqual(["codex", "cursor", "antigravity"]);
     });
   });
 
-  it("undoes a Cursor preference when current qualification evidence proves failure", () => {
+  it("keeps a Cursor preference when current qualification evidence fails", () => {
     withCursorEnvironment((_root, evidencePath) => {
       writeFailedCursorQualification(evidencePath);
       const db = openDb(":memory:");
@@ -157,15 +157,15 @@ describe("Cursor routing safety", () => {
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
       chain.setActiveCli("channel:1", "cursor");
-      expect(getUserCliPreference(db, "channel:1")).toBe("codex");
-      expect(chain.getActiveCli("channel:1")).toBe("codex");
+      expect(getUserCliPreference(db, "channel:1")).toBe("cursor");
+      expect(chain.getActiveCli("channel:1")).toBe("cursor");
     });
   });
 
-  it("blocks direct Cursor execution after a current deterministic qualification failure", () => {
+  it("allows direct Cursor execution when current qualification evidence fails", () => {
     withCursorEnvironment((_root, evidencePath) => {
       writeFailedCursorQualification(evidencePath);
-      expect(() => getCliWorkingDir("cursor")).toThrow(/qualification failure|unavailable/i);
+      expect(() => getCliWorkingDir("cursor")).not.toThrow();
     });
   });
 

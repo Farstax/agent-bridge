@@ -42,7 +42,7 @@ The implementation therefore remains provider-owned and narrow:
 2. persist/resume Grok's native session ID;
 3. surface only documented answer events;
 4. fail closed on unknown or contradictory terminal protocol;
-5. allow authenticated Grok routing while retaining qualification as diagnostic evidence and suppressing a current deterministic qualification failure.
+5. allow authenticated Grok routing while retaining qualification as diagnostic evidence; direct runtime prerequisites determine routeability.
 
 ## Provenance
 

@@ -173,7 +173,7 @@ describe("interactive CLI availability filtering", () => {
     expect(getSelectableCliKinds(available)).toEqual(["grok"]);
   });
 
-  it("suppresses authenticated Grok after a current deterministic qualification failure", () => {
+  it("suppresses authenticated Grok after an explicit runtime exclusion", () => {
     const homeDir = "/home/tester";
     const paths = resolveInteractiveCliAuthPaths(homeDir);
     const available = getAvailableCliKinds({

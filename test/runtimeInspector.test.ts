@@ -372,6 +372,43 @@ describe("runtime inspector", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("keeps a failed qualification visible without making an otherwise runnable provider unavailable", () => {
+    const { dir, path, db } = fixture();
+    try {
+      writeFileSync(join(dir, "qualification.json"), JSON.stringify({
+        schemaVersion: 1,
+        contractVersion: 6,
+        updatedAt: "2026-10-01T00:00:00.000Z",
+        providers: {
+          claude: {
+            provider: "claude",
+            providerVersion: "0.81.2",
+            previousVersion: null,
+            bridgeCommit: "a".repeat(40),
+            contractVersion: 6,
+            qualifiedAt: "2026-10-01T00:00:00.000Z",
+            environment: "test",
+            overall: "fail",
+            checks: [{ name: "repository_grounding", status: "fail" }],
+            executionRuntime: "acp:claude-acp@0.81.2:test",
+          },
+        },
+      }));
+      const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        AGENT_BRIDGE_PROVIDER_QUALIFICATION_PATH: join(dir, "qualification.json"),
+        HOME: dir,
+      }));
+      const claude = view.providers.find((p: { id: string }) => p.id === "claude");
+
+      expect(claude.availability).not.toBe("unavailable");
+      expect(claude.qualification.lastResult).toBe("fail");
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("projects Claude availability based on credential freshness against degradation marker", () => {
     const { dir, path, db } = fixture();
     const credDir = join(dir, ".claude");
