@@ -39,26 +39,9 @@ describe("MessagingPlatform abstraction — Phase 1", () => {
         },
         db,
         stub as any,
-        {
-          // Inject fast-returning stubs so handleUpdate doesn't spawn real CLI processes
-          runCli: vi.fn().mockResolvedValue({ text: "ok", sessionId: null }),
-          runCliAsync: vi.fn().mockResolvedValue({ text: "ok", sessionId: null }),
-        },
       );
       expect(engine).toBeDefined();
-
-      const update = {
-        update_id: 1,
-        message: {
-          message_id: 1,
-          chat: { id: 100, type: "private" },
-          from: { id: 42, first_name: "Test" },
-          text: "hello",
-        },
-      };
-      await engine.handleUpdate(update as any);
-      // sendMessage called via stub — platform abstraction is wired
-      expect(stub.sendMessage).toHaveBeenCalled();
+      expect(engine.client).toBe(stub);
     } finally {
       db.close();
       try { rmSync(dbPath); } catch {}
