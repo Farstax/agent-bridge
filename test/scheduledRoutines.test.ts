@@ -292,6 +292,22 @@ describe("scheduled companion routines", () => {
     db.close();
   });
 
+  it("dispatches one manual trigger and one simultaneous due occurrence with distinct keys", async () => {
+    const db = setup();
+    const dispatch = vi.fn(async () => undefined);
+    createScheduledRoutine(db, weekly());
+
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:00:30.000Z"));
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:00:31.000Z"));
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    const occurrenceKeys = dispatch.mock.calls.map(([, , key]) => key);
+    expect(new Set(occurrenceKeys).size).toBe(2);
+    expect(dispatch.mock.calls[1][1]).toBe("2026-08-31T06:00:00.000Z");
+    db.close();
+  });
+
   it("rejects a run request for a routine outside the caller's scope or that does not exist", () => {
     const db = setup();
     createScheduledRoutine(db, weekly({ id: "other-owner", ownerKey: "owner:other" }));
