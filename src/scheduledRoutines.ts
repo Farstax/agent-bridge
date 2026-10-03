@@ -37,8 +37,9 @@ export interface ScheduledOccurrence {
 export type ScheduledRoutineDispatch = (routine: ScheduledRoutine, intendedAt: string, occurrenceKey: string) => Promise<void>;
 
 const ROUTINE_PREFIX = "scheduled-routine:v1:";
+const TRIGGER_PREFIX = "scheduled-routine-trigger:v1:";
 const MAX_NAME_CHARS = 120;
-const MAX_INSTRUCTION_CHARS = 1_800;
+const MAX_INSTRUCTION_CHARS = 3_600;
 const DEFAULT_CATCH_UP_MS = 6 * 60 * 60 * 1_000;
 const DEFAULT_SCAN_MS = 30_000;
 const ISO_LOCAL_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
@@ -54,6 +55,10 @@ interface LocalParts {
 
 function routineKey(id: string): string {
   return `${ROUTINE_PREFIX}${id}`;
+}
+
+function triggerKey(id: string): string {
+  return `${TRIGGER_PREFIX}${id}`;
 }
 
 function bounded(value: string, label: string, max: number): string {
@@ -233,6 +238,25 @@ export function disableScheduledRoutine(db: BridgeDb, id: string, surfaceIdentit
   return true;
 }
 
+export type ScheduledRoutineUpdate = Partial<
+  Pick<ScheduledRoutine, "name" | "instruction" | "kind" | "timezone" | "schedule" | "enabled">
+>;
+
+export function updateScheduledRoutine(
+  db: BridgeDb,
+  id: string,
+  surfaceIdentity: string,
+  chatKey: string,
+  ownerKey: string,
+  patch: ScheduledRoutineUpdate,
+): ScheduledRoutine {
+  const routine = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey).find((item) => item.id === id);
+  if (!routine) throw new Error(`routine not found in this conversation: ${id}`);
+  const normalized = validateRoutine({ ...routine, ...patch });
+  db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(normalized), routineKey(id));
+  return normalized;
+}
+
 export function deleteScheduledRoutine(db: BridgeDb, id: string, surfaceIdentity: string, chatKey: string, ownerKey?: string): boolean {
   const routine = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey).find((item) => item.id === id);
   if (!routine) return false;
@@ -297,13 +321,51 @@ export function latestDueScheduledOccurrence(
   };
 }
 
+/**
+ * Requests an immediate, ad hoc dispatch of a routine's stored instruction, bypassing
+ * its schedule. Collapses to the single most recent pending request if called again
+ * before the next scan claims it. The owning routine's live scan/dispatch loop (not
+ * this call) performs the actual run, so it reuses the existing delivery, fallback,
+ * and autonomy-kind handling unchanged.
+ */
+export function requestScheduledRoutineRun(
+  db: BridgeDb,
+  id: string,
+  surfaceIdentity: string,
+  chatKey: string,
+  ownerKey: string,
+): string {
+  const routine = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey).find((item) => item.id === id);
+  if (!routine) throw new Error(`routine not found in this conversation: ${id}`);
+  const requestedAt = new Date().toISOString();
+  db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(triggerKey(id), requestedAt);
+  return requestedAt;
+}
+
+function claimPendingManualTrigger(db: BridgeDb, id: string): string | null {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(triggerKey(id)) as { value: string } | undefined;
+    if (!row) return null;
+    db.raw.prepare("DELETE FROM settings WHERE key = ?").run(triggerKey(id));
+    return row.value;
+  });
+}
+
 export async function scanScheduledRoutines(
   db: BridgeDb,
   surfaceIdentity: string,
   dispatch: ScheduledRoutineDispatch,
   nowMs = Date.now(),
 ): Promise<void> {
-  for (const routine of listScheduledRoutines(db, surfaceIdentity).filter((item) => item.enabled)) {
+  for (const routine of listScheduledRoutines(db, surfaceIdentity)) {
+    const triggeredAt = claimPendingManualTrigger(db, routine.id);
+    if (triggeredAt) {
+      if (claimScheduledRoutineOccurrence(db, routine.id, triggeredAt)) {
+        await dispatch(routine, triggeredAt, scheduledOccurrenceKey(routine.id, triggeredAt));
+      }
+      continue;
+    }
+    if (!routine.enabled) continue;
     const occurrence = latestDueScheduledOccurrence(routine, nowMs);
     if (!occurrence) continue;
     const occurrenceKey = claimScheduledRoutineForDispatch(db, routine, occurrence.intendedAt);

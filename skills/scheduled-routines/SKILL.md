@@ -1,6 +1,6 @@
 ---
 name: scheduled-routines
-description: Align with the user on an explicit future or recurring instruction, then create, inspect, disable, or delete the agreed companion routine.
+description: Align with the user on an explicit future or recurring instruction, then create, inspect, update, run on demand, disable, or delete the agreed companion routine.
 ---
 
 # Scheduled routines
@@ -69,14 +69,29 @@ bash "$ROUTINES" create \
 
 For explicitly autonomous work, use `--kind autonomous` and keep the stored instruction narrower than the ambient autonomy authority.
 
-Disable or delete only a routine returned by `list` in this conversation:
+Disable, delete, update, or run only a routine returned by `list` in this conversation:
 
 ```sh
 bash "$ROUTINES" disable <routine-id>
 bash "$ROUTINES" delete <routine-id>
 ```
 
-For a material instruction change, align on the replacement with the user first. Prefer creating the confirmed replacement and removing the old routine rather than inventing an implicit edit or widening its standing authority.
+For a material instruction change, align on the replacement with the user first, then update the existing routine in place (same `--name`/`--instruction`/`--timezone`/`--kind`/`--once`/`--weekly`/`--time` flags as `create`, all optional — only the supplied fields change). This preserves the routine's id, creation time, and scoping:
+
+```sh
+bash "$ROUTINES" update <routine-id> \
+  --instruction "Updated stored instruction, confirmed with the user." \
+  --weekly "mon,wed,fri" \
+  --time "09:00"
+```
+
+`update <routine-id> --enable` or `--disable` only changes the enabled state. Updating a fired one-shot routine's `--once` time and passing `--enable` reschedules it. Do not use `update` to widen the routine's standing authority (for example switching `--kind companion` to `--kind autonomous`) without the same explicit confirmation a new autonomous routine would require.
+
+To run a routine's stored instruction immediately, outside its schedule (for example to test it after creating or updating it), use `run`. This does not change the routine's schedule or enabled state; it dispatches once on the scheduler's next scan, through the same conversation, delivery, and fallback path as a normal occurrence:
+
+```sh
+bash "$ROUTINES" run <routine-id>
+```
 
 ## Scheduling semantics
 

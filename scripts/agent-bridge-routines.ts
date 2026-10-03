@@ -7,8 +7,11 @@ import {
   deleteScheduledRoutine,
   disableScheduledRoutine,
   listScheduledRoutines,
+  requestScheduledRoutineRun,
+  updateScheduledRoutine,
   type ScheduledRoutineKind,
   type ScheduledRoutineSchedule,
+  type ScheduledRoutineUpdate,
 } from "../src/scheduledRoutines.js";
 
 const WEEKDAYS: Record<string, number> = {
@@ -58,6 +61,11 @@ function scheduleFromArgs(args: string[]): ScheduledRoutineSchedule {
   return { type: "weekly", weekdays: parseWeekdays(weekly), time };
 }
 
+function scheduleFromArgsIfPresent(args: string[]): ScheduledRoutineSchedule | undefined {
+  if (option(args, "--once") || option(args, "--weekly") || option(args, "--time")) return scheduleFromArgs(args);
+  return undefined;
+}
+
 function openScopedDb(): { db: BridgeDb; surfaceIdentity: string; chatKey: string; ownerKey: string } {
   const dbPath = env("AGENT_BRIDGE_CONTEXT_DB");
   const surfaceIdentity = env("AGENT_BRIDGE_SURFACE_IDENTITY");
@@ -91,7 +99,7 @@ function renderList(db: BridgeDb, surfaceIdentity: string, chatKey: string, owne
 
 function main(args: string[]): string {
   const command = args[0];
-  if (!command) return fail("usage: agent-bridge-routines <list|create|disable|delete> ...");
+  if (!command) return fail("usage: agent-bridge-routines <list|create|update|run|disable|delete> ...");
   const scope = openScopedDb();
   try {
     if (command === "list") return renderList(scope.db, scope.surfaceIdentity, scope.chatKey, scope.ownerKey);
@@ -103,6 +111,38 @@ function main(args: string[]): string {
         : deleteScheduledRoutine(scope.db, id, scope.surfaceIdentity, scope.chatKey, scope.ownerKey);
       if (!changed) return fail(`routine not found in this conversation: ${id}`);
       return command === "disable" ? `Disabled scheduled routine ${id}.` : `Deleted scheduled routine ${id}.`;
+    }
+    if (command === "run") {
+      const id = args[1]?.trim();
+      if (!id) return fail("run requires a routine id");
+      requestScheduledRoutineRun(scope.db, id, scope.surfaceIdentity, scope.chatKey, scope.ownerKey);
+      return `Requested an immediate run of scheduled routine ${id}. It will dispatch on the next scheduler scan.`;
+    }
+    if (command === "update") {
+      const id = args[1]?.trim();
+      if (!id) return fail("update requires a routine id");
+      const patch: ScheduledRoutineUpdate = {};
+      const name = option(args, "--name");
+      const instruction = option(args, "--instruction");
+      const timezone = option(args, "--timezone");
+      const kind = option(args, "--kind");
+      const schedule = scheduleFromArgsIfPresent(args);
+      if (name !== null) patch.name = name;
+      if (instruction !== null) patch.instruction = instruction;
+      if (timezone !== null) patch.timezone = timezone;
+      if (schedule !== undefined) patch.schedule = schedule;
+      if (kind !== null) {
+        if (kind !== "companion" && kind !== "autonomous") return fail("--kind must be companion or autonomous");
+        if (kind === "autonomous" && scope.surfaceIdentity !== "telegram:interactive") {
+          return fail("scheduled autonomy is currently supported only on the Telegram interactive surface with first-class autonomy supervision");
+        }
+        patch.kind = kind;
+      }
+      if (args.includes("--enable")) patch.enabled = true;
+      if (args.includes("--disable")) patch.enabled = false;
+      if (!Object.keys(patch).length) return fail("update requires at least one of --name, --instruction, --timezone, --kind, --once/--weekly --time, --enable, --disable");
+      const routine = updateScheduledRoutine(scope.db, id, scope.surfaceIdentity, scope.chatKey, scope.ownerKey, patch);
+      return `Updated scheduled routine ${routine.id}: ${routine.name} (${renderSchedule(routine.schedule)}, ${routine.timezone}, ${routine.kind}, ${routine.enabled ? "active" : "disabled"}).`;
     }
     if (command !== "create") return fail(`unknown command: ${command}`);
 

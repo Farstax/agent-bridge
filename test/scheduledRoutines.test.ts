@@ -13,7 +13,9 @@ import {
   disableScheduledRoutine,
   latestDueScheduledOccurrence,
   listScheduledRoutines,
+  requestScheduledRoutineRun,
   scanScheduledRoutines,
+  updateScheduledRoutine,
   type ScheduledRoutine,
 } from "../src/scheduledRoutines.js";
 import { parseScheduledOccurrenceEvidence, scheduledOccurrenceKey } from "../src/scheduledRunCorrelation.js";
@@ -203,6 +205,98 @@ describe("scheduled companion routines", () => {
     });
     expect(observedChatKey).toBe("-100:42");
     db.close();
+  });
+
+  it("updates mutable fields in place while preserving id, createdAt, and scoping keys", () => {
+    const db = setup();
+    createScheduledRoutine(db, weekly());
+    const updated = updateScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42", "owner:test", {
+      name: "Evening priorities",
+      instruction: "Review today's work and flag anything blocking tomorrow.",
+      schedule: { type: "weekly", weekdays: [6, 7], time: "18:30" },
+    });
+    expect(updated).toEqual(expect.objectContaining({
+      id: "routine-1",
+      name: "Evening priorities",
+      instruction: "Review today's work and flag anything blocking tomorrow.",
+      schedule: { type: "weekly", weekdays: [6, 7], time: "18:30" },
+      createdAt: "2026-08-29T12:00:00.000Z",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "-100:42",
+      ownerKey: "owner:test",
+    }));
+    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42", "owner:test")[0]).toEqual(updated);
+    db.close();
+  });
+
+  it("can re-enable a fired one-shot routine with a new future time", () => {
+    const db = setup();
+    createScheduledRoutine(db, weekly({ schedule: { type: "once", localDateTime: "2026-08-30T10:00" } }));
+    expect(claimScheduledRoutineOccurrence(db, "routine-1", "2026-08-30T08:00:00.000Z")).toBe(true);
+    disableScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
+
+    const updated = updateScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42", "owner:test", {
+      schedule: { type: "once", localDateTime: "2026-09-02T09:00" },
+      enabled: true,
+    });
+    expect(updated.enabled).toBe(true);
+    expect(updated.schedule).toEqual({ type: "once", localDateTime: "2026-09-02T09:00" });
+    db.close();
+  });
+
+  it("rejects update of a routine outside the caller's scope or that does not exist", () => {
+    const db = setup();
+    createScheduledRoutine(db, weekly({ id: "other-owner", ownerKey: "owner:other" }));
+    expect(() => updateScheduledRoutine(db, "other-owner", "telegram:interactive", "-100:42", "owner:test", { name: "hijacked" }))
+      .toThrow(/not found/);
+    expect(() => updateScheduledRoutine(db, "missing", "telegram:interactive", "-100:42", "owner:test", { name: "x" }))
+      .toThrow(/not found/);
+    db.close();
+  });
+
+  it("accepts an instruction up to the doubled limit and rejects over it", () => {
+    const db = setup();
+    createScheduledRoutine(db, weekly({ instruction: "x".repeat(3_600) }));
+    expect(() => createScheduledRoutine(db, weekly({ id: "too-long", instruction: "x".repeat(3_601) })))
+      .toThrow(/exceeds 3600 characters/);
+    db.close();
+  });
+
+  it("dispatches a manually requested run immediately regardless of schedule or enabled state, exactly once", async () => {
+    const db = setup();
+    const dispatch = vi.fn(async () => undefined);
+    createScheduledRoutine(db, weekly({ schedule: { type: "once", localDateTime: "2099-01-01T00:00" } }));
+    disableScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
+
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-30T08:00:00.000Z"));
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-30T08:00:01.000Z"));
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const [routineArg] = dispatch.mock.calls[0];
+    expect(routineArg.id).toBe("routine-1");
+    expect(listScheduledRoutines(db, "telegram:interactive", "-100:42", "owner:test")[0].enabled).toBe(false);
+    db.close();
+  });
+
+  it("collapses repeated run requests before the next scan into a single dispatch", async () => {
+    const db = setup();
+    const dispatch = vi.fn(async () => undefined);
+    createScheduledRoutine(db, weekly());
+
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2099-01-01T00:00:00.000Z"));
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    db.close();
+  });
+
+  it("rejects a run request for a routine outside the caller's scope or that does not exist", () => {
+    const db = setup();
+    createScheduledRoutine(db, weekly({ id: "other-owner", ownerKey: "owner:other" }));
+    expect(() => requestScheduledRoutineRun(db, "other-owner", "telegram:interactive", "-100:42", "owner:test")).toThrow(/not found/);
+    expect(() => requestScheduledRoutineRun(db, "missing", "telegram:interactive", "-100:42", "owner:test")).toThrow(/not found/);
   });
 
   it("preserves a Discord snowflake chat key without numeric coercion", () => {
