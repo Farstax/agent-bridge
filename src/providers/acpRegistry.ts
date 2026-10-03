@@ -67,14 +67,14 @@ const RELEASE_LOCKED_ACP_REGISTRY_ENTRIES: Readonly<Partial<Record<ProviderId, A
   claude: {
     id: "claude-acp",
     name: "Claude Agent",
-    version: "0.81.2",
+    version: "0.85.1",
     description: "ACP adapter for the Claude Agent SDK",
     repository: "https://github.com/agentclientprotocol/claude-agent-acp",
     license: "Apache-2.0",
-    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.81.2/LICENSE",
+    license_url: "https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.85.1/LICENSE",
     distribution: {
       npx: {
-        package: "@agentclientprotocol/claude-agent-acp@0.81.2",
+        package: "@agentclientprotocol/claude-agent-acp@0.85.1",
       },
     },
   },
