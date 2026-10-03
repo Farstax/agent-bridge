@@ -85,6 +85,8 @@ bash "$ROUTINES" update <routine-id> \
   --time "09:00"
 ```
 
+Treat a failed `update` as terminal for that sequence. Do not run the routine after a failed update. First report the error; for a later retry, update successfully and verify the stored routine with `list` before using `run`.
+
 `update <routine-id> --enable` or `--disable` only changes the enabled state. Updating a fired one-shot routine's `--once` time and passing `--enable` reschedules it. Do not use `update` to widen the routine's standing authority (for example switching `--kind companion` to `--kind autonomous`) without the same explicit confirmation a new autonomous routine would require.
 
 To run a routine's stored instruction immediately, outside its schedule (for example to test it after creating or updating it), use `run`. This does not change the routine's schedule or enabled state; it dispatches once on the scheduler's next scan, through the same conversation, delivery, and fallback path as a normal occurrence:
