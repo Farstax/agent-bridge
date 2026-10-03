@@ -61,9 +61,9 @@ describe("declarative ACP provider runtime", () => {
   it("locks the Claude candidate adapter distribution to the qualified release", () => {
     expect(getLockedAcpRegistryEntry("claude")).toEqual(expect.objectContaining({
       id: "claude-acp",
-      version: "0.85.1",
+      version: "0.81.2",
       distribution: {
-        npx: { package: "@agentclientprotocol/claude-agent-acp@0.85.1" },
+        npx: { package: "@agentclientprotocol/claude-agent-acp@0.81.2" },
       },
     }));
   });

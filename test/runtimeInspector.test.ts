@@ -383,7 +383,7 @@ describe("runtime inspector", () => {
         providers: {
           claude: {
             provider: "claude",
-            providerVersion: "0.85.1",
+            providerVersion: "0.81.2",
             previousVersion: null,
             bridgeCommit: "a".repeat(40),
             contractVersion: 6,
@@ -391,7 +391,7 @@ describe("runtime inspector", () => {
             environment: "test",
             overall: "fail",
             checks: [{ name: "repository_grounding", status: "fail" }],
-            executionRuntime: "acp:claude-acp@0.85.1:test",
+            executionRuntime: "acp:claude-acp@0.81.2:test",
           },
         },
       }));

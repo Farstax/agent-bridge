@@ -85,12 +85,12 @@ describe("provider qualification routing", () => {
       CLAUDE_ACP_COMMAND: claudeAcp,
     };
     try {
-      writeFileSync(claudeAcp, "#!/usr/bin/env bash\nprintf '0.85.1\\n'\n", { mode: 0o755 });
+      writeFileSync(claudeAcp, "#!/usr/bin/env bash\nprintf '0.81.2\\n'\n", { mode: 0o755 });
       chmodSync(claudeAcp, 0o755);
       writeQualificationRecord({
         provider: "claude",
         executionRuntime: resolveProviderRuntime("claude", env).runtimeIdentity,
-        providerVersion: "0.85.1",
+        providerVersion: "0.81.2",
         previousVersion: null,
         bridgeCommit: "e".repeat(40),
         contractVersion: PROVIDER_CONTRACT_VERSION,
