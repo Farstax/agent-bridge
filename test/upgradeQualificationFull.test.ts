@@ -46,7 +46,7 @@ exit 97
 
       script(claude, `
 printf '%s\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.81.2'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo '@agentclientprotocol/claude-agent-acp 0.85.1'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(codex, `
@@ -68,7 +68,7 @@ exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs
       }) + "\n", "utf8");
       script(grok, `
 printf '%s\\n' "$0 $*" >> "${qualificationLog}"
-if [ "\${1:-}" = --version ]; then echo 'grok 1.0.41'; exit 0; fi
+if [ "\${1:-}" = --version ]; then echo 'grok 1.0.46'; exit 0; fi
 exec "${process.execPath}" "${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")}" "${join(process.cwd(), "test/support/fakeAcpAgent.ts")}"
 `);
       script(cursor, `
@@ -150,7 +150,7 @@ exit 97
         providers?: Record<string, { overall?: string; providerVersion?: string }>;
       };
       expect(evidence.providers).toMatchObject({
-        claude: { overall: "pass", providerVersion: "0.81.2" },
+        claude: { overall: "pass", providerVersion: "0.85.1" },
         codex: { overall: "pass", providerVersion: "1.10.0" },
         agy: { overall: "pass", providerVersion: "1.2.1" },
         cursor: { overall: "pass", providerVersion: "2026.09.23-86fc751" },

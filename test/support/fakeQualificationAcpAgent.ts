@@ -72,6 +72,11 @@ acp.agent({ name: "fake-qualification-acp-agent" })
       ],
     },
   }))
+  // Cursor qualification selects the provider-owned execution mode before
+  // prompting. Keep this protocol fixture aligned with the advertised modes
+  // so it exercises the prompt/result contract rather than failing at the
+  // optional session setup boundary.
+  .onRequest(acp.methods.agent.session.setMode, async () => ({}))
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
     const prompt = ctx.params.prompt.map((block) => block.type === "text" ? block.text : "").join("");
     const isGrounding = prompt.includes("Agent Bridge repository-grounding qualification.");
