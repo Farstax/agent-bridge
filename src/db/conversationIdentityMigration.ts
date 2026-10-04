@@ -6,6 +6,10 @@ function legacySurface(role?: string): string {
 
 /** Version 18: make transport identity part of every conversation-scoped row. */
 export function applyConversationIdentityMigration(db: Database.Database, role?: string): void {
+  const hasTable = (name: string): boolean => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+  // Narrow migration fixtures and role-specific databases can legitimately omit
+  // interactive tables. Nothing is owned by this migration in that shape.
+  if (!hasTable("bridge_state")) return;
   const surface = legacySurface(role);
   const columns = db.prepare("PRAGMA table_info(bridge_state)").all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === "interactive_cli_preference")) {
@@ -62,7 +66,7 @@ export function applyConversationIdentityMigration(db: Database.Database, role?:
     FROM bridge_state_v17;
     DROP TABLE bridge_state_v17;
 
-    ALTER TABLE acp_session_bindings RENAME TO acp_session_bindings_v17;
+    ${hasTable("acp_session_bindings") ? `ALTER TABLE acp_session_bindings RENAME TO acp_session_bindings_v17;` : `CREATE TABLE acp_session_bindings_v17 (conversation_id TEXT, provider_id TEXT, acp_session_id TEXT, last_run_id TEXT, created_at TEXT, updated_at TEXT);`}
     CREATE TABLE acp_session_bindings (
       surface_identity TEXT NOT NULL,
       conversation_id TEXT NOT NULL,

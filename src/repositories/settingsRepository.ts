@@ -5,7 +5,7 @@ import {
 } from "../acp/sessionConfig.js";
 import { normalizeAgyModelFamily } from "../effort.js";
 import { isAcpBackedBot } from "../providers/registry.js";
-import { assertConversationIdentity, type ConversationIdentity } from "../conversationIdentity.js";
+import { assertConversationIdentity, legacyConversationIdentity, type ConversationIdentity } from "../conversationIdentity.js";
 
 type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
@@ -87,7 +87,8 @@ export class SettingsRepository {
     this.setSetting(`chat:repo:${identity.surfaceIdentity}:${identity.chatKey}`, repo);
   }
 
-  incrementFailures(identity: ConversationIdentity, bot: BotKind): number {
+  incrementFailures(identity: ConversationIdentity | string, bot: BotKind): number {
+    identity = legacyConversationIdentity(identity);
     assertConversationIdentity(identity);
     const col = `${bot}_consecutive_failures`;
     this.db
@@ -102,7 +103,8 @@ export class SettingsRepository {
     return row?.n ?? 1;
   }
 
-  resetFailures(identity: ConversationIdentity, bot: BotKind): void {
+  resetFailures(identity: ConversationIdentity | string, bot: BotKind): void {
+    identity = legacyConversationIdentity(identity);
     assertConversationIdentity(identity);
     const col = `${bot}_consecutive_failures`;
     this.db

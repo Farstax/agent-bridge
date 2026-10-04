@@ -20,10 +20,14 @@ export function lookupProviderSession(
   kind: BotKind | "custom-acp",
   resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
 ): string | null {
+  const legacyKey = typeof identity === "string" ? identity : null;
   identity = legacyConversationIdentity(identity);
   const bindingKey = acpSessionBindingKey(kind, resolveRuntime);
   if (bindingKey) {
-    return db.getAcpSessionBinding(identity, bindingKey)?.acpSessionId ?? null;
+    const scoped = db.getAcpSessionBinding(identity, bindingKey)?.acpSessionId ?? null;
+    if (scoped || !legacyKey) return scoped;
+    const row = db.raw.prepare("SELECT acp_session_id AS sessionId FROM acp_session_bindings WHERE conversation_id = ? AND provider_id = ? ORDER BY updated_at DESC LIMIT 1").get(legacyKey, bindingKey) as { sessionId?: string } | undefined;
+    return row?.sessionId ?? null;
   }
   return db.getSession(identity, kind as BotKind);
 }

@@ -104,7 +104,7 @@ describe("schema version 9 legacy Worker table removal", () => {
       grok_session_created_at: null,
       grok_consecutive_failures: 0,
     });
-    expect(retainedAfter.run).toEqual(retainedBefore.run);
+    expect(retainedAfter.run).toEqual({ ...retainedBefore.run, surface_identity: null });
     expect(retainedAfter.event).toEqual(retainedBefore.event);
     expect(db.pragma("foreign_key_check")).toEqual([]);
 

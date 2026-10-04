@@ -113,7 +113,7 @@ describe("tier 2: same-provider fresh-session retry for a transient failure", ()
     expect(client.sendMessage.mock.calls[0][0].text).toContain("recovered on fresh session");
     // Silent: no cross-provider fallback was requested, no "Switching to..." style notice.
     expect(fallbackRequests).toEqual([]);
-    expect(lookupProviderSession(db, chatKey, "codex")).toBe("fresh-session-id");
+    expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey }, "codex")).toBe("fresh-session-id");
   });
 
   it("falls through to the existing cross-provider fallback path when the fresh-session retry also fails", async () => {
@@ -145,7 +145,7 @@ describe("tier 2: same-provider fresh-session retry for a transient failure", ()
     // Exactly one primary attempt plus one tier-2 retry -- no further looping.
     expect(runProviderInvocationMock).toHaveBeenCalledTimes(2);
     expect(fallbackRequests).toEqual(["provider_transport_failure"]);
-    expect(lookupProviderSession(db, chatKey, "codex")).toBeNull();
+    expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey }, "codex")).toBeNull();
   });
 
   it("does not attempt a tier-2 retry for a non-transient (capacity_exhausted) failure", async () => {

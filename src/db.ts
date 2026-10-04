@@ -353,11 +353,11 @@ export class BridgeDb {
 
   // ── Session failure circuit breaker ─────────────────────────────────────
 
-  incrementFailures(identity: ConversationIdentity, bot: BotKind): number {
+  incrementFailures(identity: ConversationIdentity | string, bot: BotKind): number {
     return this.settings.incrementFailures(identity, bot);
   }
 
-  resetFailures(identity: ConversationIdentity, bot: BotKind): void {
+  resetFailures(identity: ConversationIdentity | string, bot: BotKind): void {
     this.settings.resetFailures(identity, bot);
   }
 

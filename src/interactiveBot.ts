@@ -348,7 +348,8 @@ function prepareCliHandoff(db: BridgeDb, identity: ConversationIdentity, targetC
   markHandoffRequired(db, identity.chatKey, targetCli, reason);
 }
 
-export function applyManualCliSwitchHandoff(db: BridgeDb, identity: ConversationIdentity, newCli: CliKind): void {
+export function applyManualCliSwitchHandoff(db: BridgeDb, identity: ConversationIdentity | string, newCli: CliKind): void {
+  identity = legacyConversationIdentity(identity);
   db.raw.transaction(() => {
     prepareCliHandoff(db, identity, newCli, "manual_switch");
     setUserCliPreference(db, identity, newCli);
@@ -439,7 +440,7 @@ function dispatchClaimedInteractiveExecution(
   tried: Set<string>,
 ): Promise<ExecutionOutcome> {
   return dispatchInteractiveExecutionWithFallback({
-    identity: { surfaceIdentity: deps.surfaceIdentity ?? "$legacy", chatKey },
+    identity: { surfaceIdentity: deps.surfaceIdentity ?? "telegram:interactive", chatKey },
     chatKey,
     recoverPendingQueue: false,
     exhaustedOutcome: "committed",
