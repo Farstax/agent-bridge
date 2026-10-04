@@ -349,8 +349,8 @@ describe("release artifact manifest", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/historical-release-artifact.yml"), "utf8");
     const [, buildTargetJob] = workflow.split(/^  (?=build-target:|prove:)/m);
 
-    expect(buildTargetJob).toContain("git diff --quiet HEAD -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json");
-    expect(buildTargetJob).toContain("git status --porcelain -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json");
+    expect(buildTargetJob).toContain("git diff --quiet HEAD -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/agent-bridge-wait.ts package.json package-lock.json");
+    expect(buildTargetJob).toContain("git status --porcelain -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/agent-bridge-wait.ts package.json package-lock.json");
     const pruneIndex = buildTargetJob.indexOf("Retain target production dependencies only");
     const recheckIndex = buildTargetJob.indexOf("git status --porcelain -- src");
     const packageIndex = buildTargetJob.indexOf("Package raw target materials");
