@@ -90,6 +90,12 @@ export function requestRunContinuation(
   const dueAt = new Date(nowMs + input.afterSeconds * 1_000).toISOString();
   const expiresAt = new Date(nowMs + MAX_LIFETIME_MS).toISOString();
   const id = originRunId;
+  const originRun = db.getRun(originRunId);
+  if (originRun) {
+    if (originRun.status !== "running") throw new Error("originating Run is no longer active");
+    if (originRun.chat_id !== chatKey) throw new Error("originating Run conversation mismatch");
+    if (originRun.bot !== provider) throw new Error("originating Run provider mismatch");
+  }
 
   return db.runInTransaction(() => {
     const existingRow = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
@@ -131,6 +137,22 @@ export function claimDueRunContinuation(
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
     if (!current || current.state !== "pending") return null;
+    const originRun = db.getRun(current.originRunId);
+    if (!originRun || originRun.status === "running") return null;
+    if (originRun.status !== "completed" || originRun.chat_id !== current.chatKey || originRun.bot !== current.provider) {
+      const cancelled: RunContinuation = {
+        ...current,
+        state: "cancelled",
+        completedAt: new Date(nowMs).toISOString(),
+        error: originRun.status !== "completed"
+          ? `originating Run ended with status ${originRun.status}`
+          : originRun.chat_id !== current.chatKey
+            ? "originating Run conversation changed"
+            : "originating Run provider changed",
+      };
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
+      return null;
+    }
     if (Date.parse(current.expiresAt) <= nowMs) {
       const expired = { ...current, state: "expired" as const };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
