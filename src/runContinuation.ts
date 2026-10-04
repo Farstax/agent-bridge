@@ -15,7 +15,7 @@ const MAX_DELAY_SECONDS = 30 * 60;
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1_000;
 const MAX_REASON_CHARS = 500;
 
-export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired";
+export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired" | "cancelled";
 
 export interface RunContinuation {
   version: 1;
@@ -65,7 +65,7 @@ function parse(value: string): RunContinuation | null {
       || !candidate.chatKey
       || !candidate.provider
       || !candidate.reason
-      || !["pending", "claimed", "completed", "failed", "expired"].includes(candidate.state)
+      || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
     return candidate;
   } catch {
@@ -140,6 +140,27 @@ export function claimDueRunContinuation(
     const claimed = { ...current, state: "claimed" as const, claimedAt: new Date(nowMs).toISOString() };
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
     return claimed;
+  });
+}
+
+export function cancelPendingRunContinuation(
+  db: BridgeDb,
+  id: string,
+  reason: string,
+  nowMs = Date.now(),
+): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current || current.state !== "pending") return false;
+    const cancelled: RunContinuation = {
+      ...current,
+      state: "cancelled",
+      completedAt: new Date(nowMs).toISOString(),
+      error: reason.slice(0, 500),
+    };
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
+    return true;
   });
 }
 
