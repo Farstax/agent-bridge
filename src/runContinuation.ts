@@ -137,6 +137,11 @@ export function claimDueRunContinuation(
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
     if (!current || current.state !== "pending") return null;
+    if (Date.parse(current.expiresAt) <= nowMs) {
+      const expired = { ...current, state: "expired" as const };
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
+      return null;
+    }
     const originRun = db.getRun(current.originRunId);
     if (!originRun || originRun.status === "running") return null;
     if (originRun.status !== "completed" || originRun.chat_id !== current.chatKey || originRun.bot !== current.provider) {
@@ -151,11 +156,6 @@ export function claimDueRunContinuation(
             : "originating Run provider changed",
       };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
-      return null;
-    }
-    if (Date.parse(current.expiresAt) <= nowMs) {
-      const expired = { ...current, state: "expired" as const };
-      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
     }
     if (Date.parse(current.dueAt) > nowMs) return null;
