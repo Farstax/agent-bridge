@@ -76,6 +76,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
+import { cancelPendingRunContinuation } from "./runContinuation.js";
 
 export interface HookContext {
   chatId: number | string;
@@ -825,6 +826,13 @@ export class BridgeEngine {
       if (run?.status === "running") {
         if (cancelled || outcome === "fenced") this.db.updateRunCancelled(runId, cancelled ? "user" : "fenced");
         else if (outcome === "failed") this.db.updateRunFailed(runId, "prompt execution failed");
+      }
+      if (cancelled || outcome === "fenced" || outcome === "failed") {
+        cancelPendingRunContinuation(
+          this.db,
+          runId,
+          cancelled ? "originating Run cancelled by user" : outcome === "fenced" ? "originating Run lost execution ownership" : "originating Run failed",
+        );
       }
       if (lockHeartbeat) clearInterval(lockHeartbeat);
       if (!activeTaskCommitted) {
