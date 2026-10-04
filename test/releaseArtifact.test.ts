@@ -278,6 +278,8 @@ describe("release artifact manifest", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/historical-release-artifact.yml"), "utf8");
 
     expect(workflow).toContain("package-lock.json tsconfig.json node_modules");
+    expect(workflow).toContain('if [ -f target-source/scripts/agent-bridge-wait.ts ]; then paths="$paths scripts/agent-bridge-wait.ts"; fi');
+    expect(workflow).toContain("scripts/agent-bridge-wait.ts package.json package-lock.json");
     expect(workflow).toContain("package-lock.json tsconfig.json)");
   });
 
