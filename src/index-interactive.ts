@@ -62,6 +62,10 @@ import {
   buildScheduledInteractiveTurn,
   scheduledTelegramDestination,
 } from "./scheduledRoutines.js";
+import {
+  RunContinuationRunner,
+  buildTelegramRunContinuationTurn,
+} from "./runContinuation.js";
 
 loadInteractiveEnvFile();
 
@@ -441,6 +445,38 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
   },
 ) : null;
 scheduledRoutineRunner?.start();
+
+const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
+  db,
+  runtimePolicy.surfaceIdentity,
+  async (continuation) => {
+    const provider = continuation.provider as CliKind;
+    if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
+    fallbackChain.setActiveCli(continuation.chatKey, provider);
+    const turn = buildTelegramRunContinuationTurn(continuation, scheduledActorId);
+    await dispatchInteractiveTurnWithFallback(turn, {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      db,
+      notify: async (msg) => {
+        await sendTelegramMessage({
+          client,
+          kind: "interactive",
+          chatId: turn.delivery.chatId,
+          body: { text: msg, message_thread_id: turn.threadId === undefined ? undefined : Number(turn.threadId) },
+        });
+      },
+      onCliSwitched: async (newCli) => {
+        await registerGlobalCommands(newCli, " during continuation fallback");
+        if (typeof turn.delivery.chatId === "number" && turn.delivery.chatId < 0) {
+          await registerGroupChatCommands(newCli, turn.delivery.chatId);
+        }
+      },
+    }, new Set([provider]));
+  },
+) : null;
+runContinuationRunner?.start();
 
 await registerGlobalCommands(defaultPref, "");
 const registeredGroupChats = new Set<number>();
