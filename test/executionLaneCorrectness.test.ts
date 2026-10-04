@@ -20,14 +20,14 @@ process.env.AGENT_BRIDGE_KILL_GRACE_MS = "100";
  */
 function setCursorSession(database: ReturnType<typeof openDb>, chatKey: string, sessionId: string | null): void {
   if (sessionId === null) {
-    database.clearAcpSessionBinding(chatKey, "cursor");
+    database.clearAcpSessionBinding({ surfaceIdentity: "telegram:interactive", chatKey }, "cursor");
     return;
   }
-  database.putAcpSessionBinding({ conversationId: chatKey, providerId: "cursor", acpSessionId: sessionId, runId: null });
+  database.putAcpSessionBinding({ surfaceIdentity: "telegram:interactive", conversationId: chatKey, providerId: "cursor", acpSessionId: sessionId, runId: null });
 }
 
 function getCursorSession(database: ReturnType<typeof openDb>, chatKey: string): string | null {
-  return database.getAcpSessionBinding(chatKey, "cursor")?.acpSessionId ?? null;
+  return database.getAcpSessionBinding({ surfaceIdentity: "telegram:interactive", chatKey }, "cursor")?.acpSessionId ?? null;
 }
 
 function message(text: string, threadId: number) {

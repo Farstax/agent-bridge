@@ -53,11 +53,8 @@ import { ConversationRepository, DEFAULT_CONTEXT_MAX_CHARS, type AuthorizedConve
 export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./repositories/conversationRepository.js";
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
 import { assertDatabaseForeignKeyIntegrity } from "./db/roleAssignmentsMigration.js";
-import { classifyLifecycleState } from "./rolloutLifecycle.js";
 import type { BotKind } from "./types.js";
-
-// Sentinel row keys stored in bridge_state for non-chat state
-const pollingKey = (bot: string) => `$polling:${bot}`;
+import { legacyConversationIdentity, type ConversationIdentity } from "./conversationIdentity.js";
 
 function assertExecutionScope(surface: string, chatKey: string): void {
   if (!surface?.trim()) throw new Error("surface is required");
@@ -299,24 +296,24 @@ export class BridgeDb {
 
   // ── Session management ───────────────────────────────────────────────────
 
-  getSession(chatId: string, bot: BotKind): string | null {
-    return this.sessions.getSession(chatId, bot);
+  getSession(identity: ConversationIdentity | string, bot: BotKind): string | null {
+    return this.sessions.getSession(legacyConversationIdentity(identity), bot);
   }
 
-  setSession(chatId: string, bot: BotKind, sessionId: string | null): void {
-    this.sessions.setSession(chatId, bot, sessionId);
+  setSession(identity: ConversationIdentity | string, bot: BotKind, sessionId: string | null): void {
+    this.sessions.setSession(legacyConversationIdentity(identity), bot, sessionId);
   }
 
-  getAcpSessionBinding(conversationId: string, providerId: string): AcpSessionBinding | null {
-    return this.acpSessions.get(conversationId, providerId);
+  getAcpSessionBinding(identity: ConversationIdentity | string, providerId: string): AcpSessionBinding | null {
+    return this.acpSessions.get(identity, providerId);
   }
 
-  putAcpSessionBinding(binding: AcpSessionBinding): void {
+  putAcpSessionBinding(binding: AcpSessionBinding | Omit<AcpSessionBinding, "surfaceIdentity">): void {
     this.acpSessions.put(binding);
   }
 
-  clearAcpSessionBinding(conversationId: string, providerId: string): void {
-    this.acpSessions.clear(conversationId, providerId);
+  clearAcpSessionBinding(identity: ConversationIdentity | string, providerId: string): void {
+    this.acpSessions.clear(identity, providerId);
   }
 
   // ── Per-chat execution lock ──────────────────────────────────────────────
@@ -356,12 +353,12 @@ export class BridgeDb {
 
   // ── Session failure circuit breaker ─────────────────────────────────────
 
-  incrementFailures(chatId: string, bot: BotKind): number {
-    return this.settings.incrementFailures(chatId, bot);
+  incrementFailures(identity: ConversationIdentity, bot: BotKind): number {
+    return this.settings.incrementFailures(identity, bot);
   }
 
-  resetFailures(chatId: string, bot: BotKind): void {
-    this.settings.resetFailures(chatId, bot);
+  resetFailures(identity: ConversationIdentity, bot: BotKind): void {
+    this.settings.resetFailures(identity, bot);
   }
 
   getMaxConsecutiveFailures(): { bot: string; count: number }[] {
@@ -399,20 +396,20 @@ export class BridgeDb {
     return this.advisorCalls.getAdvisorAttempts(requestId);
   }
 
-  getChatRepo(chatId: string): string | null {
-    return this.settings.getChatRepo(chatId);
+  getChatRepo(identity: ConversationIdentity): string | null {
+    return this.settings.getChatRepo(identity);
   }
 
-  setChatRepo(chatId: string, repo: string | null): void {
-    this.settings.setChatRepo(chatId, repo);
+  setChatRepo(identity: ConversationIdentity, repo: string | null): void {
+    this.settings.setChatRepo(identity, repo);
   }
 
   insertRun(
     runId: string,
-    chatId: string,
+    identity: ConversationIdentity | string,
     bot: string,
   ): void {
-    this.runs.insertRun(runId, chatId, bot);
+    this.runs.insertRun(runId, legacyConversationIdentity(identity), bot);
   }
 
   getRun(runId: string): any {

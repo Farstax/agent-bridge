@@ -32,6 +32,7 @@ function advertisesCategory(result: AcpProviderConfigDiscoveryResult, category: 
 export async function prepareInteractiveAcpConfigControl(input: {
   kind: BotKind | "custom-acp";
   commandText: string;
+  surfaceIdentity: string;
   chatKey: string;
   db: BridgeDb;
   executionMode: "safe" | "trusted";
@@ -42,7 +43,7 @@ export async function prepareInteractiveAcpConfigControl(input: {
   if (hasAcpSessionConfigSnapshot(input.kind)) return true;
 
   const discover = input.discover ?? discoverAcpProviderConfig;
-  const existingAcpSessionId = lookupProviderSession(input.db, input.chatKey, input.kind);
+  const existingAcpSessionId = lookupProviderSession(input.db, { surfaceIdentity: input.surfaceIdentity, chatKey: input.chatKey }, input.kind);
   const discoveryInput = {
     bot: input.kind,
     cwd: getCliWorkingDir(input.kind),

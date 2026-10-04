@@ -205,10 +205,10 @@ function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | 
     return { pref: available.has(providerLock) ? providerLock : null, available, stored: providerLock };
   }
 
-  const stored = getUserCliPreference(db, chatKey);
+  const stored = getUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey });
   const pref = resolveAvailableCliPreference(stored, detected);
   if (pref && pref !== stored) {
-    setUserCliPreference(db, chatKey, pref);
+    setUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, pref);
     fallbackChain.setActiveCli(chatKey, pref);
   }
   return { pref, available: detected, stored };
@@ -240,6 +240,7 @@ const engines = Object.fromEntries(
                 await prepareInteractiveAcpConfigControl({
                   kind,
                   commandText,
+                  surfaceIdentity: runtimePolicy.surfaceIdentity,
                   chatKey: ctx.chatKey,
                   db,
                   executionMode: resolveExecutionMode(kind, process.env),
@@ -263,7 +264,7 @@ const engines = Object.fromEntries(
 ) as Record<CliKind, BridgeEngine>;
 
 const defaultPref = providerLock
-  ?? resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds())
+  ?? resolveAvailableCliPreference(getUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey: "default" }), getAvailableCliKinds())
   ?? "codex";
 
 const runIngressSocket = process.env.BRIDGE_RUN_INGRESS_SOCKET?.trim();
@@ -358,7 +359,7 @@ for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     const chatKey = queued.chatKey;
     return dispatchClaimedInteractiveWithFallback(queued, chatKey, {
-      engines, fallbackChain, fallbackRequests, db,
+      surfaceIdentity: runtimePolicy.surfaceIdentity, engines, fallbackChain, fallbackRequests, db,
       notify: async (msg) => {
         await sendTelegramMessage({ client, kind: "interactive", chatId: queued.chatId, body: { text: msg, message_thread_id: queued.threadId ?? undefined } });
       },
@@ -653,7 +654,7 @@ for (;;) {
             const messageId = cbq.message?.message_id;
             const chatKey = resolveUpdateChatKey(typedUpdate);
             if (chatKey) {
-              applyManualCliSwitchHandoff(db, chatKey, newCli);
+              applyManualCliSwitchHandoff(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, newCli);
               fallbackChain.setActiveCli(chatKey, newCli);
             }
             await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `Switched to ${newCli}` });

@@ -35,6 +35,7 @@ describe("database schema versioning", { timeout: 15_000 }, () => {
         .map((c) => c.name);
       // Legacy Kimchi columns remain only to prove old databases stay readable.
       expect(bridgeStateColumns).toEqual(expect.arrayContaining([
+        "surface_identity",
         "claude_session_id",
         "antigravity_session_id",
         "kimchi_session_id",
@@ -42,6 +43,8 @@ describe("database schema versioning", { timeout: 15_000 }, () => {
         "cursor_session_id",
         "cursor_consecutive_failures",
       ]));
+      const acpBindingColumns = (db.raw.prepare(`PRAGMA table_info(acp_session_bindings)`).all() as Array<{ name: string }>).map((c) => c.name);
+      expect(acpBindingColumns).toContain("surface_identity");
 
       for (const table of ["conversation_turns", "pending_messages", "conversation_summaries", "compaction_attempts", "project_memories"]) {
         expect(db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeTruthy();

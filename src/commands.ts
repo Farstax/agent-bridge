@@ -221,7 +221,7 @@ export function handleCommand(
   }
 
   if (text === "/reset") {
-    persistProviderSession(db, chatId, kind, null);
+    persistProviderSession(db, { surfaceIdentity, chatKey: chatId }, kind, null);
     db.clearConvHistory(chatId, surfaceIdentity);
     return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };
   }

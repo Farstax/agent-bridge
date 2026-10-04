@@ -64,7 +64,7 @@ describe("Issue #135 Phase 4C.2: openProductionDb()", () => {
       const seeded = openDb(dbPath);
       seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_installation_id", "install-current");
       seeded.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("agent_bridge_database_provenance", JSON.stringify({ schemaVersion: 1, role: "interactive", source: "fresh-install", installationId: "install-current", path: dbPath }));
-      seeded.raw.prepare("INSERT INTO bridge_state (chat_id, codex_session_id) VALUES (?, ?)").run("chat", "stale-session");
+      seeded.raw.prepare("INSERT INTO bridge_state (surface_identity, chat_id, codex_session_id) VALUES (?, ?, ?)").run("telegram:interactive", "chat", "stale-session");
       seeded.close();
       expect(() => openProductionDb(dbPath, { installationId: "install-current", requireInstallationIdentity: true, databaseRole: "interactive" }))
         .toThrow(/first boot.*session/i);

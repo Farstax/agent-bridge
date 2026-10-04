@@ -33,6 +33,7 @@ export interface RunContinuation {
   claimedAt?: string;
   completedAt?: string;
   error?: string;
+  delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
 }
 
 export interface RequestRunContinuationInput {
@@ -68,7 +69,15 @@ function parse(value: string): RunContinuation | null {
       || !candidate.reason
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
-    return candidate;
+    if (candidate.delivery) return candidate;
+    if (candidate.surfaceIdentity.startsWith("telegram:")) {
+      const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
+      if (!match) return null;
+      const chatId = match[1];
+      return { ...candidate, delivery: { chatId: Number(chatId), chatType: Number(chatId) < 0 ? "supergroup" : "private" } };
+    }
+    if (candidate.surfaceIdentity.startsWith("discord:")) return { ...candidate, delivery: { chatId: candidate.chatKey, chatType: "private" } };
+    return null;
   } catch {
     return null;
   }
@@ -115,8 +124,10 @@ export function requestRunContinuation(
       expiresAt,
       state: "pending",
     };
-    db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(continuation));
-    return continuation;
+    const persisted = parse(JSON.stringify(continuation));
+    if (!persisted) throw new Error("continuation delivery coordinates are invalid");
+    db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(persisted));
+    return persisted;
   });
 }
 
@@ -145,7 +156,7 @@ export function claimDueRunContinuation(
     }
     const originRun = db.getRun(current.originRunId);
     if (!originRun || originRun.status === "running") return null;
-    const boundSessionId = lookupProviderSession(db, current.chatKey, current.provider);
+    const boundSessionId = lookupProviderSession(db, { surfaceIdentity: current.surfaceIdentity, chatKey: current.chatKey }, current.provider);
     if (
       originRun.status !== "done"
       || originRun.chat_id !== current.chatKey
@@ -275,6 +286,7 @@ export function buildTelegramRunContinuationTurn(
   continuation: RunContinuation,
   actorId: string,
 ): InteractiveTurnInput {
+  continuation = continuation.delivery ? continuation : parse(JSON.stringify(continuation)) ?? continuation;
   const match = /^(-?\d+)(?::(\d+))?$/.exec(continuation.chatKey);
   if (!match) throw new Error("run continuation has invalid Telegram chat key");
   const chatId = Number(match[1]);
@@ -294,11 +306,10 @@ export function buildTelegramRunContinuationTurn(
       "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
       `Pending reason: ${continuation.reason}`,
     ].join("\n"),
-    ...(threadId === undefined ? {} : { threadId: String(threadId) }),
-    delivery: {
-      chatId,
-      chatType: chatId < 0 ? "supergroup" : "private",
-    },
+    ...(continuation.delivery?.threadId === undefined
+      ? (threadId === undefined ? {} : { threadId: String(threadId) })
+      : { threadId: String(continuation.delivery.threadId) }),
+    delivery: continuation.delivery ?? { chatId: String(chatId), chatType: chatId < 0 ? "supergroup" : "private" },
     queueOnly: true,
     attachments: [],
   };
@@ -308,6 +319,7 @@ export function buildDiscordRunContinuationTurn(
   continuation: RunContinuation,
   actorId: string,
 ): InteractiveTurnInput {
+  continuation = continuation.delivery ? continuation : parse(JSON.stringify(continuation)) ?? continuation;
   if (!continuation.chatKey.trim()) throw new Error("run continuation has invalid Discord chat key");
   return {
     surfaceIdentity: continuation.surfaceIdentity,
@@ -321,10 +333,7 @@ export function buildDiscordRunContinuationTurn(
       "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
       `Pending reason: ${continuation.reason}`,
     ].join("\n"),
-    delivery: {
-      chatId: continuation.chatKey,
-      chatType: "private",
-    },
+    delivery: continuation.delivery ?? { chatId: continuation.chatKey, chatType: "private" },
     surroundingContext: [],
     queueOnly: true,
     attachments: [],

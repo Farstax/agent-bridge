@@ -76,8 +76,9 @@ function scope(db: Database.Database, env: Env) {
   let surface = text(env.AGENT_BRIDGE_SURFACE_IDENTITY, 160);
   let provider: ProviderId | null = null;
   if (runId && hasTable(db, "bridge_runs")) {
-    const run = db.prepare("SELECT chat_id,bot FROM bridge_runs WHERE run_id=? AND status='running'").get(runId) as Row | undefined;
+    const run = db.prepare("SELECT surface_identity,chat_id,bot FROM bridge_runs WHERE run_id=? AND status='running'").get(runId) as Row | undefined;
     chatKey ||= text(run?.chat_id, 240);
+    surface ||= text(run?.surface_identity, 160);
     provider = pid(run?.bot);
   }
   if (runId && hasTable(db, "execution_locks")) {
@@ -124,12 +125,12 @@ function isStaleTimestamp(value: unknown): boolean {
   return Number.isFinite(ms) && Date.now() - ms > 7 * 24 * HOUR_MS;
 }
 
-function projectAcpSession(db: Database.Database, chatKey: string, provider: ProviderId) {
+function projectAcpSession(db: Database.Database, surfaceIdentity: string, chatKey: string, provider: ProviderId) {
   let binding: Row | undefined;
   if (hasTable(db, "acp_session_bindings")) {
     binding = db.prepare(
-      `SELECT created_at, updated_at FROM acp_session_bindings WHERE conversation_id=? AND provider_id=?`,
-    ).get(chatKey, provider) as Row | undefined;
+      `SELECT created_at, updated_at FROM acp_session_bindings WHERE surface_identity=? AND conversation_id=? AND provider_id=?`,
+    ).get(surfaceIdentity, chatKey, provider) as Row | undefined;
   }
   const stale = Boolean(binding && isStaleTimestamp(binding.updated_at));
   const active = Boolean(binding) && !stale;
@@ -146,15 +147,15 @@ function projectAcpSession(db: Database.Database, chatKey: string, provider: Pro
 }
 
 function sessions(db: Database.Database, s: ReturnType<typeof scope>, env: Env) {
-  if (!s.chatKey) return { status: "unknown", reasonCode: "conversation_scope_unavailable", providers: [] };
+  if (!s.chatKey || !s.surface) return { status: "unknown", reasonCode: "conversation_scope_unavailable", providers: [] };
   if (!hasTable(db, "bridge_state")) return { status: "unavailable", reasonCode: "session_store_unavailable", providers: [] };
-  const row = db.prepare("SELECT * FROM bridge_state WHERE chat_id=?").get(s.chatKey) as Row | undefined;
+  const row = db.prepare("SELECT * FROM bridge_state WHERE surface_identity=? AND chat_id=?").get(s.surface, s.chatKey) as Row | undefined;
   const fields: Array<[ProviderId,string]> = [["codex","codex"],["claude","claude"],["agy","antigravity"],["grok","grok"],["cursor","cursor"]];
   return {
     status: "ready",
     reasonCode: null,
     providers: fields.map(([provider, key]) => resolveProviderRuntime(provider, env).transport === "acp-stdio"
-      ? projectAcpSession(db, s.chatKey!, provider)
+      ? projectAcpSession(db, s.surface!, s.chatKey!, provider)
       : { provider, runtime: "native" as const, exists: Boolean(row?.[`${key}_session_id`]), createdAt: text(row?.[`${key}_session_created_at`], 40) }),
   };
 }
@@ -208,7 +209,7 @@ function routines(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
       : null;
     if (evidence?.runId && hasTable(db, "bridge_runs")) {
       correlatedRun = db.prepare(`SELECT run_id,status,bot,started_at,ended_at FROM bridge_runs
-        WHERE run_id=? AND chat_id=? LIMIT 1`).get(evidence.runId, s.chatKey) as Row | undefined ?? null;
+        WHERE run_id=? AND surface_identity=? AND chat_id=? LIMIT 1`).get(evidence.runId, s.surface, s.chatKey) as Row | undefined ?? null;
       if (correlatedRun) correlationReasonCode = null;
     }
     const schedule = r.schedule && typeof r.schedule === "object" ? r.schedule as Row : null;

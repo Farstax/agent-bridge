@@ -81,6 +81,37 @@ function oldDiscordAlias(snowflake: string): string {
 }
 
 describe("canonical conversation identity", () => {
+  it("keeps Telegram and Discord state isolated when they share a chat key", () => {
+    const db = openDb(":memory:", { serviceId: "cross-surface-identity" });
+    const telegram = { surfaceIdentity: "telegram:interactive", chatKey: "42" };
+    const discord = { surfaceIdentity: "discord:interactive", chatKey: "42" };
+    try {
+      db.setSession(telegram, "codex", "telegram-native");
+      db.setSession(discord, "codex", "discord-native");
+      db.putAcpSessionBinding({ surfaceIdentity: telegram.surfaceIdentity, conversationId: telegram.chatKey, providerId: "claude", acpSessionId: "telegram-acp", runId: null });
+      db.putAcpSessionBinding({ surfaceIdentity: discord.surfaceIdentity, conversationId: discord.chatKey, providerId: "claude", acpSessionId: "discord-acp", runId: null });
+      db.incrementFailures(telegram, "codex");
+      db.incrementFailures(discord, "codex");
+      setUserCliPreference(db, telegram, "claude");
+      setUserCliPreference(db, discord, "grok");
+      db.insertRun("telegram-run", telegram, "codex");
+      db.insertRun("discord-run", discord, "codex");
+
+      expect(db.getSession(telegram, "codex")).toBe("telegram-native");
+      expect(db.getSession(discord, "codex")).toBe("discord-native");
+      expect(db.getAcpSessionBinding(telegram, "claude")?.acpSessionId).toBe("telegram-acp");
+      expect(db.getAcpSessionBinding(discord, "claude")?.acpSessionId).toBe("discord-acp");
+      expect(getUserCliPreference(db, telegram)).toBe("claude");
+      expect(getUserCliPreference(db, discord)).toBe("grok");
+      expect(db.raw.prepare("SELECT surface_identity FROM bridge_runs WHERE run_id = ?").get("telegram-run")).toEqual({ surface_identity: telegram.surfaceIdentity });
+      expect(db.raw.prepare("SELECT surface_identity FROM bridge_runs WHERE run_id = ?").get("discord-run")).toEqual({ surface_identity: discord.surfaceIdentity });
+      db.resetFailures(telegram, "codex");
+      expect(db.raw.prepare("SELECT codex_consecutive_failures FROM bridge_state WHERE surface_identity = ? AND chat_id = ?").get(discord.surfaceIdentity, discord.chatKey)).toEqual({ codex_consecutive_failures: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps colliding Discord Snowflakes isolated across Engine-owned durable state", async () => {
     const nativeA = "1";
     const nativeB = String(BigInt(Number.MAX_SAFE_INTEGER) + 1n);
@@ -89,12 +120,12 @@ describe("canonical conversation identity", () => {
     const surface = "discord:interactive";
     const db = openDb(":memory:", { serviceId: "canonical-chat-key-test" });
     try {
-      db.setSession(nativeA, "codex", "session-a");
-      db.setSession(nativeB, "codex", "session-b");
+      db.setSession({ surfaceIdentity: surface, chatKey: nativeA }, "codex", "session-a");
+      db.setSession({ surfaceIdentity: surface, chatKey: nativeB }, "codex", "session-b");
       db.addConvTurn(nativeA, "user", "alpha marker", "codex");
       db.addConvTurn(nativeB, "user", "beta marker", "codex");
-      setUserCliPreference(db, nativeA, "claude");
-      setUserCliPreference(db, nativeB, "antigravity");
+      setUserCliPreference(db, { surfaceIdentity: surface, chatKey: nativeA }, "claude");
+      setUserCliPreference(db, { surfaceIdentity: surface, chatKey: nativeB }, "antigravity");
 
       const lockA = db.acquireLock(surface, nativeA);
       const lockB = db.acquireLock(surface, nativeB);
@@ -130,14 +161,14 @@ describe("canonical conversation identity", () => {
 
       await engine.handleUpdate(resetUpdate(1), nativeB);
 
-      expect(db.getSession(nativeB, "codex")).toBeNull();
-      expect(db.getSession(nativeA, "codex")).toBe("session-a");
+      expect(db.getSession({ surfaceIdentity: surface, chatKey: nativeB }, "codex")).toBeNull();
+      expect(db.getSession({ surfaceIdentity: surface, chatKey: nativeA }, "codex")).toBe("session-a");
       expect(db.searchConvTurns(nativeB, "beta")).toEqual([]);
       expect(db.searchConvTurns(nativeA, "alpha").some((row) => row.text.includes("alpha marker"))).toBe(true);
       expect(db.pendingMsgCount(surface, nativeB)).toBe(0);
       expect(db.pendingMsgCount(surface, nativeA)).toBe(1);
-      expect(getUserCliPreference(db, nativeA)).toBe("claude");
-      expect(getUserCliPreference(db, nativeB)).toBe("antigravity");
+      expect(getUserCliPreference(db, { surfaceIdentity: surface, chatKey: nativeA })).toBe("claude");
+      expect(getUserCliPreference(db, { surfaceIdentity: surface, chatKey: nativeB })).toBe("antigravity");
 
       await engine.handleUpdate(queueModeUpdate(2), nativeB);
       expect(db.getSetting(busyMessageModeSettingKey(surface, nativeB))).toBe("queue");

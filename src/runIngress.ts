@@ -111,7 +111,7 @@ export function acceptRunIngressRequest(
     if (!current) throw new Error("run ingress receipt disappeared");
     if (current.run_id) return { receiptId: current.id, runId: current.run_id, created: false };
     const runId = options.runId?.() ?? randomUUID();
-    db.insertRun(runId, runChatKey(input.scopeKey), options.bot ?? "claude");
+    db.insertRun(runId, { surfaceIdentity: RUN_INGRESS_SOURCE, chatKey: runChatKey(input.scopeKey) }, options.bot ?? "claude");
     db.linkEventReceiptRun(current.id, runId);
     return { receiptId: current.id, runId, created: true };
   });
@@ -164,7 +164,7 @@ export async function executeRunIngressRequest(
   const chatKey = runChatKey(payload.scopeKey);
   const lane: ExecutionLaneHandle | null = db.acquireLock(RUN_INGRESS_SURFACE, chatKey);
   if (!lane) return { runId, status: "failed", errorClass: "ambiguous" };
-  const eventStore = new EventStore(db, runId);
+  const eventStore = new EventStore(db, { surfaceIdentity: RUN_INGRESS_SURFACE, chatKey }, runId);
   const collect = (event: BridgeEvent) => event.type === "run.completed" ? eventStore.queueCompleted(event) : eventStore.collect(event);
   try {
     const current = terminalResponse(db, runId);

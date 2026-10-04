@@ -18,14 +18,14 @@ import { acpEngineExec } from "./support/acpEngineExec.js";
  */
 function setGrokSession(database: ReturnType<typeof openDb>, chatKey: string, sessionId: string | null): void {
   if (sessionId === null) {
-    database.clearAcpSessionBinding(chatKey, "grok");
+    database.clearAcpSessionBinding({ surfaceIdentity: "test", chatKey }, "grok");
     return;
   }
-  database.putAcpSessionBinding({ conversationId: chatKey, providerId: "grok", acpSessionId: sessionId, runId: null });
+  database.putAcpSessionBinding({ surfaceIdentity: "test", conversationId: chatKey, providerId: "grok", acpSessionId: sessionId, runId: null });
 }
 
 function getGrokSession(database: ReturnType<typeof openDb>, chatKey: string): string | null {
-  return database.getAcpSessionBinding(chatKey, "grok")?.acpSessionId ?? null;
+  return database.getAcpSessionBinding({ surfaceIdentity: "test", chatKey }, "grok")?.acpSessionId ?? null;
 }
 
 function makeMessage(text: string, userId = 42, chatId = 100): TelegramMessage {
@@ -1485,6 +1485,7 @@ describe("BridgeEngine", () => {
       const replacementId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
       const topicKey = "100:7";
       db.putAcpSessionBinding({
+        surfaceIdentity: "test",
         conversationId: topicKey,
         providerId: "agy",
         acpSessionId: staleId,
@@ -1510,8 +1511,8 @@ describe("BridgeEngine", () => {
 
       await engine.handleMessages([makePrivateTopicMessage("resume topic", 7)]);
       expect(runProviderInvocation.mock.calls[0][4].sessionId).toBe(staleId);
-      expect(db.getAcpSessionBinding(topicKey, "agy")?.acpSessionId).toBe(replacementId);
-      expect(db.getAcpSessionBinding("100", "agy")).toBeNull();
+      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: topicKey }, "agy")?.acpSessionId).toBe(replacementId);
+      expect(db.getAcpSessionBinding({ surfaceIdentity: "test", chatKey: "100" }, "agy")).toBeNull();
       expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
         chat_id: 100,
         message_thread_id: "7",

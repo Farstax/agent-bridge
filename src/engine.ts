@@ -619,7 +619,7 @@ export class BridgeEngine {
     let prompt = rawPrompt;
     if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
 
-    const sessionId = isRouteableKind(this.kind) ? lookupEngineProviderSession(this.db, chatKey, this.kind) : null;
+    const sessionId = isRouteableKind(this.kind) ? lookupEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind) : null;
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
 
@@ -749,7 +749,7 @@ export class BridgeEngine {
       // unknown): those are account/config-level conditions a fresh session
       // on this same account cannot fix.
       if (classification.kind === "transient" && isRouteableKind(sourceKind)) {
-        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
+        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null));
         markHandoffRequired(this.db, chatKey, sourceKind, `fallback_from_${sourceKind}`);
         try {
           const retryResult = await this._executeAndDeliverTurn({
@@ -796,7 +796,7 @@ export class BridgeEngine {
         ? providerFallbackReasonForError(executionKind, providerError)
         : null;
       if (providerFallbackReason && isRouteableKind(sourceKind)) {
-        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
+        this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null));
       }
       if (authRequired && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
@@ -947,7 +947,7 @@ export class BridgeEngine {
       acquisitionId: laneHandle.acquisitionId,
     };
     const events: BridgeEvent[] = [];
-    const store = new EventStore(this.db, existingRunId);
+    const store = new EventStore(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, existingRunId);
 
     const collect = (e: BridgeEvent) => {
       events.push(e);
@@ -1406,10 +1406,10 @@ export class BridgeEngine {
     const chatKey = handle.chatKey;
     this._runWithFence(handle, () => {
       if (result.sessionId && isRouteableKind(this.kind)) {
-        persistEngineProviderSession(this.db, chatKey, this.kind, result.sessionId, runId);
+        persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind, result.sessionId, runId);
         if (result.nativeSessionMode === "fresh") clearHandoffRequired(this.db, chatKey, this.kind);
       }
-      if (isManagedBotKind(this.kind)) this.db.resetFailures(chatKey, this.kind);
+      if (isManagedBotKind(this.kind)) this.db.resetFailures({ surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind);
       if (isRouteableKind(this.kind)) this._rememberTurn(chatKey, prompt, result.text);
     });
   }
@@ -1783,7 +1783,7 @@ export class BridgeEngine {
         const kind = this.kind;
         if (stagedResult.sessionId && isRouteableKind(kind)) {
           try {
-            this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, kind, stagedResult.sessionId, runId));
+            this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, stagedResult.sessionId, runId));
           } catch (error) {
             if (error instanceof LostExecutionLeaseError) throw error;
             console.warn(`[${this.kind}] failed to persist ACP session binding after provider cancellation`, error);
@@ -1840,7 +1840,7 @@ export class BridgeEngine {
       if (sessionId && isInvalidProviderSessionError(error)) {
         console.warn(`[${this.kind}] session ID invalid, retrying with fresh session...`);
         const kind = this.kind;
-        if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, kind, null));
+        if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
       if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
@@ -1988,16 +1988,16 @@ export class BridgeEngine {
     if (!isManagedBotKind(this.kind)) return;
     if (isInvalidProviderSessionError(error)) {
       console.warn(`[${this.kind}] clearing invalid session ID for ${chatKey}`);
-      this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null));
-      this.db.resetFailures(chatKey, this.kind);
+      this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind as BotKind, null));
+      this.db.resetFailures({ surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind);
       return;
     }
     this._runWithFence(laneHandle, () => {
-      const failures = this.db.incrementFailures(chatKey, this.kind as BotKind);
+      const failures = this.db.incrementFailures({ surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind as BotKind);
       if (failures >= 2) {
         console.warn(`[${this.kind}] clearing session after ${failures} consecutive failures for ${chatKey}`);
-        persistEngineProviderSession(this.db, chatKey, this.kind as BotKind, null);
-        this.db.resetFailures(chatKey, this.kind as BotKind);
+        persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind as BotKind, null);
+        this.db.resetFailures({ surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind as BotKind);
       }
     });
   }
@@ -2211,16 +2211,16 @@ export function isInvalidProviderSessionError(error: unknown): boolean {
   return providerSessionErrorTexts(error).some((text) => INVALID_PROVIDER_SESSION_RE.test(text));
 }
 
-export function lookupEngineProviderSession(db: BridgeDb, chatKey: string, kind: RouteableBotKind): string | null {
-  return lookupProviderSession(db, chatKey, kind);
+export function lookupEngineProviderSession(db: BridgeDb, identity: import("./conversationIdentity.js").ConversationIdentity, kind: RouteableBotKind): string | null {
+  return lookupProviderSession(db, identity, kind);
 }
 
 export function persistEngineProviderSession(
   db: BridgeDb,
-  chatKey: string,
+  identity: import("./conversationIdentity.js").ConversationIdentity,
   kind: RouteableBotKind,
   sessionId: string | null,
   runId: string | null = null,
 ): void {
-  persistProviderSession(db, chatKey, kind, sessionId, runId);
+  persistProviderSession(db, identity, kind, sessionId, runId);
 }
