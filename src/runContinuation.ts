@@ -247,3 +247,29 @@ export function buildTelegramRunContinuationTurn(
     attachments: [],
   };
 }
+
+export function buildDiscordRunContinuationTurn(
+  continuation: RunContinuation,
+  actorId: string,
+): InteractiveTurnInput {
+  if (!continuation.chatKey.trim()) throw new Error("run continuation has invalid Discord chat key");
+  return {
+    surfaceIdentity: continuation.surfaceIdentity,
+    chatKey: continuation.chatKey,
+    actorId,
+    messageId: `continuation:${continuation.id}`,
+    text: [
+      "[Agent Bridge continuation]",
+      "A required bounded operation was still pending in the previous Run.",
+      "Re-check current external state and continue the original objective from where you left off.",
+      "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
+      `Pending reason: ${continuation.reason}`,
+    ].join("\n"),
+    delivery: {
+      chatId: continuation.chatKey,
+      chatType: "private",
+    },
+    attachments: [],
+  };
+}
+
