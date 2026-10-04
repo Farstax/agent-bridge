@@ -4,6 +4,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import {
+  buildDiscordRunContinuationTurn,
   buildTelegramRunContinuationTurn,
   claimDueRunContinuation,
   listRunContinuations,
@@ -139,6 +140,23 @@ describe("ordinary Run continuation", () => {
     expect(turn.chatKey).toBe("-100:42");
     expect(turn.threadId).toBe("42");
     expect(turn.delivery).toEqual({ chatId: -100, chatType: "supergroup" });
+    expect(turn.text).toContain("CI pending");
+    db.close();
+  });
+
+  it("builds a continuation turn back into the exact Discord channel", () => {
+    const { db } = setup();
+    const continuation = requestRunContinuation(db, {
+      originRunId: "run-discord",
+      surfaceIdentity: "discord:interactive",
+      chatKey: "123456789012345678",
+      provider: "claude",
+      reason: "CI pending",
+      afterSeconds: 60,
+    }, 1_000);
+    const turn = buildDiscordRunContinuationTurn(continuation, "987654321");
+    expect(turn.chatKey).toBe("123456789012345678");
+    expect(turn.delivery).toEqual({ chatId: "123456789012345678", chatType: "private" });
     expect(turn.text).toContain("CI pending");
     db.close();
   });
