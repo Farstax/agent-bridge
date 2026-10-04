@@ -245,6 +245,9 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('scripts/upgrade.sh');
     expect(workflow).toContain('scripts/skill-manager.ts');
     expect(workflow).toContain('scripts/agent-bridge-routines.ts');
+    expect(workflow).toContain('scripts/agent-bridge-wait.ts');
+    expect(workflow).toContain('test -f "$root/scripts/agent-bridge-wait.ts"');
+    expect(workflow).toContain('test -f "$verify_root/scripts/agent-bridge-wait.ts"');
     expect(workflow).toContain('bin/agent-bridge-routines');
     expect(workflow).toContain('bin/agent-bridge-sensors');
     expect(statSync(join(process.cwd(), "bin/agent-bridge-sensors")).mode & 0o111).not.toBe(0);
