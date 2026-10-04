@@ -1,6 +1,7 @@
 import type { BridgeDb } from "./db.js";
 
 export const SCHEDULED_OCCURRENCE_PREFIX = "scheduled-routine-occurrence:v1:";
+export type ScheduledOccurrenceKind = "scheduled" | "manual";
 
 export interface ScheduledOccurrenceEvidence {
   version: 1;
@@ -14,8 +15,14 @@ export interface ParsedScheduledOccurrenceEvidence {
   runId: string | null;
 }
 
-export function scheduledOccurrenceKey(id: string, intendedAt: string): string {
-  return `${SCHEDULED_OCCURRENCE_PREFIX}${id}:${intendedAt}`;
+export function scheduledOccurrenceKey(
+  id: string,
+  intendedAt: string,
+  kind: ScheduledOccurrenceKind = "scheduled",
+): string {
+  return kind === "scheduled"
+    ? `${SCHEDULED_OCCURRENCE_PREFIX}${id}:${intendedAt}`
+    : `${SCHEDULED_OCCURRENCE_PREFIX}${id}:${kind}:${intendedAt}`;
 }
 
 export function encodeScheduledOccurrenceEvidence(claimedAt: string, runId: string | null = null): string {

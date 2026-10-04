@@ -262,19 +262,22 @@ describe("scheduled companion routines", () => {
     db.close();
   });
 
-  it("dispatches a manually requested run immediately regardless of schedule or enabled state, exactly once", async () => {
+  it("dispatches an explicit manual run for a disabled routine but never its due schedule", async () => {
     const db = setup();
     const dispatch = vi.fn(async () => undefined);
-    createScheduledRoutine(db, weekly({ schedule: { type: "once", localDateTime: "2099-01-01T00:00" } }));
+    createScheduledRoutine(db, weekly());
     disableScheduledRoutine(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
 
-    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
-    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-30T08:00:00.000Z"));
-    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-30T08:00:01.000Z"));
+    const triggeredAt = "2026-08-31T06:00:00.000Z";
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test", triggeredAt);
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse(triggeredAt));
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:00:01.000Z"));
 
     expect(dispatch).toHaveBeenCalledTimes(1);
-    const [routineArg] = dispatch.mock.calls[0];
+    const [routineArg, occurrence, occurrenceKey] = dispatch.mock.calls[0];
     expect(routineArg.id).toBe("routine-1");
+    expect(occurrence).toBe(triggeredAt);
+    expect(occurrenceKey).toBe(scheduledOccurrenceKey("routine-1", triggeredAt, "manual"));
     expect(listScheduledRoutines(db, "telegram:interactive", "-100:42", "owner:test")[0].enabled).toBe(false);
     db.close();
   });
@@ -284,27 +287,47 @@ describe("scheduled companion routines", () => {
     const dispatch = vi.fn(async () => undefined);
     createScheduledRoutine(db, weekly());
 
-    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
-    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test", "2026-08-31T06:00:00.000Z");
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test", "2026-08-31T06:00:01.000Z");
     await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2099-01-01T00:00:00.000Z"));
 
     expect(dispatch).toHaveBeenCalledTimes(1);
     db.close();
   });
 
-  it("dispatches one manual trigger and one simultaneous due occurrence with distinct keys", async () => {
+  it("dispatches a manual trigger and due occurrence in the same scan with independent identities", async () => {
     const db = setup();
     const dispatch = vi.fn(async () => undefined);
     createScheduledRoutine(db, weekly());
 
-    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test");
-    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:00:30.000Z"));
-    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:00:31.000Z"));
+    const intendedAt = "2026-08-31T06:00:00.000Z";
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test", intendedAt);
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse(intendedAt));
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:00:01.000Z"));
 
     expect(dispatch).toHaveBeenCalledTimes(2);
     const occurrenceKeys = dispatch.mock.calls.map(([, , key]) => key);
     expect(new Set(occurrenceKeys).size).toBe(2);
-    expect(dispatch.mock.calls[1][1]).toBe("2026-08-31T06:00:00.000Z");
+    expect(dispatch.mock.calls.map(([, occurrence]) => occurrence)).toEqual([intendedAt, intendedAt]);
+    expect(occurrenceKeys).toContain(scheduledOccurrenceKey("routine-1", intendedAt));
+    expect(occurrenceKeys).toContain(scheduledOccurrenceKey("routine-1", intendedAt, "manual"));
+    expect(buildScheduledInteractiveTurn(weekly(), intendedAt, "123", occurrenceKeys[0]).messageId)
+      .not.toBe(buildScheduledInteractiveTurn(weekly(), intendedAt, "123", occurrenceKeys[1]).messageId);
+    db.close();
+  });
+
+  it("does not let a manual trigger defer a due occurrence past the catch-up boundary", async () => {
+    const db = setup();
+    const dispatch = vi.fn(async () => undefined);
+    createScheduledRoutine(db, weekly());
+
+    const boundary = "2026-08-31T12:00:00.000Z";
+    requestScheduledRoutineRun(db, "routine-1", "telegram:interactive", "-100:42", "owner:test", boundary);
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse(boundary));
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T12:00:00.001Z"));
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls.map(([, occurrence]) => occurrence)).toContain("2026-08-31T06:00:00.000Z");
     db.close();
   });
 

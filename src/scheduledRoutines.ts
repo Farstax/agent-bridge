@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import type { BridgeDb } from "./db.js";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
-import { encodeScheduledOccurrenceEvidence, scheduledOccurrenceKey } from "./scheduledRunCorrelation.js";
+import { encodeScheduledOccurrenceEvidence, scheduledOccurrenceKey, type ScheduledOccurrenceKind } from "./scheduledRunCorrelation.js";
 
 export type ScheduledRoutineKind = "companion" | "autonomous";
 export type ScheduledRoutineSchedule =
@@ -263,10 +263,15 @@ export function deleteScheduledRoutine(db: BridgeDb, id: string, surfaceIdentity
   return db.raw.prepare("DELETE FROM settings WHERE key = ?").run(routineKey(id)).changes === 1;
 }
 
-export function claimScheduledRoutineOccurrence(db: BridgeDb, id: string, intendedAt: string): boolean {
+export function claimScheduledRoutineOccurrence(
+  db: BridgeDb,
+  id: string,
+  intendedAt: string,
+  kind: ScheduledOccurrenceKind = "scheduled",
+): boolean {
   const claimedAt = new Date().toISOString();
   const result = db.raw.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
-    .run(scheduledOccurrenceKey(id, intendedAt), encodeScheduledOccurrenceEvidence(claimedAt));
+    .run(scheduledOccurrenceKey(id, intendedAt, kind), encodeScheduledOccurrenceEvidence(claimedAt));
   return result.changes === 1;
 }
 
@@ -334,12 +339,13 @@ export function requestScheduledRoutineRun(
   surfaceIdentity: string,
   chatKey: string,
   ownerKey: string,
+  requestedAt = new Date().toISOString(),
 ): string {
   const routine = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey).find((item) => item.id === id);
   if (!routine) throw new Error(`routine not found in this conversation: ${id}`);
-  const requestedAt = new Date().toISOString();
-  db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(triggerKey(id), requestedAt);
-  return requestedAt;
+  const normalizedRequestedAt = new Date(requestedAt).toISOString();
+  db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(triggerKey(id), normalizedRequestedAt);
+  return normalizedRequestedAt;
 }
 
 function claimPendingManualTrigger(db: BridgeDb, id: string): string | null {
@@ -360,10 +366,9 @@ export async function scanScheduledRoutines(
   for (const routine of listScheduledRoutines(db, surfaceIdentity)) {
     const triggeredAt = claimPendingManualTrigger(db, routine.id);
     if (triggeredAt) {
-      if (claimScheduledRoutineOccurrence(db, routine.id, triggeredAt)) {
-        await dispatch(routine, triggeredAt, scheduledOccurrenceKey(routine.id, triggeredAt));
+      if (claimScheduledRoutineOccurrence(db, routine.id, triggeredAt, "manual")) {
+        await dispatch(routine, triggeredAt, scheduledOccurrenceKey(routine.id, triggeredAt, "manual"));
       }
-      continue;
     }
     if (!routine.enabled) continue;
     const occurrence = latestDueScheduledOccurrence(routine, nowMs);
@@ -407,8 +412,8 @@ export class ScheduledRoutineRunner {
   }
 }
 
-function deterministicSyntheticId(routineId: string, intendedAt: string): number {
-  const digest = createHash("sha256").update(`${routineId}\0${intendedAt}`).digest();
+function deterministicSyntheticId(routineId: string, occurrenceKey: string): number {
+  const digest = createHash("sha256").update(`${routineId}\0${occurrenceKey}`).digest();
   return -Math.max(1, digest.readUIntBE(0, 6));
 }
 
@@ -429,7 +434,7 @@ export function buildScheduledInteractiveTurn(
   authorizedUserId: string,
   claimedOccurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt),
 ): InteractiveTurnInput {
-  const syntheticId = deterministicSyntheticId(routine.id, intendedAt);
+  const syntheticId = deterministicSyntheticId(routine.id, claimedOccurrenceKey);
   const text = [
     `[Scheduled routine: ${routine.name}]`,
     `This instruction was explicitly authorised earlier and was scheduled for ${intendedAt}.`,
@@ -438,7 +443,7 @@ export function buildScheduledInteractiveTurn(
     "",
     routine.instruction,
   ].join("\n");
-  const messageId = `scheduled:${routine.id}:${intendedAt}:${syntheticId}`;
+  const messageId = `scheduled:${routine.id}:${claimedOccurrenceKey}:${syntheticId}`;
 
   if (routine.surfaceIdentity.startsWith("telegram:")) {
     const destination = scheduledTelegramDestination(routine);
