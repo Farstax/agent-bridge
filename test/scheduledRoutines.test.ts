@@ -254,11 +254,11 @@ describe("scheduled companion routines", () => {
     db.close();
   });
 
-  it("accepts an instruction up to the doubled limit and rejects over it", () => {
+  it("accepts an instruction up to 25,000 characters and rejects over it", () => {
     const db = setup();
-    createScheduledRoutine(db, weekly({ instruction: "x".repeat(3_600) }));
-    expect(() => createScheduledRoutine(db, weekly({ id: "too-long", instruction: "x".repeat(3_601) })))
-      .toThrow(/exceeds 3600 characters/);
+    createScheduledRoutine(db, weekly({ instruction: "x".repeat(25_000) }));
+    expect(() => createScheduledRoutine(db, weekly({ id: "too-long", instruction: "x".repeat(25_001) })))
+      .toThrow(/exceeds 25000 characters/);
     db.close();
   });
 
