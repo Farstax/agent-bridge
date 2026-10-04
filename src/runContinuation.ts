@@ -7,6 +7,7 @@
 import type { BridgeDb } from "./db.js";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
 import type { RouteableBotKind } from "./types.js";
+import { lookupProviderSession } from "./providers/sessionRuntime.js";
 
 const PREFIX = "run-continuation:v1:";
 const DEFAULT_SCAN_MS = 5_000;
@@ -144,7 +145,14 @@ export function claimDueRunContinuation(
     }
     const originRun = db.getRun(current.originRunId);
     if (!originRun || originRun.status === "running") return null;
-    if (originRun.status !== "done" || originRun.chat_id !== current.chatKey || originRun.bot !== current.provider || !originRun.session_id) {
+    const boundSessionId = lookupProviderSession(db, current.chatKey, current.provider);
+    if (
+      originRun.status !== "done"
+      || originRun.chat_id !== current.chatKey
+      || originRun.bot !== current.provider
+      || !originRun.session_id
+      || boundSessionId !== originRun.session_id
+    ) {
       const cancelled: RunContinuation = {
         ...current,
         state: "cancelled",
@@ -155,7 +163,9 @@ export function claimDueRunContinuation(
             ? "originating Run conversation changed"
             : originRun.bot !== current.provider
               ? "originating Run provider changed"
-              : "originating Run has no resumable provider session",
+              : !originRun.session_id
+                ? "originating Run has no resumable provider session"
+                : "originating provider session binding changed",
       };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
       return null;
