@@ -144,16 +144,18 @@ export function claimDueRunContinuation(
     }
     const originRun = db.getRun(current.originRunId);
     if (!originRun || originRun.status === "running") return null;
-    if (originRun.status !== "completed" || originRun.chat_id !== current.chatKey || originRun.bot !== current.provider) {
+    if (originRun.status !== "done" || originRun.chat_id !== current.chatKey || originRun.bot !== current.provider || !originRun.session_id) {
       const cancelled: RunContinuation = {
         ...current,
         state: "cancelled",
         completedAt: new Date(nowMs).toISOString(),
-        error: originRun.status !== "completed"
+        error: originRun.status !== "done"
           ? `originating Run ended with status ${originRun.status}`
           : originRun.chat_id !== current.chatKey
             ? "originating Run conversation changed"
-            : "originating Run provider changed",
+            : originRun.bot !== current.provider
+              ? "originating Run provider changed"
+              : "originating Run has no resumable provider session",
       };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
       return null;
