@@ -33,6 +33,8 @@ export interface InteractiveTurnInput {
   surroundingContext?: InteractiveSurroundingContextMessage[];
   /** Internal authoritative correlation for a previously claimed scheduled occurrence. */
   scheduledOccurrenceKey?: string;
+  /** Internal work that may run immediately on an idle lane but must never interrupt or augment an active lane. */
+  queueOnly?: boolean;
 }
 
 function safeAttachmentName(value: unknown, fallback: string): string {

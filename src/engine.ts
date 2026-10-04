@@ -76,6 +76,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
+import { cancelPendingRunContinuation } from "./runContinuation.js";
 
 export interface HookContext {
   chatId: number | string;
@@ -496,13 +497,14 @@ export class BridgeEngine {
       const attachmentLocalPath = attachments[0] ?? null;
       let executionOutcome: ExecutionOutcome = "failed";
       const finalDeliveryActive = this.laneCoordinator.hasFinalDelivery(executionLane);
-      const augmentMode = (this.opts.busyMessageMode ?? "augment") === "augment";
+      const queueOnly = primaryMessage.queueOnly === true;
+      const augmentMode = !queueOnly && (this.opts.busyMessageMode ?? "augment") === "augment";
       const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.laneCoordinator.hasAugmentedTask(executionLane);
       if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt, attachments: [...attachments] });
       try {
         executionOutcome = await this._executeAndSend(
           prompt, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx,
-          attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive, ownsAugmentedTask, true,
+          attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive && !queueOnly, ownsAugmentedTask, true,
           [], scheduledOccurrenceKeys, preProviderScope,
         );
       } finally {
@@ -825,6 +827,13 @@ export class BridgeEngine {
       if (run?.status === "running") {
         if (cancelled || outcome === "fenced") this.db.updateRunCancelled(runId, cancelled ? "user" : "fenced");
         else if (outcome === "failed") this.db.updateRunFailed(runId, "prompt execution failed");
+      }
+      if (cancelled || outcome === "fenced" || outcome === "failed") {
+        cancelPendingRunContinuation(
+          this.db,
+          runId,
+          cancelled ? "originating Run cancelled by user" : outcome === "fenced" ? "originating Run lost execution ownership" : "originating Run failed",
+        );
       }
       if (lockHeartbeat) clearInterval(lockHeartbeat);
       if (!activeTaskCommitted) {

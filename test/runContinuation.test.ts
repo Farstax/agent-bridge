@@ -3,8 +3,11 @@ import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
+import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 import {
+  buildDiscordRunContinuationTurn,
   buildTelegramRunContinuationTurn,
+  cancelPendingRunContinuation,
   claimDueRunContinuation,
   listRunContinuations,
   requestRunContinuation,
@@ -20,6 +23,22 @@ function setup() {
   return { db: openDb(path, { serviceId: "run-continuation-test", runId: "test-process" }), path };
 }
 
+function requestForActiveRun(
+  db: ReturnType<typeof openDb>,
+  input: Parameters<typeof requestRunContinuation>[1],
+  nowMs: number,
+) {
+  db.insertRun(input.originRunId, input.chatKey, input.provider);
+  return requestRunContinuation(db, input, nowMs);
+}
+
+function completeOriginRun(db: ReturnType<typeof openDb>, runId: string): void {
+  const run = db.getRun(runId);
+  const sessionId = `session-${runId}`;
+  persistProviderSession(db, run.chat_id, run.bot, sessionId, runId);
+  expect(db.updateRunCompleted(runId, "done", sessionId)).toBe(true);
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   for (const path of paths.splice(0)) try { rmSync(path); } catch { /* already removed */ }
@@ -28,7 +47,7 @@ afterEach(() => {
 describe("ordinary Run continuation", () => {
   it("persists one bounded continuation for the originating Run", () => {
     const { db } = setup();
-    const continuation = requestRunContinuation(db, {
+    const continuation = requestForActiveRun(db, {
       originRunId: "run-1",
       surfaceIdentity: "telegram:interactive",
       chatKey: "-100:42",
@@ -49,7 +68,7 @@ describe("ordinary Run continuation", () => {
 
   it("claims only once when due and never replays a claimed continuation", () => {
     const { db, path } = setup();
-    requestRunContinuation(db, {
+    requestForActiveRun(db, {
       originRunId: "run-2",
       surfaceIdentity: "telegram:interactive",
       chatKey: "123",
@@ -59,6 +78,7 @@ describe("ordinary Run continuation", () => {
     }, 1_000);
 
     expect(claimDueRunContinuation(db, "run-2", 5_999)).toBeNull();
+    completeOriginRun(db, "run-2");
     expect(claimDueRunContinuation(db, "run-2", 6_000)?.state).toBe("claimed");
     expect(claimDueRunContinuation(db, "run-2", 7_000)).toBeNull();
     db.close();
@@ -69,9 +89,56 @@ describe("ordinary Run continuation", () => {
     reopened.close();
   });
 
+  it("does not resume while the originating Run is still active", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-active",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0].state).toBe("pending");
+
+    completeOriginRun(db, "run-active");
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_001);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
+  });
+
+  it("does not resume if the provider session binding changed after the origin Run", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-session-cleared",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-session-cleared");
+    persistProviderSession(db, "123", "codex", null);
+
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({
+      state: "cancelled",
+      error: "originating provider session binding changed",
+    }));
+    db.close();
+  });
+
   it("preserves pending continuation across restart and dispatches it exactly once", async () => {
     const { db, path } = setup();
-    requestRunContinuation(db, {
+    requestForActiveRun(db, {
       originRunId: "run-3",
       surfaceIdentity: "telegram:interactive",
       chatKey: "123",
@@ -79,6 +146,7 @@ describe("ordinary Run continuation", () => {
       reason: "qualification pending",
       afterSeconds: 5,
     }, 1_000);
+    completeOriginRun(db, "run-3");
     db.close();
 
     const reopened = openDb(path, { serviceId: "run-continuation-test-reopen", runId: "test-process-2" });
@@ -92,7 +160,7 @@ describe("ordinary Run continuation", () => {
 
   it("expires bounded continuation instead of dispatching indefinitely", async () => {
     const { db } = setup();
-    requestRunContinuation(db, {
+    requestForActiveRun(db, {
       originRunId: "run-4",
       surfaceIdentity: "telegram:interactive",
       chatKey: "123",
@@ -109,7 +177,7 @@ describe("ordinary Run continuation", () => {
 
   it("records failed dispatch and does not retry it", async () => {
     const { db } = setup();
-    requestRunContinuation(db, {
+    requestForActiveRun(db, {
       originRunId: "run-5",
       surfaceIdentity: "telegram:interactive",
       chatKey: "123",
@@ -117,6 +185,7 @@ describe("ordinary Run continuation", () => {
       reason: "CI pending",
       afterSeconds: 5,
     }, 1_000);
+    completeOriginRun(db, "run-5");
     const dispatch = vi.fn(async () => { throw new Error("dispatch failed"); });
     await expect(scanRunContinuations(db, "telegram:interactive", dispatch, 6_000)).rejects.toThrow("dispatch failed");
     await scanRunContinuations(db, "telegram:interactive", dispatch, 7_000);
@@ -127,7 +196,7 @@ describe("ordinary Run continuation", () => {
 
   it("builds a continuation turn back into the exact Telegram conversation", () => {
     const { db } = setup();
-    const continuation = requestRunContinuation(db, {
+    const continuation = requestForActiveRun(db, {
       originRunId: "run-6",
       surfaceIdentity: "telegram:interactive",
       chatKey: "-100:42",
@@ -139,6 +208,24 @@ describe("ordinary Run continuation", () => {
     expect(turn.chatKey).toBe("-100:42");
     expect(turn.threadId).toBe("42");
     expect(turn.delivery).toEqual({ chatId: -100, chatType: "supergroup" });
+    expect(turn.text).toContain("CI pending");
+    db.close();
+  });
+
+  it("builds a continuation turn back into the exact Discord channel", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-discord",
+      surfaceIdentity: "discord:interactive",
+      chatKey: "123456789012345678",
+      provider: "claude",
+      reason: "CI pending",
+      afterSeconds: 60,
+    }, 1_000);
+    const turn = buildDiscordRunContinuationTurn(continuation, "987654321");
+    expect(turn.chatKey).toBe("123456789012345678");
+    expect(turn.delivery).toEqual({ chatId: "123456789012345678", chatType: "private" });
+    expect(turn.surroundingContext).toEqual([]);
     expect(turn.text).toContain("CI pending");
     db.close();
   });
@@ -157,9 +244,32 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it("cancels a pending continuation when its originating Run fails or is cancelled", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-cancelled",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+
+    expect(cancelPendingRunContinuation(db, "run-cancelled", "originating Run failed", 2_000)).toBe(true);
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({
+      state: "cancelled",
+      error: "originating Run failed",
+    }));
+    db.close();
+  });
+
   it("settles only a claimed continuation", () => {
     const { db } = setup();
-    requestRunContinuation(db, {
+    requestForActiveRun(db, {
       originRunId: "run-8",
       surfaceIdentity: "telegram:interactive",
       chatKey: "123",
@@ -168,6 +278,7 @@ describe("ordinary Run continuation", () => {
       afterSeconds: 5,
     }, 1_000);
     settleRunContinuation(db, "run-8", "completed", undefined, 2_000);
+    completeOriginRun(db, "run-8");
     expect(listRunContinuations(db)[0].state).toBe("pending");
     claimDueRunContinuation(db, "run-8", 6_000);
     settleRunContinuation(db, "run-8", "completed", undefined, 7_000);

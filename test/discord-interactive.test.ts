@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { chunkText } from "../src/discord.js";
 import { DiscordClient } from "../src/discord.js";
 
@@ -47,5 +49,15 @@ describe("DiscordClient.answerCallbackQuery with data field", () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.type).toBe(4);
     expect(body.data.content).toBe("hello");
+  });
+});
+
+describe("Discord run continuation wiring", () => {
+  it("starts and stops the continuation runner with the gateway runtime", () => {
+    const source = readFileSync(join(process.cwd(), "src", "index-discord-interactive.ts"), "utf8");
+    expect(source).toContain("new RunContinuationRunner(");
+    expect(source).toContain("runContinuationRunner?.start()");
+    expect(source).toContain("runContinuationRunner?.stop()");
+    expect(source).toContain("buildDiscordRunContinuationTurn");
   });
 });

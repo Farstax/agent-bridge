@@ -47,6 +47,7 @@ import { resolveDiscordStartInteraction } from "./discordStart.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { ScheduledRoutineRunner, buildScheduledInteractiveTurn } from "./scheduledRoutines.js";
+import { RunContinuationRunner, buildDiscordRunContinuationTurn } from "./runContinuation.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -106,6 +107,7 @@ const cliChain = parseCliChain(
 const fallbackChain = new ProviderFallbackChain(cliChain, db, (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
+let runContinuationRunner: RunContinuationRunner | null = null;
 // ── DiscordClient ─────────────────────────────────────────────────────────────
 
 let reconciliationReady: Promise<void> = new Promise(() => {});
@@ -137,7 +139,10 @@ const client = new DiscordClient({
        console.error("[discord-interactive] orphan reconciliation failed", err);
        throw err;
      });
-    void reconciliationReady.then(() => scheduledRoutineRunner?.start());
+    void reconciliationReady.then(() => {
+      scheduledRoutineRunner?.start();
+      runContinuationRunner?.start();
+    });
   },
   onError: (err) => console.error("[discord-interactive] gateway error", err),
 });
@@ -211,6 +216,27 @@ if (scheduledOwnerKey && scheduledActorId) {
         notify: async (msg) => { await client.sendMessage({ chat_id: routine.chatKey, text: msg }); },
         onCliSwitched: async (newCli) => setUserCliPreference(db, routine.chatKey, newCli),
       });
+    },
+  );
+}
+
+if (scheduledActorId) {
+  runContinuationRunner = new RunContinuationRunner(
+    db,
+    "discord:interactive",
+    async (continuation) => {
+      const provider = continuation.provider as CliKind;
+      if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
+      fallbackChain.setActiveCli(continuation.chatKey, provider);
+      const turn = buildDiscordRunContinuationTurn(continuation, scheduledActorId);
+      await dispatchInteractiveTurnWithFallback(turn, {
+        engines,
+        fallbackChain,
+        fallbackRequests,
+        db,
+        notify: async (msg) => { await client.sendMessage({ chat_id: continuation.chatKey, text: msg }); },
+        onCliSwitched: async (newCli) => setUserCliPreference(db, continuation.chatKey, newCli),
+      }, new Set([provider]));
     },
   );
 }
@@ -480,6 +506,7 @@ async function handleInteraction(d: any): Promise<void> {
 const shutdown = async (signal: string) => {
   console.log(`[discord-interactive] ${signal} received, shutting down...`);
   scheduledRoutineRunner?.stop();
+  runContinuationRunner?.stop();
   client.destroy();
   shutdownCliProcesses();
   await advisorBroker?.close();

@@ -7,6 +7,7 @@
 import type { BridgeDb } from "./db.js";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
 import type { RouteableBotKind } from "./types.js";
+import { lookupProviderSession } from "./providers/sessionRuntime.js";
 
 const PREFIX = "run-continuation:v1:";
 const DEFAULT_SCAN_MS = 5_000;
@@ -15,7 +16,7 @@ const MAX_DELAY_SECONDS = 30 * 60;
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1_000;
 const MAX_REASON_CHARS = 500;
 
-export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired";
+export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired" | "cancelled";
 
 export interface RunContinuation {
   version: 1;
@@ -65,7 +66,7 @@ function parse(value: string): RunContinuation | null {
       || !candidate.chatKey
       || !candidate.provider
       || !candidate.reason
-      || !["pending", "claimed", "completed", "failed", "expired"].includes(candidate.state)
+      || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
     return candidate;
   } catch {
@@ -90,6 +91,12 @@ export function requestRunContinuation(
   const dueAt = new Date(nowMs + input.afterSeconds * 1_000).toISOString();
   const expiresAt = new Date(nowMs + MAX_LIFETIME_MS).toISOString();
   const id = originRunId;
+  const originRun = db.getRun(originRunId);
+  if (originRun) {
+    if (originRun.status !== "running") throw new Error("originating Run is no longer active");
+    if (originRun.chat_id !== chatKey) throw new Error("originating Run conversation mismatch");
+    if (originRun.bot !== provider) throw new Error("originating Run provider mismatch");
+  }
 
   return db.runInTransaction(() => {
     const existingRow = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
@@ -136,10 +143,58 @@ export function claimDueRunContinuation(
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
     }
+    const originRun = db.getRun(current.originRunId);
+    if (!originRun || originRun.status === "running") return null;
+    const boundSessionId = lookupProviderSession(db, current.chatKey, current.provider);
+    if (
+      originRun.status !== "done"
+      || originRun.chat_id !== current.chatKey
+      || originRun.bot !== current.provider
+      || !originRun.session_id
+      || boundSessionId !== originRun.session_id
+    ) {
+      const cancelled: RunContinuation = {
+        ...current,
+        state: "cancelled",
+        completedAt: new Date(nowMs).toISOString(),
+        error: originRun.status !== "done"
+          ? `originating Run ended with status ${originRun.status}`
+          : originRun.chat_id !== current.chatKey
+            ? "originating Run conversation changed"
+            : originRun.bot !== current.provider
+              ? "originating Run provider changed"
+              : !originRun.session_id
+                ? "originating Run has no resumable provider session"
+                : "originating provider session binding changed",
+      };
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
+      return null;
+    }
     if (Date.parse(current.dueAt) > nowMs) return null;
     const claimed = { ...current, state: "claimed" as const, claimedAt: new Date(nowMs).toISOString() };
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
     return claimed;
+  });
+}
+
+export function cancelPendingRunContinuation(
+  db: BridgeDb,
+  id: string,
+  reason: string,
+  nowMs = Date.now(),
+): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current || current.state !== "pending") return false;
+    const cancelled: RunContinuation = {
+      ...current,
+      state: "cancelled",
+      completedAt: new Date(nowMs).toISOString(),
+      error: reason.slice(0, 500),
+    };
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
+    return true;
   });
 }
 
@@ -244,6 +299,34 @@ export function buildTelegramRunContinuationTurn(
       chatId,
       chatType: chatId < 0 ? "supergroup" : "private",
     },
+    queueOnly: true,
+    attachments: [],
+  };
+}
+
+export function buildDiscordRunContinuationTurn(
+  continuation: RunContinuation,
+  actorId: string,
+): InteractiveTurnInput {
+  if (!continuation.chatKey.trim()) throw new Error("run continuation has invalid Discord chat key");
+  return {
+    surfaceIdentity: continuation.surfaceIdentity,
+    chatKey: continuation.chatKey,
+    actorId,
+    messageId: `continuation:${continuation.id}`,
+    text: [
+      "[Agent Bridge continuation]",
+      "A required bounded operation was still pending in the previous Run.",
+      "Re-check current external state and continue the original objective from where you left off.",
+      "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
+      `Pending reason: ${continuation.reason}`,
+    ].join("\n"),
+    delivery: {
+      chatId: continuation.chatKey,
+      chatType: "private",
+    },
+    surroundingContext: [],
+    queueOnly: true,
     attachments: [],
   };
 }

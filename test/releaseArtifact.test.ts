@@ -245,6 +245,9 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('scripts/upgrade.sh');
     expect(workflow).toContain('scripts/skill-manager.ts');
     expect(workflow).toContain('scripts/agent-bridge-routines.ts');
+    expect(workflow).toContain('scripts/agent-bridge-wait.ts');
+    expect(workflow).toContain('test -f "$root/scripts/agent-bridge-wait.ts"');
+    expect(workflow).toContain('test -f "$verify_root/scripts/agent-bridge-wait.ts"');
     expect(workflow).toContain('bin/agent-bridge-routines');
     expect(workflow).toContain('bin/agent-bridge-sensors');
     expect(statSync(join(process.cwd(), "bin/agent-bridge-sensors")).mode & 0o111).not.toBe(0);
@@ -275,6 +278,8 @@ describe("release artifact manifest", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/historical-release-artifact.yml"), "utf8");
 
     expect(workflow).toContain("package-lock.json tsconfig.json node_modules");
+    expect(workflow).toContain('if [ -f target-source/scripts/agent-bridge-wait.ts ]; then paths="$paths scripts/agent-bridge-wait.ts"; fi');
+    expect(workflow).toContain("scripts/agent-bridge-wait.ts package.json package-lock.json");
     expect(workflow).toContain("package-lock.json tsconfig.json)");
   });
 
@@ -344,8 +349,8 @@ describe("release artifact manifest", () => {
     const workflow = readFileSync(join(process.cwd(), ".github/workflows/historical-release-artifact.yml"), "utf8");
     const [, buildTargetJob] = workflow.split(/^  (?=build-target:|prove:)/m);
 
-    expect(buildTargetJob).toContain("git diff --quiet HEAD -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json");
-    expect(buildTargetJob).toContain("git status --porcelain -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts package.json package-lock.json");
+    expect(buildTargetJob).toContain("git diff --quiet HEAD -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/agent-bridge-wait.ts package.json package-lock.json");
+    expect(buildTargetJob).toContain("git status --porcelain -- src scripts/rollout-db.ts scripts/rollout-db-impl.ts scripts/agent-bridge-wait.ts package.json package-lock.json");
     const pruneIndex = buildTargetJob.indexOf("Retain target production dependencies only");
     const recheckIndex = buildTargetJob.indexOf("git status --porcelain -- src");
     const packageIndex = buildTargetJob.indexOf("Package raw target materials");
