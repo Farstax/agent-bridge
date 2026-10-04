@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
+import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 import {
   buildDiscordRunContinuationTurn,
   buildTelegramRunContinuationTurn,
@@ -32,7 +33,10 @@ function requestForActiveRun(
 }
 
 function completeOriginRun(db: ReturnType<typeof openDb>, runId: string): void {
-  expect(db.updateRunCompleted(runId, "done", `session-${runId}`)).toBe(true);
+  const run = db.getRun(runId);
+  const sessionId = `session-${runId}`;
+  persistProviderSession(db, run.chat_id, run.bot, sessionId, runId);
+  expect(db.updateRunCompleted(runId, "done", sessionId)).toBe(true);
 }
 
 afterEach(() => {
@@ -105,6 +109,30 @@ describe("ordinary Run continuation", () => {
     await scanRunContinuations(db, "telegram:interactive", dispatch, 6_001);
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
+  });
+
+  it("does not resume if the provider session binding changed after the origin Run", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-session-cleared",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-session-cleared");
+    persistProviderSession(db, "123", "codex", null);
+
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({
+      state: "cancelled",
+      error: "originating provider session binding changed",
+    }));
     db.close();
   });
 
