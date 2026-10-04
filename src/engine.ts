@@ -1449,12 +1449,15 @@ export class BridgeEngine {
     return ctx ? `${ctx}${prompt}` : prompt;
   }
 
-  private _buildContextAccess(chatKey: string): { prompt: string; env: Record<string, string> } | null {
+  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind): { prompt: string; env: Record<string, string> } | null {
     const dbPath = this.opts.fullConfig?.dbPath;
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
     const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
+    const waitCommandPath = join(process.cwd(), "node_modules", ".bin", "tsx");
+    const waitScriptPath = join(process.cwd(), "scripts", "agent-bridge-wait.ts");
+    const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
     const turnKey = `${chatKey}:${randomUUID()}`;
     let advisorCapability: string | null = null;
     if (this.opts.advisorCapabilities) {
@@ -1470,7 +1473,7 @@ export class BridgeEngine {
         console.warn("[advisor] capability unavailable:", error);
       }
     }
-    if (!hasContext && !advisorCapability) return null;
+    if (!hasContext && !advisorCapability && !canContinue) return null;
     const ownerKey = this._conversationOwnerKey();
     const contextPrompt = hasContext ? [
       "[Agent Bridge context]",
@@ -1480,16 +1483,31 @@ export class BridgeEngine {
       ...(ownerKey ? ['"$AGENT_BRIDGE_CONTEXT_COMMAND" --search "<terms>" --scope owner'] : []),
       "",
     ].join("\n") : "";
+    const continuationPrompt = canContinue ? [
+      "[Agent Bridge continuation]",
+      "If required bounded work is still pending and keeping this Run open is impractical, request a same-session continuation instead of promising to check later:",
+      '"$AGENT_BRIDGE_WAIT_COMMAND" "$AGENT_BRIDGE_WAIT_SCRIPT" --after-seconds 60 --reason "<what to re-check>"',
+      "Do not use continuation for user input/approval or unbounded monitoring.",
+      "",
+    ].join("\n") : "";
     return {
-      prompt: contextPrompt,
+      prompt: `${contextPrompt}${continuationPrompt}`,
       env: {
-        ...(hasContext ? {
-          AGENT_BRIDGE_CONTEXT_AVAILABLE: "1",
-          AGENT_BRIDGE_CONTEXT_COMMAND: commandPath,
+        ...((hasContext || canContinue) ? {
           AGENT_BRIDGE_CONTEXT_DB: dbPath!,
           AGENT_BRIDGE_CHAT_KEY: chatKey,
           AGENT_BRIDGE_SURFACE_IDENTITY: this.surfaceIdentity,
           ...(ownerKey ? { AGENT_BRIDGE_OWNER_KEY: ownerKey } : {}),
+        } : {}),
+        ...(hasContext ? {
+          AGENT_BRIDGE_CONTEXT_AVAILABLE: "1",
+          AGENT_BRIDGE_CONTEXT_COMMAND: commandPath,
+        } : {}),
+        ...(canContinue ? {
+          AGENT_BRIDGE_WAIT_COMMAND: waitCommandPath,
+          AGENT_BRIDGE_WAIT_SCRIPT: waitScriptPath,
+          AGENT_BRIDGE_RUN_ID: runId!,
+          AGENT_BRIDGE_PROVIDER: executionKind,
         } : {}),
         ...(advisorCapability ? {
           AGENT_BRIDGE_ADVISOR_COMMAND: advisorCommandPath,
@@ -1499,11 +1517,11 @@ export class BridgeEngine {
     };
   }
 
-  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
+  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
     const contextMode = this._contextMode(chatKey, nativeSessionMode);
     const includeFreshContext = contextMode !== "resume";
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
-    const access = this._buildContextAccess(chatKey);
+    const access = this._buildContextAccess(chatKey, runId, executionKind);
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: includeFreshContext })
       : (includeFreshContext && this.opts.workspaceContext
@@ -1667,7 +1685,7 @@ export class BridgeEngine {
       attachments,
       outputDir: null,
     }).nativeSessionMode;
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
@@ -1858,7 +1876,7 @@ export class BridgeEngine {
   ): Promise<StagedCliResult> {
     const executionKind = this._executionKind();
     const fallbackLogFile: string | null = null;
-    const fallbackPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", fallbackModel);
+    const fallbackPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", fallbackModel, runId, executionKind);
     const fallbackInvocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
