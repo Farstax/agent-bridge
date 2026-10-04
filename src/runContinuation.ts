@@ -269,6 +269,7 @@ export function buildDiscordRunContinuationTurn(
       chatId: continuation.chatKey,
       chatType: "private",
     },
+    surroundingContext: [],
     attachments: [],
   };
 }
