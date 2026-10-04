@@ -140,7 +140,6 @@ describe("ordinary Run continuation", () => {
       reason: "wait",
       afterSeconds: 5,
     }, 1_000);
-    completeOriginRun(db, "run-4");
     const dispatch = vi.fn(async () => undefined);
     await scanRunContinuations(db, "telegram:interactive", dispatch, 1_000 + 2 * 60 * 60 * 1_000);
     expect(dispatch).not.toHaveBeenCalled();
