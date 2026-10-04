@@ -77,13 +77,35 @@ describe("ordinary Run continuation", () => {
     completeOriginRun(db, "run-2");
     expect(claimDueRunContinuation(db, "run-2", 6_000)?.state).toBe("claimed");
     expect(claimDueRunContinuation(db, "run-2", 7_000)).toBeNull();
-    completeOriginRun(db, "run-3");
     db.close();
 
     const reopened = openDb(path, { serviceId: "run-continuation-test-reopen", runId: "test-process-2" });
     expect(claimDueRunContinuation(reopened, "run-2", 8_000)).toBeNull();
     expect(listRunContinuations(reopened)[0].state).toBe("claimed");
     reopened.close();
+  });
+
+  it("does not resume while the originating Run is still active", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-active",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0].state).toBe("pending");
+
+    completeOriginRun(db, "run-active");
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_001);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
   });
 
   it("preserves pending continuation across restart and dispatches it exactly once", async () => {
@@ -96,6 +118,7 @@ describe("ordinary Run continuation", () => {
       reason: "qualification pending",
       afterSeconds: 5,
     }, 1_000);
+    completeOriginRun(db, "run-3");
     db.close();
 
     const reopened = openDb(path, { serviceId: "run-continuation-test-reopen", runId: "test-process-2" });
