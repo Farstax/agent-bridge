@@ -175,7 +175,7 @@ function providerFallbackReasonForError(executionKind: RouteableBotKind, error: 
   if (error instanceof CliTimeoutError) return null;
   const provider = providerIdForBotName(executionKind);
   const classification = provider ? classifyProviderError(provider, error) : classifyAnyProviderError(error);
-  if (classification.kind === "transient") {
+  if (classification.kind === "transient" || classification.kind === "unknown") {
     if (provider === "claude" && isClaudeOAuthRefreshContention(error)) return null;
     return "provider_transport_failure";
   }
@@ -743,10 +743,10 @@ export class BridgeEngine {
       // fallback-continuation prefix), just targeting this same provider
       // instead of the next one in the chain -- so no new context-injection
       // path is needed. Not attempted for any other classification
-      // (capacity_exhausted, auth_required, model_unavailable, fatal,
-      // unknown): those are account/config-level conditions a fresh session
+      // (capacity_exhausted, auth_required, model_unavailable, fatal): those
+      // are account/config-level conditions a fresh session
       // on this same account cannot fix.
-      if (classification.kind === "transient" && isRouteableKind(sourceKind)) {
+      if ((classification.kind === "transient" || classification.kind === "unknown") && isRouteableKind(sourceKind)) {
         this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
         markHandoffRequired(this.db, chatKey, sourceKind, `fallback_from_${sourceKind}`);
         try {

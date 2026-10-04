@@ -64,7 +64,8 @@ export async function runWithAcpTransientRetry<T>(
     return await operation(1);
   } catch (error) {
     const normalized = error instanceof Error ? error : new Error(String(error));
-    if (classifyProviderError(providerId, normalized).kind !== "transient") throw error;
+    const kind = classifyProviderError(providerId, normalized).kind;
+    if (kind !== "transient" && kind !== "unknown") throw error;
     const retryDelayMs = providerId === "claude" && isClaudeOAuthRefreshContention(normalized)
       ? CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS
       : TRANSIENT_RETRY_DELAY_MS;
