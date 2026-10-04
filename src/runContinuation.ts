@@ -299,6 +299,7 @@ export function buildTelegramRunContinuationTurn(
       chatId,
       chatType: chatId < 0 ? "supergroup" : "private",
     },
+    queueOnly: true,
     attachments: [],
   };
 }
@@ -325,6 +326,7 @@ export function buildDiscordRunContinuationTurn(
       chatType: "private",
     },
     surroundingContext: [],
+    queueOnly: true,
     attachments: [],
   };
 }
