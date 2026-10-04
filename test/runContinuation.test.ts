@@ -157,6 +157,7 @@ describe("ordinary Run continuation", () => {
     const turn = buildDiscordRunContinuationTurn(continuation, "987654321");
     expect(turn.chatKey).toBe("123456789012345678");
     expect(turn.delivery).toEqual({ chatId: "123456789012345678", chatType: "private" });
+    expect(turn.surroundingContext).toEqual([]);
     expect(turn.text).toContain("CI pending");
     db.close();
   });
