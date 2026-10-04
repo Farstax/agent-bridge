@@ -6,6 +6,7 @@ import { openDb } from "../src/db.js";
 import {
   buildDiscordRunContinuationTurn,
   buildTelegramRunContinuationTurn,
+  cancelPendingRunContinuation,
   claimDueRunContinuation,
   listRunContinuations,
   requestRunContinuation,
@@ -173,6 +174,29 @@ describe("ordinary Run continuation", () => {
     };
     expect(() => requestRunContinuation(db, { ...base, afterSeconds: 4 })).toThrow(/between 5 and 1800/);
     expect(() => requestRunContinuation(db, { ...base, afterSeconds: 1801 })).toThrow(/between 5 and 1800/);
+    db.close();
+  });
+
+  it("cancels a pending continuation when its originating Run fails or is cancelled", async () => {
+    const { db } = setup();
+    requestRunContinuation(db, {
+      originRunId: "run-cancelled",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+
+    expect(cancelPendingRunContinuation(db, "run-cancelled", "originating Run failed", 2_000)).toBe(true);
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({
+      state: "cancelled",
+      error: "originating Run failed",
+    }));
     db.close();
   });
 
