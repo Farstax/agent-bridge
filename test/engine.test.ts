@@ -1781,7 +1781,7 @@ describe("BridgeEngine", () => {
       expect(capturedPrompt).not.toContain("Current objective:");
     });
 
-    it("does not inject helper env or affordance when no stored context exists", async () => {
+    it("exposes only continuation helper env when no stored context exists", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
       let capturedPrompt = "";
@@ -1807,8 +1807,17 @@ describe("BridgeEngine", () => {
       );
 
       await engine.handleMessages([makeMessage("hello")]);
-      expect(capturedContextEnv).toBeUndefined();
+      expect(capturedContextEnv).toMatchObject({
+        AGENT_BRIDGE_CHAT_KEY: "100",
+        AGENT_BRIDGE_PROVIDER: "grok",
+      });
+      expect(capturedContextEnv?.AGENT_BRIDGE_RUN_ID).toBeTruthy();
+      expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_COMMAND).toContain("tsx");
+      expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_SCRIPT).toContain("agent-bridge-wait.ts");
+      expect(capturedContextEnv?.AGENT_BRIDGE_CONTEXT_AVAILABLE).toBeUndefined();
+      expect(capturedContextEnv?.AGENT_BRIDGE_CONTEXT_COMMAND).toBeUndefined();
       expect(capturedPrompt).not.toContain("[Agent Bridge context]");
+      expect(capturedPrompt).toContain("[Agent Bridge continuation]");
     });
   });
 
