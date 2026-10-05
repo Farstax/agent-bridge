@@ -236,29 +236,30 @@ describe("agent bridge MVP", () => {
     afterEach(() => { db.close(); });
 
     it("handles /reset to clear session for the chat", () => {
-      db.setSession("123", "antigravity", "session-123");
-      const result = handleCommand("antigravity", "/reset", { db, chatId: "123", config });
+      db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "123" }, "antigravity", "session-123");
+      const result = handleCommand("antigravity", "/reset", { db, chatId: "123", config, surfaceIdentity: "telegram:interactive" });
       expect(result?.kind).toBe("message");
       expect(result && "text" in result ? result.text : "").toContain("antigravity session reset");
-      expect(db.getSession("123", "antigravity")).toBeNull();
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "123" }, "antigravity")).toBeNull();
     });
 
     it("clears Codex ACP session bindings on /reset", () => {
       db.putAcpSessionBinding({
+        surfaceIdentity: "telegram:interactive",
         conversationId: "123",
         providerId: "codex",
         acpSessionId: "acp-session-secret",
         runId: "run-1",
       });
-      handleCommand("codex", "/reset", { db, chatId: "123", config });
-      expect(db.getAcpSessionBinding("123", "codex")).toBeNull();
+      handleCommand("codex", "/reset", { db, chatId: "123", config, surfaceIdentity: "telegram:interactive" });
+      expect(db.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "123" }, "codex")).toBeNull();
     });
 
     it("only resets the session for the target chat, not others", () => {
-      db.setSession("123", "antigravity", "s-123");
-      db.setSession("456", "antigravity", "s-456");
-      handleCommand("antigravity", "/reset", { db, chatId: "123", config });
-      expect(db.getSession("456", "antigravity")).toBe("s-456");
+      db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "123" }, "antigravity", "s-123");
+      db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "456" }, "antigravity", "s-456");
+      handleCommand("antigravity", "/reset", { db, chatId: "123", config, surfaceIdentity: "telegram:interactive" });
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "456" }, "antigravity")).toBe("s-456");
     });
 
     it("handles /models returning keyboard_message with current model info", () => {
@@ -316,16 +317,16 @@ describe("agent bridge MVP", () => {
       const on = handleCommand("antigravity", "/narration on", { db, chatId: "123", config });
       expect(on?.kind).toBe("message");
       expect(on && "text" in on ? on.text : "").toContain("visible");
-      expect(db.getSetting("antigravity:narration:123")).toBe("visible");
+      expect(db.getSetting("antigravity:narration:diagnostic:123")).toBe("visible");
 
       const off = handleCommand("antigravity", "/narration off", { db, chatId: "123", config });
       expect(off?.kind).toBe("message");
       expect(off && "text" in off ? off.text : "").toContain("hidden");
-      expect(db.getSetting("antigravity:narration:123")).toBe("hidden");
+      expect(db.getSetting("antigravity:narration:diagnostic:123")).toBe("hidden");
     });
 
     it("reports Antigravity narration status", () => {
-      db.setSetting("antigravity:narration:123", "visible");
+      db.setSetting("antigravity:narration:diagnostic:123", "visible");
       const result = handleCommand("antigravity", "/narration status", { db, chatId: "123", config });
       expect(result?.kind).toBe("message");
       expect(result && "text" in result ? result.text : "").toContain("visible");
@@ -335,7 +336,7 @@ describe("agent bridge MVP", () => {
       const result = handleCommand("codex", "/narration on", { db, chatId: "123", config });
       expect(result?.kind).toBe("message");
       expect(result && "text" in result ? result.text : "").toContain("only available on Antigravity");
-      expect(db.getSetting("antigravity:narration:123")).toBeNull();
+      expect(db.getSetting("antigravity:narration:diagnostic:123")).toBeNull();
     });
   });
 });

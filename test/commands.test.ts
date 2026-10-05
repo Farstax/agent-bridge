@@ -87,13 +87,13 @@ describe("grok command surface", () => {
   afterEach(() => { db.close(); });
 
   it("resets a grok session", () => {
-    db.setSession("100", "grok", "sess-grok");
-    const result = handleCommand("grok", "/reset", { db, chatId: "100", config: makeConfig() });
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "grok", "sess-grok");
+    const result = handleCommand("grok", "/reset", { db, chatId: "100", config: makeConfig(), surfaceIdentity: "telegram:interactive" });
     expect(result).toEqual({
       kind: "message",
       text: "grok session reset. Pending work and conversation history cleared.",
     });
-    expect(db.getSession("100", "grok")).toBeNull();
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "grok")).toBeNull();
   });
 
   it("does not expose Codex-only /usage on grok", () => {

@@ -72,7 +72,7 @@ describe("circuit breaker reacts to any consecutive provider error", () => {
 
   it("clears the persisted session after two consecutive failures that are not timeouts or killed-by-signal", async () => {
     const chatKey = "100";
-    persistProviderSession(db, chatKey, "codex", "existing-session-id");
+    persistProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex", "existing-session-id");
     runProviderInvocationMock.mockRejectedValue(new Error("ACP connection closed"));
 
     const { BridgeEngine } = await import("../src/engine.js");
@@ -83,9 +83,9 @@ describe("circuit breaker reacts to any consecutive provider error", () => {
     );
 
     await engine.handleMessages([makeMessage("first")]).catch(() => undefined);
-    expect(lookupProviderSession(db, chatKey, "codex")).toBe("existing-session-id");
+    expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex")).toBe("existing-session-id");
 
     await engine.handleMessages([makeMessage("second")]).catch(() => undefined);
-    expect(lookupProviderSession(db, chatKey, "codex")).toBeNull();
+    expect(lookupProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex")).toBeNull();
   });
 });

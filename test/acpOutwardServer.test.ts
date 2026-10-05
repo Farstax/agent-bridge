@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as acp from "@agentclientprotocol/sdk";
 import { openDb } from "../src/db.js";
+import { OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
 
 const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
 
@@ -417,7 +418,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
 
       const conversationId = conversationIdForSession(dbPath, outwardSessionId!);
       const afterFirst = openDb(dbPath, { databaseRole: "interactive" });
-      const firstProviderSessionId = afterFirst.getAcpSessionBinding(conversationId, "codex")?.acpSessionId;
+      const firstProviderSessionId = afterFirst.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "codex")?.acpSessionId;
       expect(firstProviderSessionId).toEqual(expect.any(String));
       afterFirst.close();
 
@@ -456,7 +457,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       second = null;
 
       const persisted = openDb(dbPath, { databaseRole: "interactive" });
-      const finalProviderSessionId = persisted.getAcpSessionBinding(conversationId, "codex")?.acpSessionId;
+      const finalProviderSessionId = persisted.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "codex")?.acpSessionId;
       expect(finalProviderSessionId).toBe(firstProviderSessionId);
       expect(finalProviderSessionId).not.toBe(outwardSessionId);
       expect(persisted.raw.prepare(`
@@ -635,8 +636,8 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       expect(firstTurn.response).toMatchObject({ jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } });
 
       const beforeFallback = openDb(dbPath, { databaseRole: "interactive" });
-      expect(beforeFallback.getAcpSessionBinding(conversationId, "codex")).not.toBeNull();
-      expect(beforeFallback.getAcpSessionBinding(conversationId, "claude")).toBeNull();
+      expect(beforeFallback.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "codex")).not.toBeNull();
+      expect(beforeFallback.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "claude")).toBeNull();
       beforeFallback.close();
 
       // codex's fake provider throws a usage-limit-classified error on this
@@ -652,7 +653,7 @@ describe("outward ACP stdio boundary", { timeout: 30_000 }, () => {
       expect(JSON.stringify(fallbackUpdates)).not.toMatch(/claude|codex/i);
 
       const afterFallback = openDb(dbPath, { databaseRole: "interactive" });
-      expect(afterFallback.getAcpSessionBinding(conversationId, "claude")).not.toBeNull();
+      expect(afterFallback.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: conversationId }, "claude")).not.toBeNull();
       const runs = afterFallback.raw.prepare(`
         SELECT COUNT(*) AS count FROM bridge_runs WHERE chat_id = ? AND status = 'done'
       `).get(conversationId) as { count: number };

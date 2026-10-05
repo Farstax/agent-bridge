@@ -63,9 +63,9 @@ describe("grok error classification", () => {
 describe("grok session persistence", () => {
   it("stores and resumes a Grok session id independently of Claude", () => {
     const db = openDb(":memory:");
-    expect(db.getSession("chat:1", "grok")).toBeNull();
-    db.setSession("chat:1", "grok", "sess-live");
-    expect(db.getSession("chat:1", "grok")).toBe("sess-live");
-    expect(db.getSession("chat:1", "claude")).toBeNull();
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "grok")).toBeNull();
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "grok", "sess-live");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "grok")).toBe("sess-live");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude")).toBeNull();
   });
 });

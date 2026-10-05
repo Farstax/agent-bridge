@@ -5,6 +5,7 @@ import type { BotKind } from "./types.js";
 import type { BridgeDb } from "./db.js";
 import type { BridgeEngine } from "./engine.js";
 import {
+  AUTONOMOUS_RUN_SURFACE,
   cancelAutonomousGoal,
   createAutonomousGoalIfNoneActive,
   drainAutonomousGoal,
@@ -372,6 +373,7 @@ export class AutonomyController {
     this.draining.add(goal.goalId);
     const engine = createSurfaceNeutralProviderRouter({
       db: this.options.db,
+      surfaceIdentity: AUTONOMOUS_RUN_SURFACE,
       initialProvider: goal.bot,
       providerChain: this.providerChain,
       engineForProvider: this.options.engineForBot,

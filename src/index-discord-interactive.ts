@@ -104,7 +104,7 @@ const cliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
   { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "grok", "cursor"] },
 );
-const fallbackChain = new ProviderFallbackChain(cliChain, db, (cli) => getAvailableCliKinds().has(cli as CliKind));
+const fallbackChain = new ProviderFallbackChain(cliChain, db, "discord:interactive", (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 let runContinuationRunner: RunContinuationRunner | null = null;

@@ -14,7 +14,7 @@ import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type In
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
-import { legacyConversationIdentity, type ConversationIdentity } from "./conversationIdentity.js";
+import type { ConversationIdentity } from "./conversationIdentity.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
 export type InteractiveCommandRegistration = {
@@ -38,8 +38,7 @@ export interface InteractiveUpdateLogSummary {
   contentDetail: string | null;
 }
 
-export function getUserCliPreference(db: BridgeDb, identity: ConversationIdentity | string): CliKind {
-  identity = legacyConversationIdentity(identity);
+export function getUserCliPreference(db: BridgeDb, identity: ConversationIdentity): CliKind {
   const row = db.raw
     .prepare(`SELECT interactive_cli_preference AS pref FROM bridge_state WHERE surface_identity = ? AND chat_id = ?`)
     .get(identity.surfaceIdentity, identity.chatKey) as { pref: string | null } | undefined;
@@ -47,8 +46,7 @@ export function getUserCliPreference(db: BridgeDb, identity: ConversationIdentit
   return isValidCliKind(stored) ? stored : DEFAULT_CLI;
 }
 
-export function setUserCliPreference(db: BridgeDb, identity: ConversationIdentity | string, cli: CliKind): void {
-  identity = legacyConversationIdentity(identity);
+export function setUserCliPreference(db: BridgeDb, identity: ConversationIdentity, cli: CliKind): void {
   db.raw
     .prepare(
       `INSERT INTO bridge_state (surface_identity, chat_id, interactive_cli_preference) VALUES (?, ?, ?)
@@ -289,7 +287,7 @@ type PassiveContextClient = MessagingPlatform & {
 export interface InteractiveDispatchEngine {
   client?: PassiveContextClient;
   handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<void>;
-  handleUpdate?: (update: TelegramUpdate) => Promise<void>;
+  handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
@@ -345,11 +343,10 @@ export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chat
 
 function prepareCliHandoff(db: BridgeDb, identity: ConversationIdentity, targetCli: CliKind, reason: string): void {
   persistProviderSession(db, identity, targetCli, null);
-  markHandoffRequired(db, identity.chatKey, targetCli, reason);
+  markHandoffRequired(db, identity.surfaceIdentity, identity.chatKey, targetCli, reason);
 }
 
-export function applyManualCliSwitchHandoff(db: BridgeDb, identity: ConversationIdentity | string, newCli: CliKind): void {
-  identity = legacyConversationIdentity(identity);
+export function applyManualCliSwitchHandoff(db: BridgeDb, identity: ConversationIdentity, newCli: CliKind): void {
   db.raw.transaction(() => {
     prepareCliHandoff(db, identity, newCli, "manual_switch");
     setUserCliPreference(db, identity, newCli);
@@ -495,7 +492,7 @@ export function dispatchInteractiveTurnWithFallback(
       const context = contextualTurn.surroundingContext ?? [];
       await withPassiveSurroundingContext(context, async () => {
         if (deps.legacyUpdate && !engine.handleInteractiveTurn && engine.handleUpdate) {
-          await engine.handleUpdate(deps.legacyUpdate);
+          await engine.handleUpdate(deps.legacyUpdate, chatKey);
         } else if (engine.handleInteractiveTurn) {
           await engine.handleInteractiveTurn(contextualTurn);
         } else {

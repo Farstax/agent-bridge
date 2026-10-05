@@ -102,7 +102,7 @@ describe("autonomous restart ownership contract (#366)", () => {
     const input = db.raw.prepare(`SELECT id FROM event_receipts
       WHERE source = ? AND event_kind = ?`).get(AUTONOMOUS_EVENT_SOURCE, AUTONOMOUS_SUPERVISOR_INPUT_KIND) as { id: number };
     const runId = "crashed-autonomous-run-with-input";
-    db.insertRun(runId, "autonomous:input-after-claim", "claude");
+    db.insertRun(runId, { surfaceIdentity: "telegram:interactive", chatKey: "autonomous:input-after-claim" }, "claude");
     db.linkEventReceiptRun(wake.id, runId);
     db.linkEventReceiptRun(input.id, runId);
     expect(db.raw.prepare("SELECT status, run_id FROM event_receipts WHERE id = ?").get(input.id))

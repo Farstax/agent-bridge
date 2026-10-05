@@ -81,7 +81,7 @@ describe("custom ACP BridgeEngine lifecycle", () => {
     expect(sentMessages[0]).toContain("fixture parent answer");
 
     // 2. Session persistence: inspect session in db
-    const savedSession = lookupProviderSession(db, "100", "custom-acp");
+    const savedSession = lookupProviderSession(db, { surfaceIdentity: "test-surface", chatKey: "100" }, "custom-acp");
     expect(savedSession).toBe("fixture-root-session");
 
     // 3. Restart/reload simulation: construct fresh BridgeEngine with same runtime launch config
@@ -172,7 +172,7 @@ describe("custom ACP BridgeEngine lifecycle", () => {
 
       await engine1.handleMessages([makeMessage("workspace A turn", 106, 1)]);
       expect(sentMessages[0]).toBe("fixture parent answer");
-      expect(lookupProviderSession(db, "106", "custom-acp")).toBe("fixture-root-session");
+      expect(lookupProviderSession(db, { surfaceIdentity: "test-surface", chatKey: "106" }, "custom-acp")).toBe("fixture-root-session");
 
       Object.assign(process.env, customEnv([tsxCli, fakeAgent], {
         CUSTOM_ACP_PROJECT_DIR: workspaceB,
@@ -358,10 +358,10 @@ describe("custom ACP BridgeEngine lifecycle", () => {
 
     // Initial turn creates session
     await engine.handleMessages([makeMessage("initial", 105, 1)]);
-    expect(lookupProviderSession(db, "105", "custom-acp")).toBe("fixture-root-session");
+    expect(lookupProviderSession(db, { surfaceIdentity: "test-surface", chatKey: "105" }, "custom-acp")).toBe("fixture-root-session");
 
     // /reset clears session
     await engine.handleMessages([makeMessage("/reset", 105, 2)]);
-    expect(lookupProviderSession(db, "105", "custom-acp")).toBeNull();
+    expect(lookupProviderSession(db, { surfaceIdentity: "test-surface", chatKey: "105" }, "custom-acp")).toBeNull();
   }, 30_000);
 });

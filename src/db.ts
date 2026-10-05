@@ -54,7 +54,7 @@ export { DEFAULT_CONTEXT_MAX_CHARS, DEFAULT_CONTEXT_RECENT_TURN_LIMIT } from "./
 import { applyMigrations, CURRENT_SCHEMA_VERSION, MigrationRequiredError, UnsupportedSchemaVersionError } from "./db/schema.js";
 import { assertDatabaseForeignKeyIntegrity } from "./db/roleAssignmentsMigration.js";
 import type { BotKind } from "./types.js";
-import { legacyConversationIdentity, type ConversationIdentity } from "./conversationIdentity.js";
+import type { ConversationIdentity } from "./conversationIdentity.js";
 
 function assertExecutionScope(surface: string, chatKey: string): void {
   if (!surface?.trim()) throw new Error("surface is required");
@@ -296,23 +296,23 @@ export class BridgeDb {
 
   // ── Session management ───────────────────────────────────────────────────
 
-  getSession(identity: ConversationIdentity | string, bot: BotKind): string | null {
-    return this.sessions.getSession(legacyConversationIdentity(identity), bot);
+  getSession(identity: ConversationIdentity, bot: BotKind): string | null {
+    return this.sessions.getSession(identity, bot);
   }
 
-  setSession(identity: ConversationIdentity | string, bot: BotKind, sessionId: string | null): void {
-    this.sessions.setSession(legacyConversationIdentity(identity), bot, sessionId);
+  setSession(identity: ConversationIdentity, bot: BotKind, sessionId: string | null): void {
+    this.sessions.setSession(identity, bot, sessionId);
   }
 
-  getAcpSessionBinding(identity: ConversationIdentity | string, providerId: string): AcpSessionBinding | null {
+  getAcpSessionBinding(identity: ConversationIdentity, providerId: string): AcpSessionBinding | null {
     return this.acpSessions.get(identity, providerId);
   }
 
-  putAcpSessionBinding(binding: AcpSessionBinding | Omit<AcpSessionBinding, "surfaceIdentity">): void {
+  putAcpSessionBinding(binding: AcpSessionBinding): void {
     this.acpSessions.put(binding);
   }
 
-  clearAcpSessionBinding(identity: ConversationIdentity | string, providerId: string): void {
+  clearAcpSessionBinding(identity: ConversationIdentity, providerId: string): void {
     this.acpSessions.clear(identity, providerId);
   }
 
@@ -353,11 +353,11 @@ export class BridgeDb {
 
   // ── Session failure circuit breaker ─────────────────────────────────────
 
-  incrementFailures(identity: ConversationIdentity | string, bot: BotKind): number {
+  incrementFailures(identity: ConversationIdentity, bot: BotKind): number {
     return this.settings.incrementFailures(identity, bot);
   }
 
-  resetFailures(identity: ConversationIdentity | string, bot: BotKind): void {
+  resetFailures(identity: ConversationIdentity, bot: BotKind): void {
     this.settings.resetFailures(identity, bot);
   }
 
@@ -406,10 +406,10 @@ export class BridgeDb {
 
   insertRun(
     runId: string,
-    identity: ConversationIdentity | string,
+    identity: ConversationIdentity,
     bot: string,
   ): void {
-    this.runs.insertRun(runId, legacyConversationIdentity(identity), bot);
+    this.runs.insertRun(runId, identity, bot);
   }
 
   getRun(runId: string): any {

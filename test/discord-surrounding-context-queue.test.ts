@@ -49,7 +49,8 @@ describe("Discord passive context queue authority", () => {
       pollIntervalMs: 1000,
       hooks: {},
     }, database, client, { runCliAsync: runCliAsync as any });
-    const fallbackChain = new ProviderFallbackChain(["codex"], database, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex"], database, "discord:interactive",
+         () => true);
     const blocker = database.acquireLock("discord:interactive", "channel-queue");
     expect(blocker).not.toBeNull();
 

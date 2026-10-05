@@ -7,6 +7,7 @@ import type { BotKind } from "./types.js";
 
 export interface SurfaceNeutralProviderRouterOptions {
   db: BridgeDb;
+  surfaceIdentity: string;
   initialProvider: BotKind;
   providerChain: readonly BotKind[];
   engineForProvider: (provider: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
@@ -24,7 +25,7 @@ export function createSurfaceNeutralProviderRouter(
     options.initialProvider,
     ...options.providerChain.filter((provider) => provider !== options.initialProvider),
   ];
-  const fallback = new ProviderFallbackChain(ordered, options.db);
+  const fallback = new ProviderFallbackChain(ordered, options.db, options.surfaceIdentity);
   const initialized = new Set<string>();
 
   return {

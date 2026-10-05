@@ -76,7 +76,7 @@ describe("tier 2: same-provider fresh-session retry for a transient failure", ()
 
   it("silently retries once on a fresh session and delivers the recovered answer with no fallback hook fired", async () => {
     const chatKey = "100";
-    persistProviderSession(db, chatKey, "codex", "stale-session-id");
+    persistProviderSession(db, { surfaceIdentity: "test", chatKey: chatKey }, "codex", "stale-session-id");
     runProviderInvocationMock.mockRejectedValueOnce(
       new Error("Selected model is at capacity. Please try a different model."),
     );

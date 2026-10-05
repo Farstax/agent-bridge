@@ -86,26 +86,26 @@ describe("canonical conversation identity", () => {
     const telegram = { surfaceIdentity: "telegram:interactive", chatKey: "42" };
     const discord = { surfaceIdentity: "discord:interactive", chatKey: "42" };
     try {
-      db.setSession(telegram, "codex", "telegram-native");
-      db.setSession(discord, "codex", "discord-native");
+      db.setSession( telegram, "codex", "telegram-native");
+      db.setSession( discord, "codex", "discord-native");
       db.putAcpSessionBinding({ surfaceIdentity: telegram.surfaceIdentity, conversationId: telegram.chatKey, providerId: "claude", acpSessionId: "telegram-acp", runId: null });
       db.putAcpSessionBinding({ surfaceIdentity: discord.surfaceIdentity, conversationId: discord.chatKey, providerId: "claude", acpSessionId: "discord-acp", runId: null });
-      db.incrementFailures(telegram, "codex");
-      db.incrementFailures(discord, "codex");
+      db.incrementFailures( telegram, "codex");
+      db.incrementFailures( discord, "codex");
       setUserCliPreference(db, telegram, "claude");
       setUserCliPreference(db, discord, "grok");
       db.insertRun("telegram-run", telegram, "codex");
       db.insertRun("discord-run", discord, "codex");
 
-      expect(db.getSession(telegram, "codex")).toBe("telegram-native");
-      expect(db.getSession(discord, "codex")).toBe("discord-native");
-      expect(db.getAcpSessionBinding(telegram, "claude")?.acpSessionId).toBe("telegram-acp");
-      expect(db.getAcpSessionBinding(discord, "claude")?.acpSessionId).toBe("discord-acp");
-      expect(getUserCliPreference(db, telegram)).toBe("claude");
-      expect(getUserCliPreference(db, discord)).toBe("grok");
+      expect(db.getSession( telegram, "codex")).toBe("telegram-native");
+      expect(db.getSession( discord, "codex")).toBe("discord-native");
+      expect(db.getAcpSessionBinding( telegram, "claude")?.acpSessionId).toBe("telegram-acp");
+      expect(db.getAcpSessionBinding( discord, "claude")?.acpSessionId).toBe("discord-acp");
+      expect(getUserCliPreference(db, telegram )).toBe("claude");
+      expect(getUserCliPreference(db, discord )).toBe("grok");
       expect(db.raw.prepare("SELECT surface_identity FROM bridge_runs WHERE run_id = ?").get("telegram-run")).toEqual({ surface_identity: telegram.surfaceIdentity });
       expect(db.raw.prepare("SELECT surface_identity FROM bridge_runs WHERE run_id = ?").get("discord-run")).toEqual({ surface_identity: discord.surfaceIdentity });
-      db.resetFailures(telegram, "codex");
+      db.resetFailures( telegram, "codex");
       expect(db.raw.prepare("SELECT codex_consecutive_failures FROM bridge_state WHERE surface_identity = ? AND chat_id = ?").get(discord.surfaceIdentity, discord.chatKey)).toEqual({ codex_consecutive_failures: 1 });
     } finally {
       db.close();

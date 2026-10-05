@@ -18,7 +18,7 @@ describe("runtime inspector review regressions", () => {
     const dbPath = join(dataDir, "bridge.sqlite");
     const db = openDb(dbPath, { serviceId: "test-service", runId: "run-active", lockLeaseMs: 90_000 });
     try {
-      db.insertRun("run-active", "chat-1", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
       expect(db.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
@@ -55,7 +55,7 @@ describe("runtime inspector review regressions", () => {
     const dbPath = join(dir, "bridge.sqlite");
     const db = openDb(dbPath, { serviceId: "test-service", runId: "run-active", lockLeaseMs: 90_000 });
     try {
-      db.insertRun("run-active", "chat-1", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
       expect(db.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
@@ -87,7 +87,7 @@ describe("runtime inspector review regressions", () => {
     const dbPath = join(dir, "bridge.sqlite");
     const db = openDb(dbPath, { serviceId: "test-service", runId: "run-active", lockLeaseMs: 90_000 });
     try {
-      db.insertRun("run-active", "chat-1", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
       expect(db.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
       const intended = Date.now() + 24 * 60 * 60 * 1_000;
       createScheduledRoutine(db, {
@@ -151,7 +151,7 @@ describe("runtime inspector review regressions", () => {
     const dbPath = join(dir, "bridge.sqlite");
     const db = openDb(dbPath, { serviceId: "test-service", runId: "other-run", lockLeaseMs: 90_000 });
     try {
-      db.insertRun("historical-run", "chat-1", "codex");
+      db.insertRun("historical-run", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
       db.raw.prepare("UPDATE bridge_runs SET status='done', ended_at=? WHERE run_id=?").run(new Date().toISOString(), "historical-run");
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {

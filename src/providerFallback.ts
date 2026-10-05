@@ -12,11 +12,13 @@ export class ProviderFallbackChain {
   private readonly chain: string[];
   private readonly chatActiveIdx = new Map<string, number>();
   private readonly db: BridgeDb;
+  private readonly surfaceIdentity: string;
   private readonly isCliAvailable: (cli: string) => boolean;
 
-  constructor(chain: string[], db: BridgeDb, isCliAvailable: (cli: string) => boolean = () => true) {
+  constructor(chain: string[], db: BridgeDb, surfaceIdentity: string, isCliAvailable: (cli: string) => boolean = () => true) {
     this.chain = chain;
     this.db = db;
+    this.surfaceIdentity = surfaceIdentity;
     this.isCliAvailable = isCliAvailable;
   }
 
@@ -44,8 +46,8 @@ export class ProviderFallbackChain {
   private clearUnavailableGatedPreference(chatKey: string, cli: "grok" | "cursor"): void {
     try {
       this.db.raw
-        .prepare(`UPDATE bridge_state SET interactive_cli_preference = NULL WHERE chat_id = ? AND interactive_cli_preference = ?`)
-        .run(chatKey, cli);
+        .prepare(`UPDATE bridge_state SET interactive_cli_preference = NULL WHERE surface_identity = ? AND chat_id = ? AND interactive_cli_preference = ?`)
+        .run(this.surfaceIdentity, chatKey, cli);
     } catch { /* preference column may not exist on non-interactive test DBs */ }
   }
 

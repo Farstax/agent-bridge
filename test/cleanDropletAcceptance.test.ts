@@ -78,7 +78,7 @@ describe("clean-droplet acceptance", () => {
         command: "codex-acp",
         executionMode: "trusted",
       });
-      expect(db.getAcpSessionBinding("100", "codex")?.acpSessionId).toBe("acp-fresh-session");
+      expect(db.getAcpSessionBinding( { surfaceIdentity: "clean-appliance", chatKey: "100" }, "codex")?.acpSessionId).toBe("acp-fresh-session");
     } finally {
       db.raw.close();
       if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND;

@@ -56,6 +56,7 @@ describe("ACP config discovery", () => {
       await prepareInteractiveAcpConfigControl({
         kind: "codex",
         commandText: "/models",
+        surfaceIdentity: "telegram:interactive",
         chatKey: "chat-fresh",
         db,
         executionMode: "safe",
@@ -66,7 +67,7 @@ describe("ACP config discovery", () => {
         },
       });
 
-      expect(lookupProviderSession(db, "chat-fresh", "codex")).toBeNull();
+      expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat-fresh" }, "codex")).toBeNull();
     } finally {
       db.close();
     }
@@ -75,12 +76,13 @@ describe("ACP config discovery", () => {
   it("falls back to a transient fresh probe when resume does not advertise the requested category", async () => {
     const db = openDb(":memory:");
     try {
-      persistProviderSession(db, "chat-resume", "codex", "conversation-session");
+      persistProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat-resume" }, "codex", "conversation-session");
       const attempts: Array<string | null> = [];
 
       await prepareInteractiveAcpConfigControl({
         kind: "codex",
         commandText: "/models",
+        surfaceIdentity: "telegram:interactive",
         chatKey: "chat-resume",
         db,
         executionMode: "safe",
@@ -96,7 +98,7 @@ describe("ACP config discovery", () => {
       });
 
       expect(attempts).toEqual(["conversation-session", null]);
-      expect(lookupProviderSession(db, "chat-resume", "codex")).toBe("conversation-session");
+      expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat-resume" }, "codex")).toBe("conversation-session");
     } finally {
       db.close();
     }

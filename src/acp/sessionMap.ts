@@ -18,26 +18,23 @@ function key(surfaceIdentity: string, conversationId: string, providerId: string
 export class AcpSessionMap {
   private readonly bindings = new Map<string, AcpSessionBinding>();
 
-  bind(binding: AcpSessionBinding | Omit<AcpSessionBinding, "surfaceIdentity">): void {
-    const scoped = "surfaceIdentity" in binding ? binding : { ...binding, surfaceIdentity: "telegram:interactive" };
-    if (!scoped.surfaceIdentity.trim()) throw new Error("ACP session binding requires a Bridge surface identity");
-    if (!scoped.conversationId.trim()) throw new Error("ACP session binding requires a Bridge conversation id");
-    if (!scoped.providerId.trim()) throw new Error("ACP session binding requires a provider id");
-    if (!scoped.acpSessionId.trim()) throw new Error("ACP session binding requires a provider ACP session id");
-    if (scoped.acpSessionId === scoped.conversationId) {
+  bind(binding: AcpSessionBinding): void {
+    if (!binding.surfaceIdentity.trim()) throw new Error("ACP session binding requires a Bridge surface identity");
+    if (!binding.conversationId.trim()) throw new Error("ACP session binding requires a Bridge conversation id");
+    if (!binding.providerId.trim()) throw new Error("ACP session binding requires a provider id");
+    if (!binding.acpSessionId.trim()) throw new Error("ACP session binding requires a provider ACP session id");
+    if (binding.acpSessionId === binding.conversationId) {
       throw new Error("ACP session id must not equal the Bridge conversation id");
     }
-    this.bindings.set(key(scoped.surfaceIdentity, scoped.conversationId, scoped.providerId), { ...scoped });
+    this.bindings.set(key(binding.surfaceIdentity, binding.conversationId, binding.providerId), { ...binding });
   }
 
-  lookup(surfaceIdentity: string, conversationId: string, providerId?: string): AcpSessionBinding | null {
-    if (providerId === undefined) return this.bindings.get(key("telegram:interactive", surfaceIdentity, conversationId)) ?? null;
+  lookup(surfaceIdentity: string, conversationId: string, providerId: string): AcpSessionBinding | null {
     return this.bindings.get(key(surfaceIdentity, conversationId, providerId)) ?? null;
   }
 
-  clear(surfaceIdentity: string, conversationId: string, providerId?: string): void {
-    if (providerId === undefined) this.bindings.delete(key("telegram:interactive", surfaceIdentity, conversationId));
-    else this.bindings.delete(key(surfaceIdentity, conversationId, providerId));
+  clear(surfaceIdentity: string, conversationId: string, providerId: string): void {
+    this.bindings.delete(key(surfaceIdentity, conversationId, providerId));
   }
 
   serialize(): AcpSessionBinding[] {

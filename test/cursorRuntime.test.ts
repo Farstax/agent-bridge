@@ -77,19 +77,19 @@ describe("cursor skill projection", () => {
 describe("cursor session persistence", () => {
   it("stores and reloads Cursor session ids through the shared session repository", () => {
     const db = openDb(":memory:");
-    expect(db.getSession("chat:cursor", "cursor")).toBeNull();
-    db.setSession("chat:cursor", "cursor", "sess-durable");
-    expect(db.getSession("chat:cursor", "cursor")).toBe("sess-durable");
-    db.setSession("chat:cursor", "cursor", null);
-    expect(db.getSession("chat:cursor", "cursor")).toBeNull();
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor")).toBeNull();
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor", "sess-durable");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor")).toBe("sess-durable");
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor", null);
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor")).toBeNull();
   });
 
   it("includes Cursor consecutive failures in the health circuit-breaker aggregate", () => {
     const db = openDb(":memory:");
-    db.incrementFailures("chat:cursor", "cursor");
-    db.incrementFailures("chat:cursor", "cursor");
+    db.incrementFailures( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor");
+    db.incrementFailures( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor");
     expect(db.getMaxConsecutiveFailures()).toEqual([{ bot: "cursor", count: 2 }]);
-    db.resetFailures("chat:cursor", "cursor");
+    db.resetFailures( { surfaceIdentity: "telegram:interactive", chatKey: "chat:cursor" }, "cursor");
     expect(db.getMaxConsecutiveFailures()).toEqual([]);
   });
 });

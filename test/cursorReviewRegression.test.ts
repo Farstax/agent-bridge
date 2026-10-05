@@ -143,14 +143,14 @@ describe("cursor doctor and session expiry", () => {
   it("expires stale Cursor sessions after seven days on open", () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), "cursor-session-expiry-")), "bridge.sqlite");
     const first = openDb(dbPath);
-    first.setSession("chat:1", "cursor", "sess-old");
+    first.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "cursor", "sess-old");
     first.raw.prepare(
       `UPDATE bridge_state SET cursor_session_created_at = datetime('now', '-8 days') WHERE chat_id = ?`,
     ).run("chat:1");
     first.close();
 
     const second = openDb(dbPath);
-    expect(second.getSession("chat:1", "cursor")).toBeNull();
+    expect(second.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "cursor")).toBeNull();
     second.close();
   });
 });

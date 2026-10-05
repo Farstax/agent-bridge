@@ -1,7 +1,6 @@
 import type { BridgeDb } from "../db.js";
 import type { BotKind } from "../types.js";
-import type { ConversationIdentity } from "../conversationIdentity.js";
-import { legacyConversationIdentity } from "../conversationIdentity.js";
+import { assertConversationIdentity, type ConversationIdentity } from "../conversationIdentity.js";
 import { resolveRuntimeForBotName } from "./acpRuntime.js";
 
 function acpSessionBindingKey(
@@ -16,31 +15,27 @@ function acpSessionBindingKey(
 /** Route provider session state through the store owned by the resolved runtime transport. */
 export function lookupProviderSession(
   db: BridgeDb,
-  identity: ConversationIdentity | string,
+  identity: ConversationIdentity,
   kind: BotKind | "custom-acp",
   resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
 ): string | null {
-  const legacyKey = typeof identity === "string" ? identity : null;
-  identity = legacyConversationIdentity(identity);
+  assertConversationIdentity(identity);
   const bindingKey = acpSessionBindingKey(kind, resolveRuntime);
   if (bindingKey) {
-    const scoped = db.getAcpSessionBinding(identity, bindingKey)?.acpSessionId ?? null;
-    if (scoped || !legacyKey) return scoped;
-    const row = db.raw.prepare("SELECT acp_session_id AS sessionId FROM acp_session_bindings WHERE conversation_id = ? AND provider_id = ? ORDER BY updated_at DESC LIMIT 1").get(legacyKey, bindingKey) as { sessionId?: string } | undefined;
-    return row?.sessionId ?? null;
+    return db.getAcpSessionBinding(identity, bindingKey)?.acpSessionId ?? null;
   }
   return db.getSession(identity, kind as BotKind);
 }
 
 export function persistProviderSession(
   db: BridgeDb,
-  identity: ConversationIdentity | string,
+  identity: ConversationIdentity,
   kind: BotKind | "custom-acp",
   sessionId: string | null,
   runId: string | null = null,
   resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
 ): void {
-  identity = legacyConversationIdentity(identity);
+  assertConversationIdentity(identity);
   const bindingKey = acpSessionBindingKey(kind, resolveRuntime);
   if (bindingKey) {
     if (sessionId) {

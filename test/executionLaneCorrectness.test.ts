@@ -185,7 +185,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       cliOptions,
     ));
     const claudeRun = vi.fn().mockResolvedValue(cursorResult("claude done"));
-    const fallbackChain = new ProviderFallbackChain(["cursor"], db);
+    const fallbackChain = new ProviderFallbackChain(["cursor"], db, "telegram:interactive");
     const exhaustedChats = new Set<string>();
     const engines = {} as Record<string, BridgeEngine>;
     // This test is about durable FIFO routing across providers, not busy-mode
@@ -203,7 +203,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     engines.codex = codex; engines.cursor = claude;
     const active = codex.handleMessages([message("first", 7)]);
     await new Promise((r) => setTimeout(r, 20));
-    setUserCliPreference(db, "100:7", "cursor");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100:7" }, "cursor");
     await claude.handleMessages([message("queued for current Claude", 7)]);
     await active;
     expect(codexRun).toHaveBeenCalledOnce();
@@ -1095,7 +1095,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       runCli: vi.fn().mockResolvedValue(JSON.stringify({ result: "parsed but fenced", session_id: "must-not-store" })),
     }));
     await engine.handleMessages([message("race commit", 7)]);
-    expect(runB.getSession("100:7", "cursor")).toBeNull();
+    expect(runB.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100:7" }, "cursor")).toBeNull();
     expect(runB.getRecentConvTurns("100:7", 10)).toHaveLength(0);
     expect(c.sendMessage.mock.calls.some((call: any[]) => String(call[0].text).includes("parsed but fenced"))).toBe(false);
     runA.close(); runB.close(); rmSync(path, { force: true });
@@ -1115,7 +1115,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     expect(handleB).not.toBeNull();
     resume(JSON.stringify({ result: "stale output", session_id: "stale-session" })); await active;
     expect(c.sendMessage.mock.calls.some((call: any[]) => call[0].text === "stale output")).toBe(false);
-    expect(runB.getSession("100:7", "cursor")).toBeNull();
+    expect(runB.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100:7" }, "cursor")).toBeNull();
     expect(runB.ownsLock(handleB)).toBe(true);
     runA.close(); runB.close(); rmSync(path, { force: true });
   });

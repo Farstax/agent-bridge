@@ -86,7 +86,8 @@ describe("Cursor routing safety", () => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(
         ["codex", "cursor", "antigravity"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
       expect(chain.getChain()).toEqual(["codex", "antigravity"]);
@@ -106,7 +107,8 @@ describe("Cursor routing safety", () => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(
         ["codex", "cursor", "antigravity"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
       expect(isCursorRouteable({ readVersion: () => CURSOR_ACP_VERSION })).toBe(true);
@@ -121,7 +123,8 @@ describe("Cursor routing safety", () => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(
         ["codex", "claude", "antigravity", "grok", "cursor"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
       expect(chain.advance("chat:1")).toBe("claude");
@@ -138,7 +141,8 @@ describe("Cursor routing safety", () => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(
         ["codex", "cursor", "antigravity"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
       expect(chain.advance("chat:1")).toBe("cursor");
@@ -150,14 +154,15 @@ describe("Cursor routing safety", () => {
     withCursorEnvironment((_root, evidencePath) => {
       writeFailedCursorQualification(evidencePath);
       const db = openDb(":memory:");
-      setUserCliPreference(db, "channel:1", "cursor");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "channel:1" }, "cursor");
       const chain = new ProviderFallbackChain(
         ["codex", "cursor"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "cursor" ? isCursorRouteable() : true,
       );
       chain.setActiveCli("channel:1", "cursor");
-      expect(getUserCliPreference(db, "channel:1")).toBe("cursor");
+      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "channel:1" } )).toBe("cursor");
       expect(chain.getActiveCli("channel:1")).toBe("cursor");
     });
   });

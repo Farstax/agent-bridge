@@ -150,12 +150,12 @@ describe("BridgeEngine", () => {
         acpEngineExec(runCli),
       );
 
-      markHandoffRequired(db, "100", "grok", "manual_switch");
-      expect(isHandoffRequired(db, "100", "grok")).toBe(true);
+      markHandoffRequired(db, "test", "100", "grok", "manual_switch");
+      expect(isHandoffRequired(db, "test", "100", "grok")).toBe(true);
 
       await engine.handleMessages([makeMessage("hello")]);
 
-      expect(isHandoffRequired(db, "100", "grok")).toBe(false);
+      expect(isHandoffRequired(db, "test", "100", "grok")).toBe(false);
     });
 
     it("does not error when no handoff is pending", async () => {
@@ -179,7 +179,7 @@ describe("BridgeEngine", () => {
       );
 
       await expect(engine.handleMessages([makeMessage("hello")])).resolves.not.toThrow();
-      expect(isHandoffRequired(db, "100", "grok")).toBe(false);
+      expect(isHandoffRequired(db, "test", "100", "grok")).toBe(false);
     });
   });
 
@@ -344,7 +344,7 @@ describe("BridgeEngine", () => {
       const { BridgeEngine } = await import("../src/engine.js");
       db.addConvTurn("100", "user", MARKER);
       setGrokSession(db, "100", "stale-session-before-handoff-mark");
-      markHandoffRequired(db, "100", "grok", "manual_switch");
+      markHandoffRequired(db, "test", "100", "grok", "manual_switch");
 
       let capturedPrompt = "";
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
@@ -360,7 +360,7 @@ describe("BridgeEngine", () => {
       await engine.handleMessages([makeMessage("hello after switch")]);
 
       expect(capturedPrompt).not.toContain(MARKER);
-      expect(isHandoffRequired(db, "100", "grok")).toBe(true);
+      expect(isHandoffRequired(db, "test", "100", "grok")).toBe(true);
     });
 
     it("keeps Agent Bridge context env available under handoff_once even when the prompt preamble is suppressed", async () => {
@@ -613,7 +613,7 @@ describe("BridgeEngine", () => {
         { runProviderInvocation },
       );
 
-      db.setSession("100", "antigravity", "stale-conversation");
+      db.setSession( { surfaceIdentity: "test", chatKey: "100" }, "antigravity", "stale-conversation");
 
       await engine.handleMessages([makeMessage("first question")]);
       await engine.handleMessages([makeMessage("second question")]);
@@ -701,7 +701,7 @@ describe("BridgeEngine", () => {
         { runProviderInvocation },
       );
 
-      db.setSession("100", "antigravity", "stale-conversation");
+      db.setSession( { surfaceIdentity: "test", chatKey: "100" }, "antigravity", "stale-conversation");
       await engine.handleMessages([makeMessage("first question")]);
       await engine.handleMessages([makeMessage("second question")]);
 

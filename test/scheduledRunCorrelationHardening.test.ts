@@ -102,7 +102,7 @@ describe("scheduled Run correlation hardening", () => {
       expect(claimScheduledRoutineOccurrence(db, routine.id, intendedAt)).toBe(true);
       const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
 
-      db.insertRun("manual-run", routine.chatKey, "cursor");
+      db.insertRun("manual-run", { surfaceIdentity: "telegram:interactive", chatKey: routine.chatKey }, "cursor");
       expect(db.updateRunCompleted("manual-run", "manual", null)).toBe(true);
 
       await executeScheduledTurn(db, routine, intendedAt, occurrenceKey);
@@ -171,7 +171,7 @@ describe("scheduled Run correlation hardening", () => {
       const claimed = after.claimNextPendingMsg(handle!);
       expect(claimed?.scheduledOccurrenceKey).toBe(occurrenceKey);
 
-      after.insertRun("queued-run", routine.chatKey, "codex");
+      after.insertRun("queued-run", { surfaceIdentity: "telegram:interactive", chatKey: routine.chatKey }, "codex");
       expect(linkScheduledOccurrenceRun(after, claimed!.scheduledOccurrenceKey!, "queued-run")).toBe(true);
       expect(parseScheduledOccurrenceEvidence(after.getSetting(occurrenceKey))?.runId).toBe("queued-run");
 

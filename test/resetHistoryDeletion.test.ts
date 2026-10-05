@@ -10,8 +10,8 @@ describe("/reset conversation evidence deletion", () => {
       db.addConvSummary("chat:1", 1, 1, "Current objective:\n- current conversation");
       db.addConvTurn("chat:2", "user", "other conversation evidence", "claude");
       db.addConvSummary("chat:2", 2, 2, "Current objective:\n- other conversation");
-      db.setSession("chat:1", "claude", "session-current");
-      db.setSession("chat:2", "claude", "session-other");
+      db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude", "session-current");
+      db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:2" }, "claude", "session-other");
 
       const config = {
         allowedUserIds: new Set(["42"]),
@@ -38,12 +38,12 @@ describe("/reset conversation evidence deletion", () => {
         kind: "message",
         text: "claude session reset. Pending work and conversation history cleared.",
       });
-      expect(db.getSession("chat:1", "claude")).toBeNull();
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude")).toBeNull();
       expect(db.getRecentConvTurns("chat:1", 100)).toEqual([]);
       expect(db.getConvStatus("chat:1", "telegram:interactive").latestSummaryAt).toBeNull();
       expect(db.getLatestConvSummary("chat:1")?.summary_md).toContain("current conversation");
 
-      expect(db.getSession("chat:2", "claude")).toBe("session-other");
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:2" }, "claude")).toBe("session-other");
       expect(db.getRecentConvTurns("chat:2", 100).map((turn) => turn.text)).toEqual(["other conversation evidence"]);
       expect(db.getLatestConvSummary("chat:2")?.summary_md).toContain("other conversation");
     } finally {

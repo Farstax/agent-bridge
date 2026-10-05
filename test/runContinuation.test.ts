@@ -207,7 +207,7 @@ describe("ordinary Run continuation", () => {
     const turn = buildTelegramRunContinuationTurn(continuation, "123");
     expect(turn.chatKey).toBe("-100:42");
     expect(turn.threadId).toBe("42");
-    expect(turn.delivery).toEqual({ chatId: -100, chatType: "supergroup" });
+    expect(turn.delivery).toEqual({ chatId: -100, chatType: "supergroup", threadId: 42 });
     expect(turn.text).toContain("CI pending");
     db.close();
   });

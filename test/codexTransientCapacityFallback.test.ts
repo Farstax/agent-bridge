@@ -65,7 +65,8 @@ describe("Codex in-band systemError capacity wording falls back instead of dead-
   it("falls back to the next CLI when Codex reports 'Selected model is at capacity'", async () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive",
+         () => true);
     const notifications: string[] = [];
     const fallbackRequests = new Map<string, import("../src/engine.js").ProviderFallbackReason>();
 
@@ -102,7 +103,7 @@ describe("Codex in-band systemError capacity wording falls back instead of dead-
     const deps = { engines, fallbackChain, fallbackRequests, db, notify: async (message: string) => { notifications.push(message); } };
 
     try {
-      setUserCliPreference(db, "100", "codex");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
       for (const engine of Object.values(engines)) {
         engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
       }

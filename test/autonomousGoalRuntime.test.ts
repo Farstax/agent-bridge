@@ -665,7 +665,7 @@ describe("autonomous goal production runtime", () => {
     });
     const wake = db.raw.prepare("SELECT id FROM event_receipts WHERE source = ?").get(AUTONOMOUS_EVENT_SOURCE) as { id: number };
     const runId = "crashed-autonomous-run";
-    db.insertRun(runId, "autonomous:claimed-crash", "claude");
+    db.insertRun(runId, { surfaceIdentity: AUTONOMOUS_RUN_SURFACE, chatKey: "autonomous:claimed-crash" }, "claude");
     db.linkEventReceiptRun(wake.id, runId);
     db.close();
 

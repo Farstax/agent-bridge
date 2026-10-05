@@ -331,13 +331,13 @@ describe("Codex ACP authority mapping", () => {
 describe("ACP session persistence", () => {
   it("round-trips the mapping through SQLite and a reopened database", () => {
     const db = openDb(":memory:");
-    db.putAcpSessionBinding({ conversationId: "conv-1", providerId: "codex", acpSessionId: "acp-zzz", runId: "run-1" });
-    expect(db.getAcpSessionBinding("conv-1", "codex")?.acpSessionId).toBe("acp-zzz");
-    expect(db.getAcpSessionBinding("conv-1", "codex")?.conversationId).toBe("conv-1");
-    expect(db.getAcpSessionBinding("conv-1", "codex")?.runId).toBe("run-1");
-    expect(db.getAcpSessionBinding("conv-1", "codex")?.acpSessionId).not.toBe("conv-1");
-    db.clearAcpSessionBinding("conv-1", "codex");
-    expect(db.getAcpSessionBinding("conv-1", "codex")).toBeNull();
+    db.putAcpSessionBinding({ surfaceIdentity: "telegram:interactive", conversationId: "conv-1", providerId: "codex", acpSessionId: "acp-zzz", runId: "run-1" });
+    expect(db.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-1" }, "codex")?.acpSessionId).toBe("acp-zzz");
+    expect(db.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-1" }, "codex")?.conversationId).toBe("conv-1");
+    expect(db.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-1" }, "codex")?.runId).toBe("run-1");
+    expect(db.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-1" }, "codex")?.acpSessionId).not.toBe("conv-1");
+    db.clearAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-1" }, "codex");
+    expect(db.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-1" }, "codex")).toBeNull();
     db.close();
   });
 
@@ -346,11 +346,11 @@ describe("ACP session persistence", () => {
     const dbPath = join(storeDir, "bridge.sqlite");
     try {
       const first = openDb(dbPath);
-      first.putAcpSessionBinding({ conversationId: "conv-stale-1", providerId: "codex", acpSessionId: "acp-stale-sess", runId: "run-1" });
+      first.putAcpSessionBinding({ surfaceIdentity: "telegram:interactive", conversationId: "conv-stale-1", providerId: "codex", acpSessionId: "acp-stale-sess", runId: "run-1" });
       first.raw.prepare(`UPDATE acp_session_bindings SET updated_at = datetime('now', '-8 days') WHERE conversation_id = ?`).run("conv-stale-1");
       first.close();
       const second = openDb(dbPath);
-      expect(second.getAcpSessionBinding("conv-stale-1", "codex")).toBeNull();
+      expect(second.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-stale-1" }, "codex")).toBeNull();
       second.close();
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
@@ -362,10 +362,10 @@ describe("ACP session persistence", () => {
     const dbPath = join(storeDir, "bridge.sqlite");
     try {
       const first = openDb(dbPath);
-      first.putAcpSessionBinding({ conversationId: "conv-fresh-1", providerId: "codex", acpSessionId: "acp-fresh-sess", runId: "run-1" });
+      first.putAcpSessionBinding({ surfaceIdentity: "telegram:interactive", conversationId: "conv-fresh-1", providerId: "codex", acpSessionId: "acp-fresh-sess", runId: "run-1" });
       first.close();
       const second = openDb(dbPath);
-      expect(second.getAcpSessionBinding("conv-fresh-1", "codex")?.acpSessionId).toBe("acp-fresh-sess");
+      expect(second.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-fresh-1" }, "codex")?.acpSessionId).toBe("acp-fresh-sess");
       second.close();
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
@@ -374,22 +374,24 @@ describe("ACP session persistence", () => {
 
   it("refuses to persist an ACP session id that equals the Bridge conversation id", () => {
     const db = openDb(":memory:");
-    expect(() => db.putAcpSessionBinding({ conversationId: "conv-1", providerId: "codex", acpSessionId: "conv-1", runId: "run-1" })).toThrow(/must not equal/);
+    expect(() => db.putAcpSessionBinding({ surfaceIdentity: "telegram:interactive", conversationId: "conv-1", providerId: "codex", acpSessionId: "conv-1", runId: "run-1" })).toThrow(/must not equal/);
     db.close();
   });
 
   it("stores ACP bindings beside Bridge conversation identity without writing the sessions table", () => {
     const db = openDb(":memory:");
     try {
-      persistEngineProviderSession(db, "conv-bridge-1", "codex", "acp-sess-aaa", "run-9");
-      expect(lookupEngineProviderSession(db, "conv-bridge-1", "codex")).toBe("acp-sess-aaa");
-      expect(db.getAcpSessionBinding("conv-bridge-1", "codex")).toEqual({
+      const identity = { surfaceIdentity: "telegram:interactive", chatKey: "conv-bridge-1" };
+      persistEngineProviderSession(db, identity, "codex", "acp-sess-aaa", "run-9");
+      expect(lookupEngineProviderSession(db, identity, "codex")).toBe("acp-sess-aaa");
+      expect(db.getAcpSessionBinding( { surfaceIdentity: "telegram:interactive", chatKey: "conv-bridge-1" }, "codex")).toEqual({
+        surfaceIdentity: "telegram:interactive",
         conversationId: "conv-bridge-1",
         providerId: "codex",
         acpSessionId: "acp-sess-aaa",
         runId: "run-9",
       });
-      expect(db.getSession("conv-bridge-1", "codex")).toBeNull();
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "conv-bridge-1" }, "codex")).toBeNull();
     } finally {
       db.close();
     }

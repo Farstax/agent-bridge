@@ -1,12 +1,11 @@
 import type Database from "better-sqlite3";
 import type { AcpSessionBinding } from "../acp/sessionMap.js";
-import { assertConversationIdentity, legacyConversationIdentity, type ConversationIdentity } from "../conversationIdentity.js";
+import { assertConversationIdentity, type ConversationIdentity } from "../conversationIdentity.js";
 
 export class AcpSessionRepository {
   constructor(private readonly db: Database.Database) {}
 
-  get(identity: ConversationIdentity | string, providerId: string): AcpSessionBinding | null {
-    identity = legacyConversationIdentity(identity);
+  get(identity: ConversationIdentity, providerId: string): AcpSessionBinding | null {
     assertConversationIdentity(identity);
     const row = this.db.prepare(
       `SELECT surface_identity AS surfaceIdentity, conversation_id AS conversationId, provider_id AS providerId,
@@ -30,14 +29,12 @@ export class AcpSessionRepository {
     };
   }
 
-  put(binding: AcpSessionBinding | Omit<AcpSessionBinding, "surfaceIdentity">): void {
-    const scoped = "surfaceIdentity" in binding
-      ? binding
-      : { ...binding, surfaceIdentity: "telegram:interactive" };
-    if (!scoped.conversationId.trim()) throw new Error("ACP session binding requires a Bridge conversation id");
-    if (!scoped.providerId.trim()) throw new Error("ACP session binding requires a provider id");
-    if (!scoped.acpSessionId.trim()) throw new Error("ACP session binding requires a provider ACP session id");
-    if (scoped.acpSessionId === scoped.conversationId) {
+  put(binding: AcpSessionBinding): void {
+    if (!binding.surfaceIdentity.trim()) throw new Error("ACP session binding requires a Bridge surface identity");
+    if (!binding.conversationId.trim()) throw new Error("ACP session binding requires a Bridge conversation id");
+    if (!binding.providerId.trim()) throw new Error("ACP session binding requires a provider id");
+    if (!binding.acpSessionId.trim()) throw new Error("ACP session binding requires a provider ACP session id");
+    if (binding.acpSessionId === binding.conversationId) {
       throw new Error("ACP session id must not equal the Bridge conversation id");
     }
     const now = new Date().toISOString();
@@ -49,11 +46,10 @@ export class AcpSessionRepository {
          acp_session_id = excluded.acp_session_id,
          last_run_id = excluded.last_run_id,
          updated_at = excluded.updated_at`,
-    ).run(scoped.surfaceIdentity, scoped.conversationId, scoped.providerId, scoped.acpSessionId, scoped.runId, now, now);
+    ).run(binding.surfaceIdentity, binding.conversationId, binding.providerId, binding.acpSessionId, binding.runId, now, now);
   }
 
-  clear(identity: ConversationIdentity | string, providerId: string): void {
-    identity = legacyConversationIdentity(identity);
+  clear(identity: ConversationIdentity, providerId: string): void {
     assertConversationIdentity(identity);
     this.db.prepare(
       `DELETE FROM acp_session_bindings WHERE surface_identity = ? AND conversation_id = ? AND provider_id = ?`,

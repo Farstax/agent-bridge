@@ -106,9 +106,9 @@ describe("custom ACP provider", () => {
     const resolveFirst = () => first as ResolvedProviderRuntime;
     const resolveChanged = () => changed as ResolvedProviderRuntime;
 
-    persistProviderSession(db, "conversation", "custom-acp", "session-one", "run-1", resolveFirst);
-    expect(lookupProviderSession(db, "conversation", "custom-acp", resolveFirst)).toBe("session-one");
-    expect(lookupProviderSession(db, "conversation", "custom-acp", resolveChanged)).toBeNull();
+    persistProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "conversation" }, "custom-acp", "session-one", "run-1", resolveFirst);
+    expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "conversation" }, "custom-acp", resolveFirst)).toBe("session-one");
+    expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "conversation" }, "custom-acp", resolveChanged)).toBeNull();
     expect(db.putAcpSessionBinding).toHaveBeenCalledWith(expect.objectContaining({
       providerId: first.runtimeIdentity,
       acpSessionId: "session-one",

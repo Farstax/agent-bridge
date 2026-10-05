@@ -100,7 +100,8 @@ describe("cross-engine queue recovery", () => {
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "grok"], db, () => true),
+      fallbackChain: new ProviderFallbackChain(["codex", "grok"], db, "telegram:interactive",
+         () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -108,7 +109,7 @@ describe("cross-engine queue recovery", () => {
     wireInteractiveQueue(engines, deps);
 
     try {
-      setUserCliPreference(db, "100", "grok");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "grok");
       db.enqueueMsg(SURFACE, "100", {
         prompt: "recovered work",
         chatId: 100,
@@ -151,7 +152,8 @@ describe("cross-engine queue recovery", () => {
     };
     const deps = {
       engines,
-      fallbackChain: new ProviderFallbackChain(["codex", "grok"], db, () => true),
+      fallbackChain: new ProviderFallbackChain(["codex", "grok"], db, "telegram:interactive",
+         () => true),
       exhaustedChats: new Set<string>(),
       db,
       notify: vi.fn(),
@@ -159,7 +161,7 @@ describe("cross-engine queue recovery", () => {
     wireInteractiveQueue(engines, deps);
 
     try {
-      setUserCliPreference(db, "100", "grok");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "grok");
       db.enqueueMsg(SURFACE, "100", {
         prompt: "recovered work",
         chatId: 100,

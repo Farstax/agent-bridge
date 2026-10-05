@@ -16,6 +16,7 @@ describe("ACP core client", () => {
     });
 
     map.bind({
+      surfaceIdentity: "telegram:interactive",
       conversationId: result.conversationId,
       runId: result.runId,
       providerId: "codex",
@@ -27,7 +28,7 @@ describe("ACP core client", () => {
     expect(result.liveText).toBe("live:hello");
     expect(result.acpSessionId).toMatch(/^acp-/);
     expect(result.acpSessionId).not.toBe("conv-bridge-1");
-    expect(map.lookup("conv-bridge-1", "codex")?.conversationId).toBe("conv-bridge-1");
+    expect(map.lookup("telegram:interactive", "conv-bridge-1", "codex")?.conversationId).toBe("conv-bridge-1");
     expect(result.events.some((event) => event.kind === "session_update" && event.notification?.update.sessionUpdate === "tool_call")).toBe(true);
     expect(result.usage?.outputTokens).toBe(8);
   });

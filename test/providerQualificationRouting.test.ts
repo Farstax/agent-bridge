@@ -293,7 +293,8 @@ describe("provider qualification routing", () => {
       });
       const chain = new ProviderFallbackChain(
         ["antigravity"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => available.has(cli as any),
       );
       expect(available.has("antigravity")).toBe(false);
@@ -307,7 +308,8 @@ describe("provider qualification routing", () => {
     const db = openDb(":memory:");
     const chain = new ProviderFallbackChain(
       ["codex", "claude", "antigravity"],
-      db,
+      db, "telegram:interactive",
+        
       (cli) => cli !== "claude",
     );
 
@@ -321,7 +323,8 @@ describe("provider qualification routing", () => {
     const db = openDb(":memory:");
     const chain = new ProviderFallbackChain(
       ["codex", "claude", "antigravity"],
-      db,
+      db, "telegram:interactive",
+        
       (cli) => cli !== "codex",
     );
 

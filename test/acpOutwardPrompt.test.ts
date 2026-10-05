@@ -187,7 +187,7 @@ describe("outward ACP prompt execution", () => {
       expect(JSON.stringify(updates)).not.toContain("provider commentary");
       expect(JSON.stringify(updates)).not.toContain("child-call");
       expect(updates.every((update) => update.sessionId !== "provider-session")).toBe(true);
-      expect(db.getAcpSessionBinding("acp:conversation", "codex")?.acpSessionId).toBe("provider-session");
+      expect(db.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:conversation" }, "codex")?.acpSessionId).toBe("provider-session");
       expect(db.getRun("run-1")).toMatchObject({
         run_id: "run-1",
         chat_id: "acp:conversation",
@@ -262,7 +262,7 @@ describe("outward ACP prompt execution", () => {
       expect(response.stopReason).toBe("cancelled");
       expect(updates).toEqual([]);
       expect(db.getRun("run-cancel")?.status).toBe("cancelled");
-      expect(db.getAcpSessionBinding("acp:cancel", "codex")?.acpSessionId).toBe("provider-cancel");
+      expect(db.getAcpSessionBinding( { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "acp:cancel" }, "codex")?.acpSessionId).toBe("provider-cancel");
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });
@@ -381,7 +381,7 @@ describe("outward ACP prompt execution", () => {
     const root = mkdtempSync(join(tmpdir(), "agent-bridge-outward-run-admission-"));
     const db = openDb(join(root, "bridge.sqlite"), { databaseRole: "interactive" });
     try {
-      db.insertRun("duplicate-run", "other-conversation", "codex");
+      db.insertRun("duplicate-run", { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: "other-conversation" }, "codex");
       const session = new OutwardAcpSessionRepository(db.raw).create({
         sessionId: "outward-run-admission",
         conversationId: "acp:run-admission",

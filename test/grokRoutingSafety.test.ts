@@ -104,7 +104,8 @@ describe("Grok routing safety", () => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(
         ["codex", "grok", "antigravity"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "grok" ? isGrokRouteable() : true,
       );
       expect(chain.getActiveCli("chat:1")).toBe("codex");
@@ -119,7 +120,8 @@ describe("Grok routing safety", () => {
       const db = openDb(":memory:");
       const chain = new ProviderFallbackChain(
         ["codex", "grok", "antigravity"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "grok" ? isGrokRouteable() : true,
       );
       expect(chain.advance("chat:1")).toBe("grok");
@@ -130,7 +132,7 @@ describe("Grok routing safety", () => {
   it("keeps an authenticated Grok-only chain routeable without qualification evidence", () => {
     withGrokEnvironment(() => {
       const db = openDb(":memory:");
-      const chain = new ProviderFallbackChain(["grok"], db);
+      const chain = new ProviderFallbackChain(["grok"], db, "telegram:interactive");
       expect(chain.getChain()).toEqual(["grok"]);
       expect(chain.getActiveCli("chat:1")).toBe("grok");
     });
@@ -140,14 +142,15 @@ describe("Grok routing safety", () => {
     withGrokEnvironment((_root, evidencePath) => {
       writeFailedGrokQualification(evidencePath);
       const db = openDb(":memory:");
-      setUserCliPreference(db, "channel:1", "grok");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "channel:1" }, "grok");
       const chain = new ProviderFallbackChain(
         ["codex", "grok"],
-        db,
+        db, "telegram:interactive",
+        
         (cli) => cli === "grok" ? isGrokRouteable() : true,
       );
       chain.setActiveCli("channel:1", "grok");
-      expect(getUserCliPreference(db, "channel:1")).toBe("grok");
+      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "channel:1" } )).toBe("grok");
       expect(chain.getActiveCli("channel:1")).toBe("grok");
     });
   });

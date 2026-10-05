@@ -119,13 +119,13 @@ async function runEngineStopPreviewScenario(kind: "claude" | "antigravity"): Pro
     void settled;
     expect(sentTexts.some((text) => text.includes("aborted"))).toBe(true);
     expect(sentTexts.some((text) => text.includes("must not be delivered"))).toBe(false);
-    expect(db.getSession("100", kind)).toBeNull();
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, kind)).toBeNull();
 
     releasePreview({ ok: true });
     phase = "later";
     await engine.handleMessages([makeMessage("next turn")]);
     expect(sentTexts.some((text) => text.includes("later turn ok"))).toBe(true);
-    expect(db.getSession("100", kind)).toBeTruthy();
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, kind)).toBeTruthy();
   } finally {
     releasePreview({ ok: true });
     await shutdownCliProcessesAndWait();

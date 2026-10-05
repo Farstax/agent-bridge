@@ -6,16 +6,17 @@ import { ProviderFallbackChain } from "../src/providerFallback.js";
 describe("Discord Grok selection availability boundary", () => {
   it("scrubs unavailable Grok even when an explicit fallback chain omits it", () => {
     const db = openDb(":memory:");
-    setUserCliPreference(db, "discord:channel:1", "grok");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "discord:channel:1" }, "grok");
     const chain = new ProviderFallbackChain(
       ["codex", "claude", "antigravity"],
-      db,
+      db, "telegram:interactive",
+        
       (cli) => cli !== "grok",
     );
 
     chain.setActiveCli("discord:channel:1", "grok");
 
-    expect(getUserCliPreference(db, "discord:channel:1")).toBe("codex");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "discord:channel:1" } )).toBe("codex");
     expect(chain.getActiveCli("discord:channel:1")).toBe("codex");
   });
 });

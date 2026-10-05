@@ -28,7 +28,8 @@ describe("provider stall fallback", () => {
     const surface = "telegram:interactive";
     const chatKey = "858";
     const fallbackRequests = new Map<string, ProviderFallbackReason>();
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive",
+         () => true);
     const telegram = client();
     const notices: string[] = [];
     const sourceRun = vi.fn(async () => {
@@ -80,9 +81,9 @@ describe("provider stall fallback", () => {
     }
 
     try {
-      setUserCliPreference(db, chatKey, "codex");
-      persistProviderSession(db, chatKey, "codex", "poisoned-codex-session");
-      persistProviderSession(db, chatKey, "claude", "stale-claude-session");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: chatKey }, "codex");
+      persistProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: chatKey }, "codex", "poisoned-codex-session");
+      persistProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: chatKey }, "claude", "stale-claude-session");
 
       await dispatchInteractiveWithFallback({
         update_id: 860,
@@ -96,12 +97,12 @@ describe("provider stall fallback", () => {
 
       expect(sourceRun).toHaveBeenCalledTimes(1);
       expect(targetRun).toHaveBeenCalledTimes(1);
-      expect(lookupProviderSession(db, chatKey, "codex")).toBeNull();
+      expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: chatKey }, "codex")).toBeNull();
       expect(targetRequests[0].sessionId).toBeNull();
       expect(targetRequests[0].prompt).toContain("[Agent Bridge provider fallback]");
       expect(targetRequests[0].prompt).toContain("externally observable results");
       expect(targetRequests[0].prompt).toContain("finish the task");
-      expect(lookupProviderSession(db, chatKey, "claude")).toBe("claude-fresh");
+      expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: chatKey }, "claude")).toBe("claude-fresh");
       expect(notices).toEqual(["Switching to claude after codex became unavailable."]);
 
       const finalAnswers = telegram.sendMessage.mock.calls
@@ -116,7 +117,8 @@ describe("provider stall fallback", () => {
   it("does not retry a stalled provider when no fallback remains", async () => {
     const db = openDb(":memory:");
     const fallbackRequests = new Map<string, ProviderFallbackReason>();
-    const fallbackChain = new ProviderFallbackChain(["codex"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex"], db, "telegram:interactive",
+         () => true);
     const telegram = client();
     const sourceRun = vi.fn(async () => {
       throw new ProviderStallError("still stalled");
@@ -168,7 +170,8 @@ describe("provider stall fallback", () => {
     const db = openDb(":memory:");
     const chatKey = "860";
     const fallbackRequests = new Map<string, ProviderFallbackReason>();
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive",
+         () => true);
     const telegram = client();
     const notices: string[] = [];
     const sourceRun = vi.fn(async () => {
@@ -213,7 +216,7 @@ describe("provider stall fallback", () => {
     }
 
     try {
-      setUserCliPreference(db, chatKey, "codex");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: chatKey }, "codex");
       await dispatchInteractiveWithFallback({
         update_id: 862,
         message: {

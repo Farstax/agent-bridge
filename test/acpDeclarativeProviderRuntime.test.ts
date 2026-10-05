@@ -172,9 +172,10 @@ describe("declarative ACP provider runtime", () => {
       setSession: vi.fn(),
     } as unknown as BridgeDb;
     const kind = "fixture" as BotKind;
-    expect(lookupProviderSession(db, "conversation", kind, resolveFixture)).toBe("fixture-session");
-    persistProviderSession(db, "conversation", kind, "next-session", "run-1", resolveFixture);
+    expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "conversation" }, kind, resolveFixture)).toBe("fixture-session");
+    persistProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "conversation" }, kind, "next-session", "run-1", resolveFixture);
     expect(db.putAcpSessionBinding).toHaveBeenCalledWith({
+      surfaceIdentity: "telegram:interactive",
       conversationId: "conversation",
       providerId: "fixture-acp",
       acpSessionId: "next-session",

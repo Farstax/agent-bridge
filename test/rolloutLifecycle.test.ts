@@ -131,7 +131,7 @@ describe("controlled rollout lifecycle reconciliation", () => {
 
   it("fails contained runs, releases locks, and requeues claimed messages without losing attachments", () => {
     const bridge = open();
-    bridge.insertRun("contained-run", "chat-1", "codex");
+    bridge.insertRun("contained-run", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
     bridge.raw.prepare("UPDATE bridge_runs SET started_at = ? WHERE run_id = ?")
       .run("2026-07-29T11:00:00.000Z", "contained-run");
     const lane = bridge.acquireLock("telegram:interactive", "chat-1");
@@ -182,7 +182,7 @@ describe("controlled rollout lifecycle reconciliation", () => {
 
   it("reconciles the production-shaped cohort after containment without process inspection", () => {
     const bridge = open();
-    bridge.insertRun("claimed-run", "chat-1", "codex");
+    bridge.insertRun("claimed-run", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
     const lane = bridge.acquireLock("telegram:interactive", "chat-1");
     bridge.raw.prepare("UPDATE execution_locks SET run_id = ?").run("claimed-run");
     bridge.enqueueMsg("telegram:interactive", "chat-1", { prompt: "preserve", chatId: 1, chatType: "private" });

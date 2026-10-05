@@ -41,7 +41,7 @@ describe("Issue #637 provider fallback continuation intent", () => {
   });
 
   it("tells Claude to continue the same action after Codex fallback without inventing a conversation turn", async () => {
-    markHandoffRequired(db, "100", "claude", "fallback_from_codex");
+    markHandoffRequired(db, "telegram:interactive", "100", "claude", "fallback_from_codex");
 
     const prompt = await buildPrompt(makeEngine(db, "claude"), "fresh");
 
@@ -52,7 +52,7 @@ describe("Issue #637 provider fallback continuation intent", () => {
   });
 
   it("tells the next Agy provider to continue after Claude fallback", async () => {
-    markHandoffRequired(db, "100", "antigravity", "fallback_from_claude");
+    markHandoffRequired(db, "telegram:interactive", "100", "antigravity", "fallback_from_claude");
 
     const prompt = await buildPrompt(makeEngine(db, "antigravity"), "fresh");
 
@@ -61,7 +61,7 @@ describe("Issue #637 provider fallback continuation intent", () => {
   });
 
   it("does not imply interrupted work for a manual provider switch", async () => {
-    markHandoffRequired(db, "100", "claude", "manual_switch");
+    markHandoffRequired(db, "telegram:interactive", "100", "claude", "manual_switch");
 
     const prompt = await buildPrompt(makeEngine(db, "claude"), "fresh");
 
@@ -73,12 +73,12 @@ describe("Issue #637 provider fallback continuation intent", () => {
     const engine = makeEngine(db, "claude");
 
     expect(await buildPrompt(engine, "fresh")).not.toContain(FALLBACK_NOTE);
-    markHandoffRequired(db, "100", "claude", "fallback_from_codex");
+    markHandoffRequired(db, "telegram:interactive", "100", "claude", "fallback_from_codex");
     expect(await buildPrompt(engine, "resume")).not.toContain(FALLBACK_NOTE);
   });
 
   it("keeps the durable fallback marker until a successful fresh provider result owns clearing it", () => {
-    markHandoffRequired(db, "100", "claude", "fallback_from_codex");
-    expect(isHandoffRequired(db, "100", "claude")).toBe(true);
+    markHandoffRequired(db, "telegram:interactive", "100", "claude", "fallback_from_codex");
+    expect(isHandoffRequired(db, "telegram:interactive", "100", "claude")).toBe(true);
   });
 });

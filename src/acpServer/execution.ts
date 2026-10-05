@@ -157,6 +157,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     const { db, providerChain, createEngine } = this.options;
     const router = createSurfaceNeutralProviderRouter({
       db,
+      surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider: providerChain[0],
       providerChain,
       engineForProvider: (attemptProvider) => createEngine(session, attemptProvider),

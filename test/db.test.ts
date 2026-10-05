@@ -9,12 +9,12 @@ afterEach(() => { db.close(); });
 
 describe("BridgeDb ordinary Run state", () => {
   it("keeps sessions isolated by chat and provider", () => {
-    db.setSession("chat-1", "codex", "codex-1");
-    db.setSession("chat-1", "claude", "claude-1");
-    db.setSession("chat-2", "codex", "codex-2");
-    expect(db.getSession("chat-1", "codex")).toBe("codex-1");
-    expect(db.getSession("chat-1", "claude")).toBe("claude-1");
-    expect(db.getSession("chat-2", "codex")).toBe("codex-2");
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex", "codex-1");
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "claude", "claude-1");
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat-2" }, "codex", "codex-2");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex")).toBe("codex-1");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "claude")).toBe("claude-1");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat-2" }, "codex")).toBe("codex-2");
   });
 
   it("fences one execution lane per surface and chat", () => {
@@ -27,7 +27,7 @@ describe("BridgeDb ordinary Run state", () => {
   });
 
   it("persists an ordinary Run and its lifecycle events", () => {
-    db.insertRun("run-1", "chat-1", "codex");
+    db.insertRun("run-1", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
     db.insertEvent("run-1", 1, "provider_started", new Date().toISOString(), { provider: "codex" });
     expect(db.getRun("run-1")).toMatchObject({ run_id: "run-1", status: "running" });
     expect(db.getEventsForRun("run-1")).toHaveLength(1);

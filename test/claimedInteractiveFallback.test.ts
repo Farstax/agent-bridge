@@ -17,7 +17,8 @@ describe("claimed interactive fallback", () => {
         },
       });
       const executeClaimedMessage = vi.fn(async () => "committed" as const);
-      const fallbackChain = new ProviderFallbackChain(["codex"], db, () => true);
+      const fallbackChain = new ProviderFallbackChain(["codex"], db, "telegram:interactive",
+         () => true);
 
       await expect(dispatchClaimedInteractiveWithFallback(message, "discord-channel", {
         engines: { codex: { executeClaimedMessage } },

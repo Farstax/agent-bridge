@@ -73,7 +73,8 @@ describe("interactive capacity fallback durable admission", () => {
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
     client.deleteMessage.mockRejectedValue(new Error("Telegram delete failed"));
-    const fallbackChain = new ProviderFallbackChain(["claude", "antigravity"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["claude", "antigravity"], db, "telegram:interactive",
+         () => true);
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
@@ -102,7 +103,7 @@ describe("interactive capacity fallback durable admission", () => {
     const deps = { engines, fallbackChain, exhaustedChats, db, notify: async (message: string) => { notifications.push(message); } };
 
     try {
-      setUserCliPreference(db, "100", "claude");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "claude");
       for (const engine of Object.values(engines)) {
         engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
       }
@@ -129,7 +130,8 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new ProviderFallbackChain(["claude", "antigravity"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["claude", "antigravity"], db, "telegram:interactive",
+         () => true);
     const notifications: string[] = [];
     const claudeRun = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
       options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "stale Claude preview" } } })}\n`);
@@ -155,7 +157,7 @@ describe("interactive capacity fallback durable admission", () => {
     const deps = { engines, fallbackChain, exhaustedChats, db, notify: async (message: string) => { notifications.push(message); } };
 
     try {
-      setUserCliPreference(db, "100", "claude");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "claude");
       for (const engine of Object.values(engines)) {
         engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
       }
@@ -183,7 +185,8 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, "telegram:interactive",
+         () => true);
     const notifications: string[] = [];
 
     const codexRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
@@ -237,7 +240,7 @@ describe("interactive capacity fallback durable admission", () => {
     }
 
     try {
-      setUserCliPreference(db, "100", "codex");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
       // An unrelated pending lane on the same surface must not be recovered as
       // a side effect of chat 100 changing providers.
       db.enqueueMsg("telegram:interactive", "200", {
@@ -266,7 +269,7 @@ describe("interactive capacity fallback durable admission", () => {
       expect(antigravityRun).toHaveBeenCalledTimes(1);
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
       expect(db.pendingMsgCount("telegram:interactive", "200")).toBe(1);
-      expect(getUserCliPreference(db, "100")).toBe("antigravity");
+      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" } )).toBe("antigravity");
       expect(notifications).toEqual([
         "Switching to claude (codex at capacity)",
         "Switching to antigravity (claude at capacity)",
@@ -285,7 +288,8 @@ describe("interactive capacity fallback durable admission", () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, "telegram:interactive",
+         () => true);
     const notifications: string[] = [];
 
     const codexRun = vi.fn().mockRejectedValue(new Error("session limit reached"));
@@ -331,7 +335,7 @@ describe("interactive capacity fallback durable admission", () => {
     }
 
     try {
-      setUserCliPreference(db, "100", "codex");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
 
       await dispatchInteractiveWithFallback(
         {
@@ -351,7 +355,7 @@ describe("interactive capacity fallback durable admission", () => {
       expect(claudeRun).toHaveBeenCalledTimes(1);
       expect(antigravityRun).toHaveBeenCalledTimes(1);
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
-      expect(getUserCliPreference(db, "100")).toBe("codex");
+      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" } )).toBe("codex");
       expect(notifications).toEqual([
         "Switching to claude (codex at capacity)",
         "Switching to antigravity (claude at capacity)",
