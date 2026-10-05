@@ -350,4 +350,51 @@ describe("scheduled companion routines", () => {
     expect(turn.actorId).toBe(actor);
     expect(typeof turn.delivery.chatId).toBe("string");
   });
+
+  it("persists legacy delivery normalization once on first read instead of re-decoding chatKey every scan (issue #930)", () => {
+    const db = setup();
+    // A pre-#929 routine row, stored without `delivery` -- exactly the shape
+    // a database upgraded straight through v18 would still contain.
+    const legacy = weekly();
+    const { delivery: _delivery, ...withoutDelivery } = legacy as ScheduledRoutine & { delivery?: unknown };
+    db.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
+      .run("scheduled-routine:v1:routine-1", JSON.stringify(withoutDelivery));
+
+    const rawBefore = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get("scheduled-routine:v1:routine-1") as { value: string };
+    expect(JSON.parse(rawBefore.value).delivery).toBeUndefined();
+
+    const [firstRead] = listScheduledRoutines(db, "telegram:interactive", "-100:42");
+    expect(firstRead.delivery).toEqual({ chatId: -100, chatType: "supergroup", threadId: 42 });
+
+    // The normalized record -- including `delivery` -- is now the stored
+    // value itself, not something re-derived on every read.
+    const rawAfter = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get("scheduled-routine:v1:routine-1") as { value: string };
+    expect(JSON.parse(rawAfter.value).delivery).toEqual({ chatId: -100, chatType: "supergroup", threadId: 42 });
+
+    // A second read is a no-op rewrite: the stored row is unchanged, proving
+    // the decoder path is not exercised again.
+    const writeSpy = vi.spyOn(db.raw, "prepare");
+    const [secondRead] = listScheduledRoutines(db, "telegram:interactive", "-100:42");
+    expect(secondRead.delivery).toEqual({ chatId: -100, chatType: "supergroup", threadId: 42 });
+    expect(writeSpy.mock.calls.some(([sql]) => String(sql).startsWith("UPDATE settings"))).toBe(false);
+    writeSpy.mockRestore();
+    db.close();
+  });
+
+  it("dispatches a normalized legacy routine without reconstructing delivery from chatKey", async () => {
+    const db = setup();
+    const legacy = weekly();
+    const { delivery: _delivery, ...withoutDelivery } = legacy as ScheduledRoutine & { delivery?: unknown };
+    db.raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
+      .run("scheduled-routine:v1:routine-1", JSON.stringify(withoutDelivery));
+
+    const dispatch = vi.fn(async (routine: ScheduledRoutine) => {
+      // Runtime dispatch must see the already-normalized record, not a
+      // delivery-less one it would need to decode itself.
+      expect(routine.delivery).toEqual({ chatId: -100, chatType: "supergroup", threadId: 42 });
+    });
+    await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:01:00.000Z"));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    db.close();
+  });
 });

@@ -74,19 +74,6 @@ export class SettingsRepository {
     this.writeRaw(key, value);
   }
 
-  getChatRepo(identity: ConversationIdentity): string | null {
-    assertConversationIdentity(identity);
-    const row = this.db
-      .prepare(`SELECT value FROM settings WHERE key = ?`)
-      .get(`chat:repo:${identity.surfaceIdentity}:${identity.chatKey}`) as { value: string } | undefined;
-    return row?.value ?? null;
-  }
-
-  setChatRepo(identity: ConversationIdentity, repo: string | null): void {
-    assertConversationIdentity(identity);
-    this.setSetting(`chat:repo:${identity.surfaceIdentity}:${identity.chatKey}`, repo);
-  }
-
   incrementFailures(identity: ConversationIdentity, bot: BotKind): number {
     assertConversationIdentity(identity);
     const col = `${bot}_consecutive_failures`;
