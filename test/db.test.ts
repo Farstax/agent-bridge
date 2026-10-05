@@ -82,4 +82,14 @@ describe("db.ts public export compatibility", () => {
     expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(50_000);
     expect(DEFAULT_CONTEXT_RECENT_TURN_LIMIT).toBe(200);
   });
+
+  it("has no dead chat-repo compatibility surface (issue #930)", () => {
+    const db = openDb(":memory:");
+    try {
+      expect((db as unknown as Record<string, unknown>).getChatRepo).toBeUndefined();
+      expect((db as unknown as Record<string, unknown>).setChatRepo).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
 });

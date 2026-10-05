@@ -396,14 +396,6 @@ export class BridgeDb {
     return this.advisorCalls.getAdvisorAttempts(requestId);
   }
 
-  getChatRepo(identity: ConversationIdentity): string | null {
-    return this.settings.getChatRepo(identity);
-  }
-
-  setChatRepo(identity: ConversationIdentity, repo: string | null): void {
-    this.settings.setChatRepo(identity, repo);
-  }
-
   insertRun(
     runId: string,
     identity: ConversationIdentity,

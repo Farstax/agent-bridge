@@ -226,16 +226,37 @@ export function createScheduledRoutine(db: BridgeDb, routine: ScheduledRoutine):
   return normalized;
 }
 
+/**
+ * Parses one stored routine row, persisting the result when the legacy
+ * decoder had to backfill `delivery` so that decode never runs again for
+ * this row -- every later read and dispatch then finds `delivery` already
+ * on the stored record instead of re-deriving it from `chatKey`.
+ */
+function normalizeStoredRoutine(db: BridgeDb, key: string, rawValue: string): ScheduledRoutine | null {
+  const routine = parseRoutine(rawValue);
+  if (!routine) return null;
+  let storedHasDelivery: boolean;
+  try {
+    storedHasDelivery = Boolean((JSON.parse(rawValue) as { delivery?: unknown }).delivery);
+  } catch {
+    storedHasDelivery = false;
+  }
+  if (!storedHasDelivery) {
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(routine), key);
+  }
+  return routine;
+}
+
 export function listScheduledRoutines(
   db: BridgeDb,
   surfaceIdentity?: string,
   chatKey?: string,
   ownerKey?: string,
 ): ScheduledRoutine[] {
-  const rows = db.raw.prepare("SELECT value FROM settings WHERE key LIKE ? ORDER BY key ASC")
-    .all(`${ROUTINE_PREFIX}%`) as Array<{ value: string }>;
+  const rows = db.raw.prepare("SELECT key, value FROM settings WHERE key LIKE ? ORDER BY key ASC")
+    .all(`${ROUTINE_PREFIX}%`) as Array<{ key: string; value: string }>;
   return rows
-    .map((row) => parseRoutine(row.value))
+    .map((row) => normalizeStoredRoutine(db, row.key, row.value))
     .filter((routine): routine is ScheduledRoutine => !!routine)
     .filter((routine) => surfaceIdentity === undefined || routine.surfaceIdentity === surfaceIdentity)
     .filter((routine) => chatKey === undefined || routine.chatKey === chatKey)
