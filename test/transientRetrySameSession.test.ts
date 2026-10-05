@@ -63,4 +63,13 @@ describe("generic transient same-session retry (tier 1)", () => {
 
     expect(attempts).toEqual([1]);
   });
+
+  it("retries an unknown provider-boundary error once", async () => {
+    const attempts: number[] = [];
+    await expect(runWithAcpTransientRetry("claude", async (attempt) => {
+      attempts.push(attempt);
+      throw new Error("organization disabled subscription access");
+    }, { abortRequested: () => false, wait: async () => undefined })).rejects.toThrow(/subscription access/);
+    expect(attempts).toEqual([1, 2]);
+  });
 });

@@ -171,6 +171,16 @@ function isRouteableKind(kind: string): kind is RouteableBotKind {
   return ROUTEABLE_KINDS.has(kind);
 }
 
+// Deliberately excludes classification.kind === "unknown": this gate gets
+// evaluated against whatever BridgeEngine's broad executePromptAsync catch
+// receives, which covers ordinary task/repository failures just as much as
+// genuine provider-boundary ones -- unlike runWithAcpTransientRetry's
+// same-session retry, which only ever wraps the real ACP transport call and
+// so can safely treat "unknown" as boundary-originated. Promoting "unknown"
+// to fallback-eligible here would cross providers (and clear/replace
+// sessions) for an unrecognised Bridge-internal error too, which issue #923
+// explicitly rules out (see test/engineProviderStallRecovery.test.ts's
+// "keeps ordinary task errors on the existing delivery path").
 function providerFallbackReasonForError(executionKind: RouteableBotKind, error: Error): ProviderFallbackReason | null {
   if (error instanceof ProviderStallError) return "provider_stall";
   if (error instanceof CliTimeoutError) return null;
@@ -746,8 +756,12 @@ export class BridgeEngine {
       // instead of the next one in the chain -- so no new context-injection
       // path is needed. Not attempted for any other classification
       // (capacity_exhausted, auth_required, model_unavailable, fatal,
-      // unknown): those are account/config-level conditions a fresh session
-      // on this same account cannot fix.
+      // unknown): those are either account/config-level conditions a fresh
+      // session on this same account cannot fix, or -- for unknown -- an
+      // unclassifiable error this coarse a boundary cannot tell apart from
+      // an ordinary task/repository failure (see providerFallbackReasonForError
+      // and runWithAcpTransientRetry's narrower, structurally-confined
+      // same-session retry for the one place "unknown" is safe to recover).
       if (classification.kind === "transient" && isRouteableKind(sourceKind)) {
         this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, chatKey, sourceKind, null));
         markHandoffRequired(this.db, chatKey, sourceKind, `fallback_from_${sourceKind}`);
