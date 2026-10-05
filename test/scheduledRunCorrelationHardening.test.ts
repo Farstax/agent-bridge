@@ -39,6 +39,7 @@ function routineFixture(overrides: Partial<ScheduledRoutine> = {}): ScheduledRou
     schedule: { type: "once", localDateTime: "2026-09-01T20:00" },
     enabled: true,
     createdAt: "2026-09-01T19:00:00.000Z",
+    delivery: { chatId: 100, chatType: "private" },
     ...overrides,
   };
 }
@@ -147,7 +148,7 @@ describe("scheduled Run correlation hardening", () => {
 
   it("preserves queued occurrence identity across routine deletion and database reopen", () => {
     const path = dbPath("scheduled-correlation-deleted-routine");
-    const routine = routineFixture({ id: "deleted-after-queue", chatKey: "200" });
+    const routine = routineFixture({ id: "deleted-after-queue", chatKey: "200", delivery: { chatId: 200, chatType: "private" } });
     const intendedAt = "2026-09-01T20:00:00.000Z";
     const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
 

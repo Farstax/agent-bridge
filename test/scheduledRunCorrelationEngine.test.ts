@@ -64,6 +64,7 @@ function routineFixture(overrides: Partial<ScheduledRoutine> = {}): ScheduledRou
     schedule: { type: "once", localDateTime: "2026-09-01T20:00" },
     enabled: true,
     createdAt: "2026-09-01T19:00:00.000Z",
+    delivery: { chatId: 100, chatType: "private" },
     ...overrides,
   };
 }

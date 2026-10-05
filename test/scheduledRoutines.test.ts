@@ -41,6 +41,7 @@ function weekly(overrides: Partial<ScheduledRoutine> = {}): ScheduledRoutine {
     schedule: { type: "weekly", weekdays: [1, 2, 3, 4, 5], time: "08:00" },
     enabled: true,
     createdAt: "2026-08-29T12:00:00.000Z",
+    delivery: { chatId: -100, chatType: "supergroup", threadId: 42 },
     ...overrides,
   };
 }
@@ -343,6 +344,7 @@ describe("scheduled companion routines", () => {
       id: "discord-routine",
       surfaceIdentity: "discord:interactive",
       chatKey: "123456789012345678",
+      delivery: { chatId: "123456789012345678", chatType: "private" },
     });
     const actor = "987654321098765432";
     const turn = buildScheduledInteractiveTurn(routine, "2026-08-31T06:00:00.000Z", actor);
@@ -396,5 +398,18 @@ describe("scheduled companion routines", () => {
     await scanScheduledRoutines(db, "telegram:interactive", dispatch, Date.parse("2026-08-31T06:01:00.000Z"));
     expect(dispatch).toHaveBeenCalledTimes(1);
     db.close();
+  });
+
+  it("fails closed instead of reconstructing delivery from chatKey when the dispatch builder is given a delivery-less routine", () => {
+    const { delivery: _delivery, ...telegramWithoutDelivery } = weekly() as ScheduledRoutine & { delivery?: unknown };
+    expect(() => buildScheduledInteractiveTurn(telegramWithoutDelivery as ScheduledRoutine, "2026-08-31T06:00:00.000Z", "123"))
+      .toThrow(/no delivery coordinates/);
+
+    const { delivery: __delivery, ...discordWithoutDelivery } = weekly({
+      surfaceIdentity: "discord:interactive",
+      chatKey: "123456789012345678",
+    }) as ScheduledRoutine & { delivery?: unknown };
+    expect(() => buildScheduledInteractiveTurn(discordWithoutDelivery as ScheduledRoutine, "2026-08-31T06:00:00.000Z", "987654321098765432"))
+      .toThrow(/no delivery coordinates/);
   });
 });
