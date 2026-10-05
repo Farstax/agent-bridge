@@ -1,5 +1,6 @@
 import type { BridgeDb } from "../db.js";
 import type { BotKind } from "../types.js";
+import { assertConversationIdentity, type ConversationIdentity } from "../conversationIdentity.js";
 import { resolveRuntimeForBotName } from "./acpRuntime.js";
 
 function acpSessionBindingKey(
@@ -14,44 +15,47 @@ function acpSessionBindingKey(
 /** Route provider session state through the store owned by the resolved runtime transport. */
 export function lookupProviderSession(
   db: BridgeDb,
-  chatKey: string,
+  identity: ConversationIdentity,
   kind: BotKind | "custom-acp",
   resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
 ): string | null {
+  assertConversationIdentity(identity);
   const bindingKey = acpSessionBindingKey(kind, resolveRuntime);
   if (bindingKey) {
-    return db.getAcpSessionBinding(chatKey, bindingKey)?.acpSessionId ?? null;
+    return db.getAcpSessionBinding(identity, bindingKey)?.acpSessionId ?? null;
   }
-  return db.getSession(chatKey, kind as BotKind);
+  return db.getSession(identity, kind as BotKind);
 }
 
 export function persistProviderSession(
   db: BridgeDb,
-  chatKey: string,
+  identity: ConversationIdentity,
   kind: BotKind | "custom-acp",
   sessionId: string | null,
   runId: string | null = null,
   resolveRuntime: typeof resolveRuntimeForBotName = resolveRuntimeForBotName,
 ): void {
+  assertConversationIdentity(identity);
   const bindingKey = acpSessionBindingKey(kind, resolveRuntime);
   if (bindingKey) {
     if (sessionId) {
       db.putAcpSessionBinding({
-        conversationId: chatKey,
+        surfaceIdentity: identity.surfaceIdentity,
+        conversationId: identity.chatKey,
         providerId: bindingKey,
         acpSessionId: sessionId,
         runId,
       });
     } else {
-      db.clearAcpSessionBinding(chatKey, bindingKey);
+      db.clearAcpSessionBinding(identity, bindingKey);
       // Remove any pre-ACP compatibility pointer during reset/handoff too.
       if (kind !== "custom-acp") {
-        db.setSession(chatKey, kind, null);
+        db.setSession(identity, kind, null);
       }
     }
     return;
   }
   if (kind !== "custom-acp") {
-    db.setSession(chatKey, kind, sessionId);
+    db.setSession(identity, kind, sessionId);
   }
 }

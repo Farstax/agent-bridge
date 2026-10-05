@@ -15,9 +15,10 @@ import { applyPendingMessageIdentityRepairMigration } from "./pendingMessageIden
 import { applyScheduledOccurrenceCorrelationMigration } from "./scheduledOccurrenceCorrelationMigration.js";
 import { applyAcpSessionBindingsMigration } from "./acpSessionBindingsMigration.js";
 import { applyOutwardAcpSessionsMigration } from "./outwardAcpSessionsMigration.js";
+import { applyConversationIdentityMigration } from "./conversationIdentityMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 17;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 export interface Migration {
   version: number;
@@ -35,7 +36,7 @@ export interface Migration {
 const MIGRATION_GROWTH: Readonly<Record<number, "none" | "copy">> = {
   1: "copy", 2: "copy", 3: "copy", 4: "copy", 5: "copy", 6: "none",
   7: "copy", 8: "copy", 9: "copy", 10: "copy", 11: "copy", 12: "copy",
-  13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy",
+  13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy", 18: "copy",
 };
 
 export function migrationGrowthClass(currentVersion: number): "none" | "copy" {
@@ -191,6 +192,7 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * authoritative occurrence -> Run correlation survives queueing and restart.
  * Version 16 persists Bridge conversation identity -> provider ACP session ids.
  * Version 17 persists outward ACP session identity separately from Bridge conversation identity.
+ * Version 18 scopes conversation state and ACP bindings by surface identity.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -211,4 +213,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 15, name: "persist-scheduled-occurrence-correlation", up: applyScheduledOccurrenceCorrelationMigration },
   { version: 16, name: "persist-acp-session-bindings", up: applyAcpSessionBindingsMigration },
   { version: 17, name: "persist-outward-acp-sessions", up: applyOutwardAcpSessionsMigration },
+  { version: 18, name: "scope-conversation-state-by-surface", up: applyConversationIdentityMigration },
 ];

@@ -1,12 +1,13 @@
 export interface AcpSessionBinding {
+  readonly surfaceIdentity: string;
   readonly conversationId: string;
   readonly runId: string | null;
   readonly providerId: string;
   readonly acpSessionId: string;
 }
 
-function key(conversationId: string, providerId: string): string {
-  return `${conversationId}\0${providerId}`;
+function key(surfaceIdentity: string, conversationId: string, providerId: string): string {
+  return `${surfaceIdentity}\0${conversationId}\0${providerId}`;
 }
 
 /**
@@ -18,21 +19,22 @@ export class AcpSessionMap {
   private readonly bindings = new Map<string, AcpSessionBinding>();
 
   bind(binding: AcpSessionBinding): void {
+    if (!binding.surfaceIdentity.trim()) throw new Error("ACP session binding requires a Bridge surface identity");
     if (!binding.conversationId.trim()) throw new Error("ACP session binding requires a Bridge conversation id");
     if (!binding.providerId.trim()) throw new Error("ACP session binding requires a provider id");
     if (!binding.acpSessionId.trim()) throw new Error("ACP session binding requires a provider ACP session id");
     if (binding.acpSessionId === binding.conversationId) {
       throw new Error("ACP session id must not equal the Bridge conversation id");
     }
-    this.bindings.set(key(binding.conversationId, binding.providerId), { ...binding });
+    this.bindings.set(key(binding.surfaceIdentity, binding.conversationId, binding.providerId), { ...binding });
   }
 
-  lookup(conversationId: string, providerId: string): AcpSessionBinding | null {
-    return this.bindings.get(key(conversationId, providerId)) ?? null;
+  lookup(surfaceIdentity: string, conversationId: string, providerId: string): AcpSessionBinding | null {
+    return this.bindings.get(key(surfaceIdentity, conversationId, providerId)) ?? null;
   }
 
-  clear(conversationId: string, providerId: string): void {
-    this.bindings.delete(key(conversationId, providerId));
+  clear(surfaceIdentity: string, conversationId: string, providerId: string): void {
+    this.bindings.delete(key(surfaceIdentity, conversationId, providerId));
   }
 
   serialize(): AcpSessionBinding[] {

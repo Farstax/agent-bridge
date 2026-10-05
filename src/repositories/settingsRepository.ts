@@ -5,6 +5,7 @@ import {
 } from "../acp/sessionConfig.js";
 import { normalizeAgyModelFamily } from "../effort.js";
 import { isAcpBackedBot } from "../providers/registry.js";
+import { assertConversationIdentity, type ConversationIdentity } from "../conversationIdentity.js";
 
 type BotKind = "codex" | "antigravity" | "claude" | "grok" | "cursor";
 
@@ -73,36 +74,40 @@ export class SettingsRepository {
     this.writeRaw(key, value);
   }
 
-  getChatRepo(chatId: string): string | null {
+  getChatRepo(identity: ConversationIdentity): string | null {
+    assertConversationIdentity(identity);
     const row = this.db
       .prepare(`SELECT value FROM settings WHERE key = ?`)
-      .get(`chat:repo:${chatId}`) as { value: string } | undefined;
+      .get(`chat:repo:${identity.surfaceIdentity}:${identity.chatKey}`) as { value: string } | undefined;
     return row?.value ?? null;
   }
 
-  setChatRepo(chatId: string, repo: string | null): void {
-    this.setSetting(`chat:repo:${chatId}`, repo);
+  setChatRepo(identity: ConversationIdentity, repo: string | null): void {
+    assertConversationIdentity(identity);
+    this.setSetting(`chat:repo:${identity.surfaceIdentity}:${identity.chatKey}`, repo);
   }
 
-  incrementFailures(chatId: string, bot: BotKind): number {
+  incrementFailures(identity: ConversationIdentity, bot: BotKind): number {
+    assertConversationIdentity(identity);
     const col = `${bot}_consecutive_failures`;
     this.db
       .prepare(
-        `INSERT INTO bridge_state (chat_id, ${col}) VALUES (?, 1)
-         ON CONFLICT (chat_id) DO UPDATE SET ${col} = ${col} + 1`
+        `INSERT INTO bridge_state (surface_identity, chat_id, ${col}) VALUES (?, ?, 1)
+         ON CONFLICT (surface_identity, chat_id) DO UPDATE SET ${col} = ${col} + 1`
       )
-      .run(chatId);
+      .run(identity.surfaceIdentity, identity.chatKey);
     const row = this.db
-      .prepare(`SELECT ${col} AS n FROM bridge_state WHERE chat_id = ?`)
-      .get(chatId) as { n: number } | undefined;
+      .prepare(`SELECT ${col} AS n FROM bridge_state WHERE surface_identity = ? AND chat_id = ?`)
+      .get(identity.surfaceIdentity, identity.chatKey) as { n: number } | undefined;
     return row?.n ?? 1;
   }
 
-  resetFailures(chatId: string, bot: BotKind): void {
+  resetFailures(identity: ConversationIdentity, bot: BotKind): void {
+    assertConversationIdentity(identity);
     const col = `${bot}_consecutive_failures`;
     this.db
-      .prepare(`UPDATE bridge_state SET ${col} = 0 WHERE chat_id = ?`)
-      .run(chatId);
+      .prepare(`UPDATE bridge_state SET ${col} = 0 WHERE surface_identity = ? AND chat_id = ?`)
+      .run(identity.surfaceIdentity, identity.chatKey);
   }
 
   getMaxConsecutiveFailures(): { bot: string; count: number }[] {
@@ -128,16 +133,16 @@ export class SettingsRepository {
 
   getLastUpdateId(bot: BotKind): number {
     const row = this.db
-      .prepare(`SELECT last_update_id FROM bridge_state WHERE chat_id = ?`)
-      .get(pollingKey(bot)) as { last_update_id: number } | undefined;
+      .prepare(`SELECT last_update_id FROM bridge_state WHERE surface_identity = ? AND chat_id = ?`)
+      .get("$global", pollingKey(bot)) as { last_update_id: number } | undefined;
     return row?.last_update_id ?? 0;
   }
 
   setLastUpdateId(bot: BotKind, updateId: number): void {
     this.db
       .prepare(
-        `INSERT INTO bridge_state (chat_id, last_update_id) VALUES (?, ?)
-         ON CONFLICT (chat_id) DO UPDATE SET
+        `INSERT INTO bridge_state (surface_identity, chat_id, last_update_id) VALUES ('$global', ?, ?)
+         ON CONFLICT (surface_identity, chat_id) DO UPDATE SET
            last_update_id = MAX(last_update_id, excluded.last_update_id)`
       )
       .run(pollingKey(bot), updateId);

@@ -64,10 +64,11 @@ describe("/reset queue escape hatch", () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const engine = makeResetEngine(db, client);
-    const fallbackChain = new ProviderFallbackChain(["codex"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex"], db, "telegram:interactive",
+         () => true);
 
-    db.setSession("100", "codex", "stuck-session");
-    db.setSession("200", "codex", "other-session");
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex", "stuck-session");
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "200" }, "codex", "other-session");
     db.enqueueMsg("telegram:interactive", "100", {
       prompt: "stuck work",
       chatId: 100,
@@ -82,7 +83,7 @@ describe("/reset queue escape hatch", () => {
     });
 
     try {
-      interactiveBot.setUserCliPreference(db, "100", "codex");
+      interactiveBot.setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
       await interactiveBot.dispatchInteractiveWithFallback(resetUpdate(1), "100", {
         engines: { codex: engine },
         fallbackChain,
@@ -93,8 +94,8 @@ describe("/reset queue escape hatch", () => {
 
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
       expect(db.pendingMsgCount("telegram:interactive", "200")).toBe(1);
-      expect(db.getSession("100", "codex")).toBeNull();
-      expect(db.getSession("200", "codex")).toBe("other-session");
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex")).toBeNull();
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "200" }, "codex")).toBe("other-session");
       expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
         text: "codex session reset. Pending work and conversation history cleared.",
       }));
@@ -107,7 +108,8 @@ describe("/reset queue escape hatch", () => {
     const db = openDb(":memory:");
     const client = makeMockClient();
     const exhaustedChats = new Set<string>();
-    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, "telegram:interactive",
+         () => true);
 
     const codexInitial = {
       handleUpdate: vi.fn(async () => { exhaustedChats.add("100"); }),
@@ -138,7 +140,7 @@ describe("/reset queue escape hatch", () => {
     };
 
     try {
-      interactiveBot.setUserCliPreference(db, "100", "codex");
+      interactiveBot.setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
       await interactiveBot.dispatchInteractiveWithFallback({
         update_id: 10,
         message: {

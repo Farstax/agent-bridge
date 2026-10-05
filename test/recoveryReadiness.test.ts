@@ -17,7 +17,7 @@ describe("recovery-readiness reconciliation guards", () => {
   }
 
   function staleRun(bridge: BridgeDb, runId: string): void {
-    bridge.insertRun(runId, "chat-1", "codex");
+    bridge.insertRun(runId, { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
     bridge.raw.prepare("UPDATE bridge_runs SET started_at = ? WHERE run_id = ?")
       .run("2026-07-26T10:00:00.000Z", runId);
   }

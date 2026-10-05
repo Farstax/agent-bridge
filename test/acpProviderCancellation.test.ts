@@ -107,7 +107,7 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
     expect(client.deleteMessage).toHaveBeenCalledWith({ chat_id: 100, message_id: 1 });
 
     // The ACP session is preserved so a later turn can resume it...
-    expect(db.getAcpSessionBinding("100", "codex")?.acpSessionId).toBe("acp-session-cancelled-1");
+    expect(db.getAcpSessionBinding( { surfaceIdentity: "test", chatKey: "100" }, "codex")?.acpSessionId).toBe("acp-session-cancelled-1");
     // ...but nothing was remembered as a completed conversation turn.
     expect(db.getConvStatus("100", "test").turnCount).toBe(0);
 
@@ -265,7 +265,7 @@ describe("ACP provider-cancellation terminal lifecycle", () => {
       message_id: 1,
       text: expect.stringContaining("the real answer"),
     }));
-    expect(db.getAcpSessionBinding("100", "codex")?.acpSessionId).toBe("acp-session-normal-1");
+    expect(db.getAcpSessionBinding( { surfaceIdentity: "test", chatKey: "100" }, "codex")?.acpSessionId).toBe("acp-session-normal-1");
     expect(db.getConvStatus("100", "test").turnCount).toBeGreaterThan(0);
     const turns = db.raw.prepare(
       "SELECT role, text FROM conversation_turns WHERE chat_key = ? ORDER BY id ASC",

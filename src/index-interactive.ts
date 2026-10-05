@@ -60,7 +60,6 @@ import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
 import {
   ScheduledRoutineRunner,
   buildScheduledInteractiveTurn,
-  scheduledTelegramDestination,
 } from "./scheduledRoutines.js";
 import {
   RunContinuationRunner,
@@ -194,6 +193,7 @@ if (!botUsername) {
 const fallbackChain = new ProviderFallbackChain(
   providerLock ? runtimePolicy.cliKinds : configuredCliChain,
   db,
+  runtimePolicy.surfaceIdentity,
   (cli) => getAvailableCliKinds().has(cli as CliKind),
 );
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
@@ -205,10 +205,10 @@ function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | 
     return { pref: available.has(providerLock) ? providerLock : null, available, stored: providerLock };
   }
 
-  const stored = getUserCliPreference(db, chatKey);
+  const stored = getUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey });
   const pref = resolveAvailableCliPreference(stored, detected);
   if (pref && pref !== stored) {
-    setUserCliPreference(db, chatKey, pref);
+    setUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, pref);
     fallbackChain.setActiveCli(chatKey, pref);
   }
   return { pref, available: detected, stored };
@@ -240,6 +240,7 @@ const engines = Object.fromEntries(
                 await prepareInteractiveAcpConfigControl({
                   kind,
                   commandText,
+                  surfaceIdentity: runtimePolicy.surfaceIdentity,
                   chatKey: ctx.chatKey,
                   db,
                   executionMode: resolveExecutionMode(kind, process.env),
@@ -263,7 +264,7 @@ const engines = Object.fromEntries(
 ) as Record<CliKind, BridgeEngine>;
 
 const defaultPref = providerLock
-  ?? resolveAvailableCliPreference(getUserCliPreference(db, "default"), getAvailableCliKinds())
+  ?? resolveAvailableCliPreference(getUserCliPreference(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey: "default" }), getAvailableCliKinds())
   ?? "codex";
 
 const runIngressSocket = process.env.BRIDGE_RUN_INGRESS_SOCKET?.trim();
@@ -358,7 +359,7 @@ for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     const chatKey = queued.chatKey;
     return dispatchClaimedInteractiveWithFallback(queued, chatKey, {
-      engines, fallbackChain, fallbackRequests, db,
+      surfaceIdentity: runtimePolicy.surfaceIdentity, engines, fallbackChain, fallbackRequests, db,
       notify: async (msg) => {
         await sendTelegramMessage({ client, kind: "interactive", chatId: queued.chatId, body: { text: msg, message_thread_id: queued.threadId ?? undefined } });
       },
@@ -390,7 +391,12 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       console.warn(`[scheduled-routines] owner mismatch for ${routine.id}; occurrence skipped`);
       return;
     }
-    const destination = scheduledTelegramDestination(routine);
+    // Runtime dispatch always receives a routine normalized by parseRoutine()
+    // (every listScheduledRoutines()/dispatch callback row), which has already
+    // populated `delivery` -- including a one-time legacy decode for pre-v18
+    // records. Dispatch itself must never re-derive delivery from chatKey.
+    if (!routine.delivery) throw new Error(`scheduled routine has no delivery coordinates: ${routine.id}`);
+    const destination = routine.delivery;
     const sendNotice = async (text: string) => {
       await sendTelegramMessage({
         client,
@@ -439,7 +445,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       notify: sendNotice,
       onCliSwitched: async (newCli) => {
         await registerGlobalCommands(newCli, " during scheduled fallback");
-        if (destination.chatId < 0) await registerGroupChatCommands(newCli, destination.chatId);
+        if (Number(destination.chatId) < 0) await registerGroupChatCommands(newCli, Number(destination.chatId));
       },
     });
   },
@@ -653,7 +659,7 @@ for (;;) {
             const messageId = cbq.message?.message_id;
             const chatKey = resolveUpdateChatKey(typedUpdate);
             if (chatKey) {
-              applyManualCliSwitchHandoff(db, chatKey, newCli);
+              applyManualCliSwitchHandoff(db, { surfaceIdentity: runtimePolicy.surfaceIdentity, chatKey }, newCli);
               fallbackChain.setActiveCli(chatKey, newCli);
             }
             await client.answerCallbackQuery({ callback_query_id: cbq.id, text: `Switched to ${newCli}` });
@@ -712,7 +718,7 @@ for (;;) {
             }).catch((err: unknown) => console.error("[interactive] dispatch error", err));
             continue;
           } else {
-            engines[pref].handleUpdate(typedUpdate)
+            engines[pref].handleUpdate(typedUpdate, chatKey)
               .catch((err: unknown) => console.error("[interactive] handleUpdate error", err));
           }
         } else {

@@ -31,6 +31,13 @@ export function requestAgentBridgeWait(args: string[], env: EnvLike = process.en
   const afterSeconds = Number(afterRaw);
   if (!Number.isInteger(afterSeconds)) throw new Error("--after-seconds requires an integer");
 
+  const deliveryChatId = env.AGENT_BRIDGE_DELIVERY_CHAT_ID?.trim();
+  const deliveryChatType = env.AGENT_BRIDGE_DELIVERY_CHAT_TYPE?.trim();
+  const deliveryThreadId = env.AGENT_BRIDGE_DELIVERY_THREAD_ID?.trim();
+  const delivery = deliveryChatId && deliveryChatType
+    ? { chatId: deliveryChatId, chatType: deliveryChatType, ...(deliveryThreadId ? { threadId: deliveryThreadId } : {}) }
+    : undefined;
+
   const raw = new Database(dbPath, { fileMustExist: true });
   raw.pragma("foreign_keys = ON");
   const db = new BridgeDb(raw, { serviceId: "run-continuation-helper", runId: originRunId, leaseMs: 90_000 });
@@ -42,6 +49,7 @@ export function requestAgentBridgeWait(args: string[], env: EnvLike = process.en
       provider,
       reason,
       afterSeconds,
+      delivery,
     });
     return `Continuation scheduled for ${continuation.dueAt}. Finish this Run without promising the user to check manually.`;
   } finally {

@@ -22,10 +22,11 @@ describe("runtime inspector", () => {
   it("projects representative runtime state without exposing secret-bearing fields", () => {
     const { dir, path, db } = fixture();
     try {
-      db.insertRun("run-active", "chat-1", "codex");
-      db.insertRun("run-failed", "chat-1", "claude");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
+      db.insertRun("run-failed", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "claude");
       db.updateRunFailed("run-failed", "github token ghp_supersecret must never escape");
       db.putAcpSessionBinding({
+        surfaceIdentity: "telegram:interactive",
         conversationId: "chat-1",
         providerId: "codex",
         acpSessionId: "secret-session-id",
@@ -49,7 +50,7 @@ describe("runtime inspector", () => {
       expect(claimScheduledRoutineOccurrence(db, "routine-1", routineOccurrence)).toBe(true);
       const occurrenceKey = scheduledOccurrenceKey("routine-1", routineOccurrence);
       expect(linkScheduledOccurrenceRun(db, occurrenceKey, "run-routine")).toBe(true);
-      db.insertRun("run-routine", "chat-1", "codex");
+      db.insertRun("run-routine", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
       createAutonomousGoal(db, {
         goalId: "goal-1",
         prompt: "private objective ghp_supersecret",
@@ -128,7 +129,7 @@ describe("runtime inspector", () => {
       });
       const intendedAt = new Date().toISOString();
       expect(claimScheduledRoutineOccurrence(db, "routine-unlinked", intendedAt)).toBe(true);
-      db.insertRun("nearby-user-run", "chat-unlinked", "codex");
+      db.insertRun("nearby-user-run", { surfaceIdentity: "telegram:interactive", chatKey: "chat-unlinked" }, "codex");
 
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,
@@ -198,8 +199,9 @@ describe("runtime inspector", () => {
   it("projects Codex ACP session bindings", () => {
     const { dir, path, db } = fixture();
     try {
-      db.insertRun("run-active", "chat-acp", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-acp" }, "codex");
       db.putAcpSessionBinding({
+        surfaceIdentity: "telegram:interactive",
         conversationId: "chat-acp",
         providerId: "codex",
         acpSessionId: "acp-session-secret",
@@ -230,7 +232,7 @@ describe("runtime inspector", () => {
   it("does not invent an ACP session when no binding exists", () => {
     const { dir, path, db } = fixture();
     try {
-      db.insertRun("run-active", "chat-empty", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-empty" }, "codex");
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,
         AGENT_BRIDGE_CHAT_KEY: "chat-empty",
@@ -254,8 +256,9 @@ describe("runtime inspector", () => {
   it("does not present a stale ACP binding as the active session", () => {
     const { dir, path, db } = fixture();
     try {
-      db.insertRun("run-active", "chat-stale", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-stale" }, "codex");
       db.putAcpSessionBinding({
+        surfaceIdentity: "telegram:interactive",
         conversationId: "chat-stale",
         providerId: "codex",
         acpSessionId: "stale-acp-session",
@@ -289,7 +292,7 @@ describe("runtime inspector", () => {
   it("resolves a bare ACP adapter command through PATH", () => {
     const { dir, path, db } = fixture();
     try {
-      db.insertRun("run-active", "chat-acp", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-acp" }, "codex");
       const bin = join(dir, "bin");
       mkdirSync(bin);
       writeFileSync(join(bin, "path-codex-acp"), "#!/bin/sh\n", { mode: 0o755 });
@@ -313,7 +316,7 @@ describe("runtime inspector", () => {
   it("does not claim Codex is available from a Run when the ACP adapter is missing", () => {
     const { dir, path, db } = fixture();
     try {
-      db.insertRun("run-active", "chat-acp", "codex");
+      db.insertRun("run-active", { surfaceIdentity: "telegram:interactive", chatKey: "chat-acp" }, "codex");
       const adapter = join(dir, "missing-codex-acp");
       const view = JSON.parse(renderAgentBridgeInspection(["--json"], {
         AGENT_BRIDGE_CONTEXT_DB: path,

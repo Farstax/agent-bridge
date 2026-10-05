@@ -140,22 +140,22 @@ export function isBridgeCommand(text: string): boolean {
   return bridgeCommands.has(normalizeCommand(text));
 }
 
-export function antigravityNarrationSettingKey(chatId: string): string {
-  return `antigravity:narration:${chatId}`;
+export function antigravityNarrationSettingKey(surfaceIdentity: string, chatId: string): string {
+  return `antigravity:narration:${surfaceIdentity}:${chatId}`;
 }
 
-export function isAntigravityNarrationVisible(db: BridgeDb, chatId: string): boolean {
-  return db.getSetting(antigravityNarrationSettingKey(chatId)) === "visible";
+export function isAntigravityNarrationVisible(db: BridgeDb, surfaceIdentity: string, chatId: string): boolean {
+  return db.getSetting(antigravityNarrationSettingKey(surfaceIdentity, chatId)) === "visible";
 }
 
-function handleNarrationCommand(kind: RouteableBotKind, text: string, db: BridgeDb, chatId: string): CommandResult {
+function handleNarrationCommand(kind: RouteableBotKind, text: string, db: BridgeDb, surfaceIdentity: string, chatId: string): CommandResult {
   if (kind !== "antigravity") {
     return { kind: "message", text: "/narration is only available on Antigravity." };
   }
 
   const [, rawMode = "status"] = String(text || "").trim().toLowerCase().split(/\s+/, 2);
-  const key = antigravityNarrationSettingKey(chatId);
-  const current = isAntigravityNarrationVisible(db, chatId);
+  const key = antigravityNarrationSettingKey(surfaceIdentity, chatId);
+  const current = isAntigravityNarrationVisible(db, surfaceIdentity, chatId);
   const next =
     rawMode === "on" || rawMode === "visible" ? true :
     rawMode === "off" || rawMode === "hidden" ? false :
@@ -221,7 +221,7 @@ export function handleCommand(
   }
 
   if (text === "/reset") {
-    persistProviderSession(db, chatId, kind, null);
+    persistProviderSession(db, { surfaceIdentity, chatKey: chatId }, kind, null);
     db.clearConvHistory(chatId, surfaceIdentity);
     return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };
   }
@@ -260,7 +260,7 @@ export function handleCommand(
   }
 
   if (text === "/narration") {
-    return handleNarrationCommand(kind, prompt, db, chatId);
+    return handleNarrationCommand(kind, prompt, db, surfaceIdentity, chatId);
   }
 
   if (text === "/usage") {

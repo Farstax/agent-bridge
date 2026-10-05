@@ -2,6 +2,7 @@ import type { BridgeDb } from "../db.js";
 import { RunRepository } from "../repositories/runRepository.js";
 import { finalizeRunTelemetry } from "../runTelemetry.js";
 import type { BridgeEvent } from "./types.js";
+import type { ConversationIdentity } from "../conversationIdentity.js";
 
 /**
  * A dropped bridge_runs/bridge_events write leaves a run permanently
@@ -21,6 +22,7 @@ function warnPersistenceFailure(phase: "collect" | "finalize", runId: string, ch
  */
 export class EventStore {
   private db: BridgeDb;
+  private readonly identity?: ConversationIdentity;
   private seq = 0;
   private runInserted = false;
   private terminalPersisted = false;
@@ -28,13 +30,16 @@ export class EventStore {
   private lastFailed: Extract<BridgeEvent, { type: "run.failed" }> | null = null;
   private attemptFailurePersisted = false;
 
-  constructor(db: BridgeDb, existingRunId?: string) {
+  constructor(db: BridgeDb, identityOrExistingRunId?: ConversationIdentity | string, existingRunId?: string) {
     this.db = db;
-    if (existingRunId) {
-      const run = db.getRun(existingRunId);
+    const identity = typeof identityOrExistingRunId === "string" ? undefined : identityOrExistingRunId;
+    this.identity = identity;
+    const resumedRunId = typeof identityOrExistingRunId === "string" ? identityOrExistingRunId : existingRunId;
+    if (resumedRunId) {
+      const run = db.getRun(resumedRunId);
       if (run?.status === "running") {
         this.runInserted = true;
-        this.seq = db.getEventsForRun(existingRunId).reduce((max, event) => Math.max(max, Number(event.seq) || 0), 0);
+        this.seq = db.getEventsForRun(resumedRunId).reduce((max, event) => Math.max(max, Number(event.seq) || 0), 0);
       }
     }
   }
@@ -97,7 +102,7 @@ export class EventStore {
     const needsRunInsert = !this.runInserted;
     const seq = this.seq + 1;
     this.db.raw.transaction(() => {
-      if (needsRunInsert) this.db.insertRun(e.runId, e.chatKey, e.bot);
+      if (needsRunInsert) this.db.insertRun(e.runId, this._identityFor(e.chatKey), e.bot);
       this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
     })();
     this.seq = seq;
@@ -110,7 +115,7 @@ export class EventStore {
     const needsRunInsert = !this.runInserted;
     const seq = this.seq + 1;
     this.db.raw.transaction(() => {
-      if (needsRunInsert) this.db.insertRun(e.runId, e.chatKey, e.bot);
+      if (needsRunInsert) this.db.insertRun(e.runId, this._identityFor(e.chatKey), e.bot);
       this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
     })();
     this.seq = seq;
@@ -149,7 +154,7 @@ export class EventStore {
     }
     const seq = this.seq + 1;
     this.db.raw.transaction(() => {
-      this.db.insertRun(e.runId, e.chatKey, e.bot);
+      this.db.insertRun(e.runId, this._identityFor(e.chatKey), e.bot);
       this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
     })();
     this.seq = seq;
@@ -163,7 +168,7 @@ export class EventStore {
     const needsRunInsert = !this.runInserted;
     const seq = this.seq + 1;
     this.db.raw.transaction(() => {
-      if (needsRunInsert) this.db.insertRun(e.runId, e.chatKey, e.bot);
+      if (needsRunInsert) this.db.insertRun(e.runId, this._identityFor(e.chatKey), e.bot);
       this.db.insertEvent(e.runId, seq, e.type, e.timestamp, e);
       let transitioned: boolean;
       if (e.type === "run.completed") {
@@ -181,5 +186,12 @@ export class EventStore {
     this.seq = seq;
     if (needsRunInsert) this.runInserted = true;
     this.terminalPersisted = true;
+  }
+
+  private _identityFor(chatKey: string): ConversationIdentity {
+    if (this.identity && this.identity.chatKey === chatKey) return this.identity;
+    // Test-only/legacy EventStore construction has no transport boundary.
+    // Production ingress always supplies identity explicitly.
+    return { surfaceIdentity: "telegram:interactive", chatKey };
   }
 }

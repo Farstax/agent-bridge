@@ -104,7 +104,7 @@ const cliChain = parseCliChain(
   process.env.INTERACTIVE_CLI_CHAIN,
   { allowed: interactiveChainKinds(), fallback: ["codex", "claude", "antigravity", "grok", "cursor"] },
 );
-const fallbackChain = new ProviderFallbackChain(cliChain, db, (cli) => getAvailableCliKinds().has(cli as CliKind));
+const fallbackChain = new ProviderFallbackChain(cliChain, db, "discord:interactive", (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 let runContinuationRunner: RunContinuationRunner | null = null;
@@ -180,9 +180,9 @@ const engines = Object.fromEntries(
 for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     return dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
-      engines, fallbackChain, fallbackRequests, db,
+      surfaceIdentity: "discord:interactive", engines, fallbackChain, fallbackRequests, db,
       notify: async (msg) => { await client.sendMessage({ chat_id: queued.chatKey, text: msg }); },
-      onCliSwitched: async (newCli) => setUserCliPreference(db, queued.chatKey, newCli),
+      onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: queued.chatKey }, newCli),
     });
   });
 }
@@ -214,7 +214,7 @@ if (scheduledOwnerKey && scheduledActorId) {
         fallbackRequests,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: routine.chatKey, text: msg }); },
-        onCliSwitched: async (newCli) => setUserCliPreference(db, routine.chatKey, newCli),
+        onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey }, newCli),
       });
     },
   );
@@ -235,7 +235,7 @@ if (scheduledActorId) {
         fallbackRequests,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: continuation.chatKey, text: msg }); },
-        onCliSwitched: async (newCli) => setUserCliPreference(db, continuation.chatKey, newCli),
+        onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, newCli),
       }, new Set([provider]));
     },
   );
@@ -401,7 +401,7 @@ async function handleInteraction(d: any): Promise<void> {
     }
     const newCli = handleCliSwitchCallback(customId);
     if (!newCli) return;
-    applyManualCliSwitchHandoff(db, channelId, newCli);
+    applyManualCliSwitchHandoff(db, { surfaceIdentity: "discord:interactive", chatKey: channelId }, newCli);
     fallbackChain.setActiveCli(channelId, newCli);
 
     await client.answerCallbackQuery({
@@ -435,11 +435,11 @@ async function handleInteraction(d: any): Promise<void> {
       if (toOption) {
         const newCli = handleCliSwitchCallback(`cli:${toOption}`);
         if (newCli) {
-          applyManualCliSwitchHandoff(db, channelId, newCli);
+          applyManualCliSwitchHandoff(db, { surfaceIdentity: "discord:interactive", chatKey: channelId }, newCli);
           fallbackChain.setActiveCli(channelId, newCli);
         }
       }
-      const pref = getUserCliPreference(db, channelId);
+      const pref = getUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: channelId });
       await client.answerCallbackQuery({
         interaction_id: d.id,
         interaction_token: d.token,
@@ -474,7 +474,7 @@ async function handleInteraction(d: any): Promise<void> {
         interaction_token: d.token,
         type: 5,
       }).catch((err) => console.warn("[discord-interactive] /start ACK failed", err));
-      await engines[getUserCliPreference(db, channelId)].handleInteractiveTurn(resolution.turn);
+      await engines[getUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: channelId })].handleInteractiveTurn(resolution.turn);
       return;
     }
 
@@ -497,7 +497,7 @@ async function handleInteraction(d: any): Promise<void> {
     };
 
     if (commandName === "reset") clearInteractiveFallbackState(fallbackChain, chatKey);
-    await engines[getUserCliPreference(db, chatKey)].handleInteractiveTurn(turn);
+    await engines[getUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey })].handleInteractiveTurn(turn);
   }
 }
 

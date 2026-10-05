@@ -189,8 +189,8 @@ describe("scheduled companion routines", () => {
     expect(turn.text).toContain(routine.instruction);
 
     let observedChatKey: string | null = null;
-    setUserCliPreference(db, routine.chatKey, "codex");
-    const fallbackChain = new ProviderFallbackChain(["codex"], db);
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: routine.chatKey }, "codex");
+    const fallbackChain = new ProviderFallbackChain(["codex"], db, "telegram:interactive");
     await dispatchInteractiveTurnWithFallback(turn, {
       engines: {
         codex: {

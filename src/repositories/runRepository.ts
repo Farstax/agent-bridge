@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import type { ConversationIdentity } from "../conversationIdentity.js";
 
 export interface RunningRun {
   run_id: string;
@@ -19,14 +20,14 @@ export interface ReconciliationEvidence {
 export class RunRepository {
   constructor(private readonly db: Database.Database) {}
 
-  insertRun(runId: string, chatId: string, bot: string): void {
+  insertRun(runId: string, identity: ConversationIdentity, bot: string): void {
     const startedAt = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO bridge_runs (run_id, chat_id, bot, status, started_at)
-         VALUES (?, ?, ?, 'running', ?)`
+        `INSERT INTO bridge_runs (run_id, surface_identity, chat_id, bot, status, started_at)
+         VALUES (?, ?, ?, ?, 'running', ?)`
       )
-      .run(runId, chatId, bot, startedAt);
+      .run(runId, identity.surfaceIdentity, identity.chatKey, bot, startedAt);
   }
 
   getRun(runId: string): any {

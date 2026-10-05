@@ -33,6 +33,7 @@ export interface RunContinuation {
   claimedAt?: string;
   completedAt?: string;
   error?: string;
+  delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
 }
 
 export interface RequestRunContinuationInput {
@@ -42,6 +43,8 @@ export interface RequestRunContinuationInput {
   provider: RouteableBotKind;
   reason: string;
   afterSeconds: number;
+  /** Transport delivery coordinates, persisted as-is at request time. Omit only for legacy/test callers that rely on the one-time decode fallback in parse(). */
+  delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
 }
 
 function key(id: string): string {
@@ -68,7 +71,23 @@ function parse(value: string): RunContinuation | null {
       || !candidate.reason
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
-    return candidate;
+    if (candidate.delivery) return candidate;
+    if (candidate.surfaceIdentity.startsWith("telegram:")) {
+      const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
+      if (!match) return null;
+      const chatId = match[1];
+      const threadId = match[2];
+      return {
+        ...candidate,
+        delivery: {
+          chatId: Number(chatId),
+          chatType: Number(chatId) < 0 ? "supergroup" : "private",
+          ...(threadId === undefined ? {} : { threadId: Number(threadId) }),
+        },
+      };
+    }
+    if (candidate.surfaceIdentity.startsWith("discord:")) return { ...candidate, delivery: { chatId: candidate.chatKey, chatType: "private" } };
+    return null;
   } catch {
     return null;
   }
@@ -94,6 +113,7 @@ export function requestRunContinuation(
   const originRun = db.getRun(originRunId);
   if (originRun) {
     if (originRun.status !== "running") throw new Error("originating Run is no longer active");
+    if (originRun.surface_identity !== surfaceIdentity) throw new Error("originating Run surface mismatch");
     if (originRun.chat_id !== chatKey) throw new Error("originating Run conversation mismatch");
     if (originRun.bot !== provider) throw new Error("originating Run provider mismatch");
   }
@@ -114,9 +134,12 @@ export function requestRunContinuation(
       dueAt,
       expiresAt,
       state: "pending",
+      ...(input.delivery ? { delivery: input.delivery } : {}),
     };
-    db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(continuation));
-    return continuation;
+    const persisted = parse(JSON.stringify(continuation));
+    if (!persisted) throw new Error("continuation delivery coordinates are invalid");
+    db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(persisted));
+    return persisted;
   });
 }
 
@@ -145,9 +168,10 @@ export function claimDueRunContinuation(
     }
     const originRun = db.getRun(current.originRunId);
     if (!originRun || originRun.status === "running") return null;
-    const boundSessionId = lookupProviderSession(db, current.chatKey, current.provider);
+    const boundSessionId = lookupProviderSession(db, { surfaceIdentity: current.surfaceIdentity, chatKey: current.chatKey }, current.provider);
     if (
       originRun.status !== "done"
+      || originRun.surface_identity !== current.surfaceIdentity
       || originRun.chat_id !== current.chatKey
       || originRun.bot !== current.provider
       || !originRun.session_id
@@ -159,13 +183,15 @@ export function claimDueRunContinuation(
         completedAt: new Date(nowMs).toISOString(),
         error: originRun.status !== "done"
           ? `originating Run ended with status ${originRun.status}`
-          : originRun.chat_id !== current.chatKey
-            ? "originating Run conversation changed"
-            : originRun.bot !== current.provider
-              ? "originating Run provider changed"
-              : !originRun.session_id
-                ? "originating Run has no resumable provider session"
-                : "originating provider session binding changed",
+          : originRun.surface_identity !== current.surfaceIdentity
+            ? "originating Run surface changed"
+            : originRun.chat_id !== current.chatKey
+              ? "originating Run conversation changed"
+              : originRun.bot !== current.provider
+                ? "originating Run provider changed"
+                : !originRun.session_id
+                  ? "originating Run has no resumable provider session"
+                  : "originating provider session binding changed",
       };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
       return null;
@@ -275,13 +301,11 @@ export function buildTelegramRunContinuationTurn(
   continuation: RunContinuation,
   actorId: string,
 ): InteractiveTurnInput {
-  const match = /^(-?\d+)(?::(\d+))?$/.exec(continuation.chatKey);
-  if (!match) throw new Error("run continuation has invalid Telegram chat key");
-  const chatId = Number(match[1]);
-  const threadId = match[2] === undefined ? undefined : Number(match[2]);
-  if (!Number.isSafeInteger(chatId) || (threadId !== undefined && !Number.isSafeInteger(threadId))) {
-    throw new Error("run continuation has unsafe Telegram chat key");
-  }
+  // Delivery coordinates are persisted at request time (or recovered once, by
+  // parse(), from a legacy pre-delivery record) -- this builder must never
+  // parse them back out of chatKey itself.
+  const delivery = continuation.delivery ?? parse(JSON.stringify(continuation))?.delivery;
+  if (!delivery) throw new Error("run continuation has no Telegram delivery coordinates");
   return {
     surfaceIdentity: continuation.surfaceIdentity,
     chatKey: continuation.chatKey,
@@ -294,11 +318,8 @@ export function buildTelegramRunContinuationTurn(
       "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
       `Pending reason: ${continuation.reason}`,
     ].join("\n"),
-    ...(threadId === undefined ? {} : { threadId: String(threadId) }),
-    delivery: {
-      chatId,
-      chatType: chatId < 0 ? "supergroup" : "private",
-    },
+    ...(delivery.threadId === undefined ? {} : { threadId: String(delivery.threadId) }),
+    delivery,
     queueOnly: true,
     attachments: [],
   };
@@ -308,7 +329,8 @@ export function buildDiscordRunContinuationTurn(
   continuation: RunContinuation,
   actorId: string,
 ): InteractiveTurnInput {
-  if (!continuation.chatKey.trim()) throw new Error("run continuation has invalid Discord chat key");
+  const delivery = continuation.delivery ?? parse(JSON.stringify(continuation))?.delivery;
+  if (!delivery) throw new Error("run continuation has no Discord delivery coordinates");
   return {
     surfaceIdentity: continuation.surfaceIdentity,
     chatKey: continuation.chatKey,
@@ -321,10 +343,7 @@ export function buildDiscordRunContinuationTurn(
       "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
       `Pending reason: ${continuation.reason}`,
     ].join("\n"),
-    delivery: {
-      chatId: continuation.chatKey,
-      chatType: "private",
-    },
+    delivery,
     surroundingContext: [],
     queueOnly: true,
     attachments: [],

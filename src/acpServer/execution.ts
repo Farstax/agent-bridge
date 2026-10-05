@@ -157,6 +157,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     const { db, providerChain, createEngine } = this.options;
     const router = createSurfaceNeutralProviderRouter({
       db,
+      surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider: providerChain[0],
       providerChain,
       engineForProvider: (attemptProvider) => createEngine(session, attemptProvider),
@@ -225,8 +226,9 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
     let signalAbort: (() => void) | null = null;
     let activeProvider: RouteableBotKind = provider;
     try {
-      db.insertRun(runId, input.session.conversationId, provider);
-      eventStore = new EventStore(db, runId);
+      const identity = { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId };
+      db.insertRun(runId, identity, provider);
+      eventStore = new EventStore(db, identity, runId);
 
       let finishDone!: () => void;
       const done = new Promise<void>((resolve) => { finishDone = resolve; });
@@ -298,7 +300,7 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
       const terminalBot = (event: { bot: RouteableBotKind } | null): RouteableBotKind | undefined => event?.bot;
       const actualProvider: RouteableBotKind = terminalBot(completed) ?? terminalBot(providerCancelled) ?? activeProvider;
       db.runWithLockFence(lane, () => {
-        persistProviderSession(db, input.session.conversationId, actualProvider, result.sessionId, runId);
+        persistProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: input.session.conversationId }, actualProvider, result.sessionId, runId);
         // Durable transcript for `session/load` replay only — mirrors the
         // generic addConvTurn seam Telegram/Discord already use, so a
         // cancelled/partial turn (with no authoritative final text) never
@@ -449,7 +451,7 @@ export function createProductionOutwardAcpPromptExecutor(
         // forwards for a different provider's turn input.
         executeSurfaceNeutralTurn: (turnInput) => engine.executeSurfaceNeutralTurn({
           ...turnInput,
-          sessionId: lookupProviderSession(db, session.conversationId, attemptProvider),
+          sessionId: lookupProviderSession(db, { surfaceIdentity: OUTWARD_ACP_SURFACE, chatKey: session.conversationId }, attemptProvider),
         }),
       };
     },

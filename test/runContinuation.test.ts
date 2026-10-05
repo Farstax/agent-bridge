@@ -28,14 +28,14 @@ function requestForActiveRun(
   input: Parameters<typeof requestRunContinuation>[1],
   nowMs: number,
 ) {
-  db.insertRun(input.originRunId, input.chatKey, input.provider);
+  db.insertRun(input.originRunId, { surfaceIdentity: input.surfaceIdentity, chatKey: input.chatKey }, input.provider);
   return requestRunContinuation(db, input, nowMs);
 }
 
 function completeOriginRun(db: ReturnType<typeof openDb>, runId: string): void {
   const run = db.getRun(runId);
   const sessionId = `session-${runId}`;
-  persistProviderSession(db, run.chat_id, run.bot, sessionId, runId);
+  persistProviderSession(db, { surfaceIdentity: run.surface_identity ?? "$legacy", chatKey: run.chat_id }, run.bot, sessionId, runId);
   expect(db.updateRunCompleted(runId, "done", sessionId)).toBe(true);
 }
 
@@ -123,7 +123,7 @@ describe("ordinary Run continuation", () => {
       afterSeconds: 5,
     }, 1_000);
     completeOriginRun(db, "run-session-cleared");
-    persistProviderSession(db, "123", "codex", null);
+    persistProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "123" }, "codex", null);
 
     const dispatch = vi.fn(async () => undefined);
     await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
@@ -207,7 +207,7 @@ describe("ordinary Run continuation", () => {
     const turn = buildTelegramRunContinuationTurn(continuation, "123");
     expect(turn.chatKey).toBe("-100:42");
     expect(turn.threadId).toBe("42");
-    expect(turn.delivery).toEqual({ chatId: -100, chatType: "supergroup" });
+    expect(turn.delivery).toEqual({ chatId: -100, chatType: "supergroup", threadId: 42 });
     expect(turn.text).toContain("CI pending");
     db.close();
   });

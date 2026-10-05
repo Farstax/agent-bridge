@@ -14,6 +14,7 @@ import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type In
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
+import type { ConversationIdentity } from "./conversationIdentity.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
 export type InteractiveCommandRegistration = {
@@ -37,29 +38,21 @@ export interface InteractiveUpdateLogSummary {
   contentDetail: string | null;
 }
 
-export function getUserCliPreference(db: BridgeDb, chatId: string): CliKind {
-  try {
-    db.raw.prepare(`ALTER TABLE bridge_state ADD COLUMN interactive_cli_preference TEXT`).run();
-  } catch { /* column already exists */ }
-
+export function getUserCliPreference(db: BridgeDb, identity: ConversationIdentity): CliKind {
   const row = db.raw
-    .prepare(`SELECT interactive_cli_preference AS pref FROM bridge_state WHERE chat_id = ?`)
-    .get(chatId) as { pref: string | null } | undefined;
+    .prepare(`SELECT interactive_cli_preference AS pref FROM bridge_state WHERE surface_identity = ? AND chat_id = ?`)
+    .get(identity.surfaceIdentity, identity.chatKey) as { pref: string | null } | undefined;
   const stored = row?.pref ?? null;
   return isValidCliKind(stored) ? stored : DEFAULT_CLI;
 }
 
-export function setUserCliPreference(db: BridgeDb, chatId: string, cli: CliKind): void {
-  try {
-    db.raw.prepare(`ALTER TABLE bridge_state ADD COLUMN interactive_cli_preference TEXT`).run();
-  } catch { /* column already exists */ }
-
+export function setUserCliPreference(db: BridgeDb, identity: ConversationIdentity, cli: CliKind): void {
   db.raw
     .prepare(
-      `INSERT INTO bridge_state (chat_id, interactive_cli_preference) VALUES (?, ?)
-       ON CONFLICT (chat_id) DO UPDATE SET interactive_cli_preference = excluded.interactive_cli_preference`
+      `INSERT INTO bridge_state (surface_identity, chat_id, interactive_cli_preference) VALUES (?, ?, ?)
+       ON CONFLICT (surface_identity, chat_id) DO UPDATE SET interactive_cli_preference = excluded.interactive_cli_preference`
     )
-    .run(chatId, cli);
+    .run(identity.surfaceIdentity, identity.chatKey, cli);
 }
 
 export function handleCliSwitchCallback(data: string): CliKind | null {
@@ -294,12 +287,13 @@ type PassiveContextClient = MessagingPlatform & {
 export interface InteractiveDispatchEngine {
   client?: PassiveContextClient;
   handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<void>;
-  handleUpdate?: (update: TelegramUpdate) => Promise<void>;
+  handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
 
 export interface InteractiveDispatchDeps {
+  surfaceIdentity?: string;
   engines: Record<string, InteractiveDispatchEngine>;
   fallbackChain: ProviderFallbackChain;
   fallbackRequests?: Map<string, ProviderFallbackReason>;
@@ -347,19 +341,20 @@ export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chat
   clearPendingFallbackResume(chain, chatKey);
 }
 
-function prepareCliHandoff(db: BridgeDb, chatKey: string, targetCli: CliKind, reason: string): void {
-  persistProviderSession(db, chatKey, targetCli, null);
-  markHandoffRequired(db, chatKey, targetCli, reason);
+function prepareCliHandoff(db: BridgeDb, identity: ConversationIdentity, targetCli: CliKind, reason: string): void {
+  persistProviderSession(db, identity, targetCli, null);
+  markHandoffRequired(db, identity.surfaceIdentity, identity.chatKey, targetCli, reason);
 }
 
-export function applyManualCliSwitchHandoff(db: BridgeDb, chatKey: string, newCli: CliKind): void {
+export function applyManualCliSwitchHandoff(db: BridgeDb, identity: ConversationIdentity, newCli: CliKind): void {
   db.raw.transaction(() => {
-    prepareCliHandoff(db, chatKey, newCli, "manual_switch");
-    setUserCliPreference(db, chatKey, newCli);
+    prepareCliHandoff(db, identity, newCli, "manual_switch");
+    setUserCliPreference(db, identity, newCli);
   })();
 }
 
 interface InteractiveFallbackExecution {
+  identity: ConversationIdentity;
   chatKey: string;
   execute: (engine: InteractiveDispatchEngine) => Promise<ExecutionOutcome>;
   recoverPendingQueue: boolean;
@@ -371,13 +366,13 @@ async function dispatchInteractiveExecutionWithFallback(
   deps: InteractiveDispatchDeps,
   tried: Set<string>,
 ): Promise<ExecutionOutcome> {
-  const { chatKey } = execution;
+  const { chatKey, identity } = execution;
   const { engines, fallbackChain, fallbackRequests, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
   fallbackRequests?.delete(chatKey);
   exhaustedChats?.delete(chatKey);
   authRequiredChats?.delete(chatKey);
   if (tried.size === 0) {
-    const pref = getUserCliPreference(db, chatKey);
+    const pref = getUserCliPreference(db, identity);
     fallbackChain.setActiveCli(chatKey, pref);
   }
 
@@ -403,7 +398,7 @@ async function dispatchInteractiveExecutionWithFallback(
       }
     }
     if (next) {
-      prepareCliHandoff(db, chatKey, next, `fallback_from_${activeCli}`);
+      prepareCliHandoff(db, identity, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
       const notice = fallbackReason === "auth_required"
         ? `${activeCli} needs re-authentication. Falling back to ${next}…`
@@ -431,7 +426,7 @@ async function dispatchInteractiveExecutionWithFallback(
     return execution.exhaustedOutcome;
   }
 
-  if (tried.size > 1) setUserCliPreference(db, chatKey, activeCli);
+  if (tried.size > 1) setUserCliPreference(db, identity, activeCli);
   return outcome;
 }
 
@@ -442,6 +437,7 @@ function dispatchClaimedInteractiveExecution(
   tried: Set<string>,
 ): Promise<ExecutionOutcome> {
   return dispatchInteractiveExecutionWithFallback({
+    identity: { surfaceIdentity: deps.surfaceIdentity ?? "telegram:interactive", chatKey },
     chatKey,
     recoverPendingQueue: false,
     exhaustedOutcome: "committed",
@@ -487,6 +483,7 @@ export function dispatchInteractiveTurnWithFallback(
   if (isResetTurn(turn)) clearInteractiveFallbackState(deps.fallbackChain, chatKey);
   let contextualTurnPromise: Promise<InteractiveTurnInput> | null = null;
   return dispatchInteractiveExecutionWithFallback({
+    identity: { surfaceIdentity: turn.surfaceIdentity, chatKey },
     chatKey,
     recoverPendingQueue: true,
     exhaustedOutcome: "failed",
@@ -495,7 +492,7 @@ export function dispatchInteractiveTurnWithFallback(
       const context = contextualTurn.surroundingContext ?? [];
       await withPassiveSurroundingContext(context, async () => {
         if (deps.legacyUpdate && !engine.handleInteractiveTurn && engine.handleUpdate) {
-          await engine.handleUpdate(deps.legacyUpdate);
+          await engine.handleUpdate(deps.legacyUpdate, chatKey);
         } else if (engine.handleInteractiveTurn) {
           await engine.handleInteractiveTurn(contextualTurn);
         } else {

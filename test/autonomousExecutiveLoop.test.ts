@@ -69,7 +69,7 @@ class SqliteAutonomousGoalStore implements AutonomousGoalStore {
       const wake = this.db.raw.prepare(`SELECT * FROM autonomous_spike_wakes WHERE wake_key = ?`).get(wakeKey) as any;
       if (!wake) throw new Error(`unknown wake: ${wakeKey}`);
       if (wake.run_id) return { runId: wake.run_id, goalId: wake.goal_id, wakeKey, cycle, status: this.db.getRun(wake.run_id).status };
-      this.runs.insertRun(runId, `autonomous:${wake.goal_id}`, "claude");
+      this.runs.insertRun(runId, { surfaceIdentity: "telegram:interactive", chatKey: `autonomous:${wake.goal_id}` }, "claude");
       this.db.raw.prepare(`UPDATE autonomous_spike_wakes SET status = 'run_created', run_id = ?, cycle = ? WHERE wake_key = ? AND status = 'pending'`).run(runId, cycle, wakeKey);
       return { runId, goalId: wake.goal_id, wakeKey, cycle, status: "running" as const };
     })();

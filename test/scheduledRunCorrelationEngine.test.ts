@@ -144,7 +144,8 @@ describe("authoritative scheduled Run correlation", () => {
       }, db, mockClient(), { runProviderInvocation: codexCli });
       const deps = {
         engines: { cursor: claude, antigravity: codex },
-        fallbackChain: new ProviderFallbackChain(["cursor", "antigravity"], db, () => true),
+        fallbackChain: new ProviderFallbackChain(["cursor", "antigravity"], db, "telegram:interactive",
+         () => true),
         exhaustedChats,
         db,
         notify: async () => undefined,
@@ -154,7 +155,7 @@ describe("authoritative scheduled Run correlation", () => {
           dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
       }
 
-      setUserCliPreference(db, routine.chatKey, "cursor");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: routine.chatKey }, "cursor");
       const turn = buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey);
       const outcome = await dispatchInteractiveTurnWithFallback(turn, deps);
       // Capacity fallback recovers the persisted occurrence through the pending queue.
@@ -255,14 +256,14 @@ describe("authoritative scheduled Run correlation", () => {
       expect(linkScheduledOccurrenceRun(db, key, "run-b")).toBe(true);
       expect(parseScheduledOccurrenceEvidence(db.getSetting(key))?.runId).toBe("run-b");
 
-      db.insertRun("run-b", "100", "cursor");
+      db.insertRun("run-b", { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "cursor");
       expect(linkScheduledOccurrenceRun(db, key, "run-c")).toBe(false);
 
       db.updateRunFailed("run-b", "MODEL_CAPACITY_EXHAUSTED");
       expect(linkScheduledOccurrenceRun(db, key, "run-c")).toBe(true);
       expect(parseScheduledOccurrenceEvidence(db.getSetting(key))?.runId).toBe("run-c");
 
-      db.insertRun("run-c", "100", "codex");
+      db.insertRun("run-c", { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
       db.updateRunCompleted("run-c", "ok", null);
       expect(linkScheduledOccurrenceRun(db, key, "run-d")).toBe(false);
     } finally {

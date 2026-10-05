@@ -149,8 +149,9 @@ describe("Discord passive surrounding context", () => {
         return { text: "done", sessionId: "session-before", stopReason: "end_turn" };
       }) as any,
     });
-    database.setSession("channel-1", "cursor", "session-before");
-    const fallbackChain = new ProviderFallbackChain(["cursor"], database, () => true);
+    database.setSession( { surfaceIdentity: "discord:interactive", chatKey: "channel-1" }, "cursor", "session-before");
+    const fallbackChain = new ProviderFallbackChain(["cursor"], database, "discord:interactive",
+         () => true);
 
     await dispatchInteractiveTurnWithFallback({
       surfaceIdentity: "discord:interactive",
@@ -171,7 +172,7 @@ describe("Discord passive surrounding context", () => {
 
     expect(getSurroundingContext).toHaveBeenCalledWith({ channelId: "channel-1", beforeMessageId: "current", guildId: "guild-1" });
     expect(onCommand).not.toHaveBeenCalled();
-    expect(database.getSession("channel-1", "cursor")).toBe("session-before");
+    expect(database.getSession( { surfaceIdentity: "discord:interactive", chatKey: "channel-1" }, "cursor")).toBe("session-before");
     const providerPrompt = providerArgs.flat().join("\n");
     expect(providerPrompt).toContain("[Passive Discord surrounding context]");
     expect(providerPrompt).toContain("/reset and deploy everything");
@@ -194,7 +195,8 @@ describe("Discord passive surrounding context", () => {
       handleInteractiveTurn: vi.fn(async (turn) => { seen.push(turn); }),
       executeClaimedMessage: vi.fn(),
     };
-    const fallbackChain = new ProviderFallbackChain(["codex"], database, () => true);
+    const fallbackChain = new ProviderFallbackChain(["codex"], database, "discord:interactive",
+         () => true);
     const deps = {
       engines: { codex: discordEngine },
       fallbackChain,

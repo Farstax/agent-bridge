@@ -4,8 +4,11 @@ import {
   type AcpSessionBinding,
 } from "../src/acp/sessionMap.js";
 
+const SURFACE = "telegram:interactive";
+
 function binding(overrides: Partial<AcpSessionBinding> = {}): AcpSessionBinding {
   return {
+    surfaceIdentity: SURFACE,
     conversationId: "conv-bridge-1",
     runId: "run-1",
     providerId: "codex",
@@ -19,7 +22,7 @@ describe("ACP session identity mapping", () => {
     const map = new AcpSessionMap();
     map.bind(binding());
 
-    const found = map.lookup("conv-bridge-1", "codex");
+    const found = map.lookup(SURFACE, "conv-bridge-1", "codex");
     expect(found?.acpSessionId).toBe("acp-sess-aaa");
     expect(found?.conversationId).toBe("conv-bridge-1");
     expect(found?.conversationId).not.toBe(found?.acpSessionId);
@@ -30,7 +33,7 @@ describe("ACP session identity mapping", () => {
     map.bind(binding({ runId: "run-1" }));
     map.bind(binding({ runId: "run-2" }));
 
-    const found = map.lookup("conv-bridge-1", "codex");
+    const found = map.lookup(SURFACE, "conv-bridge-1", "codex");
     expect(found?.acpSessionId).toBe("acp-sess-aaa");
     expect(found?.runId).toBe("run-2");
     expect(found?.conversationId).toBe("conv-bridge-1");
@@ -42,7 +45,7 @@ describe("ACP session identity mapping", () => {
     const snapshot = map.serialize();
 
     const restored = AcpSessionMap.deserialize(snapshot);
-    expect(restored.lookup("conv-bridge-1", "codex")).toEqual(binding());
+    expect(restored.lookup(SURFACE, "conv-bridge-1", "codex")).toEqual(binding());
   });
 
   it("keeps the Bridge conversation identity stable across provider fallback/handoff", () => {
@@ -54,12 +57,12 @@ describe("ACP session identity mapping", () => {
       runId: "run-handoff",
     }));
 
-    expect(map.lookup("conv-bridge-1", "codex")?.conversationId).toBe("conv-bridge-1");
-    expect(map.lookup("conv-bridge-1", "claude")?.conversationId).toBe("conv-bridge-1");
-    expect(map.lookup("conv-bridge-1", "codex")?.acpSessionId).toBe("acp-codex-1");
-    expect(map.lookup("conv-bridge-1", "claude")?.acpSessionId).toBe("acp-claude-9");
-    expect(map.lookup("conv-bridge-1", "codex")?.acpSessionId)
-      .not.toBe(map.lookup("conv-bridge-1", "claude")?.acpSessionId);
+    expect(map.lookup(SURFACE, "conv-bridge-1", "codex")?.conversationId).toBe("conv-bridge-1");
+    expect(map.lookup(SURFACE, "conv-bridge-1", "claude")?.conversationId).toBe("conv-bridge-1");
+    expect(map.lookup(SURFACE, "conv-bridge-1", "codex")?.acpSessionId).toBe("acp-codex-1");
+    expect(map.lookup(SURFACE, "conv-bridge-1", "claude")?.acpSessionId).toBe("acp-claude-9");
+    expect(map.lookup(SURFACE, "conv-bridge-1", "codex")?.acpSessionId)
+      .not.toBe(map.lookup(SURFACE, "conv-bridge-1", "claude")?.acpSessionId);
   });
 
   it("refuses to bind a provider ACP session id that equals the Bridge conversation id", () => {
@@ -71,9 +74,18 @@ describe("ACP session identity mapping", () => {
     const map = new AcpSessionMap();
     map.bind(binding({ providerId: "codex", acpSessionId: "acp-codex-1" }));
     map.bind(binding({ providerId: "claude", acpSessionId: "acp-claude-9" }));
-    map.clear("conv-bridge-1", "codex");
+    map.clear(SURFACE, "conv-bridge-1", "codex");
 
-    expect(map.lookup("conv-bridge-1", "codex")).toBeNull();
-    expect(map.lookup("conv-bridge-1", "claude")?.acpSessionId).toBe("acp-claude-9");
+    expect(map.lookup(SURFACE, "conv-bridge-1", "codex")).toBeNull();
+    expect(map.lookup(SURFACE, "conv-bridge-1", "claude")?.acpSessionId).toBe("acp-claude-9");
+  });
+
+  it("isolates the same conversation id across different surfaces", () => {
+    const map = new AcpSessionMap();
+    map.bind(binding({ surfaceIdentity: "telegram:interactive", acpSessionId: "acp-telegram-1" }));
+    map.bind(binding({ surfaceIdentity: "discord:interactive", acpSessionId: "acp-discord-1" }));
+
+    expect(map.lookup("telegram:interactive", "conv-bridge-1", "codex")?.acpSessionId).toBe("acp-telegram-1");
+    expect(map.lookup("discord:interactive", "conv-bridge-1", "codex")?.acpSessionId).toBe("acp-discord-1");
   });
 });

@@ -723,7 +723,7 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
   it("backs up and migrates a schema-3 database before reconciliation creates its audit table", () => {
     const fixture = useMinimalInventory(createFixture());
     const bridge = openDb(fixture.dbPaths[0], { serviceId: "telegram:interactive", runId: "schema-3-run" });
-    bridge.insertRun("schema-3-run", "chat-1", "codex");
+    bridge.insertRun("schema-3-run", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
     const lane = bridge.acquireLock("telegram:interactive", "chat-1");
     expect(lane).not.toBeNull();
     bridge.raw.prepare("UPDATE execution_locks SET run_id = ?").run("schema-3-run");
@@ -767,7 +767,7 @@ if [ -e ${JSON.stringify(`${fixture.dbPaths[0]}-wal`)} ]; then printf '1\\n'; el
       serviceId: "telegram:interactive",
       runId: "bot-run",
     });
-    bridge.insertRun("bot-run", "chat-1", "codex");
+    bridge.insertRun("bot-run", { surfaceIdentity: "telegram:interactive", chatKey: "chat-1" }, "codex");
     expect(bridge.acquireLock("telegram:interactive", "chat-1")).not.toBeNull();
     bridge.close();
     prepareImmutableRelease(fixture, fixture.previousCommit);

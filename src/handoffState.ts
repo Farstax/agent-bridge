@@ -12,12 +12,12 @@ import { notePendingRunFallback } from "./runTelemetry.js";
 
 type HandoffDb = Pick<BridgeDb, "getSetting" | "setSetting">;
 
-export function handoffRequiredSettingKey(chatKey: string, cliKind: string): string {
-  return `handoff_required:${chatKey}:${cliKind}`;
+export function handoffRequiredSettingKey(surfaceIdentity: string, chatKey: string, cliKind: string): string {
+  return `handoff_required:${surfaceIdentity}:${chatKey}:${cliKind}`;
 }
 
-export function markHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string, reason: string): void {
-  db.setSetting(handoffRequiredSettingKey(chatKey, cliKind), JSON.stringify({ reason, at: new Date().toISOString() }));
+export function markHandoffRequired(db: HandoffDb, surfaceIdentity: string, chatKey: string, cliKind: string, reason: string): void {
+  db.setSetting(handoffRequiredSettingKey(surfaceIdentity, chatKey, cliKind), JSON.stringify({ reason, at: new Date().toISOString() }));
   const match = reason.match(/^fallback_from_(codex|claude|antigravity|grok|cursor)$/);
   if (match && (cliKind === "codex" || cliKind === "claude" || cliKind === "antigravity" || cliKind === "grok" || cliKind === "cursor")) {
     notePendingRunFallback(chatKey, {
@@ -32,8 +32,8 @@ export function markHandoffRequired(db: HandoffDb, chatKey: string, cliKind: str
   }
 }
 
-export function getHandoffReason(db: HandoffDb, chatKey: string, cliKind: string): string | null {
-  const raw = db.getSetting(handoffRequiredSettingKey(chatKey, cliKind));
+export function getHandoffReason(db: HandoffDb, surfaceIdentity: string, chatKey: string, cliKind: string): string | null {
+  const raw = db.getSetting(handoffRequiredSettingKey(surfaceIdentity, chatKey, cliKind));
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as { reason?: unknown };
@@ -43,14 +43,14 @@ export function getHandoffReason(db: HandoffDb, chatKey: string, cliKind: string
   }
 }
 
-export function isProviderFallbackHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): boolean {
-  return /^fallback_from_(codex|claude|antigravity|grok|cursor)$/.test(getHandoffReason(db, chatKey, cliKind) ?? "");
+export function isProviderFallbackHandoffRequired(db: HandoffDb, surfaceIdentity: string, chatKey: string, cliKind: string): boolean {
+  return /^fallback_from_(codex|claude|antigravity|grok|cursor)$/.test(getHandoffReason(db, surfaceIdentity, chatKey, cliKind) ?? "");
 }
 
-export function isHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): boolean {
-  return db.getSetting(handoffRequiredSettingKey(chatKey, cliKind)) != null;
+export function isHandoffRequired(db: HandoffDb, surfaceIdentity: string, chatKey: string, cliKind: string): boolean {
+  return db.getSetting(handoffRequiredSettingKey(surfaceIdentity, chatKey, cliKind)) != null;
 }
 
-export function clearHandoffRequired(db: HandoffDb, chatKey: string, cliKind: string): void {
-  db.setSetting(handoffRequiredSettingKey(chatKey, cliKind), null);
+export function clearHandoffRequired(db: HandoffDb, surfaceIdentity: string, chatKey: string, cliKind: string): void {
+  db.setSetting(handoffRequiredSettingKey(surfaceIdentity, chatKey, cliKind), null);
 }

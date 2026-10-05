@@ -95,6 +95,7 @@ describe("Issue #538 fresh-session handoff guidance", () => {
   it("does not repeat the handoff guidance on an ordinary resumed native turn", async () => {
     db.addConvTurn("100", "user", HISTORY_MARKER);
     db.putAcpSessionBinding({
+      surfaceIdentity: "test",
       conversationId: "100",
       providerId: "cursor",
       acpSessionId: "existing-session",

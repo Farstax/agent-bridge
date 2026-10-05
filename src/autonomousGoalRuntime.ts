@@ -289,7 +289,7 @@ function claimWakeAndRun(db: BridgeDb, goalId: string, receiptId: number): Claim
     const receipt = db.raw.prepare("SELECT status, event_kind FROM event_receipts WHERE id = ? AND source = 'autonomous'").get(receiptId) as { status: string; event_kind: string } | undefined;
     if (!receipt || receipt.status !== "received") return false;
     if (receipt.event_kind !== AUTONOMOUS_EVENT_KIND) throw new Error("refusing to claim non-wake autonomous receipt as a Run");
-    db.insertRun(runId, chatKey, getAutonomousGoal(db, goalId).bot);
+    db.insertRun(runId, { surfaceIdentity: AUTONOMOUS_RUN_SURFACE, chatKey }, getAutonomousGoal(db, goalId).bot);
     const result = db.raw.prepare("UPDATE event_receipts SET status = 'run_created', run_id = ? WHERE id = ? AND status = 'received' AND event_kind = ?").run(runId, receiptId, AUTONOMOUS_EVENT_KIND);
     if (result.changes !== 1) throw new Error("autonomous wake claim lost");
 
@@ -523,7 +523,7 @@ export async function runNextAutonomousGoal(
     const claim = claimWakeAndRun(db, goalId, currentWake.id);
     if (!claim) return false;
     const { runId, supervisorInputs } = claim;
-    const eventStore = new EventStore(db, runId);
+    const eventStore = new EventStore(db, { surfaceIdentity: AUTONOMOUS_RUN_SURFACE, chatKey: goalChatKey(goalId) }, runId);
     const dispositionChannel = createAutonomyDispositionChannel(runId);
     let responseText: string | undefined;
     let disposition: AutonomyDispositionRecord | null = null;

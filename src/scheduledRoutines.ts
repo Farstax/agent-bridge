@@ -27,6 +27,8 @@ export interface ScheduledRoutine {
   schedule: ScheduledRoutineSchedule;
   enabled: boolean;
   createdAt: string;
+  /** Transport delivery coordinates, separate from canonical conversation identity. */
+  delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
 }
 
 export interface ScheduledOccurrence {
@@ -196,14 +198,28 @@ function validateRoutine(routine: ScheduledRoutine): ScheduledRoutine {
 function parseRoutine(value: string): ScheduledRoutine | null {
   try {
     const candidate = JSON.parse(value) as ScheduledRoutine;
-    return validateRoutine(candidate);
+    const routine = validateRoutine(candidate);
+    if (routine.delivery) return routine;
+    // Legacy v1 rows did not persist delivery. Decode once at the compatibility
+    // boundary; all newly written rows carry delivery directly.
+    if (routine.surfaceIdentity.startsWith("telegram:")) {
+      try {
+        const destination = scheduledTelegramDestination(routine);
+        return { ...routine, delivery: { chatId: destination.chatId, chatType: destination.chatId < 0 ? "supergroup" : "private", ...(destination.threadId === undefined ? {} : { threadId: destination.threadId }) } };
+      } catch {
+        return { ...routine, delivery: { chatId: routine.chatKey, chatType: "private" } };
+      }
+    }
+    if (routine.surfaceIdentity.startsWith("discord:")) return { ...routine, delivery: { chatId: routine.chatKey, chatType: "private" } };
+    return null;
   } catch {
     return null;
   }
 }
 
 export function createScheduledRoutine(db: BridgeDb, routine: ScheduledRoutine): ScheduledRoutine {
-  const normalized = validateRoutine(routine);
+  const normalized = parseRoutine(JSON.stringify(validateRoutine(routine)));
+  if (!normalized) throw new Error("routine delivery coordinates are invalid");
   const result = db.raw.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)")
     .run(routineKey(normalized.id), JSON.stringify(normalized));
   if (result.changes !== 1) throw new Error(`scheduled routine already exists: ${normalized.id}`);
@@ -252,7 +268,8 @@ export function updateScheduledRoutine(
 ): ScheduledRoutine {
   const routine = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey).find((item) => item.id === id);
   if (!routine) throw new Error(`routine not found in this conversation: ${id}`);
-  const normalized = validateRoutine({ ...routine, ...patch });
+  const normalized = parseRoutine(JSON.stringify(validateRoutine({ ...routine, ...patch })));
+  if (!normalized) throw new Error("routine delivery coordinates are invalid");
   db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(normalized), routineKey(id));
   return normalized;
 }
@@ -434,6 +451,7 @@ export function buildScheduledInteractiveTurn(
   authorizedUserId: string,
   claimedOccurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt),
 ): InteractiveTurnInput {
+  routine = routine.delivery ? routine : parseRoutine(JSON.stringify(routine)) ?? routine;
   const syntheticId = deterministicSyntheticId(routine.id, claimedOccurrenceKey);
   const text = [
     `[Scheduled routine: ${routine.name}]`,
@@ -446,7 +464,8 @@ export function buildScheduledInteractiveTurn(
   const messageId = `scheduled:${routine.id}:${claimedOccurrenceKey}:${syntheticId}`;
 
   if (routine.surfaceIdentity.startsWith("telegram:")) {
-    const destination = scheduledTelegramDestination(routine);
+    const destination = routine.delivery;
+    if (!destination) throw new Error("scheduled Telegram routine has no delivery coordinates");
     if (!/^-?\d+$/.test(authorizedUserId)) throw new Error("scheduled Telegram routine has invalid authorised user");
     return {
       surfaceIdentity: routine.surfaceIdentity,
@@ -456,12 +475,13 @@ export function buildScheduledInteractiveTurn(
       text,
       scheduledOccurrenceKey: claimedOccurrenceKey,
       ...(destination.threadId === undefined ? {} : { threadId: String(destination.threadId) }),
-      delivery: { chatId: destination.chatId, chatType: destination.chatId < 0 ? "supergroup" : "private" },
+      delivery: { chatId: destination.chatId, chatType: destination.chatType },
       attachments: [],
     };
   }
   if (routine.surfaceIdentity.startsWith("discord:")) {
-    return { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text, scheduledOccurrenceKey: claimedOccurrenceKey, delivery: { chatId: routine.chatKey, chatType: "private" }, attachments: [] };
+    if (!routine.delivery) throw new Error("scheduled Discord routine has no delivery coordinates");
+    return { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text, scheduledOccurrenceKey: claimedOccurrenceKey, delivery: routine.delivery, attachments: [] };
   }
   throw new Error(`unsupported scheduled routine surface: ${routine.surfaceIdentity}`);
 }

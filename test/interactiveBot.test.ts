@@ -40,30 +40,30 @@ describe("getUserCliPreference", () => {
   beforeEach(() => { db = openDb(":memory:"); });
 
   it("returns codex as default when no preference is stored", () => {
-    expect(getUserCliPreference(db, "chat:1")).toBe("codex");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("codex");
   });
 
   it("returns the stored preference after setUserCliPreference", () => {
-    setUserCliPreference(db, "chat:1", "claude");
-    expect(getUserCliPreference(db, "chat:1")).toBe("claude");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("claude");
   });
 
   it("stores and restores an opt-in grok preference", () => {
-    setUserCliPreference(db, "chat:1", "grok");
-    expect(getUserCliPreference(db, "chat:1")).toBe("grok");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "grok");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("grok");
   });
 
   it("preferences are per chat_id", () => {
-    setUserCliPreference(db, "chat:1", "claude");
-    setUserCliPreference(db, "chat:2", "antigravity");
-    expect(getUserCliPreference(db, "chat:1")).toBe("claude");
-    expect(getUserCliPreference(db, "chat:2")).toBe("antigravity");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:2" }, "antigravity");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("claude");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:2" } )).toBe("antigravity");
   });
 
   it("updating preference overwrites the previous value", () => {
-    setUserCliPreference(db, "chat:1", "claude");
-    setUserCliPreference(db, "chat:1", "codex");
-    expect(getUserCliPreference(db, "chat:1")).toBe("codex");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("codex");
   });
 });
 
@@ -378,19 +378,19 @@ describe("resolveUpdateChatKey", () => {
     const key8 = resolveUpdateChatKey(topic8)!;
 
     try {
-      db.setSession(key7, "codex", "session-7");
-      db.setSession(key8, "codex", "session-8");
+      db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: key7 }, "codex", "session-7");
+      db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: key8 }, "codex", "session-8");
       db.addConvTurn(key7, "user", "history-7");
       db.addConvTurn(key8, "user", "history-8");
-      setUserCliPreference(db, key7, "codex");
-      setUserCliPreference(db, key8, "claude");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: key7 }, "codex");
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: key8 }, "claude");
 
-      expect(db.getSession(key7, "codex")).toBe("session-7");
-      expect(db.getSession(key8, "codex")).toBe("session-8");
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: key7 }, "codex")).toBe("session-7");
+      expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: key8 }, "codex")).toBe("session-8");
       expect(db.getRecentConvTurns(key7, 10).map((turn) => turn.text)).toEqual(["history-7"]);
       expect(db.getRecentConvTurns(key8, 10).map((turn) => turn.text)).toEqual(["history-8"]);
-      expect(getUserCliPreference(db, key7)).toBe("codex");
-      expect(getUserCliPreference(db, key8)).toBe("claude");
+      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: key7 } )).toBe("codex");
+      expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: key8 } )).toBe("claude");
     } finally {
       db.close();
     }
@@ -695,7 +695,8 @@ describe("dispatchInteractiveWithFallback", () => {
     codex = { handleCount: 0, handleInteractiveTurn: async () => { codex.handleCount++; } };
     claude = { handleCount: 0, handleInteractiveTurn: async () => { claude.handleCount++; } };
     antigravity = { handleCount: 0, handleInteractiveTurn: async () => { antigravity.handleCount++; } };
-    fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, () => true);
+    fallbackChain = new ProviderFallbackChain(["codex", "claude", "antigravity"], db, "telegram:interactive",
+         () => true);
     exhaustedChats = new Set();
     sentMessages = [];
     onCliSwitchedCalls = [];
@@ -711,7 +712,7 @@ describe("dispatchInteractiveWithFallback", () => {
   });
 
   it("routes to the user's preferred CLI from DB", async () => {
-    setUserCliPreference(db, "chat:1", "claude");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
     await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
     expect(claude.handleCount).toBe(1);
     expect(codex.handleCount).toBe(0);
@@ -719,7 +720,7 @@ describe("dispatchInteractiveWithFallback", () => {
 
   it("falls back to the next CLI when the active provider requires re-authentication", async () => {
     const authRequiredChats = new Set<string>();
-    setUserCliPreference(db, "chat:1", "claude");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
     claude.handleInteractiveTurn = async () => {
       claude.handleCount++;
       authRequiredChats.add("chat:1");
@@ -733,12 +734,13 @@ describe("dispatchInteractiveWithFallback", () => {
     expect(claude.handleCount).toBe(1);
     expect(codex.handleCount).toBe(1);
     expect(sentMessages).toContain("claude needs re-authentication. Falling back to codex…");
-    expect(getUserCliPreference(db, "chat:1")).toBe("codex");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("codex");
   });
 
   it("does not claim global CLI unavailability when the configured chain is exhausted", async () => {
-    fallbackChain = new ProviderFallbackChain(["codex"], db, () => true);
-    setUserCliPreference(db, "chat:1", "codex");
+    fallbackChain = new ProviderFallbackChain(["codex"], db, "telegram:interactive",
+         () => true);
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
     codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
@@ -754,7 +756,7 @@ describe("dispatchInteractiveWithFallback", () => {
   });
 
   it("automatically falls back to the next CLI when exhausted", async () => {
-    setUserCliPreference(db, "chat:1", "codex");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
     codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
@@ -764,13 +766,13 @@ describe("dispatchInteractiveWithFallback", () => {
 
     expect(codex.handleCount).toBe(1);
     expect(claude.handleCount).toBe(1);
-    expect(getUserCliPreference(db, "chat:1")).toBe("claude");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("claude");
     expect(sentMessages).toContain("Switching to claude (codex at capacity)");
     expect(onCliSwitchedCalls).toContain("claude");
   });
 
   it("auto-fallback promotes the successful fallback CLI into the stored DB preference", async () => {
-    setUserCliPreference(db, "chat:1", "codex");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
     codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
@@ -779,11 +781,11 @@ describe("dispatchInteractiveWithFallback", () => {
     await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
 
     expect(onCliSwitchedCalls).toContain("claude");
-    expect(getUserCliPreference(db, "chat:1")).toBe("claude");
+    expect(getUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" } )).toBe("claude");
   });
 
   it("second message after fallback starts from the promoted CLI instead of retrying the exhausted one", async () => {
-    setUserCliPreference(db, "chat:1", "codex");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
     codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
@@ -803,8 +805,8 @@ describe("dispatchInteractiveWithFallback", () => {
   });
 
   it("clears the target CLI's stale session and marks handoff required on fallback", async () => {
-    setUserCliPreference(db, "chat:1", "codex");
-    db.setSession("chat:1", "claude", "stale-claude-session-from-weeks-ago");
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex");
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude", "stale-claude-session-from-weeks-ago");
     codex.handleInteractiveTurn = async () => {
       codex.handleCount++;
       exhaustedChats.add("chat:1");
@@ -812,8 +814,8 @@ describe("dispatchInteractiveWithFallback", () => {
 
     await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "1", text: "hello", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
 
-    expect(db.getSession("chat:1", "claude")).toBeNull();
-    expect(isHandoffRequired(db, "chat:1", "claude")).toBe(true);
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude")).toBeNull();
+    expect(isHandoffRequired(db, "telegram:interactive", "chat:1", "claude")).toBe(true);
   });
 
 });
@@ -826,21 +828,21 @@ describe("applyManualCliSwitchHandoff", () => {
   });
 
   it("clears the target CLI's session so it starts fresh", () => {
-    db.setSession("chat:1", "claude", "old-session-id");
-    applyManualCliSwitchHandoff(db, "chat:1", "claude");
-    expect(db.getSession("chat:1", "claude")).toBeNull();
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude", "old-session-id");
+    applyManualCliSwitchHandoff(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude")).toBeNull();
   });
 
   it("marks handoff required for the target CLI", () => {
-    applyManualCliSwitchHandoff(db, "chat:1", "claude");
-    expect(isHandoffRequired(db, "chat:1", "claude")).toBe(true);
+    applyManualCliSwitchHandoff(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
+    expect(isHandoffRequired(db, "telegram:interactive", "chat:1", "claude")).toBe(true);
   });
 
   it("does not affect a different chat or a different CLI's session/handoff state", () => {
-    db.setSession("chat:1", "codex", "keep-me");
-    applyManualCliSwitchHandoff(db, "chat:1", "claude");
-    expect(db.getSession("chat:1", "codex")).toBe("keep-me");
-    expect(isHandoffRequired(db, "chat:1", "codex")).toBe(false);
-    expect(isHandoffRequired(db, "chat:2", "claude")).toBe(false);
+    db.setSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex", "keep-me");
+    applyManualCliSwitchHandoff(db, { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude");
+    expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "codex")).toBe("keep-me");
+    expect(isHandoffRequired(db, "telegram:interactive", "chat:1", "codex")).toBe(false);
+    expect(isHandoffRequired(db, "telegram:interactive", "chat:2", "claude")).toBe(false);
   });
 });
