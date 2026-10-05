@@ -472,7 +472,10 @@ export function buildScheduledInteractiveTurn(
   authorizedUserId: string,
   claimedOccurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt),
 ): InteractiveTurnInput {
-  routine = routine.delivery ? routine : parseRoutine(JSON.stringify(routine)) ?? routine;
+  // Delivery must already be on the stored record by the time dispatch runs
+  // (listScheduledRoutines() persists the legacy-decoder's backfill on
+  // first read) -- this boundary never reconstructs it from chatKey itself,
+  // so a delivery-less routine fails closed via the per-surface checks below.
   const syntheticId = deterministicSyntheticId(routine.id, claimedOccurrenceKey);
   const text = [
     `[Scheduled routine: ${routine.name}]`,

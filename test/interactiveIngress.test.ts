@@ -17,6 +17,7 @@ function routine(overrides: Partial<ScheduledRoutine> = {}): ScheduledRoutine {
     schedule: { type: "weekly", weekdays: [1], time: "08:00" },
     enabled: true,
     createdAt: "2026-08-30T12:00:00.000Z",
+    delivery: { chatId: -100, chatType: "supergroup", threadId: 42 },
     ...overrides,
   };
 }
@@ -68,7 +69,11 @@ describe("surface-neutral interactive ingress", () => {
     const telegram = buildScheduledInteractiveTurn(routine(), "2026-08-31T07:00:00.000Z", "123");
     expect(telegram).toMatchObject({ chatKey: "-100:42", actorId: "123", threadId: "42", delivery: { chatId: -100 } });
 
-    const discord = buildScheduledInteractiveTurn(routine({ surfaceIdentity: "discord:interactive", chatKey: "223456789012345678" }), "2026-08-31T07:00:00.000Z", "423456789012345678");
+    const discord = buildScheduledInteractiveTurn(routine({
+      surfaceIdentity: "discord:interactive",
+      chatKey: "223456789012345678",
+      delivery: { chatId: "223456789012345678", chatType: "private" },
+    }), "2026-08-31T07:00:00.000Z", "423456789012345678");
     expect(discord).toMatchObject({ chatKey: "223456789012345678", actorId: "423456789012345678", delivery: { chatId: "223456789012345678" } });
     expect(typeof discord.delivery.chatId).toBe("string");
   });
