@@ -18,10 +18,11 @@ Keep MCP ownership provider-native. Agent Bridge coordinates the provider proces
 
 Configure only providers that are installed and natively support the requested MCP. Inspect the installed CLI's current help/documentation before mutating configuration because these surfaces can change between qualified versions.
 
-- Claude: use Claude's native `claude mcp` commands or its normal user/project MCP configuration for the intended scope.
-- Codex: use native `codex mcp` commands / Codex's native MCP entries.
-- Agy `1.1.19` was qualified with native `agy mcp add/remove/list/enable/disable`; its configuration was observed at `~/.gemini/config/mcp_config.json`. The earlier Agy `1.1.12` no-MCP result is historical, not a current capability rule.
-- Grok Build `1.0.5` was qualified with native `grok mcp add/remove/list/enable/disable/doctor`; its configuration was observed at `~/.grok/config.toml`. Grok remains opt-in.
+- Claude: `claude mcp` registrations (local, project `.mcp.json`, and user scope) are **not loaded** on the Agent Bridge Claude ACP path, because Bridge sets `settingSources: []` and sends no `mcpServers` (observed with `claude-acp@0.85.1`; tracked in agent-bridge issue #935). Do not report a Claude MCP tool as available on the Bridge path based on `claude mcp list` or the interactive CLI.
+- Codex: use native `codex mcp` commands / Codex's native MCP entries (global `~/.codex/config.toml`). Qualified with `codex-acp@1.10.0`.
+- Cursor: use `.cursor/mcp.json` (project) or `~/.cursor/mcp.json`, then approve with `cursor-agent mcp enable <name>`. Qualified with `cursor@2026.09.23-86fc751` through the ACP path.
+- Agy `1.1.19` and, through the ACP path, `antigravity-acp@1.2.1` were qualified with native `agy mcp add/remove/list/enable/disable`; its configuration was observed at `~/.gemini/config/mcp_config.json`. The earlier Agy `1.1.12` no-MCP result is historical, not a current capability rule.
+- Grok Build `1.0.5` and, through the ACP path, `1.0.46` were qualified with native `grok mcp add/remove/list/enable/disable/doctor`; its configuration was observed at `~/.grok/config.toml`. Grok remains opt-in. Use user scope (`grok mcp add -s user`): a project-scoped server (`./.grok/config.toml`) is not started for an untrusted folder (`grok mcp doctor`: "folder untrusted"), so it is not usable by an unattended Run.
 
 Grok headless MCP tool use requires trusted execution so its native `--always-approve` behavior is available. Prefer the normal shared execution-mode policy; when an explicit Grok override is required, use `GROK_EXECUTION_MODE=trusted`. Do not bypass the policy by changing `NODE_ENV`, and do not weaken the safe default for unrelated Runs.
 
@@ -54,13 +55,13 @@ For a concrete MCP dependency, perform a bounded model-mediated qualification th
 
 Re-run this proof when a provider executable/version or relied-on MCP contract materially changes, not for every ordinary CI run.
 
-Active-tool cancellation has not yet been separately qualified for MCP. Keep MCP operations bounded and do not make long-running MCP work a production dependency until cancellation is re-proved through the existing Agent Bridge supervision/fencing path.
+Active-tool cancellation was qualified for Codex + Playwright MCP `0.0.79` (2026-10-06): `abortCliProcess` returned the turn within milliseconds, the in-flight browser request was closed, no later events or delivery occurred, and no Playwright/Chromium process remained. It has not been separately re-proved for the other providers; keep MCP operations bounded there and do not make long-running MCP work a production dependency until cancellation is re-proved through the existing Agent Bridge supervision/fencing path.
 
 ## Playwright MCP
 
 For headless web UI work, prefer the qualified Playwright MCP path when no stronger provider-native browser path has itself been qualified.
 
-The evidence captured for issue #554 qualified Playwright MCP `0.0.79` with headless Chromium. On a managed host, keep that version pinned until a newer version is requalified. Run it headlessly and isolate task browser state where practical; do not disable the Chromium sandbox unless the environment specifically requires and qualifies that exception.
+The evidence captured for issue #554 qualified Playwright MCP `0.0.79` with headless Chromium. On 2026-10-06 the same server passed a deterministic click/form/submit fixture through ordinary Agent Bridge ACP turns for Codex, Agy, Grok (user scope) and Cursor (project `mcp.json`). No provider exposes a native browser or computer-use tool on its Bridge ACP path (Claude, Codex, Agy, Grok, Cursor all lack one), and Claude has no MCP browser path today (#935). A UI task routed to Claude must report browser verification as unavailable. On a managed host, keep that version pinned until a newer version is requalified. Run it headlessly and isolate task browser state where practical; do not disable the Chromium sandbox unless the environment specifically requires and qualifies that exception.
 
 Playwright MCP is a tool boundary, not a security sandbox. Keep test credentials scoped, prefer localhost/test/staging, and do not expose production sessions merely to obtain visual evidence.
 
