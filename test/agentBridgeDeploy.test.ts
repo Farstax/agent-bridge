@@ -275,6 +275,62 @@ print(json.dumps({"status": status, "command": calls[0]}))
     expect(observed.command[observed.command.indexOf("--approval") + 1]).toBe(resolve("relative-approval.json"));
   });
 
+  it("forwards only a valid invocation-scoped rollout reserve into the transient worker", () => {
+    const probe = String.raw`
+import importlib.util
+import json
+import os
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+unit = "agent-bridge-deploy-42.service"
+def command(value):
+    if value is None:
+        os.environ.pop("AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES", None)
+    else:
+        os.environ["AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES"] = value
+    return module.detached_command("relative-release.tar.gz", None, None, unit)
+print(json.dumps({"none": command(None), "zero": command("0"), "positive": command("20000000000")}))
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8", env: { ...process.env, UNRELATED_DEPLOYER_ENV: "never-forward" } });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const observed = JSON.parse(result.stdout) as Record<string, string[]>;
+    expect(observed.none).toContain("--setenv=AGENT_BRIDGE_DEPLOY_UNIT=agent-bridge-deploy-42.service");
+    expect(observed.none).not.toContain("--setenv=AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES=0");
+    expect(observed.none.join("\n")).not.toContain("UNRELATED_DEPLOYER_ENV");
+    expect(observed.zero).toContain("--setenv=AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES=0");
+    expect(observed.positive).toContain("--setenv=AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES=20000000000");
+    expect(observed.positive).toContain("--setenv=AGENT_BRIDGE_DEPLOY_UNIT=agent-bridge-deploy-42.service");
+  });
+
+  it("rejects malformed rollout reserve overrides before launching a worker", () => {
+    const probe = String.raw`
+import importlib.util
+import json
+import os
+import types
+spec = importlib.util.spec_from_file_location("agent_bridge_deploy", ${JSON.stringify(resolve(DEPLOYER))})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.os.geteuid = lambda: 0
+for value in ("-1", "1.5", " 1", "1 ", "1junk", "$(id)", ""):
+    calls = []
+    module.subprocess.run = lambda command, **kwargs: calls.append(command) or types.SimpleNamespace(returncode=0)
+    os.environ["AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES"] = value
+    try:
+        module.launch_detached("relative-release.tar.gz", None, None)
+    except RuntimeError as error:
+        if "rollout safety reserve" not in str(error): raise
+    else:
+        raise AssertionError(value + " unexpectedly passed")
+    if calls: raise AssertionError(value + " launched a worker")
+print("ok")
+`;
+    const result = spawnSync("python3", ["-c", probe], { encoding: "utf8" });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout.trim()).toContain("ok");
+  });
+
   it("surfaces the underlying rollout journal when the transient deployment unit fails", () => {
     const probe = String.raw`
 import contextlib
