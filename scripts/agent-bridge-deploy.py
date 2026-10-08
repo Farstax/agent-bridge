@@ -28,6 +28,7 @@ REPOSITORY_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9
 REPOSITORY_OWNER_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 DEPLOY_UNIT = re.compile(r"^agent-bridge-deploy-[1-9][0-9]*\.service$")
 DEPLOY_UNIT_ENV = "AGENT_BRIDGE_DEPLOY_UNIT"
+ROLLOUT_SAFETY_RESERVE_ENV = "AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES"
 DEPLOY_LOCK = Path("/run/lock/agent-bridge-deploy.lock")
 SYSTEMD_RUN = "/usr/bin/systemd-run"
 RUNUSER = "/usr/sbin/runuser"
@@ -496,6 +497,15 @@ def mutating_deployment(production: bool) -> bool:
     return bool(os.environ.get("AGENT_BRIDGE_DEPLOY_TEST_RELEASE_ROOT"))
 
 
+def rollout_safety_reserve_override() -> str | None:
+    value = os.environ.get(ROLLOUT_SAFETY_RESERVE_ENV)
+    if value is None:
+        return None
+    if not re.fullmatch(r"[0-9]+", value):
+        fail("rollout safety reserve must be an unsigned integer")
+    return value
+
+
 def detached_command(release: Path, approval: Path | None, owner_request: Path | None, unit: str, script: Path | None = None) -> list[str]:
     if not DEPLOY_UNIT.fullmatch(unit):
         fail("invalid transient deployment unit")
@@ -515,6 +525,9 @@ def detached_command(release: Path, approval: Path | None, owner_request: Path |
         "--release",
         str(absolute_input(release)),
     ]
+    reserve = rollout_safety_reserve_override()
+    if reserve is not None:
+        command.insert(command.index("/usr/bin/python3"), f"--setenv={ROLLOUT_SAFETY_RESERVE_ENV}={reserve}")
     if approval:
         command.extend(["--approval", str(absolute_input(approval))])
     if owner_request:
