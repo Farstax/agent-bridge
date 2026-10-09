@@ -172,6 +172,38 @@ fi
     expect(actions(fixture)).toContain("systemctl:stop");
   });
 
+  it("keeps only the newest proven terminal cohort by default before disk admission", () => {
+    const fixture = useMinimalInventory(createFixture());
+    const oldest = writeTerminal(fixture.logDir, fixture.backupDir, "20260101T000000Z");
+    const middle = writeTerminal(fixture.logDir, fixture.backupDir, "20260102T000000Z");
+    const newest = writeTerminal(fixture.logDir, fixture.backupDir, "20260103T000000Z");
+    const probe = join(fixture.root, "available-bytes");
+    writeFileSync(probe, `#!/bin/bash
+if [ -d ${JSON.stringify(join(fixture.logDir, oldest))} ] || [ -d ${JSON.stringify(join(fixture.logDir, middle))} ]; then
+  printf '1\\n'
+else
+  printf '999999999999\\n'
+fi
+`);
+    execFileSync("chmod", ["755", probe]);
+
+    const result = runRollout(fixture, undefined, undefined, {
+      AGENT_BRIDGE_ROLLOUT_AVAILABLE_BYTES_COMMAND: probe,
+      AGENT_BRIDGE_ROLLOUT_SAFETY_RESERVE_BYTES: "1048576",
+    });
+
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(result.status, output).toBe(0);
+    expect(output).toMatch(/rollout retention pruned=2 retained_terminal=1/);
+    expect(existsSync(join(fixture.logDir, oldest))).toBe(false);
+    expect(existsSync(join(fixture.backupDir, oldest))).toBe(false);
+    expect(existsSync(join(fixture.logDir, middle))).toBe(false);
+    expect(existsSync(join(fixture.backupDir, middle))).toBe(false);
+    expect(existsSync(join(fixture.logDir, newest))).toBe(true);
+    expect(existsSync(join(fixture.backupDir, newest))).toBe(true);
+    expect(actions(fixture)).toContain("systemctl:stop");
+  });
+
   it("retries a refused rollout once without leaving a backup or sentinel behind", () => {
     const fixture = useMinimalInventory(createFixture());
     const refused = runRollout(fixture, undefined, undefined, {
