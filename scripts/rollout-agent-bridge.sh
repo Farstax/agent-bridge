@@ -1261,10 +1261,12 @@ record_phase() {
   /usr/bin/sha256sum "$phase_ledger" > "$phase_ledger.sha256"
 }
 
-# Keep the five newest proven terminal rollouts. Older proven terminal
-# evidence and its matching backup set are removed. Ambiguous, in-progress,
-# and sentinel-referenced artifacts are never deleted.
-ROLLOUT_TERMINAL_RETENTION_COUNT=5
+# Keep the newest proven terminal rollout. Older proven terminal evidence and
+# its matching backup set are removed before disk admission. This preserves an
+# auditable completed cohort without allowing retained backup copies to
+# deadlock the next rollback-safe rollout. Ambiguous, in-progress, and
+# sentinel-referenced artifacts are never deleted.
+ROLLOUT_TERMINAL_RETENTION_COUNT=1
 ROLLOUT_EVIDENCE_BUDGET_BYTES=16777216
 ROLLOUT_SAFETY_RESERVE_BYTES=268435456
 ROLLOUT_SYSTEM_CONFIG_BUDGET_BYTES=1048576
