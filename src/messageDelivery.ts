@@ -26,13 +26,23 @@ const DEFAULT_FINAL_DELIVERY_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000]
  * of a multi-message answer was delivered. Timeouts, dropped connections and
  * 5xx responses may have been applied remotely and are never blindly resent.
  */
-function isDefiniteDeliveryRejection(error: unknown): boolean {
+function deliveryRejectionStatus(error: unknown): number | null {
   const candidate = error as { status?: unknown; finalChunksDelivered?: unknown; message?: unknown } | null;
-  if (typeof candidate?.finalChunksDelivered === "number" && candidate.finalChunksDelivered > 0) return false;
+  if (typeof candidate?.finalChunksDelivered === "number" && candidate.finalChunksDelivered > 0) return null;
   const status = typeof candidate?.status === "number"
     ? candidate.status
     : Number(/HTTP (\d{3})/.exec(String(candidate?.message ?? ""))?.[1]);
-  return Number.isInteger(status) && status >= 400 && status < 500;
+  return Number.isInteger(status) && status >= 400 && status < 500 ? status : null;
+}
+
+function isDefiniteDeliveryRejection(error: unknown): boolean {
+  return deliveryRejectionStatus(error) !== null;
+}
+
+/** Only rate limiting and request timeouts can succeed unchanged on a later attempt. */
+function isRetryableDeliveryRejection(error: unknown): boolean {
+  const status = deliveryRejectionStatus(error);
+  return status === 429 || status === 408;
 }
 
 export class PreviewCleanupError extends Error {
@@ -104,8 +114,11 @@ export async function sendTelegramMessage({
     try {
       await client.sendRichMessage({ chat_id: chatId, ...rest, rich_message: { html: richHtml } });
       return null;
-    } catch {
-      // sendRichMessage unsupported or rejected — fall through to card-style delivery
+    } catch (error) {
+      // Only a definite HTTP rejection (unsupported/invalid rich message) may
+      // fall through to card-style delivery; an ambiguous failure could have
+      // been applied remotely and a second send would duplicate the answer.
+      if (!isDefiniteDeliveryRejection(error)) throw error;
     }
   }
 
@@ -684,7 +697,8 @@ export async function sendMessageWithProgress({
     console.error(`[${kind}] final answer delivery failed`, failure);
     let delivered = false;
     let definite = isDefiniteDeliveryRejection(failure);
-    for (const delayMs of definite ? finalDeliveryRetryDelaysMs : []) {
+    let retryable = isRetryableDeliveryRejection(failure);
+    for (const delayMs of retryable ? finalDeliveryRetryDelaysMs : []) {
       if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
       if (isAborted?.()) {
         await beginProgressCleanup();
@@ -696,8 +710,15 @@ export async function sendMessageWithProgress({
         break;
       } catch (retryFailure) {
         definite = isDefiniteDeliveryRejection(retryFailure);
-        if (!definite) break;
+        retryable = isRetryableDeliveryRejection(retryFailure);
+        if (!retryable) break;
       }
+    }
+    // Ownership may have been lost (or the user stopped the Run) while a retry
+    // was in flight; a stopped worker publishes and commits nothing.
+    if (isAborted?.()) {
+      await beginProgressCleanup();
+      return null;
     }
     if (delivered) {
       finalDeliveryCompleted = true;
@@ -705,6 +726,7 @@ export async function sendMessageWithProgress({
       return stagedCliResult as CliResult | null;
     }
     await beginProgressCleanup();
+    if (isAborted?.()) return null;
     try {
       const notice = definite
         ? "⚠️ The answer was generated but could not be delivered to this chat. Ask me to repeat it."
@@ -783,7 +805,17 @@ export async function sendMessageWithProgress({
           : "final_delivery",
     });
     if (diagnostic) onEvent?.(diagnostic);
-    if (!finalDeliveryCompleted) await discardAnswerPreview();
+    let previewCleanupFailure: unknown = null;
+    if (!finalDeliveryCompleted) {
+      try {
+        await discardAnswerPreview();
+      } catch (cleanupError) {
+        // A failed strict preview delete must not skip final-delivery recovery
+        // after execution succeeded; it only rules out an immediate resend.
+        if (!(executionCompleted && !finalDeliveryPreparationFailed)) throw cleanupError;
+        previewCleanupFailure = cleanupError;
+      }
+    }
     if (isAborted?.()) {
       await beginProgressCleanup();
       return null;
@@ -792,7 +824,7 @@ export async function sendMessageWithProgress({
       // Provider execution already succeeded exactly once. A failure from here
       // on is a delivery failure: it never reaches provider recovery and never
       // replaces the authoritative answer with an error message.
-      return recoverFinalDelivery(err);
+      return recoverFinalDelivery(previewCleanupFailure ?? err);
     }
     if (propagateTimeoutErrors && err instanceof CliTimeoutError) {
       await beginProgressCleanup();

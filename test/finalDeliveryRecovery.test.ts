@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine, type ProviderFallbackReason } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { lookupProviderSession } from "../src/providers/sessionRuntime.js";
 import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback, setUserCliPreference } from "../src/interactiveBot.js";
-import { sendMessageWithProgress } from "../src/messageDelivery.js";
+import { sendMessageWithProgress, sendTelegramMessage } from "../src/messageDelivery.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 import type { CliResult } from "../src/types.js";
 
@@ -51,9 +52,39 @@ async function deliver(options: {
 }
 
 describe("final-answer delivery recovery (#948)", () => {
+  it("does not retry a deterministic rejection and says the answer was not delivered", async () => {
+    const sendMessage = vi.fn(async (body: any) => {
+      if (String(body?.text ?? "").includes("authoritative")) throw telegramRejection(403);
+      return { ok: true, result: { message_id: 12 } };
+    });
+    const after = vi.fn();
+    const { result } = await deliver({ sendMessage, afterFinalDelivery: after });
+    expect(answerTexts(sendMessage)).toHaveLength(1);
+    const notices = sendMessage.mock.calls.map(([b]: [any]) => String(b?.text ?? "")).filter((t) => /could not be delivered/i.test(t));
+    expect(notices).toHaveLength(1);
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ text: ANSWER });
+  });
+
+  it("publishes and commits nothing when the Run is stopped while a retry is in flight", async () => {
+    let stopped = false;
+    let attempts = 0;
+    const sendMessage = vi.fn(async (body: any) => {
+      if (!String(body?.text ?? "").includes("authoritative")) return { ok: true, result: { message_id: 13 } };
+      attempts += 1;
+      if (attempts === 2) stopped = true;
+      throw telegramRejection(429);
+    });
+    const after = vi.fn();
+    const { result } = await deliver({ sendMessage, isAborted: () => stopped, afterFinalDelivery: after });
+    expect(result).toBeNull();
+    expect(after).not.toHaveBeenCalled();
+    expect(sendMessage.mock.calls.map(([b]: [any]) => String(b?.text ?? "")).filter((t) => t.startsWith("⚠️"))).toHaveLength(0);
+  });
+
   it("retries the same answer after a definite rejection without re-executing or routing to provider recovery", async () => {
     const sendMessage = vi.fn()
-      .mockRejectedValueOnce(telegramRejection(400))
+      .mockRejectedValueOnce(telegramRejection(429))
       .mockResolvedValue({ ok: true, result: { message_id: 7 } });
     const propagate = vi.fn(() => true);
     const after = vi.fn();
@@ -92,7 +123,7 @@ describe("final-answer delivery recovery (#948)", () => {
 
   it("stops after the bounded retries and still retires the executed turn exactly once", async () => {
     const sendMessage = vi.fn(async (body: any) => {
-      if (String(body?.text ?? "").includes("authoritative")) throw telegramRejection(400);
+      if (String(body?.text ?? "").includes("authoritative")) throw telegramRejection(429);
       return { ok: true, result: { message_id: 9 } };
     });
     const after = vi.fn();
@@ -104,7 +135,7 @@ describe("final-answer delivery recovery (#948)", () => {
   });
 
   it("does not resend after part of a multi-message answer was delivered", async () => {
-    const partial = Object.assign(telegramRejection(400), { finalChunksDelivered: 1 });
+    const partial = Object.assign(telegramRejection(429), { finalChunksDelivered: 1 });
     const sendMessage = vi.fn().mockRejectedValueOnce(partial).mockResolvedValue({ ok: true, result: { message_id: 10 } });
     await deliver({ sendMessage });
     expect(answerTexts(sendMessage)).toHaveLength(1);
@@ -114,7 +145,7 @@ describe("final-answer delivery recovery (#948)", () => {
     let aborted = false;
     const sendMessage = vi.fn(async () => {
       aborted = true;
-      throw telegramRejection(400);
+      throw telegramRejection(429);
     });
     const after = vi.fn();
     const { result } = await deliver({ sendMessage, isAborted: () => aborted, afterFinalDelivery: after });
@@ -171,6 +202,8 @@ describe("final-answer delivery failure through BridgeEngine", () => {
       expect(runProviderInvocation).toHaveBeenCalledTimes(1);
       expect(fallbackRequests.size).toBe(0);
       expect(db.pendingMsgCount("telegram:interactive", "948")).toBe(0);
+      // The executed turn is committed even though nothing could be delivered.
+      expect(lookupProviderSession(db, { surfaceIdentity: "telegram:interactive", chatKey: "948" }, "codex")).toBe("s1");
     } finally { db.close(); }
   });
 });
@@ -195,5 +228,35 @@ describe("Discord message delivery failures surface as errors", () => {
     const discord = new DiscordClient({ token: "t" } as any, fetchFn);
     await expect(discord.sendMessage({ chat_id: "1", text: "x".repeat(5000) }))
       .rejects.toMatchObject({ status: 400, finalChunksDelivered: 1 });
+  });
+});
+
+describe("Telegram multi-message and rich-message delivery evidence", () => {
+  it("annotates how many chunks were delivered when a later chunk fails", async () => {
+    let calls = 0;
+    const sendMessage = vi.fn(async () => {
+      calls += 1;
+      if (calls === 2) throw telegramRejection(429);
+      return { ok: true, result: { message_id: calls } };
+    });
+    await expect(sendTelegramMessage({
+      client: client(sendMessage),
+      kind: "codex",
+      chatId: 100,
+      body: { text: `${"a".repeat(3900)}\n\n${"b".repeat(3900)}` },
+    })).rejects.toMatchObject({ finalChunksDelivered: 1 });
+  });
+
+  it("does not fall back to a second send after an ambiguous rich-message failure", async () => {
+    const sendRichMessage = vi.fn(async () => { throw new Error("ETIMEDOUT"); });
+    const sendMessage = vi.fn(async () => ({ ok: true, result: { message_id: 1 } }));
+    const rich = { ...client(sendMessage), sendRichMessage } as any;
+    await expect(sendTelegramMessage({
+      client: rich,
+      kind: "codex",
+      chatId: 100,
+      body: { text: "| a | b |\n|---|---|\n| 1 | 2 |\n" },
+    })).rejects.toThrow(/ETIMEDOUT/);
+    expect(sendMessage).not.toHaveBeenCalled();
   });
 });
