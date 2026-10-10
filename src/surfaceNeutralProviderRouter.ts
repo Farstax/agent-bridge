@@ -1,8 +1,10 @@
-import { isCapacityExhaustedError } from "./cli.js";
 import type { BridgeDb } from "./db.js";
 import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
+import { providerIdForBotName } from "./providers/registry.js";
+import { readProviderFailureEvidence } from "./providers/failureEvidence.js";
+import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import type { BotKind } from "./types.js";
 
 export interface SurfaceNeutralProviderRouterOptions {
@@ -14,7 +16,7 @@ export interface SurfaceNeutralProviderRouterOptions {
 }
 
 /**
- * Provider-neutral capacity fallback for non-messaging Runs.
+ * Provider-neutral fallback for non-messaging Runs.
  * BridgeEngine retains same-provider model fallback; this only advances to the
  * next configured CLI after that provider has exhausted its own model chain.
  */
@@ -74,8 +76,17 @@ export function createSurfaceNeutralProviderRouter(
           }
           return result;
         } catch (error) {
-          const capacityError = isCapacityExhaustedError(error instanceof Error ? error : new Error(String(error)));
-          if (!capacityError) {
+          // Same authoritative verdict as interactive routing; this router only
+          // advances along the chain it was constructed with.
+          // Without the interactive handoff context a non-messaging Run must not
+          // be blindly replayed: only provider rejections (capacity/auth) or a
+          // failure proven to precede prompt submission may advance the chain.
+          const failure = error instanceof Error ? error : new Error(String(error));
+          const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
+          const recoverable = decision.reason === "capacity"
+            || decision.reason === "auth_required"
+            || (decision.reason !== null && readProviderFailureEvidence(failure)?.promptSubmitted === false);
+          if (!recoverable) {
             for (const event of attemptEvents) input.collect(event);
             throw error;
           }

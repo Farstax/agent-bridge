@@ -110,6 +110,8 @@ export interface AcpTurnInput {
   /** Standard ACP authentication method selected from workspace-local policy. */
   readonly authenticateMethodId?: string;
   readonly abortRequested?: () => boolean;
+  /** Called once, immediately before `session/prompt` is sent. */
+  readonly onPromptSubmitted?: () => void;
   readonly signal?: AbortSignal;
   readonly stream?: Stream;
   readonly peer?: AgentApp;
@@ -660,6 +662,8 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
       input.onSteerReady((prompt) => steerAcpSession(agent, sessionIdForSteering, prompt));
     }
 
+    // Evidence for recovery owners: from here the provider may have started the task.
+    input.onPromptSubmitted?.();
     const requestPrompt = () => agent.request(acp.methods.agent.session.prompt, {
       sessionId: acpSessionId,
       prompt: blocks,
