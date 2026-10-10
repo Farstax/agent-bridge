@@ -13,6 +13,12 @@ export interface SurfaceNeutralProviderRouterOptions {
   initialProvider: BotKind;
   providerChain: readonly BotKind[];
   engineForProvider: (provider: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
+  /**
+   * Same routeability predicate interactive routing uses (see
+   * canonicalProviderAvailability). Omitted only where every chain member is
+   * known runnable, e.g. unit tests.
+   */
+  isProviderAvailable?: (provider: BotKind) => boolean;
 }
 
 /**
@@ -27,7 +33,23 @@ export function createSurfaceNeutralProviderRouter(
     options.initialProvider,
     ...options.providerChain.filter((provider) => provider !== options.initialProvider),
   ];
-  const fallback = new ProviderFallbackChain(ordered, options.db, options.surfaceIdentity);
+  const probe = options.isProviderAvailable ?? (() => true);
+  // Availability is probed synchronously per candidate; evaluate each provider
+  // once per routing decision rather than on every chain query.
+  let snapshot = new Map<string, boolean>();
+  const isAvailable = (provider: BotKind): boolean => {
+    const known = snapshot.get(provider);
+    if (known !== undefined) return known;
+    const value = probe(provider);
+    snapshot.set(provider, value);
+    return value;
+  };
+  const fallback = new ProviderFallbackChain(
+    ordered,
+    options.db,
+    options.surfaceIdentity,
+    (provider) => isAvailable(provider as BotKind),
+  );
   const initialized = new Set<string>();
 
   return {
@@ -38,7 +60,14 @@ export function createSurfaceNeutralProviderRouter(
       }
 
       for (;;) {
+        snapshot = new Map();
         const provider = fallback.getActiveCli(input.chatKey) as BotKind;
+        // The chain returns its head when nothing is routeable; a non-messaging
+        // Run must fail clearly instead of invoking an unusable provider.
+        if (!isAvailable(provider)) {
+          console.error(`[surface-neutral-router] no available provider in chain ${ordered.join(",")} surface=${options.surfaceIdentity ?? "unknown"}`);
+          throw new Error("no available provider in the configured chain");
+        }
         const engine = options.engineForProvider(provider);
         let attemptEvents: BridgeEvent[] = [];
         const providerInput: SurfaceNeutralTurnInput = {
@@ -76,6 +105,7 @@ export function createSurfaceNeutralProviderRouter(
           }
           return result;
         } catch (error) {
+          snapshot = new Map();
           // Same authoritative verdict as interactive routing; this router only
           // advances along the chain it was constructed with.
           // Without the interactive handoff context a non-messaging Run must not

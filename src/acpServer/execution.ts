@@ -12,6 +12,8 @@ import { interactiveChainKinds, parseCliChain } from "../providers/selection.js"
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
 import { createSurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
+import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
+import type { CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 
 export const OUTWARD_ACP_SURFACE = "acp:outward";
@@ -49,6 +51,7 @@ export interface BridgeOutwardAcpPromptExecutorOptions {
   db: BridgeDb;
   /** Ordered fallback chain; [0] is the initial/head provider for a fresh session. */
   providerChain: readonly BotKind[];
+  isProviderAvailable?: (provider: BotKind) => boolean;
   createEngine: (session: OutwardAcpSessionRecord, attemptProvider: BotKind) => OutwardAcpExecutionEngine;
   runId?: () => string;
 }
@@ -154,9 +157,10 @@ export class BridgeOutwardAcpPromptExecutor implements OutwardAcpPromptExecutor 
   private routerFor(session: OutwardAcpSessionRecord): OutwardAcpExecutionEngine {
     const existing = this.routers.get(session.conversationId);
     if (existing) return existing;
-    const { db, providerChain, createEngine } = this.options;
+    const { db, providerChain, createEngine, isProviderAvailable } = this.options;
     const router = createSurfaceNeutralProviderRouter({
       db,
+      isProviderAvailable,
       surfaceIdentity: OUTWARD_ACP_SURFACE,
       initialProvider: providerChain[0],
       providerChain,
@@ -422,6 +426,7 @@ export function createProductionOutwardAcpPromptExecutor(
   return new BridgeOutwardAcpPromptExecutor({
     db,
     providerChain,
+    isProviderAvailable: (provider) => getCachedAvailableCliKinds({ env }).has(provider as CliKind),
     createEngine: (session, attemptProvider) => {
       const executionMode = resolveExecutionMode(attemptProvider, env);
       const fullConfig: BridgeConfig = {
