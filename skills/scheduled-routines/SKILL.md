@@ -22,6 +22,25 @@ Creating the routine is standing, revocable authority only to submit that stored
 
 Never infer routines from habits. Never create or modify a routine from a scheduled-triggered Run. An autonomous Cycle also must not create or broaden schedules unless a current authenticated user conversation separately authorizes it.
 
+## Provider lock and fallback
+
+A routine always runs in the conversation that created it. That conversation decides whether another provider can take over:
+
+- A **dedicated provider conversation** (for example the Claude-only Telegram bot, surface `telegram:claude`) is locked to that provider. If the provider is unavailable or out of quota, the occurrence fails; there is no cross-provider fallback and Agent Bridge will not switch it to another bot or conversation.
+- The **unified interactive conversation** (`telegram:interactive`, or a configured Discord interactive surface) can fall back to another configured, available provider when a failure is safe to recover. This is capability, not a guarantee: it depends on the configured chain, provider availability and the recovery safety rules.
+
+Check `AGENT_BRIDGE_SURFACE_IDENTITY` (or the `Route:` line printed by `list`/`create`) before the user confirms recurring or important work. When the conversation is provider-locked, say so plainly before creating the routine and tell the user they can ask for it from the unified interactive conversation instead if it must survive that provider being unavailable.
+
+Never move a routine between conversations on your own. The helper is scoped to the current conversation and cannot create, list or disable anything in another one. To move important work to the unified conversation:
+
+1. The user asks for the routine from the unified interactive conversation; create it there and verify it with `list` there.
+2. The user then disables the old routine from the original locked conversation (`disable <routine-id>` there). Verify first, so there is no period with no routine.
+3. Both routines are enabled between steps 1 and 2. If a scheduled time falls inside that window the instruction runs twice, so disable the old routine promptly and avoid doing this just before an occurrence.
+
+Do not copy schedules, owners or delivery targets by editing a stored routine, and do not expect `update` to change a routine's conversation: it cannot.
+
+Autonomous routines are narrower than companion routines. They require the Telegram interactive surface with first-class autonomy; locked provider bots ignore autonomy settings and a Discord surface does not run them. Only offer moving an autonomous routine to the Telegram unified conversation.
+
 ## Routine types
 
 Use `companion` for normal proactive work such as briefings, reminders that need reasoning, status reviews, or scheduled questions. The occurrence returns to this same companion conversation and uses its existing session, queue, provider routing and delivery.

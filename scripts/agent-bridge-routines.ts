@@ -5,6 +5,7 @@ import { BridgeDb } from "../src/db.js";
 import {
   createScheduledRoutine,
   deleteScheduledRoutine,
+  describeScheduledRoutineRoute,
   disableScheduledRoutine,
   listScheduledRoutines,
   requestScheduledRoutineRun,
@@ -89,12 +90,13 @@ function renderSchedule(schedule: ScheduledRoutineSchedule): string {
 
 function renderList(db: BridgeDb, surfaceIdentity: string, chatKey: string, ownerKey: string): string {
   const routines = listScheduledRoutines(db, surfaceIdentity, chatKey, ownerKey);
-  if (!routines.length) return "No scheduled routines in this conversation.";
-  return routines.map((routine) => [
+  const route = `Route: ${describeScheduledRoutineRoute(surfaceIdentity)}`;
+  if (!routines.length) return `No scheduled routines in this conversation.\n${route}`;
+  return [route, ...routines.map((routine) => [
     `${routine.id}\t${routine.enabled ? "active" : "disabled"}\t${routine.kind}\t${routine.name}`,
     `  ${renderSchedule(routine.schedule)} (${routine.timezone})`,
     `  ${routine.instruction}`,
-  ].join("\n")).join("\n");
+  ].join("\n"))].join("\n");
 }
 
 function main(args: string[]): string {
@@ -167,7 +169,7 @@ function main(args: string[]): string {
       enabled: true,
       createdAt: new Date().toISOString(),
     });
-    return `Created scheduled routine ${routine.id}: ${routine.name} (${renderSchedule(routine.schedule)}, ${routine.timezone}, ${routine.kind}).`;
+    return `Created scheduled routine ${routine.id}: ${routine.name} (${renderSchedule(routine.schedule)}, ${routine.timezone}, ${routine.kind}).\nRoute: ${describeScheduledRoutineRoute(scope.surfaceIdentity)}`;
   } finally {
     scope.db.close();
   }
