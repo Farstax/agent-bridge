@@ -35,6 +35,10 @@ export interface InteractiveTurnInput {
   scheduledOccurrenceKey?: string;
   /** Internal work that may run immediately on an idle lane but must never interrupt or augment an active lane. */
   queueOnly?: boolean;
+  /** Mechanical execution mode override for the turn. */
+  executionMode?: "safe" | "trusted";
+  /** Whether the turn is strictly verification-only (suppressing execution contract). */
+  verificationOnly?: boolean;
 }
 
 function safeAttachmentName(value: unknown, fallback: string): string {

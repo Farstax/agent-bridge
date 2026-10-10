@@ -8,6 +8,7 @@ import type { BridgeDb } from "./db.js";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
 import type { RouteableBotKind } from "./types.js";
 import { lookupProviderSession } from "./providers/sessionRuntime.js";
+import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
 const PREFIX = "run-continuation:v1:";
 const DEFAULT_SCAN_MS = 5_000;
@@ -195,9 +196,6 @@ export function claimDueRunContinuation(
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
     }
-    const originRun = db.getRun(current.originRunId);
-    if (!originRun || originRun.status === "running") return null;
-
     const cancel = (error: string): null => {
       const cancelled: RunContinuation = {
         ...current,
@@ -209,10 +207,20 @@ export function claimDueRunContinuation(
       return null;
     };
 
+    const originRun = db.getRun(current.originRunId);
+    if (!originRun) return null;
+    if (originRun.status === "running") {
+      if (current.rolloutProvenance) {
+        return cancel("originating Run process or descendant is still active");
+      }
+      return null;
+    }
+
     if (current.rolloutProvenance) {
       const prov = current.rolloutProvenance;
 
-      if (options?.isProcessAlive?.(current.originRunId)) {
+      const isProcessAlive = options?.isProcessAlive ?? ((runId: string) => getRunOwnedProcessState(runId) !== "absent");
+      if (isProcessAlive(current.originRunId)) {
         return cancel("originating Run process or descendant is still active");
       }
 
@@ -441,6 +449,16 @@ export class RunContinuationRunner {
   }
 }
 
+export function buildPostRolloutVerificationTurnText(reason: string): string {
+  return [
+    "[Agent Bridge post-rollout verification]",
+    "The previous service was restarted by a controlled rollout.",
+    "Perform bounded read-only verification of current service health and external state for the requested check.",
+    "Do not repeat completed side effects, apply mutations, or replay previous operations.",
+    `Verification reason: ${reason}`,
+  ].join("\n");
+}
+
 export function buildTelegramRunContinuationTurn(
   continuation: RunContinuation,
   actorId: string,
@@ -450,22 +468,27 @@ export function buildTelegramRunContinuationTurn(
   // parse them back out of chatKey itself.
   const delivery = continuation.delivery ?? parse(JSON.stringify(continuation))?.delivery;
   if (!delivery) throw new Error("run continuation has no Telegram delivery coordinates");
+  const isRollout = Boolean(continuation.rolloutProvenance);
   return {
     surfaceIdentity: continuation.surfaceIdentity,
     chatKey: continuation.chatKey,
     actorId,
     messageId: `continuation:${continuation.id}`,
-    text: [
-      "[Agent Bridge continuation]",
-      "A required bounded operation was still pending in the previous Run.",
-      "Re-check current external state and continue the original objective from where you left off.",
-      "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
-      `Pending reason: ${continuation.reason}`,
-    ].join("\n"),
+    text: isRollout
+      ? buildPostRolloutVerificationTurnText(continuation.reason)
+      : [
+          "[Agent Bridge continuation]",
+          "A required bounded operation was still pending in the previous Run.",
+          "Re-check current external state and continue the original objective from where you left off.",
+          "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
+          `Pending reason: ${continuation.reason}`,
+        ].join("\n"),
     ...(delivery.threadId === undefined ? {} : { threadId: String(delivery.threadId) }),
     delivery,
     queueOnly: true,
     attachments: [],
+    executionMode: isRollout ? "safe" : undefined,
+    verificationOnly: isRollout ? true : undefined,
   };
 }
 
@@ -475,21 +498,26 @@ export function buildDiscordRunContinuationTurn(
 ): InteractiveTurnInput {
   const delivery = continuation.delivery ?? parse(JSON.stringify(continuation))?.delivery;
   if (!delivery) throw new Error("run continuation has no Discord delivery coordinates");
+  const isRollout = Boolean(continuation.rolloutProvenance);
   return {
     surfaceIdentity: continuation.surfaceIdentity,
     chatKey: continuation.chatKey,
     actorId,
     messageId: `continuation:${continuation.id}`,
-    text: [
-      "[Agent Bridge continuation]",
-      "A required bounded operation was still pending in the previous Run.",
-      "Re-check current external state and continue the original objective from where you left off.",
-      "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
-      `Pending reason: ${continuation.reason}`,
-    ].join("\n"),
+    text: isRollout
+      ? buildPostRolloutVerificationTurnText(continuation.reason)
+      : [
+          "[Agent Bridge continuation]",
+          "A required bounded operation was still pending in the previous Run.",
+          "Re-check current external state and continue the original objective from where you left off.",
+          "Do not repeat completed side effects. If the operation is still pending and keeping this Run open is impractical, request another bounded continuation.",
+          `Pending reason: ${continuation.reason}`,
+        ].join("\n"),
     delivery,
     surroundingContext: [],
     queueOnly: true,
     attachments: [],
+    executionMode: isRollout ? "safe" : undefined,
+    verificationOnly: isRollout ? true : undefined,
   };
 }

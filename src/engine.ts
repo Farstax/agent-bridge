@@ -487,6 +487,8 @@ export class BridgeEngine {
       let executionOutcome: ExecutionOutcome = "failed";
       const finalDeliveryActive = this.laneCoordinator.hasFinalDelivery(executionLane);
       const queueOnly = primaryMessage.queueOnly === true;
+      const turnExecutionMode = primaryMessage.executionMode;
+      const turnVerificationOnly = primaryMessage.verificationOnly === true;
       const augmentMode = !queueOnly && (this.opts.busyMessageMode ?? "augment") === "augment";
       const ownsAugmentedTask = augmentMode && !finalDeliveryActive && !this.laneCoordinator.hasAugmentedTask(executionLane);
       if (ownsAugmentedTask) this.laneCoordinator.setAugmentedTask(executionLane, { prompt, attachments: [...attachments] });
@@ -494,7 +496,7 @@ export class BridgeEngine {
         executionOutcome = await this._executeAndSend(
           prompt, chatId, chatKey, primaryMessage.delivery.chatType, threadId, userId, hookCtx,
           attachments, attachmentLocalPath, null, true, true, !finalDeliveryActive && !queueOnly, ownsAugmentedTask, true,
-          [], scheduledOccurrenceKeys, preProviderScope,
+          [], scheduledOccurrenceKeys, preProviderScope, turnExecutionMode, turnVerificationOnly,
         );
       } finally {
         const transferred = this.laneCoordinator.isAugmentTransferred(executionLane);
@@ -603,6 +605,8 @@ export class BridgeEngine {
     claimedPendingIds: number[] = [],
     scheduledOccurrenceKeys: string[] = [],
     preProviderScope: PreProviderIngressScope | null = null,
+    executionMode?: "safe" | "trusted",
+    verificationOnly = false,
   ): Promise<ExecutionOutcome> {
     void attachmentLocalPath;
     let prompt = rawPrompt;
@@ -676,6 +680,7 @@ export class BridgeEngine {
     try {
       const result = await this._executeAndDeliverTurn({
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
+        executionMode, verificationOnly,
       });
       if (!result) {
         if (!this.laneCoordinator.hasCancellation(executionLane)) finalize();
@@ -750,6 +755,7 @@ export class BridgeEngine {
           const retryResult = await this._executeAndDeliverTurn({
             prompt, sessionId: null, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
             suppressTransientRetry: true,
+            executionMode, verificationOnly,
           });
           if (retryResult) {
             finalize();
@@ -858,6 +864,8 @@ export class BridgeEngine {
     eventContext: CliOptions["eventContext"];
     collect: (event: BridgeEvent) => void;
     suppressTransientRetry?: boolean;
+    executionMode?: "safe" | "trusted";
+    verificationOnly?: boolean;
   }): Promise<StagedCliResult | null> {
     let result: StagedCliResult | null = null;
     let finalDeliveryPhase: FinalDeliveryPhase | null = null;
@@ -894,6 +902,8 @@ export class BridgeEngine {
             message_thread_id: input.threadId,
             onAnswerDelta: supportsProvisionalAnswers(executionKind) ? onAnswerDelta : undefined,
             suppressTransientRetry: input.suppressTransientRetry,
+            executionMode: input.executionMode,
+            verificationOnly: input.verificationOnly,
           };
           result = await this.executePromptAsync(
             input.prompt, input.sessionId, input.chatId, body, onProgress, input.attachments,
@@ -1689,6 +1699,8 @@ export class BridgeEngine {
     const model = modelFallback?.model ?? configuredModel;
 
     const logFile: string | null = null;
+    const executionMode = (body as { executionMode?: "safe" | "trusted" }).executionMode ?? this.opts.executionMode;
+    const isVerificationOnly = (body as { verificationOnly?: boolean }).verificationOnly === true;
 
     const fileSendOptions = threadId != null ? { message_thread_id: threadId } : undefined;
     const outDir = await prepareOutputDir(chatKey, this.kind, runId ?? randomUUID());
@@ -1700,7 +1712,7 @@ export class BridgeEngine {
       effort: resolveEffort(executionKind, this.db),
       prompt: "",
       sessionId,
-      executionMode: this.opts.executionMode,
+      executionMode,
       outputFormat: null,
       logFile,
       soulContext: null,
@@ -1716,7 +1728,7 @@ export class BridgeEngine {
       effort: resolveEffort(executionKind, this.db),
       prompt: promptForCli.prompt,
       sessionId,
-      executionMode: this.opts.executionMode,
+      executionMode,
       outputFormat: "json",
       logFile,
       soulContext: promptForCli.soulContext,
@@ -1726,8 +1738,9 @@ export class BridgeEngine {
       // Issue #903: ordinary interactive main-lane turns opt into the
       // delegation/execution contract; autonomous Episode cycles already own
       // their Goal/Episode/Cycle authority contract and must not also
-      // receive operator delegation posture.
-      includeExecutionContract: this.kind !== "autonomous",
+      // receive operator delegation posture. Post-rollout verification turns
+      // are strictly read-only and must never receive mutation instructions.
+      includeExecutionContract: !isVerificationOnly && this.kind !== "autonomous",
     });
     const executionLane = this._executionLane(chatKey);
     try {
@@ -1756,7 +1769,7 @@ export class BridgeEngine {
             prompt: invocation.prompt ?? promptForCli.prompt,
             sessionId,
             model,
-            executionMode: this.opts.executionMode,
+            executionMode,
             soulContext: promptForCli.soulContext,
             includeResponseContract: promptForCli.includeResponseContract,
             attachments,
