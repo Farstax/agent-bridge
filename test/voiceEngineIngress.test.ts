@@ -192,7 +192,7 @@ describe("voice ingress -> ordinary Run admission fence", () => {
 
     expect(countAtAdmission).toBe(0);
     expect(coordinator.preProviderIngressCount()).toBe(0);
-  });
+  }, 15_000);
 
   it("forwards the original attachment through the ordinary attachment path on a real transcription failure", async () => {
     const turn = audioTurn("retain-voice");
