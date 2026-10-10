@@ -24,6 +24,8 @@ For security, identity, credential, account/repository selection, installation, 
 
 The authority at the final consequential operation is the boundary that must be proven.
 
+For work that can be retried, resumed, replayed, handed off, or redelivered, define the evidence that distinguishes definitely not executed, possibly executed, and completed work (including a lost acknowledgement). State the allowed recovery in each relevant phase and its cancellation/authority limits. A transport failure or missing output alone does not prove that work or side effects never occurred; do not prescribe a new recovery framework where the existing owner suffices.
+
 For multiple issues, split only when the pieces are independently valuable or have a real dependency. A claimed dependency must have an output/state from the earlier step that the later step actually consumes.
 
 Ask a question only when the missing answer would make a reasonable implementation unsafe or materially change product intent. Otherwise state the assumption and continue.
