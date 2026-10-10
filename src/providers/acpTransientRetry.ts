@@ -47,7 +47,8 @@ async function defaultWait(delayMs: number, abortRequested: () => boolean): Prom
  * cross-process credential lock); every other transient reason gets a short
  * "maybe it was nothing" retry instead. Not attempted for any other
  * classification (capacity_exhausted, auth_required, model_unavailable,
- * fatal, unknown) -- those cannot be fixed by retrying the same session. The
+ * fatal) -- those cannot be fixed by retrying the same session. An `unknown`
+ * failure is retried only while no session/prompt was submitted. The
  * decision callback fires exactly once for the failed first attempt and
  * says whether attempt two really starts.
  */

@@ -108,6 +108,9 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
       expect(readProviderFailureEvidence(error)).toEqual({ promptSubmitted: true });
       // One adapter process only: the task is not replayed on an ambiguous failure.
       expect(readFileSync(counter, "utf8")).toBe("1");
+      const diagnostics = events.filter((event) => event.type === "run.diagnostic");
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]).toMatchObject({ attempt: 1, successorStarted: false, retryEligible: false, promptSubmitted: true });
       expect(decideProviderRecovery("codex", error as Error).reason).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });
