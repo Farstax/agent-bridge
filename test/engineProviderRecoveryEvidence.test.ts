@@ -6,7 +6,7 @@ import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback
 import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
-import { ProviderStallError } from "../src/cli.js";
+import { CliTimeoutError, ProviderStallError } from "../src/cli.js";
 
 function client() {
   return {
@@ -189,7 +189,12 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
   });
 
   it("advances on provider rejections but not on post-submission transport failures", async () => {
-    const advancing = [new Error("usage limit reached"), new Error("Failed to authenticate"), submitted("socket hang up", false)];
+    const advancing = [
+      new Error("usage limit reached"),
+      new Error("Failed to authenticate"),
+      submitted("socket hang up", false),
+      attachProviderFailureEvidence(new CliTimeoutError("pre-prompt timeout", "hard"), { promptSubmitted: false }),
+    ];
     for (const error of advancing) {
       const { db, claude, router, input } = routerOver(error);
       try {
@@ -214,6 +219,35 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
         expect(claude).not.toHaveBeenCalled();
       } finally { db.close(); }
     }
+  });
+
+  it("retains pre-prompt diagnostics from an abandoned attempt while suppressing its terminal result", async () => {
+    const db = openDb(":memory:");
+    const diagnostics: BridgeEvent[] = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db,
+      surfaceIdentity: "acp:test",
+      initialProvider: "codex",
+      providerChain: ["codex", "claude"],
+      engineForProvider: (provider) => provider === "codex"
+        ? {
+          executeSurfaceNeutralTurn: async (input: any) => {
+            input.collect({ type: "run.diagnostic", runId: "r", bot: "codex", promptSubmitted: false });
+            input.collect({ type: "run.failed", runId: "r", bot: "codex" });
+            throw submitted("ACP setup transport failed", false);
+          },
+        } as any
+        : { executeSurfaceNeutralTurn: async () => ({ text: "fallback answer", sessionId: "s", stopReason: "end_turn" }) } as any,
+    });
+    try {
+      await router.executeSurfaceNeutralTurn({
+        prompt: "p", sessionId: null, chatId: "c", chatKey: "k", laneHandle: {} as any, runId: "r",
+        eventContext: { runId: "r", bot: "codex", chatId: "c", chatKey: "k" } as any,
+        collect: (event) => diagnostics.push(event),
+      });
+      expect(diagnostics.map((event) => event.type)).toEqual(["run.diagnostic"]);
+      expect((diagnostics[0] as any).promptSubmitted).toBe(false);
+    } finally { db.close(); }
   });
 });
 

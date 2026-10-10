@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { AcpSessionMap, liveDeliveryText, runAcpTurn } from "../src/acp/index.js";
+import * as acp from "@agentclientprotocol/sdk";
+import { PassThrough } from "node:stream";
+import { AcpSessionMap, liveDeliveryText, nodeStdioStream, runAcpTurn } from "../src/acp/index.js";
 import { createFakeAcpAgent } from "./support/fakeAcpAgent.js";
 
 describe("ACP core client", () => {
@@ -241,6 +243,48 @@ describe("ACP core client", () => {
     setTimeout(() => abort.abort(), 20);
     const result = await hung;
     expect(result.stopReason).toBe("cancelled");
+  });
+
+  it("rejects an abort that arrives before ACP initialization so supervision can recover a pre-prompt failure", async () => {
+    const abort = new AbortController();
+    const peer = acp.agent({ name: "never-initializes" })
+      .onRequest(acp.methods.agent.initialize, async () => new Promise<never>(() => {}));
+    const pending = runAcpTurn({
+      peer,
+      cwd: process.cwd(),
+      conversationId: "conv-pre-prompt-abort",
+      runId: "run-pre-prompt-abort",
+      existingAcpSessionId: null,
+      prompt: "must never submit",
+      executionMode: "safe",
+      signal: abort.signal,
+    });
+    const cause = new Error("pre-prompt supervisor fence");
+    abort.abort(cause);
+    await expect(Promise.race([
+      pending,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ACP did not settle after pre-prompt abort")), 100)),
+    ])).rejects.toBe(cause);
+  });
+
+  it("rejects an abort while an ACP stdio peer is silent before initialization", async () => {
+    const abort = new AbortController();
+    const pending = runAcpTurn({
+      stream: nodeStdioStream(new PassThrough(), new PassThrough()),
+      cwd: process.cwd(),
+      conversationId: "conv-silent-stream",
+      runId: "run-silent-stream",
+      existingAcpSessionId: null,
+      prompt: "must never submit",
+      executionMode: "safe",
+      signal: abort.signal,
+    });
+    const cause = new Error("stdio pre-prompt supervisor fence");
+    abort.abort(cause);
+    await expect(Promise.race([
+      pending,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("silent ACP stdio did not settle after abort")), 100)),
+    ])).rejects.toBe(cause);
   });
 
   it("takes turn consumption from PromptResponse.usage and keeps context usage separate", async () => {

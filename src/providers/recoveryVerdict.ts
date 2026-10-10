@@ -60,7 +60,12 @@ export function decideProviderRecovery(
   // its text also looks like capacity wording).
   let transportReason: ProviderRecoveryDecision["transportReason"] = null;
   if (error instanceof ProviderStallError) transportReason = "provider_stall";
-  else if (error instanceof CliTimeoutError) transportReason = null;
+  // A timeout is normally ambiguous: the provider may have received work.
+  // The ACP runtime can prove the narrower startup/setup case, where no
+  // session/prompt was submitted and the existing fallback path is safe.
+  else if (error instanceof CliTimeoutError) {
+    transportReason = evidence?.promptSubmitted === false ? "provider_transport_failure" : null;
+  }
   else if (classification.kind === "transient") {
     transportReason = claudeContention ? null : "provider_transport_failure";
   } else if (classification.kind === "fatal" && !/not a git repository/i.test(classification.reason)) {
