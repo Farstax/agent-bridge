@@ -191,6 +191,10 @@ function promptBlocks(prompt: AcpTurnInput["prompt"]): ContentBlock[] {
   return Array.isArray(prompt) ? prompt : [prompt];
 }
 
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("ACP turn aborted before prompt submission");
+}
+
 function agentSupportsResume(init: InitializeResponse): boolean {
   return Boolean(init.agentCapabilities?.sessionCapabilities?.resume);
 }
@@ -474,6 +478,11 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   // actual root/child protocol session id.
   let currentAcpSessionId: string | undefined;
   let currentSessionMode: AcpSessionMode | undefined;
+  // This local boundary is separate from the externally recorded callback:
+  // an abort before it is true must settle the ACP connection, while a later
+  // abort remains a provider-native session/cancel request and can return its
+  // normal `stopReason: cancelled` result.
+  let promptSubmitted = false;
   let rootSystemErrorSeen = false;
   let rootClaudeRateLimitRejectedSeen = false;
 
@@ -663,6 +672,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     }
 
     // Evidence for recovery owners: from here the provider may have started the task.
+    promptSubmitted = true;
     input.onPromptSubmitted?.();
     const requestPrompt = () => agent.request(acp.methods.agent.session.prompt, {
       sessionId: acpSessionId,
@@ -710,8 +720,25 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     };
   };
 
-  if (input.peer) return clientApp.connectWith(input.peer, execute);
-  return clientApp.connectWith(input.stream as Stream, execute);
+  const connection = input.peer
+    ? clientApp.connectWith(input.peer, execute)
+    : clientApp.connectWith(input.stream as Stream, execute);
+  const signal = input.signal;
+  if (!signal || promptSubmitted) return connection;
+  return new Promise<AcpTurnResult>((resolve, reject) => {
+    const onAbort = () => {
+      // Once session/prompt is sent, preserve the provider-native cancellation
+      // path above. Before it, the provider cannot have started the task, and
+      // the supervisor's original reason must reach recovery immediately.
+      if (!promptSubmitted) reject(abortReason(signal));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    void connection.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 export function runAcpSessionSetup(input: AcpSessionSetupInput): Promise<AcpTurnResult> {

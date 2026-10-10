@@ -53,6 +53,10 @@ describe("provider recovery verdict", () => {
     expect(decideProviderRecovery("codex", new Error("socket hang up")).freshSessionRetry).toBe(true);
     expect(decideProviderRecovery("codex", new ProviderStallError("stalled")).reason).toBe("provider_stall");
     expect(decideProviderRecovery("codex", new CliTimeoutError("t", "hard")).reason).toBeNull();
+    expect(decideProviderRecovery("codex", attachProviderFailureEvidence(new CliTimeoutError("t", "hard"), { promptSubmitted: false })).reason)
+      .toBe("provider_transport_failure");
+    expect(decideProviderRecovery("codex", attachProviderFailureEvidence(new CliTimeoutError("t", "hard"), { promptSubmitted: true })).reason)
+      .toBeNull();
     expect(decideProviderRecovery("codex", new Error("spawn agent ENOENT")).reason).toBe("provider_unavailable");
   });
 

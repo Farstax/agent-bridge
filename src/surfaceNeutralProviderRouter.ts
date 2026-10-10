@@ -126,8 +126,13 @@ export function createSurfaceNeutralProviderRouter(
             throw error;
           }
           // The failed provider/model attempt was abandoned in favour of the
-          // next configured CLI. Do not let its terminal event settle the
-          // single durable Run owned by the eventual successful attempt.
+          // next configured CLI. Preserve its non-terminal diagnostics for
+          // audit (especially prompt-submission evidence) without letting its
+          // terminal event settle the single durable Run owned by the eventual
+          // successful attempt.
+          for (const event of attemptEvents) {
+            if (event.type === "run.diagnostic") input.collect(event);
+          }
         }
       }
     },
