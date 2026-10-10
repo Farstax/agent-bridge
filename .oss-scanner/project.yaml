@@ -1,0 +1,8 @@
+# Draft only. Copy to anthropics/oss-scanner/projects/agent-bridge/project.yaml.
+# DO NOT SUBMIT before replacing the contact with a verified public mailbox.
+repo: https://github.com/Farstax/agent-bridge#main
+primary_contact: REPLACE_WITH_VERIFIED_PUBLIC_SECURITY_CONTACT
+homepage: https://farstax.com/
+dockerfile: .oss-scanner/Dockerfile
+threat_model: .oss-scanner/threat_model.md
+disabled: false
