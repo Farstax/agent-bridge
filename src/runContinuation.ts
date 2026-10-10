@@ -18,6 +18,16 @@ const MAX_REASON_CHARS = 500;
 
 export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired" | "cancelled";
 
+export interface RolloutProvenance {
+  reconciledAt: string;
+  reason: string;
+  reconciliationAuditId: string;
+  originRunId: string;
+  surfaceIdentity: string;
+  chatKey: string;
+  provider: RouteableBotKind;
+}
+
 export interface RunContinuation {
   version: 1;
   id: string;
@@ -34,6 +44,7 @@ export interface RunContinuation {
   completedAt?: string;
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
+  rolloutProvenance?: RolloutProvenance;
 }
 
 export interface RequestRunContinuationInput {
@@ -71,6 +82,19 @@ function parse(value: string): RunContinuation | null {
       || !candidate.reason
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
+    if (candidate.rolloutProvenance) {
+      const p = candidate.rolloutProvenance;
+      if (
+        !p
+        || typeof p.reconciledAt !== "string"
+        || typeof p.reason !== "string"
+        || typeof p.reconciliationAuditId !== "string"
+        || typeof p.originRunId !== "string"
+        || typeof p.surfaceIdentity !== "string"
+        || typeof p.chatKey !== "string"
+        || typeof p.provider !== "string"
+      ) return null;
+    }
     if (candidate.delivery) return candidate;
     if (candidate.surfaceIdentity.startsWith("telegram:")) {
       const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
@@ -152,10 +176,15 @@ export function listRunContinuations(db: BridgeDb, surfaceIdentity?: string): Ru
     .filter((item) => surfaceIdentity === undefined || item.surfaceIdentity === surfaceIdentity);
 }
 
+export interface ClaimRunContinuationOptions {
+  isProcessAlive?: (runId: string) => boolean;
+}
+
 export function claimDueRunContinuation(
   db: BridgeDb,
   id: string,
   nowMs = Date.now(),
+  options?: ClaimRunContinuationOptions,
 ): RunContinuation | null {
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
@@ -168,6 +197,104 @@ export function claimDueRunContinuation(
     }
     const originRun = db.getRun(current.originRunId);
     if (!originRun || originRun.status === "running") return null;
+
+    const cancel = (error: string): null => {
+      const cancelled: RunContinuation = {
+        ...current,
+        state: "cancelled",
+        completedAt: new Date(nowMs).toISOString(),
+        error,
+      };
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
+      return null;
+    };
+
+    if (current.rolloutProvenance) {
+      const prov = current.rolloutProvenance;
+
+      if (options?.isProcessAlive?.(current.originRunId)) {
+        return cancel("originating Run process or descendant is still active");
+      }
+
+      if (
+        prov.originRunId !== current.originRunId
+        || prov.surfaceIdentity !== current.surfaceIdentity
+        || prov.chatKey !== current.chatKey
+        || prov.provider !== current.provider
+        || prov.reason !== "interrupted_by_controlled_rollout"
+      ) {
+        return cancel("invalid rollout provenance metadata");
+      }
+
+      if (
+        originRun.status !== "failed"
+        || originRun.error !== "interrupted_by_controlled_rollout"
+        || originRun.surface_identity !== current.surfaceIdentity
+        || originRun.chat_id !== current.chatKey
+        || originRun.bot !== current.provider
+      ) {
+        return cancel("originating Run does not match rollout provenance");
+      }
+
+      const auditRow = db.raw.prepare(`
+        SELECT id, kind, subject_id, status, reason, before_json
+        FROM reconciliation_audit
+        WHERE id = ?
+      `).get(prov.reconciliationAuditId) as {
+        id: string;
+        kind: string;
+        subject_id: string;
+        status: string;
+        reason: string;
+        before_json: string;
+      } | undefined;
+
+      if (
+        !auditRow
+        || auditRow.kind !== "run"
+        || auditRow.subject_id !== current.originRunId
+        || auditRow.status !== "completed"
+        || auditRow.reason !== "interrupted_by_controlled_rollout"
+      ) {
+        return cancel("reconciliation audit evidence missing or invalid");
+      }
+
+      try {
+        const before = JSON.parse(auditRow.before_json);
+        if (before.containmentState !== "proven" || before.processState !== "absent") {
+          return cancel("reconciliation containment not proven");
+        }
+      } catch {
+        return cancel("reconciliation audit payload malformed");
+      }
+
+      if (db.hasChatLock(current.chatKey) || db.hasRunLock(originRun.run_id)) {
+        return null;
+      }
+
+      const claimedCount = (db.raw.prepare(`
+        SELECT COUNT(*) AS count
+        FROM pending_messages
+        WHERE chat_key = ? AND surface = ? AND (state = 'claimed' OR claim_run_id IS NOT NULL)
+      `).get(current.chatKey, current.surfaceIdentity) as { count: number }).count;
+      if (claimedCount > 0) return null;
+
+      const abortCount = (db.raw.prepare(`
+        SELECT COUNT(*) AS count
+        FROM pending_messages
+        WHERE chat_key = ? AND surface = ? AND prompt IN ('/stop', '/cancel', '/reset')
+      `).get(current.chatKey, current.surfaceIdentity) as { count: number }).count;
+      if (abortCount > 0) {
+        return cancel("originating Run cancelled or reset by user");
+      }
+
+      if (Date.parse(current.dueAt) > nowMs) return null;
+
+      const claimed: RunContinuation = { ...current, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
+      return claimed;
+    }
+
     const boundSessionId = lookupProviderSession(db, { surfaceIdentity: current.surfaceIdentity, chatKey: current.chatKey }, current.provider);
     if (
       originRun.status !== "done"
@@ -177,11 +304,8 @@ export function claimDueRunContinuation(
       || !originRun.session_id
       || boundSessionId !== originRun.session_id
     ) {
-      const cancelled: RunContinuation = {
-        ...current,
-        state: "cancelled",
-        completedAt: new Date(nowMs).toISOString(),
-        error: originRun.status !== "done"
+      return cancel(
+        originRun.status !== "done"
           ? `originating Run ended with status ${originRun.status}`
           : originRun.surface_identity !== current.surfaceIdentity
             ? "originating Run surface changed"
@@ -192,9 +316,7 @@ export function claimDueRunContinuation(
                 : !originRun.session_id
                   ? "originating Run has no resumable provider session"
                   : "originating provider session binding changed",
-      };
-      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(cancelled), key(id));
-      return null;
+      );
     }
     if (Date.parse(current.dueAt) > nowMs) return null;
     const claimed = { ...current, state: "claimed" as const, claimedAt: new Date(nowMs).toISOString() };
@@ -224,6 +346,27 @@ export function cancelPendingRunContinuation(
   });
 }
 
+export function cancelPendingRunContinuationsForChat(
+  db: BridgeDb,
+  surfaceIdentity: string,
+  chatKey: string,
+  reason: string,
+  nowMs = Date.now(),
+): number {
+  return db.runInTransaction(() => {
+    const continuations = listRunContinuations(db, surfaceIdentity).filter(
+      (c) => c.chatKey === chatKey && c.state === "pending",
+    );
+    let count = 0;
+    for (const c of continuations) {
+      if (cancelPendingRunContinuation(db, c.id, reason, nowMs)) {
+        count++;
+      }
+    }
+    return count;
+  });
+}
+
 export function settleRunContinuation(
   db: BridgeDb,
   id: string,
@@ -250,10 +393,11 @@ export async function scanRunContinuations(
   surfaceIdentity: string,
   dispatch: (continuation: RunContinuation) => Promise<void>,
   nowMs = Date.now(),
+  options?: ClaimRunContinuationOptions,
 ): Promise<void> {
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
     if (candidate.state !== "pending") continue;
-    const claimed = claimDueRunContinuation(db, candidate.id, nowMs);
+    const claimed = claimDueRunContinuation(db, candidate.id, nowMs, options);
     if (!claimed) continue;
     try {
       await dispatch(claimed);
