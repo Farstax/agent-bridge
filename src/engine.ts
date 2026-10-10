@@ -673,20 +673,32 @@ export class BridgeEngine {
     const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
     let outcome: ExecutionOutcome | null = null;
     try {
-      const errorDelivered = { value: false };
+      const errorDelivered: { error: Error | null } = { error: null };
       const result = await this._executeAndDeliverTurn({
         prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect, errorDelivered,
       });
-      if (!result && errorDelivered.value && !this.laneCoordinator.hasCancellation(executionLane)) {
-        // The user was told this task failed. It is terminal: retire the input so
-        // a later message or restart cannot silently re-run possibly executed
-        // work, and record the Run as failed rather than fenced/cancelled.
+      if (!result && errorDelivered.error && !this.laneCoordinator.hasCancellation(executionLane)
+        && readProviderFailureEvidence(errorDelivered.error)?.promptSubmitted === true) {
+        // The user was told this task failed after the provider may have
+        // started it. It is terminal: retire every claimed input (direct and
+        // queue-claimed) so neither a later message nor queue recovery can
+        // silently re-run possibly executed work, and record the Run as failed.
+        // A proven pre-prompt failure keeps its durable-queue retry.
         finalize();
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
-        if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
+        const terminalPendingIds = [...new Set([...activePendingIds, ...claimedPendingIds])];
+        if (terminalPendingIds.length > 0) {
+          const retired = this.db.completePendingMsgs(laneHandle, terminalPendingIds)
+            || this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds);
+          if (!retired) {
+            outcome = "fenced";
+            return "fenced";
+          }
+        }
+        if (this.db.getRun(runId)?.status === "running") this.db.updateRunFailed(runId, "prompt execution failed");
         activeTaskCommitted = true;
-        outcome = "failed";
-        return "failed";
+        outcome = "committed";
+        return "committed";
       }
       if (!result) {
         if (!this.laneCoordinator.hasCancellation(executionLane)) finalize();
@@ -870,7 +882,7 @@ export class BridgeEngine {
     collect: (event: BridgeEvent) => void;
     suppressTransientRetry?: boolean;
     /** Set when the provider failure was delivered to the user in place (terminal for this task). */
-    errorDelivered?: { value: boolean };
+    errorDelivered?: { error: Error | null };
   }): Promise<StagedCliResult | null> {
     let result: StagedCliResult | null = null;
     let finalDeliveryPhase: FinalDeliveryPhase | null = null;
@@ -899,7 +911,7 @@ export class BridgeEngine {
         propagateExecutionError: (error) =>
           decideProviderRecovery(providerIdForBotName(this._executionKind()), error).reason !== null,
         propagateTimeoutErrors: true,
-        onExecutionErrorDelivered: () => { if (input.errorDelivered) input.errorDelivered.value = true; },
+        onExecutionErrorDelivered: (error) => { if (input.errorDelivered) input.errorDelivered.error = error; },
         runId: input.runId,
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
@@ -1779,7 +1791,15 @@ export class BridgeEngine {
             effort: resolveEffort(executionKind, this.db),
           },
           { conversationId: chatKey, runId: runId ?? randomUUID() },
-        );
+        ).catch((providerCallError: unknown) => {
+          // An error out of the provider call itself carries submission
+          // evidence from the ACP runtime; without it the call is treated as
+          // possibly executed (fail closed). Local errors never get evidence.
+          if (providerCallError instanceof Error && !readProviderFailureEvidence(providerCallError)) {
+            attachProviderFailureEvidence(providerCallError, { promptSubmitted: true });
+          }
+          throw providerCallError;
+        });
         stdout = invoked.stdout;
         parsedAcp = invoked.parsed;
       } finally {

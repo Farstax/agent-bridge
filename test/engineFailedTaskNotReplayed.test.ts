@@ -21,14 +21,20 @@ function client() {
   } as any;
 }
 
-async function run(failure: () => Error) {
+async function run(failure: () => Error, options: { queueSecond?: boolean } = {}) {
   const db = openDb(":memory:");
   const telegram = client();
   const prompts: string[] = [];
   let failing = true;
+  let gate: Promise<void> | null = null;
+  let release: () => void = () => {};
+  if (options.queueSecond) gate = new Promise<void>((resolve) => { release = resolve; });
   const runProviderInvocation = vi.fn(async (_k: string, _i: any, _c: string, _o: any, request: any) => {
     prompts.push(String(request.prompt));
-    if (failing) throw failure();
+    if (failing) {
+      if (gate) await gate;
+      throw failure();
+    }
     return { text: "ok", sessionId: "s", stopReason: "end_turn" };
   });
   const engine = new BridgeEngine({
@@ -37,7 +43,7 @@ async function run(failure: () => Error) {
     botConfig: { command: "codex", modelPreference: [] },
     allowedUserIds: new Set(["42"]),
     executionMode: "safe",
-    busyMessageMode: "augment",
+    busyMessageMode: options.queueSecond ? "queue" : "augment",
     pollIntervalMs: 1000,
     workingDir: process.cwd(),
   }, db, telegram, { runProviderInvocation } as any);
@@ -54,7 +60,16 @@ async function run(failure: () => Error) {
     update_id: id,
     message: { message_id: id, chat: { id: 977, type: "private" }, from: { id: 42, first_name: "T" }, text },
   }, "977", deps);
-  await send(1, "FIRST-TASK do the risky thing");
+  if (options.queueSecond) {
+    const first = send(1, "FIRST-TASK do the risky thing");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await send(3, "QUEUED-TASK second while busy");
+    release();
+    await first;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  } else {
+    await send(1, "FIRST-TASK do the risky thing");
+  }
   const afterFirst = { pending: db.pendingMsgCount("telegram:interactive", "977"), runs: db.raw.prepare("select status, error from bridge_runs").all() as any[] };
   failing = false;
   await send(2, "SECOND-MESSAGE hello");
@@ -70,6 +85,26 @@ describe("a failed task whose error was delivered in place is retired, not repla
       expect(afterFirst.runs.map((r) => r.status)).toEqual(["failed"]);
       const replays = prompts.filter((p, index) => index > 0 && p.includes("FIRST-TASK"));
       expect(replays).toEqual([]);
+    } finally { db.close(); }
+  });
+
+  it("also retires queue-claimed inputs, with no recovery replay", async () => {
+    const { db, prompts, afterFirst } = await run(() =>
+      attachProviderFailureEvidence(new Error("Internal error: connection lost after submission"), { promptSubmitted: true }),
+      { queueSecond: true });
+    try {
+      expect(afterFirst.pending).toBe(0);
+      // First task runs once; the queued task runs at most once and neither is re-run.
+      expect(prompts.filter((p) => p.includes("FIRST-TASK"))).toHaveLength(1);
+      expect(prompts.filter((p) => p.includes("QUEUED-TASK")).length).toBeLessThanOrEqual(1);
+    } finally { db.close(); }
+  });
+
+  it("keeps the durable-queue retry for a failure proven to precede prompt submission", async () => {
+    const { db, afterFirst } = await run(() =>
+      attachProviderFailureEvidence(new Error("Internal error: could not initialise"), { promptSubmitted: false }));
+    try {
+      expect(afterFirst.pending).toBe(1);
     } finally { db.close(); }
   });
 });
