@@ -614,6 +614,7 @@ export async function runResolvedAcpProviderTurn(
       ? await runTurn(1)
       : await runWithAcpTransientRetry(providerId as ProviderId, runTurn, {
         abortRequested,
+        promptSubmitted: () => promptEverSubmitted,
         onRetryDecision: (error, successorStarted) => {
           priorAttemptRecorded = true;
           if (eventContext && onEvent) {

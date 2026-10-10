@@ -47,7 +47,8 @@ async function defaultWait(delayMs: number, abortRequested: () => boolean): Prom
  * cross-process credential lock); every other transient reason gets a short
  * "maybe it was nothing" retry instead. Not attempted for any other
  * classification (capacity_exhausted, auth_required, model_unavailable,
- * fatal, unknown) -- those cannot be fixed by retrying the same session. The
+ * fatal) -- those cannot be fixed by retrying the same session. An `unknown`
+ * failure is retried only while no session/prompt was submitted. The
  * decision callback fires exactly once for the failed first attempt and
  * says whether attempt two really starts.
  */
@@ -58,6 +59,12 @@ export async function runWithAcpTransientRetry<T>(
     abortRequested: () => boolean;
     wait?: AcpTransientRetryWait;
     onRetryDecision?: (error: Error, successorStarted: boolean) => void | Promise<void>;
+    /**
+     * True once any attempt sent `session/prompt`. An unclassified failure after
+     * that point is ambiguous (the provider may already be acting), so it is
+     * surfaced instead of replaying the task in a successor attempt.
+     */
+    promptSubmitted?: () => boolean;
   },
 ): Promise<T> {
   try {
@@ -66,6 +73,7 @@ export async function runWithAcpTransientRetry<T>(
     const normalized = error instanceof Error ? error : new Error(String(error));
     const kind = classifyProviderError(providerId, normalized).kind;
     if (kind !== "transient" && kind !== "unknown") throw error;
+    if (kind === "unknown" && options.promptSubmitted?.()) throw error;
     const retryDelayMs = providerId === "claude" && isClaudeOAuthRefreshContention(normalized)
       ? CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS
       : TRANSIENT_RETRY_DELAY_MS;
