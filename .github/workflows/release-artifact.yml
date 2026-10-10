@@ -85,9 +85,11 @@ jobs:
           mkdir -p "$root/systemd"
           cp -a systemd/agent-bridge-antigravity.service systemd/agent-bridge-claude.service systemd/agent-bridge-codex.service systemd/agent-bridge-discord-interactive.service systemd/agent-bridge-interactive.service "$root/systemd/"
           cp -a systemd/agent-bridge-tmp-cleanup.service systemd/agent-bridge-tmp-cleanup.timer "$root/systemd/"
-          cp -a bin/agent-bridge-context bin/agent-bridge-advisor bin/agent-bridge-routines bin/agent-bridge-sensors bin/agent-bridge-inspect "$root/bin/"
+          cp -a bin/agent-bridge-context bin/agent-bridge-advisor bin/agent-bridge-routines bin/agent-bridge-wait bin/agent-bridge-sensors bin/agent-bridge-inspect "$root/bin/"
+          chmod 0755 "$root/bin/agent-bridge-wait"
           chmod 0755 "$root/bin/agent-bridge-sensors"
           test -f "$root/bin/agent-bridge-routines"
+          test -x "$root/bin/agent-bridge-wait"
           test -f "$root/bin/agent-bridge-sensors"
           test -f "$root/bin/agent-bridge-inspect"
           cp -a skills/. "$root/skills/"
@@ -143,6 +145,7 @@ jobs:
           test -f "$verify_root/scripts/rollout-sentinel-clear.sh"
           test -f "$verify_root/scripts/load-interactive-telegram-credential.sh"
           test -f "$verify_root/scripts/agent-bridge-wait.ts"
+          test -x "$verify_root/bin/agent-bridge-wait"
           node --input-type=module - "$verify_root/manifest.json" <<'NODE'
           import { createHash } from "node:crypto";
           import { readFileSync } from "node:fs";

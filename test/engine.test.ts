@@ -1782,15 +1782,15 @@ describe("BridgeEngine", () => {
       expect(capturedPrompt).not.toContain("Current objective:");
     });
 
-    it("exposes only continuation helper env when no stored context exists", async () => {
+    it("exposes one installed continuation command on fresh and resumed ordinary turns", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const client = makeMockClient();
-      let capturedPrompt = "";
-      let capturedContextEnv: Record<string, string> | undefined;
+      const capturedPrompts: string[] = [];
+      const capturedContextEnvs: Array<Record<string, string> | undefined> = [];
       const runCli = vi.fn().mockImplementation(async (_cmd: string, args: string[], _cwd: string, options: any) => {
-        capturedPrompt = args[1];
-        capturedContextEnv = options.contextEnv;
-        return cursorResult("done");
+        capturedPrompts.push(args[1]);
+        capturedContextEnvs.push(options.contextEnv);
+        return cursorResult("done", "continuation-session");
       });
       const engine = new BridgeEngine(
         {
@@ -1808,17 +1808,28 @@ describe("BridgeEngine", () => {
       );
 
       await engine.handleMessages([makeMessage("hello")]);
-      expect(capturedContextEnv).toMatchObject({
+      await engine.handleMessages([makeMessage("continue")]);
+
+      expect(capturedContextEnvs).toHaveLength(2);
+      for (const capturedContextEnv of capturedContextEnvs) expect(capturedContextEnv).toMatchObject({
         AGENT_BRIDGE_CHAT_KEY: "100",
         AGENT_BRIDGE_PROVIDER: "grok",
       });
-      expect(capturedContextEnv?.AGENT_BRIDGE_RUN_ID).toBeTruthy();
-      expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_COMMAND).toContain("tsx");
-      expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_SCRIPT).toContain("agent-bridge-wait.ts");
-      expect(capturedContextEnv?.AGENT_BRIDGE_CONTEXT_AVAILABLE).toBeUndefined();
-      expect(capturedContextEnv?.AGENT_BRIDGE_CONTEXT_COMMAND).toBeUndefined();
-      expect(capturedPrompt).not.toContain("[Agent Bridge context]");
-      expect(capturedPrompt).toContain("[Agent Bridge continuation]");
+      for (const capturedContextEnv of capturedContextEnvs) {
+        expect(capturedContextEnv?.AGENT_BRIDGE_RUN_ID).toBeTruthy();
+        expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_COMMAND).toContain("bin/agent-bridge-wait");
+        expect(capturedContextEnv?.AGENT_BRIDGE_WAIT_SCRIPT).toBeUndefined();
+      }
+      for (const capturedPrompt of capturedPrompts) {
+        expect(capturedPrompt).toContain("[Agent Bridge continuation]");
+        expect(capturedPrompt).toContain('"$AGENT_BRIDGE_WAIT_COMMAND" --after-seconds 60 --reason "<what to re-check>"');
+        expect(capturedPrompt).not.toContain("AGENT_BRIDGE_WAIT_SCRIPT");
+        expect(capturedPrompt).not.toContain("node_modules/.bin/tsx");
+        expect((capturedPrompt.match(/\[Agent Bridge continuation\]/g) ?? [])).toHaveLength(1);
+        expect((capturedPrompt.match(/Agent Bridge execution contract:/g) ?? [])).toHaveLength(1);
+      }
+      expect(capturedPrompts[0]).not.toContain("[Agent Bridge context]");
+      expect(capturedPrompts[1]).not.toContain("[Agent Bridge context]");
     });
   });
 
