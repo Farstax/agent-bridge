@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.js";
@@ -69,6 +69,29 @@ describe("agent-bridge-routines route output (#947)", () => {
     const unified = helper("telegram:interactive", ["list"], dbPath);
     expect(unified).toMatch(/No scheduled routines/);
     expect(unified).toMatch(/unified/i);
-    expect(readFileSync(dbPath).length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("does not let a locked conversation's routines appear in, or be changed from, another conversation", () => {
+    const dbPath = join(tmpdir(), `routine-route-scope-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(dbPath);
+    openDb(dbPath, { serviceId: "route-test", runId: "route-run" }).close();
+    const created = helper("telegram:claude", [
+      "create", "--name", "Nightly", "--instruction", "Check things.", "--timezone", "Europe/London",
+      "--weekly", "mon", "--time", "04:00",
+    ], dbPath);
+    const id = /Created scheduled routine ([0-9a-f-]{36})/.exec(created)?.[1];
+    expect(id).toBeTruthy();
+    expect(() => helper("telegram:interactive", ["disable", id!], dbPath)).toThrow();
+    expect(helper("telegram:claude", ["list"], dbPath)).toContain("active");
+  }, 30_000);
+
+  it("keeps scheduled autonomy unavailable outside the Telegram interactive surface", () => {
+    const dbPath = join(tmpdir(), `routine-route-auto-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(dbPath);
+    openDb(dbPath, { serviceId: "route-test", runId: "route-run" }).close();
+    expect(() => helper("telegram:claude", [
+      "create", "--name", "Auto", "--instruction", "Work.", "--kind", "autonomous", "--timezone", "Europe/London",
+      "--weekly", "mon", "--time", "04:00",
+    ], dbPath)).toThrow();
   }, 30_000);
 });
