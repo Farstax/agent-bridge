@@ -1,6 +1,8 @@
 import type { BridgeDb } from "./db.js";
 import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
+import { getCachedAvailableCliKinds } from "./interactiveCliAuth.js";
+import type { CliKind } from "./interactiveBot.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { readProviderFailureEvidence } from "./providers/failureEvidence.js";
@@ -13,6 +15,17 @@ export interface SurfaceNeutralProviderRouterOptions {
   initialProvider: BotKind;
   providerChain: readonly BotKind[];
   engineForProvider: (provider: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
+  /**
+   * Same routeability predicate interactive routing uses (see
+   * canonicalProviderAvailability). Omitted only where every chain member is
+   * known runnable, e.g. unit tests.
+   */
+  isProviderAvailable?: (provider: BotKind) => boolean;
+}
+
+/** Canonical executable/auth/runtime availability; qualification failure alone is not unavailability (#910). */
+export function canonicalProviderAvailability(provider: BotKind): boolean {
+  return getCachedAvailableCliKinds().has(provider as CliKind);
 }
 
 /**
@@ -27,7 +40,13 @@ export function createSurfaceNeutralProviderRouter(
     options.initialProvider,
     ...options.providerChain.filter((provider) => provider !== options.initialProvider),
   ];
-  const fallback = new ProviderFallbackChain(ordered, options.db, options.surfaceIdentity);
+  const isAvailable = options.isProviderAvailable ?? (() => true);
+  const fallback = new ProviderFallbackChain(
+    ordered,
+    options.db,
+    options.surfaceIdentity,
+    (provider) => isAvailable(provider as BotKind),
+  );
   const initialized = new Set<string>();
 
   return {
@@ -39,6 +58,9 @@ export function createSurfaceNeutralProviderRouter(
 
       for (;;) {
         const provider = fallback.getActiveCli(input.chatKey) as BotKind;
+        // The chain returns its head when nothing is routeable; a non-messaging
+        // Run must fail clearly instead of invoking an unusable provider.
+        if (!isAvailable(provider)) throw new Error("no available provider in the configured chain");
         const engine = options.engineForProvider(provider);
         let attemptEvents: BridgeEvent[] = [];
         const providerInput: SurfaceNeutralTurnInput = {

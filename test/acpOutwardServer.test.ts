@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
@@ -77,11 +77,20 @@ function fallbackProviderEnv(store: string): NodeJS.ProcessEnv {
   };
 }
 
+// Canonical provider availability (shared with interactive routing) requires
+// provider authentication; give the server a hermetic home with fake auth files.
+const authHome = mkdtempSync(join(tmpdir(), "outward-acp-home-"));
+mkdirSync(join(authHome, ".codex"), { recursive: true });
+mkdirSync(join(authHome, ".claude"), { recursive: true });
+writeFileSync(join(authHome, ".codex", "auth.json"), "{}");
+writeFileSync(join(authHome, ".claude", ".credentials.json"), "{}");
+
 function startOutwardAcpProcess(dbPath: string, extraEnv: NodeJS.ProcessEnv = {}): RunningOutwardAcp {
   const child = spawn(process.execPath, ["--import", "tsx", "src/acpServer/stdio.ts"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
+      HOME: authHome,
       DB_PATH: dbPath,
       NODE_ENV: "test",
       AGENT_BRIDGE_INSTALLATION_ID: "",

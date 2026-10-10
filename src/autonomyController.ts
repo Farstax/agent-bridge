@@ -76,6 +76,8 @@ export interface AutonomyControllerOptions {
   requireEpisodeApproval?: boolean;
   maxEpisodesPerDay?: number;
   providerChain?: readonly BotKind[];
+  /** Canonical provider routeability; defaults to every configured provider. */
+  isProviderAvailable?: (provider: BotKind) => boolean;
   engineForBot: (bot: BotKind) => Pick<BridgeEngine, "executeSurfaceNeutralTurn">;
   deliverSupervisorMessage?: (route: AutonomousSupervisorRoute, text: string) => Promise<number>;
   log?: Pick<Console, "error">;
@@ -376,6 +378,7 @@ export class AutonomyController {
       surfaceIdentity: AUTONOMOUS_RUN_SURFACE,
       initialProvider: goal.bot,
       providerChain: this.providerChain,
+      isProviderAvailable: this.options.isProviderAvailable,
       engineForProvider: this.options.engineForBot,
     });
     void drainAutonomousGoal(this.options.db, goal.goalId, engine, (event) => this.onCycleReconciled(event))

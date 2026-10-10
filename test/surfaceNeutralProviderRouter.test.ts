@@ -134,3 +134,84 @@ describe("surface-neutral provider attempt isolation", () => {
     }
   });
 });
+
+describe("surface-neutral provider availability (#954)", () => {
+  function routerWith(chain: BotKind[], available: () => Set<string>, failures: Record<string, Error> = {}, onAttempt: (provider: string) => void = () => {}) {
+    const db = openDb(":memory:");
+    const calls: string[] = [];
+    const router = createSurfaceNeutralProviderRouter({
+      db,
+      surfaceIdentity: "acp:availability",
+      initialProvider: chain[0],
+      providerChain: chain,
+      isProviderAvailable: (provider) => available().has(provider),
+      engineForProvider: (provider) => ({
+        executeSurfaceNeutralTurn: vi.fn(async () => {
+          calls.push(provider);
+          onAttempt(provider);
+          if (failures[provider]) throw failures[provider];
+          return { text: `${provider} answer`, sessionId: provider };
+        }),
+      }) as any,
+    });
+    return { db, router, calls };
+  }
+  const input = () => turnInput(vi.fn());
+
+  it("starts at the first routeable provider when the head is unavailable", async () => {
+    const { db, router, calls } = routerWith(["codex", "claude", "grok"], () => new Set(["claude", "grok"]));
+    try {
+      expect((await router.executeSurfaceNeutralTurn(input() as any)).text).toBe("claude answer");
+      expect(calls).toEqual(["claude"]);
+    } finally { db.close(); }
+  });
+
+  it("skips an unavailable middle provider after a capacity failure", async () => {
+    const { db, router, calls } = routerWith(
+      ["codex", "claude", "grok"],
+      () => new Set(["codex", "grok"]),
+      { codex: new Error("usage limit reached") },
+    );
+    try {
+      expect((await router.executeSurfaceNeutralTurn(input() as any)).text).toBe("grok answer");
+      expect(calls).toEqual(["codex", "grok"]);
+    } finally { db.close(); }
+  });
+
+  it("re-evaluates availability between attempts", async () => {
+    let available = new Set(["codex", "claude", "grok"]);
+    const { db, router, calls } = routerWith(
+      ["codex", "claude", "grok"],
+      () => available,
+      { codex: new Error("usage limit reached") },
+      (provider) => {
+        // claude becomes unrouteable while the head provider is failing.
+        if (provider === "codex") available = new Set(["codex", "grok"]);
+      },
+    );
+    try {
+      expect((await router.executeSurfaceNeutralTurn(input() as any)).text).toBe("grok answer");
+      expect(calls).toEqual(["codex", "grok"]);
+    } finally { db.close(); }
+  });
+
+  it("fails clearly without invoking any provider when none is routeable", async () => {
+    const { db, router, calls } = routerWith(["codex", "claude"], () => new Set());
+    try {
+      await expect(router.executeSurfaceNeutralTurn(input() as any)).rejects.toThrow(/no available provider/);
+      expect(calls).toEqual([]);
+    } finally { db.close(); }
+  });
+
+  it("does not loop on an exhausted chain", async () => {
+    const { db, router, calls } = routerWith(
+      ["codex", "claude"],
+      () => new Set(["codex", "claude"]),
+      { codex: new Error("usage limit reached"), claude: new Error("usage limit reached") },
+    );
+    try {
+      await expect(router.executeSurfaceNeutralTurn(input() as any)).rejects.toThrow(/usage limit/);
+      expect(calls).toEqual(["codex", "claude"]);
+    } finally { db.close(); }
+  });
+});

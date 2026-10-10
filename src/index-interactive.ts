@@ -55,6 +55,7 @@ import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { loadWorkspaceContext } from "./workspaceContext.js";
 import { AutonomyController, isFirstClassAutonomyBot } from "./autonomyController.js";
+import { canonicalProviderAvailability } from "./surfaceNeutralProviderRouter.js";
 import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } from "./autonomyTelegram.js";
 import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
 import {
@@ -317,6 +318,7 @@ const autonomyEngines = autonomyDb && autonomyDir ? Object.fromEntries(
 ) as Record<CliKind, BridgeEngine> : null;
 const autonomyController = autonomyDb && autonomyDir && autonomyEngines ? new AutonomyController({
   db: autonomyDb,
+  isProviderAvailable: canonicalProviderAvailability,
   autonomyDir,
   maxCycles: autonomyMaxCycles,
   engineForBot: (bot) => {

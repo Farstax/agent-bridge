@@ -1601,7 +1601,9 @@ export class BridgeEngine {
         input.prompt,
         input.sessionId,
         input.chatId,
-        { onProviderExecutionStarted: input.onProviderExecutionStarted },
+        // Non-messaging Runs have no delivery owner for generated files; the
+        // staged output is discarded instead of sent to a messaging client.
+        { onProviderExecutionStarted: input.onProviderExecutionStarted, publishArtifacts: false },
         () => {},
         [],
         input.eventContext,
@@ -1670,13 +1672,21 @@ export class BridgeEngine {
     collect: ((e: BridgeEvent) => void) | null,
     chatKey: string,
     laneHandle: ExecutionLaneHandle,
+    /**
+     * Set only for the single same-provider alternate-model attempt after a
+     * capacity failure. It reuses this whole attempt (staging, hooks, artifact
+     * publication, run.completed, ownership checks) with a fresh session.
+     */
+    modelFallback?: { model: string; from: string | null },
   ): Promise<StagedCliResult> {
     if (!laneHandle) throw new Error("execution lane handle is required");
     const threadId = body.message_thread_id;
+    const publishArtifacts = (body as { publishArtifacts?: boolean }).publishArtifacts !== false;
     const executionKind = this._executionKind();
-    const model = isRouteableKind(this.kind)
+    const configuredModel = isRouteableKind(this.kind)
       ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null)
       : (this.opts.botConfig.modelPreference[0] || null);
+    const model = modelFallback?.model ?? configuredModel;
 
     const logFile: string | null = null;
 
@@ -1771,6 +1781,9 @@ export class BridgeEngine {
 
       const result: CliResult = parsedAcp ?? parseCliResult({ bot: executionKind, stdout, logContent });
       result.text = scrubOutputDir(result.text, outDir);
+      if (modelFallback) {
+        result.text = `⚠️ Fell back to ${modelFallback.model} (${modelFallback.from || "default"} at capacity)\n\n${result.text}`;
+      }
       const stagedResult: StagedCliResult = { ...this._stageResultState(result), nativeSessionMode };
       if (stagedResult.stopReason === "cancelled") {
         // The provider ended the turn itself (ACP session/cancel resolving
@@ -1804,7 +1817,9 @@ export class BridgeEngine {
         await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
       }
       this._renewLaneOrThrow(laneHandle);
-      if (this._canPublish(laneHandle)) {
+      if (!publishArtifacts) {
+        await this._cleanTerminalOutputDir(outDir, "non-messaging Run");
+      } else if (this._canPublish(laneHandle)) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch((err) =>
           console.error(`[${this.kind}] output file upload failed`, err)
         );
@@ -1849,8 +1864,8 @@ export class BridgeEngine {
         error instanceof Error ? error : new Error(String(error)),
       ).transportReason;
       const canPublish = this._canPublish(laneHandle);
-      if (providerFallbackReason) {
-        await this._cleanTerminalOutputDir(outDir, "provider fallback");
+      if (providerFallbackReason || !publishArtifacts) {
+        await this._cleanTerminalOutputDir(outDir, providerFallbackReason ? "provider fallback" : "non-messaging Run");
       } else if (canPublish) {
         await uploadOutputFiles(outDir, chatId, this.client, fileSendOptions, () => this._canPublish(laneHandle)).catch(() => {});
       }
@@ -1860,12 +1875,14 @@ export class BridgeEngine {
         if (isRouteableKind(kind)) this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, kind, null));
         return this.executePromptAsync(prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle);
       }
-      if (isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
+      // One bounded same-provider alternate-model attempt; the alternate attempt
+      // never falls back again.
+      if (!modelFallback && isCapacityExhaustedError(error as Error) && this.opts.botConfig.modelPreference.length > 1) {
         const fallbackModel = getNextFallbackModel(model, this.opts.botConfig.modelPreference);
         if (fallbackModel) {
-          return this._runWithFallback(
-            prompt, sessionId, chatId, chatKey, fallbackModel, outDir, cwd, Date.now(), onProgress,
-            attachments, logFile, laneHandle, eventContext, runId, collect, body,
+          return this._executeProviderAttempt(
+            prompt, null, chatId, body, onProgress, attachments, eventContext, runId, collect, chatKey, laneHandle,
+            { model: fallbackModel, from: model },
           );
         }
       }
@@ -1879,116 +1896,6 @@ export class BridgeEngine {
       if (!canPublish) await this._cleanTerminalOutputDir(outDir, "terminal provider attempt");
       this._handleCircuitBreaker(error as Error, chatKey, laneHandle);
       throw error;
-    }
-  }
-
-  private async _runWithFallback(
-    prompt: string,
-    sessionId: string | null,
-    chatId: number | string,
-    chatKey: string,
-    fallbackModel: string,
-    outDir: string,
-    cwd: string,
-    _startedAtMs: number,
-    onProgress: (t: string) => void,
-    attachments: string[],
-    _logFile: string | null,
-    laneHandle: ExecutionLaneHandle,
-    eventContext: CliOptions["eventContext"] = undefined as any,
-    runId: string | null = null,
-    collect: ((e: BridgeEvent) => void) | null = null,
-    body: any = {},
-  ): Promise<StagedCliResult> {
-    const executionKind = this._executionKind();
-    const fallbackLogFile: string | null = null;
-    const fallbackPromptForCli = await this._buildPromptForCli(chatKey, prompt, "fresh", fallbackModel, runId, executionKind, chatId, body.message_thread_id);
-    const fallbackInvocation = buildCliInvocation({
-      bot: executionKind,
-      command: this.opts.botConfig.command,
-      model: fallbackModel,
-      effort: resolveEffort(executionKind, this.db),
-      prompt: fallbackPromptForCli.prompt,
-      sessionId: null,
-      executionMode: this.opts.executionMode,
-      outputFormat: "json",
-      logFile: fallbackLogFile,
-      soulContext: fallbackPromptForCli.soulContext,
-      includeResponseContract: fallbackPromptForCli.includeResponseContract,
-      outputDir: outDir,
-      attachments,
-      includeExecutionContract: this.kind !== "autonomous",
-    });
-    try {
-      const fallbackCwd = this._workingDir(executionKind);
-      let rawResult: string;
-      let parsedAcp: CliResult | null = null;
-      try {
-        const invoked = await this._runNativeOrAcp(
-          executionKind,
-          fallbackInvocation,
-          fallbackCwd,
-          {
-            ...buildExecutionOptions(executionKind),
-            onProgress,
-            onProviderOutputChunk: body.onProviderOutputChunk,
-            onAnswerDelta: body.onAnswerDelta,
-            chatId: this._executionLane(chatKey),
-            stdin: fallbackInvocation.stdin,
-            contextEnv: fallbackPromptForCli.contextEnv,
-            eventContext,
-            onEvent: collect ?? undefined,
-          },
-          {
-            prompt: fallbackInvocation.prompt ?? fallbackPromptForCli.prompt,
-            sessionId: null,
-            model: fallbackModel,
-            executionMode: this.opts.executionMode,
-            soulContext: fallbackPromptForCli.soulContext,
-            includeResponseContract: fallbackPromptForCli.includeResponseContract,
-            attachments,
-            outputDir: outDir,
-            effort: resolveEffort(executionKind, this.db),
-          },
-          { conversationId: chatKey, runId: runId ?? randomUUID() },
-        );
-        rawResult = invoked.stdout;
-        parsedAcp = invoked.parsed;
-      } finally {
-        body.onProviderOutputFinished?.();
-      }
-      this._assertLaneOwned(laneHandle);
-
-      let fallbackLogContent: string | null = null;
-      if (fallbackLogFile) {
-        try { fallbackLogContent = readFileSync(fallbackLogFile, "utf8"); } catch {}
-        finally { try { rmSync(fallbackLogFile); } catch {} }
-      }
-
-      const result: CliResult = parsedAcp ?? parseCliResult({
-        bot: executionKind,
-        stdout: rawResult,
-        logContent: fallbackLogContent,
-      });
-      const currentModel = isRouteableKind(this.kind) ? (this.db.getSetting(this.kind) || this.opts.botConfig.modelPreference[0] || null) : null;
-      const finalResult = {
-        ...result,
-        text: `⚠️ Fell back to ${fallbackModel} (${currentModel || "default"} at capacity)\n\n${result.text}`,
-      };
-      const stagedResult: StagedCliResult = { ...this._stageResultState(finalResult), nativeSessionMode: "fresh" };
-      this._renewLaneOrThrow(laneHandle);
-      if (this.hooks.onAfterExecute) {
-        await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, eventContext?.threadId));
-      }
-      return stagedResult;
-    } catch (fallbackError) {
-      if (fallbackLogFile) { try { rmSync(fallbackLogFile); } catch {} }
-      // The fallback attempt reuses the primary attempt's Run-owned outDir;
-      // if it too becomes terminal without publish authority (fenced, hard
-      // /stop, or any other throw), it is the current owner of that output
-      // and must clean it up the same way the primary attempt does.
-      if (!this._canPublish(laneHandle)) await this._cleanTerminalOutputDir(outDir, "terminal fallback attempt");
-      throw fallbackError;
     }
   }
 
