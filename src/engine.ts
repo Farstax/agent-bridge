@@ -31,12 +31,9 @@ import {
   ProviderStallError,
 } from "./cli.js";
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
-import {
-  classifyAnyProviderError,
-  classifyProviderError,
-  isClaudeOAuthRefreshContention,
-} from "./providers/errorClassification.js";
 import { isAcpBackedBot, providerIdForBotName, supportsToolFreeMode } from "./providers/registry.js";
+import { decideProviderRecovery, type ProviderFallbackReason } from "./providers/recoveryVerdict.js";
+import { readProviderFailureEvidence, type ProviderFailureEvidence } from "./providers/failureEvidence.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
@@ -110,7 +107,7 @@ export interface PendingMessage {
 }
 
 export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
-export type ProviderFallbackReason = "capacity" | "auth_required" | "provider_stall" | "provider_unavailable" | "provider_transport_failure";
+export type { ProviderFallbackReason } from "./providers/recoveryVerdict.js";
 
 type StagedCliResult = CliResult & {
   nativeSessionMode?: "fresh" | "resume";
@@ -169,29 +166,6 @@ function isManagedBotKind(kind: string): kind is BotKind {
 const ROUTEABLE_KINDS = new Set<string>(["codex", "antigravity", "claude", "grok", "cursor", "custom-acp"]);
 function isRouteableKind(kind: string): kind is RouteableBotKind {
   return ROUTEABLE_KINDS.has(kind);
-}
-
-// Deliberately excludes classification.kind === "unknown": this gate gets
-// evaluated against whatever BridgeEngine's broad executePromptAsync catch
-// receives, which covers ordinary task/repository failures just as much as
-// genuine provider-boundary ones -- unlike runWithAcpTransientRetry's
-// same-session retry, which only ever wraps the real ACP transport call and
-// so can safely treat "unknown" as boundary-originated. Promoting "unknown"
-// to fallback-eligible here would cross providers (and clear/replace
-// sessions) for an unrecognised Bridge-internal error too, which issue #923
-// explicitly rules out (see test/engineProviderStallRecovery.test.ts's
-// "keeps ordinary task errors on the existing delivery path").
-function providerFallbackReasonForError(executionKind: RouteableBotKind, error: Error): ProviderFallbackReason | null {
-  if (error instanceof ProviderStallError) return "provider_stall";
-  if (error instanceof CliTimeoutError) return null;
-  const provider = providerIdForBotName(executionKind);
-  const classification = provider ? classifyProviderError(provider, error) : classifyAnyProviderError(error);
-  if (classification.kind === "transient") {
-    if (provider === "claude" && isClaudeOAuthRefreshContention(error)) return null;
-    return "provider_transport_failure";
-  }
-  if (classification.kind === "fatal" && !/not a git repository/i.test(classification.reason)) return "provider_unavailable";
-  return null;
 }
 
 function topicChatKey(chatId: number | string, chatType: string, threadId?: number | string): string {
@@ -739,10 +713,9 @@ export class BridgeEngine {
         }
       }
       let providerError = error instanceof Error ? error : new Error(String(error));
+      let priorEvidence: ProviderFailureEvidence | null = null;
       const executionProvider = providerIdForBotName(this._executionKind());
-      let classification = executionProvider
-        ? classifyProviderError(executionProvider, providerError)
-        : classifyAnyProviderError(providerError);
+      let decision = decideProviderRecovery(executionProvider, providerError);
       const sourceKind = this.kind;
 
       // Tier 2: one silent same-provider, fresh-session retry for a
@@ -762,7 +735,10 @@ export class BridgeEngine {
       // an ordinary task/repository failure (see providerFallbackReasonForError
       // and runWithAcpTransientRetry's narrower, structurally-confined
       // same-session retry for the one place "unknown" is safe to recover).
-      if (classification.kind === "transient" && isRouteableKind(sourceKind)) {
+      if (decision.freshSessionRetry && isRouteableKind(sourceKind)) {
+        // Submission evidence is monotonic across the admitted action: a first
+        // attempt without evidence is treated as possibly submitted.
+        priorEvidence = readProviderFailureEvidence(providerError) ?? { promptSubmitted: true };
         this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null));
         markHandoffRequired(this.db, this.surfaceIdentity, chatKey, sourceKind, `fallback_from_${sourceKind}`);
         try {
@@ -790,9 +766,7 @@ export class BridgeEngine {
           }
           console.error(`[${this.kind}] same-provider fresh-session retry also failed`, retryError);
           providerError = retryError instanceof Error ? retryError : new Error(String(retryError));
-          classification = executionProvider
-            ? classifyProviderError(executionProvider, providerError)
-            : classifyAnyProviderError(providerError);
+          decision = decideProviderRecovery(executionProvider, providerError, priorEvidence);
         }
       }
 
@@ -802,13 +776,9 @@ export class BridgeEngine {
       } catch (linkError) {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
       }
-      const capacityExhausted = isCapacityExhaustedError(providerError);
-      const authRequired = classification.kind === "auth_required"
-        || (executionProvider === "claude" && isClaudeOAuthRefreshContention(providerError));
-      const executionKind = this._executionKind();
-      const providerFallbackReason = isRouteableKind(executionKind)
-        ? providerFallbackReasonForError(executionKind, providerError)
-        : null;
+      const capacityExhausted = decision.capacityExhausted;
+      const authRequired = decision.authRequired;
+      const providerFallbackReason = isRouteableKind(this._executionKind()) ? decision.transportReason : null;
       if (providerFallbackReason && isRouteableKind(sourceKind)) {
         this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null));
       }
@@ -903,7 +873,8 @@ export class BridgeEngine {
         // Only provider-level failures deliberately classified as fallback-eligible
         // escape this delivery boundary. Ordinary task/code errors retain the prior
         // in-place error delivery semantics.
-        propagateExecutionError: (error) => providerFallbackReasonForError(this._executionKind(), error) !== null,
+        propagateExecutionError: (error) =>
+          decideProviderRecovery(providerIdForBotName(this._executionKind()), error).reason !== null,
         propagateTimeoutErrors: true,
         runId: input.runId,
         onEvent: input.collect,
@@ -1854,7 +1825,10 @@ export class BridgeEngine {
         await this._cleanTerminalOutputDir(outDir, "lease loss");
         throw error;
       }
-      const providerFallbackReason = providerFallbackReasonForError(executionKind, error instanceof Error ? error : new Error(String(error)));
+      const providerFallbackReason = decideProviderRecovery(
+        providerIdForBotName(executionKind),
+        error instanceof Error ? error : new Error(String(error)),
+      ).transportReason;
       const canPublish = this._canPublish(laneHandle);
       if (providerFallbackReason) {
         await this._cleanTerminalOutputDir(outDir, "provider fallback");

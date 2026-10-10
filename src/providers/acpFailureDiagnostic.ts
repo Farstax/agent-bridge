@@ -32,7 +32,7 @@ export function buildAcpFailureDiagnosticEvent(
   error: unknown,
   eventContext: NonNullable<CliOptions["eventContext"]>,
   env: NodeJS.ProcessEnv,
-  attemptState: { attempt?: number; successorStarted?: boolean; retryEligible?: boolean } = {},
+  attemptState: { attempt?: number; successorStarted?: boolean; retryEligible?: boolean; promptSubmitted?: boolean } = {},
 ): RunDiagnosticEvent {
   const normalized = normalizeError(error);
   if (error && typeof error === "object") diagnosedAcpFailures.add(error as object);
@@ -56,5 +56,6 @@ export function buildAcpFailureDiagnosticEvent(
     message: boundedProviderFailureDiagnostic(normalized, env, "Unknown ACP provider failure"),
     classification: classification.kind,
     fallbackEligible: isFallbackEligibleProviderError(classification),
+    ...(attemptState.promptSubmitted === undefined ? {} : { promptSubmitted: attemptState.promptSubmitted }),
   });
 }

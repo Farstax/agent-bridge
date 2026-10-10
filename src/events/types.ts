@@ -59,6 +59,8 @@ export interface RunDiagnosticEvent extends BridgeEventBase {
   message: string;
   classification: "capacity_exhausted" | "model_unavailable" | "auth_required" | "transient" | "fatal" | "unknown";
   fallbackEligible: boolean;
+  /** ACP provider failures only: whether `session/prompt` had been submitted when the attempt failed. */
+  promptSubmitted?: boolean;
 }
 
 export interface RunCancelledEvent extends BridgeEventBase {
@@ -174,6 +176,7 @@ export const type = {
     message: string;
     classification: RunDiagnosticEvent["classification"];
     fallbackEligible: boolean;
+    promptSubmitted?: boolean;
     threadId?: string;
   }): RunDiagnosticEvent {
     return {
@@ -189,6 +192,7 @@ export const type = {
       message: fields.message,
       classification: fields.classification,
       fallbackEligible: fields.fallbackEligible,
+      ...(fields.promptSubmitted === undefined ? {} : { promptSubmitted: fields.promptSubmitted }),
     };
   },
 

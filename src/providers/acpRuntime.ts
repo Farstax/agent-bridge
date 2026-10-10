@@ -22,13 +22,14 @@ import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 import type { ProviderId, ProviderInvocation, ProviderInvocationRequest } from "./types.js";
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 import { getLockedAcpRegistryEntry } from "./acpRegistry.js";
-import { runWithAcpTransientRetry } from "./acpTransientRetry.js";
+import { AcpTransientRetryCancelledError, runWithAcpTransientRetry } from "./acpTransientRetry.js";
 import { isClaudeRuntimeAuthFailure } from "./errorClassification.js";
 import {
   clearProviderRuntimeAuthDegraded,
   markProviderRuntimeAuthDegraded,
 } from "./runtimeAvailability.js";
 import { buildAcpFailureDiagnosticEvent } from "./acpFailureDiagnostic.js";
+import { attachProviderFailureEvidence } from "./failureEvidence.js";
 import { hasCustomAcpConfiguration, resolveCustomAcpLaunch } from "./externalAcpLaunch.js";
 import {
   getAcpProviderPolicy,
@@ -534,6 +535,9 @@ export async function runResolvedAcpProviderTurn(
   const eventContext = options.eventContext;
   const onEvent = options.onEvent;
   const abortRequested = () => chatId != null && isAbortRequested(chatId);
+  // Monotonic across same-session retry attempts: once any attempt sent
+  // session/prompt the provider may have started the task.
+  let promptEverSubmitted = false;
   const runTurn = async (attempt: 1 | 2): Promise<AcpTurnResult> => {
     const credentialExecutionLock = policy.credentialExecutionLock?.(effectiveEnv, attempt) ?? null;
     const turn = await runSupervisedStdioSession(
@@ -562,6 +566,7 @@ export async function runResolvedAcpProviderTurn(
         sessionConfig: sessionSettings?.config,
         authenticateMethodId: policy.authenticateMethodId?.(effectiveEnv),
         abortRequested,
+        onPromptSubmitted: () => { promptEverSubmitted = true; },
         signal: io.signal,
         onSteerReady: policy.steeringSupported ? options.onSteerReady : undefined,
         onLiveText: options.onProgress
@@ -618,7 +623,7 @@ export async function runResolvedAcpProviderTurn(
               redacted,
               eventContext,
               redactionEnv,
-              { attempt: 1, successorStarted, retryEligible: true },
+              { attempt: 1, successorStarted, retryEligible: true, promptSubmitted: promptEverSubmitted },
             ));
           }
           if (successorStarted) currentAttempt = 2;
@@ -632,7 +637,7 @@ export async function runResolvedAcpProviderTurn(
         redacted,
         eventContext,
         redactionEnv,
-        { attempt: currentAttempt, successorStarted: false, retryEligible: false },
+        { attempt: currentAttempt, successorStarted: false, retryEligible: false, promptSubmitted: promptEverSubmitted },
       ));
     }
     const classifiedError = redacted instanceof Error || typeof redacted === "string"
@@ -641,7 +646,9 @@ export async function runResolvedAcpProviderTurn(
     if (providerId === "claude" && isClaudeRuntimeAuthFailure(classifiedError)) {
       markProviderRuntimeAuthDegraded("claude", runtimeHome);
     }
-    throw redacted;
+    // Cancellation is never a provider failure and must not gain recovery evidence.
+    if (abortRequested() || redacted instanceof AcpTransientRetryCancelledError) throw redacted;
+    throw attachProviderFailureEvidence(redacted, { promptSubmitted: promptEverSubmitted });
   }
   if (providerId === "claude") clearProviderRuntimeAuthDegraded("claude", runtimeHome);
   const flushed = liveRedactor.flush();
