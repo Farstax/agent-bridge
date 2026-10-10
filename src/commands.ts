@@ -17,6 +17,7 @@ import { listLocalCatalog } from "./skills.js";
 import { buildEffortKeyboard, buildEffortText, resolveEffort } from "./effort.js";
 import { buildBusyMessageModeKeyboard, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
+import { cancelPendingRunContinuationsForChat } from "./runContinuation.js";
 
 export type CommandResult =
   | { kind: "message"; text: string }
@@ -221,6 +222,7 @@ export function handleCommand(
   }
 
   if (text === "/reset") {
+    cancelPendingRunContinuationsForChat(db, surfaceIdentity, chatId, "session reset by user");
     persistProviderSession(db, { surfaceIdentity, chatKey: chatId }, kind, null);
     db.clearConvHistory(chatId, surfaceIdentity);
     return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };

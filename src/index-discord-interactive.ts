@@ -48,7 +48,7 @@ import { resolveDiscordStartInteraction } from "./discordStart.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { ScheduledRoutineRunner, buildScheduledInteractiveTurn } from "./scheduledRoutines.js";
-import { RunContinuationRunner, buildDiscordRunContinuationTurn } from "./runContinuation.js";
+import { RunContinuationRunner, buildDiscordRunContinuationTurn, cancelPendingRunContinuationsForChat } from "./runContinuation.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -497,7 +497,10 @@ async function handleInteraction(d: any): Promise<void> {
       attachments: [],
     };
 
-    if (commandName === "reset") clearInteractiveFallbackState(fallbackChain, chatKey);
+    if (commandName === "reset") {
+      clearInteractiveFallbackState(fallbackChain, chatKey);
+      cancelPendingRunContinuationsForChat(db, "discord:interactive", chatKey, "session reset by user");
+    }
     await engines[getUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey })].handleInteractiveTurn(turn);
   }
 }

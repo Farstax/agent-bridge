@@ -3,6 +3,7 @@ import type { ConversationIdentity } from "../conversationIdentity.js";
 
 export interface RunningRun {
   run_id: string;
+  surface_identity?: string | null;
   chat_id: string;
   bot: string;
   started_at: string;
@@ -107,7 +108,7 @@ export class RunRepository {
 
   listRunningRuns(): RunningRun[] {
     return this.db
-      .prepare(`SELECT run_id, chat_id, bot, started_at FROM bridge_runs WHERE status = 'running' ORDER BY started_at ASC`)
+      .prepare(`SELECT run_id, surface_identity, chat_id, bot, started_at FROM bridge_runs WHERE status = 'running' ORDER BY started_at ASC`)
       .all() as RunningRun[];
   }
 

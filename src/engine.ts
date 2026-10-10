@@ -77,7 +77,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
-import { cancelPendingRunContinuation } from "./runContinuation.js";
+import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat } from "./runContinuation.js";
 
 export interface HookContext {
   chatId: number | string;
@@ -342,6 +342,7 @@ export class BridgeEngine {
     }
     const rawText = turn.text.trim().toLowerCase();
     if (rawText === "/stop" || rawText === "/cancel") {
+      cancelPendingRunContinuationsForChat(this.db, this.surfaceIdentity, turn.chatKey, "originating Run cancelled by user");
       void this._cancelLane(turn.chatKey, "stop").catch((error) => console.error(`[${this.kind}] stop cleanup failed`, error));
       await this.sendText(turn.delivery.chatId, { text: "🛑 Execution aborted by user.", message_thread_id: turn.threadId });
       return;
