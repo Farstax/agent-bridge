@@ -67,8 +67,10 @@ export async function prepareInteractiveCliAuth(
 
 /**
  * Load the canonical interactive env file before preparing provider auth.
- * This must run during module initialization because index-interactive imports
- * this module before its own body executes and then snapshots availability.
+ * Interactive entrypoints run this through ./interactiveCliAuthStartup.js
+ * during module initialization, because they snapshot availability before
+ * their own body executes. Merely importing the availability functions (for
+ * example from the outward ACP server) has no startup side effect.
  */
 export async function prepareInteractiveCliAuthStartup(
   options: InteractiveCliAuthStartupOptions = {},
@@ -78,9 +80,6 @@ export async function prepareInteractiveCliAuthStartup(
   await prepareInteractiveCliAuth(env, options);
 }
 
-if (process.env.NODE_ENV !== "test") {
-  await prepareInteractiveCliAuthStartup();
-}
 
 export function resolveInteractiveCliAuthPaths(
   homeDir: string = homedir(),

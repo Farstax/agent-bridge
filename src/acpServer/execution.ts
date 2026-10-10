@@ -11,7 +11,9 @@ import { SAFE_SURFACE_CAPABILITIES, type MessagingPlatform } from "../platform.j
 import { interactiveChainKinds, parseCliChain } from "../providers/selection.js";
 import { lookupProviderSession, persistProviderSession } from "../providers/sessionRuntime.js";
 import type { OutwardAcpSessionRecord } from "../repositories/outwardAcpSessionRepository.js";
-import { canonicalProviderAvailability, createSurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
+import { createSurfaceNeutralProviderRouter } from "../surfaceNeutralProviderRouter.js";
+import { getCachedAvailableCliKinds } from "../interactiveCliAuth.js";
+import type { CliKind } from "../interactiveBot.js";
 import type { BotKind, BridgeConfig, CliResult, RouteableBotKind } from "../types.js";
 
 export const OUTWARD_ACP_SURFACE = "acp:outward";
@@ -424,7 +426,7 @@ export function createProductionOutwardAcpPromptExecutor(
   return new BridgeOutwardAcpPromptExecutor({
     db,
     providerChain,
-    isProviderAvailable: canonicalProviderAvailability,
+    isProviderAvailable: (provider) => getCachedAvailableCliKinds({ env }).has(provider as CliKind),
     createEngine: (session, attemptProvider) => {
       const executionMode = resolveExecutionMode(attemptProvider, env);
       const fullConfig: BridgeConfig = {

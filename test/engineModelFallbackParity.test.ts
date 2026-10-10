@@ -45,9 +45,10 @@ function setup(runProviderInvocation: any, hooks: any = {}) {
     });
   };
   // The messaging entry owner publishes generated files (publishArtifacts default).
-  const runMessaging = async () => {
+  const runMessaging = async (laneHook?: (lane: any) => void) => {
     const lane = db.acquireLock("acp:model-fallback", "k");
     if (!lane) throw new Error("lane unavailable");
+    laneHook?.(lane);
     return engine.executePromptAsync(
       "task", null, 100, {}, () => {}, [],
       { runId: "run-1", bot: "codex", chatId: "100", chatKey: "k" } as any,
@@ -107,9 +108,9 @@ describe("same-provider model fallback uses the normal provider-attempt success 
       db.unlock(laneHandle);
       return { text: "late answer", sessionId: "s", stopReason: "end_turn" };
     });
-    const { db, telegram, events, run } = setup(runProviderInvocation);
+    const { db, telegram, events, runMessaging } = setup(runProviderInvocation);
     try {
-      await expect(run((lane) => { laneHandle = lane; })).rejects.toThrow();
+      await expect(runMessaging((lane) => { laneHandle = lane; })).rejects.toThrow();
       expect(telegram.sendDocument).not.toHaveBeenCalled();
       expect(events.some((event) => event.type === "run.completed")).toBe(false);
       expect(outputDir).not.toBe("");

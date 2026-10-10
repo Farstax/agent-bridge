@@ -16,6 +16,7 @@ import { sendTelegramMessage } from "./messageDelivery.js";
 import { loadBotsConfig, resolveExecutionMode, resolveBusyMessageMode, validateBusyMessageModeEnv } from "./config.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
+import "./interactiveCliAuthStartup.js";
 import { getCachedAvailableCliKinds as getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
   getUserCliPreference,
@@ -55,7 +56,6 @@ import { startOwnerNotificationIngress } from "./ownerNotificationIngress.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { loadWorkspaceContext } from "./workspaceContext.js";
 import { AutonomyController, isFirstClassAutonomyBot } from "./autonomyController.js";
-import { canonicalProviderAvailability } from "./surfaceNeutralProviderRouter.js";
 import { matchAutonomousTelegramSupervisorReply, parseAutonomyTelegramCommand } from "./autonomyTelegram.js";
 import { AUTONOMOUS_RUN_SURFACE } from "./autonomousGoalRuntime.js";
 import {
@@ -318,7 +318,7 @@ const autonomyEngines = autonomyDb && autonomyDir ? Object.fromEntries(
 ) as Record<CliKind, BridgeEngine> : null;
 const autonomyController = autonomyDb && autonomyDir && autonomyEngines ? new AutonomyController({
   db: autonomyDb,
-  isProviderAvailable: canonicalProviderAvailability,
+  isProviderAvailable: (provider) => getAvailableCliKinds().has(provider as CliKind),
   autonomyDir,
   maxCycles: autonomyMaxCycles,
   engineForBot: (bot) => {

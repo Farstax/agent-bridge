@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import * as acp from "@agentclientprotocol/sdk";
 import { openDb } from "../src/db.js";
 import { OUTWARD_ACP_SURFACE } from "../src/acpServer/execution.js";
@@ -84,6 +84,7 @@ mkdirSync(join(authHome, ".codex"), { recursive: true });
 mkdirSync(join(authHome, ".claude"), { recursive: true });
 writeFileSync(join(authHome, ".codex", "auth.json"), "{}");
 writeFileSync(join(authHome, ".claude", ".credentials.json"), "{}");
+afterAll(() => rmSync(authHome, { recursive: true, force: true }));
 
 function startOutwardAcpProcess(dbPath: string, extraEnv: NodeJS.ProcessEnv = {}): RunningOutwardAcp {
   const child = spawn(process.execPath, ["--import", "tsx", "src/acpServer/stdio.ts"], {

@@ -26,6 +26,7 @@ import { DiscordClient, type DiscordUpdate } from "./discord.js";
 import { BridgeEngine } from "./engine.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
+import "./interactiveCliAuthStartup.js";
 import { getAvailableCliKinds } from "./interactiveCliAuth.js";
 import {
   getUserCliPreference,
