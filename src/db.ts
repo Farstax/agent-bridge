@@ -19,6 +19,7 @@ import type { AcpSessionBinding } from "./acp/sessionMap.js";
 import { SettingsRepository } from "./repositories/settingsRepository.js";
 import { EventReceiptRepository } from "./repositories/eventReceiptRepository.js";
 import { AdvisorRepository } from "./repositories/advisorRepository.js";
+import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
 type OrphanProcessState = "live" | "absent" | "ambiguous";
 export type ReconciliationContainment = "proven" | "unproven" | "ambiguous";
@@ -582,15 +583,19 @@ export class BridgeDb {
       WHERE state = 'claimed' OR claim_run_id IS NOT NULL OR claim_acquisition_id IS NOT NULL
       ORDER BY id
     `).all() as Array<Record<string, unknown>>;
+    const isAliveFn = options.isProcessAlive ?? ((runId: string) => getRunOwnedProcessState(runId) !== "absent");
     const auditIds: string[] = [];
     const reconciledRunIds = this.runInTransaction(() => {
       for (const run of runs) {
         const auditId = randomUUID();
         auditIds.push(auditId);
+        const alive = isAliveFn(run.run_id);
+        const processState = alive ? "live" : "absent";
+        const containmentState = alive ? "unproven" : "proven";
         this.raw.prepare(`INSERT INTO reconciliation_audit
           (id, kind, subject_id, status, reason, before_json, created_at)
           VALUES (?, 'run', ?, 'started', ?, ?, ?)`)
-          .run(auditId, run.run_id, options.reason, JSON.stringify({ status: "running", processState: "absent", containmentState: "proven" }), now);
+          .run(auditId, run.run_id, options.reason, JSON.stringify({ status: "running", processState, containmentState }), now);
       }
       for (const lock of locks) {
         const auditId = randomUUID();
@@ -608,17 +613,17 @@ export class BridgeDb {
           VALUES (?, 'claim', ?, 'started', ?, ?, ?)`)
           .run(auditId, String(claim.id), options.reason, JSON.stringify(claim), now);
       }
-      for (const run of runs) {
-        if (!this.runs.reconcileOrphanedRun(run.run_id, now, {
-          reason: options.reason, reconciledAt: now, processState: "absent", lockState: "absent", cutoffMs: 0,
-        })) throw new ReconciliationLostRace();
-      }
+      const reconciled: string[] = [];
       for (let i = 0; i < runs.length; i++) {
         const run = runs[i];
         const auditId = auditIds[i];
-        if (options.isProcessAlive?.(run.run_id)) {
+        if (isAliveFn(run.run_id)) {
           continue;
         }
+        if (!this.runs.reconcileOrphanedRun(run.run_id, now, {
+          reason: options.reason, reconciledAt: now, processState: "absent", lockState: "absent", cutoffMs: 0,
+        })) throw new ReconciliationLostRace();
+        reconciled.push(run.run_id);
         const contKey = `run-continuation:v1:${run.run_id}`;
         const existingRow = this.raw.prepare("SELECT value FROM settings WHERE key = ?").get(contKey) as { value: string } | undefined;
         if (existingRow) {
@@ -670,7 +675,7 @@ export class BridgeDb {
           SET status = 'completed', after_json = ?, completed_at = ? WHERE id = ?`)
           .run(JSON.stringify({ reason: options.reason, reconciled: true }), now, auditId);
       }
-      return runs.map((run) => run.run_id);
+      return reconciled;
     });
     return { reconciledRunIds, releasedLockCount: locks.length, requeuedClaimCount: claims.length };
   }

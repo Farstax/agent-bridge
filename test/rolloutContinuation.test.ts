@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { persistProviderSession } from "../src/providers/sessionRuntime.js";
 import {
+  buildDiscordRunContinuationTurn,
   buildTelegramRunContinuationTurn,
   cancelPendingRunContinuation,
   cancelPendingRunContinuationsForChat,
@@ -13,6 +14,7 @@ import {
   requestRunContinuation,
   scanRunContinuations,
 } from "../src/runContinuation.js";
+import * as runOwnedProcesses from "../src/runOwnedProcesses.js";
 
 const paths: string[] = [];
 
@@ -80,7 +82,12 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     const dispatch = vi.fn(async (claimed) => {
       const turn = buildTelegramRunContinuationTurn(claimed, "actor-1");
       expect(turn.text).toContain("Deploy of release-2026.10.10-1 was started");
-      expect(turn.text).toContain("[Agent Bridge continuation]");
+      expect(turn.text).toContain("[Agent Bridge post-rollout verification]");
+      expect(turn.text).toContain("read-only verification of current service health");
+      expect(turn.text).not.toContain("continue the original objective");
+      expect(turn.executionMode).toBe("safe");
+      expect(turn.verificationOnly).toBe(true);
+      expect(turn.queueOnly).toBe(true);
     });
 
     await scanRunContinuations(restartedDb, surfaceIdentity, dispatch, 11_000);
@@ -453,5 +460,99 @@ describe("controlled self-rollout continuation recovery (issue #964)", () => {
     // Queue only
     expect(turn.queueOnly).toBe(true);
     expect(turn.attachments).toEqual([]);
+  });
+
+  it("default production scanner path without injected options verifies live process containment and fails closed", async () => {
+    const { db } = setup();
+    const runId = "default-scanner-liveness-run";
+    const surfaceIdentity = "telegram:interactive";
+    const chatKey = "-1004366290625:2";
+    const provider = "claude";
+
+    db.insertRun(runId, { surfaceIdentity, chatKey }, provider);
+    requestRunContinuation(db, {
+      originRunId: runId,
+      surfaceIdentity,
+      chatKey,
+      provider,
+      reason: "Post-deploy health check",
+      afterSeconds: 10,
+    }, 1_000);
+
+    // Reconcile rollout when processes were contained
+    db.reconcileControlledRollout({
+      reason: "interrupted_by_controlled_rollout",
+      nowMs: 2_000,
+    });
+
+    const cont = listRunContinuations(db)[0];
+    expect(cont.rolloutProvenance).toBeDefined();
+
+    // Mock getRunOwnedProcessState returning live (descendant still running)
+    const spy = vi.spyOn(runOwnedProcesses, "getRunOwnedProcessState").mockReturnValue("live");
+
+    const dispatch = vi.fn(async () => undefined);
+
+    // Run production scanner with NO ClaimRunContinuationOptions
+    await scanRunContinuations(db, surfaceIdentity, dispatch, 12_000);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    const cancelled = listRunContinuations(db)[0];
+    expect(cancelled.state).toBe("cancelled");
+    expect(cancelled.error).toBe("originating Run process or descendant is still active");
+
+    spy.mockRestore();
+    db.close();
+  });
+
+  it("enforces verification-only read-only turn contract and suppresses mutation instructions for rollout continuations", () => {
+    const rolloutContinuation = {
+      version: 1 as const,
+      id: "rollout-turn-test",
+      originRunId: "rollout-turn-test",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "-1004366290625:2",
+      provider: "claude" as const,
+      reason: "Verify systemd service status after self-restart",
+      requestedAt: new Date(1000).toISOString(),
+      dueAt: new Date(11000).toISOString(),
+      expiresAt: new Date(7200000).toISOString(),
+      state: "claimed" as const,
+      delivery: { chatId: -1004366290625, chatType: "supergroup", threadId: 2 },
+      rolloutProvenance: {
+        reconciledAt: new Date(2000).toISOString(),
+        reason: "interrupted_by_controlled_rollout",
+        reconciliationAuditId: "audit-1",
+        originRunId: "rollout-turn-test",
+        surfaceIdentity: "telegram:interactive",
+        chatKey: "-1004366290625:2",
+        provider: "claude" as const,
+      },
+    };
+
+    // Telegram turn
+    const telegramTurn = buildTelegramRunContinuationTurn(rolloutContinuation, "actor-1");
+    expect(telegramTurn.text).toContain("[Agent Bridge post-rollout verification]");
+    expect(telegramTurn.text).toContain("Perform bounded read-only verification of current service health");
+    expect(telegramTurn.text).toContain("Do not repeat completed side effects, apply mutations, or replay previous operations.");
+    expect(telegramTurn.text).not.toContain("continue the original objective");
+    expect(telegramTurn.executionMode).toBe("safe");
+    expect(telegramTurn.verificationOnly).toBe(true);
+    expect(telegramTurn.queueOnly).toBe(true);
+
+    // Discord turn
+    const discordContinuation = {
+      ...rolloutContinuation,
+      surfaceIdentity: "discord:guild-1",
+      delivery: { chatId: "1234567890", chatType: "channel" },
+    };
+    const discordTurn = buildDiscordRunContinuationTurn(discordContinuation, "actor-2");
+    expect(discordTurn.text).toContain("[Agent Bridge post-rollout verification]");
+    expect(discordTurn.text).toContain("Perform bounded read-only verification of current service health");
+    expect(discordTurn.text).toContain("Do not repeat completed side effects, apply mutations, or replay previous operations.");
+    expect(discordTurn.text).not.toContain("continue the original objective");
+    expect(discordTurn.executionMode).toBe("safe");
+    expect(discordTurn.verificationOnly).toBe(true);
+    expect(discordTurn.queueOnly).toBe(true);
   });
 });
