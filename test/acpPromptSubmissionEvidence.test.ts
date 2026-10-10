@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,6 +93,21 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
       // Attempt 1 submitted; the later setup failure must not be recorded as pre-prompt.
       expect(events.filter((event) => event.type === "run.diagnostic").map((event) => event.promptSubmitted))
         .toEqual([true, true]);
+      expect(decideProviderRecovery("codex", error as Error).reason).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("does not start a successor attempt for an unclassified failure after prompt submission", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "acp-evidence-"));
+    try {
+      const events: any[] = [];
+      const counter = join(dir, "count");
+      const error = await failureFor("prompt-fail", counter, events);
+      expect(readProviderFailureEvidence(error)).toEqual({ promptSubmitted: true });
+      // One adapter process only: the task is not replayed on an ambiguous failure.
+      expect(readFileSync(counter, "utf8")).toBe("1");
       expect(decideProviderRecovery("codex", error as Error).reason).toBeNull();
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -58,6 +58,12 @@ export async function runWithAcpTransientRetry<T>(
     abortRequested: () => boolean;
     wait?: AcpTransientRetryWait;
     onRetryDecision?: (error: Error, successorStarted: boolean) => void | Promise<void>;
+    /**
+     * True once any attempt sent `session/prompt`. An unclassified failure after
+     * that point is ambiguous (the provider may already be acting), so it is
+     * surfaced instead of replaying the task in a successor attempt.
+     */
+    promptSubmitted?: () => boolean;
   },
 ): Promise<T> {
   try {
@@ -66,6 +72,7 @@ export async function runWithAcpTransientRetry<T>(
     const normalized = error instanceof Error ? error : new Error(String(error));
     const kind = classifyProviderError(providerId, normalized).kind;
     if (kind !== "transient" && kind !== "unknown") throw error;
+    if (kind === "unknown" && options.promptSubmitted?.()) throw error;
     const retryDelayMs = providerId === "claude" && isClaudeOAuthRefreshContention(normalized)
       ? CLAUDE_OAUTH_REFRESH_RETRY_DELAY_MS
       : TRANSIENT_RETRY_DELAY_MS;

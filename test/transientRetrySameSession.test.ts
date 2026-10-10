@@ -72,4 +72,27 @@ describe("generic transient same-session retry (tier 1)", () => {
     }, { abortRequested: () => false, wait: async () => undefined })).rejects.toThrow(/subscription access/);
     expect(attempts).toEqual([1, 2]);
   });
+
+  it("does not replay an unclassified failure once the prompt was submitted", async () => {
+    const attempts: number[] = [];
+    let submitted = false;
+    await expect(runWithAcpTransientRetry("claude", async (attempt) => {
+      attempts.push(attempt);
+      submitted = true;
+      throw new Error("ACP connection closed");
+    }, { abortRequested: () => false, wait: async () => undefined, promptSubmitted: () => submitted }))
+      .rejects.toThrow(/connection closed/);
+    expect(attempts).toEqual([1]);
+  });
+
+  it("still retries a classified transient failure after the prompt was submitted", async () => {
+    const attempts: number[] = [];
+    const result = await runWithAcpTransientRetry("codex", async (attempt) => {
+      attempts.push(attempt);
+      if (attempt === 1) throw new Error("Selected model is at capacity. Please try a different model.");
+      return "ok";
+    }, { abortRequested: () => false, wait: async () => undefined, promptSubmitted: () => true });
+    expect(result).toBe("ok");
+    expect(attempts).toEqual([1, 2]);
+  });
 });
