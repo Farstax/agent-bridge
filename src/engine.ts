@@ -1452,14 +1452,13 @@ export class BridgeEngine {
     return ctx ? `${ctx}${prompt}` : prompt;
   }
 
-  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string): { prompt: string; env: Record<string, string> } | null {
+  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
     const dbPath = this.opts.fullConfig?.dbPath;
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
     const commandPath = join(process.cwd(), "bin", "agent-bridge-context");
     const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
-    const waitCommandPath = join(process.cwd(), "node_modules", ".bin", "tsx");
-    const waitScriptPath = join(process.cwd(), "scripts", "agent-bridge-wait.ts");
+    const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
     const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
     const turnKey = `${chatKey}:${randomUUID()}`;
     let advisorCapability: string | null = null;
@@ -1489,12 +1488,13 @@ export class BridgeEngine {
     const continuationPrompt = canContinue ? [
       "[Agent Bridge continuation]",
       "If required bounded work is still pending and keeping this Run open is impractical, request a same-session continuation instead of promising to check later:",
-      '"$AGENT_BRIDGE_WAIT_COMMAND" "$AGENT_BRIDGE_WAIT_SCRIPT" --after-seconds 60 --reason "<what to re-check>"',
+      '"$AGENT_BRIDGE_WAIT_COMMAND" --after-seconds 60 --reason "<what to re-check>"',
       "Do not use continuation for user input/approval or unbounded monitoring.",
       "",
     ].join("\n") : "";
     return {
-      prompt: `${contextPrompt}${continuationPrompt}`,
+      prompt: contextPrompt,
+      continuationPrompt,
       env: {
         ...((hasContext || canContinue) ? {
           AGENT_BRIDGE_CONTEXT_DB: dbPath!,
@@ -1508,7 +1508,6 @@ export class BridgeEngine {
         } : {}),
         ...(canContinue ? {
           AGENT_BRIDGE_WAIT_COMMAND: waitCommandPath,
-          AGENT_BRIDGE_WAIT_SCRIPT: waitScriptPath,
           AGENT_BRIDGE_RUN_ID: runId!,
           AGENT_BRIDGE_PROVIDER: executionKind,
           // Delivery is persisted here, at the point the native chatId/threadId
@@ -1547,7 +1546,7 @@ export class BridgeEngine {
     const soulContext = includeFreshContext ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: includeFreshContext };
     return {
-      prompt: includeFreshContext ? `${access.prompt}${handoffPrompt}` : handoffPrompt,
+      prompt: includeFreshContext ? `${access.prompt}${access.continuationPrompt}${handoffPrompt}` : `${access.continuationPrompt}${handoffPrompt}`,
       contextEnv: access.env,
       soulContext,
       includeResponseContract: includeFreshContext,
