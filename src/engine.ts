@@ -673,9 +673,21 @@ export class BridgeEngine {
     const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
     let outcome: ExecutionOutcome | null = null;
     try {
+      const errorDelivered = { value: false };
       const result = await this._executeAndDeliverTurn({
-        prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect,
+        prompt, sessionId, chatId, chatKey, threadId, attachments, laneHandle, runId, eventContext, collect, errorDelivered,
       });
+      if (!result && errorDelivered.value && !this.laneCoordinator.hasCancellation(executionLane)) {
+        // The user was told this task failed. It is terminal: retire the input so
+        // a later message or restart cannot silently re-run possibly executed
+        // work, and record the Run as failed rather than fenced/cancelled.
+        finalize();
+        this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+        if (activePendingIds.length && !this.db.completePendingMsgs(laneHandle, activePendingIds)) throw new LostExecutionLeaseError();
+        activeTaskCommitted = true;
+        outcome = "failed";
+        return "failed";
+      }
       if (!result) {
         if (!this.laneCoordinator.hasCancellation(executionLane)) finalize();
         this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
@@ -857,6 +869,8 @@ export class BridgeEngine {
     eventContext: CliOptions["eventContext"];
     collect: (event: BridgeEvent) => void;
     suppressTransientRetry?: boolean;
+    /** Set when the provider failure was delivered to the user in place (terminal for this task). */
+    errorDelivered?: { value: boolean };
   }): Promise<StagedCliResult | null> {
     let result: StagedCliResult | null = null;
     let finalDeliveryPhase: FinalDeliveryPhase | null = null;
@@ -885,6 +899,7 @@ export class BridgeEngine {
         propagateExecutionError: (error) =>
           decideProviderRecovery(providerIdForBotName(this._executionKind()), error).reason !== null,
         propagateTimeoutErrors: true,
+        onExecutionErrorDelivered: () => { if (input.errorDelivered) input.errorDelivered.value = true; },
         runId: input.runId,
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {

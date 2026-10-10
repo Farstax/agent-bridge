@@ -262,6 +262,7 @@ export async function sendMessageWithProgress({
   runId,
   onEvent,
   finalDeliveryRetryDelaysMs = DEFAULT_FINAL_DELIVERY_RETRY_DELAYS_MS,
+  onExecutionErrorDelivered,
 }: {
   client: MessagingPlatform;
   kind: string;
@@ -283,6 +284,8 @@ export async function sendMessageWithProgress({
   onEvent?: (event: BridgeEvent) => void;
   /** Bounded pauses before re-sending an answer the surface definitely rejected. */
   finalDeliveryRetryDelaysMs?: readonly number[];
+  /** Called after a provider-execution failure was delivered to the user in place (terminal for that task). */
+  onExecutionErrorDelivered?: () => void;
 }): Promise<CliResult | null> {
   const { text: _ignored, ...rest } = body;
   const capabilities = surfaceCapabilities(client);
@@ -847,6 +850,7 @@ export async function sendMessageWithProgress({
       errorText,
     });
     await deliverFinal(errorText);
+    onExecutionErrorDelivered?.();
     console.error(`[${kind}] execution error`, err);
     return null;
   }
