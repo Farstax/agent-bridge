@@ -34,6 +34,8 @@ For persistent state, startup, provisioning, deployment, or reconciliation chang
 
 Only require transitions that the change can actually affect.
 
+When the affected journey crosses owners or execution environments (such as host to guest, staged release to active process, or persisted metadata to service), trace the consequential handoff end to end. Distinguish requested or recorded success from the effective running state; verify the relevant actor/permissions, preserved active and rollback state, and downstream identity/health read-back. An upstream stage succeeding is not proof that the next owner completed its work. Keep the evidence limited to boundaries the change can affect.
+
 Treat tests/CI as evidence. Challenge a mock, synthetic request, source-shape assertion, or helper-only test when it does not reach the consequential production boundary.
 
 ## Simplification changes
