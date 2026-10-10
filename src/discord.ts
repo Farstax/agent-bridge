@@ -138,8 +138,16 @@ export class DiscordClient implements MessagingPlatform {
       : rawText;
     const chunks = chunkText(text);
     let last: any = null;
-    for (const chunk of chunks) {
-      last = await this._restPost(`/channels/${channelId}/messages`, { content: chunk });
+    for (let index = 0; index < chunks.length; index += 1) {
+      try {
+        last = await this._restPost(`/channels/${channelId}/messages`, { content: chunks[index] }, true);
+      } catch (error) {
+        // Final-answer recovery must not resend chunks the channel already has.
+        if (index > 0 && error && typeof error === "object") {
+          (error as { finalChunksDelivered?: number }).finalChunksDelivered = index;
+        }
+        throw error;
+      }
     }
     return last;
   }
@@ -239,12 +247,19 @@ export class DiscordClient implements MessagingPlatform {
     return res.json();
   }
 
-  private async _restPost(path: string, body: object): Promise<any> {
+  private async _restPost(path: string, body: object, requireOk = false): Promise<any> {
     const res = await this.fetchFn(`${DISCORD_API}${path}`, {
       method: "POST",
       headers: { Authorization: `Bot ${this.opts.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    if (requireOk && res.ok === false) {
+      // A rejected message post must not look delivered (HTTP status is the only
+      // evidence callers have that the message was definitely not created).
+      const error = new Error(`Discord POST ${path} HTTP ${res.status}`) as Error & { status?: number };
+      error.status = res.status;
+      throw error;
+    }
     return res.status === 204 ? null : res.json();
   }
 

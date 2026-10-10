@@ -19,6 +19,22 @@ const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
 const ANSWER_PREVIEW_ABORT_POLL_MS = 50;
 const RUN_ACTIVITY_EDIT_INTERVAL_MS = 700;
 
+const DEFAULT_FINAL_DELIVERY_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000];
+
+/**
+ * True only when the surface definitely refused the send (HTTP 4xx) and no part
+ * of a multi-message answer was delivered. Timeouts, dropped connections and
+ * 5xx responses may have been applied remotely and are never blindly resent.
+ */
+function isDefiniteDeliveryRejection(error: unknown): boolean {
+  const candidate = error as { status?: unknown; finalChunksDelivered?: unknown; message?: unknown } | null;
+  if (typeof candidate?.finalChunksDelivered === "number" && candidate.finalChunksDelivered > 0) return false;
+  const status = typeof candidate?.status === "number"
+    ? candidate.status
+    : Number(/HTTP (\d{3})/.exec(String(candidate?.message ?? ""))?.[1]);
+  return Number.isInteger(status) && status >= 400 && status < 500;
+}
+
 export class PreviewCleanupError extends Error {
   readonly cause: unknown;
 
@@ -131,7 +147,13 @@ async function sendEntityMessages({
     if (i > 0) delete chunkBody.reply_markup;
     chunkBody.text = renderTelegramHtml(chunkText);
     chunkBody.parse_mode = "HTML";
-    const response = await client.sendMessage(chunkBody);
+    let response: any;
+    try {
+      response = await client.sendMessage(chunkBody);
+    } catch (error) {
+      if (i > 0 && error && typeof error === "object") (error as { finalChunksDelivered?: number }).finalChunksDelivered = i;
+      throw error;
+    }
     if (i === 0 && typeof response?.result?.message_id === "number") firstMessageId = response.result.message_id;
   }
   return firstMessageId;
@@ -226,6 +248,7 @@ export async function sendMessageWithProgress({
   propagateTimeoutErrors = false,
   runId,
   onEvent,
+  finalDeliveryRetryDelaysMs = DEFAULT_FINAL_DELIVERY_RETRY_DELAYS_MS,
 }: {
   client: MessagingPlatform;
   kind: string;
@@ -245,6 +268,8 @@ export async function sendMessageWithProgress({
   propagateTimeoutErrors?: boolean;
   runId?: string;
   onEvent?: (event: BridgeEvent) => void;
+  /** Bounded pauses before re-sending an answer the surface definitely rejected. */
+  finalDeliveryRetryDelaysMs?: readonly number[];
 }): Promise<CliResult | null> {
   const { text: _ignored, ...rest } = body;
   const capabilities = surfaceCapabilities(client);
@@ -643,9 +668,60 @@ export async function sendMessageWithProgress({
     await sendSurfaceMessage({ client, kind, chatId, body: { ...body, text } });
   }
 
+  async function recoverFinalDelivery(failure: unknown): Promise<CliResult | null> {
+    const commit = async (): Promise<void> => {
+      try {
+        await afterFinalDelivery?.();
+      } catch (commitError) {
+        console.error(`[${kind}] final delivery commit failed`, commitError);
+      }
+    };
+    if (finalDeliveryCompleted) {
+      // The answer is visible; only the post-delivery commit step failed.
+      console.error(`[${kind}] post-delivery step failed after the answer was delivered`, failure);
+      return stagedCliResult as CliResult | null;
+    }
+    console.error(`[${kind}] final answer delivery failed`, failure);
+    let delivered = false;
+    let definite = isDefiniteDeliveryRejection(failure);
+    for (const delayMs of definite ? finalDeliveryRetryDelaysMs : []) {
+      if (delayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      if (isAborted?.()) {
+        await beginProgressCleanup();
+        return null;
+      }
+      try {
+        await deliverFinal(stagedFinalText);
+        delivered = true;
+        break;
+      } catch (retryFailure) {
+        definite = isDefiniteDeliveryRejection(retryFailure);
+        if (!definite) break;
+      }
+    }
+    if (delivered) {
+      finalDeliveryCompleted = true;
+      await commit();
+      return stagedCliResult as CliResult | null;
+    }
+    await beginProgressCleanup();
+    try {
+      const notice = definite
+        ? "⚠️ The answer was generated but could not be delivered to this chat. Ask me to repeat it."
+        : "⚠️ The answer was generated but its delivery could not be confirmed. If it did not arrive, ask me to repeat it.";
+      await sendSurfaceMessage({ client, kind, chatId, body: { ...body, text: notice } });
+    } catch {
+      /* the surface is still unavailable; the answer remains in the Run record */
+    }
+    await commit();
+    return stagedCliResult as CliResult | null;
+  }
+
   let finalDeliveryPreparationFailed = false;
   let finalDeliveryCompleted = false;
   let executionCompleted = false;
+  let stagedFinalText = "";
+  let stagedCliResult: { text: any; sessionId: any } | null = null;
   try {
     let result: any;
     if (typeof execution === "function") {
@@ -659,6 +735,8 @@ export async function sendMessageWithProgress({
     const cliResult = result == null
       ? null
       : { text: result.text, sessionId: result.sessionId ?? null };
+    stagedFinalText = finalText;
+    stagedCliResult = cliResult;
 
     if (isAborted?.()) {
       clearInterval(typingInterval);
@@ -709,6 +787,12 @@ export async function sendMessageWithProgress({
     if (isAborted?.()) {
       await beginProgressCleanup();
       return null;
+    }
+    if (executionCompleted && !finalDeliveryPreparationFailed) {
+      // Provider execution already succeeded exactly once. A failure from here
+      // on is a delivery failure: it never reaches provider recovery and never
+      // replaces the authoritative answer with an error message.
+      return recoverFinalDelivery(err);
     }
     if (propagateTimeoutErrors && err instanceof CliTimeoutError) {
       await beginProgressCleanup();
