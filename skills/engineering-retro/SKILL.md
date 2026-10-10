@@ -44,6 +44,8 @@ Classify the cause before recommending a change:
 
 Prefer fixing the cause over instructing around it. Prefer deleting, consolidating, or clarifying an existing owner before adding another source of truth.
 
+Explicitly assess the existing Skills as possible owners. Where Skill guidance is missing or ineffective, name the exact Skill and the smallest wording change likely to alter future behavior. Where a mechanical test/code fix or an already-clear instruction owns the problem, distinguish that from a Skill gap and state **No Skill change warranted** rather than recommending extra process.
+
 ## Recommend conservatively
 
 Return at most three improvements, ranked by expected reduction in future owner intervention or by correctness impact. Each recommendation must cite the repeated evidence that justifies it and name the owning mechanism to change.
@@ -61,7 +63,7 @@ Keep the retro compact:
 - evidence window reviewed;
 - repeated avoidable intervention or friction, with concrete examples;
 - likely owning cause;
-- up to three recommended changes, or `No change warranted`;
+- up to three recommended changes, including the exact existing Skill and minimal proposed wording for any Skill edits, or `No change warranted`; explicitly state `No Skill change warranted` when appropriate;
 - what should be observed in future real work to judge whether a change actually helped.
 
 The primary outcome measure is whether equivalent future work reaches a correct, verified, mergeable result with less unnecessary owner intervention. Do not optimize for fewer messages, fewer Skills, or lower process count by themselves.
