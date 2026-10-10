@@ -22,6 +22,17 @@ Creating the routine is standing, revocable authority only to submit that stored
 
 Never infer routines from habits. Never create or modify a routine from a scheduled-triggered Run. An autonomous Cycle also must not create or broaden schedules unless a current authenticated user conversation separately authorizes it.
 
+## Provider lock and fallback
+
+A routine always runs in the conversation that created it. That conversation decides whether another provider can take over:
+
+- A **dedicated provider conversation** (for example the Claude-only Telegram bot, surface `telegram:claude`) is locked to that provider. If the provider is unavailable or out of quota, the occurrence fails; there is no cross-provider fallback and Agent Bridge will not switch it to another bot or conversation.
+- The **unified interactive conversation** (`telegram:interactive`, or a configured Discord interactive surface) can fall back to another configured, available provider when a failure is safe to recover. This is capability, not a guarantee: it depends on the configured chain, provider availability and the recovery safety rules.
+
+Check `AGENT_BRIDGE_SURFACE_IDENTITY` (or the `Route:` line printed by `list`/`create`) before the user confirms recurring or important work. When the conversation is provider-locked, say so plainly before creating the routine and tell the user they can ask for it from the unified interactive conversation instead if it must survive that provider being unavailable.
+
+Never move a routine between conversations on your own. The helper is scoped to the current conversation and cannot create in another one. To move important work to the unified conversation, the user asks from that conversation: create and verify the new routine there with `list`, and only then disable the old routine here with `disable <routine-id>`, so there is no gap and no duplicate firing. Do not copy schedules, owners or delivery targets by editing the stored routine.
+
 ## Routine types
 
 Use `companion` for normal proactive work such as briefings, reminders that need reasoning, status reviews, or scheduled questions. The occurrence returns to this same companion conversation and uses its existing session, queue, provider routing and delivery.

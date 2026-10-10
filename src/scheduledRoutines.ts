@@ -247,6 +247,23 @@ function normalizeStoredRoutine(db: BridgeDb, key: string, rawValue: string): Sc
   return routine;
 }
 
+/**
+ * Factual route descriptor derived only from the known surface identity. It
+ * never claims the live provider chain: whether a switch actually happens still
+ * depends on the configured chain, provider availability and #946 safety rules.
+ */
+export function describeScheduledRoutineRoute(surfaceIdentity: string): string {
+  const locked = /^telegram:(?!interactive$)([a-z0-9-]+)$/.exec(surfaceIdentity);
+  if (locked) {
+    return `provider-locked to ${locked[1]}: occurrences run only on ${locked[1]} with no cross-provider fallback. `
+      + "For work that must continue when this provider is unavailable, create the routine from the unified interactive conversation instead.";
+  }
+  if (surfaceIdentity === "telegram:interactive" || surfaceIdentity === "discord:interactive") {
+    return "unified interactive conversation: another provider can take over only when a fallback chain is configured and a provider is available; this is not guaranteed.";
+  }
+  return "route is not a recognised interactive surface; provider fallback is not asserted.";
+}
+
 export function listScheduledRoutines(
   db: BridgeDb,
   surfaceIdentity?: string,
