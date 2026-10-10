@@ -55,24 +55,29 @@ export function decideProviderRecovery(
     || isFallbackEligibleProviderError(classifyAnyProviderError(error));
   const evidence = mergeProviderFailureEvidence(readProviderFailureEvidence(error), priorEvidence);
 
-  let reason: ProviderFallbackReason | null = null;
-  if (authRequired) reason = "auth_required";
-  else if (capacityExhausted) reason = "capacity";
-  else if (error instanceof ProviderStallError) reason = "provider_stall";
-  else if (error instanceof CliTimeoutError) reason = null;
-  else if (classification.kind === "transient") reason = "provider_transport_failure";
-  else if (classification.kind === "fatal" && !/not a git repository/i.test(classification.reason)) {
-    reason = "provider_unavailable";
+  // Transport/availability reasons are evaluated independently of the auth and
+  // capacity categories (a stalled provider still abandons its session even if
+  // its text also looks like capacity wording).
+  let transportReason: ProviderRecoveryDecision["transportReason"] = null;
+  if (error instanceof ProviderStallError) transportReason = "provider_stall";
+  else if (error instanceof CliTimeoutError) transportReason = null;
+  else if (classification.kind === "transient") {
+    transportReason = claudeContention ? null : "provider_transport_failure";
+  } else if (classification.kind === "fatal" && !/not a git repository/i.test(classification.reason)) {
+    transportReason = "provider_unavailable";
   } else if (classification.kind === "unknown" && evidence?.promptSubmitted === false) {
-    reason = "provider_transport_failure";
+    transportReason = "provider_transport_failure";
   }
+  const reason: ProviderFallbackReason | null = authRequired
+    ? "auth_required"
+    : capacityExhausted ? "capacity" : transportReason;
 
   return {
     classification,
     reason,
     capacityExhausted,
     authRequired,
-    transportReason: reason === "auth_required" || reason === "capacity" ? null : reason,
+    transportReason,
     freshSessionRetry: classification.kind === "transient",
   };
 }

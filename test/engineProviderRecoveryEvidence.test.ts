@@ -6,6 +6,7 @@ import { dispatchClaimedInteractiveWithFallback, dispatchInteractiveWithFallback
 import { attachProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 import { createSurfaceNeutralProviderRouter } from "../src/surfaceNeutralProviderRouter.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
+import { ProviderStallError } from "../src/cli.js";
 
 function client() {
   return {
@@ -104,6 +105,21 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
+  it("treats a later local error after a pre-prompt transient first attempt as possibly submitted", async () => {
+    let calls = 0;
+    const sourceRun = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw submitted("ECONNREFUSED at spawn", false);
+      // The silent retry ran the task, then a local post-provider step failed.
+      throw new Error("Internal error: upload hook exploded");
+    });
+    const { db, targetRun } = await runCodexThenClaude(sourceRun);
+    try {
+      expect(sourceRun).toHaveBeenCalledTimes(2);
+      expect(targetRun).not.toHaveBeenCalled();
+    } finally { db.close(); }
+  });
+
   it("treats a first attempt without evidence as possibly submitted (fail closed)", async () => {
     let calls = 0;
     const sourceRun = vi.fn(async () => {
@@ -172,6 +188,24 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
     } finally { db.close(); }
   });
 
+  it("advances on provider rejections but not on post-submission transport failures", async () => {
+    const advancing = [new Error("usage limit reached"), new Error("Failed to authenticate"), submitted("socket hang up", false)];
+    for (const error of advancing) {
+      const { db, claude, router, input } = routerOver(error);
+      try {
+        await router.executeSurfaceNeutralTurn(input as any);
+        expect(claude).toHaveBeenCalledTimes(1);
+      } finally { db.close(); }
+    }
+    for (const error of [submitted("socket hang up", true), new Error("socket hang up"), new ProviderStallError("stalled")]) {
+      const { db, claude, router, input } = routerOver(error);
+      try {
+        await expect(router.executeSurfaceNeutralTurn(input as any)).rejects.toThrow();
+        expect(claude).not.toHaveBeenCalled();
+      } finally { db.close(); }
+    }
+  });
+
   it("does not advance on an unclassified failure after submission or without evidence", async () => {
     for (const error of [submitted("Internal error: lost", true), new Error("Internal error: lost")]) {
       const { db, claude, router, input } = routerOver(error);
@@ -180,5 +214,43 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
         expect(claude).not.toHaveBeenCalled();
       } finally { db.close(); }
     }
+  });
+});
+
+describe("stopped lane", () => {
+  it("never advances the chain when /stop lands while a pre-prompt provider failure is being reported", async () => {
+    const db = openDb(":memory:");
+    try {
+      const engine: BridgeEngine = new BridgeEngine({
+        surfaceIdentity: "acp:test",
+        kind: "codex",
+        botConfig: { command: "codex", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+        workingDir: process.cwd(),
+      }, db, client(), {
+        runProviderInvocation: async () => {
+          (engine as any).laneCoordinator.markAborted((engine as any)._executionLane("k"));
+          throw attachProviderFailureEvidence(new Error("Internal error: spawn killed"), { promptSubmitted: false });
+        },
+      } as any);
+      const claude = vi.fn(async () => ({ text: "must not run", sessionId: "s", stopReason: "end_turn" }));
+      const router = createSurfaceNeutralProviderRouter({
+        db,
+        surfaceIdentity: "acp:test",
+        initialProvider: "codex",
+        providerChain: ["codex", "claude"],
+        engineForProvider: (provider) => (provider === "codex" ? engine : { executeSurfaceNeutralTurn: claude }) as any,
+      });
+      const laneHandle = db.acquireLock("acp:test", "k");
+      expect(laneHandle).not.toBeNull();
+      await expect(router.executeSurfaceNeutralTurn({
+        prompt: "p", sessionId: null, chatId: "c", chatKey: "k", laneHandle: laneHandle as any, runId: "r-stop",
+        eventContext: { runId: "r-stop", bot: "codex", chatId: "c", chatKey: "k" } as any,
+        collect: () => {},
+      })).rejects.toThrow();
+      expect(claude).not.toHaveBeenCalled();
+    } finally { db.close(); }
   });
 });

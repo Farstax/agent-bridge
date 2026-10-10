@@ -33,7 +33,11 @@ import {
 import { supportsProvisionalAnswers } from "./providers/acpRuntime.js";
 import { isAcpBackedBot, providerIdForBotName, supportsToolFreeMode } from "./providers/registry.js";
 import { decideProviderRecovery, type ProviderFallbackReason } from "./providers/recoveryVerdict.js";
-import { readProviderFailureEvidence, type ProviderFailureEvidence } from "./providers/failureEvidence.js";
+import {
+  attachProviderFailureEvidence,
+  readProviderFailureEvidence,
+  type ProviderFailureEvidence,
+} from "./providers/failureEvidence.js";
 import { lookupProviderSession, persistProviderSession } from "./providers/sessionRuntime.js";
 import { captureParsedProviderOutput, registerProviderOutput } from "./runTelemetry.js";
 import type { ProviderInvocation } from "./providers/types.js";
@@ -766,6 +770,11 @@ export class BridgeEngine {
           }
           console.error(`[${this.kind}] same-provider fresh-session retry also failed`, retryError);
           providerError = retryError instanceof Error ? retryError : new Error(String(retryError));
+          // The retry may itself have executed the task; an error without
+          // provider evidence (a local post-provider failure) fails closed.
+          if (!readProviderFailureEvidence(providerError)) {
+            attachProviderFailureEvidence(providerError, { promptSubmitted: true });
+          }
           decision = decideProviderRecovery(executionProvider, providerError, priorEvidence);
         }
       }
@@ -1824,6 +1833,16 @@ export class BridgeEngine {
         // attempt owns no further continuation, so its output is terminal.
         await this._cleanTerminalOutputDir(outDir, "lease loss");
         throw error;
+      }
+      // A stopped, aborted or fenced lane never recovers through a provider
+      // switch: the error is marked as possibly submitted before any route owner
+      // (interactive dispatch or the surface-neutral router) sees it.
+      if (error instanceof Error && (
+        this.laneCoordinator.hasCancellation(executionLane)
+        || this.laneCoordinator.isAborted(executionLane)
+        || !this.db.ownsLock(laneHandle)
+      )) {
+        attachProviderFailureEvidence(error, { promptSubmitted: true });
       }
       const providerFallbackReason = decideProviderRecovery(
         providerIdForBotName(executionKind),
