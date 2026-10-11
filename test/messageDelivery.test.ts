@@ -641,6 +641,14 @@ describe("sendTelegramMessage rendering", () => {
     expect(payloads.every((payload: string) => payload.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length <= 4_096)).toBe(true);
   });
 
+  it("terminates safely for one oversized list item", async () => {
+    const client = createMockClient();
+    await sendTelegramMessage({ client, kind: "codex", chatId: 123, body: { text: `1. ${"x".repeat(10_000)}` } });
+    const payloads = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body.text as string);
+    expect(payloads.length).toBeGreaterThan(1);
+    expect(payloads.every((payload: string) => payload.length <= 4_096)).toBe(true);
+  });
+
   it("renders Codex fenced code blocks with HTML pre tags instead of visible backticks", async () => {
     const client = createMockClient();
 

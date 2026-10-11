@@ -393,6 +393,15 @@ export function markdownToTelegramHtmlChunks(markdown: string, limit = 4096): st
 }
 
 function splitOversizedNode(node: IRNode, limit: number): IRNode[] {
+  if (node.type === "list") {
+    const start = node.start ?? 1;
+    return node.items.flatMap((item, index) => {
+      const itemNode: IRNode = { ...node, start: start + index, items: [item] };
+      if (item.length <= limit) return [itemNode];
+      const prefix = node.ordered ? `${start + index}. ` : "• ";
+      return splitOversizedNode({ type: "text", value: prefix + item }, limit);
+    });
+  }
   if (!("value" in node) || typeof node.value !== "string" || node.value.length <= limit) return [node];
   const values: string[] = [];
   let value = "";
