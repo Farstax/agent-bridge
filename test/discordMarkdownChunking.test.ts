@@ -90,3 +90,41 @@ describe("DiscordClient.sendMessage with the Markdown IR enabled", () => {
     expect(contents.join("\n").match(/row \d+ \*\*literal\*\*/g)).toHaveLength(250);
   });
 });
+
+describe("Discord chunking invariants", () => {
+  it("handles the reviewer's boundary inputs within the limit", () => {
+    const inputs = [
+      `a\n\n${"b".repeat(1985)}\n${"c".repeat(1985)}`,
+      `a\n\n${"b".repeat(1000)}\n${"c".repeat(1000)}\n${"d".repeat(1000)}`,
+      `${"a".repeat(1985)}\n\`\`\`\nx\n${"c".repeat(100)}`,
+      `\`\`\`${"j".repeat(1980)}\nabc\n${"q".repeat(1900)}`,
+      `\`\`\`\`\n${"x\n".repeat(1500)}\`\`\`\n~~~\ninside\n~~~\n\`\`\`\`\ntail`,
+    ];
+    for (const input of inputs) {
+      const chunks = chunkText(input);
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(chunks.length).toBeLessThan(40);
+      for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(LIMIT);
+    }
+  });
+
+  it("keeps every chunk within the limit and preserves content for random Markdown", () => {
+    let seed = 20261011;
+    const random = (): number => {
+      seed = (seed * 1664525 + 1013904223) % 4294967296;
+      return seed / 4294967296;
+    };
+    const atoms = ["word ", "**bold** ", "`code` ", "😀", "\n", "\n\n", "\n```\n", "\n~~~ts\n", "- item ", "1. step ", "x".repeat(300)];
+    for (let round = 0; round < 150; round += 1) {
+      let input = "";
+      const target = 1500 + Math.floor(random() * 9000);
+      while (input.length < target) input += atoms[Math.floor(random() * atoms.length)];
+      const chunks = chunkText(input);
+      for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(LIMIT);
+      const strip = (value: string): string => value.replace(/[\s`~]/g, "").replace(/ts/g, "");
+      const original = strip(input);
+      const rebuilt = strip(chunks.join(""));
+      expect(rebuilt).toBe(original);
+    }
+  });
+});

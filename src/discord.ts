@@ -309,69 +309,96 @@ function truncate(text: string): string {
   return text.length > MAX_DISCORD_MESSAGE_LENGTH ? text.slice(-MAX_DISCORD_MESSAGE_LENGTH) : text;
 }
 
+interface MarkdownFence {
+  closer: string;
+  reopen: string;
+}
+
+const MAX_FENCE_INFO_CHARS = 40;
+
+function openingFence(line: string): MarkdownFence | null {
+  const match = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/.exec(line);
+  if (!match) return null;
+  const [, marker, info] = match;
+  if (marker.startsWith("`") && info.includes("`")) return null;
+  return { closer: marker, reopen: `${marker}${info.trim().slice(0, MAX_FENCE_INFO_CHARS)}` };
+}
+
+function closesFence(line: string, fence: MarkdownFence): boolean {
+  const match = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+  return !!match && match[1][0] === fence.closer[0] && match[1].length >= fence.closer.length;
+}
+
+/**
+ * Splits a Discord message on blank-line and line boundaries so list items and
+ * paragraphs stay whole. A fenced code block that crosses a boundary is closed
+ * at the end of one chunk and reopened at the start of the next. Only a single
+ * line longer than the limit is split by code point.
+ */
 export function chunkText(text: string): string[] {
-  if (text.length <= MAX_DISCORD_MESSAGE_LENGTH) return [text];
   const limit = MAX_DISCORD_MESSAGE_LENGTH;
+  if (text.length <= limit) return [text];
   const chunks: string[] = [];
   let lines: string[] = [];
-  let size = 0;
-  let fence: string | null = null;
+  let length = 0;
+  let fence: MarkdownFence | null = null;
   let lastBlank = -1;
 
-  const closing = (open: string | null): string => (open ? `\n${open.trim().startsWith("~") ? "~~~" : "```"}` : "");
-  const flush = (count: number): void => {
-    const head = lines.slice(0, count);
-    const rest = lines.slice(count);
-    while (head.length && head[head.length - 1] === "") head.pop();
-    if (head.length) chunks.push(head.join("\n") + closing(fence && rest.length === 0 ? fence : null));
-    lines = rest;
-    size = lines.reduce((total, line, index) => total + line.length + (index ? 1 : 0), 0);
-    lastBlank = -1;
+  const measure = (): void => {
+    length = lines.reduce((total, line, index) => total + line.length + (index ? 1 : 0), 0);
   };
-  const push = (line: string): void => {
-    const reserve = fence ? closing(fence).length : 0;
-    if (lines.length && size + 1 + line.length + reserve > limit) {
+  const emit = (count: number, closeFence: boolean): void => {
+    const head = lines.slice(0, count);
+    while (head.length && head[head.length - 1].trim() === "") head.pop();
+    if (head.length) chunks.push(head.join("\n") + (closeFence && fence ? `\n${fence.closer}` : ""));
+  };
+
+  const add = (line: string): void => {
+    const opens = fence ? null : openingFence(line);
+    const reserveFence = fence ?? opens;
+    const reserve = reserveFence ? reserveFence.closer.length + 1 : 0;
+    while (lines.length && length + 1 + line.length + reserve > limit) {
       if (!fence && lastBlank > 0) {
-        flush(lastBlank);
-        while (lines.length && lines[0] === "") lines.shift();
-        size = lines.reduce((total, l, index) => total + l.length + (index ? 1 : 0), 0);
+        emit(lastBlank, false);
+        lines = lines.slice(lastBlank + 1);
+        while (lines.length && lines[0].trim() === "") lines.shift();
       } else {
-        const open = fence;
-        const body = lines.join("\n") + closing(open);
-        chunks.push(body);
-        lines = open ? [open] : [];
-        size = open ? open.length : 0;
-        lastBlank = -1;
+        emit(lines.length, true);
+        lines = fence ? [fence.reopen] : [];
       }
+      lastBlank = -1;
+      measure();
     }
     lines.push(line);
-    size += (lines.length > 1 ? 1 : 0) + line.length;
-    if (!fence && line.trim() === "") lastBlank = lines.length - 1;
+    length += (lines.length > 1 ? 1 : 0) + line.length;
+    if (fence) {
+      if (closesFence(line, fence)) fence = null;
+    } else if (opens) {
+      fence = opens;
+    } else if (line.trim() === "") {
+      lastBlank = lines.length - 1;
+    }
   };
 
   for (const rawLine of text.split("\n")) {
-    const room = fence ? limit - closing(fence).length - fence.length - 1 : limit;
-    const pieces: string[] = [];
-    if (rawLine.length <= room) pieces.push(rawLine);
-    else {
-      const points = Array.from(rawLine);
-      let current = "";
-      for (const point of points) {
-        if (current.length + point.length > room) {
-          pieces.push(current);
-          current = "";
-        }
-        current += point;
-      }
-      if (current) pieces.push(current);
+    const opens = fence ? null : openingFence(rawLine);
+    const line = opens ? `${rawLine.match(/^ {0,3}/)![0]}${opens.reopen}` : rawLine;
+    const active = fence as MarkdownFence | null;
+    const cap = active ? limit - (active.reopen.length + active.closer.length + 2) : limit;
+    if (line.length <= cap) {
+      add(line);
+      continue;
     }
-    for (const piece of pieces) {
-      push(piece);
-      if (pieces.length === 1 && /^\s*(```|~~~)/.test(piece)) {
-        fence = fence ? null : piece.trim();
+    let piece = "";
+    for (const point of Array.from(line)) {
+      if (piece.length + point.length > cap) {
+        add(piece);
+        piece = "";
       }
+      piece += point;
     }
+    if (piece) add(piece);
   }
-  if (lines.length) flush(lines.length);
+  if (lines.length) emit(lines.length, true);
   return chunks;
 }
