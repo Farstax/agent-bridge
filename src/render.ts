@@ -259,8 +259,9 @@ export function renderTelegramEntitiesFromIR(ir: IRNode[]): { text: string; enti
       }
       if (!isLast) push("\n");
     } else if (node.type === "list") {
+      if (length > 0 && !outputParts[outputParts.length - 1]?.endsWith("\n")) push("\n");
       node.items.forEach((item, idx) => {
-        push(node.ordered ? `${idx + 1}. ` : `- `);
+        push(node.ordered ? `${(node.start ?? 1) + idx}. ` : `- `);
         pushSpans(item);
         if (idx < node.items.length - 1) push("\n");
       });

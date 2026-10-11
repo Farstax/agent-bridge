@@ -599,6 +599,48 @@ describe("sendTelegramMessage rendering", () => {
     }));
   });
 
+  it("keeps loose ordered-list numbering when it crosses Telegram messages", async () => {
+    const client = createMockClient();
+    const text = Array.from({ length: 12 }, (_, index) => `${index + 1}. **Step ${index + 1}** ${"detail ".repeat(90)}`).join("\n\n");
+
+    await sendTelegramMessage({ client, kind: "codex", chatId: 123, body: { text } });
+
+    const payloads = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body.text as string);
+    expect(payloads.length).toBeGreaterThan(1);
+    expect(payloads.join("\n")).toContain("1. <b>Step 1</b>");
+    expect(payloads.join("\n")).toContain("12. <b>Step 12</b>");
+    expect(payloads.every((payload: string) => !payload.includes("<br>"))).toBe(true);
+  });
+
+  it("preserves non-1 starts and nested list formatting without unsupported HTML", async () => {
+    const client = createMockClient();
+    await sendTelegramMessage({
+      client,
+      kind: "codex",
+      chatId: 123,
+      body: { text: "5. Parent\n   - child **bold**\n6. Next" },
+    });
+
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      text: "5. Parent\n• child <b>bold</b>\n6. Next",
+    }));
+  });
+
+  it("escapes unsafe links and splits a long escaped text node into valid payloads", async () => {
+    const client = createMockClient();
+    await sendTelegramMessage({
+      client,
+      kind: "codex",
+      chatId: 123,
+      body: { text: `[unsafe](javascript:alert(1))\n${"<🚀".repeat(3_000)}` },
+    });
+
+    const payloads = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body.text as string);
+    expect(payloads.length).toBeGreaterThan(1);
+    expect(payloads.every((payload: string) => !payload.includes('href="javascript:'))).toBe(true);
+    expect(payloads.every((payload: string) => payload.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length <= 4_096)).toBe(true);
+  });
+
   it("renders Codex fenced code blocks with HTML pre tags instead of visible backticks", async () => {
     const client = createMockClient();
 

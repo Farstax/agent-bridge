@@ -1,4 +1,4 @@
-import { splitTelegramText, toTelegramEntitiesText } from "./render.js";
+import { toTelegramEntitiesText } from "./render.js";
 import { toUserMessage, CliTimeoutError } from "./cli.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import type { CliResult } from "./types.js";
@@ -12,7 +12,7 @@ import {
   documentFallbackEnabled,
   routeNativeLayout,
 } from "./nativeLayout.js";
-import { parseMarkdownToIR, renderMarkerString, TELEGRAM_HTML_MARKERS, markdownTableToRichHtml } from "./markdownIR.js";
+import { parseMarkdownToIR, renderMarkerString, TELEGRAM_HTML_MARKERS, markdownTableToRichHtml, markdownToTelegramHtmlChunks } from "./markdownIR.js";
 
 const MAX_TELEGRAM_TEXT = 4096;
 const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
@@ -145,7 +145,7 @@ async function sendEntityMessages({
   chatId: number | string;
   body: any;
 }): Promise<number | null> {
-  const chunks = splitTelegramText(String(body.text || ""));
+  const chunks = markdownToTelegramHtmlChunks(String(body.text || ""));
   const { text: _ignored, ...rest } = body;
   let firstMessageId: number | null = null;
 
@@ -158,7 +158,7 @@ async function sendEntityMessages({
     };
 
     if (i > 0) delete chunkBody.reply_markup;
-    chunkBody.text = renderTelegramHtml(chunkText);
+    chunkBody.text = chunkText;
     chunkBody.parse_mode = "HTML";
     let response: any;
     try {
