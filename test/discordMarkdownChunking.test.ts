@@ -128,3 +128,94 @@ describe("Discord chunking invariants", () => {
     }
   });
 });
+
+describe("Discord rate limits", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("waits out HTTP 429 and delivers every chunk once and in order", async () => {
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    let posts = 0;
+    const fetchMock = vi.fn(async (_url: string, init: { body: string }) => {
+      posts += 1;
+      // Reproduce the production failure: the 7th rapid post is rate limited.
+      if (posts === 7 || posts === 8) {
+        return { ok: false, status: 429, headers: new Headers(), json: async () => ({ retry_after: 0.4 }), text: async () => "" };
+      }
+      sent.push(JSON.parse(init.body).content as string);
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: String(posts) }), text: async () => "{}" };
+    });
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const pending = client.sendMessage({ channel_id: "c", text: numberedList(120) });
+    await vi.runAllTimersAsync();
+    await pending;
+    const numbers = sent.flatMap((c) => [...c.matchAll(/^(\d+)\. Item/gm)].map((m) => Number(m[1])));
+    expect(numbers).toEqual(Array.from({ length: 120 }, (_, i) => i + 1));
+    expect(sent.length).toBe(chunkText(numberedList(120)).length);
+  });
+
+  it("surfaces the failure with finalChunksDelivered when 429 persists", async () => {
+    vi.useFakeTimers();
+    let posts = 0;
+    const fetchMock = vi.fn(async () => {
+      posts += 1;
+      if (posts >= 3) return { ok: false, status: 429, headers: new Headers(), json: async () => ({ retry_after: 0.1 }), text: async () => "" };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: "1" }), text: async () => "{}" };
+    });
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const pending = client.sendMessage({ channel_id: "c", text: numberedList(120) }).catch((e) => e);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+    expect(error.status).toBe(429);
+    expect(error.finalChunksDelivered).toBe(2);
+  });
+});
+
+describe("Discord rate limit boundaries", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const limited = (body: unknown, headers: Record<string, string> = {}) => ({
+    ok: false,
+    status: 429,
+    headers: new Headers(headers),
+    json: async () => {
+      if (body === undefined) throw new SyntaxError("not json");
+      return body;
+    },
+    text: async () => "",
+  });
+  const accepted = { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: "1" }), text: async () => "{}" };
+
+  it("waits one second when a 429 carries no retry hint", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValueOnce(limited(undefined)).mockResolvedValue(accepted);
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const pending = client.sendMessage({ channel_id: "c", text: "hello" });
+    await vi.advanceTimersByTimeAsync(900);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(300);
+    await pending;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry when Discord asks for a wait longer than the cap", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(limited({ retry_after: 3600, global: true }));
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const error = await client.sendMessage({ channel_id: "c", text: "hello" }).catch((e) => e);
+    expect(error.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry typing indicators", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(limited({ retry_after: 0.1 }));
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    await client.sendChatAction({ channel_id: "c" }).catch(() => undefined);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
