@@ -1043,6 +1043,25 @@ describe("sendTelegramMessage table rendering", () => {
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("counts implicit paragraphs around a table before rich delivery", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    // The table itself, header row, and 498 body rows reach 500. The prose on
+    // both sides becomes two rich paragraph blocks, so this must pre-fallback.
+    const rows = Array.from({ length: 498 }, (_, index) => `| ${index} | value-${index} |`).join("\n");
+    const text = `Before the table.\n\n| Number | Value |\n|---|---|\n${rows}\n\nAfter the table.`;
+
+    await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text } });
+
+    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    const delivered = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body.text as string).join("\n");
+    expect(delivered).toContain("Before the table.");
+    expect(delivered).toContain("After the table.");
+    expect(delivered).toContain("<b>Number</b> 497");
+  });
+
   it("uses rich delivery at 16 nesting levels and falls back above it", async () => {
     const client = {
       ...createMockClient(),

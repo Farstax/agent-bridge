@@ -473,20 +473,45 @@ export function isTelegramRichHtmlWithinLimits(html: string): boolean {
 
   let blocks = 0;
   let depth = 0;
+  let richBlockDepth = 0;
   let maxDepth = 0;
+  let inImplicitParagraph = false;
   const tags = /<\/?([a-z][\w-]*)(?:\s[^>]*)?>/gi;
+  let cursor = 0;
   for (const match of html.matchAll(tags)) {
+    const text = html.slice(cursor, match.index);
+    if (/\S/.test(text) && richBlockDepth === 0) {
+      if (!inImplicitParagraph) blocks += 1;
+      inImplicitParagraph = true;
+      // Telegram wraps top-level inline content in a paragraph block.
+      maxDepth = Math.max(maxDepth, depth + 1);
+    }
     const raw = match[0]!;
     const tag = match[1]!.toLowerCase();
     if (raw.startsWith("</")) {
+      if (RICH_BLOCK_TAGS.has(tag)) {
+        richBlockDepth = Math.max(0, richBlockDepth - 1);
+        inImplicitParagraph = false;
+      }
       if (!RICH_VOID_TAGS.has(tag)) depth = Math.max(0, depth - 1);
+      cursor = match.index! + raw.length;
       continue;
     }
-    if (RICH_BLOCK_TAGS.has(tag)) blocks += 1;
+    if (RICH_BLOCK_TAGS.has(tag)) {
+      blocks += 1;
+      richBlockDepth += 1;
+      inImplicitParagraph = false;
+    }
     if (!RICH_VOID_TAGS.has(tag)) {
       depth += 1;
       maxDepth = Math.max(maxDepth, depth);
     }
+    cursor = match.index! + raw.length;
+  }
+  const trailingText = html.slice(cursor);
+  if (/\S/.test(trailingText) && richBlockDepth === 0) {
+    if (!inImplicitParagraph) blocks += 1;
+    maxDepth = Math.max(maxDepth, depth + 1);
   }
   return blocks <= MAX_TELEGRAM_RICH_BLOCKS && maxDepth <= MAX_TELEGRAM_RICH_NESTING;
 }
