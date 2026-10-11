@@ -31,7 +31,7 @@ const bridgeCommands = new Set(["/start", "/reset", "/models", "/effort", "/queu
 export const START_PAYLOAD_MAX_LENGTH = 64;
 export const START_PAYLOAD_PATTERN = /^[a-z0-9-]+$/;
 
-function normalizeCommand(text: string): string {
+export function normalizeCommand(text: string): string {
   const [command] = String(text || "").trim().toLowerCase().split(/\s+/, 1);
   return command.replace(/@\S+$/, "");
 }

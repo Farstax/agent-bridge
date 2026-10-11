@@ -14,6 +14,7 @@ import {
   readScratch,
   writeScratch,
 } from "../src/scratchpad.js";
+import { SCRATCHPAD_GUIDANCE } from "../src/promptWrapping.js";
 import { runAgentBridgeScratch } from "../scripts/agent-bridge-scratch.js";
 
 const S = "telegram:interactive";
@@ -144,8 +145,29 @@ describe("conversation scratchpad (#972)", () => {
     expect(readScratch(db.raw, id())).toBeNull();
     expect(readScratch(db.raw, id("200"))?.text).toBe("other notes");
     // A helper that read revision 1 before the reset cannot resurrect old state.
-    expect(() => writeScratch(db.raw, id(), a.fence, 1, "zombie")).toThrow(ScratchConflictError);
-    expect(writeScratch(db.raw, id(), a.fence, 2, "fresh start").revision).toBe(3);
+    expect(() => writeScratch(db.raw, id(), a.fence, 1, "zombie")).toThrow(ScratchFenceError);
+    // Nor can it after re-reading the new revision: reset revoked its lane generation.
+    expect(() => writeScratch(db.raw, id(), a.fence, 2, "zombie")).toThrow(ScratchFenceError);
+    expect(() => clearScratch(db.raw, id(), a.fence, 2)).toThrow(ScratchFenceError);
+    expect(readScratch(db.raw, id())).toBeNull();
+    // A Run admitted after the reset writes normally.
+    db.unlock(a.lane);
+    const b = startRun();
+    expect(writeScratch(db.raw, id(), b.fence, 2, "fresh start").revision).toBe(3);
+    expect(() => writeScratch(db.raw, id(), a.fence, 3, "zombie")).toThrow(ScratchFenceError);
+  });
+
+  it("/reset of an empty scratchpad still advances the revision and revokes the running writer", () => {
+    const a = startRun();
+    handleCommand("codex", "/reset", { db, chatId: CHAT, surfaceIdentity: S, config: { bots: {} } as any });
+    // A helper that read revision 0 before the reset cannot create notes afterwards.
+    expect(() => writeScratch(db.raw, id(), a.fence, 0, "zombie")).toThrow(ScratchFenceError);
+    expect(() => writeScratch(db.raw, id(), a.fence, 1, "zombie")).toThrow(ScratchFenceError);
+    expect(readScratch(db.raw, id())).toBeNull();
+    db.unlock(a.lane);
+    const b = startRun();
+    expect(() => writeScratch(db.raw, id(), b.fence, 0, "stale revision")).toThrow(ScratchConflictError);
+    expect(writeScratch(db.raw, id(), b.fence, 1, "fresh start").revision).toBe(2);
   });
 
   describe("helper command", () => {
@@ -189,15 +211,48 @@ describe("conversation scratchpad (#972)", () => {
       return (e as any)._buildPromptForCli(CHAT, "continue", mode, null, runId, e["kind"], 100, undefined, lane);
     }
 
-    it("injects nothing when empty but still exposes the helper", async () => {
+    it("advertises the helper commands when empty, on fresh and resumed Runs", async () => {
       const a = startRun();
-      const built = await build(engine("claude"), "fresh", a.lane, a.runId);
-      expect(built.prompt).not.toContain("working scratch");
-      expect(built.prompt).not.toContain("[Agent Bridge scratchpad]");
-      expect(built.contextEnv.AGENT_BRIDGE_SCRATCH_COMMAND).toMatch(/bin\/agent-bridge-scratch$/);
-      expect(built.contextEnv.AGENT_BRIDGE_LOCK_ACQUISITION_ID).toBe(a.lane.acquisitionId);
-      expect(built.contextEnv.AGENT_BRIDGE_LOCK_SERVICE_ID).toBe(a.lane.serviceId);
-      expect(built.contextEnv.AGENT_BRIDGE_LOCK_RUN_ID).toBe(a.lane.runId);
+      for (const mode of ["fresh", "resume"] as const) {
+        const built = await build(engine("claude"), mode, a.lane, a.runId);
+        expect(built.prompt).not.toContain("working scratch");
+        expect(built.prompt.match(/^\[Agent Bridge scratchpad\]$/gm)).toHaveLength(1);
+        expect(built.prompt).toContain('"$AGENT_BRIDGE_SCRATCH_COMMAND" read');
+        expect(built.prompt).toContain('"$AGENT_BRIDGE_SCRATCH_COMMAND" write --if-revision <n>');
+        expect(built.prompt).toContain('"$AGENT_BRIDGE_SCRATCH_COMMAND" clear --if-revision <n>');
+        expect(built.contextEnv.AGENT_BRIDGE_SCRATCH_COMMAND).toMatch(/bin\/agent-bridge-scratch$/);
+        expect(built.contextEnv.AGENT_BRIDGE_LOCK_ACQUISITION_ID).toBe(a.lane.acquisitionId);
+        expect(built.contextEnv.AGENT_BRIDGE_LOCK_SERVICE_ID).toBe(a.lane.serviceId);
+        expect(built.contextEnv.AGENT_BRIDGE_LOCK_RUN_ID).toBe(a.lane.runId);
+      }
+    });
+
+    it("exposes neither the helper nor its signpost without a lane handle (read-only verification turns)", async () => {
+      const a = startRun();
+      writeScratch(db.raw, id(), a.fence, 0, "notes");
+      const built = await build(engine("claude"), "resume", undefined, a.runId);
+      expect(built.prompt).not.toContain("AGENT_BRIDGE_SCRATCH_COMMAND");
+      expect(built.contextEnv?.AGENT_BRIDGE_SCRATCH_COMMAND).toBeUndefined();
+    });
+
+    it("gives autonomous Runs the usage guidance that the execution contract carries elsewhere", async () => {
+      const a = startRun();
+      const auto = new BridgeEngine(
+        {
+          surfaceIdentity: S, kind: "autonomous", executionKind: "claude", botConfig: { command: "claude", modelPreference: [] }, allowedUserIds: new Set(["42"]),
+          executionMode: "safe", pollIntervalMs: 1000, workspaceContext: null, fullConfig: { dbPath } as any,
+        } as any,
+        db,
+        {} as any,
+      );
+      const fresh = await (auto as any)._buildPromptForCli(CHAT, "continue", "fresh", null, a.runId, "claude", 100, undefined, a.lane);
+      expect(fresh.prompt).toContain(SCRATCHPAD_GUIDANCE);
+      expect(fresh.prompt).toContain('"$AGENT_BRIDGE_SCRATCH_COMMAND" write --if-revision <n>');
+      const resumed = await (auto as any)._buildPromptForCli(CHAT, "continue", "resume", null, a.runId, "claude", 100, undefined, a.lane);
+      expect(resumed.prompt).not.toContain(SCRATCHPAD_GUIDANCE);
+      // Interactive Runs get the guidance from the execution contract, not twice.
+      const interactive = await build(engine("claude"), "fresh", a.lane, a.runId);
+      expect(interactive.prompt).not.toContain(SCRATCHPAD_GUIDANCE);
     });
 
     it("injects the full notes once on a fresh session and only the signpost on resumed Runs", async () => {
@@ -209,8 +264,11 @@ describe("conversation scratchpad (#972)", () => {
       expect(fresh.prompt).toContain("Revision 1");
       expect(fresh.prompt.match(/^\[End scratch\]$/gm)).toHaveLength(1);
 
+      expect(fresh.prompt).toContain('"$AGENT_BRIDGE_SCRATCH_COMMAND" write --if-revision <n>');
+
       const resumed = await build(engine("claude"), "resume", a.lane, a.runId);
       expect(resumed.prompt).toContain('"$AGENT_BRIDGE_SCRATCH_COMMAND" read');
+      expect(resumed.prompt).toContain('"$AGENT_BRIDGE_SCRATCH_COMMAND" write --if-revision <n>');
       expect(resumed.prompt).not.toContain("SECRET-PLAN-MARKER");
       // The same signpost is repeated on every resumed Run.
       const again = await build(engine("codex"), "resume", a.lane, a.runId);

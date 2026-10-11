@@ -18,7 +18,7 @@ export function targetTelegramAbortUpdate(
   const rawText = message?.text?.trim();
   if (!message || !rawText) return update;
 
-  const match = /^\/(stop|cancel)@([a-z0-9_]+)$/i.exec(rawText);
+  const match = /^\/(stop|cancel|reset)@([a-z0-9_]+)$/i.exec(rawText);
   if (!match) return update;
 
   const currentBot = botUsername?.trim().toLowerCase();

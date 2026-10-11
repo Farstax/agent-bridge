@@ -241,8 +241,11 @@ describe("unified Telegram callback ingress", () => {
       ["/stop@SomeOtherBot", "crawlerinteractivebot", 12],
       ["/cancel@SomeOtherBot", "crawlerinteractivebot", 13],
       ["/stop@CrawlerInteractiveBot", undefined, 14],
+      // #972: /reset aborts the active Run, so another bot's reset must not reach this one.
+      ["/reset@OtherBot", "crawlerinteractivebot", 15],
     ] as const) {
       expect(targetTelegramAbortUpdate(message(text, updateId), botUsername)).toBeNull();
     }
+    expect(targetTelegramAbortUpdate(message("/reset@CrawlerInteractiveBot", 16), "crawlerinteractivebot")?.message?.text).toBe("/reset");
   });
 });
