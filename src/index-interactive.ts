@@ -314,6 +314,9 @@ const autonomyEngines = autonomyDb && autonomyDir ? Object.fromEntries(
     soulContext: autonomySoulContext,
     workingDir: join(autonomyDir, "work"),
     workspaceContext: autonomyWorkspaceContext,
+    // Keep the shared scratch helper scoped to the autonomy database, not the
+    // interactive service database.
+    fullConfig: { ...config, dbPath: autonomyDbPath! },
   }, autonomyDb, client)]),
 ) as Record<CliKind, BridgeEngine> : null;
 const autonomyController = autonomyDb && autonomyDir && autonomyEngines ? new AutonomyController({

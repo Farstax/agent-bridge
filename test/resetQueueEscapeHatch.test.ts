@@ -97,7 +97,7 @@ describe("/reset queue escape hatch", () => {
       expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex")).toBeNull();
       expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "200" }, "codex")).toBe("other-session");
       expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-        text: "codex session reset. Pending work and conversation history cleared.",
+        text: "codex session reset. Pending work, working notes and conversation history cleared.",
       }));
     } finally {
       db.close();

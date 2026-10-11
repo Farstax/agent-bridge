@@ -908,6 +908,7 @@ describe("runAutonomousGoalOperatorStandalone", () => {
     try {
       const engine = buildStandaloneEngine(db, "claude");
       expect((engine as any).opts.soulContext).toContain("Do smart things.");
+      expect((engine as any).opts.fullConfig.dbPath).toBe(dbPath);
     } finally {
       if (previous.AGENT_BRIDGE_SOUL_PATH === undefined) delete process.env.AGENT_BRIDGE_SOUL_PATH; else process.env.AGENT_BRIDGE_SOUL_PATH = previous.AGENT_BRIDGE_SOUL_PATH;
       if (previous.AGENT_BRIDGE_SOUL_MODE === undefined) delete process.env.AGENT_BRIDGE_SOUL_MODE; else process.env.AGENT_BRIDGE_SOUL_MODE = previous.AGENT_BRIDGE_SOUL_MODE;

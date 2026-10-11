@@ -6,6 +6,7 @@
  * LOGIC: Normalizes user commands and routes built-ins to action structures.
  */
 
+import { resetScratch } from "./scratchpad.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { BridgeConfig, BotKind, RouteableBotKind } from "./types.js";
@@ -225,7 +226,8 @@ export function handleCommand(
     cancelPendingRunContinuationsForChat(db, surfaceIdentity, chatId, "session reset by user");
     persistProviderSession(db, { surfaceIdentity, chatKey: chatId }, kind, null);
     db.clearConvHistory(chatId, surfaceIdentity);
-    return { kind: "message", text: `${kind} session reset. Pending work and conversation history cleared.` };
+    resetScratch(db.raw, { surfaceIdentity, chatKey: chatId });
+    return { kind: "message", text: `${kind} session reset. Pending work, working notes and conversation history cleared.` };
   }
 
   if (text === "/models") {

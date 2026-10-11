@@ -7,6 +7,7 @@
  * NEIGHBORS: src/index.ts, src/index-health.ts, src/cli.ts, src/db.ts, src/telegram.ts
  */
 
+import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1463,7 +1464,7 @@ export class BridgeEngine {
     return ctx ? `${ctx}${prompt}` : prompt;
   }
 
-  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
+  private _buildContextAccess(chatKey: string, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle): { prompt: string; continuationPrompt: string; env: Record<string, string> } | null {
     const dbPath = this.opts.fullConfig?.dbPath;
     const status = this.db.getConvStatus(chatKey, this.surfaceIdentity);
     const hasContext = !!dbPath && status.turnCount > 0;
@@ -1471,6 +1472,8 @@ export class BridgeEngine {
     const advisorCommandPath = join(process.cwd(), "bin", "agent-bridge-advisor");
     const waitCommandPath = join(process.cwd(), "bin", "agent-bridge-wait");
     const canContinue = Boolean(dbPath && runId && this.kind !== "autonomous");
+    const canScratch = Boolean(dbPath && runId && laneHandle);
+    const scratchCommandPath = join(process.cwd(), "bin", "agent-bridge-scratch");
     const turnKey = `${chatKey}:${randomUUID()}`;
     let advisorCapability: string | null = null;
     if (this.opts.advisorCapabilities) {
@@ -1486,7 +1489,7 @@ export class BridgeEngine {
         console.warn("[advisor] capability unavailable:", error);
       }
     }
-    if (!hasContext && !advisorCapability && !canContinue) return null;
+    if (!hasContext && !advisorCapability && !canContinue && !canScratch) return null;
     const ownerKey = this._conversationOwnerKey();
     const contextPrompt = hasContext ? [
       "[Agent Bridge context]",
@@ -1507,7 +1510,7 @@ export class BridgeEngine {
       prompt: contextPrompt,
       continuationPrompt,
       env: {
-        ...((hasContext || canContinue) ? {
+        ...((hasContext || canContinue || canScratch) ? {
           AGENT_BRIDGE_CONTEXT_DB: dbPath!,
           AGENT_BRIDGE_CHAT_KEY: chatKey,
           AGENT_BRIDGE_SURFACE_IDENTITY: this.surfaceIdentity,
@@ -1516,6 +1519,14 @@ export class BridgeEngine {
         ...(hasContext ? {
           AGENT_BRIDGE_CONTEXT_AVAILABLE: "1",
           AGENT_BRIDGE_CONTEXT_COMMAND: commandPath,
+        } : {}),
+        ...(canScratch ? {
+          AGENT_BRIDGE_SCRATCH_COMMAND: scratchCommandPath,
+          AGENT_BRIDGE_RUN_ID: runId!,
+          AGENT_BRIDGE_PROVIDER: executionKind,
+          AGENT_BRIDGE_LOCK_SERVICE_ID: laneHandle!.serviceId,
+          AGENT_BRIDGE_LOCK_RUN_ID: laneHandle!.runId,
+          AGENT_BRIDGE_LOCK_ACQUISITION_ID: laneHandle!.acquisitionId,
         } : {}),
         ...(canContinue ? {
           AGENT_BRIDGE_WAIT_COMMAND: waitCommandPath,
@@ -1540,11 +1551,11 @@ export class BridgeEngine {
     };
   }
 
-  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
+  private async _buildPromptForCli(chatKey: string, prompt: string, nativeSessionMode: "fresh" | "resume", model: string | null, runId: string | null, executionKind: RouteableBotKind, chatId?: number | string, threadId?: number | string, laneHandle?: ExecutionLaneHandle): Promise<{ prompt: string; contextEnv?: Record<string, string>; soulContext: string | null; includeResponseContract: boolean }> {
     const contextMode = this._contextMode(chatKey, nativeSessionMode);
     const includeFreshContext = contextMode !== "resume";
     const contextPrompt = this._buildRecentContextPrompt(chatKey, prompt, contextMode);
-    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId);
+    const access = this._buildContextAccess(chatKey, runId, executionKind, chatId, threadId, laneHandle);
     const workspacePrompt = this.opts.workspaceContext === undefined
       ? prependWorkspaceContext(contextPrompt, process.env, { includeManagedContext: includeFreshContext })
       : (includeFreshContext && this.opts.workspaceContext
@@ -1556,8 +1567,15 @@ export class BridgeEngine {
     const handoffPrompt = includeFreshContext ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
     const soulContext = includeFreshContext ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: includeFreshContext };
+    // #972: full notes once per fresh native session, a fixed signpost on every resumed Run.
+    const scratch = access.env.AGENT_BRIDGE_SCRATCH_COMMAND
+      ? readScratch(this.db.raw, { surfaceIdentity: this.surfaceIdentity, chatKey })
+      : null;
+    const scratchPrompt = !scratch ? "" : includeFreshContext ? renderFreshScratch(scratch) : SCRATCH_SIGNPOST;
     return {
-      prompt: includeFreshContext ? `${access.prompt}${access.continuationPrompt}${handoffPrompt}` : `${access.continuationPrompt}${handoffPrompt}`,
+      prompt: includeFreshContext
+        ? `${access.prompt}${access.continuationPrompt}${scratchPrompt}${handoffPrompt}`
+        : `${access.continuationPrompt}${scratchPrompt}${handoffPrompt}`,
       contextEnv: access.env,
       soulContext,
       includeResponseContract: includeFreshContext,
@@ -1720,7 +1738,7 @@ export class BridgeEngine {
       attachments,
       outputDir: null,
     }).nativeSessionMode;
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId);
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, laneHandle);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
