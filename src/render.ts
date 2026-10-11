@@ -212,6 +212,38 @@ export function renderTelegramEntitiesFromIR(ir: IRNode[]): { text: string; enti
     flushBuf();
   };
 
+  // List children are already parsed by the Markdown adapter. Keep this small
+  // entity renderer structural instead of reparsing their source strings.
+  const pushInlineNodes = (nodes: IRNode[]) => {
+    for (const child of nodes) {
+      if (child.type === "text") push(child.value);
+      else if (child.type === "bold" || child.type === "italic" || child.type === "strikethrough") {
+        const start = length;
+        if (child.children?.length) pushInlineNodes(child.children);
+        else push(child.value);
+        entities.push({ type: child.type, offset: start, length: length - start });
+      } else if (child.type === "code_inline") {
+        const start = length;
+        push(child.value);
+        entities.push({ type: "code", offset: start, length: child.value.length });
+      } else if (child.type === "link") {
+        const start = length;
+        push(child.text);
+        entities.push({ type: "text_link", offset: start, length: child.text.length, url: child.url });
+      } else if (child.type === "list") {
+        child.items.forEach((item, itemIndex) => {
+          if (length > 0 && !outputParts[outputParts.length - 1]?.endsWith("\n")) push("\n");
+          push(child.ordered ? `${(child.start ?? 1) + itemIndex}. ` : "- ");
+          const grandchildren = child.children[itemIndex];
+          if (grandchildren) pushInlineNodes(grandchildren);
+          else pushSpans(item);
+        });
+      } else {
+        push("value" in child ? child.value : "");
+      }
+    }
+  };
+
   for (let idx = 0; idx < ir.length; idx++) {
     const node = ir[idx];
     const isLast = idx === ir.length - 1;
@@ -222,6 +254,10 @@ export function renderTelegramEntitiesFromIR(ir: IRNode[]): { text: string; enti
       const start = length;
       push(node.value);
       entities.push({ type: "bold", offset: start, length: node.value.length });
+    } else if (node.type === "italic" || node.type === "strikethrough") {
+      const start = length;
+      push(node.value);
+      entities.push({ type: node.type === "italic" ? "italic" : "strikethrough", offset: start, length: node.value.length });
     } else if (node.type === "heading") {
       const start = length;
       push(node.value);
@@ -262,7 +298,9 @@ export function renderTelegramEntitiesFromIR(ir: IRNode[]): { text: string; enti
       if (length > 0 && !outputParts[outputParts.length - 1]?.endsWith("\n")) push("\n");
       node.items.forEach((item, idx) => {
         push(node.ordered ? `${(node.start ?? 1) + idx}. ` : `- `);
-        pushSpans(item);
+        const children = node.children[idx];
+        if (children) pushInlineNodes(children);
+        else pushSpans(item);
         if (idx < node.items.length - 1) push("\n");
       });
       if (!isLast) push("\n");

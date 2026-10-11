@@ -58,39 +58,120 @@ import { marked, type Token, type Tokens } from "marked";
 /** All possible nodes produced by parseMarkdownToIR. */
 export type IRNode =
   | { type: "text"; value: string }
-  | { type: "bold"; value: string }
+  | { type: "bold"; value: string; children?: IRNode[] }
+  | { type: "italic"; value: string; children?: IRNode[] }
+  | { type: "strikethrough"; value: string; children?: IRNode[] }
   | { type: "code_inline"; value: string }
   | { type: "code_block"; value: string; language?: string }
   | { type: "heading"; level: number; value: string }
-  | { type: "table"; headers: string[]; rows: string[][] }
-  | { type: "list"; items: string[]; ordered?: boolean; start?: number }
+  | { type: "table"; headers: string[]; rows: string[][]; headerChildren?: IRNode[][]; rowChildren?: IRNode[][][] }
+  | { type: "list"; items: string[]; children: IRNode[][]; ordered?: boolean; start?: number }
   | { type: "link"; text: string; url: string };
 
 // ── Block parser ──────────────────────────────────────────────────────────────
 
+/** The small parser boundary used by the surface-neutral renderer. */
+export interface MarkdownParser {
+  parse(markdown: string): IRNode[];
+}
+
+/** Marked adapter. Its token types do not leave this module. */
+export class MarkedMarkdownParser implements MarkdownParser {
+  parse(markdown: string): IRNode[] {
+    return mergeAdjacentOrderedLists(blockTokensToIr(marked.lexer(markdown), "\n\n"));
+  }
+}
+
+const productionMarkdownParser: MarkdownParser = new MarkedMarkdownParser();
+
 /** The single production parser boundary. */
 export function parseMarkdownToIR(markdown: string): IRNode[] {
-  return marked.lexer(markdown).flatMap(markedTokenToIr);
+  return productionMarkdownParser.parse(markdown);
 }
 
 function markedTokenToIr(token: Token): IRNode[] {
   switch (token.type) {
     case "heading": return [{ type: "heading", level: token.depth, value: token.text }];
-    case "code": return [{ type: "code_block", value: token.text, language: token.lang?.split(/\s+/, 1)[0] }];
+    case "code": return [{ type: "code_block", value: token.text, language: token.lang?.split(/\s+/, 1)[0] || undefined }];
     case "paragraph": return inlineTokensToIr(token.tokens) || [{ type: "text", value: token.text }];
     case "html": return [{ type: "text", value: token.raw }];
     case "hr": return [{ type: "text", value: "---" }];
-    case "blockquote": return [{ type: "text", value: token.text }];
+    case "blockquote": return quoteNodes(blockTokensToIr((token as Tokens.Blockquote).tokens, "\n\n"));
     case "table": {
       const table = token as Tokens.Table;
-      return [{ type: "table", headers: table.header.map((cell) => cell.text), rows: table.rows.map((row) => row.map((cell) => cell.text)) }];
+      return [{
+        type: "table",
+        headers: table.header.map((cell) => cell.text),
+        rows: table.rows.map((row) => row.map((cell) => cell.text)),
+        headerChildren: table.header.map((cell) => inlineTokensToIr(cell.tokens) ?? [{ type: "text", value: cell.text }]),
+        rowChildren: table.rows.map((row) => row.map((cell) => inlineTokensToIr(cell.tokens) ?? [{ type: "text", value: cell.text }])),
+      }];
     }
     case "list": {
       const list = token as Tokens.List;
-      return [{ type: "list", ordered: list.ordered, start: typeof list.start === "number" ? list.start : undefined, items: list.items.map((item) => item.text) }];
+      return [{
+        type: "list",
+        ordered: list.ordered,
+        start: typeof list.start === "number" ? list.start : undefined,
+        items: list.items.map((item) => taskPrefix(item) + item.text.trimEnd()),
+        children: list.items.map((item) => {
+          const children = blockTokensToIr(item.tokens, "\n");
+          return item.task ? [{ type: "text", value: taskPrefix(item) }, ...children] : children;
+        }),
+      }];
     }
     default: return "text" in token && typeof token.text === "string" ? [{ type: "text", value: token.text }] : [];
   }
+}
+
+/**
+ * Convert sibling block tokens. Marked drops the blank line between two
+ * paragraphs, so the separator is restored here as text; block nodes get their
+ * spacing from renderMarkerString.
+ */
+function blockTokensToIr(tokens: Token[], paragraphSeparator: string): IRNode[] {
+  const nodes: IRNode[] = [];
+  for (const token of tokens) {
+    const group = token.type === "text" && token.tokens
+      ? inlineTokensToIr(token.tokens) ?? [{ type: "text", value: token.text }]
+      : markedTokenToIr(token);
+    if (!group.length) continue;
+    const previous = nodes.at(-1);
+    if (previous && !isBlockNode(previous) && !isBlockNode(group[0]!)) nodes.push({ type: "text", value: paragraphSeparator });
+    nodes.push(...group);
+  }
+  return nodes;
+}
+
+function taskPrefix(item: Tokens.ListItem): string {
+  return item.task ? (item.checked ? "[x] " : "[ ] ") : "";
+}
+
+/** Neither surface path has a quote node; keep the quote marker on every line. */
+function quoteNodes(nodes: IRNode[]): IRNode[] {
+  return [
+    { type: "text", value: "> " },
+    ...nodes.map((node) => node.type === "text" ? { ...node, value: node.value.replace(/\n/g, "\n> ") } : node),
+  ];
+}
+
+/**
+ * Models commonly put blank lines between each `1.` item. Marked correctly
+ * emits separate adjacent lists, but delivery should retain the author's one
+ * logical sequence. A paragraph, heading, or any other block prevents merging.
+ */
+function mergeAdjacentOrderedLists(nodes: IRNode[]): IRNode[] {
+  const merged: IRNode[] = [];
+  for (const node of nodes) {
+    const previous = merged.at(-1);
+    if (node.type === "list" && node.ordered && previous?.type === "list" && previous.ordered) {
+      previous.items.push(...node.items);
+      previous.children.push(...node.children);
+    } else {
+      merged.push(node);
+    }
+  }
+  return merged;
 }
 
 function inlineTokensToIr(tokens: Token[] | undefined): IRNode[] | null {
@@ -98,14 +179,23 @@ function inlineTokensToIr(tokens: Token[] | undefined): IRNode[] | null {
   return tokens.flatMap((token) => {
     switch (token.type) {
       case "text": return token.tokens ? inlineTokensToIr(token.tokens) ?? [{ type: "text", value: token.text }] : [{ type: "text", value: token.text }];
-      case "strong": return [{ type: "bold", value: token.text }];
+      case "strong": return [{ type: "bold", value: token.text, children: nestedInlineChildren(token.tokens, token.text) }];
       case "codespan": return [{ type: "code_inline", value: token.text }];
       case "link": return [{ type: "link", text: token.text, url: token.href }];
-      case "em": return [{ type: "text", value: `*${token.text}*` }];
-      case "del": return [{ type: "text", value: `~~${token.text}~~` }];
+      case "image": return [{ type: "link", text: token.text || token.href, url: token.href }];
+      case "br": return [{ type: "text", value: "\n" }];
+      case "em": return [{ type: "italic", value: token.text, children: nestedInlineChildren(token.tokens, token.text) }];
+      case "del": return [{ type: "strikethrough", value: token.text, children: nestedInlineChildren(token.tokens, token.text) }];
       default: return "text" in token && typeof token.text === "string" ? [{ type: "text", value: token.text }] : [];
     }
   });
+}
+
+function nestedInlineChildren(tokens: Token[] | undefined, text: string): IRNode[] | undefined {
+  const children = inlineTokensToIr(tokens);
+  return children?.every((child) => child.type === "text") && children.map((child) => child.value).join("") === text
+    ? undefined
+    : children ?? undefined;
 }
 
 // ── MarkerTable interface ─────────────────────────────────────────────────────
@@ -119,6 +209,8 @@ function inlineTokensToIr(tokens: Token[] | undefined): IRNode[] | null {
 export type MarkerTable = {
   text: (text: string) => string;
   bold: (text: string) => string;
+  italic: (text: string) => string;
+  strikethrough: (text: string) => string;
   code_inline: (text: string) => string;
   code_block: (text: string, language?: string) => string;
   heading: (text: string, level: number) => string;
@@ -146,12 +238,22 @@ export function renderMarkerString(ir: IRNode[], markers: MarkerTable, blockSepa
   for (let idx = 0; idx < ir.length; idx++) {
     const node = ir[idx];
     const isLast = idx === ir.length - 1;
+    const previous = ir[idx - 1];
+    if (isBlockNode(node) && previous && !isBlockNode(previous)) {
+      parts.push(node.type === "heading" ? blockSeparator : blockSeparator.includes("<br>") ? "<br>" : "\n");
+    }
     switch (node.type) {
       case "text":
         parts.push(markers.text(node.value));
         break;
       case "bold":
-        parts.push(markers.bold(node.value));
+        parts.push(renderInlineNode(node, markers, "bold"));
+        break;
+      case "italic":
+        parts.push(renderInlineNode(node, markers, "italic"));
+        break;
+      case "strikethrough":
+        parts.push(renderInlineNode(node, markers, "strikethrough"));
         break;
       case "link":
         parts.push(markers.link(node.text, node.url));
@@ -168,16 +270,70 @@ export function renderMarkerString(ir: IRNode[], markers: MarkerTable, blockSepa
         if (!isLast) parts.push(blockSeparator);
         break;
       case "table":
-        parts.push(markers.table(node.headers, node.rows));
+        parts.push(renderTable(node, markers));
         if (!isLast) parts.push(blockSeparator);
         break;
       case "list":
-        parts.push(markers.list(node.items, node.ordered, node.start));
+        parts.push(renderList(node, markers, blockSeparator));
         if (!isLast) parts.push(ir[idx + 1]?.type === "list" ? "\n" : blockSeparator);
         break;
     }
   }
   return parts.join("");
+}
+
+function renderInlineNode(
+  node: Extract<IRNode, { type: "bold" | "italic" | "strikethrough" }>,
+  markers: MarkerTable,
+  kind: "bold" | "italic" | "strikethrough",
+): string {
+  if (!node.children?.length) return markers[kind](node.value);
+  const content = renderMarkerString(node.children, markers);
+  if (markers === DISCORD_MARKERS) return kind === "bold" ? `**${content}**` : kind === "italic" ? `*${content}*` : `~~${content}~~`;
+  if (markers === TELEGRAM_HTML_MARKERS || markers === TELEGRAM_RICH_HTML_MARKERS) {
+    const tag = kind === "bold" ? "b" : kind === "italic" ? "i" : "s";
+    return `<${tag}>${content}</${tag}>`;
+  }
+  return markers[kind](content);
+}
+
+function isBlockNode(node: IRNode): boolean {
+  return node.type === "code_block" || node.type === "heading" || node.type === "table" || node.type === "list";
+}
+
+function renderList(node: Extract<IRNode, { type: "list" }>, markers: MarkerTable, blockSeparator: string): string {
+  const lineSeparator = blockSeparator.includes("<br>") ? "<br>" : "\n";
+  return node.items.map((item, index) => {
+    const prefix = node.ordered ? `${(node.start ?? 1) + index}. ` : markers === DISCORD_MARKERS ? "- " : "• ";
+    const children = node.children[index];
+    const body = children?.length
+      ? renderMarkerString(children, markers, lineSeparator)
+      : markers.text(item);
+    return `${prefix}${body}`;
+  }).join(lineSeparator);
+}
+
+function renderTable(node: Extract<IRNode, { type: "table" }>, markers: MarkerTable): string {
+  if (!node.headerChildren || !node.rowChildren) return markers.table(node.headers, node.rows);
+  const renderCell = (children: IRNode[]) => renderMarkerString(children, markers);
+  if (markers === TELEGRAM_HTML_MARKERS) {
+    return node.rows.map((row, rowIndex) => row.map((cell, cellIndex) => {
+      const label = `<b>${escapeHtml(node.headers[cellIndex] ?? `Field ${cellIndex + 1}`)}</b>`;
+      const value = renderCell(node.rowChildren![rowIndex]?.[cellIndex] ?? [{ type: "text", value: cell }]);
+      return `${cellIndex === 0 ? "" : "• "}${label} ${value}`;
+    }).join("\n")).join("\n");
+  }
+  if (markers === TELEGRAM_RICH_HTML_MARKERS) {
+    return `<table bordered striped><thead><tr>${node.headers.map((header, index) => `<th>${renderCell(node.headerChildren![index] ?? [{ type: "text", value: header }])}</th>`).join("")}</tr></thead><tbody>${node.rows.map((row, rowIndex) => `<tr>${row.map((cell, cellIndex) => `<td>${renderCell(node.rowChildren![rowIndex]?.[cellIndex] ?? [{ type: "text", value: cell }])}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  }
+  if (markers === DISCORD_MARKERS) {
+    return node.rows.map((row, rowIndex) => row.map((cell, cellIndex) => {
+      const label = `**${node.headers[cellIndex] ?? `Field ${cellIndex + 1}`}:**`;
+      const value = renderCell(node.rowChildren![rowIndex]?.[cellIndex] ?? [{ type: "text", value: cell }]);
+      return `${cellIndex === 0 ? "" : "- "}${label} ${value}`;
+    }).join("\n")).join("\n");
+  }
+  return markers.table(node.headers, node.rows);
 }
 
 // ── Table card fallback ───────────────────────────────────────────────────────
@@ -212,6 +368,8 @@ function renderTableAsCards(
 export const DISCORD_MARKERS: MarkerTable = {
   text: (text) => text,
   bold: (text) => `**${text}**`,
+  italic: (text) => `*${text}*`,
+  strikethrough: (text) => `~~${text}~~`,
   code_inline: (text) => `\`${text}\``,
   code_block: (text, language) => "```" + (language ?? "") + "\n" + text + "\n```",
   heading: (text, level) => `${"#".repeat(level)} ${text}`,
@@ -240,79 +398,10 @@ function safeHref(url: string): string | null {
   return /^(https?:\/\/|tg:\/\/|mailto:|\/|#)/i.test(value) ? value : null;
 }
 
-/**
- * Recursively render inline markdown within a single list item (or table cell).
- *
- * This is a reduced-scope version of renderMarkerString: it re-parses the item
- * string through parseMarkdownToIR and applies only the inline markers. Block
- * nodes that appear inside item text (e.g. sub-bullets indented with spaces)
- * are handled gracefully: headings → bold, code_blocks → code_inline, nested
- * lists → recursively rendered and joined with lineSep.
- *
- * lineSep controls how multi-line content within an item is joined:
- *   "\n"   for parse_mode:HTML (TELEGRAM_HTML_MARKERS path)
- *   "<br>" for rich_message HTML (renderTelegramInlineHtml, TELEGRAM_RICH_HTML_MARKERS path)
- */
-function renderInlineMarkerText(
-  text: string,
-  markers: Pick<MarkerTable, "text" | "bold" | "code_inline" | "link">,
-  lineSep = "\n",
-): string {
-  const parts: string[] = [];
-  for (const node of parseMarkdownToIR(text)) {
-    if (node.type === "bold") {
-      parts.push(markers.bold(node.value));
-    } else if (node.type === "code_inline") {
-      parts.push(markers.code_inline(node.value));
-    } else if (node.type === "link") {
-      parts.push(markers.link(node.text, node.url));
-    } else if (node.type === "text") {
-      parts.push(markers.text(node.value));
-    } else if (node.type === "code_block") {
-      // Degrade to inline code inside a list item — block fences don't render well inline.
-      parts.push(markers.code_inline(node.value));
-    } else if (node.type === "heading") {
-      parts.push(markers.bold(node.value));
-    } else if (node.type === "list") {
-      const rendered = node.items.map((item, index) => {
-        const prefix = node.ordered ? `${(node.start ?? 1) + index}. ` : "• ";
-        return `${prefix}${renderInlineMarkerText(item, markers, lineSep)}`;
-      }).join(lineSep);
-      parts.push(parts.length ? `${lineSep}${rendered}` : rendered);
-    } else if (node.type === "table") {
-      // Flatten table cells to space-separated text inside a list item.
-      parts.push(node.rows.flat().map((cell) => renderInlineMarkerText(cell, markers, lineSep)).join(" "));
-    }
-  }
-  return parts.join("");
-}
-
-// ── Telegram rich HTML inline renderer ───────────────────────────────────────
-
-/**
- * Inline renderer for TELEGRAM_RICH_HTML_MARKERS list items.
- *
- * The rich_message HTML path sends a real HTML document — \n collapses to
- * whitespace. All line breaks within inline content must be <br>, hence the
- * explicit text conversion and lineSep="<br>".
- */
-const renderTelegramInlineHtml = (text: string) => renderInlineMarkerText(text, {
-  text: (value) => escapeHtml(value).replace(/\n\n/g, "<br><br>").replace(/\n/g, "<br>"),
-  bold: (value) => `<b>${escapeHtml(value)}</b>`,
-  code_inline: (value) => `<code>${escapeHtml(value)}</code>`,
-  link: (linkText, url) => safeHref(url)
-    ? `<a href="${escapeHtml(safeHref(url)!)}">${escapeHtml(linkText)}</a>`
-    : `${escapeHtml(linkText)} (${escapeHtml(url)})`,
-}, "<br>");
-
-const renderTelegramInlineText = (text: string) => renderInlineMarkerText(text, {
-  text: escapeHtml,
-  bold: (value) => `<b>${escapeHtml(value)}</b>`,
-  code_inline: (value) => `<code>${escapeHtml(value)}</code>`,
-  link: (linkText, url) => safeHref(url)
-    ? `<a href="${escapeHtml(safeHref(url)!)}">${escapeHtml(linkText)}</a>`
-    : `${escapeHtml(linkText)} (${escapeHtml(url)})`,
-}, "\n");
+// Table-cell strings are escaped at the renderer boundary. List content never
+// returns through this helper: it retains the parsed child blocks above.
+const renderTelegramInlineHtml = (text: string) =>
+  escapeHtml(text).replace(/\n\n/g, "<br><br>").replace(/\n/g, "<br>");
 
 // ── Telegram parse_mode:HTML markers (Path A) ─────────────────────────────────
 
@@ -329,6 +418,8 @@ const renderTelegramInlineText = (text: string) => renderInlineMarkerText(text, 
 export const TELEGRAM_HTML_MARKERS: MarkerTable = {
   text: (text) => escapeHtml(text),
   bold: (text) => `<b>${escapeHtml(text)}</b>`,
+  italic: (text) => `<i>${escapeHtml(text)}</i>`,
+  strikethrough: (text) => `<s>${escapeHtml(text)}</s>`,
   code_inline: (text) => `<code>${escapeHtml(text)}</code>`,
   code_block: (text, language) => language
     ? `<pre language="${escapeHtml(language)}">${escapeHtml(text)}</pre>`
@@ -341,8 +432,8 @@ export const TELEGRAM_HTML_MARKERS: MarkerTable = {
   // List items joined with \n — Telegram's HTML parser renders \n as a line break.
   list: (items, ordered, start = 1) =>
     ordered
-      ? items.map((item, i) => `${start + i}. ${renderTelegramInlineText(item)}`).join("\n")
-      : items.map((item) => `• ${renderTelegramInlineText(item)}`).join("\n"),
+      ? items.map((item, i) => `${start + i}. ${escapeHtml(item)}`).join("\n")
+      : items.map((item) => `• ${escapeHtml(item)}`).join("\n"),
   // Tables unsupported in parse_mode:HTML — degrade to card-style stacked lines.
   table: (headers, rows) =>
     renderTableAsCards(headers, rows, (label) => `<b>${escapeHtml(label)}</b>`, "• ", renderTelegramInlineHtml),
@@ -361,59 +452,77 @@ export function markdownTableToRichHtml(markdown: string): string {
   return renderMarkerString(parseMarkdownToIR(markdown), TELEGRAM_RICH_HTML_MARKERS, "<br><br>");
 }
 
+/** Telegram applies its message limit after entity parsing: tags do not count and an entity is one character. */
+function telegramVisibleLength(html: string): number {
+  return html.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length;
+}
+
+function telegramNodeLength(node: IRNode): number {
+  return telegramVisibleLength(renderMarkerString([node], TELEGRAM_HTML_MARKERS, "\n\n"));
+}
+
 /** Render a document before chunking so list starts and block boundaries survive delivery. */
 export function markdownToTelegramHtmlChunks(markdown: string, limit = 4096): string[] {
   const nodes = parseMarkdownToIR(markdown).flatMap((node) => splitOversizedNode(node, limit));
   const chunks: string[] = [];
   let current: IRNode[] = [];
-  const renderedLength = (value: string) => value
-    .replace(/<[^>]+>/g, "")
-    .replace(/&(?:amp|lt|gt|quot);/g, "x").length;
   const flush = () => {
-    if (current.length) chunks.push(renderMarkerString(current, TELEGRAM_HTML_MARKERS, "\n\n"));
+    // A chunk boundary replaces the paragraph separator next to it.
+    const rendered = renderMarkerString(current, TELEGRAM_HTML_MARKERS, "\n\n").trim();
+    if (rendered) chunks.push(rendered);
     current = [];
   };
   for (const node of nodes) {
-    if (node.type === "list") {
-      const start = node.start ?? 1;
-      for (let index = 0; index < node.items.length; index += 1) {
-        const itemNode: IRNode = { ...node, start: start + index, items: [node.items[index]!] };
-        const candidate = renderMarkerString([...current, itemNode], TELEGRAM_HTML_MARKERS, "\n\n");
-        if (current.length && renderedLength(candidate) > limit) flush();
-        current.push(itemNode);
-      }
-      continue;
-    }
     const candidate = renderMarkerString([...current, node], TELEGRAM_HTML_MARKERS, "\n\n");
-    if (current.length && renderedLength(candidate) > limit) flush();
+    if (current.length && telegramVisibleLength(candidate) > limit) flush();
     current.push(node);
   }
   flush();
   return chunks.length ? chunks : [""];
 }
 
+/** Break a node that cannot fit one message into nodes that each fit. Lists always split per item so counters continue. */
 function splitOversizedNode(node: IRNode, limit: number): IRNode[] {
   if (node.type === "list") {
     const start = node.start ?? 1;
     return node.items.flatMap((item, index) => {
-      const itemNode: IRNode = { ...node, start: start + index, items: [item] };
-      if (item.length <= limit) return [itemNode];
+      const itemNode: IRNode = { ...node, start: start + index, items: [item], children: [node.children[index] ?? []] };
+      if (telegramNodeLength(itemNode) <= limit) return [itemNode];
       const prefix = node.ordered ? `${start + index}. ` : "• ";
       return splitOversizedNode({ type: "text", value: prefix + item }, limit);
     });
   }
+  if (node.type === "table") {
+    if (telegramNodeLength(node) <= limit) return [node];
+    const parts: IRNode[] = [];
+    let from = 0;
+    const slice = (to: number): IRNode => ({ ...node, rows: node.rows.slice(from, to), rowChildren: node.rowChildren?.slice(from, to) });
+    for (let to = 1; to <= node.rows.length; to += 1) {
+      if (to - from > 1 && telegramNodeLength(slice(to)) > limit) {
+        parts.push(slice(to - 1));
+        from = to - 1;
+      }
+    }
+    parts.push(slice(node.rows.length));
+    return parts.flatMap((part) => telegramNodeLength(part) <= limit
+      ? [part]
+      : splitOversizedNode({ type: "text", value: renderMarkerString([part], DISCORD_MARKERS) }, limit));
+  }
   if (!("value" in node) || typeof node.value !== "string" || node.value.length <= limit) return [node];
   const values: string[] = [];
-  let value = "";
-  for (const character of node.value) {
-    if (value.length + character.length > limit && value) {
-      values.push(value);
-      value = "";
-    }
-    value += character;
+  let rest = node.value;
+  while (rest.length > limit) {
+    // Prefer a line or word boundary in the second half; never cut a surrogate pair.
+    let cut = /[\uD800-\uDBFF]/.test(rest[limit - 1]!) ? limit - 1 : limit;
+    const window = rest.slice(0, cut);
+    const boundary = Math.max(window.lastIndexOf("\n"), window.lastIndexOf(" ")) + 1;
+    if (boundary > limit / 2) cut = window.lastIndexOf("\n") + 1 > limit / 2 ? window.lastIndexOf("\n") + 1 : boundary;
+    values.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
   }
-  if (value) values.push(value);
-  return values.map((part) => ({ ...node, value: part } as IRNode));
+  if (rest) values.push(rest);
+  // The parts carry the text themselves; stale children would render the whole node again.
+  return values.map((part) => ({ ...node, value: part, ...("children" in node ? { children: undefined } : {}) } as IRNode));
 }
 
 /**
@@ -432,6 +541,8 @@ export const TELEGRAM_RICH_HTML_MARKERS: MarkerTable = {
   // \n → <br>: required because this HTML is parsed as a document, not by Telegram's custom parser.
   text: (text) => escapeHtml(text).replace(/\n\n/g, "<br><br>").replace(/\n/g, "<br>"),
   bold: (text) => `<b>${escapeHtml(text)}</b>`,
+  italic: (text) => `<i>${escapeHtml(text)}</i>`,
+  strikethrough: (text) => `<s>${escapeHtml(text)}</s>`,
   code_inline: (text) => `<code>${escapeHtml(text)}</code>`,
   // <pre> preserves internal whitespace so no \n→<br> conversion needed inside code blocks.
   code_block: (text, language) => language

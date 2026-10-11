@@ -601,7 +601,7 @@ describe("sendTelegramMessage rendering", () => {
 
   it("keeps loose ordered-list numbering when it crosses Telegram messages", async () => {
     const client = createMockClient();
-    const text = Array.from({ length: 12 }, (_, index) => `${index + 1}. **Step ${index + 1}** ${"detail ".repeat(90)}`).join("\n\n");
+    const text = Array.from({ length: 12 }, (_, index) => `1. **Step ${index + 1}** ${"detail ".repeat(90)}`).join("\n\n");
 
     await sendTelegramMessage({ client, kind: "codex", chatId: 123, body: { text } });
 
@@ -610,6 +610,52 @@ describe("sendTelegramMessage rendering", () => {
     expect(payloads.join("\n")).toContain("1. <b>Step 1</b>");
     expect(payloads.join("\n")).toContain("12. <b>Step 12</b>");
     expect(payloads.every((payload: string) => !payload.includes("<br>"))).toBe(true);
+  });
+
+  it("delivers a long mixed response as valid in-limit HTML messages with paragraph breaks", async () => {
+    const client = createMockClient();
+    const table = "| Case | Detail | Result |\n|---|---|---|\n" + Array.from({ length: 60 }, (_, i) => `| C${i} | ${"detail <x> & ".repeat(8)} | **PASS** |`).join("\n");
+    const text = `Intro paragraph.\n\nSecond paragraph with *emphasis*.\n\n${table}\n\n\`\`\`ts\n${"const x = '<&>';\n".repeat(400)}\`\`\`\n\n3. three\n\n3. four`;
+
+    await withEnv({ TELEGRAM_RICH_MESSAGES_ENABLED: undefined }, async () => {
+      await sendTelegramMessage({ client, kind: "codex", chatId: 123, body: { text } });
+    });
+
+    const bodies = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body);
+    expect(bodies.length).toBeGreaterThan(2);
+    for (const body of bodies) {
+      expect(body.parse_mode).toBe("HTML");
+      expect(body.text).not.toMatch(/<br>|<table/);
+      expect(body.text.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length).toBeLessThanOrEqual(4096);
+    }
+    const all = bodies.map((body: any) => body.text).join("\n");
+    expect(all).toContain("Intro paragraph.\n\nSecond paragraph with <i>emphasis</i>.");
+    expect(all.match(/<b>Case<\/b> C\d+/g)).toHaveLength(60);
+    expect(all).toContain("3. three\n4. four");
+  });
+
+  it("keeps an answer preview within the limit when a table expands into cards", async () => {
+    const client = createMockClient();
+    const table = "| A | B | C | D |\n|---|---|---|---|\n" + Array.from({ length: 200 }, (_, i) => `| ${i} | b | c | d |`).join("\n");
+    expect(table.length).toBeLessThan(4096);
+
+    await sendMessageWithProgress({
+      client,
+      kind: "claude",
+      chatId: 123,
+      execution: async (_onProgress, onAnswerDelta) => {
+        onAnswerDelta?.(table);
+        return { text: "done", sessionId: "s1" } as CliResult;
+      },
+    });
+
+    const previews = [...(client.sendMessage as any).mock.calls, ...(client.editMessageText as any).mock.calls]
+      .map(([body]: any[]) => body)
+      .filter((body: any) => String(body.text).includes("<b>A</b>"));
+    expect(previews.length).toBeGreaterThan(0);
+    for (const body of previews) {
+      expect(body.text.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length).toBeLessThanOrEqual(4096);
+    }
   });
 
   it("preserves non-1 starts and nested list formatting without unsupported HTML", async () => {

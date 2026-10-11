@@ -12,7 +12,7 @@ import {
   documentFallbackEnabled,
   routeNativeLayout,
 } from "./nativeLayout.js";
-import { parseMarkdownToIR, renderMarkerString, TELEGRAM_HTML_MARKERS, markdownTableToRichHtml, markdownToTelegramHtmlChunks } from "./markdownIR.js";
+import { markdownTableToRichHtml, markdownToTelegramHtmlChunks } from "./markdownIR.js";
 
 const MAX_TELEGRAM_TEXT = 4096;
 const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
@@ -57,10 +57,6 @@ export class PreviewCleanupError extends Error {
 
 function truncate(text: string): string {
   return text.length > MAX_TELEGRAM_TEXT ? text.slice(-MAX_TELEGRAM_TEXT) : text;
-}
-
-function renderTelegramHtml(text: string): string {
-  return renderMarkerString(parseMarkdownToIR(text), TELEGRAM_HTML_MARKERS, "\n\n");
 }
 
 function extractStatusProgress(text: string): string {
@@ -339,7 +335,8 @@ export async function sendMessageWithProgress({
     const maxLength = capabilities.maxMessageLength;
     const bounded = text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
     if (capabilities.formatting !== "telegram-html") return { text: bounded };
-    try { return { text: renderTelegramHtml(bounded), parse_mode: "HTML" }; } catch { return { text: bounded }; }
+    // The first structural chunk is always within the limit, also when a table expands into cards.
+    try { return { text: markdownToTelegramHtmlChunks(bounded, maxLength)[0], parse_mode: "HTML" }; } catch { return { text: bounded }; }
   };
 
   const publishProgressText = async (text: string): Promise<void> => {
