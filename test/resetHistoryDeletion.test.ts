@@ -36,7 +36,7 @@ describe("/reset conversation evidence deletion", () => {
 
       expect(result).toEqual({
         kind: "message",
-        text: "claude session reset. Pending work and conversation history cleared.",
+        text: "claude session reset. Pending work, working notes and conversation history cleared.",
       });
       expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "chat:1" }, "claude")).toBeNull();
       expect(db.getRecentConvTurns("chat:1", 100)).toEqual([]);

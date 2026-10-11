@@ -91,7 +91,7 @@ describe("grok command surface", () => {
     const result = handleCommand("grok", "/reset", { db, chatId: "100", config: makeConfig(), surfaceIdentity: "telegram:interactive" });
     expect(result).toEqual({
       kind: "message",
-      text: "grok session reset. Pending work and conversation history cleared.",
+      text: "grok session reset. Pending work, working notes and conversation history cleared.",
     });
     expect(db.getSession( { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "grok")).toBeNull();
   });

@@ -7,7 +7,7 @@ import { killRunOwnedDescendants } from "./runOwnedProcesses.js";
 import { loadBotsConfig, resolveExecutionMode } from "./config.js";
 import { defaultSoulPath, loadSoulContext, normalizeSoulMode } from "./soul.js";
 import { createAutonomyDispositionChannel, type AutonomyDisposition, type AutonomyDispositionRecord } from "./autonomyDisposition.js";
-import type { BotConfig, BotKind } from "./types.js";
+import type { BotConfig, BotKind, BridgeConfig } from "./types.js";
 
 export const AUTONOMOUS_EVENT_SOURCE = "autonomous" as const;
 export const AUTONOMOUS_EVENT_KIND = "goal_wake" as const;
@@ -704,6 +704,10 @@ export function buildStandaloneEngine(db: BridgeDb, bot: BotKind): BridgeEngine 
     surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind, botConfig,
     allowedUserIds: new Set(["operator"]), executionMode, pollIntervalMs: 1000,
     soulContext: standaloneSoulContext(),
+    // Surface-neutral Runs use the same conversation-scoped helper as
+    // interactive Runs. This is the existing config conduit, not a separate
+    // autonomy scratch path.
+    fullConfig: { dbPath: db.raw.name } as BridgeConfig,
   }, db, client);
 }
 
@@ -743,7 +747,7 @@ export async function runAutonomousGoalLiveSmoke(databasePath: string): Promise<
   const db = openProductionDb(databasePath, { serviceId: "autonomous-live-smoke", runId: randomUUID() });
   const command = process.env.AGENT_BRIDGE_AUTONOMOUS_PROVIDER_COMMAND ?? "claude";
   const client = { getUpdates: async () => ({ result: [], ok: true }), sendMessage: async () => ({ ok: true }), sendChatAction: async () => ({ ok: true }) } as any;
-  const engine = new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", pollIntervalMs: 1000 }, db, client);
+  const engine = new BridgeEngine({ surfaceIdentity: AUTONOMOUS_RUN_SURFACE, kind: "autonomous", executionKind: "claude", botConfig: { command, modelPreference: ["default"] }, allowedUserIds: new Set(["operator"]), executionMode: "safe", pollIntervalMs: 1000, fullConfig: { dbPath: databasePath } as BridgeConfig }, db, client);
   let providerBoundaryReached = false;
   const executeSurfaceNeutralTurn = engine.executeSurfaceNeutralTurn.bind(engine);
   engine.executeSurfaceNeutralTurn = async (input) => {

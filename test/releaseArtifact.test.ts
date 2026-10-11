@@ -253,6 +253,10 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('bin/agent-bridge-sensors');
     expect(workflow).toContain('test -x "$root/bin/agent-bridge-wait"');
     expect(workflow).toContain('test -x "$verify_root/bin/agent-bridge-wait"');
+    expect(workflow).toContain('test -f "$root/scripts/agent-bridge-scratch.ts"');
+    expect(workflow).toContain('test -x "$root/bin/agent-bridge-scratch"');
+    expect(workflow).toContain('test -x "$verify_root/bin/agent-bridge-scratch"');
+    expect(statSync(join(process.cwd(), "bin/agent-bridge-scratch")).mode & 0o111).not.toBe(0);
     expect(statSync(join(process.cwd(), "bin/agent-bridge-wait")).mode & 0o111).not.toBe(0);
     expect(statSync(join(process.cwd(), "bin/agent-bridge-sensors")).mode & 0o111).not.toBe(0);
     expect(workflow).toContain('cp -a skills/. "$root/skills/"');
