@@ -452,6 +452,45 @@ export function markdownTableToRichHtml(markdown: string): string {
   return renderMarkerString(parseMarkdownToIR(markdown), TELEGRAM_RICH_HTML_MARKERS, "<br><br>");
 }
 
+const MAX_TELEGRAM_RICH_TEXT_BYTES = 32_768;
+const MAX_TELEGRAM_RICH_BLOCKS = 500;
+const MAX_TELEGRAM_RICH_NESTING = 16;
+const RICH_VOID_TAGS = new Set(["br"]);
+const RICH_BLOCK_TAGS = new Set(["pre", "table", "tr"]);
+
+/**
+ * Check the documented sendRichMessage limits against the exact generated HTML.
+ * Rich HTML tags themselves do not consume text bytes. Tables and preformatted
+ * blocks are the only block tags emitted by this renderer; table rows count as
+ * nested blocks. User input is escaped before this point, so tag inspection
+ * cannot be affected by source Markdown.
+ */
+export function isTelegramRichHtmlWithinLimits(html: string): boolean {
+  const text = html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(amp|lt|gt|quot);/g, (_match, entity: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"' })[entity]!);
+  if (Buffer.byteLength(text, "utf8") > MAX_TELEGRAM_RICH_TEXT_BYTES) return false;
+
+  let blocks = 0;
+  let depth = 0;
+  let maxDepth = 0;
+  const tags = /<\/?([a-z][\w-]*)(?:\s[^>]*)?>/gi;
+  for (const match of html.matchAll(tags)) {
+    const raw = match[0]!;
+    const tag = match[1]!.toLowerCase();
+    if (raw.startsWith("</")) {
+      if (!RICH_VOID_TAGS.has(tag)) depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (RICH_BLOCK_TAGS.has(tag)) blocks += 1;
+    if (!RICH_VOID_TAGS.has(tag)) {
+      depth += 1;
+      maxDepth = Math.max(maxDepth, depth);
+    }
+  }
+  return blocks <= MAX_TELEGRAM_RICH_BLOCKS && maxDepth <= MAX_TELEGRAM_RICH_NESTING;
+}
+
 /** Telegram applies its message limit after entity parsing: tags do not count and an entity is one character. */
 function telegramVisibleLength(html: string): number {
   return html.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length;

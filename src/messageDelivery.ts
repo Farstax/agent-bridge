@@ -12,7 +12,7 @@ import {
   documentFallbackEnabled,
   routeNativeLayout,
 } from "./nativeLayout.js";
-import { markdownTableToRichHtml, markdownToTelegramHtmlChunks } from "./markdownIR.js";
+import { isTelegramRichHtmlWithinLimits, markdownTableToRichHtml, markdownToTelegramHtmlChunks } from "./markdownIR.js";
 
 const MAX_TELEGRAM_TEXT = 4096;
 const ANSWER_PREVIEW_EDIT_INTERVAL_MS = 700;
@@ -107,6 +107,12 @@ export async function sendTelegramMessage({
   // Falls back to card-style entity messages when sendRichMessage isn't available.
   if (route.kind === "html" && typeof client.sendRichMessage === "function") {
     const richHtml = markdownTableToRichHtml(text);
+    // Rich messages have independent text, block, and nesting limits. Check
+    // before a remote send so a definite oversize condition takes the existing
+    // structure-aware HTML path without risking a duplicate fallback delivery.
+    if (!isTelegramRichHtmlWithinLimits(richHtml)) {
+      return sendEntityMessages({ client, chatId, body: { ...rest, text } });
+    }
     try {
       await client.sendRichMessage({ chat_id: chatId, ...rest, rich_message: { html: richHtml } });
       return null;
