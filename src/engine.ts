@@ -66,7 +66,7 @@ import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from 
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
 import { linkScheduledOccurrenceRun } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
-import { prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
+import { SCRATCHPAD_GUIDANCE, prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
 import {
   executionLaneCoordinator,
@@ -1567,11 +1567,18 @@ export class BridgeEngine {
     const handoffPrompt = includeFreshContext ? prependHandoffModel(fallbackPrompt, model) : fallbackPrompt;
     const soulContext = includeFreshContext ? this.opts.soulContext ?? null : null;
     if (!access) return { prompt: handoffPrompt, soulContext, includeResponseContract: includeFreshContext };
-    // #972: full notes once per fresh native session, a fixed signpost on every resumed Run.
-    const scratch = access.env.AGENT_BRIDGE_SCRATCH_COMMAND
+    // #972: the helper signpost on every Run, plus the full notes once per fresh
+    // native session. Autonomous Runs get no execution contract, so their fresh
+    // session carries the scratchpad guidance here.
+    const canScratch = Boolean(access.env.AGENT_BRIDGE_SCRATCH_COMMAND);
+    const scratch = canScratch && includeFreshContext
       ? readScratch(this.db.raw, { surfaceIdentity: this.surfaceIdentity, chatKey })
       : null;
-    const scratchPrompt = !scratch ? "" : includeFreshContext ? renderFreshScratch(scratch) : SCRATCH_SIGNPOST;
+    const scratchPrompt = !canScratch ? "" : [
+      SCRATCH_SIGNPOST,
+      includeFreshContext && this.kind === "autonomous" ? `${SCRATCHPAD_GUIDANCE}\n` : "",
+      scratch ? renderFreshScratch(scratch) : "",
+    ].join("");
     return {
       prompt: includeFreshContext
         ? `${access.prompt}${access.continuationPrompt}${scratchPrompt}${handoffPrompt}`

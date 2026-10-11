@@ -46,6 +46,9 @@ export function prependHandoffModel(prompt: string, model: string | null): strin
   ].join("\n");
 }
 
+/** Shared scratchpad posture. Autonomous Runs receive it beside the helper signpost (#972). */
+export const SCRATCHPAD_GUIDANCE = 'Working scratchpad (when AGENT_BRIDGE_SCRATCH_COMMAND is available): read it when resuming substantial unfinished work, recovering after interruption or handoff, or when notes could clarify the next action. Update it when meaningful progress changes next steps, important constraints or blockers emerge, or work will be left unfinished; clear or revise obsolete notes when complete. Keep notes concise, actionable and evidence-linked. Never store secrets or reasoning transcripts. Do not duplicate conversation history, touch it on simple questions, or update after every turn. Verify current reality before acting.';
+
 const SESSION_EXECUTION_CONTRACT = [
   "Agent Bridge execution contract:",
   "- A question asks for an answer, not permission to make changes.",
@@ -62,7 +65,7 @@ const SESSION_EXECUTION_CONTRACT = [
   "- If part of the work is genuinely blocked, complete the unblocked work and state the specific blocker.",
   "- Ask the operator only when meaningful progress genuinely requires information, authority, credentials, a product decision, or an unsafe/irreversible action that has not been authorised.",
   "- Do not claim work was completed or verified unless it was.",
-  '- Working scratchpad (when AGENT_BRIDGE_SCRATCH_COMMAND is available): read it when resuming substantial unfinished work, recovering after interruption or handoff, or when notes could clarify the next action. Update it when meaningful progress changes next steps, important constraints or blockers emerge, or work will be left unfinished; clear or revise obsolete notes when complete. Keep notes concise, actionable and evidence-linked. Never store secrets or reasoning transcripts. Do not duplicate conversation history, touch it on simple questions, or update after every turn. Verify current reality before acting.',
+  `- ${SCRATCHPAD_GUIDANCE}`,
 ].join("\n");
 
 const MINIMAL_RESPONSE_CONTRACT = [
