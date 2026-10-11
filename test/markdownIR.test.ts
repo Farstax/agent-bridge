@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   parseMarkdownToIR,
+  markdownToTelegramHtmlChunks,
   renderMarkerString,
   DISCORD_MARKERS,
   TELEGRAM_HTML_MARKERS,
+  TELEGRAM_RICH_HTML_MARKERS,
   discordMarkdownIrEnabled,
 } from "../src/markdownIR.js";
 
@@ -34,6 +36,49 @@ describe("parseMarkdownToIR", () => {
       { type: "code_inline", value: "npm test" },
       { type: "text", value: " now" },
     ]);
+  });
+
+  it("preserves italic and strikethrough as typed inline nodes", () => {
+    expect(parseMarkdownToIR("*emphasis* and ~~removed~~")).toEqual([
+      { type: "italic", value: "emphasis" },
+      { type: "text", value: " and " },
+      { type: "strikethrough", value: "removed" },
+    ]);
+    expect(renderMarkerString(parseMarkdownToIR("*emphasis* and ~~removed~~"), TELEGRAM_HTML_MARKERS)).toBe(
+      "<i>emphasis</i> and <s>removed</s>",
+    );
+  });
+
+  it("keeps nested inline formatting inside structured list items", () => {
+    const document = parseMarkdownToIR("- **bold `code` and *italic***");
+    expect(renderMarkerString(document, TELEGRAM_HTML_MARKERS)).toBe(
+      "• <b>bold <code>code</code> and <i>italic</i></b>",
+    );
+  });
+
+  it("keeps paragraphs and nested lists inside a list item on separate lines", () => {
+    const document = parseMarkdownToIR("1. a\n   - x\n   - y\n2. b\n\n   para in b");
+    expect(renderMarkerString(document, TELEGRAM_HTML_MARKERS, "\n\n")).toBe("1. a\n• x\n• y\n2. b\npara in b");
+    expect(renderMarkerString(document, TELEGRAM_RICH_HTML_MARKERS, "<br><br>")).toBe("1. a<br>• x<br>• y<br>2. b<br>para in b");
+    expect(renderMarkerString(document, DISCORD_MARKERS)).toBe("1. a\n- x\n- y\n2. b\npara in b");
+  });
+
+  it("keeps paragraph, hard-break, quote and rule spacing on every surface", () => {
+    const document = parseMarkdownToIR("one\n\ntwo  \nbreak\n\n## Head\n\n> quote **q**\n> more\n\n---\n\nend");
+    expect(renderMarkerString(document, TELEGRAM_HTML_MARKERS, "\n\n")).toBe(
+      "one\n\ntwo\nbreak\n\n<b>Head</b>\n\n&gt; quote <b>q</b>\n&gt; more\n\n---\n\nend",
+    );
+    expect(renderMarkerString(document, TELEGRAM_RICH_HTML_MARKERS, "<br><br>")).toBe(
+      "one<br><br>two<br>break<br><br><b>Head</b><br><br>&gt; quote <b>q</b><br>&gt; more<br><br>---<br><br>end",
+    );
+    expect(renderMarkerString(document, DISCORD_MARKERS)).toBe("one\n\ntwo\nbreak\n## Head\n> quote **q**\n> more\n\n---\n\nend");
+  });
+
+  it("keeps task markers and image targets", () => {
+    const document = parseMarkdownToIR("- [ ] todo\n- [x] done\n\n![alt](https://example.test/a.png)");
+    expect(renderMarkerString(document, TELEGRAM_HTML_MARKERS, "\n\n")).toBe(
+      '• [ ] todo\n• [x] done\n\n<a href="https://example.test/a.png">alt</a>',
+    );
   });
 
   it("treats an unmatched ** as plain text", () => {
@@ -72,7 +117,7 @@ describe("parseMarkdownToIR", () => {
 
   it("treats text before and after a code block as separate paragraphs", () => {
     expect(parseMarkdownToIR("before\n```\ncode\n```\nafter")).toEqual([
-      { type: "text", value: "before\n" },
+      { type: "text", value: "before" },
       { type: "code_block", value: "code", language: undefined },
       { type: "text", value: "after" },
     ]);
@@ -99,7 +144,7 @@ describe("parseMarkdownToIR", () => {
 
   it("parses a markdown table", () => {
     const markdown = "| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |";
-    expect(parseMarkdownToIR(markdown)).toEqual([
+    expect(parseMarkdownToIR(markdown)).toMatchObject([
       {
         type: "table",
         headers: ["Name", "Age"],
@@ -115,57 +160,57 @@ describe("parseMarkdownToIR", () => {
   });
 
   it("treats text before and after a table as separate paragraphs", () => {
-    const markdown = "summary:\n| A | B |\n| --- | --- |\n| 1 | 2 |\nend.";
-    expect(parseMarkdownToIR(markdown)).toEqual([
-      { type: "text", value: "summary:\n" },
+    const markdown = "summary:\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nend.";
+    expect(parseMarkdownToIR(markdown)).toMatchObject([
+      { type: "text", value: "summary:" },
       { type: "table", headers: ["A", "B"], rows: [["1", "2"]] },
       { type: "text", value: "end." },
     ]);
   });
 
   it("parses a bullet list using -", () => {
-    expect(parseMarkdownToIR("- first\n- second")).toEqual([
-      { type: "list", items: ["first", "second"] },
-    ]);
+    expect(parseMarkdownToIR("- first\n- second")[0]).toMatchObject({
+      type: "list", ordered: false, items: ["first", "second"], children: [[{ type: "text", value: "first" }], [{ type: "text", value: "second" }]],
+    });
   });
 
   it("parses a bullet list using *", () => {
-    expect(parseMarkdownToIR("* first\n* second")).toEqual([
-      { type: "list", items: ["first", "second"] },
-    ]);
+    expect(parseMarkdownToIR("* first\n* second")[0]).toMatchObject({ type: "list", ordered: false, items: ["first", "second"] });
   });
 
   it("treats text before and after a list as separate paragraphs", () => {
-    expect(parseMarkdownToIR("intro\n- one\n- two\noutro")).toEqual([
-      { type: "text", value: "intro\n" },
+    expect(parseMarkdownToIR("intro\n- one\n- two\n\noutro")).toMatchObject([
+      { type: "text", value: "intro" },
       { type: "list", items: ["one", "two"] },
       { type: "text", value: "outro" },
     ]);
   });
 
   it("preserves a blank line between text and a following block as paragraph separation", () => {
-    expect(parseMarkdownToIR("intro\n\n- one\n- two")).toEqual([
-      { type: "text", value: "intro\n\n" },
+    expect(parseMarkdownToIR("intro\n\n- one\n- two")).toMatchObject([
+      { type: "text", value: "intro" },
       { type: "list", items: ["one", "two"] },
     ]);
   });
 
   it("parses a numbered (ordered) list", () => {
-    expect(parseMarkdownToIR("1. first\n2. second\n3. third")).toEqual([
-      { type: "list", ordered: true, items: ["first", "second", "third"] },
-    ]);
+    expect(parseMarkdownToIR("1. first\n2. second\n3. third")[0]).toMatchObject({ type: "list", ordered: true, start: 1, items: ["first", "second", "third"] });
   });
 
   it("parses a numbered list with non-1 starting number", () => {
-    expect(parseMarkdownToIR("3. alpha\n4. beta")).toEqual([
-      { type: "list", ordered: true, items: ["alpha", "beta"] },
-    ]);
+    expect(parseMarkdownToIR("3. alpha\n4. beta")[0]).toMatchObject({ type: "list", ordered: true, start: 3, items: ["alpha", "beta"] });
+  });
+
+  it("keeps blank-line-separated model list items in one numbered sequence", () => {
+    const document = parseMarkdownToIR("1. first\n\n1. second\n\n1. third");
+    expect(document).toMatchObject([{ type: "list", ordered: true, start: 1, items: ["first", "second", "third"] }]);
+    expect(renderMarkerString(document, TELEGRAM_HTML_MARKERS)).toBe("1. first\n2. second\n3. third");
   });
 
   it("treats text before and after an ordered list as separate paragraphs", () => {
-    expect(parseMarkdownToIR("intro\n1. one\n2. two\noutro")).toEqual([
-      { type: "text", value: "intro\n" },
-      { type: "list", ordered: true, items: ["one", "two"] },
+    expect(parseMarkdownToIR("intro\n1. one\n2. two\n\noutro")).toMatchObject([
+      { type: "text", value: "intro" },
+      { type: "list", ordered: true, start: 1, items: ["one", "two"] },
       { type: "text", value: "outro" },
     ]);
   });
@@ -203,7 +248,7 @@ describe("renderMarkerString with DISCORD_MARKERS", () => {
   });
 
   it("renders text immediately before a list with text following", () => {
-    const ir = parseMarkdownToIR("intro:\n- one\n- two\noutro");
+    const ir = parseMarkdownToIR("intro:\n- one\n- two\n\noutro");
     expect(renderMarkerString(ir, DISCORD_MARKERS)).toBe("intro:\n- one\n- two\noutro");
   });
 
@@ -243,7 +288,7 @@ describe("renderMarkerString with TELEGRAM_HTML_MARKERS", () => {
   });
 
   it("separates a list from following text with a blank line", () => {
-    const ir = parseMarkdownToIR("intro:\n- one\n- two\noutro");
+    const ir = parseMarkdownToIR("intro:\n- one\n- two\n\noutro");
     expect(renderMarkerString(ir, TELEGRAM_HTML_MARKERS, "\n\n")).toBe(
       "intro:\n• one\n• two\n\noutro",
     );
@@ -267,5 +312,52 @@ describe("feature flags", () => {
     process.env.DISCORD_MARKDOWN_IR_ENABLED = "true";
     expect(discordMarkdownIrEnabled()).toBe(true);
     delete process.env.DISCORD_MARKDOWN_IR_ENABLED;
+  });
+});
+
+describe("markdownToTelegramHtmlChunks", () => {
+  const visibleLength = (html: string) => html.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length;
+  const balanced = (html: string) => {
+    for (const tag of ["b", "i", "s", "code", "pre", "a"]) {
+      expect(html.match(new RegExp(`<${tag}[ >]`, "g"))?.length ?? 0).toBe(html.match(new RegExp(`</${tag}>`, "g"))?.length ?? 0);
+    }
+  };
+
+  it.each([
+    ["table rows", "| Case | Detail | Result |\n|---|---|---|\n" + Array.from({ length: 80 }, (_, i) => `| C${i} | ${"detail <x> & ".repeat(8)} | **PASS** |`).join("\n")],
+    ["one oversized table row", `| A | B |\n|---|---|\n| ${"x".repeat(9000)} | y |`],
+    ["paragraphs", Array.from({ length: 30 }, (_, i) => `Sentence ${i} with **bold** and \`code\` ${"word ".repeat(40)}`).join("\n\n")],
+    ["surrogate pairs", "😀".repeat(5000)],
+    ["escaped code", "```ts\n" + "const x = '<&>';\n".repeat(600) + "```"],
+    ["one oversized list item", `7. **${"w ".repeat(3000)}**\n8. next`],
+    ["one oversized bold span", `**${"b".repeat(9000)}**`],
+  ])("keeps every chunk of %s valid and within the post-entity limit", (_name, markdown) => {
+    const chunks = markdownToTelegramHtmlChunks(markdown);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(visibleLength(chunk)).toBeGreaterThan(0);
+      expect(visibleLength(chunk)).toBeLessThanOrEqual(4096);
+      expect(chunk).not.toMatch(/[\uD800-\uDBFF]$|^[\uDC00-\uDFFF]/);
+      balanced(chunk);
+    }
+  });
+
+  it("splits a table between rows and repeats the card labels", () => {
+    const markdown = "| Case | Result |\n|---|---|\n" + Array.from({ length: 300 }, (_, i) => `| C${i} | ok ${"y".repeat(30)} |`).join("\n");
+    const chunks = markdownToTelegramHtmlChunks(markdown);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) expect(chunk).toMatch(/^<b>Case<\/b> C\d+\n• <b>Result<\/b> ok y+/);
+    expect(chunks.join("\n").match(/<b>Case<\/b>/g)).toHaveLength(300);
+  });
+
+  it("splits code on line boundaries and keeps the language", () => {
+    const chunks = markdownToTelegramHtmlChunks("```ts\n" + "const x = 1;\n".repeat(700) + "```");
+    for (const chunk of chunks) expect(chunk).toMatch(/^<pre language="ts">const x = 1;[\s\S]*const x = 1;\n?<\/pre>$/);
+  });
+
+  it("does not drop or repeat text when paragraphs cross a chunk boundary", () => {
+    const paragraphs = Array.from({ length: 40 }, (_, i) => `P${i} ${"word ".repeat(60).trim()}`);
+    const chunks = markdownToTelegramHtmlChunks(paragraphs.join("\n\n"));
+    expect(chunks.join("\n\n")).toBe(paragraphs.join("\n\n"));
   });
 });

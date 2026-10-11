@@ -116,6 +116,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,claude,antigravity" },
       commandExists: allFound,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: voiceReady,
     });
     const chain = report.chains.find((c) => c.name === "INTERACTIVE_CLI_CHAIN");
@@ -127,6 +128,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex,not-a-cli" },
       commandExists: allFound,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: voiceReady,
     });
     const chain = report.chains.find((c) => c.name === "INTERACTIVE_CLI_CHAIN");
@@ -136,7 +138,7 @@ describe("doctor diagnostics", () => {
   });
 
   it("skips unset chains without failing", () => {
-    const report = runDoctor({ env: {}, commandExists: allFound, inspectVoiceRuntime: voiceReady });
+    const report = runDoctor({ env: {}, commandExists: allFound, inspectVersion: acpInspectVersion, inspectVoiceRuntime: voiceReady });
     for (const chain of report.chains) {
       expect(chain.ok).toBe(true);
     }
@@ -147,6 +149,7 @@ describe("doctor diagnostics", () => {
       env: { TELEGRAM_BOT_TOKEN: "x" },
       requiredEnv: ["TELEGRAM_BOT_TOKEN", "MISSING_VAR"],
       commandExists: allFound,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: voiceReady,
     });
     expect(report.env.find((e) => e.name === "TELEGRAM_BOT_TOKEN")?.present).toBe(true);
@@ -184,6 +187,7 @@ describe("doctor diagnostics", () => {
     const report = runDoctor({
       env: { INTERACTIVE_CLI_CHAIN: "codex" },
       commandExists: allFound,
+      inspectVersion: acpInspectVersion,
       inspectVoiceRuntime: () => ({ status: "unavailable", reasonCode: "voice_runtime_preflight_failed" }),
     });
     expect(report.voiceTranscription.reasonCode).toBe("voice_runtime_preflight_failed");
