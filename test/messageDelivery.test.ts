@@ -1024,22 +1024,79 @@ describe("sendTelegramMessage table rendering", () => {
     expect(delivered).toContain("<b>Number</b> 499");
   });
 
-  it("falls back when generated rich formatting exceeds 16 nesting levels", async () => {
+  it("uses rich delivery at exactly 500 rich blocks", async () => {
     const client = {
       ...createMockClient(),
       sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
     } as any;
-    const nested = "**".repeat(17);
+    // The table itself, its header row, and 498 body rows are 500 blocks.
+    const rows = Array.from({ length: 498 }, (_, index) => `| ${index} | value-${index} |`).join("\n");
 
     await sendTelegramMessage({
       client,
       kind: "claude",
       chatId: 1,
-      body: { text: `| A | B |\n|---|---|\n| ${nested}nested${nested} | value |` },
+      body: { text: `| Number | Value |\n|---|---|\n${rows}` },
     });
 
-    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    expect(client.sendRichMessage).toHaveBeenCalledOnce();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses rich delivery at 16 nesting levels and falls back above it", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    // table > tbody > tr > td consumes four levels, leaving twelve for spans.
+    const atLimit = "**".repeat(12);
+
+    await sendTelegramMessage({
+      client,
+      kind: "claude",
+      chatId: 1,
+      body: { text: `| A | B |\n|---|---|\n| ${atLimit}nested${atLimit} | value |` },
+    });
+
+    expect(client.sendRichMessage).toHaveBeenCalledOnce();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+
+    const aboveLimit = "**".repeat(13);
+    await sendTelegramMessage({
+      client,
+      kind: "claude",
+      chatId: 1,
+      body: { text: `| A | B |\n|---|---|\n| ${aboveLimit}nested${aboveLimit} | value |` },
+    });
+
+    expect(client.sendRichMessage).toHaveBeenCalledTimes(1);
     expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("nested") }));
+  });
+
+  it("falls back once after a definite rich-message rejection", async () => {
+    const richError = Object.assign(new Error("Telegram HTTP 400: Bad Request"), { status: 400 });
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => { throw richError; }),
+    } as any;
+
+    await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text: tableMarkdown } });
+
+    expect(client.sendRichMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry via HTML after an ambiguous rich-message failure", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => { throw new Error("socket hung up after request write"); }),
+    } as any;
+
+    await expect(sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text: tableMarkdown } }))
+      .rejects.toThrow("socket hung up");
+
+    expect(client.sendRichMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage).not.toHaveBeenCalled();
   });
 });
 
