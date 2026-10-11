@@ -3,7 +3,7 @@
 **Author:** Operations Engineer (Antigravity)  
 **Branch:** `spike/markdown-parser-replacement`  
 **Date:** 2026-10-11  
-**Status:** Spike Completed — Definite Recommendation: **Adopt Marked**
+**Status:** Draft spike — conditional recommendation: **GO for a focused Marked migration**
 
 ---
 
@@ -18,16 +18,16 @@ While this bespoke parser is fast (0.011 ms median for medium responses), it suf
 4. **Architectural inversion in chunking**: Chunking is applied to raw Markdown text *prior* to parsing (`src/messageDelivery.ts`), causing split code blocks, fragmented tables, broken inline formatting, and entity length mismatches.
 
 This spike evaluated three established libraries against the current baseline:
-- **Marked** (v15.0.7)
+- **Marked** (v15.0.12, locked in `package-lock.json`)
 - **markdown-it** (v14.3.2)
 - **remark-parse + remark-gfm** (v11.0.0 / v4.0.1)
 
 ### Final Verdict & Recommendation: **MIGRATE TO MARKED (Score: 94.5 / 100)**
 **Marked** is the clear winner across all weighted evaluation criteria:
-- **Zero runtime dependencies** (vs 6 for markdown-it, 30+ for remark).
+- **Zero direct dependencies** in its package (vs six for markdown-it and the larger unified/remark graph).
 - **Lightweight footprint** (784 KB on disk vs 1.9 MB for markdown-it, 4.8 MB for remark).
 - **Clean token-level AST (`marked.lexer`)** that maps directly to Agent Bridge\'s `IRNode[]` without intermediate HTML generation.
-- **Flawless fidelity**: Fixes the loose list numbering defect, preserves arbitrary start numbers, supports task lists, nested lists, and code block language tags.
+- **Best corpus fidelity**: Fixes the loose list numbering defect, preserves arbitrary start numbers, supports task lists, nested lists, and code block language tags.
 - **Exceptional performance**: Median 0.089 ms for typical medium turns (9,755 ops/sec) and 0.242 ms for long 5KB turns (3,919 ops/sec) — orders of magnitude faster than network transmission time (20–50 ms).
 
 ---
@@ -61,11 +61,11 @@ Weights:
 | • AST structure / impedance | Custom ad-hoc | Lexer tokens (IR 1:1) | Open/close stream | unist / MDAST tree |
 | • Code complexity | ~550 lines regex | ~110 lines adapter | ~210 lines adapter | ~220 lines adapter |
 | **Performance & Resources (10%)** | 98 / 100 | **88 / 100** | 92 / 100 | 45 / 100 |
-| • Short (80 chars) median | 0.003 ms | 0.025 ms | 0.009 ms | 0.234 ms |
-| • Medium (765 chars) median | 0.011 ms | 0.089 ms | 0.065 ms | 0.964 ms |
-| • Long (5,317 chars) median | 0.063 ms | 0.242 ms | 0.110 ms | 2.691 ms |
-| • Throughput (Medium ops/sec) | 82,297 ops/s | 9,755 ops/s | 14,512 ops/s | 988 ops/s |
-| • Heap delta per 1k ops | 0 KB | ~16 MB | ~0 KB | ~24 MB |
+| • Short (80 chars) median | 0.002 ms | 0.024 ms | 0.011 ms | 0.251 ms |
+| • Medium (765 chars) median | 0.011 ms | 0.082 ms | 0.075 ms | 1.026 ms |
+| • Long (5,317 chars) median | 0.062 ms | 0.225 ms | 0.193 ms | 2.783 ms |
+| • Throughput (Medium ops/sec) | 76,818 ops/s | 11,150 ops/s | 11,139 ops/s | 907 ops/s |
+| • Heap delta per 1k ops | ~12 MB | ~8 MB | ~3 MB | ~17 MB |
 | **Security (Disqualifying check)** | PASS (with escapes) | **PASS** | **PASS** | **PASS** |
 | **WEIGHTED TOTAL SCORE (100)** | **62.7** | **94.5** | **89.9** | **77.7** |
 
@@ -100,9 +100,9 @@ Sample: LONG (5,317 chars - Comprehensive Report)
 
 ### Latency Analysis
 In Agent Bridge, message dispatch involves an outbound HTTPS round-trip to the Telegram or Discord Bot API, which typically takes **20 ms to 150 ms**.
-- At **0.089 ms**, Marked consumes less than **0.4%** of a typical Telegram dispatch budget.
-- The throughput of 9,755 turns per second on a single thread is vastly higher than Agent Bridge\'s peak concurrency needs (10–50 turns/second).
-- While remark-parse is respectable at 0.96 ms, its 30+ transitive dependencies, unified pipeline complexity, and 2.7 ms cost on large payloads make it unnecessarily heavy for an operational bridge daemon.
+- At **0.082 ms**, Marked consumes less than **0.5%** of a 20 ms Telegram dispatch budget.
+- The measured throughput of 11,150 medium turns per second is well above Bridge's message delivery concurrency.
+- Remark's 1.026 ms median, larger dependency graph, and 2.783 ms long-message cost make it unnecessarily heavy for this boundary.
 
 ---
 
@@ -241,7 +241,10 @@ If approved for migration, the replacement should proceed in two minimal, non-di
 ---
 
 ## 6. Verification and Test Evidence
-- **All 94 Comparison Tests Passed**: Verified in `test/markdownComparison.test.ts` across all 12 regression fixture categories.
-- **Full Existing Test Suite Passed**: 2,500+ existing tests across 120+ test files ran and passed with 0 errors.
-- **Typecheck & Architecture Lint Passed**: `npm run typecheck` and `scripts/arch-lint.sh src` passed with 0 errors.
-- **No Production Changes Made**: All work is strictly isolated in spike adapters, fixtures, tests, and documentation.
+
+- **106 focused tests passed**: `test/markdownComparison.test.ts` covers all 12 shared fixture categories and `test/markdownSurfaceComparison.test.ts` captures the final Telegram HTML payload sent to a mocked outbound client for every candidate. It also exercises Telegram rich HTML and Discord Markdown output.
+- **Known defect reproduced at the delivery boundary**: The custom parser produces `1, 1, 1`; Marked, markdown-it, and remark produce `1, 2, 3` in the captured Telegram payload.
+- **Current delivery defects reproduced**: `sendTelegramMessage()` parses each raw-text chunk as a new document, so a later ordered-list chunk starts at `1`; 3,500 raw `<` characters become a 14,000-character HTML payload, above Telegram's 4,096-character limit.
+- **Security checks**: Raw HTML is escaped and `javascript:` URLs render as text, never as an HTML `href`, for every candidate.
+- **Typecheck passed**: `npm run typecheck` succeeded. `npm run cleanup:check` reports pre-existing repository-wide findings and one expected spike benchmark entry; it is not a clean repository gate.
+- **Production path deliberately remains unchanged**: `messageDelivery.ts` still owns the custom parser, raw-text chunking, and outbound client calls. The adapters and shared renderers are comparison-only. A production migration must wire the selected adapter into that path and run its existing mocked Telegram and Discord client tests before it can claim delivery compatibility.

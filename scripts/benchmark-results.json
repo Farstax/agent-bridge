@@ -5,10 +5,10 @@
     "sampleType": "short",
     "charLength": 80,
     "iterations": 2000,
-    "opsPerSec": 270459,
-    "medianMs": 0.0033,
-    "p95Ms": 0.0052,
-    "heapDeltaKb": 4683
+    "opsPerSec": 378631,
+    "medianMs": 0.0019,
+    "p95Ms": 0.0032,
+    "heapDeltaKb": 4707
   },
   {
     "parserId": "marked",
@@ -16,10 +16,10 @@
     "sampleType": "short",
     "charLength": 80,
     "iterations": 2000,
-    "opsPerSec": 30501,
-    "medianMs": 0.0253,
-    "p95Ms": 0.0607,
-    "heapDeltaKb": 0
+    "opsPerSec": 34272,
+    "medianMs": 0.0241,
+    "p95Ms": 0.0446,
+    "heapDeltaKb": 9856
   },
   {
     "parserId": "markdown-it",
@@ -27,10 +27,10 @@
     "sampleType": "short",
     "charLength": 80,
     "iterations": 2000,
-    "opsPerSec": 64387,
-    "medianMs": 0.0095,
-    "p95Ms": 0.0305,
-    "heapDeltaKb": 9592
+    "opsPerSec": 56342,
+    "medianMs": 0.0105,
+    "p95Ms": 0.0467,
+    "heapDeltaKb": 5965
   },
   {
     "parserId": "remark",
@@ -38,10 +38,10 @@
     "sampleType": "short",
     "charLength": 80,
     "iterations": 2000,
-    "opsPerSec": 3797,
-    "medianMs": 0.2338,
-    "p95Ms": 0.3684,
-    "heapDeltaKb": 8426
+    "opsPerSec": 3399,
+    "medianMs": 0.2513,
+    "p95Ms": 0.5156,
+    "heapDeltaKb": 12333
   },
   {
     "parserId": "custom",
@@ -49,10 +49,10 @@
     "sampleType": "medium",
     "charLength": 765,
     "iterations": 1000,
-    "opsPerSec": 82297,
-    "medianMs": 0.011,
-    "p95Ms": 0.0151,
-    "heapDeltaKb": 0
+    "opsPerSec": 76818,
+    "medianMs": 0.0112,
+    "p95Ms": 0.0172,
+    "heapDeltaKb": 11597
   },
   {
     "parserId": "marked",
@@ -60,10 +60,10 @@
     "sampleType": "medium",
     "charLength": 765,
     "iterations": 1000,
-    "opsPerSec": 9755,
-    "medianMs": 0.089,
-    "p95Ms": 0.1305,
-    "heapDeltaKb": 16343
+    "opsPerSec": 11150,
+    "medianMs": 0.0822,
+    "p95Ms": 0.121,
+    "heapDeltaKb": 7892
   },
   {
     "parserId": "markdown-it",
@@ -71,10 +71,10 @@
     "sampleType": "medium",
     "charLength": 765,
     "iterations": 1000,
-    "opsPerSec": 14512,
-    "medianMs": 0.0649,
-    "p95Ms": 0.1116,
-    "heapDeltaKb": 0
+    "opsPerSec": 11139,
+    "medianMs": 0.075,
+    "p95Ms": 0.1427,
+    "heapDeltaKb": 3027
   },
   {
     "parserId": "remark",
@@ -82,10 +82,10 @@
     "sampleType": "medium",
     "charLength": 765,
     "iterations": 1000,
-    "opsPerSec": 988,
-    "medianMs": 0.9641,
-    "p95Ms": 1.245,
-    "heapDeltaKb": 23573
+    "opsPerSec": 907,
+    "medianMs": 1.0259,
+    "p95Ms": 1.4839,
+    "heapDeltaKb": 17239
   },
   {
     "parserId": "custom",
@@ -93,10 +93,10 @@
     "sampleType": "long",
     "charLength": 5317,
     "iterations": 500,
-    "opsPerSec": 14669,
-    "medianMs": 0.0626,
-    "p95Ms": 0.0918,
-    "heapDeltaKb": 11145
+    "opsPerSec": 14858,
+    "medianMs": 0.0623,
+    "p95Ms": 0.0817,
+    "heapDeltaKb": 10957
   },
   {
     "parserId": "marked",
@@ -104,10 +104,10 @@
     "sampleType": "long",
     "charLength": 5317,
     "iterations": 500,
-    "opsPerSec": 3919,
-    "medianMs": 0.2417,
-    "p95Ms": 0.3027,
-    "heapDeltaKb": 2792
+    "opsPerSec": 4300,
+    "medianMs": 0.2252,
+    "p95Ms": 0.2655,
+    "heapDeltaKb": 14276
   },
   {
     "parserId": "markdown-it",
@@ -115,10 +115,10 @@
     "sampleType": "long",
     "charLength": 5317,
     "iterations": 500,
-    "opsPerSec": 7737,
-    "medianMs": 0.1097,
-    "p95Ms": 0.1551,
-    "heapDeltaKb": 0
+    "opsPerSec": 4741,
+    "medianMs": 0.1928,
+    "p95Ms": 0.3012,
+    "heapDeltaKb": 16085
   },
   {
     "parserId": "remark",
@@ -126,9 +126,9 @@
     "sampleType": "long",
     "charLength": 5317,
     "iterations": 500,
-    "opsPerSec": 356,
-    "medianMs": 2.6906,
-    "p95Ms": 3.6949,
-    "heapDeltaKb": 48209
+    "opsPerSec": 344,
+    "medianMs": 2.7834,
+    "p95Ms": 3.5145,
+    "heapDeltaKb": 31419
   }
 ]

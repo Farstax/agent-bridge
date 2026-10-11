@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { CANDIDATE_PARSERS } from "../src/markdown/index.js";
 
@@ -167,12 +169,13 @@ async function main() {
   }
 
   // Save results to JSON for inclusion in report
+  const outputPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "benchmark-results.json");
   fs.writeFileSync(
-    "/home/content-crawler/agent-bridge/scripts/benchmark-results.json",
+    outputPath,
     JSON.stringify(allResults, null, 2),
     "utf8"
   );
-  console.log("Saved raw benchmark results to scripts/benchmark-results.json");
+  console.log(`Saved raw benchmark results to ${outputPath}`);
 }
 
 main().catch(console.error);
