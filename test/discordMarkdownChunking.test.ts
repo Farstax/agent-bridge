@@ -128,3 +128,48 @@ describe("Discord chunking invariants", () => {
     }
   });
 });
+
+describe("Discord rate limits", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it("waits out HTTP 429 and delivers every chunk once and in order", async () => {
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    let posts = 0;
+    const fetchMock = vi.fn(async (_url: string, init: { body: string }) => {
+      posts += 1;
+      // Reproduce the production failure: the 7th rapid post is rate limited.
+      if (posts === 7 || posts === 8) {
+        return { ok: false, status: 429, headers: new Headers(), json: async () => ({ retry_after: 0.4 }), text: async () => "" };
+      }
+      sent.push(JSON.parse(init.body).content as string);
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: String(posts) }), text: async () => "{}" };
+    });
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const pending = client.sendMessage({ channel_id: "c", text: numberedList(120) });
+    await vi.runAllTimersAsync();
+    await pending;
+    const numbers = sent.flatMap((c) => [...c.matchAll(/^(\d+)\. Item/gm)].map((m) => Number(m[1])));
+    expect(numbers).toEqual(Array.from({ length: 120 }, (_, i) => i + 1));
+    expect(sent.length).toBe(chunkText(numberedList(120)).length);
+  });
+
+  it("surfaces the failure with finalChunksDelivered when 429 persists", async () => {
+    vi.useFakeTimers();
+    let posts = 0;
+    const fetchMock = vi.fn(async () => {
+      posts += 1;
+      if (posts >= 3) return { ok: false, status: 429, headers: new Headers(), json: async () => ({ retry_after: 0.1 }), text: async () => "" };
+      return { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: "1" }), text: async () => "{}" };
+    });
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const pending = client.sendMessage({ channel_id: "c", text: numberedList(120) }).catch((e) => e);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+    expect(error.status).toBe(429);
+    expect(error.finalChunksDelivered).toBe(2);
+  });
+});
