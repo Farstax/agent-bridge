@@ -110,17 +110,16 @@ export async function sendTelegramMessage({
     // Rich messages have independent text, block, and nesting limits. Check
     // before a remote send so a definite oversize condition takes the existing
     // structure-aware HTML path without risking a duplicate fallback delivery.
-    if (!isTelegramRichHtmlWithinLimits(richHtml)) {
-      return sendEntityMessages({ client, chatId, body: { ...rest, text } });
-    }
-    try {
-      await client.sendRichMessage({ chat_id: chatId, ...rest, rich_message: { html: richHtml } });
-      return null;
-    } catch (error) {
-      // Only a definite HTTP rejection (unsupported/invalid rich message) may
-      // fall through to card-style delivery; an ambiguous failure could have
-      // been applied remotely and a second send would duplicate the answer.
-      if (!isDefiniteDeliveryRejection(error)) throw error;
+    if (isTelegramRichHtmlWithinLimits(richHtml)) {
+      try {
+        await client.sendRichMessage({ chat_id: chatId, ...rest, rich_message: { html: richHtml } });
+        return null;
+      } catch (error) {
+        // Only a definite HTTP rejection (unsupported/invalid rich message) may
+        // fall through to card-style delivery; an ambiguous failure could have
+        // been applied remotely and a second send would duplicate the answer.
+        if (!isDefiniteDeliveryRejection(error)) throw error;
+      }
     }
   }
 

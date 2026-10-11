@@ -1062,6 +1062,21 @@ describe("sendTelegramMessage table rendering", () => {
     expect(delivered).toContain("<b>Number</b> 497");
   });
 
+  it("counts paragraphs separated by blank lines towards the 500 rich blocks limit", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    // 501 paragraphs separated by double breaks exceed the 500-block limit
+    const paragraphs = Array.from({ length: 501 }, (_, i) => `Paragraph ${i}`).join("\n\n");
+    const text = `| A | B |\n|---|---|\n| 1 | 2 |\n\n${paragraphs}`;
+
+    await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text } });
+
+    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    expect(client.sendMessage).toHaveBeenCalled();
+  });
+
   it("uses rich delivery at 16 nesting levels and falls back above it", async () => {
     const client = {
       ...createMockClient(),

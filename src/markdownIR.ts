@@ -455,7 +455,7 @@ export function markdownTableToRichHtml(markdown: string): string {
 const MAX_TELEGRAM_RICH_TEXT_BYTES = 32_768;
 const MAX_TELEGRAM_RICH_BLOCKS = 500;
 const MAX_TELEGRAM_RICH_NESTING = 16;
-const RICH_VOID_TAGS = new Set(["br"]);
+const RICH_VOID_TAGS = new Set(["br", "hr"]);
 const RICH_BLOCK_TAGS = new Set(["pre", "table", "tr"]);
 
 /**
@@ -469,26 +469,32 @@ export function isTelegramRichHtmlWithinLimits(html: string): boolean {
   const text = html
     .replace(/<[^>]*>/g, "")
     .replace(/&(amp|lt|gt|quot);/g, (_match, entity: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"' })[entity]!);
-  if (Buffer.byteLength(text, "utf8") > MAX_TELEGRAM_RICH_TEXT_BYTES) return false;
+  if (Buffer.byteLength(text, "utf8") > MAX_TELEGRAM_RICH_TEXT_BYTES || [...text].length > MAX_TELEGRAM_RICH_TEXT_BYTES) return false;
 
   let blocks = 0;
   let depth = 0;
   let richBlockDepth = 0;
   let maxDepth = 0;
   let inImplicitParagraph = false;
-  const tags = /<\/?([a-z][\w-]*)(?:\s[^>]*)?>/gi;
+  let consecutiveBrs = 0;
+  const tags = /<\/?([a-z][\w-]*)(?:\s[^>]*?)?(\/?)>/gi;
   let cursor = 0;
   for (const match of html.matchAll(tags)) {
     const text = html.slice(cursor, match.index);
-    if (/\S/.test(text) && richBlockDepth === 0) {
-      if (!inImplicitParagraph) blocks += 1;
-      inImplicitParagraph = true;
-      // Telegram wraps top-level inline content in a paragraph block.
-      maxDepth = Math.max(maxDepth, depth + 1);
+    if (/\S/.test(text)) {
+      consecutiveBrs = 0;
+      if (richBlockDepth === 0) {
+        if (!inImplicitParagraph) blocks += 1;
+        inImplicitParagraph = true;
+        // Telegram wraps top-level inline content in a paragraph block.
+        maxDepth = Math.max(maxDepth, depth + 1);
+      }
     }
     const raw = match[0]!;
     const tag = match[1]!.toLowerCase();
+    const isSelfClosing = Boolean(match[2]) || raw.endsWith("/>");
     if (raw.startsWith("</")) {
+      consecutiveBrs = 0;
       if (RICH_BLOCK_TAGS.has(tag)) {
         richBlockDepth = Math.max(0, richBlockDepth - 1);
         inImplicitParagraph = false;
@@ -497,12 +503,20 @@ export function isTelegramRichHtmlWithinLimits(html: string): boolean {
       cursor = match.index! + raw.length;
       continue;
     }
+    if (tag === "br") {
+      consecutiveBrs += 1;
+      if (consecutiveBrs >= 2) {
+        inImplicitParagraph = false;
+      }
+    } else {
+      consecutiveBrs = 0;
+    }
     if (RICH_BLOCK_TAGS.has(tag)) {
       blocks += 1;
       richBlockDepth += 1;
       inImplicitParagraph = false;
     }
-    if (!RICH_VOID_TAGS.has(tag)) {
+    if (!RICH_VOID_TAGS.has(tag) && !isSelfClosing) {
       depth += 1;
       maxDepth = Math.max(maxDepth, depth);
     }
