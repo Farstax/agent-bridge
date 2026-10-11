@@ -1,0 +1,134 @@
+[
+  {
+    "parserId": "custom",
+    "parserName": "Custom Baseline",
+    "sampleType": "short",
+    "charLength": 80,
+    "iterations": 2000,
+    "opsPerSec": 270459,
+    "medianMs": 0.0033,
+    "p95Ms": 0.0052,
+    "heapDeltaKb": 4683
+  },
+  {
+    "parserId": "marked",
+    "parserName": "Marked",
+    "sampleType": "short",
+    "charLength": 80,
+    "iterations": 2000,
+    "opsPerSec": 30501,
+    "medianMs": 0.0253,
+    "p95Ms": 0.0607,
+    "heapDeltaKb": 0
+  },
+  {
+    "parserId": "markdown-it",
+    "parserName": "markdown-it",
+    "sampleType": "short",
+    "charLength": 80,
+    "iterations": 2000,
+    "opsPerSec": 64387,
+    "medianMs": 0.0095,
+    "p95Ms": 0.0305,
+    "heapDeltaKb": 9592
+  },
+  {
+    "parserId": "remark",
+    "parserName": "remark-parse + remark-gfm",
+    "sampleType": "short",
+    "charLength": 80,
+    "iterations": 2000,
+    "opsPerSec": 3797,
+    "medianMs": 0.2338,
+    "p95Ms": 0.3684,
+    "heapDeltaKb": 8426
+  },
+  {
+    "parserId": "custom",
+    "parserName": "Custom Baseline",
+    "sampleType": "medium",
+    "charLength": 765,
+    "iterations": 1000,
+    "opsPerSec": 82297,
+    "medianMs": 0.011,
+    "p95Ms": 0.0151,
+    "heapDeltaKb": 0
+  },
+  {
+    "parserId": "marked",
+    "parserName": "Marked",
+    "sampleType": "medium",
+    "charLength": 765,
+    "iterations": 1000,
+    "opsPerSec": 9755,
+    "medianMs": 0.089,
+    "p95Ms": 0.1305,
+    "heapDeltaKb": 16343
+  },
+  {
+    "parserId": "markdown-it",
+    "parserName": "markdown-it",
+    "sampleType": "medium",
+    "charLength": 765,
+    "iterations": 1000,
+    "opsPerSec": 14512,
+    "medianMs": 0.0649,
+    "p95Ms": 0.1116,
+    "heapDeltaKb": 0
+  },
+  {
+    "parserId": "remark",
+    "parserName": "remark-parse + remark-gfm",
+    "sampleType": "medium",
+    "charLength": 765,
+    "iterations": 1000,
+    "opsPerSec": 988,
+    "medianMs": 0.9641,
+    "p95Ms": 1.245,
+    "heapDeltaKb": 23573
+  },
+  {
+    "parserId": "custom",
+    "parserName": "Custom Baseline",
+    "sampleType": "long",
+    "charLength": 5317,
+    "iterations": 500,
+    "opsPerSec": 14669,
+    "medianMs": 0.0626,
+    "p95Ms": 0.0918,
+    "heapDeltaKb": 11145
+  },
+  {
+    "parserId": "marked",
+    "parserName": "Marked",
+    "sampleType": "long",
+    "charLength": 5317,
+    "iterations": 500,
+    "opsPerSec": 3919,
+    "medianMs": 0.2417,
+    "p95Ms": 0.3027,
+    "heapDeltaKb": 2792
+  },
+  {
+    "parserId": "markdown-it",
+    "parserName": "markdown-it",
+    "sampleType": "long",
+    "charLength": 5317,
+    "iterations": 500,
+    "opsPerSec": 7737,
+    "medianMs": 0.1097,
+    "p95Ms": 0.1551,
+    "heapDeltaKb": 0
+  },
+  {
+    "parserId": "remark",
+    "parserName": "remark-parse + remark-gfm",
+    "sampleType": "long",
+    "charLength": 5317,
+    "iterations": 500,
+    "opsPerSec": 356,
+    "medianMs": 2.6906,
+    "p95Ms": 3.6949,
+    "heapDeltaKb": 48209
+  }
+]
