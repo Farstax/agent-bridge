@@ -275,6 +275,33 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
   }, 30_000);
 
+  it("treats /reset@bot as a reset: aborts the active Run and releases the lane (#972)", async () => {
+    const path = join(tmpdir(), `reset-mention-${Date.now()}-${Math.random()}.sqlite`);
+    const childReady = join(tmpdir(), `reset-mention-ready-${Date.now()}-${Math.random()}`);
+    const db = openDb(path);
+    const engine = new BridgeEngine(options("cursor"), db, client(), cliExec({
+      runCli: (_command, _args, cwd, cliOptions) => runCli(
+        process.execPath,
+        ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ready'); setTimeout(()=>{},20000)", childReady],
+        cwd,
+        cliOptions,
+      ),
+    }));
+    const active = engine.handleMessages([message("long reset run", 7)]);
+    await waitForFile(childReady);
+    const started = Date.now();
+    await engine.handleMessages([message("/reset@SomeBot", 7)]);
+    await active;
+    // Without the abort the child would hold the lane for its full 20 s.
+    expect(Date.now() - started).toBeLessThan(10_000);
+    const next = db.acquireLock("telegram:interactive", "100:7");
+    expect(next).not.toBeNull();
+    // The lane generation that reset revoked is gone, so the next Run's handle is not fenced.
+    const tombstone = db.raw.prepare("SELECT value FROM settings WHERE key LIKE 'conversation-scratch:v1:%'").get() as { value: string };
+    expect(JSON.parse(tombstone.value).revokedAcquisitionId).not.toBe(next!.acquisitionId);
+    db.close(); rmSync(path, { force: true }); rmSync(childReady, { force: true });
+  }, 30_000);
+
   it("interrupt mode aborts the active turn and admits the next message immediately instead of waiting in FIFO (Issue #177)", async () => {
     const path = join(tmpdir(), `interrupt-${Date.now()}-${Math.random()}.sqlite`);
     const childReady = join(tmpdir(), `interrupt-ready-${Date.now()}-${Math.random()}`);

@@ -227,6 +227,14 @@ describe("conversation scratchpad (#972)", () => {
       }
     });
 
+    it("exposes neither the helper nor its signpost without a lane handle (read-only verification turns)", async () => {
+      const a = startRun();
+      writeScratch(db.raw, id(), a.fence, 0, "notes");
+      const built = await build(engine("claude"), "resume", undefined, a.runId);
+      expect(built.prompt).not.toContain("AGENT_BRIDGE_SCRATCH_COMMAND");
+      expect(built.contextEnv?.AGENT_BRIDGE_SCRATCH_COMMAND).toBeUndefined();
+    });
+
     it("gives autonomous Runs the usage guidance that the execution contract carries elsewhere", async () => {
       const a = startRun();
       const auto = new BridgeEngine(

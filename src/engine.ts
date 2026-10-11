@@ -50,7 +50,7 @@ import { cleanOutputDir, prepareOutputDir, uploadOutputFiles } from "./fileOutpu
 import { createPollErrorState, planPollError, notePollSuccess } from "./polling.js";
 import { sendSurfaceMessage, sendMessageWithProgress, PreviewCleanupError } from "./messageDelivery.js";
 import { buildModelKeyboard, buildModelsText, getCliWorkingDir } from "./bridge.js";
-import { handleCommand, buildTelegramCommands, isAntigravityNarrationVisible } from "./commands.js";
+import { handleCommand, normalizeCommand, buildTelegramCommands, isAntigravityNarrationVisible } from "./commands.js";
 import { buildBusyMessageModeKeyboard, busyMessageModeSettingKey, resolveLaneBusyMessageMode, type BusyMessageMode } from "./busyMessageMode.js";
 import { buildEffortKeyboard, buildEffortText, effortSettingKey, resolveDefaultEffort, resolveEffort, isEffortLevel, type EffortLevel } from "./effort.js";
 import { resolveAcpTelegramConfigCallback } from "./acp/telegramConfigCallback.js";
@@ -388,7 +388,9 @@ export class BridgeEngine {
       }
       if (isRouteableKind(this.kind) && isSlashCmd) {
         let resetHandle: ExecutionLaneHandle | null = null;
-        if (commandText === "/reset") {
+        // Same normalisation as handleCommand, so "/reset@bot" also aborts and releases the lane.
+        const isReset = normalizeCommand(commandText) === "/reset";
+        if (isReset) {
           this.laneCoordinator.markResetting(executionLane);
           this.laneCoordinator.markAborted(executionLane);
           resetHandle = await abortExecutionAndWait(executionLane);
@@ -398,7 +400,7 @@ export class BridgeEngine {
         const commandResponse = handleCommand(this.kind, commandText, { db: this.db, chatId: chatKey, config: this._effectiveConfig(), surfaceIdentity: this.surfaceIdentity, defaultBusyMessageMode: this.opts.busyMessageMode ?? "augment" });
         if (commandResponse) {
           if (commandResponse.kind === "message") {
-            if (commandText === "/reset") {
+            if (isReset) {
               try { await this.sendText(initialChatId, { text: commandResponse.text, message_thread_id: initialThreadId }); }
               finally { this.laneCoordinator.clearResetting(executionLane); if (resetHandle) this.db.unlock(resetHandle); }
             } else await this.sendText(initialChatId, { text: commandResponse.text, message_thread_id: initialThreadId });
@@ -1745,7 +1747,8 @@ export class BridgeEngine {
       attachments,
       outputDir: null,
     }).nativeSessionMode;
-    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, laneHandle);
+    // Read-only verification turns get no scratch helper: its write and clear are mutations.
+    const promptForCli = await this._buildPromptForCli(chatKey, prompt, nativeSessionMode, model, runId, executionKind, chatId, threadId, isVerificationOnly ? undefined : laneHandle);
     const invocation = buildCliInvocation({
       bot: executionKind,
       command: this.opts.botConfig.command,
