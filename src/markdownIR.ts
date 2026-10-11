@@ -306,9 +306,12 @@ function renderList(node: Extract<IRNode, { type: "list" }>, markers: MarkerTabl
   return node.items.map((item, index) => {
     const prefix = node.ordered ? `${(node.start ?? 1) + index}. ` : markers === DISCORD_MARKERS ? "- " : "• ";
     const children = node.children[index];
-    const body = children?.length
+    const rendered = children?.length
       ? renderMarkerString(children, markers, lineSeparator)
       : markers.text(item);
+    // Discord renders Markdown natively, so continuation lines (nested lists,
+    // wrapped paragraphs) must be indented under their item to keep nesting.
+    const body = markers === DISCORD_MARKERS ? rendered.replace(/\n/g, `\n${" ".repeat(prefix.length)}`) : rendered;
     return `${prefix}${body}`;
   }).join(lineSeparator);
 }

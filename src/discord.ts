@@ -311,11 +311,67 @@ function truncate(text: string): string {
 
 export function chunkText(text: string): string[] {
   if (text.length <= MAX_DISCORD_MESSAGE_LENGTH) return [text];
+  const limit = MAX_DISCORD_MESSAGE_LENGTH;
   const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    chunks.push(remaining.slice(0, MAX_DISCORD_MESSAGE_LENGTH));
-    remaining = remaining.slice(MAX_DISCORD_MESSAGE_LENGTH);
+  let lines: string[] = [];
+  let size = 0;
+  let fence: string | null = null;
+  let lastBlank = -1;
+
+  const closing = (open: string | null): string => (open ? `\n${open.trim().startsWith("~") ? "~~~" : "```"}` : "");
+  const flush = (count: number): void => {
+    const head = lines.slice(0, count);
+    const rest = lines.slice(count);
+    while (head.length && head[head.length - 1] === "") head.pop();
+    if (head.length) chunks.push(head.join("\n") + closing(fence && rest.length === 0 ? fence : null));
+    lines = rest;
+    size = lines.reduce((total, line, index) => total + line.length + (index ? 1 : 0), 0);
+    lastBlank = -1;
+  };
+  const push = (line: string): void => {
+    const reserve = fence ? closing(fence).length : 0;
+    if (lines.length && size + 1 + line.length + reserve > limit) {
+      if (!fence && lastBlank > 0) {
+        flush(lastBlank);
+        while (lines.length && lines[0] === "") lines.shift();
+        size = lines.reduce((total, l, index) => total + l.length + (index ? 1 : 0), 0);
+      } else {
+        const open = fence;
+        const body = lines.join("\n") + closing(open);
+        chunks.push(body);
+        lines = open ? [open] : [];
+        size = open ? open.length : 0;
+        lastBlank = -1;
+      }
+    }
+    lines.push(line);
+    size += (lines.length > 1 ? 1 : 0) + line.length;
+    if (!fence && line.trim() === "") lastBlank = lines.length - 1;
+  };
+
+  for (const rawLine of text.split("\n")) {
+    const room = fence ? limit - closing(fence).length - fence.length - 1 : limit;
+    const pieces: string[] = [];
+    if (rawLine.length <= room) pieces.push(rawLine);
+    else {
+      const points = Array.from(rawLine);
+      let current = "";
+      for (const point of points) {
+        if (current.length + point.length > room) {
+          pieces.push(current);
+          current = "";
+        }
+        current += point;
+      }
+      if (current) pieces.push(current);
+    }
+    for (const piece of pieces) {
+      push(piece);
+      if (pieces.length === 1 && /^\s*(```|~~~)/.test(piece)) {
+        fence = fence ? null : piece.trim();
+      }
+    }
   }
+  if (lines.length) flush(lines.length);
   return chunks;
 }
