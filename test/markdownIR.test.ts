@@ -60,7 +60,7 @@ describe("parseMarkdownToIR", () => {
     const document = parseMarkdownToIR("1. a\n   - x\n   - y\n2. b\n\n   para in b");
     expect(renderMarkerString(document, TELEGRAM_HTML_MARKERS, "\n\n")).toBe("1. a\n• x\n• y\n2. b\npara in b");
     expect(renderMarkerString(document, TELEGRAM_RICH_HTML_MARKERS, "<br><br>")).toBe("1. a<br>• x<br>• y<br>2. b<br>para in b");
-    expect(renderMarkerString(document, DISCORD_MARKERS)).toBe("1. a\n- x\n- y\n2. b\npara in b");
+    expect(renderMarkerString(document, DISCORD_MARKERS)).toBe("1. a\n   - x\n   - y\n2. b\n   para in b");
   });
 
   it("keeps paragraph, hard-break, quote and rule spacing on every surface", () => {

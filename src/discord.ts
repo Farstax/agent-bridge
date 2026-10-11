@@ -309,13 +309,96 @@ function truncate(text: string): string {
   return text.length > MAX_DISCORD_MESSAGE_LENGTH ? text.slice(-MAX_DISCORD_MESSAGE_LENGTH) : text;
 }
 
+interface MarkdownFence {
+  closer: string;
+  reopen: string;
+}
+
+const MAX_FENCE_INFO_CHARS = 40;
+
+function openingFence(line: string): MarkdownFence | null {
+  const match = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/.exec(line);
+  if (!match) return null;
+  const [, marker, info] = match;
+  if (marker.startsWith("`") && info.includes("`")) return null;
+  return { closer: marker, reopen: `${marker}${info.trim().slice(0, MAX_FENCE_INFO_CHARS)}` };
+}
+
+function closesFence(line: string, fence: MarkdownFence): boolean {
+  const match = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+  return !!match && match[1][0] === fence.closer[0] && match[1].length >= fence.closer.length;
+}
+
+/**
+ * Splits a Discord message on blank-line and line boundaries so list items and
+ * paragraphs stay whole. A fenced code block that crosses a boundary is closed
+ * at the end of one chunk and reopened at the start of the next. Only a single
+ * line longer than the limit is split by code point.
+ */
 export function chunkText(text: string): string[] {
-  if (text.length <= MAX_DISCORD_MESSAGE_LENGTH) return [text];
+  const limit = MAX_DISCORD_MESSAGE_LENGTH;
+  if (text.length <= limit) return [text];
   const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    chunks.push(remaining.slice(0, MAX_DISCORD_MESSAGE_LENGTH));
-    remaining = remaining.slice(MAX_DISCORD_MESSAGE_LENGTH);
+  let lines: string[] = [];
+  let length = 0;
+  let fence: MarkdownFence | null = null;
+  let lastBlank = -1;
+
+  const measure = (): void => {
+    length = lines.reduce((total, line, index) => total + line.length + (index ? 1 : 0), 0);
+  };
+  const emit = (count: number, closeFence: boolean): void => {
+    const head = lines.slice(0, count);
+    while (head.length && head[head.length - 1].trim() === "") head.pop();
+    if (head.length) chunks.push(head.join("\n") + (closeFence && fence ? `\n${fence.closer}` : ""));
+  };
+
+  const add = (line: string): void => {
+    const opens = fence ? null : openingFence(line);
+    const reserveFence = fence ?? opens;
+    const reserve = reserveFence ? reserveFence.closer.length + 1 : 0;
+    while (lines.length && length + 1 + line.length + reserve > limit) {
+      if (!fence && lastBlank > 0) {
+        emit(lastBlank, false);
+        lines = lines.slice(lastBlank + 1);
+        while (lines.length && lines[0].trim() === "") lines.shift();
+      } else {
+        emit(lines.length, true);
+        lines = fence ? [fence.reopen] : [];
+      }
+      lastBlank = -1;
+      measure();
+    }
+    lines.push(line);
+    length += (lines.length > 1 ? 1 : 0) + line.length;
+    if (fence) {
+      if (closesFence(line, fence)) fence = null;
+    } else if (opens) {
+      fence = opens;
+    } else if (line.trim() === "") {
+      lastBlank = lines.length - 1;
+    }
+  };
+
+  for (const rawLine of text.split("\n")) {
+    const opens = fence ? null : openingFence(rawLine);
+    const line = opens ? `${rawLine.match(/^ {0,3}/)![0]}${opens.reopen}` : rawLine;
+    const active = fence as MarkdownFence | null;
+    const cap = active ? limit - (active.reopen.length + active.closer.length + 2) : limit;
+    if (line.length <= cap) {
+      add(line);
+      continue;
+    }
+    let piece = "";
+    for (const point of Array.from(line)) {
+      if (piece.length + point.length > cap) {
+        add(piece);
+        piece = "";
+      }
+      piece += point;
+    }
+    if (piece) add(piece);
   }
+  if (lines.length) emit(lines.length, true);
   return chunks;
 }
