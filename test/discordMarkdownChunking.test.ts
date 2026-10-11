@@ -173,3 +173,49 @@ describe("Discord rate limits", () => {
     expect(error.finalChunksDelivered).toBe(2);
   });
 });
+
+describe("Discord rate limit boundaries", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const limited = (body: unknown, headers: Record<string, string> = {}) => ({
+    ok: false,
+    status: 429,
+    headers: new Headers(headers),
+    json: async () => {
+      if (body === undefined) throw new SyntaxError("not json");
+      return body;
+    },
+    text: async () => "",
+  });
+  const accepted = { ok: true, status: 200, headers: new Headers(), json: async () => ({ id: "1" }), text: async () => "{}" };
+
+  it("waits one second when a 429 carries no retry hint", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValueOnce(limited(undefined)).mockResolvedValue(accepted);
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const pending = client.sendMessage({ channel_id: "c", text: "hello" });
+    await vi.advanceTimersByTimeAsync(900);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(300);
+    await pending;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry when Discord asks for a wait longer than the cap", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(limited({ retry_after: 3600, global: true }));
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    const error = await client.sendMessage({ channel_id: "c", text: "hello" }).catch((e) => e);
+    expect(error.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry typing indicators", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(limited({ retry_after: 0.1 }));
+    const client = new DiscordClient({ token: "t", applicationId: "a", onUpdate: vi.fn() }, fetchMock as never);
+    await client.sendChatAction({ channel_id: "c" }).catch(() => undefined);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

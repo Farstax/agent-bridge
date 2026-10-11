@@ -27,6 +27,7 @@ export const MAX_DISCORD_SURROUNDING_CHARS = 3_000;
 const MAX_DISCORD_SURROUNDING_MESSAGE_CHARS = 800;
 const MAX_DISCORD_RATE_LIMIT_RETRIES = 5;
 const MAX_DISCORD_RATE_LIMIT_WAIT_MS = 15_000;
+const DISCORD_MESSAGE_POST_PATH = /^\/channels\/[^/]+\/messages$/;
 const MAX_DISCORD_ACTOR_LABEL_CHARS = 80;
 
 export interface DiscordUpdate {
@@ -259,8 +260,14 @@ export class DiscordClient implements MessagingPlatform {
       });
       // HTTP 429 is a definite rejection: Discord did not create the message,
       // so waiting for retry_after and re-posting cannot duplicate it.
-      if (res.status !== 429 || attempt >= MAX_DISCORD_RATE_LIMIT_RETRIES) break;
-      await sleep(await discordRetryDelayMs(res));
+      // Only channel message posts are retried. Interaction callbacks have a
+      // 3 s acknowledgement deadline and typing indicators are best-effort.
+      if (res.status !== 429 || !DISCORD_MESSAGE_POST_PATH.test(path) || attempt >= MAX_DISCORD_RATE_LIMIT_RETRIES) break;
+      const delayMs = await discordRetryDelayMs(res);
+      // A wait longer than the cap is a global or ban-style limit. Surface the
+      // 429 instead of re-hitting the endpoint early.
+      if (delayMs > MAX_DISCORD_RATE_LIMIT_WAIT_MS) break;
+      await sleep(delayMs);
     }
     if (requireOk && res.ok === false) {
       // A rejected message post must not look delivered (HTTP status is the only
@@ -349,7 +356,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function discordRetryDelayMs(res: any): Promise<number> {
-  let seconds = Number(res.headers?.get?.("retry-after"));
+  const header = res.headers?.get?.("retry-after");
+  let seconds = header === null || header === undefined || header === "" ? Number.NaN : Number(header);
   try {
     const body = await res.json();
     if (typeof body?.retry_after === "number") seconds = body.retry_after;
@@ -357,7 +365,7 @@ async function discordRetryDelayMs(res: any): Promise<number> {
     // Keep the header value or the default below.
   }
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 1;
-  return Math.min(Math.ceil(seconds * 1000) + 50, MAX_DISCORD_RATE_LIMIT_WAIT_MS);
+  return Math.ceil(seconds * 1000) + 50;
 }
 
 export function chunkText(text: string): string[] {
