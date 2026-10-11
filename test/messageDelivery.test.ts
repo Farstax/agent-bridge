@@ -881,6 +881,10 @@ describe("typingInterval cleanup on isAborted early return", () => {
 describe("sendTelegramMessage table rendering", () => {
   const tableMarkdown = "| Name | Age |\n| --- | --- |\n| Alice | 30 |";
 
+  function tableWithOneCell(value: string): string {
+    return `| A | B |\n|---|---|\n| ${value} | y |`;
+  }
+
   it("renders tables as card-style HTML lines, not <table> tags", async () => {
     const client = createMockClient();
     await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text: tableMarkdown } });
@@ -947,6 +951,185 @@ describe("sendTelegramMessage table rendering", () => {
         rich_message: expect.objectContaining({ html: expect.stringContaining("<table") }),
       }),
     );
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses rich delivery at the 32,768 UTF-8 text boundary", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+
+    // The rendered rich text is headers "AB", cell value, and cell "y".
+    await withEnv({ TELEGRAM_DOCUMENT_FALLBACK_ENABLED: undefined }, async () => {
+      await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text: tableWithOneCell("x".repeat(32_765)) } });
+    });
+
+    expect(client.sendRichMessage).toHaveBeenCalledOnce();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("falls back before sending a rich message above the UTF-8 text limit without losing ordered-list content", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    const text = `1. Before\n\n${tableWithOneCell("x".repeat(32_766))}\n\n1. After`;
+
+    await withEnv({ TELEGRAM_DOCUMENT_FALLBACK_ENABLED: undefined }, async () => {
+      await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text } });
+    });
+
+    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    const payloads = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body.text as string);
+    expect(payloads.length).toBeGreaterThan(1);
+    expect(payloads.every((payload: string) => payload.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length <= 4_096)).toBe(true);
+    const delivered = payloads.join("\n");
+    expect(delivered).toContain("1. Before");
+    // The table separates distinct ordered lists, so this remains a new list.
+    expect(delivered).toContain("1. After");
+    expect((delivered.match(/x/g) ?? []).length).toBe(32_766);
+  });
+
+  it("measures the rich text limit in UTF-8 bytes, not JavaScript code units", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+
+    await withEnv({ TELEGRAM_DOCUMENT_FALLBACK_ENABLED: undefined }, async () => {
+      await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text: tableWithOneCell("🚀".repeat(8_192)) } });
+    });
+
+    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    expect(client.sendMessage).toHaveBeenCalled();
+  });
+
+  it("falls back before sending a rich message with more than 500 rich blocks", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    const rows = Array.from({ length: 500 }, (_, index) => `| ${index} | value-${index} |`).join("\n");
+    const text = `| Number | Value |\n|---|---|\n${rows}`;
+
+    await withEnv({ TELEGRAM_DOCUMENT_FALLBACK_ENABLED: undefined }, async () => {
+      await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text } });
+    });
+
+    // One table plus its header and 500 body rows exceeds the 500-block limit.
+    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    const delivered = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body.text as string).join("\n");
+    expect(delivered).toContain("<b>Number</b> 0");
+    expect(delivered).toContain("<b>Number</b> 499");
+  });
+
+  it("uses rich delivery at exactly 500 rich blocks", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    // The table itself, its header row, and 498 body rows are 500 blocks.
+    const rows = Array.from({ length: 498 }, (_, index) => `| ${index} | value-${index} |`).join("\n");
+
+    await sendTelegramMessage({
+      client,
+      kind: "claude",
+      chatId: 1,
+      body: { text: `| Number | Value |\n|---|---|\n${rows}` },
+    });
+
+    expect(client.sendRichMessage).toHaveBeenCalledOnce();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("counts implicit paragraphs around a table before rich delivery", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    // The table itself, header row, and 498 body rows reach 500. The prose on
+    // both sides becomes two rich paragraph blocks, so this must pre-fallback.
+    const rows = Array.from({ length: 498 }, (_, index) => `| ${index} | value-${index} |`).join("\n");
+    const text = `Before the table.\n\n| Number | Value |\n|---|---|\n${rows}\n\nAfter the table.`;
+
+    await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text } });
+
+    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    const delivered = (client.sendMessage as any).mock.calls.map(([body]: any[]) => body.text as string).join("\n");
+    expect(delivered).toContain("Before the table.");
+    expect(delivered).toContain("After the table.");
+    expect(delivered).toContain("<b>Number</b> 497");
+  });
+
+  it("counts paragraphs separated by blank lines towards the 500 rich blocks limit", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    // 501 paragraphs separated by double breaks exceed the 500-block limit
+    const paragraphs = Array.from({ length: 501 }, (_, i) => `Paragraph ${i}`).join("\n\n");
+    const text = `| A | B |\n|---|---|\n| 1 | 2 |\n\n${paragraphs}`;
+
+    await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text } });
+
+    expect(client.sendRichMessage).not.toHaveBeenCalled();
+    expect(client.sendMessage).toHaveBeenCalled();
+  });
+
+  it("uses rich delivery at 16 nesting levels and falls back above it", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => ({ ok: true, result: { message_id: 1 } })),
+    } as any;
+    // table > tbody > tr > td consumes four levels, leaving twelve for spans.
+    const atLimit = "**".repeat(12);
+
+    await sendTelegramMessage({
+      client,
+      kind: "claude",
+      chatId: 1,
+      body: { text: `| A | B |\n|---|---|\n| ${atLimit}nested${atLimit} | value |` },
+    });
+
+    expect(client.sendRichMessage).toHaveBeenCalledOnce();
+    expect(client.sendMessage).not.toHaveBeenCalled();
+
+    const aboveLimit = "**".repeat(13);
+    await sendTelegramMessage({
+      client,
+      kind: "claude",
+      chatId: 1,
+      body: { text: `| A | B |\n|---|---|\n| ${aboveLimit}nested${aboveLimit} | value |` },
+    });
+
+    expect(client.sendRichMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining("nested") }));
+  });
+
+  it("falls back once after a definite rich-message rejection", async () => {
+    const richError = Object.assign(new Error("Telegram HTTP 400: Bad Request"), { status: 400 });
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => { throw richError; }),
+    } as any;
+
+    await sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text: tableMarkdown } });
+
+    expect(client.sendRichMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry via HTML after an ambiguous rich-message failure", async () => {
+    const client = {
+      ...createMockClient(),
+      sendRichMessage: vi.fn(async () => { throw new Error("socket hung up after request write"); }),
+    } as any;
+
+    await expect(sendTelegramMessage({ client, kind: "claude", chatId: 1, body: { text: tableMarkdown } }))
+      .rejects.toThrow("socket hung up");
+
+    expect(client.sendRichMessage).toHaveBeenCalledTimes(1);
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 });

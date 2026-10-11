@@ -452,6 +452,84 @@ export function markdownTableToRichHtml(markdown: string): string {
   return renderMarkerString(parseMarkdownToIR(markdown), TELEGRAM_RICH_HTML_MARKERS, "<br><br>");
 }
 
+const MAX_TELEGRAM_RICH_TEXT_BYTES = 32_768;
+const MAX_TELEGRAM_RICH_BLOCKS = 500;
+const MAX_TELEGRAM_RICH_NESTING = 16;
+const RICH_VOID_TAGS = new Set(["br", "hr"]);
+const RICH_BLOCK_TAGS = new Set(["pre", "table", "tr"]);
+
+/**
+ * Check the documented sendRichMessage limits against the exact generated HTML.
+ * Rich HTML tags themselves do not consume text bytes. Tables and preformatted
+ * blocks are the only block tags emitted by this renderer; table rows count as
+ * nested blocks. User input is escaped before this point, so tag inspection
+ * cannot be affected by source Markdown.
+ */
+export function isTelegramRichHtmlWithinLimits(html: string): boolean {
+  const text = html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(amp|lt|gt|quot);/g, (_match, entity: string) => ({ amp: "&", lt: "<", gt: ">", quot: '"' })[entity]!);
+  if (Buffer.byteLength(text, "utf8") > MAX_TELEGRAM_RICH_TEXT_BYTES || [...text].length > MAX_TELEGRAM_RICH_TEXT_BYTES) return false;
+
+  let blocks = 0;
+  let depth = 0;
+  let richBlockDepth = 0;
+  let maxDepth = 0;
+  let inImplicitParagraph = false;
+  let consecutiveBrs = 0;
+  const tags = /<\/?([a-z][\w-]*)(?:\s[^>]*?)?(\/?)>/gi;
+  let cursor = 0;
+  for (const match of html.matchAll(tags)) {
+    const text = html.slice(cursor, match.index);
+    if (/\S/.test(text)) {
+      consecutiveBrs = 0;
+      if (richBlockDepth === 0) {
+        if (!inImplicitParagraph) blocks += 1;
+        inImplicitParagraph = true;
+        // Telegram wraps top-level inline content in a paragraph block.
+        maxDepth = Math.max(maxDepth, depth + 1);
+      }
+    }
+    const raw = match[0]!;
+    const tag = match[1]!.toLowerCase();
+    const isSelfClosing = Boolean(match[2]) || raw.endsWith("/>");
+    if (raw.startsWith("</")) {
+      consecutiveBrs = 0;
+      if (RICH_BLOCK_TAGS.has(tag)) {
+        richBlockDepth = Math.max(0, richBlockDepth - 1);
+        inImplicitParagraph = false;
+      }
+      if (!RICH_VOID_TAGS.has(tag)) depth = Math.max(0, depth - 1);
+      cursor = match.index! + raw.length;
+      continue;
+    }
+    if (tag === "br") {
+      consecutiveBrs += 1;
+      if (consecutiveBrs >= 2) {
+        inImplicitParagraph = false;
+      }
+    } else {
+      consecutiveBrs = 0;
+    }
+    if (RICH_BLOCK_TAGS.has(tag)) {
+      blocks += 1;
+      richBlockDepth += 1;
+      inImplicitParagraph = false;
+    }
+    if (!RICH_VOID_TAGS.has(tag) && !isSelfClosing) {
+      depth += 1;
+      maxDepth = Math.max(maxDepth, depth);
+    }
+    cursor = match.index! + raw.length;
+  }
+  const trailingText = html.slice(cursor);
+  if (/\S/.test(trailingText) && richBlockDepth === 0) {
+    if (!inImplicitParagraph) blocks += 1;
+    maxDepth = Math.max(maxDepth, depth + 1);
+  }
+  return blocks <= MAX_TELEGRAM_RICH_BLOCKS && maxDepth <= MAX_TELEGRAM_RICH_NESTING;
+}
+
 /** Telegram applies its message limit after entity parsing: tags do not count and an entity is one character. */
 function telegramVisibleLength(html: string): number {
   return html.replace(/<[^>]+>/g, "").replace(/&(?:amp|lt|gt|quot);/g, "x").length;
