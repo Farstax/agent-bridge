@@ -8,8 +8,9 @@ import { openDb } from "../src/db.js";
 import { SensorRegistry } from "../src/sensors/registry.js";
 import { buildSensorsKeyboard, formatSensorReport, formatSensorReports, handleSensorCallback, isSensorsCommand, parseSensorCallback } from "../src/sensors/telegram.js";
 import { normalizeSensorReport } from "../src/sensors/report.js";
-import { readAptUpdateStatus, ServerSensor } from "../src/sensors/server.js";
+import { readAptUpdateStatus, readMemAvailableBytes, readPressureAverage, ServerSensor } from "../src/sensors/server.js";
 import { AgentBridgeSensor } from "../src/sensors/agentBridge.js";
+import { clearProviderRuntimeAuthDegraded, markProviderRuntimeAuthDegraded } from "../src/providers/runtimeAvailability.js";
 
 const paths: string[] = [];
 const temporary = (name: string) => {
@@ -49,6 +50,27 @@ describe("sensors", { timeout: 30_000 }, () => {
     expect(bridge.checks.find((check) => check.name === "db-read")?.status).toBe("green");
     db.close();
   }, 10_000);
+
+  it("reports a missing DB handle instead of claiming a successful read", async () => {
+    const dbPath = temporary("sensor-handle.sqlite");
+    const db = openDb(dbPath, { serviceId: "sensor-test", runId: "sensor-test" });
+    db.close();
+    const report = await new AgentBridgeSensor(undefined, dbPath).check();
+    expect(report.checks.find((check) => check.name === "db-read")).toMatchObject({ status: "red" });
+  });
+
+  it("surfaces runtime authentication degradation separately from adapter installation", async () => {
+    markProviderRuntimeAuthDegraded("grok");
+    try {
+      const report = await new AgentBridgeSensor().check();
+      expect(report.checks.find((check) => check.name === "provider-runtime-auth")).toMatchObject({
+        status: "red",
+        message: expect.stringContaining("grok"),
+      });
+    } finally {
+      clearProviderRuntimeAuthDegraded("grok");
+    }
+  });
 
   it("does not write Sensor or health history while observing the interactive DB", async () => {
     const dbPath = temporary("sensor-readonly.sqlite");
@@ -212,6 +234,20 @@ describe("sensors", { timeout: 30_000 }, () => {
     chmodSync(script, 0o755);
     expect(readAptUpdateStatus(script)).toEqual({ total: 12, security: 3 });
   });
+
+  it("uses MemAvailable and parses bounded PSI observations", () => {
+    expect(readMemAvailableBytes("MemFree: 10 kB\nMemAvailable: 512000 kB\n")).toBe(512000 * 1024);
+    expect(readMemAvailableBytes("MemFree: 10 kB\n")).toBeNull();
+    expect(readPressureAverage("some avg10=1.00 avg60=5.25 avg300=2.00 total=1\n")).toBe(5.25);
+    expect(readPressureAverage("full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")).toBeNull();
+  });
+
+  it("keeps package update queries bounded without treating a slow success as invalid", () => {
+    const script = temporary("slow-apt-check");
+    writeFileSync(script, "#!/bin/sh\nsleep 1\nprintf '4;0'\n");
+    chmodSync(script, 0o755);
+    expect(readAptUpdateStatus(script, 2_000)).toEqual({ total: 4, security: 0 });
+  }, 5_000);
 
   it("acknowledges a Sensor callback before slow execution and returns to the same topic exactly once", async () => {
     const events: string[] = [];
