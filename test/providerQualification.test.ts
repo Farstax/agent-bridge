@@ -8,8 +8,10 @@ import {
   PROVIDER_CONTRACT_VERSION,
   currentQualificationRuntime,
   isQualificationCurrent,
+  qualificationEvidencePath,
   qualificationHealthCheck,
   qualifyProvider,
+  qualifyProviderIfNeeded,
   readProviderVersion,
   readQualificationEvidence,
   writeQualificationRecord,
@@ -271,6 +273,88 @@ exit 7
       const other = executable(join(root, "other_agy_acp_server.par"), `${agyScript}\n# other\n`);
       const record = await qualifyAgy(deployed, other, false);
       expect(record.candidate).toMatchObject({ executable: realpathSync(deployed), staged: false });
+    });
+
+    it("invalidates current qualification when executable bytes change without release or version changing", async () => {
+      const root = mkdtempSync(join(tmpdir(), "provider-qualification-byte-drift-"));
+      const acp = executable(join(root, "agy_acp_server.par"), agyScript);
+      const previousCommand = process.env.AGY_ACP_COMMAND;
+      const previousArgs = process.env.AGY_ACP_ARGS;
+      process.env.AGY_ACP_COMMAND = acp;
+      process.env.AGY_ACP_ARGS = "--uid=";
+      try {
+        const evidencePath = join(root, "qualification.json");
+        const initial = await qualifyProvider({
+          providerId: "agy",
+          executable: acp,
+          evidencePath,
+          bridgeCommit: "b".repeat(40),
+          cwd: root,
+          homeDir: root,
+          timeoutMs: 5_000,
+          env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "--uid=" },
+        });
+        expect(isQualificationCurrent(initial, "agy", "1.3.0", process.env)).toBe(true);
+
+        // Mutate the executable bytes while keeping the reported version identical
+        writeFileSync(acp, `${agyScript}\n# modified binary bytes\n`, { encoding: "utf8", mode: 0o755 });
+        expect(isQualificationCurrent(initial, "agy", "1.3.0", process.env)).toBe(false);
+
+        // qualifyProviderIfNeeded must not reuse the stale record when bytes changed
+        const recheck = await qualifyProviderIfNeeded({
+          providerId: "agy",
+          executable: acp,
+          evidencePath,
+          homeDir: root,
+          env: { ...process.env, AGY_ACP_COMMAND: acp, AGY_ACP_ARGS: "--uid=" },
+        });
+        expect(recheck.ran).toBe(true);
+        expect(recheck.record.candidate?.sha256).not.toBe(initial.candidate?.sha256);
+      } finally {
+        if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
+        else process.env.AGY_ACP_COMMAND = previousCommand;
+        if (previousArgs === undefined) delete process.env.AGY_ACP_ARGS;
+        else process.env.AGY_ACP_ARGS = previousArgs;
+      }
+    });
+
+    it("refuses to overwrite active production qualification evidence with staged candidate qualification", async () => {
+      const root = mkdtempSync(join(tmpdir(), "provider-qualification-staged-prod-"));
+      const staged = executable(join(root, "staged_agy_acp_server.par"), `${agyScript}\n# staged\n`);
+      const prodPath = qualificationEvidencePath(root);
+      const previousCommand = process.env.AGY_ACP_COMMAND;
+      const previousArgs = process.env.AGY_ACP_ARGS;
+      process.env.AGY_ACP_COMMAND = staged;
+      process.env.AGY_ACP_ARGS = "--uid=";
+      try {
+        await expect(qualifyProvider({
+          providerId: "agy",
+          executable: staged,
+          stagedExecutable: true,
+          evidencePath: prodPath,
+          bridgeCommit: "d".repeat(40),
+          cwd: root,
+          homeDir: root,
+          timeoutMs: 5_000,
+          env: { ...process.env, AGY_ACP_COMMAND: staged, AGY_ACP_ARGS: "--uid=" },
+        })).rejects.toThrow(/staged qualification cannot overwrite active production qualification evidence/);
+      } finally {
+        if (previousCommand === undefined) delete process.env.AGY_ACP_COMMAND;
+        else process.env.AGY_ACP_COMMAND = previousCommand;
+        if (previousArgs === undefined) delete process.env.AGY_ACP_ARGS;
+        else process.env.AGY_ACP_ARGS = previousArgs;
+      }
+    });
+
+    it("never considers a staged qualification record as current for production runtime", () => {
+      const runtimeIdentity = currentQualificationRuntime("agy");
+      const record = passingRecord({
+        provider: "agy",
+        providerVersion: "1.3.0",
+        executionRuntime: runtimeIdentity,
+        candidate: { executable: "/usr/bin/agy", sha256: "abc", staged: true },
+      });
+      expect(isQualificationCurrent(record, "agy", "1.3.0")).toBe(false);
     });
   });
 

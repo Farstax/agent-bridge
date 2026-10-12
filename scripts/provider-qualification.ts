@@ -124,6 +124,9 @@ async function main(): Promise<void> {
   // check, the exercised provider and the evidence all refer to it.
   if (args.stagedExecutable !== undefined) {
     const staged = assertStagedExecutable(args.stagedExecutable);
+    if (!args.evidencePath) {
+      throw new Error("--staged-executable requires --evidence");
+    }
     const key = stagedExecutableEnvKey(providerId);
     if (!key) throw new Error(`${providerId} does not support staged executable selection`);
     runtimeEnv[key] = staged;
