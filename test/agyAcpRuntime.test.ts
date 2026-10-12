@@ -146,6 +146,15 @@ describe("Agy ACP provider", () => {
         isExecutable: () => true,
         isValid: () => false,
       })).toBe(false);
+      const installedAgy = join(root, "agy_acp_server.par");
+      writeFileSync(installedAgy, "#!/bin/sh\\necho 'agy_acp_server.par 1.2.1'\\n", "utf8");
+      chmodSync(installedAgy, 0o755);
+      const runtime = resolveProviderRuntime("agy", { AGY_ACP_COMMAND: installedAgy });
+      expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
+        .toThrow(/expects 1\\.3\\.0, observed 1\\.2\\.1/);
+      writeFileSync(installedAgy, "#!/bin/sh\\necho 'agy_acp_server.par 1.3.0'\\n", "utf8");
+      expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
+        .not.toThrow();
       expect(resolveAgyHarnessPath({ ANTIGRAVITY_HARNESS_PATH: harness })).toBe(harness);
       expect(agyAcpPolicy.buildChildEnv?.(request(), { ANTIGRAVITY_HARNESS_PATH: harness }))
         .toEqual({ ANTIGRAVITY_HARNESS_PATH: harness });
