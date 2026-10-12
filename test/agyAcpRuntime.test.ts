@@ -87,7 +87,7 @@ describe("Agy ACP provider", () => {
 
   it("refuses a stale, malformed, or missing Agy executable before submission", () => {
     expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "agy_acp_server.par 1.2.1"))
-      .toThrow(/expects 1\\.3\\.0, observed 1\\.2\\.1/);
+      .toThrow(/expects 1\.3\.0, observed 1\.2\.1/);
     expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "unknown"))
       .toThrow(/observed unknown/);
     expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => { throw new Error("not installed"); }))
