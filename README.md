@@ -22,7 +22,7 @@ cancellation, scheduled work, autonomous continuation, and guarded operations.
 ## What it feels like to use
 
 1. Give a coding agent a real repository and its normal tools on an always-on host.
-2. Work with it through a durable Telegram or Discord conversation.
+2. Work with it through a durable Telegram, Discord, or Slack conversation.
 3. Leave the desk while the same workstream remains available.
 4. Check progress, answer questions, stop work, or continue from your phone.
 5. Switch provider when useful without creating a new workstream.
@@ -45,7 +45,7 @@ switch to Codex when useful
 same workstream, same repository
 ```
 
-A Telegram forum topic or Discord conversation can act as a durable workstream:
+A Telegram forum topic, Discord conversation, or Slack thread can act as a durable workstream:
 conversation state belongs to the workstream, while each provider keeps its own
 native session underneath it.
 
@@ -84,8 +84,7 @@ then enters the same ordinary Run and provider-agent path.
 - **Native provider sessions** — Codex, Claude Code, Antigravity/Agy, Grok Build,
   and Cursor keep their own session identity rather than being flattened into a
   new harness.
-- **Telegram and Discord** — use the coding agents from the messaging surfaces
-  you already carry, including Telegram forum-topic routing.
+- **Telegram, Discord, and Slack** — interact with coding agents over Telegram forum topics, Discord channels, or allowlisted Slack DMs and mentions. Slack v1 uses text-only replies and does not support attachments, slash commands, or previews.
 - **Provider switching and fallback** — choose a provider per workstream and use
   configured fallback without replacing the conversation itself.
 - **Cancellation and fencing** — `/stop` prevents superseded work from continuing
@@ -169,9 +168,14 @@ fallback. `npm run doctor` reads `.env.interactive` by default; set
 `BRIDGE_ENV_FILE` to diagnose another runtime env file. Provider-locked and
 production deployment details live in the operator documentation below.
 
-See [source/self-hosting examples](docs/examples/README.md) for multi-provider
-Telegram, Telegram topic workstreams, Discord interactive, and scheduled
-routines.
+Choose an additional standalone surface using its guide:
+
+- [Telegram with multiple providers](docs/examples/telegram-multi-provider.md) — supported source setup wizard (`npm run setup`).
+- [Discord interactive](docs/examples/discord-interactive.md) — manual bot/application setup and separate companion process.
+- [Slack via Socket Mode](docs/slack.md) — operator-owned app, two credentials, dedicated database and separate companion process.
+- [Telegram topic workstreams](docs/examples/telegram-topic-workstreams.md) — topics provide separate durable conversations.
+
+**Current setup boundary:** `npm run setup` configures **Telegram only**. Discord and Slack have documented manual setup; neither is enabled by the source wizard yet. See [issue #1003](https://github.com/Farstax/agent-bridge/issues/1003) for unified onboarding. Slack's example systemd unit is operator-installed, not selected by the one-time production installer. Surface capabilities differ: Slack accepts owner-allowlisted DMs and explicit mentions with text-only threaded replies and text commands such as `!cli`; Telegram uses slash commands such as `/cli`.
 
 ## Production installation
 
