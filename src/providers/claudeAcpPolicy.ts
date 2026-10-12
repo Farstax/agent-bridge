@@ -13,6 +13,7 @@ import {
 import { createStreamingSecretRedactor } from "./streamingSecretRedactor.js";
 import type { ProviderInvocationRequest } from "./types.js";
 import { resolveClaudeAcpArgs, resolveClaudeAcpCommand } from "./claudeAcpConfig.js";
+import { loadProjectedClaudeMcpServers } from "./claudeManagedMcp.js";
 import { claudeCredentialLockFile } from "./runtimeAvailability.js";
 
 const REPOSITORY_GROUNDING_APPEND = [
@@ -59,6 +60,7 @@ export async function verifyClaudeAcpApiKey(
         options: {
           tools: [],
           mcpServers: {},
+          strictMcpConfig: true,
           settingSources: [],
         },
       },
@@ -93,10 +95,12 @@ function sessionSettings(
           // File-backed user/project/local settings can contain permission rules
           // that the Claude SDK evaluates before canUseTool. Exclude them so a
           // repository cannot bypass Agent Bridge's ACP permission decision.
+          // strictMcpConfig keeps Claude from merging those files' MCP servers.
+          // The explicit map is only the workspace projection helper's servers.
           settingSources: [],
-          ...(request.toolMode === "none"
-            ? { tools: [], mcpServers: {}, strictMcpConfig: true }
-            : {}),
+          strictMcpConfig: true,
+          mcpServers: request.toolMode === "none" ? {} : loadProjectedClaudeMcpServers(env),
+          ...(request.toolMode === "none" ? { tools: [] } : {}),
         },
       },
     },
