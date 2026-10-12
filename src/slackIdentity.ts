@@ -24,7 +24,8 @@ export interface SlackIdentityWebClient {
 }
 
 export class SlackIdentityError extends Error {
-  constructor(readonly code: SlackIdentityErrorCode, message: string) {
+  /** True only when Slack stated the credentials or app are unusable (not a transport failure). */
+  constructor(readonly code: SlackIdentityErrorCode, message: string, readonly permanent = false) {
     super(message);
     this.name = "SlackIdentityError";
   }
@@ -45,25 +46,29 @@ export function assertSupportedSlackTokens(botToken: string, appToken: string): 
   if (!/^xapp-/.test(appToken)) throw new SlackIdentityError("token_invalid", "SLACK_APP_TOKEN must be an app-level token (xapp-...).");
 }
 
+const PERMANENT_AUTH_ERRORS = new Set(["invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive", "bot_not_found", "team_access_not_granted", "no_permission"]);
+
 export async function verifySlackBotIdentity(web: SlackIdentityWebClient): Promise<SlackBotIdentity> {
   let auth: any;
   try {
     auth = await web.auth.test();
   } catch (error) {
-    throw new SlackIdentityError("token_invalid", `Slack bot token verification failed: ${safeSlackErrorCode(error)}`);
+    const reason = safeSlackErrorCode(error);
+    throw new SlackIdentityError("token_invalid", `Slack bot token verification failed: ${reason}`, PERMANENT_AUTH_ERRORS.has(reason));
   }
   const teamId = str(auth?.team_id);
   const botUserId = str(auth?.user_id);
   const botId = str(auth?.bot_id);
-  if (!teamId || !botUserId || !botId) throw new SlackIdentityError("identity_unavailable", "Slack auth.test did not return a team, bot user and bot ID.");
+  if (!teamId || !botUserId || !botId) throw new SlackIdentityError("identity_unavailable", "Slack auth.test did not return a team, bot user and bot ID.", true);
   let info: any;
   try {
     info = await web.bots.info({ bot: botId });
   } catch (error) {
-    throw new SlackIdentityError("identity_unavailable", `Slack bots.info failed (the users:read scope is required): ${safeSlackErrorCode(error)}`);
+    const reason = safeSlackErrorCode(error);
+    throw new SlackIdentityError("identity_unavailable", `Slack bots.info failed (the users:read scope is required): ${reason}`, PERMANENT_AUTH_ERRORS.has(reason) || reason === "missing_scope");
   }
   const appId = str(info?.bot?.app_id);
-  if (!appId) throw new SlackIdentityError("identity_unavailable", "Slack bots.info did not return an app ID.");
+  if (!appId) throw new SlackIdentityError("identity_unavailable", "Slack bots.info did not return an app ID.", true);
   return { teamId, botUserId, botId, appId };
 }
 

@@ -679,7 +679,18 @@ export class BridgeEngine {
     }, this.db.lockHeartbeatMs) : null;
     lockHeartbeat?.unref();
 
-    const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
+    const { runId, eventContext, collect: collectEvent, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
+    // #943: correlate admission receipts as soon as the Run row exists, which is
+    // before the provider prompt is submitted, so a crash leaves a linked receipt.
+    const receiptKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX));
+    let receiptsCorrelated = receiptKeys.length === 0;
+    const collect = receiptsCorrelated ? collectEvent : (event: BridgeEvent) => {
+      collectEvent(event);
+      if (!receiptsCorrelated && this.db.getRun(runId)) {
+        receiptsCorrelated = true;
+        this._correlateEventReceipts(receiptKeys, runId);
+      }
+    };
     let outcome: ExecutionOutcome | null = null;
     try {
       const result = await this._executeAndDeliverTurn({
@@ -928,6 +939,19 @@ export class BridgeEngine {
     }
   }
 
+  /** Links admission receipts to their Run and settles them once the Run is terminal. */
+  private _correlateEventReceipts(keys: string[], runId: string): void {
+    for (const key of keys) {
+      const receiptId = Number(key.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
+      if (!Number.isSafeInteger(receiptId)) continue;
+      this.db.linkEventReceiptRun(receiptId, runId);
+      const status = this.db.getRun(runId)?.status;
+      if (status === "done") this.db.finishEventReceipt(receiptId, { status: "completed", result_reference: runId });
+      else if (status === "failed") this.db.finishEventReceipt(receiptId, { status: "failed", result_reference: runId });
+      else if (status === "cancelled") this.db.finishEventReceipt(receiptId, { status: "cancelled", result_reference: runId });
+    }
+  }
+
   private _linkScheduledOccurrences(scheduledOccurrenceKeys: string[], runId: string): void {
     if (scheduledOccurrenceKeys.length === 0) return;
     if (!this.db.getRun(runId)) return;
@@ -936,15 +960,7 @@ export class BridgeEngine {
       // queue correlation as scheduled occurrences; they link to the receipt
       // row rather than the scheduled-occurrence table.
       if (occurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
-        const receiptId = Number(occurrenceKey.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
-        if (Number.isSafeInteger(receiptId)) {
-          this.db.linkEventReceiptRun(receiptId, runId);
-          // The link runs after the Run settled, so the receipt can settle with it.
-          const status = this.db.getRun(runId)?.status;
-          if (status === "done") this.db.finishEventReceipt(receiptId, { status: "completed", result_reference: runId });
-          else if (status === "failed") this.db.finishEventReceipt(receiptId, { status: "failed", result_reference: runId });
-          else if (status === "cancelled") this.db.finishEventReceipt(receiptId, { status: "cancelled", result_reference: runId });
-        }
+        this._correlateEventReceipts([occurrenceKey], runId);
         continue;
       }
       if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {

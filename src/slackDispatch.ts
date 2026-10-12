@@ -8,6 +8,14 @@
  * NEIGHBORS: src/slackIngress.ts, src/index-slack-interactive.ts
  */
 import type { BridgeDb, EventReceipt } from "./db.js";
+import type { ProviderFallbackChain } from "./providerFallback.js";
+import {
+  applyManualCliSwitchHandoff,
+  buildCliStatusText,
+  getUserCliPreference,
+  handleCliSwitchCallback,
+  type CliKind,
+} from "./interactiveBot.js";
 import { EVENT_RECEIPT_CORRELATION_PREFIX, type InteractiveTurnInput } from "./interactiveIngress.js";
 import {
   SLACK_RECEIPT_SOURCE,
@@ -21,6 +29,8 @@ import {
 export const SLACK_RESTART_NOTICE = "Agent Bridge restarted while handling this message and could not confirm it finished. It was not re-run. Send it again if you still need it.";
 export const SLACK_AMBIGUOUS_NOTICE = "This message may not have completed. It was not re-run. Send it again if you still need it.";
 export const MAX_RESTART_NOTICES = 20;
+/** Slack retries within minutes; settled receipts are kept for diagnosis, then removed. */
+export const RECEIPT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
 export interface SlackReceiptRuntimeDeps {
   db: BridgeDb;
@@ -28,6 +38,8 @@ export interface SlackReceiptRuntimeDeps {
   authorityScope: string;
   /** Existing provider-fallback dispatch for one normalised turn. */
   dispatch: (turn: InteractiveTurnInput) => Promise<unknown>;
+  /** Surface-local commands that create no Run (for example `!cli`); true when handled. */
+  handleCommand?: (turn: InteractiveTurnInput) => Promise<boolean>;
   /** Native-coordinate notice (channel, thread ts). */
   notify: (channel: string, thread: string | undefined, text: string) => Promise<void>;
   log?: (message: string) => void;
@@ -51,9 +63,19 @@ export function createSlackReceiptRuntime(deps: SlackReceiptRuntimeDeps) {
     if (!db.claimEventReceiptDispatch(receipt.id)) return;
     const turn: InteractiveTurnInput = { ...stored, scheduledOccurrenceKey: `${EVENT_RECEIPT_CORRELATION_PREFIX}${receipt.id}` };
     try {
+      if (await deps.handleCommand?.(turn)) {
+        db.finishEventReceipt(receipt.id, { status: "completed" });
+        return;
+      }
       await deps.dispatch(turn);
-      const linked = db.getEventReceipt(receipt.id);
-      db.finishEventReceipt(receipt.id, { status: "completed", result_reference: linked?.run_id ?? null });
+      // The engine settles a receipt from its Run. Work the durable queue still
+      // owns stays open until that Run settles it; a turn that created no Run
+      // (a bridge command) has nothing left to wait for.
+      const settled = db.getEventReceipt(receipt.id);
+      if (settled && (settled.status === "dispatching" || settled.status === "run_created")
+        && !db.hasPendingMessageForCorrelationKey(slackSurfaceIdentity(context.teamId, context.appId), `${EVENT_RECEIPT_CORRELATION_PREFIX}${receipt.id}`)) {
+        db.finishEventReceipt(receipt.id, { status: "completed", result_reference: settled.run_id });
+      }
     } catch (error) {
       // The provider may already have started: fence, never replay.
       db.finishEventReceipt(receipt.id, { status: "ambiguous", error_class: "dispatch_failed" });
@@ -105,7 +127,9 @@ export function createSlackReceiptRuntime(deps: SlackReceiptRuntimeDeps) {
         continue;
       }
       db.finishEventReceipt(receipt.id, { status: "ambiguous", result_reference: receipt.run_id, error_class: "restart_interrupted" });
-      const stored = turnFromReceipt(receipt);
+      // A linked Run is reported by its own terminal state and orphan
+      // reconciliation, so only unlinked work gets a notice here.
+      const stored = receipt.run_id ? null : turnFromReceipt(receipt);
       if (stored && notices < MAX_RESTART_NOTICES) {
         notices += 1;
         await deps.notify(String(stored.delivery.chatId), stored.threadId, SLACK_RESTART_NOTICE).catch(() => undefined);
@@ -121,6 +145,7 @@ export function createSlackReceiptRuntime(deps: SlackReceiptRuntimeDeps) {
       redispatch.push(dispatchReceipt(receipt, stored));
     }
     await Promise.all(redispatch);
+    db.pruneSettledEventReceipts(SLACK_RECEIPT_SOURCE, new Date(Date.now() - RECEIPT_RETENTION_MS).toISOString());
   }
 
   return {
@@ -128,5 +153,34 @@ export function createSlackReceiptRuntime(deps: SlackReceiptRuntimeDeps) {
     recoverReceipts,
     /** Hold live dispatch until the given startup recovery has settled. */
     gateOn(promise: Promise<void>) { ready = promise.catch(() => undefined); },
+  };
+}
+
+/** `!cli` is a bridge command: it reports or switches the provider and creates no Run. */
+export function createSlackCliCommandHandler(deps: {
+  db: BridgeDb;
+  surfaceIdentity: string;
+  fallbackChain: Pick<ProviderFallbackChain, "setActiveCli">;
+  available: () => ReadonlySet<CliKind>;
+  hasEngine: (cli: CliKind) => boolean;
+  notify: (channel: string, thread: string | undefined, text: string) => Promise<void>;
+}): (turn: InteractiveTurnInput) => Promise<boolean> {
+  return async (turn) => {
+    const [command, requested] = turn.text.trim().split(/\s+/);
+    if (command !== "/cli") return false;
+    const channel = String(turn.delivery.chatId);
+    const available = deps.available();
+    const identity = { surfaceIdentity: deps.surfaceIdentity, chatKey: turn.chatKey };
+    if (requested) {
+      const target = handleCliSwitchCallback(`cli:${requested.toLowerCase()}`);
+      if (!target || !available.has(target) || !deps.hasEngine(target)) {
+        await deps.notify(channel, turn.threadId, `Unknown or unavailable CLI "${requested.slice(0, 40)}". ${buildCliStatusText(getUserCliPreference(deps.db, identity), available)}`);
+        return true;
+      }
+      applyManualCliSwitchHandoff(deps.db, identity, target);
+      deps.fallbackChain.setActiveCli(turn.chatKey, target);
+    }
+    await deps.notify(channel, turn.threadId, buildCliStatusText(getUserCliPreference(deps.db, identity), available));
+    return true;
   };
 }

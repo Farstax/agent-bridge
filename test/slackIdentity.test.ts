@@ -28,6 +28,16 @@ describe("slack bot identity (#943)", () => {
     await expect(verifySlackBotIdentity(w as any)).rejects.toMatchObject({ code });
   });
 
+  it("distinguishes permanent credential failures from transient transport failures", async () => {
+    const platform = (error: string) => Object.assign(new Error(error), { code: "slack_webapi_platform_error", data: { ok: false, error } });
+    const transient = Object.assign(new Error("hang up"), { code: "slack_webapi_request_error" });
+    await expect(verifySlackBotIdentity(web(platform("invalid_auth"), {}) as any)).rejects.toMatchObject({ permanent: true });
+    await expect(verifySlackBotIdentity(web(platform("token_revoked"), {}) as any)).rejects.toMatchObject({ permanent: true });
+    await expect(verifySlackBotIdentity(web(transient, {}) as any)).rejects.toMatchObject({ permanent: false });
+    await expect(verifySlackBotIdentity(web(platform("ratelimited"), {}) as any)).rejects.toMatchObject({ permanent: false });
+    await expect(verifySlackBotIdentity(web({ team_id: "T", user_id: "U", bot_id: "B" }, platform("missing_scope")) as any)).rejects.toMatchObject({ permanent: true });
+  });
+
   it("rejects expiring token families and malformed tokens with actionable errors", () => {
     expect(() => assertSupportedSlackTokens("xoxe.xoxb-1-abc", "xapp-1-x")).toThrow(SlackIdentityError);
     expect(() => assertSupportedSlackTokens("xoxe.xoxb-1-abc", "xapp-1-x")).toThrow(/rotat/i);

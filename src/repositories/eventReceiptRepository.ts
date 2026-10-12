@@ -66,9 +66,18 @@ export class EventReceiptRepository {
   /** Terminal transition for an in-flight receipt, with or without a Run. */
   finish(id: number, input: { status: "completed" | "failed" | "cancelled" | "ambiguous"; result_reference?: string | null; error_class?: string | null }): void {
     this.db.prepare(
-      `UPDATE event_receipts SET status = ?, result_reference = ?, error_class = ?
+      // A settled receipt keeps only its identity; the message text is not retained.
+      `UPDATE event_receipts SET status = ?, result_reference = ?, error_class = ?, payload_json = '{}'
        WHERE id = ? AND status IN ('dispatching', 'run_created')`
     ).run(input.status, input.result_reference ?? null, input.error_class ?? null, id);
+  }
+
+  /** Retention for settled receipts; returns the number removed. */
+  pruneSettled(source: string, olderThanIso: string): number {
+    return this.db.prepare(
+      `DELETE FROM event_receipts
+       WHERE source = ? AND status IN ('completed','failed','cancelled','ambiguous') AND received_at < ?`
+    ).run(source, olderThanIso).changes;
   }
 
   listBySourceAndStatus(source: string, statuses: readonly string[]): EventReceipt[] {

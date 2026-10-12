@@ -44,7 +44,7 @@ import {
   verifySlackBotIdentity,
 } from "./slackIdentity.js";
 import { slackSurfaceIdentity } from "./slackIngress.js";
-import { createSlackReceiptRuntime } from "./slackDispatch.js";
+import { createSlackCliCommandHandler, createSlackReceiptRuntime } from "./slackDispatch.js";
 import { SlackStatusWriter, type SlackStatusErrorCode } from "./slackStatus.js";
 import type { BridgeDb } from "./db.js";
 
@@ -54,13 +54,30 @@ const TAG = "[slack-interactive]";
 
 /** EX_CONFIG: a permanent misconfiguration; the unit does not restart-loop on it. */
 const EXIT_CONFIG = 78;
+/** Failures Slack states are permanent for the supplied credentials or allowlist. */
+const PERMANENT_SLACK_ERRORS = new Set([
+  "invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive", "missing_scope",
+  "bot_not_found", "user_not_found", "user_disabled", "team_access_not_granted", "no_permission",
+]);
 
-function fail(code: SlackStatusErrorCode, message: string, status: SlackStatusWriter): never {
+/** True only when Slack positively said the credentials or users are unusable. */
+function isPermanentSlackFailure(error: unknown): boolean {
+  return PERMANENT_SLACK_ERRORS.has(safeSlackErrorCode(error));
+}
+
+function fail(code: SlackStatusErrorCode, message: string, status: SlackStatusWriter, exitCode = EXIT_CONFIG): never {
   status.transition("failed", code);
   status.stop("failed");
   console.error(`${TAG} ${code}: ${message}`);
-  process.exit(EXIT_CONFIG);
+  process.exit(exitCode);
 }
+
+process.on("unhandledRejection", (reason) => {
+  console.error(`${TAG} unhandled rejection: ${safeSlackErrorCode(reason)}`);
+  status.transition("failed", "socket_error");
+  status.stop("failed");
+  process.exit(1);
+});
 
 // ── Config and verified identity ─────────────────────────────────────────────
 
@@ -86,7 +103,9 @@ try {
   identity = await verifySlackBotIdentity(web);
 } catch (error) {
   const code = error instanceof SlackIdentityError && error.code === "identity_unavailable" ? "identity_unavailable" : "token_invalid";
-  fail(code, (error as Error).message, status);
+  // Transport, rate-limit and 5xx failures are transient: exit 1 so the unit restarts.
+  const permanent = error instanceof SlackIdentityError && error.permanent;
+  fail(code, (error as Error).message, status, permanent ? EXIT_CONFIG : 1);
 }
 status.setIdentity({ appId: identity.appId, teamId: identity.teamId, botUserId: identity.botUserId });
 
@@ -94,9 +113,12 @@ for (const userId of slackConfig.allowedUserIds) {
   try {
     const info: any = await web.users.info({ user: userId });
     const user = info?.user;
-    if (!user || user.is_bot || user.deleted || (user.team_id && user.team_id !== identity.teamId)) throw new Error("not eligible");
-  } catch {
-    fail("allowlist_invalid", "an allowlisted Slack user is missing, a bot, deactivated or outside the verified workspace", status);
+    if (!user || user.is_bot || user.deleted || (user.team_id && user.team_id !== identity.teamId)) {
+      fail("allowlist_invalid", "an allowlisted Slack user is a bot, deactivated or outside the verified workspace", status);
+    }
+  } catch (error) {
+    if (isPermanentSlackFailure(error)) fail("allowlist_invalid", "an allowlisted Slack user does not exist or is disabled", status);
+    fail("identity_unavailable", "could not verify the allowlist (transient Slack failure)", status, 1);
   }
 }
 
@@ -180,8 +202,16 @@ for (const engine of Object.values(engines)) {
 
 // ── Admission, dispatch, recovery ────────────────────────────────────────────
 
+const handleCliAlias = createSlackCliCommandHandler({
+  db, surfaceIdentity, fallbackChain,
+  available: () => getAvailableCliKinds() as ReadonlySet<CliKind>,
+  hasEngine: (cli) => Boolean(engines[cli]),
+  notify: notifyNative,
+});
+
 const receiptRuntime = createSlackReceiptRuntime({
   db,
+  handleCommand: handleCliAlias,
   context: verifiedContext,
   authorityScope: `slack:${identity.teamId}:${identity.appId}`,
   dispatch: (turn) => dispatchInteractiveTurnWithFallback(turn, dispatchDeps(String(turn.delivery.chatId), turn.threadId, turn.chatKey)),
@@ -243,6 +273,8 @@ const socket = new VerifiedSocketModeClient(
       socketRejected = true;
       scheduledRoutineRunner?.stop();
       runContinuationRunner?.stop();
+      shutdownCliProcesses();
+      try { db.close(); } catch { /* best effort */ }
       fail(code, "the app-level token does not belong to the verified app; refusing to serve events", status);
     },
   },
@@ -271,17 +303,39 @@ const shutdown = async (signal: string) => {
 process.on("SIGINT", () => { void shutdown("SIGINT"); });
 process.on("SIGTERM", () => { void shutdown("SIGTERM"); });
 
+// Degradation clears itself once the database accepts work again.
+const dbProbe = setInterval(() => {
+  try {
+    db.countEventReceipts("slack", "received");
+    status.clearDegraded();
+  } catch {
+    status.transition("connected", "database_unavailable");
+  }
+}, 30_000);
+dbProbe.unref();
+
 try {
   await socket.start();
 } catch (error) {
   const code = safeSlackErrorCode(error);
-  status.transition("reconnect_required", /invalid_auth|token_revoked|account_inactive|not_authed/.test(code) ? "token_revoked" : "socket_error");
   console.error(`${TAG} socket start failed: ${code}`);
+  if (isPermanentSlackFailure(error)) {
+    status.transition("reconnect_required", "token_revoked");
+    status.stop("reconnect_required");
+    process.exit(EXIT_CONFIG);
+  }
+  // Transient: exit so the service manager restarts with fresh state.
+  fail("socket_error", "socket could not be established", status, 1);
 }
-void reconciliationReady.then(async () => {
-  await receiptRuntime.recoverReceipts();
-  scheduledRoutineRunner?.start();
-  runContinuationRunner?.start();
-});
+reconciliationReady
+  .then(async () => {
+    await receiptRuntime.recoverReceipts();
+    scheduledRoutineRunner?.start();
+    runContinuationRunner?.start();
+  })
+  .catch((error) => {
+    console.error(`${TAG} startup recovery failed`, safeSlackErrorCode(error));
+    fail("database_unavailable", "startup recovery failed", status, 1);
+  });
 
 await new Promise(() => {});

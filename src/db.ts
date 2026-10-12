@@ -478,6 +478,10 @@ export class BridgeDb {
     return this.eventReceipts.listBySourceAndStatus(source, statuses);
   }
 
+  pruneSettledEventReceipts(source: string, olderThanIso: string): number {
+    return this.eventReceipts.pruneSettled(source, olderThanIso);
+  }
+
   countEventReceipts(source: string, status: string): number {
     return this.eventReceipts.countBySourceAndStatus(source, status);
   }

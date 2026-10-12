@@ -64,6 +64,8 @@ export function classifySlackEnvelope(body: any, context: SlackVerifiedContext):
   const isMention = type === "app_mention";
   if (!isDm && !isMention) return { kind: "ignore", reason: "unsupported_event" };
   if (event.subtype !== undefined) return { kind: "ignore", reason: "subtype" };
+  // A DM is delivered as message.im; a mention event there would duplicate it.
+  if (isMention && typeof event.channel === "string" && event.channel.startsWith("D")) return { kind: "ignore", reason: "unsupported_event" };
   if (event.bot_id !== undefined) return { kind: "ignore", reason: "bot_author" };
   const user = event.user;
   const channel = event.channel;
@@ -86,7 +88,10 @@ export function classifySlackEnvelope(body: any, context: SlackVerifiedContext):
   if (Buffer.byteLength(text, "utf8") > SLACK_MAX_TEXT_BYTES) return { kind: "ignore", reason: "too_large" };
   const [first, ...restWords] = text.split(/\s+/);
   const command = COMMANDS[first.toLowerCase()];
-  if (command) text = command === "/cli" && restWords.length ? `${command} ${restWords.join(" ")}` : command;
+  // Only the exact literal aliases are commands; `!cli` may carry one provider name.
+  if (command && (command === "/cli" ? restWords.length <= 1 : restWords.length === 0)) {
+    text = restWords.length ? `${command} ${restWords[0]}` : command;
+  }
 
   const threadTs = typeof event.thread_ts === "string" && event.thread_ts ? event.thread_ts : undefined;
   const surfaceIdentity = slackSurfaceIdentity(context.teamId, context.appId);

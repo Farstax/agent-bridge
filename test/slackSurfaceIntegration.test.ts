@@ -7,9 +7,10 @@ import { BridgeEngine } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import { dispatchInteractiveTurnWithFallback } from "../src/interactiveBot.js";
 import { SlackClient } from "../src/slack.js";
-import { createSlackReceiptRuntime, SLACK_AMBIGUOUS_NOTICE, SLACK_RESTART_NOTICE } from "../src/slackDispatch.js";
+import { createSlackCliCommandHandler, createSlackReceiptRuntime, SLACK_AMBIGUOUS_NOTICE, SLACK_RESTART_NOTICE } from "../src/slackDispatch.js";
 import { admitSlackTurn, classifySlackEnvelope, slackSurfaceIdentity } from "../src/slackIngress.js";
 import { acpEngineExec } from "./support/acpEngineExec.js";
+import { type as eventType } from "../src/events/types.js";
 
 const SURFACE = slackSurfaceIdentity("T1", "A1");
 const ctx = { teamId: "T1", appId: "A1", botUserId: "UBOT", allowedUserIds: new Set(["U1"]) };
@@ -62,6 +63,31 @@ describe("slack surface through the existing engine (#943)", () => {
     await h.runtime.handleEnvelope({ ack, body: envelope });
     return ack;
   };
+
+  it("correlates the receipt to its Run before the provider is invoked", async () => {
+    const seen: Array<{ status: string; run_id: string | null }> = [];
+    const h = harness();
+    h.runCli.mockImplementation(async (_command: string, _args: string[], _cwd: string, options: any) => {
+      // The ACP runtime emits run.started when the child spawns, before the prompt is submitted.
+      options.onEvent?.(eventType.runStarted({ ...options.eventContext, command: "provider", cwd: ".", model: null }));
+      const row = db.getEventReceiptByIdempotencyKey("slack:T1:A1:EvPre")!;
+      seen.push({ status: row.status, run_id: row.run_id });
+      return result("the answer");
+    });
+    await deliver(h, body(dm("hello"), "EvPre"));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].status).toBe("run_created");
+    expect(seen[0].run_id).toBeTruthy();
+    expect(db.getEventReceiptByIdempotencyKey("slack:T1:A1:EvPre")?.status).toBe("completed");
+  });
+
+  it("scrubs the stored message text once the receipt settles", async () => {
+    const h = harness();
+    await deliver(h, body(dm("super secret request text"), "EvScrub"));
+    const row = db.getEventReceiptByIdempotencyKey("slack:T1:A1:EvScrub")!;
+    expect(row.status).toBe("completed");
+    expect(row.payload_json).toBe("{}");
+  });
 
   it("DM: acknowledges after the receipt, runs once and replies in the DM with native coordinates", async () => {
     const h = harness();
@@ -190,6 +216,54 @@ describe("slack surface through the existing engine (#943)", () => {
     expect(settled.status).toBe("completed");
     expect(settled.run_id).toBeTruthy();
     expect(h.runCli).toHaveBeenCalledTimes(1);
+  });
+
+  it("restart: a receipt linked to a Run is fenced without a second notice", async () => {
+    const h = harness();
+    const admitted = admitSlackTurn(db, classifySlackEnvelope(body(dm("work"), "EvL"), ctx) as any, SURFACE);
+    if (admitted.kind !== "admitted") throw new Error("expected admission");
+    db.claimEventReceiptDispatch(admitted.receipt.id);
+    db.insertRun("run-live", { surfaceIdentity: SURFACE, chatKey: "D1" }, "grok");
+    db.linkEventReceiptRun(admitted.receipt.id, "run-live");
+    await h.runtime.recoverReceipts();
+    expect(db.getEventReceipt(admitted.receipt.id)).toMatchObject({ status: "ambiguous", run_id: "run-live" });
+    expect(h.notices).toHaveLength(0);
+    expect(h.runCli).not.toHaveBeenCalled();
+  });
+
+  it("retains settled receipts only for the retention window", async () => {
+    const h = harness();
+    await deliver(h, body(dm("old"), "EvOld"));
+    db.raw.prepare("UPDATE event_receipts SET received_at = ? WHERE idempotency_key = ?").run("2020-01-01T00:00:00.000Z", "slack:T1:A1:EvOld");
+    await deliver(h, body(dm("new", "1700000200.000100"), "EvNew"));
+    await h.runtime.recoverReceipts();
+    expect(db.getEventReceiptByIdempotencyKey("slack:T1:A1:EvOld")).toBeNull();
+    expect(db.getEventReceiptByIdempotencyKey("slack:T1:A1:EvNew")).not.toBeNull();
+  });
+
+  it("!cli switches or reports the provider without creating a Run", async () => {
+    const h = harness();
+    const chain = new ProviderFallbackChain(["grok", "codex"], db, SURFACE, () => true);
+    const sent: string[] = [];
+    const handler = createSlackCliCommandHandler({
+      db, surfaceIdentity: SURFACE, fallbackChain: chain,
+      available: () => new Set(["grok", "codex"]) as any, hasEngine: (cli) => cli === "grok" || cli === "codex",
+      notify: async (_c, _t, text) => { sent.push(text); },
+    });
+    const runtime = createSlackReceiptRuntime({
+      db, context: ctx, authorityScope: SURFACE, handleCommand: handler,
+      dispatch: async () => { throw new Error("must not execute"); }, notify: async () => undefined,
+    });
+    const ack = vi.fn(async () => undefined);
+    await runtime.handleEnvelope({ ack, body: body(dm("!cli codex"), "EvCli1") });
+    await runtime.handleEnvelope({ ack, body: body(dm("!cli", "1700000300.000100"), "EvCli2") });
+    await runtime.handleEnvelope({ ack, body: body(dm("!cli nonsense", "1700000400.000100"), "EvCli3") });
+    expect(sent[0]).toContain("Active CLI: **codex**");
+    expect(sent[1]).toContain("Active CLI: **codex**");
+    expect(sent[2]).toMatch(/Unknown or unavailable CLI/);
+    expect(db.listEventReceipts("slack", ["completed"])).toHaveLength(3);
+    expect(h.runCli).not.toHaveBeenCalled();
+    expect(db.raw.prepare("SELECT COUNT(*) AS n FROM bridge_runs").get()).toEqual({ n: 0 });
   });
 
   it("a dispatch that throws fences the receipt and notifies once instead of replaying", async () => {

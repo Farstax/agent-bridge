@@ -11,8 +11,10 @@ outside this repository is required.
 - Allowlisted direct messages to the bot: each DM channel is one conversation.
 - Explicit channel mentions (`@Agent Bridge ...`): each thread root is one
   conversation, and replies stay in that thread.
-- Commands as plain text: `!stop`, `!cancel`, `!reset`, `!cli` in a DM, or
-  `@Agent Bridge !stop` in a channel. Slack slash commands are not enabled.
+- Commands as plain text, exactly: `!stop`, `!cancel`, `!reset`, `!cli` (and
+  `!cli <provider>`) in a DM, or `@Agent Bridge !stop` in a channel. Anything
+  longer, such as `!reset the config`, is an ordinary message. Slack slash
+  commands are not enabled.
 - Replies are plain text, chunked at 3,500 characters, posted in order and
   paced at about one message per second per channel.
 
@@ -49,9 +51,11 @@ Grid, Slack Connect, rotating (`xoxe`) tokens, and Slack Marketplace listing.
 
 Token files have trailing newlines trimmed and must be non-empty. Tokens are
 never logged. Rotating tokens (`xoxe-...`) are rejected at startup with an
-actionable error. Permanent configuration failures (bad tokens, an app-level
-token for another app, an invalid allowlist) write a `failed` status and exit
-with code 78, which the example unit does not restart.
+actionable error. Permanent configuration failures (credentials Slack reports as invalid or
+revoked, an app-level token for another app, an invalid allowlist) write a
+`failed` status and exit with code 78, which the example unit does not restart.
+Transient failures (Slack unreachable, rate limited, 5xx) exit with code 1 and
+are restarted.
 
 The Slack unit is operator-installed: `scripts/agent-bridge-install.py` does not
 manage it, but the guarded rollout knows the unit and its database role.
@@ -87,6 +91,8 @@ grants execution rights.
   `event_receipts`, source `slack`) **before** the envelope is acknowledged.
   If the database write fails the envelope is not acknowledged and Slack may
   redeliver. Duplicates are recognised by `event_id`, not by envelope ID.
+- Receipts keep the message text only until they settle, and settled receipts
+  are removed after 14 days.
 - A receipt is dispatched at most once. After a restart, a receipt that was
   stored but never dispatched runs once. Work that the durable queue still owns
   follows the normal queue recovery. Any other receipt that may already have
