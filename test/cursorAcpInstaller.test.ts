@@ -76,5 +76,21 @@ fi
     expect(install("prepare").toString()).toContain("host_component_status=converged");
     expect(readFileSync(stagedBinary, "utf8")).not.toContain("altered after staging");
     expect(install("commit").toString()).toContain("host_component_status=converged");
+
+    // The manifest covers the whole payload, not only the launcher: altering,
+    // adding or removing any other file is rejected the same way.
+    appendFileSync(join(installed, "node"), "\n# altered runtime file\n");
+    expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
+    expect(install("prepare").toString()).toContain("host_component_status=converged");
+
+    chmodSync(join(installed, "node"), 0o777);
+    expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
+    expect(install("prepare").toString()).toContain("host_component_status=converged");
+
+    writeFileSync(join(installed, "unexpected-extra-file"), "added after staging\n");
+    expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
+    expect(install("prepare").toString()).toContain("host_component_status=converged");
+    expect(() => readFileSync(join(installed, "unexpected-extra-file"))).toThrow();
+    expect(install("commit").toString()).toMatch(/host_component_status=(converged|no_op)/);
   });
 });
