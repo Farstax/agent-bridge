@@ -33,7 +33,18 @@ Grid, Slack Connect, rotating (`xoxe`) tokens, and Slack Marketplace listing.
 3. Create an app-level token with the `connections:write` scope (`xapp-...`).
 4. Invite the bot to any channel where you want to mention it (private channels
    included). Replies in channels require the bot to be a member.
-5. Copy `.env.slack-interactive.example` to `.env.slack-interactive`, write each
+5. Create the database once with the guarded bootstrap, using a path dedicated
+   to Slack:
+
+   ```bash
+   node --import tsx scripts/rollout-db.ts bootstrap \
+     --db /var/lib/agent-bridge/slack-interactive.sqlite \
+     --role slack --confirm-new-role /var/lib/agent-bridge/slack-interactive.sqlite
+   ```
+
+   The service never creates or migrates a database itself; it refuses a
+   missing database or one at another schema version.
+6. Copy `.env.slack-interactive.example` to `.env.slack-interactive`, write each
    token to its own file readable only by the service account, and fill in:
 
    | Variable | Meaning |
@@ -42,10 +53,11 @@ Grid, Slack Connect, rotating (`xoxe`) tokens, and Slack Marketplace listing.
    | `SLACK_APP_TOKEN_FILE` or `SLACK_APP_TOKEN` | App-level token. Exactly one of the pair. |
    | `SLACK_ALLOWED_USER_IDS` | Required, comma-separated member IDs (`U0123ABCD`). Default deny. |
    | `SLACK_STATUS_FILE` | Optional readiness file (see below). |
+   | `SLACK_API_URL` | Optional Web API base URL (https; loopback http allowed for testing). |
    | `DB_PATH` | SQLite database dedicated to this surface. |
    | `INTERACTIVE_CLI_CHAIN`, `BRIDGE_EXECUTION_MODE`, `AGENT_BRIDGE_INSTALLATION_ID` | As for the other surfaces. |
 
-6. Start `src/index-slack-interactive.ts` with your service manager. A systemd
+7. Start `src/index-slack-interactive.ts` with your service manager. A systemd
    example is `systemd/agent-bridge-slack-interactive.service`. Any secret
    manager works as long as it mounts the token files.
 
@@ -147,5 +159,7 @@ this socket.
 ## Database and upgrade
 
 The companion uses its own database role (`slack`). The schema version bump to
-20 only widens `event_receipts`; the guarded rollout takes the usual backup, and
-an older release refuses a version 20 database instead of running against it.
+20 only widens `event_receipts`. Existing databases are migrated by the guarded
+rollout (`scripts/rollout-agent-bridge.sh` knows the Slack unit), which takes
+the usual backup first, and an older release refuses a version 20 database
+instead of running against it.

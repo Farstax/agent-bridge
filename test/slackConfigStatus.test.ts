@@ -40,6 +40,14 @@ describe("slack configuration (#943)", () => {
     expect(() => loadSlackConfig({ ...tokens, SLACK_ALLOWED_USER_IDS: " , " })).toThrow(/default deny/);
     expect(() => loadSlackConfig({ ...tokens, SLACK_ALLOWED_USER_IDS: "alice" })).toThrow(/member IDs/);
   });
+
+  it("accepts only HTTPS API overrides outside the loopback acceptance harness", () => {
+    const tokens = { SLACK_BOT_TOKEN: "xoxb-1-a", SLACK_APP_TOKEN: "xapp-1-b", SLACK_ALLOWED_USER_IDS: "U1ABC" };
+    expect(loadSlackConfig({ ...tokens, SLACK_API_URL: "https://slack-gov.example/api" }).apiUrl).toBe("https://slack-gov.example/api/");
+    expect(loadSlackConfig({ ...tokens, SLACK_API_URL: "http://127.0.0.1:3000/api" }).apiUrl).toBe("http://127.0.0.1:3000/api/");
+    expect(() => loadSlackConfig({ ...tokens, SLACK_API_URL: "http://proxy.example/api" })).toThrow(/https/);
+    expect(() => loadSlackConfig({ ...tokens, SLACK_API_URL: "not-a-url" })).toThrow(/valid URL/);
+  });
 });
 
 describe("slack status file (#943, schema v1)", () => {

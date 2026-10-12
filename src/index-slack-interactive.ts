@@ -97,7 +97,8 @@ try {
 }
 
 // Uncertain write outcomes are surfaced, never retried by the SDK.
-const web = new WebClient(slackConfig.botToken, { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 15_000 });
+const apiOptions = slackConfig.apiUrl ? { slackApiUrl: slackConfig.apiUrl } : {};
+const web = new WebClient(slackConfig.botToken, { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 15_000, ...apiOptions });
 let identity: Awaited<ReturnType<typeof verifySlackBotIdentity>>;
 try {
   identity = await verifySlackBotIdentity(web);
@@ -263,7 +264,7 @@ runContinuationRunner = new RunContinuationRunner(db, surfaceIdentity, async (co
 
 let socketRejected = false;
 const socket = new VerifiedSocketModeClient(
-  { appToken: slackConfig.appToken, autoReconnectEnabled: true, clientOptions: { retryConfig: { retries: 10, factor: 1.3 } } },
+  { appToken: slackConfig.appToken, autoReconnectEnabled: true, clientOptions: { retryConfig: { retries: 10, factor: 1.3 }, ...apiOptions } },
   identity.appId,
   {
     onVerified: () => undefined,

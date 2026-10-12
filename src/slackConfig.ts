@@ -20,6 +20,8 @@ export interface SlackConfig {
   appToken: string;
   allowedUserIds: string[];
   statusFile: string | null;
+  /** Optional Web API base URL (Slack GovCloud, an egress proxy, or an acceptance harness). */
+  apiUrl: string | null;
 }
 
 type Env = Record<string, string | undefined>;
@@ -52,5 +54,16 @@ export function loadSlackConfig(env: Env = process.env, readFile: (path: string)
   const invalid = allowedUserIds.find((id) => !/^[UW][A-Z0-9]{2,}$/.test(id));
   if (invalid) throw new SlackConfigError("SLACK_ALLOWED_USER_IDS must contain Slack member IDs such as U0123ABCD.");
   const statusFile = env.SLACK_STATUS_FILE?.trim() || null;
-  return { botToken, appToken, allowedUserIds, statusFile };
+  const rawApiUrl = env.SLACK_API_URL?.trim();
+  let apiUrl: string | null = null;
+  if (rawApiUrl) {
+    let parsed: URL;
+    try { parsed = new URL(rawApiUrl); } catch { throw new SlackConfigError("SLACK_API_URL is not a valid URL."); }
+    const loopback = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "[::1]";
+    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+      throw new SlackConfigError("SLACK_API_URL must use https (plain http is allowed only for loopback).");
+    }
+    apiUrl = parsed.toString().endsWith("/") ? parsed.toString() : `${parsed.toString()}/`;
+  }
+  return { botToken, appToken, allowedUserIds, statusFile, apiUrl };
 }
