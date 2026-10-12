@@ -211,6 +211,16 @@ function parseRoutine(value: string): ScheduledRoutine | null {
       }
     }
     if (routine.surfaceIdentity.startsWith("discord:")) return { ...routine, delivery: { chatId: routine.chatKey, chatType: "private" } };
+    if (routine.surfaceIdentity.startsWith("slack:")) {
+      // Slack chat keys are `<channel>` (DM) or `<channel>:<thread-ts>`; the
+      // native channel ID and thread timestamp are opaque strings.
+      const [channel, threadTs] = routine.chatKey.split(":");
+      if (!channel) return null;
+      return {
+        ...routine,
+        delivery: { chatId: channel, chatType: channel.startsWith("D") ? "private" : "supergroup", ...(threadTs ? { threadId: threadTs } : {}) },
+      };
+    }
     return null;
   } catch {
     return null;
@@ -517,6 +527,16 @@ export function buildScheduledInteractiveTurn(
       scheduledOccurrenceKey: claimedOccurrenceKey,
       ...(destination.threadId === undefined ? {} : { threadId: String(destination.threadId) }),
       delivery: { chatId: destination.chatId, chatType: destination.chatType },
+      attachments: [],
+    };
+  }
+  if (routine.surfaceIdentity.startsWith("slack:")) {
+    if (!routine.delivery) throw new Error("scheduled Slack routine has no delivery coordinates");
+    return {
+      surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text,
+      scheduledOccurrenceKey: claimedOccurrenceKey,
+      ...(routine.delivery.threadId === undefined ? {} : { threadId: String(routine.delivery.threadId) }),
+      delivery: { chatId: routine.delivery.chatId, chatType: routine.delivery.chatType },
       attachments: [],
     };
   }

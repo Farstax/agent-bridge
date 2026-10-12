@@ -455,6 +455,37 @@ export class BridgeDb {
     return this.eventReceipts.createReceipt(input);
   }
 
+  /** True while the durable queue still owns work correlated to this key. */
+  hasPendingMessageForCorrelationKey(surface: string, key: string): boolean {
+    return Boolean(this.raw.prepare(
+      "SELECT 1 FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? LIMIT 1",
+    ).get(surface, key));
+  }
+
+  admitEventReceipt(input: Parameters<BridgeDb["createEventReceipt"]>[0]): { receipt: EventReceipt; created: boolean } {
+    return this.eventReceipts.admitReceipt(input);
+  }
+
+  claimEventReceiptDispatch(id: number): boolean {
+    return this.eventReceipts.claimDispatch(id);
+  }
+
+  finishEventReceipt(id: number, input: Parameters<EventReceiptRepository["finish"]>[1]): void {
+    this.eventReceipts.finish(id, input);
+  }
+
+  listEventReceipts(source: string, statuses: readonly string[]): EventReceipt[] {
+    return this.eventReceipts.listBySourceAndStatus(source, statuses);
+  }
+
+  pruneSettledEventReceipts(source: string, olderThanIso: string): number {
+    return this.eventReceipts.pruneSettled(source, olderThanIso);
+  }
+
+  countEventReceipts(source: string, status: string): number {
+    return this.eventReceipts.countBySourceAndStatus(source, status);
+  }
+
   getEventReceipt(id: number): EventReceipt | null {
     return this.eventReceipts.getById(id);
   }

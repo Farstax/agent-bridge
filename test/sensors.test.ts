@@ -39,7 +39,9 @@ describe("sensors", { timeout: 30_000 }, () => {
     const dbPath = temporary("built-in-sensors.sqlite");
     const db = openDb(dbPath, { serviceId: "sensor-test", runId: "sensor-test" });
     const bridge = await new AgentBridgeSensor(db, dbPath).check();
-    const server = await new ServerSensor().check();
+    // Avoid the host APT probe: it can consume its entire 10s command timeout
+    // under CI load. The APT parser and timeout behaviour are tested separately.
+    const server = await new ServerSensor(temporary("absent-apt-check")).check();
 
     for (const report of [bridge, server]) {
       expect(["green", "amber", "red"]).toContain(report.status);

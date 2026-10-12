@@ -8,6 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
+import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -678,7 +679,18 @@ export class BridgeEngine {
     }, this.db.lockHeartbeatMs) : null;
     lockHeartbeat?.unref();
 
-    const { runId, eventContext, collect, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
+    const { runId, eventContext, collect: collectEvent, finalize } = this._createEventContext(chatId, chatKey, threadId, laneHandle);
+    // #943: correlate admission receipts as soon as the Run row exists, which is
+    // before the provider prompt is submitted, so a crash leaves a linked receipt.
+    const receiptKeys = scheduledOccurrenceKeys.filter((key) => key.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX));
+    let receiptsCorrelated = receiptKeys.length === 0;
+    const collect = receiptsCorrelated ? collectEvent : (event: BridgeEvent) => {
+      collectEvent(event);
+      if (!receiptsCorrelated && this.db.getRun(runId)) {
+        receiptsCorrelated = true;
+        this._correlateEventReceipts(receiptKeys, runId);
+      }
+    };
     let outcome: ExecutionOutcome | null = null;
     try {
       const result = await this._executeAndDeliverTurn({
@@ -927,10 +939,30 @@ export class BridgeEngine {
     }
   }
 
+  /** Links admission receipts to their Run and settles them once the Run is terminal. */
+  private _correlateEventReceipts(keys: string[], runId: string): void {
+    for (const key of keys) {
+      const receiptId = Number(key.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
+      if (!Number.isSafeInteger(receiptId)) continue;
+      this.db.linkEventReceiptRun(receiptId, runId);
+      const status = this.db.getRun(runId)?.status;
+      if (status === "done") this.db.finishEventReceipt(receiptId, { status: "completed", result_reference: runId });
+      else if (status === "failed") this.db.finishEventReceipt(receiptId, { status: "failed", result_reference: runId });
+      else if (status === "cancelled") this.db.finishEventReceipt(receiptId, { status: "cancelled", result_reference: runId });
+    }
+  }
+
   private _linkScheduledOccurrences(scheduledOccurrenceKeys: string[], runId: string): void {
     if (scheduledOccurrenceKeys.length === 0) return;
     if (!this.db.getRun(runId)) return;
     for (const occurrenceKey of scheduledOccurrenceKeys) {
+      // Surface admission receipts (#943) travel through the same durable
+      // queue correlation as scheduled occurrences; they link to the receipt
+      // row rather than the scheduled-occurrence table.
+      if (occurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
+        this._correlateEventReceipts([occurrenceKey], runId);
+        continue;
+      }
       if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {
         throw new Error(`scheduled occurrence correlation unavailable: ${occurrenceKey}`);
       }
