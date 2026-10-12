@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { buildCliInvocation, parseCliResult, runCli, runProviderInvocation } from "../cli.js";
 import { resolveExecutionMode } from "../config.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
@@ -79,6 +79,22 @@ export interface ProviderQualificationRecord {
   checks: ProviderQualificationCheck[];
   /** Exact runtime identity prevents evidence from cross-qualifying another transport or ACP distribution. */
   executionRuntime?: string;
+  /**
+   * The executable that was actually exercised. `executionRuntime` identifies the
+   * runtime the service will select; this binds the evidence to the exact bytes
+   * that were qualified, so a staged candidate cannot be confused with the
+   * deployed binary.
+   */
+  candidate?: ProviderQualificationCandidate;
+}
+
+export interface ProviderQualificationCandidate {
+  /** Resolved real path, or the command name when it is not a file (for example an npx launcher). */
+  executable: string;
+  /** SHA-256 of the executable file, or null when the command does not resolve to a regular file. */
+  sha256: string | null;
+  /** True only when the caller explicitly selected a staged executable. */
+  staged: boolean;
 }
 
 export interface ProviderQualificationEvidence {
@@ -91,6 +107,11 @@ export interface ProviderQualificationEvidence {
 export interface ProviderQualificationOptions {
   providerId: ProviderId;
   executable?: string;
+  /**
+   * Marks `executable` as an explicitly selected staged candidate. The evidence
+   * records it, together with the executable digest, as the qualified candidate.
+   */
+  stagedExecutable?: boolean;
   evidencePath?: string;
   expectedVersion?: string;
   previousVersion?: string | null;
@@ -309,6 +330,54 @@ export function writeQualificationRecord(
   writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   chmodSync(temporary, 0o600);
   renameSync(temporary, path);
+}
+
+/** Environment variable through which an ACP provider's executable is selected, or null when it has none. */
+export function stagedExecutableEnvKey(providerId: ProviderId): string | null {
+  const keys = getAcpProviderPolicy(providerId)?.qualificationEnvKeys ?? [];
+  return keys.find((key) => /_ACP_COMMAND$/.test(key)) ?? null;
+}
+
+function resolveExecutableFile(command: string, env: QualificationEnv): string | null {
+  const candidates = command.includes("/")
+    ? [isAbsolute(command) ? command : join(process.cwd(), command)]
+    : (env.PATH ?? process.env.PATH ?? "").split(delimiter).filter(Boolean).map((dir) => join(dir, command));
+  for (const candidate of candidates) {
+    try {
+      const real = realpathSync(candidate);
+      if (statSync(real).isFile()) return real;
+    } catch {
+      // Try the next PATH entry.
+    }
+  }
+  return null;
+}
+
+function sha256File(path: string): string {
+  const hash = createHash("sha256");
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest("hex");
+}
+
+/** Identify the executable that qualification exercises. */
+export function describeQualificationCandidate(
+  command: string,
+  env: QualificationEnv = process.env,
+  staged = false,
+): ProviderQualificationCandidate {
+  const file = resolveExecutableFile(command, env);
+  if (!file) return { executable: command, sha256: null, staged };
+  return { executable: file, sha256: sha256File(file), staged };
 }
 
 export function currentQualificationRuntime(
@@ -706,6 +775,17 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const runtime = resolveProviderRuntime(options.providerId, runtimeEnv);
   const executable = options.executable ?? runtime.executable;
   assertQualificationRuntimeEnvironment(options.providerId, runtimeEnv);
+  const stagedExecutable = options.stagedExecutable === true;
+  // ACP providers are launched from the runtime environment, never from the
+  // `executable` argument, so the exercised binary is the one the runtime selects.
+  const exercisedExecutable = runtime.transport === "acp-stdio" ? runtime.executable : executable;
+  if (stagedExecutable && exercisedExecutable !== executable) {
+    throw new Error(
+      `staged ${options.providerId} executable ${executable} is not the executable the runtime environment selects `
+      + `(${exercisedExecutable}); select it through ${stagedExecutableEnvKey(options.providerId) ?? "the runtime environment"}`,
+    );
+  }
+  const candidate = describeQualificationCandidate(exercisedExecutable, runtimeEnv, stagedExecutable);
   const runtimePolicy = resolveQualificationRuntimePolicy(
     options.providerId,
     runtimeEnv,
@@ -762,6 +842,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
         overall,
         checks,
         executionRuntime: currentQualificationRuntime(options.providerId, runtimeEnv),
+        candidate,
       };
       writeQualificationRecord(record, evidencePath);
       return record;
@@ -848,6 +929,7 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
       overall,
       checks,
       executionRuntime: currentQualificationRuntime(options.providerId, runtimeEnv),
+        candidate,
     };
     writeQualificationRecord(record, evidencePath);
     return record;

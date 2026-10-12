@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelegramClient } from "../src/telegram.js";
 
@@ -9,12 +10,22 @@ describe("TelegramClient poll liveness", () => {
 
   it("terminates the process if getUpdates remains pending beyond its request deadline plus grace", async () => {
     vi.useFakeTimers();
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined as never) as typeof process.exit);
+    // Inject the exit and signal source instead of spying on the process, so no
+    // other test can observe or interfere with the watchdog.
+    const exit = vi.fn();
+    const signals = new EventEmitter();
 
-    const fakeFetch = ((_url: string, _options: any) => new Promise(() => {})) as any;
+    // A wedged fetch ignores the client's own request timeout, which is the case
+    // the watchdog exists for. The test settles it explicitly at the end so no
+    // pending promise is left for async leak detection to report.
+    let releaseFetch: (error: Error) => void = () => undefined;
+    const fakeFetch = ((_url: string, _options: unknown) => new Promise((_resolve, reject) => {
+      releaseFetch = reject;
+    })) as any;
     const client = new TelegramClient("token", fakeFetch, 45_000);
 
-    void client.getUpdates({ timeout: 30 });
+    const pending = client.getUpdates({ timeout: 30 }, { signalSource: signals as never, exit: exit as never })
+      .catch((error: unknown) => error);
 
     await vi.advanceTimersByTimeAsync(74_999);
     expect(exit).not.toHaveBeenCalled();
@@ -22,6 +33,9 @@ describe("TelegramClient poll liveness", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(exit).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(1);
+
+    releaseFetch(new Error("test released the wedged request"));
+    await expect(pending).resolves.toBeInstanceOf(Error);
   });
 
   it("cancels the liveness watchdog when getUpdates settles normally", async () => {

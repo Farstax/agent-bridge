@@ -49,7 +49,7 @@ describe("sensors", { timeout: 30_000 }, () => {
     }
     expect(bridge.checks.find((check) => check.name === "db-read")?.status).toBe("green");
     db.close();
-  }, 10_000);
+  });
 
   it("reports a missing DB handle instead of claiming a successful read", async () => {
     const dbPath = temporary("sensor-handle.sqlite");
