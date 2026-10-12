@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -41,22 +41,40 @@ export function getLockedAcpRegistryEntry() {
     execFileSync("tar", ["-czf", archive, "-C", join(root, "archive"), "dist-package"]);
 
     executable(join(commandRoot, "curl"), `#!/bin/sh\nset -eu\nif [ "$1" = --fail ] && [ "$5" = --head ]; then printf 'content-length: 1\\n'; exit 0; fi\nwhile [ "$#" -gt 0 ]; do if [ "$1" = --output ]; then cp "$CURSOR_FIXTURE_ARCHIVE" "$2"; exit 0; fi; shift; done\nexit 2\n`);
-    executable(join(commandRoot, "sha256sum"), `#!/bin/sh\nprintf '%s  %s\\n' '${cursorArchiveSha}' "$1"\n`);
+    executable(join(commandRoot, "sha256sum"), `#!/bin/sh
+if [ "$(basename "$1")" = cursor-agent.tar.gz ]; then
+  printf '%s  %s\\n' '${cursorArchiveSha}' "$1"
+else
+  exec "$CURSOR_REAL_SHA256SUM" "$@"
+fi
+`);
 
-    execFileSync("bash", [join(releaseRoot, "scripts", "install-cursor-acp.sh")], {
+    const install = (phase: "prepare" | "commit") => execFileSync("bash", [join(releaseRoot, "scripts", "install-cursor-acp.sh")], {
       env: {
         ...process.env,
         AGENT_BRIDGE_CURSOR_ACP_USER: process.env.USER ?? "content-crawler",
-        AGENT_BRIDGE_HOST_COMPONENT_PHASE: "prepare",
+        AGENT_BRIDGE_HOST_COMPONENT_PHASE: phase,
         CURSOR_FIXTURE_ARCHIVE: archive,
+        CURSOR_REAL_SHA256SUM: execFileSync("which", ["sha256sum"], { encoding: "utf8" }).trim(),
         HOME: runtimeHome,
         PATH: `${commandRoot}:${process.env.PATH}`,
       },
       stdio: "pipe",
     });
+    install("prepare");
 
     const installed = join(runtimeHome, ".local", "share", "agent-bridge", "cursor-acp", "versions", cursorVersion, "dist-package");
     expect(readFileSync(join(installed, "node"), "utf8")).toContain(cursorVersion);
     expect(execFileSync(join(installed, "cursor-agent"), ["--version"], { encoding: "utf8" }).trim()).toBe(cursorVersion);
+    const stagedBinary = join(installed, "cursor-agent");
+    expect(install("prepare").toString()).toContain("host_component_status=no_op");
+
+    // A binary can still report the locked version after corruption. Never reuse it
+    // or activate it in commit phase solely on the basis of --version.
+    appendFileSync(stagedBinary, "\\n# altered after staging\\n");
+    expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
+    expect(install("prepare").toString()).toContain("host_component_status=converged");
+    expect(readFileSync(stagedBinary, "utf8")).not.toContain("altered after staging");
+    expect(install("commit").toString()).toContain("host_component_status=converged");
   });
 });
