@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { dirname, isAbsolute } from "node:path";
 import {
   qualifyProvider,
   qualifyProviderIfNeeded,
   qualificationEvidencePath,
+  stagedExecutableEnvKey,
 } from "../src/providers/qualification.js";
 import {
   applyQualificationEntrypointEnvironment,
@@ -19,6 +22,7 @@ interface Args {
   evidencePath?: string;
   bridgeCommit?: string;
   runtimeEnvDir?: string;
+  stagedExecutable?: string;
   ifNeeded: boolean;
   printEnv: boolean;
 }
@@ -30,6 +34,7 @@ function parseArgs(argv: string[]): Args {
   let evidencePath: string | undefined;
   let bridgeCommit: string | undefined;
   let runtimeEnvDir: string | undefined;
+  let stagedExecutable: string | undefined;
   let ifNeeded = false;
   let printEnv = false;
   for (let index = 0; index < argv.length; index += 1) {
@@ -40,12 +45,13 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--evidence") evidencePath = argv[++index];
     else if (arg === "--bridge-commit") bridgeCommit = argv[++index];
     else if (arg === "--runtime-env-dir") runtimeEnvDir = argv[++index];
+    else if (arg === "--staged-executable") stagedExecutable = argv[++index];
     else if (arg === "--if-needed") ifNeeded = true;
     else if (arg === "--print-env") printEnv = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!provider) throw new Error("--provider is required");
-  return { provider, expectedVersion, previousVersion, evidencePath, bridgeCommit, runtimeEnvDir, ifNeeded, printEnv };
+  return { provider, expectedVersion, previousVersion, evidencePath, bridgeCommit, runtimeEnvDir, stagedExecutable, ifNeeded, printEnv };
 }
 
 function resolveBridgeCommit(explicit?: string): string {
@@ -66,8 +72,33 @@ function resolveBridgeCommit(explicit?: string): string {
   }
 }
 
+/**
+ * A staged candidate must be an absolute, regular, executable file owned by the
+ * current user or root, in a directory only its owner can modify. Returns the
+ * resolved path that is validated and later launched.
+ */
+function assertStagedExecutable(path: string): string {
+  if (!isAbsolute(path)) throw new Error("--staged-executable must be an absolute path");
+  const real = realpathSync(path);
+  const stats = statSync(real);
+  if (!stats.isFile()) throw new Error("--staged-executable must resolve to a regular file");
+  if ((stats.mode & 0o111) === 0) throw new Error("--staged-executable is not executable");
+  if ((stats.mode & 0o022) !== 0) throw new Error("--staged-executable must not be group- or world-writable");
+  const uid = process.getuid?.();
+  if (uid !== undefined && stats.uid !== uid && stats.uid !== 0) {
+    throw new Error("--staged-executable must be owned by the current user or root");
+  }
+  if ((statSync(dirname(real)).mode & 0o022) !== 0) {
+    throw new Error("--staged-executable directory must not be group- or world-writable");
+  }
+  return real;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.printEnv && args.stagedExecutable !== undefined) {
+    throw new Error("--print-env cannot be combined with --staged-executable");
+  }
   const providerId = assertProviderId(args.provider);
   const runtimeEnv = resolveQualificationEntrypointEnvironment(providerId, {
     directory: args.runtimeEnvDir,
@@ -88,18 +119,31 @@ async function main(): Promise<void> {
     return;
   }
 
+  // An explicitly staged executable is selected through the provider's own
+  // runtime variable, so the ACP runtime launches that binary and the version
+  // check, the exercised provider and the evidence all refer to it.
+  if (args.stagedExecutable !== undefined) {
+    const staged = assertStagedExecutable(args.stagedExecutable);
+    const key = stagedExecutableEnvKey(providerId);
+    if (!key) throw new Error(`${providerId} does not support staged executable selection`);
+    runtimeEnv[key] = staged;
+  }
+
   applyQualificationEntrypointEnvironment(runtimeEnv);
 
   const common = {
     providerId,
     executable: resolveProviderExecutable(providerId, runtimeEnv),
+    stagedExecutable: args.stagedExecutable !== undefined,
     evidencePath: args.evidencePath ?? qualificationEvidencePath(homedir()),
     previousVersion: args.previousVersion ?? null,
     bridgeCommit: resolveBridgeCommit(args.bridgeCommit),
     env: runtimeEnv,
   };
 
-  const result = args.ifNeeded && args.expectedVersion
+  // A staged candidate is always exercised: an existing current record belongs to
+  // whichever binary was qualified before.
+  const result = args.ifNeeded && args.expectedVersion && args.stagedExecutable === undefined
     ? await qualifyProviderIfNeeded({ ...common, installedVersion: args.expectedVersion })
     : { record: await qualifyProvider({ ...common, expectedVersion: args.expectedVersion }), ran: true };
 
