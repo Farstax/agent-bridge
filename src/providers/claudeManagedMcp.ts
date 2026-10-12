@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 /** Host-published managed MCP sockets. The workspace helper only writes this adapter shape. */
 export const CLAUDE_MANAGED_MCP_SOCKET_DIR = "/run/agent-bridge/managed-mcp";
-export const CLAUDE_MANAGED_MCP_ADAPTER = "/usr/local/bin/farstax-mcp-adapter.cjs";
+/** OSS-owned adapter path. The hosted installer must publish the helper here. */
+export const CLAUDE_MANAGED_MCP_ADAPTER = "/usr/local/bin/agent-bridge-mcp-adapter.cjs";
 
 export type TrustedClaudeMcpServer =
   | { type: "stdio"; command: "node"; args: [string, "--socket", string] }

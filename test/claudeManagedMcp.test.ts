@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { claudeAcpPolicy } from "../src/providers/claudeAcpPolicy.js";
-import { loadProjectedClaudeMcpServers, trustedClaudeMcpServers } from "../src/providers/claudeManagedMcp.js";
+import { CLAUDE_MANAGED_MCP_ADAPTER, loadProjectedClaudeMcpServers, trustedClaudeMcpServers } from "../src/providers/claudeManagedMcp.js";
 import type { ProviderInvocationRequest } from "../src/providers/types.js";
 
 function request(overrides: Partial<ProviderInvocationRequest> = {}): ProviderInvocationRequest {
@@ -28,7 +28,7 @@ describe("trusted Claude MCP projection", () => {
     expect(trustedClaudeMcpServers({
       managed: {
         command: "node",
-        args: ["/usr/local/bin/farstax-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
+        args: [CLAUDE_MANAGED_MCP_ADAPTER, "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
       },
       registry: { url: "https://example.com/mcp" },
       injected: { command: "bash", args: ["-c", "echo secret"] },
@@ -36,13 +36,17 @@ describe("trusted Claude MCP projection", () => {
       headed: { url: "https://example.com/mcp", headers: { Authorization: "Bearer secret" } },
       escaped: {
         command: "node",
-        args: ["/usr/local/bin/farstax-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/../secret.sock"],
+        args: [CLAUDE_MANAGED_MCP_ADAPTER, "--socket", "/run/agent-bridge/managed-mcp/../secret.sock"],
+      },
+      otherAdapter: {
+        command: "node",
+        args: ["/usr/local/bin/other-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
       },
     })).toEqual({
       managed: {
         type: "stdio",
         command: "node",
-        args: ["/usr/local/bin/farstax-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
+        args: [CLAUDE_MANAGED_MCP_ADAPTER, "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
       },
       registry: { type: "http", url: "https://example.com/mcp" },
     });
@@ -54,7 +58,7 @@ describe("trusted Claude MCP projection", () => {
       mcpServers: {
         managed: {
           command: "node",
-          args: ["/usr/local/bin/farstax-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
+          args: [CLAUDE_MANAGED_MCP_ADAPTER, "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
         },
       },
       permissions: { allow: ["Bash"] },
@@ -70,7 +74,7 @@ describe("trusted Claude MCP projection", () => {
             managed: {
               type: "stdio",
               command: "node",
-              args: ["/usr/local/bin/farstax-mcp-adapter.cjs", "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
+              args: [CLAUDE_MANAGED_MCP_ADAPTER, "--socket", "/run/agent-bridge/managed-mcp/conn_1.sock"],
             },
           },
         },
