@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { AcpRegistryAgentEntry } from "./acpRegistry.js";
 
 const DEFAULT_AGY_ACP_COMMAND = "agy_acp_server.par";
@@ -18,4 +19,27 @@ export function resolveAgyAcpArgs(
     return raw.trim().split(/\s+/).filter(Boolean);
   }
   return [...(entry?.distribution.binary?.["linux-x86_64"]?.args ?? DEFAULT_AGY_ACP_ARGS)];
+}
+
+/** Refuse an installed Agy executable whose actual version differs from the release lock. */
+export function assertAgyAcpVersion(
+  command: string,
+  expectedVersion: string | null,
+  readVersion: () => string = () => execFileSync(command, ["--version"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+  }).trim(),
+): void {
+  if (!expectedVersion) throw new Error("Agy ACP release lock has no selected version");
+  let observedVersion = "unknown";
+  try {
+    const raw = readVersion();
+    observedVersion = raw.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? "unknown";
+  } catch (error) {
+    throw new Error(`Agy ACP executable could not be version-verified: ${(error as Error).message}`);
+  }
+  if (observedVersion !== expectedVersion) {
+    throw new Error(`Agy ACP executable version mismatch: release lock expects ${expectedVersion}, observed ${observedVersion}`);
+  }
 }
