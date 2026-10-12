@@ -32,6 +32,13 @@ describe("explicit staged qualification entrypoint (issue 997)", () => {
     expect(notExecutable.status).toBe(2);
     expect(notExecutable.stderr).toMatch(/not executable/);
 
+    const printEnv = spawnSync(tsx, [entrypoint, "--provider", "agy", "--staged-executable", plain, "--print-env"], {
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    expect(printEnv.status).toBe(2);
+    expect(printEnv.stderr).toMatch(/--print-env cannot be combined with --staged-executable/);
+
     const unsafe = run(writable);
     expect(unsafe.status).toBe(2);
     expect(unsafe.stderr).toMatch(/group- or world-writable/);

@@ -83,6 +83,10 @@ fi
     expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
     expect(install("prepare").toString()).toContain("host_component_status=converged");
 
+    chmodSync(join(installed, "node"), 0o777);
+    expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
+    expect(install("prepare").toString()).toContain("host_component_status=converged");
+
     writeFileSync(join(installed, "unexpected-extra-file"), "added after staging\n");
     expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
     expect(install("prepare").toString()).toContain("host_component_status=converged");

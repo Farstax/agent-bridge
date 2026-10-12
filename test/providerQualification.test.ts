@@ -256,6 +256,15 @@ exit 7
       expect(record.checks.find((check) => check.name === "fresh_prompt")).toMatchObject({ status: "not_applicable" });
     });
 
+    it("records an unreadable executable as unbound instead of failing qualification", async () => {
+      const root = mkdtempSync(join(tmpdir(), "provider-qualification-unreadable-"));
+      const acp = executable(join(root, "agy_acp_server.par"), agyScript);
+      chmodSync(acp, 0o111);
+      const record = await qualifyAgy(acp, acp, false);
+      if (process.getuid?.() === 0) return; // root can read any file
+      expect(record.candidate).toMatchObject({ executable: realpathSync(acp), sha256: null, staged: false });
+    });
+
     it("never records an argument executable the ACP runtime did not exercise", async () => {
       const root = mkdtempSync(join(tmpdir(), "provider-qualification-unflagged-"));
       const deployed = executable(join(root, "deployed_agy_acp_server.par"), agyScript);

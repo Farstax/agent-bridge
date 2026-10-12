@@ -59,7 +59,12 @@ CHANGED=0
 payload_digest() {
   [[ -d "${PAYLOAD_DIR}" && ! -L "${PAYLOAD_DIR}" ]] || return 1
   [[ -z "$(find "${PAYLOAD_DIR}" ! -type f ! -type d -print -quit)" ]] || return 1
-  (cd "${PAYLOAD_DIR}" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+  local contents modes
+  # File contents plus every entry's type, mode and path, so permission changes
+  # and added or removed directories are detected as well.
+  contents="$(cd "${PAYLOAD_DIR}" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)" || return 1
+  modes="$(cd "${PAYLOAD_DIR}" && find . -printf '%y %m %p\n' | LC_ALL=C sort)" || return 1
+  printf '%s\n%s\n' "${contents}" "${modes}" | sha256sum | cut -d' ' -f1
 }
 
 valid_binary() {
@@ -112,8 +117,10 @@ else
   install -d -m 0755 "${VERSION_DIR}"
   rm -rf -- "${VERSION_DIR}/dist-package"
   cp -a -- "${PACKAGE_DIR}" "${VERSION_DIR}/"
-  [[ "$("${BINARY}" --version 2>/dev/null || true)" == *"${VERSION}"* ]] || fail "installed binary did not report ${VERSION}"
+  # Record the digest of the payload exactly as extracted, before the launcher is
+  # executed for the first time, so anything it writes is treated as tampering.
   payload_digest > "${PAYLOAD_SHA_FILE}" || fail "unable to record the Cursor payload digest"
+  [[ "$("${BINARY}" --version 2>/dev/null || true)" == *"${VERSION}"* ]] || fail "installed binary did not report ${VERSION}"
   CHANGED=1
 fi
 

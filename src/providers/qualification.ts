@@ -377,7 +377,13 @@ export function describeQualificationCandidate(
 ): ProviderQualificationCandidate {
   const file = resolveExecutableFile(command, env);
   if (!file) return { executable: command, sha256: null, staged };
-  return { executable: file, sha256: sha256File(file), staged };
+  try {
+    return { executable: file, sha256: sha256File(file), staged };
+  } catch {
+    // An executable that cannot be read (for example mode 0111) is still run by
+    // the runtime. Record it as unbound rather than failing qualification.
+    return { executable: file, sha256: null, staged };
+  }
 }
 
 export function currentQualificationRuntime(
