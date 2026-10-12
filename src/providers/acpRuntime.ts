@@ -509,6 +509,11 @@ export async function runResolvedAcpProviderTurn(
   cwd: string,
   options: CliOptions,
   identities: { conversationId: string; runId: string },
+  /**
+   * Qualification-only hook. Production callers omit it. The callback sees
+   * the settled turn and must not persist conversation content.
+   */
+  observeSettledTurn?: (result: AcpTurnResult) => void,
 ): Promise<CliResult> {
   const providerId = runtime.providerId;
   if (policy.providerId !== providerId) {
@@ -664,6 +669,7 @@ export async function runResolvedAcpProviderTurn(
       console.warn(`[${providerId}] failed to clean output after ACP provider cancellation`, error);
     }
   }
+  observeSettledTurn?.(result);
   return {
     ...parsed,
     text: redactProviderApiKeySecrets(parsed.text, redactionEnv),
@@ -676,6 +682,7 @@ export async function runAcpProviderTurn(
   cwd: string,
   options: CliOptions,
   identities: { conversationId: string; runId: string },
+  observeSettledTurn?: (result: AcpTurnResult) => void,
 ): Promise<CliResult> {
   const policy = getAcpProviderPolicy(providerId);
   if (!policy) throw new Error(`Provider ${providerId} has no ACP runtime policy`);
@@ -687,5 +694,6 @@ export async function runAcpProviderTurn(
     cwd,
     options,
     identities,
+    observeSettledTurn,
   );
 }
