@@ -16,7 +16,7 @@ import { assertDatabaseForeignKeyIntegrity } from "../src/db/roleAssignmentsMigr
 import { applyRoleSchema, canonicalSchemaTablesForRole, type DatabaseRole } from "../src/db/schemaContract.js";
 
 /** The active database roles. */
-const VALID_ROLES = new Set(["shared", "discord", "health", "interactive"]);
+const VALID_ROLES = new Set(["shared", "discord", "health", "interactive", "slack"]);
 
 type Mode = "inspect" | "checkpoint" | "prune" | "migrate" | "validate" | "reconcile" | "growth" | "relocate" | "bootstrap";
 
@@ -131,8 +131,8 @@ function parseArgs(argv: string[]): Options {
     else if (flag === "--database-role") {
       const separator = value.indexOf("=");
       const role = value.slice(separator + 1);
-      if (separator <= 0 || !["shared", "discord", "health", "interactive"].includes(role)) {
-        throw new Error(`--database-role must be PATH=shared|discord|health|interactive, got: ${value}`);
+      if (separator <= 0 || !["shared", "discord", "health", "interactive", "slack"].includes(role)) {
+        throw new Error(`--database-role must be PATH=shared|discord|health|interactive|slack, got: ${value}`);
       }
       databaseRoles.set(value.slice(0, separator), role as DatabaseRole);
     }

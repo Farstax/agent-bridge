@@ -1,0 +1,31 @@
+# Agent Bridge Slack app manifest (standalone, Socket Mode, customer-owned app).
+# Create the app from this manifest, install it to ONE workspace, then create a
+# non-expiring app-level token with the connections:write scope.
+display_information:
+  name: Agent Bridge
+  description: Chat with your Agent Bridge installation from Slack.
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Agent Bridge
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - im:history
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

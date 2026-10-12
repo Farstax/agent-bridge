@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { schemaTablesForRole } from "./schema.js";
 
-export const DATABASE_ROLES = ["shared", "discord", "health", "interactive"] as const;
+export const DATABASE_ROLES = ["shared", "discord", "health", "interactive", "slack"] as const;
 export type DatabaseRole = (typeof DATABASE_ROLES)[number];
 
 export function canonicalSchemaTablesForRole(role: string = "shared"): readonly string[] {

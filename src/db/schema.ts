@@ -17,9 +17,10 @@ import { applyAcpSessionBindingsMigration } from "./acpSessionBindingsMigration.
 import { applyOutwardAcpSessionsMigration } from "./outwardAcpSessionsMigration.js";
 import { applyConversationIdentityMigration } from "./conversationIdentityMigration.js";
 import { applyLegacySettingsSurfaceMigration } from "./legacySettingsSurfaceMigration.js";
+import { applySlackReceiptsMigration } from "./slackReceiptsMigration.js";
 
 /** The schema version reached after the complete registered migration plan. */
-export const CURRENT_SCHEMA_VERSION = 19;
+export const CURRENT_SCHEMA_VERSION = 20;
 
 export interface Migration {
   version: number;
@@ -38,7 +39,7 @@ const MIGRATION_GROWTH: Readonly<Record<number, "none" | "copy">> = {
   1: "copy", 2: "copy", 3: "copy", 4: "copy", 5: "copy", 6: "none",
   7: "copy", 8: "copy", 9: "copy", 10: "copy", 11: "copy", 12: "copy",
   13: "copy", 14: "copy", 15: "copy", 16: "copy", 17: "copy", 18: "copy",
-  19: "none",
+  19: "none", 20: "copy",
 };
 
 export function migrationGrowthClass(currentVersion: number): "none" | "copy" {
@@ -200,6 +201,8 @@ export function schemaTablesForRole(databaseRole = "shared"): readonly string[] 
  * their surface-scoped keys; this runs as its own step rather than
  * extending version 18's body because a database already at v18 never
  * re-executes an earlier version's migration function.
+ * Version 20 widens event_receipts for the standalone Slack surface (#943):
+ * source 'slack' and the dispatching/ambiguous receipt states.
  * Each step is transactional and user_version remains authoritative.
  */
 const DEFAULT_MIGRATIONS: readonly Migration[] = [
@@ -222,4 +225,5 @@ const DEFAULT_MIGRATIONS: readonly Migration[] = [
   { version: 17, name: "persist-outward-acp-sessions", up: applyOutwardAcpSessionsMigration },
   { version: 18, name: "scope-conversation-state-by-surface", up: applyConversationIdentityMigration },
   { version: 19, name: "scope-legacy-settings-by-surface", up: applyLegacySettingsSurfaceMigration },
+  { version: 20, name: "add-slack-event-receipts", up: applySlackReceiptsMigration },
 ];
