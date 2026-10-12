@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { buildCliInvocation, parseCliResult, runCli, runProviderInvocation } from "../cli.js";
 import { resolveExecutionMode } from "../config.js";
 import { resolveTimeoutsForKind } from "../timeouts.js";
@@ -310,6 +310,9 @@ export function writeQualificationRecord(
   record: ProviderQualificationRecord,
   path: string = qualificationEvidencePath(),
 ): void {
+  if (record.candidate?.staged && (resolve(path) === resolve(qualificationEvidencePath()) || resolve(path) === resolve(qualificationEvidencePath(homedir())))) {
+    throw new Error("staged qualification record cannot overwrite active production qualification evidence");
+  }
   let evidence: ProviderQualificationEvidence;
   try {
     evidence = readQualificationEvidence(path);
@@ -402,11 +405,24 @@ export function isQualificationCurrent(
   const runtime = resolveProviderRuntime(providerId, env);
   const normalizedInstalledVersion = normalizeProviderVersion(installedVersion);
   if (runtime.selectedVersion && normalizedInstalledVersion !== runtime.selectedVersion) return false;
-  return Boolean(record
-    && record.provider === providerId
-    && record.providerVersion === normalizedInstalledVersion
-    && record.contractVersion === PROVIDER_CONTRACT_VERSION
-    && record.executionRuntime === runtime.runtimeIdentity);
+  if (!record
+    || record.provider !== providerId
+    || record.providerVersion !== normalizedInstalledVersion
+    || record.contractVersion !== PROVIDER_CONTRACT_VERSION
+    || record.executionRuntime !== runtime.runtimeIdentity) {
+    return false;
+  }
+  if (record.candidate?.staged) return false;
+  if (record.candidate) {
+    const current = describeQualificationCandidate(runtime.executable, env);
+    if (record.candidate.executable && current.executable !== record.candidate.executable) {
+      return false;
+    }
+    if (record.candidate.sha256 !== null && current.sha256 !== record.candidate.sha256) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function failedCheckNames(record: ProviderQualificationRecord): string[] {
@@ -522,6 +538,14 @@ function resolveBridgeCommit(cwd: string): string {
   }
 }
 
+function toContextEnv(env: QualificationEnv): Record<string, string> {
+  const context: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) context[key] = value;
+  }
+  return context;
+}
+
 async function runQualificationInvocation({
   providerId,
   command,
@@ -542,8 +566,10 @@ async function runQualificationInvocation({
   runtimeEnv: QualificationEnv;
 }): Promise<string> {
   void homeDir;
-  void runtimeEnv;
-  const supervisorOptions = buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs);
+  const supervisorOptions = {
+    ...buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs),
+    contextEnv: toContextEnv(runtimeEnv),
+  };
   return runCli(command, args, cwd, supervisorOptions);
 }
 
@@ -587,7 +613,10 @@ async function executeNativeQualificationCheck({
     throw new Error("provider invocation compatibility failed: fresh qualification did not enter native fresh mode");
   }
 
-  const supervisorOptions = buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs);
+  const supervisorOptions = {
+    ...buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs),
+    contextEnv: toContextEnv(runtimeEnv),
+  };
   let parsed;
   try {
     if (invocation.transport === "acp-stdio") {
@@ -729,7 +758,10 @@ async function executeRepositoryGroundingCheck({
     if (invocation.nativeSessionMode !== "fresh") {
       throw new Error("repository grounding qualification failed: invocation did not enter native fresh mode");
     }
-    const supervisorOptions = buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs);
+    const supervisorOptions = {
+      ...buildQualificationSupervisorOptions(providerId, timeoutMs, idleTimeoutMs),
+      contextEnv: toContextEnv(runtimeEnv),
+    };
     const parsed = invocation.transport === "acp-stdio"
       ? await runProviderInvocation(
           bot,
@@ -802,7 +834,16 @@ export async function qualifyProvider(options: ProviderQualificationOptions): Pr
   const homeDir = options.homeDir ?? homedir();
   const ownsWorkspace = !options.cwd;
   const cwd = options.cwd ?? mkdtempSync(join(tmpdir(), `agent-bridge-qualify-${options.providerId}-`));
-  const evidencePath = options.evidencePath ?? qualificationEvidencePath(homeDir);
+  const defaultEvidencePath = qualificationEvidencePath(homeDir);
+  if (stagedExecutable) {
+    if (!options.evidencePath) {
+      throw new Error("--staged-executable requires an explicit evidence path and cannot overwrite active production qualification evidence");
+    }
+    if (resolve(options.evidencePath) === resolve(defaultEvidencePath) || resolve(options.evidencePath) === resolve(qualificationEvidencePath(homedir()))) {
+      throw new Error("staged qualification cannot overwrite active production qualification evidence");
+    }
+  }
+  const evidencePath = options.evidencePath ?? defaultEvidencePath;
   const qualifiedAt = new Date().toISOString();
   const checks: ProviderQualificationCheck[] = [];
   const requestedExpectedVersion = options.expectedVersion
