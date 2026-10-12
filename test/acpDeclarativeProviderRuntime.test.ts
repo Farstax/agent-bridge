@@ -71,9 +71,9 @@ describe("declarative ACP provider runtime", () => {
   it("locks the Grok candidate adapter distribution to the qualified release", () => {
     expect(getLockedAcpRegistryEntry("grok")).toEqual(expect.objectContaining({
       id: "grok-build",
-      version: "1.0.46",
+      version: "1.0.50",
       distribution: {
-        npx: { package: "@xai-official/grok@1.0.46", args: ["agent", "stdio"] },
+        npx: { package: "@xai-official/grok@1.0.50", args: ["agent", "stdio"] },
       },
     }));
   });
