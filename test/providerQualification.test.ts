@@ -264,7 +264,7 @@ exit 7
         CURSOR_ACP_ARGS: "acp",
       }).runtimeIdentity);
       expect(result.providerVersion).toBe(CURSOR_ACP_VERSION);
-      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/2026\.09\.23/);
+      expect(result.checks.find((check) => check.name === "version")?.diagnostic).toMatch(/2026\.10\.01/);
     } finally {
       if (previousCommand === undefined) delete process.env.CURSOR_ACP_COMMAND;
       else process.env.CURSOR_ACP_COMMAND = previousCommand;

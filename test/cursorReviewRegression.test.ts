@@ -131,7 +131,7 @@ describe("cursor doctor and session expiry", () => {
       // path (e.g. agent-bridge-738-cursor), which would otherwise make
       // every other provider's node_modules/.bin path match too.
       commandExists: (executable) => basename(executable).includes("cursor"),
-      inspectVersion: () => "2026.09.23-86fc751",
+      inspectVersion: () => "2026.10.01-14929f9",
       inspectVoiceRuntime: () => ({ status: "ready", reasonCode: null }),
     });
     const chain = report.chains.find((entry) => entry.name === "INTERACTIVE_CLI_CHAIN");
