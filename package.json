@@ -41,6 +41,7 @@
     "skills": "tsx scripts/skill-manager.ts",
     "qualify:local": "bash scripts/qualify-local.sh",
     "qualify:provider": "tsx scripts/provider-qualification.ts",
+    "qualify:logical-messages": "tsx scripts/qualify-logical-messages.ts",
     "scan-token-savings": "tsx scripts/scan-token-savings.ts",
     "postinstall": "node scripts/normalize-grok-bin-symlink.mjs"
   },
