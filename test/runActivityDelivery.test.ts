@@ -22,10 +22,12 @@ afterEach(() => {
 });
 
 describe("structured run activity delivery", () => {
-  it("keeps the parent typing heartbeat alive while a child works and reconciles progress into final", async () => {
+  it("keeps activity private while retaining the observer, typing heartbeat and final answer", async () => {
     vi.useFakeTimers();
     const client = createClient();
     let finish!: () => void;
+    const observer = vi.fn();
+    const onProgress = Object.assign(vi.fn(), { activity: observer });
     const execution = async (progress: ProgressReporter): Promise<CliResult> => {
       progress.activity?.(delegated);
       await Promise.resolve();
@@ -33,20 +35,19 @@ describe("structured run activity delivery", () => {
       return { text: "authoritative final", sessionId: "s1" };
     };
 
-    const pending = sendMessageWithProgress({ client, kind: "codex", chatId: 123, execution });
+    const pending = sendMessageWithProgress({ client, kind: "codex", chatId: 123, onProgress, execution });
     await vi.advanceTimersByTimeAsync(0);
-    expect(client.sendMessage).toHaveBeenCalledTimes(1);
-    expect(client.sendMessage.mock.calls[0][0].text).toBe("Delegated work to a subagent…");
+    expect(observer).toHaveBeenCalledWith(delegated);
+    expect(client.sendMessage).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(9_000);
     expect(client.sendChatAction).toHaveBeenCalledTimes(3);
     finish();
     await pending;
 
-    expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
-      message_id: 101,
-      text: expect.stringContaining("authoritative final"),
-    }));
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage.mock.calls[0][0].text).toContain("authoritative final");
+    expect(client.editMessageText).not.toHaveBeenCalled();
     const typingCount = client.sendChatAction.mock.calls.length;
     await vi.advanceTimersByTimeAsync(10_000);
     expect(client.sendChatAction).toHaveBeenCalledTimes(typingCount);
@@ -67,7 +68,7 @@ describe("structured run activity delivery", () => {
       return { text: "done", sessionId: "s1" };
     };
 
-    const pending = sendMessageWithProgress({ client, kind: "codex", chatId: 123, execution });
+    const pending = sendMessageWithProgress({ client, kind: "codex", chatId: 123, showProgressNarration: true, execution });
     await vi.advanceTimersByTimeAsync(0);
     expect(client.sendMessage).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(700);
@@ -87,6 +88,7 @@ describe("structured run activity delivery", () => {
       kind: "codex",
       chatId: 123,
       allowAnswerPreview: true,
+      showProgressNarration: true,
       execution: async (progress, onAnswerDelta) => {
         progress.activity?.(delegated);
         await vi.advanceTimersByTimeAsync(0);
@@ -112,6 +114,7 @@ describe("structured run activity delivery", () => {
       kind: "codex",
       chatId: 123,
       isAborted: () => aborted,
+      showProgressNarration: true,
       execution: async (progress) => {
         progress.activity?.(delegated);
         await vi.advanceTimersByTimeAsync(0);

@@ -65,6 +65,9 @@ const SESSION_EXECUTION_CONTRACT = [
   "- If part of the work is genuinely blocked, complete the unblocked work and state the specific blocker.",
   "- Ask the operator only when meaningful progress genuinely requires information, authority, credentials, a product decision, or an unsafe/irreversible action that has not been authorised.",
   "- Do not claim work was completed or verified unless it was.",
+  "- Work privately by default. Do not narrate tool calls, clock or scratchpad checks, CI polling, retries, continuation scheduling, or routine implementation steps in chat.",
+  "- Send user-facing updates only for meaningful new progress, important delays, genuine blockers or decisions requiring input, and verified outcomes. Do not repeat unchanged waiting or blocked status on later continuations.",
+  "- Summarize outcomes rather than execution logs; include technical identifiers, times and diagnostics only when they matter to the user or are requested. Keep full evidence in its owning records.",
   `- ${SCRATCHPAD_GUIDANCE}`,
 ].join("\n");
 

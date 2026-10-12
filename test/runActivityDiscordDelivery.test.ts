@@ -19,7 +19,7 @@ function createDiscordClient() {
 }
 
 describe("Discord structured run activity delivery", () => {
-  it("uses the Discord message id and reconciles one transient message into the final answer", async () => {
+  it("keeps activity private and sends only the final answer on Discord", async () => {
     vi.useFakeTimers();
     const client = createDiscordClient();
     let finish!: () => void;
@@ -35,13 +35,12 @@ describe("Discord structured run activity delivery", () => {
     });
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage).not.toHaveBeenCalled();
     finish();
     await pending;
-    expect(client.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
-      message_id: "discord-progress-1",
-      text: "final answer",
-    }));
+    expect(client.sendMessage).toHaveBeenCalledTimes(1);
+    expect(client.sendMessage.mock.calls[0][0].text).toBe("final answer");
+    expect(client.editMessageText).not.toHaveBeenCalled();
   });
 
   it("neutralizes stale Discord activity when cancellation cannot delete messages", async () => {
@@ -53,6 +52,7 @@ describe("Discord structured run activity delivery", () => {
       kind: "codex",
       chatId: "channel-1",
       isAborted: () => aborted,
+      showProgressNarration: true,
       execution: async (progress) => {
         progress.activity?.({ kind: "subagents", state: "working", activeCount: 1 });
         await vi.advanceTimersByTimeAsync(0);
