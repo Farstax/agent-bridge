@@ -28,4 +28,5 @@ dist/
 .data-health/
 cache/
 .worktrees/
-__pycache__/.env.slack-interactive
+__pycache__/
+.env.slack-interactive

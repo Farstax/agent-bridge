@@ -129,6 +129,39 @@ describe("slack transport adapter (#943)", () => {
     expect(slept).toEqual([1000]);
   });
 
+  it("never splits a Slack entity across chunks and releases idle channel state", async () => {
+    const text = `${"a".repeat(3497)}&amp;${"b".repeat(100)}`;
+    const chunks = chunkSlackText(text);
+    expect(chunks.every((c) => !/&(?:amp|lt|gt)?$/.test(c) || c.endsWith(";"))).toBe(true);
+    expect(chunks.join("")).toBe(text);
+    const client = new SlackClient(web(ok()) as any, fast);
+    await client.sendMessage({ chat_id: "C9", text: "hi" });
+    await new Promise((r) => setImmediate(r));
+    expect((client as any).tails.size).toBe(0);
+  });
+
+  it("a confirmed 429 pauses every channel in the workspace", async () => {
+    let t = 0;
+    const slept: number[] = [];
+    let first = true;
+    const w = web(async (args: any) => {
+      if (first) { first = false; throw rateLimited(5); }
+      return { ok: true, ts: "1.1", channel: args.channel };
+    });
+    const client = new SlackClient(w as any, { now: () => t, sleep: async (ms) => { slept.push(ms); t += ms; }, channelSpacingMs: 0 });
+    await client.sendMessage({ chat_id: "C1", text: "a" });
+    slept.length = 0;
+    await client.sendMessage({ chat_id: "C2", text: "b" });
+    expect(slept.filter((ms) => ms > 0)).toEqual([]); // already waited out by the first channel
+    first = true;
+    t = 0;
+    const w2 = web(async (args: any) => { if (first) { first = false; throw rateLimited(5); } return { ok: true, ts: "2.2", channel: args.channel }; });
+    const c2 = new SlackClient(w2 as any, { now: () => t, sleep: async (ms) => { t += ms; }, channelSpacingMs: 0 });
+    const [a, b] = await Promise.all([c2.sendMessage({ chat_id: "C1", text: "x" }), c2.sendMessage({ chat_id: "C2", text: "y" })]);
+    expect(a.ok && b.ok).toBe(true);
+    expect(t).toBeGreaterThanOrEqual(5000);
+  });
+
   it("fails explicitly for unsupported operations", async () => {
     const client = new SlackClient(web(ok()) as any, fast);
     await expect(client.editMessageText({})).rejects.toThrow(/does not support/);

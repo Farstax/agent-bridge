@@ -211,6 +211,16 @@ function parseRoutine(value: string): ScheduledRoutine | null {
       }
     }
     if (routine.surfaceIdentity.startsWith("discord:")) return { ...routine, delivery: { chatId: routine.chatKey, chatType: "private" } };
+    if (routine.surfaceIdentity.startsWith("slack:")) {
+      // Slack chat keys are `<channel>` (DM) or `<channel>:<thread-ts>`; the
+      // native channel ID and thread timestamp are opaque strings.
+      const [channel, threadTs] = routine.chatKey.split(":");
+      if (!channel) return null;
+      return {
+        ...routine,
+        delivery: { chatId: channel, chatType: channel.startsWith("D") ? "private" : "supergroup", ...(threadTs ? { threadId: threadTs } : {}) },
+      };
+    }
     return null;
   } catch {
     return null;

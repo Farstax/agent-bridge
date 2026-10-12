@@ -455,6 +455,13 @@ export class BridgeDb {
     return this.eventReceipts.createReceipt(input);
   }
 
+  /** True while the durable queue still owns work correlated to this key. */
+  hasPendingMessageForCorrelationKey(surface: string, key: string): boolean {
+    return Boolean(this.raw.prepare(
+      "SELECT 1 FROM pending_messages WHERE surface = ? AND scheduled_occurrence_key = ? LIMIT 1",
+    ).get(surface, key));
+  }
+
   admitEventReceipt(input: Parameters<BridgeDb["createEventReceipt"]>[0]): { receipt: EventReceipt; created: boolean } {
     return this.eventReceipts.admitReceipt(input);
   }

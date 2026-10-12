@@ -86,7 +86,7 @@ export function classifySlackEnvelope(body: any, context: SlackVerifiedContext):
   if (Buffer.byteLength(text, "utf8") > SLACK_MAX_TEXT_BYTES) return { kind: "ignore", reason: "too_large" };
   const [first, ...restWords] = text.split(/\s+/);
   const command = COMMANDS[first.toLowerCase()];
-  if (command) text = restWords.length ? `${command} ${restWords.join(" ")}` : command;
+  if (command) text = command === "/cli" && restWords.length ? `${command} ${restWords.join(" ")}` : command;
 
   const threadTs = typeof event.thread_ts === "string" && event.thread_ts ? event.thread_ts : undefined;
   const surfaceIdentity = slackSurfaceIdentity(context.teamId, context.appId);

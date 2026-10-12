@@ -54,10 +54,22 @@ export class SlackStatusWriter {
     this.flush();
   }
 
+  /**
+   * `connected` with a non-null errorCode is a degraded observation (for
+   * example the database refused an admission); consumers must not report it
+   * as fully connected.
+   */
   transition(state: SlackStatusState, errorCode: SlackStatusErrorCode | null = null): void {
+    if (state === "connected" && this.state !== "connected") this.lastConnectedAt = new Date(this.now()).toISOString();
     this.state = state;
-    this.errorCode = state === "connected" ? null : errorCode;
-    if (state === "connected") this.lastConnectedAt = new Date(this.now()).toISOString();
+    this.errorCode = errorCode;
+    this.flush();
+  }
+
+  /** Clears a degraded observation once the condition has passed. */
+  clearDegraded(): void {
+    if (this.state !== "connected" || this.errorCode === null) return;
+    this.errorCode = null;
     this.flush();
   }
 
@@ -107,7 +119,7 @@ export class SlackStatusWriter {
 
 /** Consumer-side freshness rule documented in docs/slack.md. */
 export function isSlackStatusCurrent(record: SlackStatusRecord, expected: { pid: number; generation?: string; appId?: string; teamId?: string }, nowMs = Date.now()): boolean {
-  if (record.schemaVersion !== 1 || record.state !== "connected") return false;
+  if (record.schemaVersion !== 1 || record.state !== "connected" || record.errorCode !== null) return false;
   if (record.pid !== expected.pid) return false;
   if (expected.generation && record.generation !== expected.generation) return false;
   if (expected.appId && record.appId !== expected.appId) return false;

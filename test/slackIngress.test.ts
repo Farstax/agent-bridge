@@ -87,6 +87,8 @@ describe("slack event classification (#943)", () => {
     expect(text("!reset")).toBe("/reset");
     expect(text("!cancel")).toBe("/cancel");
     expect(text("!cli codex")).toBe("/cli codex");
+    expect(text("!stop please")).toBe("/stop");
+    expect(text("!reset now")).toBe("/reset");
     expect(text("<@UBOT> !stop", mention)).toBe("/stop");
     expect(text("please !stop")).toBe("please !stop");
     expect(text("/stop")).toBe("/stop"); // never an alias: Slack reserves slash commands

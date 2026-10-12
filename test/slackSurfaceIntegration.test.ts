@@ -141,8 +141,11 @@ describe("slack surface through the existing engine (#943)", () => {
     await deliver(h, body(dm("hello"), "Ev10"));
     expect(h.runCli).toHaveBeenCalledTimes(1);
     expect(finals).toBe(1);
+    // The turn executed and committed; the answer's send outcome is unknown and is not repeated.
     const receipt = db.getEventReceiptByIdempotencyKey("slack:T1:A1:Ev10")!;
-    expect(["completed", "ambiguous"]).toContain(receipt.status);
+    expect(receipt.status).toBe("completed");
+    expect(receipt.run_id).toBeTruthy();
+    expect(h.runCli).toHaveBeenCalledTimes(1);
   });
 
   it("restart: a possibly-started receipt is fenced with one native notice and a never-started one runs once", async () => {
@@ -162,6 +165,33 @@ describe("slack surface through the existing engine (#943)", () => {
     expect(String(h.posts.at(-1)?.text)).toContain("the answer");
   });
 
+  it("restart: work the durable queue still owns is left to queue recovery and is never fenced or re-notified", async () => {
+    const h = harness();
+    const first = admitSlackTurn(db, classifySlackEnvelope(body(dm("first"), "EvQ1"), ctx) as any, SURFACE);
+    const queued = admitSlackTurn(db, classifySlackEnvelope(body(dm("second", "1700000100.000500"), "EvQ2"), ctx) as any, SURFACE);
+    if (first.kind !== "admitted" || queued.kind !== "admitted") throw new Error("expected admission");
+    db.claimEventReceiptDispatch(first.receipt.id);
+    db.claimEventReceiptDispatch(queued.receipt.id);
+    // The second message was persisted by the engine's durable queue with its receipt correlation.
+    db.enqueueMsg(SURFACE, "D1", {
+      prompt: "second", chatId: "D1", chatType: "private", userId: "U1", attachments: [],
+      scheduledOccurrenceKey: `event-receipt:${queued.receipt.id}`,
+    });
+
+    await h.runtime.recoverReceipts();
+
+    expect(db.getEventReceipt(first.receipt.id)?.status).toBe("ambiguous");
+    expect(db.getEventReceipt(queued.receipt.id)?.status).toBe("dispatching");
+    expect(h.notices).toHaveLength(1);
+    expect(h.runCli).not.toHaveBeenCalled();
+    // The engine's queue recovery then executes it and settles the receipt.
+    await h.engine.recoverPendingQueues();
+    const settled = db.getEventReceipt(queued.receipt.id)!;
+    expect(settled.status).toBe("completed");
+    expect(settled.run_id).toBeTruthy();
+    expect(h.runCli).toHaveBeenCalledTimes(1);
+  });
+
   it("a dispatch that throws fences the receipt and notifies once instead of replaying", async () => {
     const h = harness();
     const dispatchSpy = vi.fn(async () => { throw new Error("boom"); });
@@ -175,5 +205,28 @@ describe("slack surface through the existing engine (#943)", () => {
     expect(h.notices).toEqual([{ channel: "D1", thread: undefined, text: SLACK_AMBIGUOUS_NOTICE }]);
     await runtime.recoverReceipts();
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("slack scheduled routines (#943)", () => {
+  it("creates a routine for a channel thread and dispatches with the stored native coordinates", async () => {
+    const { createScheduledRoutine, buildScheduledInteractiveTurn } = await import("../src/scheduledRoutines.js");
+    const dir = mkdtempSync(join(tmpdir(), "slack-routine-"));
+    const db = openDb(join(dir, "bridge.sqlite"));
+    try {
+      const created = createScheduledRoutine(db, {
+        id: "r1", name: "daily", surfaceIdentity: SURFACE, chatKey: "C1:1700000050.000200", ownerKey: "owner", kind: "companion",
+        timezone: "UTC", schedule: { type: "weekly", weekdays: [1], time: "09:00" }, instruction: "do it", enabled: true,
+        createdAt: new Date().toISOString(),
+      });
+      expect(created.delivery).toEqual({ chatId: "C1", chatType: "supergroup", threadId: "1700000050.000200" });
+      const turn = buildScheduledInteractiveTurn(created, new Date().toISOString(), "U1");
+      expect(turn).toMatchObject({ chatKey: "C1:1700000050.000200", threadId: "1700000050.000200", delivery: { chatId: "C1", chatType: "supergroup" } });
+      const dmRoutine = createScheduledRoutine(db, { ...created, id: "r2", chatKey: "D1", delivery: undefined });
+      expect(dmRoutine.delivery).toEqual({ chatId: "D1", chatType: "private" });
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

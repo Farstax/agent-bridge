@@ -52,10 +52,14 @@ dotenv.config({ path: process.env.BRIDGE_ENV_FILE || ".env.slack-interactive", o
 
 const TAG = "[slack-interactive]";
 
+/** EX_CONFIG: a permanent misconfiguration; the unit does not restart-loop on it. */
+const EXIT_CONFIG = 78;
+
 function fail(code: SlackStatusErrorCode, message: string, status: SlackStatusWriter): never {
+  status.transition("failed", code);
   status.stop("failed");
   console.error(`${TAG} ${code}: ${message}`);
-  process.exit(1);
+  process.exit(EXIT_CONFIG);
 }
 
 // ── Config and verified identity ─────────────────────────────────────────────
@@ -184,6 +188,7 @@ const receiptRuntime = createSlackReceiptRuntime({
   notify: notifyNative,
   log: (message) => console.log(`${TAG} ${message}`),
   onAdmissionDegraded: (reason) => status.transition("connected", reason === "storage" ? "database_unavailable" : "socket_error"),
+  onAdmissionRecovered: () => status.clearDegraded(),
 });
 let reconciliationReady: Promise<void> = Promise.resolve();
 
@@ -226,21 +231,26 @@ runContinuationRunner = new RunContinuationRunner(db, surfaceIdentity, async (co
 
 // ── Socket Mode ──────────────────────────────────────────────────────────────
 
+let socketRejected = false;
 const socket = new VerifiedSocketModeClient(
   { appToken: slackConfig.appToken, autoReconnectEnabled: true, clientOptions: { retryConfig: { retries: 10, factor: 1.3 } } },
   identity.appId,
   {
     onVerified: () => undefined,
     onRejected: (code) => {
-      status.transition("failed", code);
-      console.error(`${TAG} ${code}: the app-level token does not belong to the verified app; refusing to serve events`);
+      // A token that belongs to another app is a permanent misconfiguration:
+      // record it, stop serving and exit without a restart loop.
+      socketRejected = true;
+      scheduledRoutineRunner?.stop();
+      runContinuationRunner?.stop();
+      fail(code, "the app-level token does not belong to the verified app; refusing to serve events", status);
     },
   },
 );
-socket.on("connecting", () => status.transition("connecting"));
-socket.on("connected", () => { if (socket.socketVerified) status.transition("connected"); });
-socket.on("reconnecting", () => status.transition("reconnecting"));
-socket.on("disconnected", () => status.transition("disconnected"));
+socket.on("connecting", () => { if (!socketRejected) status.transition("connecting"); });
+socket.on("connected", () => { if (!socketRejected && socket.socketVerified) status.transition("connected"); });
+socket.on("reconnecting", () => { if (!socketRejected) status.transition("reconnecting"); });
+socket.on("disconnected", () => { if (!socketRejected) status.transition("disconnected"); });
 for (const eventType of ["message", "app_mention"]) {
   socket.on(eventType, (args: any) => {
     receiptRuntime.handleEnvelope(args).catch((error) => console.error(`${TAG} event handling failed`, safeSlackErrorCode(error)));

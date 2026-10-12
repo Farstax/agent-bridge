@@ -44,6 +44,9 @@ export function chunkSlackText(text: string, limit = SLACK_MAX_CHUNK): string[] 
     let cut = rest.lastIndexOf("\n", limit);
     if (cut < limit / 2) cut = rest.lastIndexOf(" ", limit);
     if (cut < limit / 2) cut = limit;
+    // Never split a Slack entity (&amp; &lt; &gt;) across two messages.
+    const amp = rest.lastIndexOf("&", cut - 1);
+    if (amp > cut - 6 && amp > 0 && !rest.slice(amp, cut).includes(";")) cut = amp;
     chunks.push(rest.slice(0, cut));
     rest = rest.slice(cut).replace(/^\n/, "");
   }
@@ -75,6 +78,8 @@ export class SlackClient implements MessagingPlatform {
   readonly capabilities: SurfaceCapabilities = SLACK_SURFACE_CAPABILITIES;
   private readonly tails = new Map<string, Promise<unknown>>();
   private readonly nextAllowedAt = new Map<string, number>();
+  /** A confirmed 429 pauses every channel until Retry-After has passed. */
+  private workspaceNotBefore = 0;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly spacingMs: number;
@@ -106,13 +111,15 @@ export class SlackClient implements MessagingPlatform {
       }
       return last;
     });
-    this.tails.set(channel, run.catch(() => undefined));
+    const tail = run.catch(() => undefined);
+    this.tails.set(channel, tail);
+    void tail.then(() => { if (this.tails.get(channel) === tail) this.tails.delete(channel); });
     return run;
   }
 
   private async postChunk(channel: string, threadTs: string | undefined, text: string): Promise<any> {
     for (let attempt = 1; ; attempt += 1) {
-      const wait = (this.nextAllowedAt.get(channel) ?? 0) - this.now();
+      const wait = Math.max(this.nextAllowedAt.get(channel) ?? 0, this.workspaceNotBefore) - this.now();
       if (wait > 0) await this.sleep(wait);
       try {
         const response = await this.web.chat.postMessage({
@@ -131,7 +138,7 @@ export class SlackClient implements MessagingPlatform {
         const failure = error instanceof SlackDeliveryError ? error : classify(error);
         if (failure.outcome === "rate_limited" && attempt < MAX_RATE_LIMIT_ATTEMPTS) {
           const delay = (failure as SlackDeliveryError & { retryAfterMs?: number }).retryAfterMs ?? 1_000;
-          this.nextAllowedAt.set(channel, this.now() + delay);
+          this.workspaceNotBefore = Math.max(this.workspaceNotBefore, this.now() + delay);
           continue;
         }
         throw failure;

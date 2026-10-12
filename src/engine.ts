@@ -937,7 +937,14 @@ export class BridgeEngine {
       // row rather than the scheduled-occurrence table.
       if (occurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
         const receiptId = Number(occurrenceKey.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
-        if (Number.isSafeInteger(receiptId)) this.db.linkEventReceiptRun(receiptId, runId);
+        if (Number.isSafeInteger(receiptId)) {
+          this.db.linkEventReceiptRun(receiptId, runId);
+          // The link runs after the Run settled, so the receipt can settle with it.
+          const status = this.db.getRun(runId)?.status;
+          if (status === "done") this.db.finishEventReceipt(receiptId, { status: "completed", result_reference: runId });
+          else if (status === "failed") this.db.finishEventReceipt(receiptId, { status: "failed", result_reference: runId });
+          else if (status === "cancelled") this.db.finishEventReceipt(receiptId, { status: "cancelled", result_reference: runId });
+        }
         continue;
       }
       if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {

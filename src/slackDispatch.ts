@@ -13,6 +13,7 @@ import {
   SLACK_RECEIPT_SOURCE,
   admitSlackTurn,
   classifySlackEnvelope,
+  slackSurfaceIdentity,
   turnFromReceipt,
   type SlackVerifiedContext,
 } from "./slackIngress.js";
@@ -31,6 +32,7 @@ export interface SlackReceiptRuntimeDeps {
   notify: (channel: string, thread: string | undefined, text: string) => Promise<void>;
   log?: (message: string) => void;
   onAdmissionDegraded?: (reason: "storage" | "backlog") => void;
+  onAdmissionRecovered?: () => void;
 }
 
 export interface SlackEnvelopeArgs {
@@ -81,16 +83,22 @@ export function createSlackReceiptRuntime(deps: SlackReceiptRuntimeDeps) {
       log("undispatched backlog full; envelope not acknowledged");
       return;
     }
+    deps.onAdmissionRecovered?.();
     await args.ack().catch(() => log("acknowledgement failed; the durable receipt is retained"));
     if (admission.kind === "duplicate") return;
     await ready;
     await dispatchReceipt(admission.receipt, admission.turn);
   }
 
-  /** Restart reconciliation: fence possibly-started work, run never-started work once. */
+  /**
+   * Restart reconciliation. Work the durable queue still owns follows existing
+   * queue recovery and is left untouched; other possibly-started work is fenced
+   * and never replayed; never-started work runs once.
+   */
   async function recoverReceipts(): Promise<void> {
     let notices = 0;
     for (const receipt of db.listEventReceipts(SLACK_RECEIPT_SOURCE, ["dispatching", "run_created"])) {
+      if (db.hasPendingMessageForCorrelationKey(slackSurfaceIdentity(context.teamId, context.appId), `${EVENT_RECEIPT_CORRELATION_PREFIX}${receipt.id}`)) continue;
       const run = receipt.run_id ? db.getRun(receipt.run_id) : null;
       if (run && run.status === "done") {
         db.finishEventReceipt(receipt.id, { status: "completed", result_reference: receipt.run_id });

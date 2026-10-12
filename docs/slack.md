@@ -49,7 +49,12 @@ Grid, Slack Connect, rotating (`xoxe`) tokens, and Slack Marketplace listing.
 
 Token files have trailing newlines trimmed and must be non-empty. Tokens are
 never logged. Rotating tokens (`xoxe-...`) are rejected at startup with an
-actionable error.
+actionable error. Permanent configuration failures (bad tokens, an app-level
+token for another app, an invalid allowlist) write a `failed` status and exit
+with code 78, which the example unit does not restart.
+
+The Slack unit is operator-installed: `scripts/agent-bridge-install.py` does not
+manage it, but the guarded rollout knows the unit and its database role.
 
 > **Never run the same Slack app in two places.** Slack distributes events for
 > one app across every connected socket, including a second Agent Bridge. Agent
@@ -83,15 +88,20 @@ grants execution rights.
   If the database write fails the envelope is not acknowledged and Slack may
   redeliver. Duplicates are recognised by `event_id`, not by envelope ID.
 - A receipt is dispatched at most once. After a restart, a receipt that was
-  stored but never dispatched runs once. A receipt that may already have reached
-  a provider is marked `ambiguous` and **is not re-run**; the conversation gets
-  one notice asking you to resend if needed.
+  stored but never dispatched runs once. Work that the durable queue still owns
+  follows the normal queue recovery. Any other receipt that may already have
+  reached a provider is marked `ambiguous` and **is not re-run**; the
+  conversation gets one notice asking you to resend if needed.
 - Slack retries and network behaviour mean delivery is not exactly-once. A
   confirmed `429` is retried with the advertised `Retry-After` (bounded). Any
   timeout, 5xx or disconnect during a post is treated as ambiguous and is not
   blindly resent; a partially delivered multi-part answer is not resent.
 - Replies always use the native Slack channel ID and thread timestamp, including
-  queued, fallback, continuation, scheduled and restart notices.
+  queued, fallback, continuation, scheduled and restart notices. The one
+  exception is the notice for a run interrupted by a restart inside a DM thread,
+  which is posted at the top level of that DM.
+- Scheduled routines can only target a conversation that already exists, using
+  its stored channel and thread; nothing is posted unsolicited.
 
 ## Readiness file (`SLACK_STATUS_FILE`, schema v1)
 
@@ -117,11 +127,13 @@ every 15 seconds while the process is alive:
 `reconnect_required`, `failed`. `errorCode` is a bounded identifier such as
 `token_revoked`, `token_class_unsupported`, `app_mismatch`, `app_unverified`,
 `identity_unavailable`, `allowlist_invalid`, `database_unavailable` or
-`socket_error`.
+`socket_error`. A `connected` record with a non-null `errorCode` is **degraded**
+(for example the database refused an admission); it is not fully connected.
 
 A consumer should treat the process as connected only when `state` is
-`connected`, `observedAt` is at most **45 seconds** old, `pid` is the live
-process ID, and `generation`, `appId` and `teamId` match what it expects. The
+`connected`, `errorCode` is `null`, `observedAt` is at most **45 seconds** old,
+`pid` is the live process ID, and `generation`, `appId` and `teamId` match what
+it expects. The
 file never contains tokens, socket URLs or message content. A connected record
 is an observation; it does not guarantee Slack routes a particular event to
 this socket.

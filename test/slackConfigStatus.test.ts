@@ -81,6 +81,24 @@ describe("slack status file (#943, schema v1)", () => {
     expect(isSlackStatusCurrent({ ...record, state: "reconnecting" }, expected, at(0))).toBe(false);
   });
 
+  it("records degradation without refreshing the connection time and clears it on recovery", () => {
+    let now = Date.parse("2026-10-12T10:00:00Z");
+    const writer = new SlackStatusWriter(null, () => now);
+    writer.setIdentity({ appId: "A1", teamId: "T1", botUserId: "UBOT" });
+    writer.transition("connected");
+    const connectedAt = writer.snapshot().lastConnectedAt;
+    now += 60_000;
+    writer.transition("connected", "database_unavailable");
+    expect(writer.snapshot()).toMatchObject({ state: "connected", errorCode: "database_unavailable", lastConnectedAt: connectedAt });
+    expect(isSlackStatusCurrent(writer.snapshot(), { pid: process.pid })).toBe(false);
+    writer.clearDegraded();
+    expect(writer.snapshot().errorCode).toBeNull();
+    expect(isSlackStatusCurrent(writer.snapshot(), { pid: process.pid }, now)).toBe(true);
+    writer.transition("failed", "app_mismatch");
+    writer.stop("failed");
+    expect(writer.snapshot()).toMatchObject({ state: "failed", errorCode: "app_mismatch" });
+  });
+
   it("reports a write failure instead of silently claiming readiness", () => {
     const writer = new SlackStatusWriter(join(dir, "missing-dir", "status.json"));
     writer.transition("connected");
