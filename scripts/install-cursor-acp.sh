@@ -49,10 +49,16 @@ ROOT="${RUNTIME_HOME}/.local/share/agent-bridge/cursor-acp"
 LINK="${RUNTIME_HOME}/.local/bin/cursor-agent"
 VERSION_DIR="${ROOT}/versions/${VERSION}"
 BINARY="${VERSION_DIR}/${RELATIVE_CMD}"
+BINARY_SHA_FILE="${VERSION_DIR}/cursor-agent.sha256"
 CHANGED=0
 
 valid_binary() {
-  [[ -x "${BINARY}" ]] && [[ "$("${BINARY}" --version 2>/dev/null || true)" == *"${VERSION}"* ]]
+  [[ -x "${BINARY}" && -f "${BINARY_SHA_FILE}" && ! -L "${BINARY_SHA_FILE}" ]] || return 1
+  local expected_sha
+  IFS= read -r expected_sha < "${BINARY_SHA_FILE}" || return 1
+  [[ "${expected_sha}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$(sha256sum "${BINARY}" | cut -d' ' -f1)" == "${expected_sha}" ]] || return 1
+  [[ "$("${BINARY}" --version 2>/dev/null || true)" == *"${VERSION}"* ]]
 }
 
 if valid_binary; then
@@ -96,6 +102,7 @@ else
   rm -rf -- "${VERSION_DIR}/dist-package"
   cp -a -- "${PACKAGE_DIR}" "${VERSION_DIR}/"
   [[ "$("${BINARY}" --version 2>/dev/null || true)" == *"${VERSION}"* ]] || fail "installed binary did not report ${VERSION}"
+  sha256sum "${BINARY}" | cut -d' ' -f1 > "${BINARY_SHA_FILE}"
   CHANGED=1
 fi
 
