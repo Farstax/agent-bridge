@@ -51,9 +51,9 @@ describe("declarative ACP provider runtime", () => {
     expect(ACP_REGISTRY_SCHEMA_VERSION).toBe("1.0.0");
     expect(getLockedAcpRegistryEntry("codex")).toEqual(expect.objectContaining({
       id: "codex-acp",
-      version: "1.10.0",
+      version: "2.2.2",
       distribution: {
-        npx: { package: "@agentclientprotocol/codex-acp@1.10.0" },
+        npx: { package: "@agentclientprotocol/codex-acp@2.2.2" },
       },
     }));
   });
@@ -95,7 +95,7 @@ describe("declarative ACP provider runtime", () => {
       executable: "/opt/agent-bridge/current/node_modules/.bin/codex-acp",
       args: [],
       versionArgs: ["--version"],
-      runtimeIdentity: expect.stringMatching(/^acp:codex-acp@1\.10\.0:[a-f0-9]{64}$/),
+      runtimeIdentity: expect.stringMatching(/^acp:codex-acp@2\.2\.2:[a-f0-9]{64}$/),
       provisionalAnswers: true,
     }));
   });
