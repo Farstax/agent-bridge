@@ -1,4 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildCliInvocation } from "../src/cli.js";
 import { runAcpTurn } from "../src/acp/client.js";
@@ -114,9 +117,15 @@ describe("Claude ACP provider", () => {
     expect(claudeAcpPolicy.sessionSettings?.(request({ model: "claude-sonnet-5" }), {})?.config).toEqual([
       { category: "model", explicitValue: "claude-sonnet-5", preferredValues: [] },
     ]);
-    expect(claudeAcpPolicy.sessionSettings?.(request(), {}).meta).toEqual({
+    expect(claudeAcpPolicy.sessionSettings?.(request(), { HOME: mkdtempSync(join(tmpdir(), "claude-mcp-empty-")) }).meta).toEqual({
       systemPrompt: { append: expect.any(String) },
-      claudeCode: { options: { settingSources: [] } },
+      claudeCode: {
+        options: {
+          settingSources: [],
+          strictMcpConfig: true,
+          mcpServers: {},
+        },
+      },
     });
     expect(supportsToolFreeMode("claude")).toBe(true);
   });
