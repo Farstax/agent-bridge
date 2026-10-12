@@ -254,6 +254,10 @@ describe("release artifact manifest", () => {
     expect(workflow).toContain('test -x "$root/bin/agent-bridge-wait"');
     expect(workflow).toContain('test -x "$verify_root/bin/agent-bridge-wait"');
     expect(workflow).toContain('test -f "$root/scripts/agent-bridge-scratch.ts"');
+    expect(workflow).toContain("scripts/qualify-logical-messages.ts");
+    expect(workflow).toContain('test -f "$root/scripts/qualify-logical-messages.ts"');
+    expect(workflow).toContain('test -f "$verify_root/scripts/qualify-logical-messages.ts"');
+    expect(readFileSync(join(process.cwd(), "scripts/qualify-logical-messages.ts"), "utf8")).not.toHaveLength(0);
     expect(workflow).toContain('test -x "$root/bin/agent-bridge-scratch"');
     expect(workflow).toContain('test -x "$verify_root/bin/agent-bridge-scratch"');
     expect(statSync(join(process.cwd(), "bin/agent-bridge-scratch")).mode & 0o111).not.toBe(0);
