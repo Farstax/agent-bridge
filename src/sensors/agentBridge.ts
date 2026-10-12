@@ -2,8 +2,9 @@ import { existsSync } from "node:fs";
 import type { Sensor, SensorReport, SensorCheck } from "./types.js";
 import { normalizeSensorReport } from "./report.js";
 import type { BridgeDb } from "../db.js";
-import { readInstalledProviderVersions } from "../providers/qualificationStatus.js";
+import { getInstalledQualificationStatus, readInstalledProviderVersions } from "../providers/qualificationStatus.js";
 import { resolveProviderRuntime } from "../providers/acpRuntime.js";
+import { getProviderRuntimeAuthDegradedProviders } from "../providers/runtimeAvailability.js";
 import type { ProviderId } from "../providers/types.js";
 
 function inspectReleaseLockedAcpProvider(
@@ -50,7 +51,8 @@ export class AgentBridgeSensor implements Sensor {
 
     if (dbExists) {
       try {
-        this.db?.raw.prepare("SELECT 1").get();
+        if (!this.db) throw new Error("Interactive DB handle unavailable");
+        this.db.raw.prepare("SELECT 1").get();
         checks.push({ name: "db-read", status: "green", message: "DB read OK" });
       } catch (e) {
         checks.push({ name: "db-read", status: "red", message: `DB error: ${(e as Error).message}` });
@@ -87,6 +89,23 @@ export class AgentBridgeSensor implements Sensor {
       if (acpCheck) checks.push(acpCheck);
     }
 
+    const authDegraded = [...getProviderRuntimeAuthDegradedProviders()];
+    checks.push({
+      name: "provider-runtime-auth",
+      status: authDegraded.length > 0 ? "red" : "green",
+      message: authDegraded.length > 0
+        ? `Provider runtime authentication degraded: ${authDegraded.join(", ")}`
+        : "Provider runtime authentication healthy",
+    });
+
+    for (const qualification of getInstalledQualificationStatus(undefined, runtimeVersions)) {
+      checks.push({
+        name: `provider-qualification-${qualification.provider}`,
+        status: qualification.status,
+        message: qualification.message,
+      });
+    }
+
     const worst = checks.some(c => c.status === "red") ? "red"
                 : checks.some(c => c.status === "amber") ? "amber"
                 : "green";
@@ -106,4 +125,3 @@ export class AgentBridgeSensor implements Sensor {
     });
   }
 }
-

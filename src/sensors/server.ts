@@ -5,14 +5,24 @@ import { execSync, spawnSync } from "node:child_process";
 import type { Sensor, SensorReport, SensorCheck } from "./types.js";
 import { normalizeSensorReport } from "./report.js";
 
-export function readAptUpdateStatus(aptCheckPath = "/usr/lib/update-notifier/apt-check"): { total: number; security: number } | null {
+export function readAptUpdateStatus(aptCheckPath = "/usr/lib/update-notifier/apt-check", timeoutMs = 10_000): { total: number; security: number } | null {
   if (!existsSync(aptCheckPath)) return null;
-  const result = spawnSync(aptCheckPath, [], { encoding: "utf8", timeout: 5000 });
+  const result = spawnSync(aptCheckPath, [], { encoding: "utf8", timeout: timeoutMs });
   if (result.error) throw result.error;
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
   const match = output.match(/(\d+);(\d+)/);
   if (!match) throw new Error("apt-check returned an invalid result");
   return { total: Number(match[1]), security: Number(match[2]) };
+}
+
+export function readMemAvailableBytes(meminfo: string): number | null {
+  const match = meminfo.match(/^MemAvailable:\s+(\d+)\s+kB$/m);
+  return match ? Number(match[1]) * 1024 : null;
+}
+
+export function readPressureAverage(pressure: string, window: "avg10" | "avg60" = "avg60"): number | null {
+  const some = pressure.match(new RegExp(`^some\\s+.*\\b${window}=([0-9.]+)`, "m"));
+  return some ? Number(some[1]) : null;
 }
 
 export class ServerSensor implements Sensor {
@@ -61,8 +71,14 @@ export class ServerSensor implements Sensor {
 
     // 2. Memory (RAM) Usage
     const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const usedMem = totalMem - freeMem;
+    let availableMem = os.freemem();
+    try {
+      const parsed = readMemAvailableBytes(readFileSync("/proc/meminfo", "utf8"));
+      if (parsed !== null) availableMem = parsed;
+    } catch {
+      // Non-Linux environments retain the os.freemem fallback.
+    }
+    const usedMem = totalMem - availableMem;
     const memPct = (usedMem / totalMem) * 100;
     
     const memAmberPct = 80;
@@ -80,7 +96,7 @@ export class ServerSensor implements Sensor {
     checks.push({
       name: "memory-usage",
       status: memStatus,
-      message: `Memory usage: ${memPct.toFixed(1)}% (${usedGB} GB of ${totalGB} GB used)`,
+      message: `Memory pressure: ${memPct.toFixed(1)}% (${usedGB} GB of ${totalGB} GB unavailable)`,
       value: Number(memPct.toFixed(1)),
     });
 
@@ -125,6 +141,17 @@ export class ServerSensor implements Sensor {
       message: swapMsg,
       value: swapPct !== undefined ? Number(swapPct.toFixed(1)) : undefined,
     });
+
+    for (const [name, path] of [["cpu-pressure", "/proc/pressure/cpu"], ["memory-pressure", "/proc/pressure/memory"]] as const) {
+      try {
+        const average = readPressureAverage(readFileSync(path, "utf8"));
+        if (average === null) throw new Error("missing some avg60");
+        const status = average >= 20 ? "red" : average >= 5 ? "amber" : "green";
+        checks.push({ name, status, value: average, message: `PSI some avg60: ${average.toFixed(2)}%` });
+      } catch {
+        checks.push({ name, status: "amber", message: "Could not query PSI pressure" });
+      }
+    }
 
     // 4. Zombie Processes
     let zombieStatus: "green" | "amber" | "red" = "green";
@@ -258,7 +285,7 @@ export class ServerSensor implements Sensor {
     let diskFreeGB: number | undefined;
     try {
       const stats = statfsSync("/");
-      const freeBytes = stats.bfree * stats.bsize;
+      const freeBytes = stats.bavail * stats.bsize;
       diskFreeGB = Math.round((freeBytes / (1024 ** 3)) * 10) / 10;
       if (diskFreeGB < 0.5) {
         diskStatus = "red";
@@ -282,7 +309,7 @@ export class ServerSensor implements Sensor {
       let mFreeGB: number | undefined;
       try {
         const mStats = statfsSync(mountPath);
-        const mFreeBytes = mStats.bfree * mStats.bsize;
+        const mFreeBytes = mStats.bavail * mStats.bsize;
         mFreeGB = Math.round((mFreeBytes / (1024 ** 3)) * 10) / 10;
         if (mFreeGB < 0.5) {
           mStatus = "red";
