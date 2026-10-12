@@ -29,6 +29,8 @@ export class ServerSensor implements Sensor {
   readonly id = "server";
   readonly label = "Server health";
 
+  // Allow callers to select an APT probe path; the default retains live host behaviour.
+  constructor(private readonly aptCheckPath = "/usr/lib/update-notifier/apt-check") {}
 
   async check(): Promise<SensorReport> {
     const checks: SensorCheck[] = [];
@@ -376,7 +378,7 @@ export class ServerSensor implements Sensor {
     let updatesMsg = "All packages up to date";
     if (os.platform() === "linux") {
       try {
-        const updates = readAptUpdateStatus();
+        const updates = readAptUpdateStatus(this.aptCheckPath);
         if (updates) {
           if (updates.security > 0) {
             updatesStatus = "amber";
