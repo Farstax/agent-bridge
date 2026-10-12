@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { buildCliInvocation, parseCliResult } from "../src/cli.js";
 import { runAcpTurn } from "../src/acp/client.js";
 import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
+import { assertAgyAcpVersion } from "../src/providers/agyAcpConfig.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import {
   acpProviderDefaultSettingKey,
@@ -82,6 +83,17 @@ describe("Agy ACP provider", () => {
       transport: "acp-stdio",
     });
     expect(invocation.args).not.toContain("--print");
+  });
+
+  it("refuses a stale, malformed, or missing Agy executable before submission", () => {
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "agy_acp_server.par 1.2.1"))
+      .toThrow(/expects 1\\.3\\.0, observed 1\\.2\\.1/);
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "unknown"))
+      .toThrow(/observed unknown/);
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => { throw new Error("not installed"); }))
+      .toThrow(/could not be version-verified: not installed/);
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "agy_acp_server.par 1.3.0"))
+      .not.toThrow();
   });
 
   it("honors AGY_ACP_COMMAND and empty AGY_ACP_ARGS overrides", () => {
