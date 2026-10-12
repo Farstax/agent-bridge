@@ -71,7 +71,7 @@ fi
 
     // A binary can still report the locked version after corruption. Never reuse it
     // or activate it in commit phase solely on the basis of --version.
-    appendFileSync(stagedBinary, "\\n# altered after staging\\n");
+    appendFileSync(stagedBinary, "\n# altered after staging\n");
     expect(() => install("commit")).toThrow(/prepared Cursor ACP binary is missing/);
     expect(install("prepare").toString()).toContain("host_component_status=converged");
     expect(readFileSync(stagedBinary, "utf8")).not.toContain("altered after staging");
