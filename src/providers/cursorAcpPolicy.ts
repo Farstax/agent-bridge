@@ -62,8 +62,9 @@ function sessionSettings(
     thoughtLevel: env.CURSOR_EFFORT?.trim() ? [env.CURSOR_EFFORT.trim()] : [],
   });
   return {
-    // Cursor's locked 2026.09.23-86fc751 distribution advertises "ask", "plan", and
-    // "agent". Safe runs must remain read-only; trusted runs may edit.
+    // Request "ask" for safe Runs and "agent" for trusted Runs. The ACP
+    // client refuses an unavailable mode; verify that the locked Cursor build
+    // actually prevents writes in "ask" before rollout (issue #989).
     modeId: request.executionMode === "trusted" ? "agent" : "ask",
     ...(config.length > 0 ? { config } : {}),
   };

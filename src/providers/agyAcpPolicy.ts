@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { acpSessionConfigIntents } from "../acp/sessionConfig.js";
 import type { AcpProviderPolicy, AcpProviderSessionSettings } from "./acpRuntime.js";
-import { resolveAgyAcpArgs, resolveAgyAcpCommand } from "./agyAcpConfig.js";
+import { assertAgyAcpVersion, resolveAgyAcpArgs, resolveAgyAcpCommand } from "./agyAcpConfig.js";
 import { assertAgyRuntimePrerequisites, hasAgyAcpCachedAuth, resolveAgyHarnessPath } from "./agyAvailability.js";
 import type { ProviderInvocationRequest } from "./types.js";
 
@@ -35,7 +35,7 @@ export const agyAcpPolicy: AcpProviderPolicy = {
   providerId: "agy",
   registryAgentId: "antigravity-acp",
   toolFree: true,
-  // Issue #748: do not enable steering from advertisement. antigravity-acp@1.2.1
+  // Issue #748: do not enable steering from advertisement. antigravity-acp@1.3.0
   // is not independently qualified for a host-owned idle contract.
   steeringSupported: false,
   presentation: {
@@ -43,7 +43,10 @@ export const agyAcpPolicy: AcpProviderPolicy = {
   },
   resolveExecutable: resolveAgyAcpCommand,
   resolveArgs: (env, entry) => resolveAgyAcpArgs(env, entry),
-  validateRuntime: (_runtime, env) => assertAgyRuntimePrerequisites(env),
+  validateRuntime: (runtime, env) => {
+    assertAgyRuntimePrerequisites(env);
+    assertAgyAcpVersion(runtime.executable, runtime.selectedVersion);
+  },
   buildChildEnv: (_request, env) => ({
     ANTIGRAVITY_HARNESS_PATH: resolveAgyHarnessPath(env),
   }),

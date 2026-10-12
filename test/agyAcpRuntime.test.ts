@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { buildCliInvocation, parseCliResult } from "../src/cli.js";
 import { runAcpTurn } from "../src/acp/client.js";
 import { getLockedAcpRegistryEntry } from "../src/providers/acpRegistry.js";
+import { assertAgyAcpVersion } from "../src/providers/agyAcpConfig.js";
 import { resolveProviderRuntime } from "../src/providers/acpRuntime.js";
 import {
   acpProviderDefaultSettingKey,
@@ -84,6 +85,17 @@ describe("Agy ACP provider", () => {
     expect(invocation.args).not.toContain("--print");
   });
 
+  it("refuses a stale, malformed, or missing Agy executable before submission", () => {
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "agy_acp_server.par 1.2.1"))
+      .toThrow(/expects 1\.3\.0, observed 1\.2\.1/);
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "unknown"))
+      .toThrow(/observed unknown/);
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => { throw new Error("not installed"); }))
+      .toThrow(/could not be version-verified: not installed/);
+    expect(() => assertAgyAcpVersion("agy_acp_server.par", "1.3.0", () => "agy_acp_server.par 1.3.0"))
+      .not.toThrow();
+  });
+
   it("honors AGY_ACP_COMMAND and empty AGY_ACP_ARGS overrides", () => {
     expect(resolveProviderRuntime("agy", {
       AGY_ACP_COMMAND: "/opt/agy/bin/agy_acp_server.par",
@@ -134,6 +146,15 @@ describe("Agy ACP provider", () => {
         isExecutable: () => true,
         isValid: () => false,
       })).toBe(false);
+      const installedAgy = join(root, "agy_acp_server.par");
+      writeFileSync(installedAgy, "#!/bin/sh\necho 'agy_acp_server.par 1.2.1'\n", "utf8");
+      chmodSync(installedAgy, 0o755);
+      const runtime = resolveProviderRuntime("agy", { AGY_ACP_COMMAND: installedAgy });
+      expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
+        .toThrow(/expects 1\.3\.0, observed 1\.2\.1/);
+      writeFileSync(installedAgy, "#!/bin/sh\necho 'agy_acp_server.par 1.3.0'\n", "utf8");
+      expect(() => agyAcpPolicy.validateRuntime?.(runtime, { ANTIGRAVITY_HARNESS_PATH: harness }))
+        .not.toThrow();
       expect(resolveAgyHarnessPath({ ANTIGRAVITY_HARNESS_PATH: harness })).toBe(harness);
       expect(agyAcpPolicy.buildChildEnv?.(request(), { ANTIGRAVITY_HARNESS_PATH: harness }))
         .toEqual({ ANTIGRAVITY_HARNESS_PATH: harness });
