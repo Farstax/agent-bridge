@@ -520,6 +520,16 @@ export function buildScheduledInteractiveTurn(
       attachments: [],
     };
   }
+  if (routine.surfaceIdentity.startsWith("slack:")) {
+    if (!routine.delivery) throw new Error("scheduled Slack routine has no delivery coordinates");
+    return {
+      surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text,
+      scheduledOccurrenceKey: claimedOccurrenceKey,
+      ...(routine.delivery.threadId === undefined ? {} : { threadId: String(routine.delivery.threadId) }),
+      delivery: { chatId: routine.delivery.chatId, chatType: routine.delivery.chatType },
+      attachments: [],
+    };
+  }
   if (routine.surfaceIdentity.startsWith("discord:")) {
     if (!routine.delivery) throw new Error("scheduled Discord routine has no delivery coordinates");
     return { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey, actorId: authorizedUserId, messageId, text, scheduledOccurrenceKey: claimedOccurrenceKey, delivery: routine.delivery, attachments: [] };

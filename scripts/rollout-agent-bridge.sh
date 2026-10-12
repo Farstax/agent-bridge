@@ -12,6 +12,7 @@ readonly -a ALLOWED_UNITS=(
   agent-bridge-claude.service
   agent-bridge-codex.service
   agent-bridge-discord-interactive.service
+  agent-bridge-slack-interactive.service
   # Legacy unified-bot unit. Existing hosted deployments may retain this unit
   # name while their lifecycle owner adopts the next-start definition into the
   # release-pointer contract; fresh installs use agent-bridge-interactive.service.
@@ -612,6 +613,7 @@ for unit in "${units[@]}"; do
   case "$unit" in
     agent-bridge-health.service) unit_roles[$unit]=health ;;
     agent-bridge-discord-interactive.service) unit_roles[$unit]=discord ;;
+    agent-bridge-slack-interactive.service) unit_roles[$unit]=slack ;;
     agent-bridge-bot.service|agent-bridge-interactive.service) unit_roles[$unit]=interactive ;;
     *) unit_roles[$unit]=shared ;;
   esac

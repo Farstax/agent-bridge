@@ -1,0 +1,179 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDb } from "../src/db.js";
+import { BridgeEngine } from "../src/engine.js";
+import { ProviderFallbackChain } from "../src/providerFallback.js";
+import { dispatchInteractiveTurnWithFallback } from "../src/interactiveBot.js";
+import { SlackClient } from "../src/slack.js";
+import { createSlackReceiptRuntime, SLACK_AMBIGUOUS_NOTICE, SLACK_RESTART_NOTICE } from "../src/slackDispatch.js";
+import { admitSlackTurn, classifySlackEnvelope, slackSurfaceIdentity } from "../src/slackIngress.js";
+import { acpEngineExec } from "./support/acpEngineExec.js";
+
+const SURFACE = slackSurfaceIdentity("T1", "A1");
+const ctx = { teamId: "T1", appId: "A1", botUserId: "UBOT", allowedUserIds: new Set(["U1"]) };
+const result = (text: string) => [
+  JSON.stringify({ type: "text", data: text }),
+  JSON.stringify({ type: "end", sessionId: "s-1", stopReason: "end_turn" }),
+].join("\n") + "\n";
+const body = (event: Record<string, unknown>, eventId: string) => ({ team_id: "T1", api_app_id: "A1", event_id: eventId, event });
+const dm = (text: string, ts = "1700000000.000100", extra: Record<string, unknown> = {}) => ({ type: "message", channel_type: "im", channel: "D1", user: "U1", text, ts, ...extra });
+const mention = (text: string, ts: string, extra: Record<string, unknown> = {}) => ({ type: "app_mention", channel: "C1", user: "U1", text: `<@UBOT> ${text}`, ts, ...extra });
+
+describe("slack surface through the existing engine (#943)", () => {
+  let dir: string;
+  let db: ReturnType<typeof openDb>;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "slack-surface-")); db = openDb(join(dir, "bridge.sqlite")); });
+  afterEach(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+
+  function harness(options: { post?: (args: any) => Promise<any>; reply?: string } = {}) {
+    const posts: any[] = [];
+    let counter = 0;
+    const web = {
+      chat: {
+        postMessage: vi.fn(async (args: any) => {
+          if (options.post) return options.post(args);
+          posts.push(args);
+          counter += 1;
+          return { ok: true, ts: `1700001000.${String(counter).padStart(6, "0")}`, channel: args.channel };
+        }),
+      },
+    };
+    const client = new SlackClient(web as any, { sleep: async () => undefined, channelSpacingMs: 0 });
+    const runCli = vi.fn().mockImplementation(async () => result(options.reply ?? "the answer"));
+    const engine = new BridgeEngine({
+      surfaceIdentity: SURFACE, kind: "grok", botConfig: { command: "grok", modelPreference: [] },
+      allowedUserIds: new Set(["U1"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
+    }, db, client, acpEngineExec(runCli));
+    const chain = new ProviderFallbackChain(["grok"], db, SURFACE, () => true);
+    const notices: Array<{ channel: string; thread?: string; text: string }> = [];
+    const runtime = createSlackReceiptRuntime({
+      db, context: ctx, authorityScope: SURFACE,
+      dispatch: (turn) => dispatchInteractiveTurnWithFallback(turn, {
+        surfaceIdentity: SURFACE, engines: { grok: engine } as any, fallbackChain: chain, db, notify: async () => undefined,
+      }),
+      notify: async (channel, thread, text) => { notices.push({ channel, thread, text }); },
+    });
+    return { runtime, runCli, posts, web, notices, engine };
+  }
+  const deliver = async (h: ReturnType<typeof harness>, envelope: any) => {
+    const ack = vi.fn(async () => undefined);
+    await h.runtime.handleEnvelope({ ack, body: envelope });
+    return ack;
+  };
+
+  it("DM: acknowledges after the receipt, runs once and replies in the DM with native coordinates", async () => {
+    const h = harness();
+    const ack = await deliver(h, body(dm("hello"), "Ev1"));
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(h.runCli).toHaveBeenCalledTimes(1);
+    const final = h.posts.find((p) => String(p.text).includes("the answer"));
+    expect(final).toMatchObject({ channel: "D1" });
+    expect(final).not.toHaveProperty("thread_ts");
+    const receipt = db.getEventReceiptByIdempotencyKey("slack:T1:A1:Ev1")!;
+    expect(receipt.status).toBe("completed");
+    expect(receipt.run_id).toBeTruthy();
+    expect(db.getRun(receipt.run_id!)).toMatchObject({ status: "done", surface_identity: SURFACE, chat_id: "D1" });
+  });
+
+  it("channel mention: replies in a new thread under the native channel, never the composite key", async () => {
+    const h = harness();
+    await deliver(h, body(mention("deploy status", "1700000050.000200"), "Ev2"));
+    expect(h.runCli).toHaveBeenCalledTimes(1);
+    expect(h.posts.length).toBeGreaterThan(0);
+    for (const post of h.posts) {
+      expect(post.channel).toBe("C1");
+      expect(post.thread_ts).toBe("1700000050.000200");
+    }
+    const receipt = db.getEventReceiptByIdempotencyKey("slack:T1:A1:Ev2")!;
+    expect(db.getRun(receipt.run_id!)).toMatchObject({ chat_id: "C1:1700000050.000200" });
+  });
+
+  it("a mention inside an existing thread uses that thread's conversation and thread_ts", async () => {
+    const h = harness();
+    await deliver(h, body(mention("first", "1700000050.000200"), "Ev3"));
+    await deliver(h, body(mention("follow up", "1700000060.000300", { thread_ts: "1700000050.000200" }), "Ev4"));
+    expect(h.runCli).toHaveBeenCalledTimes(2);
+    const runs = ["Ev3", "Ev4"].map((id) => db.getRun(db.getEventReceiptByIdempotencyKey(`slack:T1:A1:${id}`)!.run_id!)!);
+    expect(runs[0].chat_id).toBe(runs[1].chat_id);
+    expect(h.posts.every((p) => p.thread_ts === "1700000050.000200" && p.channel === "C1")).toBe(true);
+  });
+
+  it("redelivery of the same event is acknowledged but never re-executed", async () => {
+    const h = harness();
+    await deliver(h, body(dm("hello"), "Ev5"));
+    const again = await deliver(h, body(dm("hello"), "Ev5"));
+    expect(again).toHaveBeenCalledTimes(1);
+    expect(h.runCli).toHaveBeenCalledTimes(1);
+    expect(db.listEventReceipts("slack", ["completed"])).toHaveLength(1);
+  });
+
+  it("ignores unauthorized, unmentioned and foreign-app traffic without a Run or reply", async () => {
+    const h = harness();
+    await deliver(h, body(dm("hi", "1.1", { user: "U9" }), "Ev6"));
+    await deliver(h, body({ type: "message", channel_type: "channel", channel: "C1", user: "U1", text: "hi", ts: "2.2" }, "Ev7"));
+    await deliver(h, { ...body(dm("hi"), "Ev8"), api_app_id: "A2" });
+    expect(h.runCli).not.toHaveBeenCalled();
+    expect(h.web.chat.postMessage).not.toHaveBeenCalled();
+    expect(db.listEventReceipts("slack", ["received", "dispatching", "completed"])).toHaveLength(0);
+  });
+
+  it("withholds the acknowledgement when no durable receipt can be written", async () => {
+    const h = harness();
+    db.raw.exec("DROP TABLE event_receipts");
+    const ack = await deliver(h, body(dm("hello"), "Ev9"));
+    expect(ack).not.toHaveBeenCalled();
+    expect(h.runCli).not.toHaveBeenCalled();
+  });
+
+  it("an ambiguous final post is never blindly resent and never re-executes the provider", async () => {
+    let finals = 0;
+    const h = harness({
+      post: async (args) => {
+        if (String(args.text).includes("the answer")) {
+          finals += 1;
+          throw Object.assign(new Error("socket hang up"), { code: "slack_webapi_request_error" });
+        }
+        return { ok: true, ts: "1.1", channel: args.channel };
+      },
+    });
+    await deliver(h, body(dm("hello"), "Ev10"));
+    expect(h.runCli).toHaveBeenCalledTimes(1);
+    expect(finals).toBe(1);
+    const receipt = db.getEventReceiptByIdempotencyKey("slack:T1:A1:Ev10")!;
+    expect(["completed", "ambiguous"]).toContain(receipt.status);
+  });
+
+  it("restart: a possibly-started receipt is fenced with one native notice and a never-started one runs once", async () => {
+    const h = harness();
+    const fenced = admitSlackTurn(db, classifySlackEnvelope(body(mention("work", "1700000070.000400"), "EvA"), ctx) as any, SURFACE);
+    const fresh = admitSlackTurn(db, classifySlackEnvelope(body(dm("pending work"), "EvB"), ctx) as any, SURFACE);
+    if (fenced.kind !== "admitted" || fresh.kind !== "admitted") throw new Error("expected admission");
+    db.claimEventReceiptDispatch(fenced.receipt.id); // crashed after the claim, before a terminal state
+
+    await h.runtime.recoverReceipts();
+    await h.runtime.recoverReceipts(); // a second recovery pass must be a no-op
+
+    expect(db.getEventReceipt(fenced.receipt.id)?.status).toBe("ambiguous");
+    expect(h.notices).toEqual([{ channel: "C1", thread: "1700000070.000400", text: SLACK_RESTART_NOTICE }]);
+    expect(h.runCli).toHaveBeenCalledTimes(1);
+    expect(db.getEventReceipt(fresh.receipt.id)?.status).toBe("completed");
+    expect(String(h.posts.at(-1)?.text)).toContain("the answer");
+  });
+
+  it("a dispatch that throws fences the receipt and notifies once instead of replaying", async () => {
+    const h = harness();
+    const dispatchSpy = vi.fn(async () => { throw new Error("boom"); });
+    const runtime = createSlackReceiptRuntime({
+      db, context: ctx, authorityScope: SURFACE, dispatch: dispatchSpy, notify: async (c, t, text) => { h.notices.push({ channel: c, thread: t, text }); },
+    });
+    const ack = vi.fn(async () => undefined);
+    await runtime.handleEnvelope({ ack, body: body(dm("hello"), "Ev11") });
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(db.getEventReceiptByIdempotencyKey("slack:T1:A1:Ev11")?.status).toBe("ambiguous");
+    expect(h.notices).toEqual([{ channel: "D1", thread: undefined, text: SLACK_AMBIGUOUS_NOTICE }]);
+    await runtime.recoverReceipts();
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+  });
+});

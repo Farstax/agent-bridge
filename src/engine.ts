@@ -8,6 +8,7 @@
  */
 
 import { SCRATCH_SIGNPOST, readScratch, renderFreshScratch } from "./scratchpad.js";
+import { EVENT_RECEIPT_CORRELATION_PREFIX } from "./interactiveIngress.js";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -931,6 +932,14 @@ export class BridgeEngine {
     if (scheduledOccurrenceKeys.length === 0) return;
     if (!this.db.getRun(runId)) return;
     for (const occurrenceKey of scheduledOccurrenceKeys) {
+      // Surface admission receipts (#943) travel through the same durable
+      // queue correlation as scheduled occurrences; they link to the receipt
+      // row rather than the scheduled-occurrence table.
+      if (occurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
+        const receiptId = Number(occurrenceKey.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
+        if (Number.isSafeInteger(receiptId)) this.db.linkEventReceiptRun(receiptId, runId);
+        continue;
+      }
       if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {
         throw new Error(`scheduled occurrence correlation unavailable: ${occurrenceKey}`);
       }
