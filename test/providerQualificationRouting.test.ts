@@ -16,7 +16,7 @@ describe("provider qualification routing", () => {
     writeQualificationRecord({
       provider: "agy",
       executionRuntime: resolveProviderRuntime("agy", {}).runtimeIdentity,
-      providerVersion: "1.2.1",
+      providerVersion: "1.3.0",
       previousVersion: null,
       bridgeCommit: "e".repeat(40),
       contractVersion: PROVIDER_CONTRACT_VERSION,
@@ -47,7 +47,7 @@ describe("provider qualification routing", () => {
     }, evidencePath);
 
     expect([...getQualificationFailedProviders(evidencePath, {
-      agy: "1.2.1",
+      agy: "1.3.0",
       claude: "2.3.4",
     })]).toEqual(["agy"]);
   });
