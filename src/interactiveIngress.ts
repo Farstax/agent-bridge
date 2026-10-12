@@ -17,6 +17,9 @@ export interface InteractiveSurroundingContextMessage {
   text: string;
 }
 
+/** `scheduledOccurrenceKey` value prefix correlating a turn to its durable admission receipt. */
+export const EVENT_RECEIPT_CORRELATION_PREFIX = "event-receipt:";
+
 export interface InteractiveTurnInput {
   surfaceIdentity: string;
   chatKey: string;

@@ -63,6 +63,21 @@ export const DISCORD_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze({
   formatting: "discord-markdown",
 });
 
+export const SLACK_SURFACE_CAPABILITIES: SurfaceCapabilities = Object.freeze({
+  maxMessageLength: 3500,
+  editMessages: false,
+  deleteMessages: false,
+  previewStreaming: false,
+  threads: true,
+  attachments: false,
+  typing: false,
+  polling: false,
+  remoteFileDownload: false,
+  richMessages: false,
+  passiveSurroundingContext: false,
+  formatting: "plain",
+});
+
 export interface MessagingPlatform {
   readonly capabilities?: SurfaceCapabilities;
   getUpdates?(options: TransportRequest): Promise<TransportResponse>;
@@ -83,7 +98,7 @@ export interface MessagingPlatform {
 
 export interface FileSendOptions { message_thread_id?: number | string; }
 
-export type MessagingPlatformKind = "telegram" | "discord";
+export type MessagingPlatformKind = "telegram" | "discord" | "slack";
 
 export interface SurfaceIdentity {
   kind: MessagingPlatformKind;
@@ -98,7 +113,7 @@ export function parseSurfaceIdentity(identity: string): SurfaceIdentity | null {
   const separator = identity.indexOf(":");
   if (separator <= 0 || separator === identity.length - 1) return null;
   const kind = identity.slice(0, separator);
-  if (kind !== "telegram" && kind !== "discord") return null;
+  if (kind !== "telegram" && kind !== "discord" && kind !== "slack") return null;
   return { kind, accountId: identity.slice(separator + 1) };
 }
 

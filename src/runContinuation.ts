@@ -459,6 +459,7 @@ export function buildPostRolloutVerificationTurnText(reason: string): string {
   ].join("\n");
 }
 
+/** Surfaces with native thread coordinates (Telegram topics, Slack threads) share this builder. */
 export function buildTelegramRunContinuationTurn(
   continuation: RunContinuation,
   actorId: string,
