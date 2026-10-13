@@ -481,6 +481,45 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(actions(fixture)).toContain("systemctl:disable agent-bridge-health.service");
   }, 15_000);
 
+  it("keeps the newly accepted release running when post-acceptance health unit retirement fails (#1008)", () => {
+    const fixture = createFixture();
+    const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_FAIL_HEALTH_RESET_FAILED: "1" });
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    // The release itself (activation, service start, acceptance validation)
+    // already succeeded before the orphaned health-unit cleanup failed —
+    // that trailing, unrelated failure must not tear down an already-healthy,
+    // already-accepted release.
+    expect(output).toMatch(/failed to clear retired health service failed state/i);
+    expect(output).not.toMatch(/STOPPED_PRESERVED/);
+    expect(output).not.toMatch(/containing services/i);
+    expect(readlinkSync(currentPointer)).toBe(fixture.expectedCommit);
+    expect(readFileSync(fixture.stateFile, "utf8").trim().split("\n").filter(Boolean).sort())
+      .toEqual(units.filter((unit) => unit !== "agent-bridge-health.service").sort());
+  }, 15_000);
+
+  it("does not mislabel a post-completion ledger failure as health unit retirement failure (#1008 review)", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    const runtimeUser = process.env.USER ?? "root";
+    rewriteConfig(fixture, (lines) => lines.map((line) => line.startsWith("runtime_user=") ? `runtime_user=${runtimeUser}` : line));
+
+    const result = runRollout(fixture, undefined, undefined, { FAKE_FAIL_COMPLETE_LEDGER: "1" });
+    const output = `${result.stdout}\n${result.stderr}`;
+
+    // Health unit retirement already succeeded by this point (`completed`
+    // is only set after it returns) — a failure writing the completion
+    // ledger afterward is a distinct problem and must not be reported as,
+    // or treated with the leniency of, the health-retirement case.
+    expect(result.status).not.toBe(0);
+    expect(output).not.toMatch(/ACCEPTED_HEALTH_RETIREMENT_FAILED/);
+    expect(output).not.toMatch(/retired health-unit cleanup failed/);
+  }, 15_000);
+
   describe("orphaned legacy health unit", () => {
     it("retires a restarting canonical health unit that inventory no longer lists", () => {
       const fixture = createFixture();

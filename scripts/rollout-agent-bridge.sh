@@ -1312,6 +1312,9 @@ record_phase() {
   if (( test_mode == 1 )) && [[ "$phase_name" == FAILED_RESTORED && "${FAKE_FAIL_TERMINAL_RECOVERY_LEDGER:-}" == 1 ]]; then
     return 1
   fi
+  if (( test_mode == 1 )) && [[ "$phase_name" == COMPLETE && "${FAKE_FAIL_COMPLETE_LEDGER:-}" == 1 ]]; then
+    return 1
+  fi
   printf 'phase=%s timestamp=%s\n' "$phase_name" "$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$phase_ledger"
   /usr/bin/sha256sum "$phase_ledger" > "$phase_ledger.sha256"
 }
@@ -1934,6 +1937,22 @@ on_exit() {
     echo "rollout completed successfully but automatic sentinel cleanup failed; manual review required before the next rollout" >&2
     exit 1
   fi
+  if (( release_accepted == 1 && completed == 0 )); then
+    # The release itself already activated, started, and passed acceptance,
+    # and the only step that can still fail before `completed=1` is the
+    # trailing, unrelated health-unit retirement — containing/stopping the
+    # already-healthy new release for it would be strictly worse than
+    # leaving it running and flagging the orphaned-unit cleanup for manual
+    # follow-up. Once `completed=1` is set, a later failure (e.g. writing
+    # the completion ledger/result files) is a distinct problem and must
+    # not be mislabeled as this one or allowed to clear the sentinel.
+    echo "STATE: ACCEPTED_HEALTH_RETIREMENT_FAILED — release $expected_commit is running and accepted; retired health-unit cleanup failed and needs manual follow-up" >&2
+    sentinel_removable=1
+    if ! remove_sentinel_if_removable; then
+      echo "automatic sentinel cleanup also failed; manual review required in addition to the failure above" >&2
+    fi
+    exit 1
+  fi
   echo "rollout failed status=$status start_attempted=$start_attempted services_started=$services_started; containing services"
   containment_verified=0
   sentinel_removable=0
@@ -2046,6 +2065,7 @@ stop_attempted=0
 backup_completed=0
 pointer_switched=0
 completed=0
+release_accepted=0
 sentinel_removable=0
 sentinel_identity=""
 previous_pointer_target=""
@@ -2341,6 +2361,12 @@ if [[ -n "$health_relocation_source" ]] && (( retiring_health == 0 )); then
   record_phase HEALTH_DB_RELOCATED
 fi
 record_phase ACCEPTED
+# The release is already activated, started, and accepted at this point.
+# Everything after this line is best-effort hygiene for an unrelated,
+# already-retired service — its failure must not be treated with the same
+# severity as a failure of the release itself (on_exit checks this before
+# deciding whether to contain/stop the already-healthy new release).
+release_accepted=1
 retire_health_state_after_acceptance
 
 completed=1
