@@ -159,6 +159,7 @@ health_relocation_source=""
 health_relocation_target=""
 retiring_health=0
 health_already_retired=0
+orphan_health_adopted=0
 retired_health_database=""
 retired_health_database_present=0
 retired_health_config_database=""
@@ -532,6 +533,37 @@ if (( release_mode == 1 ))   && [[ -n "${selected_units[agent-bridge-health.serv
     echo "retired health unit is already absent; reconciling stale rollout inventory"
   fi
 fi
+# Inventory can be cleaned while systemd still has the canonical retired unit
+# loaded (#1002). Adopt that proven unit into the existing retirement path.
+# Leave it out of rollback_units so recovery cannot resurrect the crash loop.
+if (( release_mode == 1 && retiring_health == 0 )) \
+  && [[ -z "${selected_units[agent-bridge-health.service]:-}" ]] \
+  && [[ ! -f "$release_dir/systemd/agent-bridge-health.service" ]] \
+  && [[ -e "$retired_health_unit" || -L "$retired_health_unit" ]]; then
+  [[ -f "$retired_health_unit" && ! -L "$retired_health_unit" ]] || die "orphaned health unit is not a regular Agent Bridge unit file: $retired_health_unit"
+  health_load_state="$("$systemctl_cmd" show agent-bridge-health.service --property=LoadState --value 2>/dev/null || true)"
+  case "$health_load_state" in
+    not-found)
+      echo "orphaned health unit file is present but not loaded; leaving it untouched"
+      ;;
+    loaded)
+      health_fragment_path="$("$systemctl_cmd" show agent-bridge-health.service --property=FragmentPath --value 2>/dev/null || true)"
+      health_drop_in_paths="$("$systemctl_cmd" show agent-bridge-health.service --property=DropInPaths --value 2>/dev/null || true)"
+      [[ "$health_fragment_path" == "$retired_health_unit" ]] || die "orphaned health unit FragmentPath is not the canonical Agent Bridge unit"
+      [[ -z "$health_drop_in_paths" ]] || die "orphaned health unit has unexpected systemd drop-ins"
+      /usr/bin/grep -F -x -q "User=${runtime_user}" "$retired_health_unit" || die "orphaned health unit owner does not match the rollout runtime user"
+      /usr/bin/grep -E -q '^ExecStart=.*src/index-health\.ts' "$retired_health_unit" || die "orphaned health unit ExecStart is not the retired Agent Bridge health service"
+      selected_units[agent-bridge-health.service]=1
+      units+=("agent-bridge-health.service")
+      retiring_health=1
+      orphan_health_adopted=1
+      echo "adopting orphaned canonical health unit absent from rollout inventory"
+      ;;
+    *)
+      die "orphaned health unit is in an unrecognized load state: ${health_load_state:-unreadable}"
+      ;;
+  esac
+fi
 
 shared_env="$defaults_dir/agent-bridge-shared"
 if [[ -e "$shared_env" ]]; then validate_secure_path "$shared_env" file; fi
@@ -623,6 +655,21 @@ if (( retiring_health == 1 && health_already_retired == 0 )); then
   retired_health_database="${unit_databases[agent-bridge-health.service]:-}"
   [[ -n "$retired_health_database" ]] || die "legacy health unit has no resolved database"
   retired_health_database_present=1
+fi
+if (( orphan_health_adopted == 1 )); then
+  [[ -n "$retired_health_database" ]] || die "orphaned health unit has no resolved database"
+  for adopted_unit in "${!unit_databases[@]}"; do
+    [[ "$adopted_unit" == "agent-bridge-health.service" ]] && continue
+    [[ "${unit_databases[$adopted_unit]}" != "$retired_health_database" ]] || die "orphaned health database is still selected by an active unit: $retired_health_database"
+  done
+  health_database_allowlisted=0
+  for database in "${databases[@]}"; do
+    [[ "$database" == "$retired_health_database" ]] && health_database_allowlisted=1
+  done
+  if (( health_database_allowlisted == 0 )); then
+    databases+=("$retired_health_database")
+    echo "orphaned health database was absent from rollout inventory; backing it up before retirement path=$retired_health_database"
+  fi
 fi
 
 # The interactive service may own a second production database for the
@@ -931,6 +978,9 @@ assert_service_ready_for_rollout() {
   case "$active_state/$sub_state" in
     active/running) assert_service_active "$unit" ;;
     inactive/dead|inactive/exited|failed/dead|failed/failed) ;;
+    activating/auto-restart)
+      [[ "$unit" == "agent-bridge-health.service" && "$retiring_health" == 1 ]] || die "service is not in a quiesceable state: $unit state=$active_state/$sub_state"
+      ;;
     *) die "service is not in a quiesceable state: $unit state=$active_state/$sub_state" ;;
   esac
 }
@@ -1115,6 +1165,9 @@ restore_health_retirement_config() {
 retire_health_state_after_acceptance() {
   (( retiring_health == 1 )) || return 0
   if (( health_already_retired == 0 )); then
+    # reset-failed rejects a unit that is no longer loaded, so clear the
+    # crash-loop state while the fragment still exists.
+    "$systemctl_cmd" reset-failed agent-bridge-health.service || die "failed to clear retired health service failed state"
     "$systemctl_cmd" disable agent-bridge-health.service >/dev/null 2>&1 || die "failed to disable retired health service"
     if "$systemctl_cmd" is-enabled --quiet agent-bridge-health.service >/dev/null 2>&1; then
       die "retired health service remains enabled"
