@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   try {
     const surface: SetupSurface = surfaceOption
       ? parseSetupSurface(surfaceOption)
-      : scripted ? "telegram" : await askRequired(rl, "Select surface (telegram/discord/slack): ", parseSetupSurface);
+      : scripted ? "telegram" : parseSetupSurface(await askRequired(rl, "Select surface (telegram/discord/slack): ", parseSetupSurface));
     const file = surface === "telegram" ? ".env.interactive" : ".env." + surface + "-interactive";
     const configPath = resolve(process.cwd(), file);
     if (existsSync(configPath) && !force) throw new Error(configPath + " already exists. Re-run with --force to replace only this surface's config.");
