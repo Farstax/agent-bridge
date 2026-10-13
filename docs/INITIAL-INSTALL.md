@@ -19,7 +19,7 @@ The initial installer requires:
 
 The runtime account's existing unrestricted passwordless sudo rule is an installation invariant. The installer verifies it with a non-cached `sudo -k -n true` check and does not create, narrow or replace the rule.
 
-At least one service token is required. A service is installed only when its token is supplied. For example, an interactive-only installation can use:
+At least one configured messaging surface is required. A service is installed only when its required credentials are supplied. The supported fresh-host selection includes optional Slack-only installation, using two **pre-existing, runtime-user-owned mode-0600** token files. For example, a Telegram interactive-only installation can use:
 
 ```bash
 sudo env \
@@ -94,3 +94,17 @@ The initial installer refuses to overwrite an existing active pointer, so it can
 ## Source and development installation
 
 `scripts/install.sh` remains useful for a source checkout or development host where an operator wants interactive prompts and local `.env.*` files. It installs and enables units but deliberately does not activate an immutable release or start production services. It is not the platform's fresh-workspace installation command.
+
+## Optional Slack-first production installation
+
+The one-time guarded immutable-release installer can select `agent-bridge-slack-interactive.service` without any Telegram or Discord token. Before installation, create an operator-owned Slack app using [the checked-in manifest](../examples/slack-app-manifest.yaml), and place its nonrotating `xoxb-` and `xapp-` tokens into **separate absolute regular files** outside the immutable release tree. Both files must be owned by the non-root runtime user and have mode `0600`. Ensure `SLACK_ALLOWED_USER_IDS` names active Slack member IDs. For example, supplying these three values to the existing installer selects Slack:
+
+```text
+SLACK_BOT_TOKEN_FILE=/home/agentbridge/.config/agent-bridge/slack/bot-token
+SLACK_APP_TOKEN_FILE=/home/agentbridge/.config/agent-bridge/slack/app-token
+SLACK_ALLOWED_USER_IDS=U0123ABCD
+```
+
+Pass the values through your normal privileged installation environment, along with the required `--release`, `--runtime-user`, `--node-bin` arguments. The installer refuses half-configured Slack credentials, rotating token classes, group-readable secret files and pre-existing database targets. It does **not** store raw tokens in environment defaults: it records only their file paths and creates a dedicated role-`slack` DB. Acceptance requires current Slack Socket Mode readiness with a verified team/app identity, not only `systemd active`.
+
+Adding Slack to an **existing** active installation is not a fresh installation: do not rerun `agent-bridge-install.py`. Use the operator-managed Slack unit and guarded deployment inventory/reconciliation procedures rather than introducing another release activation path. See [the standalone Slack guide](slack.md) for app setup, Socket Mode constraints, tokens, commands, and independent first-message verification.

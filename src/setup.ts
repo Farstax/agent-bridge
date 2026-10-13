@@ -1,4 +1,5 @@
-import { accessSync, chmodSync, constants, existsSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, statSync, writeFileSync, openSync, closeSync, fsyncSync, linkSync, renameSync, unlinkSync, lstatSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 export { bootstrapSourceInteractiveDb } from "./db.js";
@@ -180,14 +181,37 @@ export async function validateTelegramBotToken(
   };
 }
 
+/** Atomically create or replace only the selected source config, never truncate an existing file. */
 export function writeInteractiveSetupConfig(
   configPath: string,
   content: string,
   options: { force?: boolean } = {},
 ): void {
-  if (existsSync(configPath) && !options.force) {
-    throw new Error(`${configPath} already exists. Re-run with --force to replace it.`);
+  let occupied = false;
+  try { lstatSync(configPath); occupied = true; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  writeFileSync(configPath, content, { encoding: "utf8", mode: 0o600 });
-  chmodSync(configPath, 0o600);
+  if (occupied && !options.force) {
+    throw new Error(configPath + " already exists. Re-run with --force to replace it.");
+  }
+  if (occupied && lstatSync(configPath).isSymbolicLink()) {
+    throw new Error("Refusing to replace a symlinked setup config.");
+  }
+  const temporary = configPath + ".setup-" + randomUUID();
+  const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+  try {
+    writeFileSync(fd, content, { encoding: "utf8" });
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  try {
+    chmodSync(temporary, 0o600);
+    if (options.force) {
+      renameSync(temporary, configPath); // atomic replacement on the same filesystem
+    } else {
+      linkSync(temporary, configPath); // atomic no-replace creation
+      unlinkSync(temporary);
+    }
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
 }
