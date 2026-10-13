@@ -130,8 +130,9 @@ export function requestRunContinuation(
   input: RequestRunContinuationInput,
   nowMs = Date.now(),
 ): RunContinuation {
-  if (!Number.isInteger(input.afterSeconds) || input.afterSeconds < MIN_DELAY_SECONDS || input.afterSeconds > MAX_DELAY_SECONDS) {
-    throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${MAX_DELAY_SECONDS}`);
+  const maximumDelay = input.capacityWait ? MAX_CAPACITY_LIFETIME_MS / 1_000 : MAX_DELAY_SECONDS;
+  if (!Number.isInteger(input.afterSeconds) || input.afterSeconds < MIN_DELAY_SECONDS || input.afterSeconds > maximumDelay) {
+    throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${maximumDelay}`);
   }
   const originRunId = bounded(input.originRunId, "origin run id", 200);
   const surfaceIdentity = bounded(input.surfaceIdentity, "surface identity", 160);

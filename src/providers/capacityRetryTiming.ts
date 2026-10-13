@@ -3,7 +3,7 @@
  * influence a durable retry. Unknown and malformed values stay unknown.
  */
 const MIN_DELAY_SECONDS = 5;
-const MAX_DELAY_SECONDS = 30 * 60;
+const MAX_DELAY_SECONDS = 7 * 24 * 60 * 60;
 const MAX_RESET_WINDOW_MS = 7 * 24 * 60 * 60 * 1_000;
 const RESET_GUARD_SECONDS = 5;
 

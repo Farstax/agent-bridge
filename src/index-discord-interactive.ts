@@ -108,7 +108,7 @@ const cliChain = parseCliChain(
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db, "discord:interactive", (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
-const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number }>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 let runContinuationRunner: RunContinuationRunner | null = null;
 // ── DiscordClient ─────────────────────────────────────────────────────────────
@@ -178,6 +178,7 @@ const engines = Object.fromEntries(
                 ...(previous?.retryAfterSeconds !== undefined && (context.retryAfterSeconds === undefined || previous.retryAfterSeconds < context.retryAfterSeconds)
                   ? { retryAfterSeconds: previous.retryAfterSeconds }
                   : {}),
+                ...(previous?.hasUnknownCapacityTiming || context.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
               });
             }
           },

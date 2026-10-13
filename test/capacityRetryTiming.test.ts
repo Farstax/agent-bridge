@@ -11,6 +11,13 @@ describe("capacity retry timing", () => {
     expect(capacityRetryAfterSeconds(error, now)).toBe(25);
   });
 
+  it("preserves a validated daily-window retry instead of turning it into a tight poll", () => {
+    const error = Object.assign(new Error("limited"), {
+      data: { capacityResetsAt: "2026-10-14T00:00:00.000Z" },
+    });
+    expect(capacityRetryAfterSeconds(error, now)).toBe(43_205);
+  });
+
   it("rejects malformed, stale, and implausibly distant reset telemetry", () => {
     expect(capacityRetryAfterSeconds(Object.assign(new Error("limited"), { data: { capacityResetsAt: "nope" } }), now)).toBeNull();
     expect(capacityRetryAfterSeconds(Object.assign(new Error("limited"), { data: { capacityResetsAt: "2026-10-13T11:59:59.000Z" } }), now)).toBeNull();

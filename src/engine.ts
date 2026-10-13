@@ -99,7 +99,7 @@ export interface BridgeEngineHooks {
   onBeforeExecute?: (prompt: string, ctx: HookContext) => Promise<string>;
   onCapacityExhausted?: (chatKey: string) => void | Promise<void>;
   onAuthRequired?: (chatKey: string) => void | Promise<void>;
-  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason, context?: { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number }) => void | Promise<void>;
+  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason, context?: { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }) => void | Promise<void>;
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
   onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
 }
@@ -824,7 +824,7 @@ export class BridgeEngine {
       if (authRequired && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
       } else if (capacityExhausted && this.hooks.onProviderFallbackRequested) {
-        await this.hooks.onProviderFallbackRequested(chatKey, "capacity", { runId, chatId, chatType, ...(threadId === undefined ? {} : { threadId }), ...(capacityRetryAfter === null ? {} : { retryAfterSeconds: capacityRetryAfter }) });
+        await this.hooks.onProviderFallbackRequested(chatKey, "capacity", { runId, chatId, chatType, ...(threadId === undefined ? {} : { threadId }), ...(capacityRetryAfter === null ? { hasUnknownCapacityTiming: true as const } : { retryAfterSeconds: capacityRetryAfter }) });
       } else if (providerFallbackReason && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, providerFallbackReason);
       } else if (authRequired && this.hooks.onAuthRequired) {
