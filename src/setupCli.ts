@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, lstatSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import dotenv from "dotenv";
@@ -147,6 +147,20 @@ async function main(): Promise<void> {
         if (rawBot || rawApp) throw new Error("Supply either both Slack token files or both raw env tokens.");
         botFile ||= await get("SLACK_BOT_TOKEN_FILE", "Private xoxb bot-token file: ");
         appFile ||= await get("SLACK_APP_TOKEN_FILE", "Private xapp app-token file: ");
+      }
+      if (createFiles && existsSync(botFile!) && existsSync(appFile!)) {
+        if (readFileSync(botFile!, "utf8").trim() !== rawBot || readFileSync(appFile!, "utf8").trim() !== rawApp) {
+          throw new Error("Slack token files already exist with different contents. Stop the service and rotate the files manually.");
+        }
+        createFiles = false;
+      }
+      if (!createFiles) {
+        for (const filePath of [botFile!, appFile!]) {
+          const info = lstatSync(filePath);
+          if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077)) {
+            throw new Error("Slack token files must be private regular files (mode 0600).");
+          }
+        }
       }
       const loaded = createFiles
         ? { botToken: rawBot!, appToken: rawApp! }
