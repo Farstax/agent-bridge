@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { constants, existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync, chmodSync, renameSync, unlinkSync } from "node:fs";
+import { constants, existsSync, mkdirSync, openSync, closeSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { WebClient } from "@slack/web-api";
@@ -113,13 +113,15 @@ export function writePrivateSlackTokenFiles(paths: { bot: string; app: string },
   if (dirname(paths.bot) !== dirname(paths.app)) throw new Error("Slack tokens must have one private directory.");
   mkdirSync(dirname(paths.bot), { recursive: true, mode: 0o700 });
   chmodSync(dirname(paths.bot), 0o700);
+  const created: string[] = [];
   try {
     for (const [path, token] of [[paths.bot, botToken], [paths.app, appToken]]) {
       const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      created.push(path);
       try { writeFileSync(fd, token.trim() + "\n"); } finally { closeSync(fd); }
     }
   } catch (error) {
-    for (const path of [paths.bot, paths.app]) { if (existsSync(path)) unlinkSync(path); }
+    for (const path of created) { if (existsSync(path)) unlinkSync(path); }
     throw error;
   }
 }
