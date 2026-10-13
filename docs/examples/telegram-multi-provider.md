@@ -1,6 +1,6 @@
 # Telegram with multiple providers
 
-The source setup wizard currently supports **Telegram only**. Use it when you want one Telegram bot that can switch between the coding-agent CLIs installed on the host.
+The unified source setup wizard supports Telegram, Discord and Slack. Choose Telegram when you want one Telegram bot that can switch between the coding-agent CLIs installed on the host.
 
 ## 1. Install the source checkout
 
@@ -23,7 +23,7 @@ Authenticate at least one supported provider CLI on the same host: Codex, Claude
 ## 2. Create the interactive configuration
 
 ```bash
-npm run setup
+npm run setup -- --surface telegram
 ```
 
 The wizard:

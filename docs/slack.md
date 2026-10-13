@@ -22,11 +22,36 @@ Not supported in v1: attachments, edits, previews, typing indicators, rich or
 interactive messages, passive channel reading, multiple workspaces or Enterprise
 Grid, Slack Connect, rotating (`xoxe`) tokens, and Slack Marketplace listing.
 
+## Guided source installer
+
+The OSS source setup wizard supports Slack directly:
+
+```bash
+npm run setup -- --surface slack
+```
+
+It prints the portal steps below, checks the bot token and member allowlist, stores Slack credentials in private files or reads operator-provided token files, bootstraps an independent schema-v20 role-`slack` database, runs provider Doctor and prints the exact companion start command. If run without `--surface` in an interactive terminal it offers Telegram, Discord and Slack; scripted setup retains Telegram as the backward-compatible default. The wizard does **not** create a Slack app for you, run a production service, or prove `xapp` identity until the real Socket Mode hello is received.
+
+## Secure local token-file preparation
+
+For a source checkout, create an operator-owned directory and two private token files. **Do not put Slack tokens on the shell command line** (including an `echo` command). Use an editor to paste each value into the correct file:
+
+```bash
+umask 077
+mkdir -p "$HOME/.config/agent-bridge/slack"
+chmod 700 "$HOME/.config/agent-bridge/slack"
+touch "$HOME/.config/agent-bridge/slack/bot-token" "$HOME/.config/agent-bridge/slack/app-token"
+chmod 600 "$HOME/.config/agent-bridge/slack/bot-token" "$HOME/.config/agent-bridge/slack/app-token"
+# Open the files in your editor; put only xoxb-... in bot-token and xapp-... in app-token.
+```
+
+When the source wizard asks, supply these two absolute file paths. It validates the bot token and allowed member IDs before writing `.env.slack-interactive`; the app-level token is **only finally matched** to the bot app by the live Socket Mode hello. For unattended source setup, alternatively provide both tokens through pre-provisioned secret environment variables; the wizard will write them into private token files under `~/.config/agent-bridge/` and persist only file paths in its output config. For production, the runtime user must own both private regular token files, and the guarded installer reads them by path.
+
 ## Install
 
 **Portal walkthrough:** open [Your Slack apps](https://api.slack.com/apps), choose **Create New App → From an app manifest**, choose your intended workspace, select **YAML**, paste [the checked-in manifest](../examples/slack-app-manifest.yaml), review permissions and create the app. In the app's **OAuth & Permissions** area select **Install to Workspace** and approve (or request admin approval); copy its **Bot User OAuth Token**. Then open **Basic Information → App-Level Tokens → Generate Token and Scopes**, add `connections:write`, generate a **nonrotating app-level token**, and copy it. To find your own Slack member ID, open your profile and choose **Copy member ID**. Use that ID in `SLACK_ALLOWED_USER_IDS`, never the display name or email. A workspace may require administrator approval for installation.
 
-The `npm run setup` source wizard currently supports Telegram only; Slack setup is manual until the unified setup work in #1003 ships. This guide applies to standalone OSS installations.
+The source wizard guides app creation and setup but cannot create the Slack app itself. The steps below also support fully manual standalone installations.
 
 1. Create a Slack app **from manifest** using
    [`examples/slack-app-manifest.yaml`](../examples/slack-app-manifest.yaml).

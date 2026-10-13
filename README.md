@@ -139,28 +139,26 @@ cd agent-bridge
 npm install
 ```
 
-For a switchable Telegram setup, run the source setup wizard:
+For standalone Telegram, Discord or Slack setup from source, run the unified setup wizard:
 
 ```bash
 npm run setup
 ```
 
-It detects supported provider CLIs, asks for the Telegram bot token, allowed user
-IDs, and repository/project directory, validates the bot token with Telegram,
-writes `.env.interactive` with mode `0600`, runs Doctor against that generated
-configuration, and initializes the source interactive SQLite database that
-`npm start` will open strictly. The generated secret file is ignored by Git and
+It offers Telegram, Discord or Slack, detects supported provider CLIs, collects the selected surface's credentials and authorized user IDs, verifies credentials, runs Doctor and initializes its dedicated source SQLite database. The Telegram path retains the existing `.env.interactive` and `npm start` command; Discord and Slack have separate configuration and companion entrypoints. Slack uses private token files, not plaintext token values in its config. The generated secret file is ignored by Git and
 the wizard refuses to replace it unless you deliberately pass `--force`.
 
-For non-interactive setup, provide `TELEGRAM_BOT_TOKEN_INTERACTIVE`,
+To pick a surface explicitly, use `npm run setup -- --surface discord` or `npm run setup -- --surface slack`. For backward-compatible non-interactive Telegram setup, provide `TELEGRAM_BOT_TOKEN_INTERACTIVE`,
 `TELEGRAM_ALLOWED_USER_IDS`, and `BRIDGE_PROJECT_DIR`. Run
 `npm run setup -- --help` for the compact input contract.
 
-Then start the interactive runtime:
+Start the chosen surface using the command printed by setup; Telegram uses:
 
 ```bash
 npm start
 ```
+
+Discord uses `npx tsx src/index-discord-interactive.ts` and Slack uses `npx tsx src/index-slack-interactive.ts`.
 
 For manual configuration, copy [`.env.interactive.example`](.env.interactive.example).
 The switchable interactive runtime uses `INTERACTIVE_CLI_CHAIN` for provider
@@ -175,7 +173,7 @@ Choose an additional standalone surface using its guide:
 - [Slack via Socket Mode](docs/slack.md) — operator-owned app, two credentials, dedicated database and separate companion process.
 - [Telegram topic workstreams](docs/examples/telegram-topic-workstreams.md) — topics provide separate durable conversations.
 
-**Current setup boundary:** `npm run setup` configures **Telegram only**. Discord and Slack have documented manual setup; neither is enabled by the source wizard yet. See [issue #1003](https://github.com/Farstax/agent-bridge/issues/1003) for unified onboarding. Slack's example systemd unit is operator-installed, not selected by the one-time production installer. Surface capabilities differ: Slack accepts owner-allowlisted DMs and explicit mentions with text-only threaded replies and text commands such as `!cli`; Telegram uses slash commands such as `/cli`.
+**Setup boundary:** `npm run setup` configures one selected **source** surface. An optional Slack service can be selected by the one-time guarded immutable-release production installer using two pre-existing private runtime-user token files; source setup never modifies production services. Surface capabilities differ: Slack accepts owner-allowlisted DMs and explicit mentions with text-only threaded replies and text commands such as `!cli`; Telegram uses slash commands such as `/cli`.
 
 ## Production installation
 
