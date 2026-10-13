@@ -10,4 +10,4 @@ These are source/self-hosting recipes built from Agent Bridge's existing runtime
 
 For production host installation and guarded releases, use [Initial installation](../INITIAL-INSTALL.md) and [Guarded rollout](../GUARDED-ROLLOUT.md) instead of these source recipes.
 
-**Setup status:** `npm run setup` is currently a Telegram-only source wizard. Discord and Slack use manual configuration and separate companion entrypoints until [unified onboarding #1003](https://github.com/Farstax/agent-bridge/issues/1003) ships. Production setup is a separate guarded, immutable-release process.
+**Setup status:** `npm run setup` offers Telegram, Discord and Slack source onboarding (or `--surface` noninteractive selection). It configures only the selected companion, with its own database; see the dedicated surface guides. Production setup is a separate guarded, immutable-release process.
