@@ -612,7 +612,8 @@ export async function sendMessageWithProgress({
 
   wrappedOnProgress.activity = (activity: RunActivity): void => {
     originalOnProgress.activity?.(activity);
-    if (progressStopped || isAborted?.()) return;
+    // Internal activity is retained for observers; publishing it to chat is opt-in.
+    if (!showProgressNarration || progressStopped || isAborted?.()) return;
     queueProgressText(truncate(runActivityText(activity)), RUN_ACTIVITY_EDIT_INTERVAL_MS);
   };
 

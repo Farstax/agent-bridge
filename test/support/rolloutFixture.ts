@@ -328,6 +328,15 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
         fi
       done
     fi
+    # Only the dedicated post-acceptance retirement call passes
+    # agent-bridge-health.service alone; the early restart-counter reset
+    # passes the full configured unit list. Distinguishing on arity models
+    # the real race where LoadState still reads "loaded" early on but the
+    # unit has gone not-found by the time retirement runs.
+    if [ "\${FAKE_FAIL_HEALTH_RESET_FAILED:-}" = 1 ] && [ "$#" -eq 1 ] && [ "$1" = agent-bridge-health.service ]; then
+      echo "Failed to reset failed state of unit agent-bridge-health.service: Unit agent-bridge-health.service not loaded." >&2
+      exit 1
+    fi
     : > "${fixture.root}/restart-counters-reset"
     ;;
   show)
@@ -360,13 +369,20 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
           ;;
         Environment) echo NODE_ENV=production ;;
         ActiveState)
-          if [ "$unit" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-active" ]; then echo active
+          if [ "$unit" = agent-bridge-health.service ] && [ "\${FAKE_HEALTH_RESTART_LOOP:-}" = 1 ] && grep -Fxq "$unit" "${fixture.stateFile}"; then echo activating
+          elif [ "$unit" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-active" ]; then echo active
           elif grep -Fxq "$unit" "${fixture.stateFile}"; then echo active
           elif [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]]; then echo failed
           else echo inactive
           fi
           ;;
-        SubState) [ "$unit" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-active" ] && echo waiting || { grep -Fxq "$unit" "${fixture.stateFile}" && echo running || echo dead; } ;;
+        SubState)
+          if [ "$unit" = agent-bridge-health.service ] && [ "\${FAKE_HEALTH_RESTART_LOOP:-}" = 1 ] && grep -Fxq "$unit" "${fixture.stateFile}"; then echo auto-restart
+          elif [ "$unit" = agent-bridge-tmp-cleanup.timer ] && [ -f "${fixture.root}/cleanup-timer-active" ]; then echo waiting
+          elif grep -Fxq "$unit" "${fixture.stateFile}"; then echo running
+          else echo dead
+          fi
+          ;;
         Result) [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]] && echo exit-code || echo success ;;
         ExecMainCode) [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]] && echo exited || echo 0 ;;
         ExecMainStatus) [[ "\${FAKE_CONTAINMENT_MODE:-}" == *failed-empty* ]] && echo 143 || echo 0 ;;
