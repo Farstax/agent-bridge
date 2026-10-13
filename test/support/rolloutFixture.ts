@@ -328,6 +328,15 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
         fi
       done
     fi
+    # Only the dedicated post-acceptance retirement call passes
+    # agent-bridge-health.service alone; the early restart-counter reset
+    # passes the full configured unit list. Distinguishing on arity models
+    # the real race where LoadState still reads "loaded" early on but the
+    # unit has gone not-found by the time retirement runs.
+    if [ "\${FAKE_FAIL_HEALTH_RESET_FAILED:-}" = 1 ] && [ "$#" -eq 1 ] && [ "$1" = agent-bridge-health.service ]; then
+      echo "Failed to reset failed state of unit agent-bridge-health.service: Unit agent-bridge-health.service not loaded." >&2
+      exit 1
+    fi
     : > "${fixture.root}/restart-counters-reset"
     ;;
   show)
