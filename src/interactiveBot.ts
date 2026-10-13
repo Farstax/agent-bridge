@@ -15,7 +15,7 @@ import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
 import type { ConversationIdentity } from "./conversationIdentity.js";
-import { requestRunContinuation } from "./runContinuation.js";
+import { claimCapacityWaitNotice, requestRunContinuation } from "./runContinuation.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
 export type InteractiveCommandRegistration = {
@@ -298,7 +298,7 @@ export interface InteractiveDispatchDeps {
   engines: Record<string, InteractiveDispatchEngine>;
   fallbackChain: ProviderFallbackChain;
   fallbackRequests?: Map<string, ProviderFallbackReason>;
-  capacityFallbackAttempts?: Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>;
+  capacityFallbackAttempts?: Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; provider?: CliKind; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>;
   /** Legacy test/embedding compatibility; production uses fallbackRequests. */
   exhaustedChats?: Set<string>;
   authRequiredChats?: Set<string>;
@@ -314,14 +314,18 @@ export interface InteractiveDispatchDeps {
  * queue claim re-enters the normal fallback chain with a fresh tried set.
  */
 export async function resumeCapacityHeldQueue(
-  input: { chatKey: string; provider: string },
-  deps: Pick<InteractiveDispatchDeps, "engines" | "fallbackChain">,
+  input: { chatKey: string; provider: string; surfaceIdentity: string },
+  deps: Pick<InteractiveDispatchDeps, "engines" | "fallbackChain"> & Partial<Pick<InteractiveDispatchDeps, "db">>,
 ): Promise<boolean> {
   const candidates = [input.provider, ...deps.fallbackChain.getChain()];
   for (const candidate of candidates) {
     const engine = deps.engines[candidate];
     if (!engine?.recoverPendingQueue) continue;
-    if (await engine.recoverPendingQueue(input.chatKey)) return true;
+    if (await engine.recoverPendingQueue(input.chatKey)) {
+      // A callback returning is not proof of recovery. The original receipt
+      // must have been consumed by its queue owner before this wait settles.
+      return !deps.db || deps.db.pendingMsgCount(input.surfaceIdentity, input.chatKey) === 0;
+    }
   }
   return false;
 }
@@ -359,6 +363,23 @@ function clearPendingFallbackResume(chain: ProviderFallbackChain, chatKey: strin
 
 export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chatKey: string): void {
   clearPendingFallbackResume(chain, chatKey);
+}
+
+function capacityWaitNotice(retryAfterSeconds: number | undefined, unknownTiming: boolean | undefined): string {
+  if (unknownTiming || retryAfterSeconds === undefined) {
+    return "All available providers are temporarily at capacity. I’ll retry automatically and continue your task when one becomes available.";
+  }
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const when = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(Date.now() + retryAfterSeconds * 1_000));
+  return `All available providers are temporarily at capacity. I’ll retry automatically at ${when} (${timeZone}) and continue your task.`;
 }
 
 function prepareCliHandoff(db: BridgeDb, identity: ConversationIdentity, targetCli: CliKind, reason: string): void {
@@ -447,26 +468,31 @@ async function dispatchInteractiveExecutionWithFallback(
       }
       return dispatchInteractiveExecutionWithFallback(execution, deps, tried);
     }
-    if (fallbackReason === "capacity") {
+    // Capacity recovery remains valid if a later eligible fallback needs auth:
+    // the existing configured chain still contains a provider that can recover.
+    if (fallbackReason === "capacity" || capacityFallbackAttempts?.has(chatKey)) {
       const attempt = capacityFallbackAttempts?.get(chatKey);
       if (attempt) {
         const heldReceipt = execution.recoverPendingQueue
           ? db.dequeueMsgs(identity.surfaceIdentity, chatKey)[0]
           : null;
-        requestRunContinuation(db, {
+        const continuation = requestRunContinuation(db, {
           ...(execution.capacityContinuationId || heldReceipt ? { continuationId: execution.capacityContinuationId ?? `capacity-wait:${heldReceipt!.id}` } : {}),
           originRunId: attempt.runId,
           surfaceIdentity: identity.surfaceIdentity,
           chatKey,
-          provider: activeCli,
+          provider: attempt.provider ?? activeCli,
           reason: "all permitted providers are temporarily at capacity",
           afterSeconds: attempt.hasUnknownCapacityTiming
             ? Math.min(attempt.retryAfterSeconds ?? 300, 300)
             : attempt.retryAfterSeconds ?? 300,
           capacityWait: true,
+          ...(heldReceipt ? { retainedPendingMessageIds: [heldReceipt.id] } : {}),
           delivery: { chatId: attempt.chatId, chatType: attempt.chatType, ...(attempt.threadId === undefined ? {} : { threadId: attempt.threadId }) },
         });
-        await notify("All available providers are temporarily at capacity. I’ll retry automatically and continue your task when one becomes available.");
+        if (claimCapacityWaitNotice(db, continuation.id)) {
+          await notify(capacityWaitNotice(attempt.retryAfterSeconds, attempt.hasUnknownCapacityTiming));
+        }
         return "deferred";
       }
     }

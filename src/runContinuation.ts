@@ -49,6 +49,10 @@ export interface RunContinuation {
   rolloutProvenance?: RolloutProvenance;
   /** A settled capacity rejection may re-enter the existing fallback path. */
   capacityWait?: true;
+  /** The initial capacity notice is a durable one-shot delivery decision. */
+  capacityNoticeSent?: true;
+  /** Original queue receipt retained through capacity recovery. */
+  retainedPendingMessageIds?: number[];
 }
 
 export interface RequestRunContinuationInput {
@@ -63,6 +67,7 @@ export interface RequestRunContinuationInput {
   /** Transport delivery coordinates, persisted as-is at request time. Omit only for legacy/test callers that rely on the one-time decode fallback in parse(). */
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   capacityWait?: boolean;
+  retainedPendingMessageIds?: number[];
 }
 
 function key(id: string): string {
@@ -90,6 +95,8 @@ function parse(value: string): RunContinuation | null {
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
     if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
+    if (candidate.capacityNoticeSent !== undefined && candidate.capacityNoticeSent !== true) return null;
+    if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
       if (
@@ -141,7 +148,7 @@ export function requestRunContinuation(
   const provider = bounded(String(input.provider), "provider", 80) as RouteableBotKind;
   const requestedAt = new Date(nowMs).toISOString();
   const dueAt = new Date(nowMs + input.afterSeconds * 1_000).toISOString();
-  const expiresAt = new Date(nowMs + (input.capacityWait ? MAX_CAPACITY_LIFETIME_MS : MAX_LIFETIME_MS)).toISOString();
+  const proposedExpiresAt = new Date(nowMs + (input.capacityWait ? MAX_CAPACITY_LIFETIME_MS : MAX_LIFETIME_MS)).toISOString();
   const id = bounded(input.continuationId ?? originRunId, "continuation id", 240);
   const originRun = db.getRun(originRunId);
   if (originRun) {
@@ -168,15 +175,33 @@ export function requestRunContinuation(
       reason,
       requestedAt,
       dueAt,
-      expiresAt,
+      // A capacity retry represents one admitted task.  Rejections may move
+      // its wake time but must never grant it a fresh seven-day lifetime.
+      expiresAt: input.capacityWait && existing?.capacityWait ? existing.expiresAt : proposedExpiresAt,
       state: "pending",
       ...(input.delivery ? { delivery: input.delivery } : {}),
       ...(input.capacityWait ? { capacityWait: true as const } : {}),
+      ...(existing?.capacityNoticeSent ? { capacityNoticeSent: true as const } : {}),
+      ...(input.capacityWait && (input.retainedPendingMessageIds?.length || existing?.retainedPendingMessageIds?.length)
+        ? { retainedPendingMessageIds: input.retainedPendingMessageIds ?? existing!.retainedPendingMessageIds! }
+        : {}),
     };
     const persisted = parse(JSON.stringify(continuation));
     if (!persisted) throw new Error("continuation delivery coordinates are invalid");
     db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(persisted));
     return persisted;
+  });
+}
+
+/** Mark before external delivery so a restart cannot emit a second wait notice. */
+export function claimCapacityWaitNotice(db: BridgeDb, id: string): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current?.capacityWait || current.capacityNoticeSent) return false;
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+      .run(JSON.stringify({ ...current, capacityNoticeSent: true }), key(id));
+    return true;
   });
 }
 
@@ -373,7 +398,7 @@ export function cancelPendingRunContinuation(
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || current.state !== "pending") return false;
+    if (!current || (current.state !== "pending" && !(current.capacityWait && current.state === "claimed"))) return false;
     const cancelled: RunContinuation = {
       ...current,
       state: "cancelled",
@@ -394,7 +419,7 @@ export function cancelPendingRunContinuationsForChat(
 ): number {
   return db.runInTransaction(() => {
     const continuations = listRunContinuations(db, surfaceIdentity).filter(
-      (c) => c.chatKey === chatKey && c.state === "pending",
+      (c) => c.chatKey === chatKey && (c.state === "pending" || (c.capacityWait && c.state === "claimed")),
     );
     let count = 0;
     for (const c of continuations) {
@@ -427,19 +452,47 @@ export function settleRunContinuation(
   });
 }
 
+/** A wake that did not obtain the retained queue work remains retryable. */
+function requeueClaimedCapacityWait(db: BridgeDb, id: string, nowMs: number): void {
+  db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current?.capacityWait || current.state !== "claimed") return;
+    if (Date.parse(current.expiresAt) <= nowMs) {
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+        .run(JSON.stringify({ ...current, state: "expired" }), key(id));
+      return;
+    }
+    const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+      .run(JSON.stringify({ ...current, state: "pending", dueAt, claimedAt: undefined }), key(id));
+  });
+}
+
 export async function scanRunContinuations(
   db: BridgeDb,
   surfaceIdentity: string,
-  dispatch: (continuation: RunContinuation) => Promise<void>,
+  dispatch: (continuation: RunContinuation) => Promise<void | boolean>,
   nowMs = Date.now(),
-  options?: ClaimRunContinuationOptions,
+  options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
 ): Promise<void> {
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
     if (candidate.state !== "pending") continue;
+    if (candidate.capacityWait && Date.parse(candidate.expiresAt) <= nowMs) {
+      claimDueRunContinuation(db, candidate.id, nowMs, options);
+      await options?.onCapacityExpired?.(candidate);
+      continue;
+    }
     const claimed = claimDueRunContinuation(db, candidate.id, nowMs, options);
     if (!claimed) continue;
     try {
-      await dispatch(claimed);
+      const dispatched = await dispatch(claimed);
+      // A capacity callback must prove that the retained queue item progressed.
+      // Returning false leaves the one admitted task pending for another wake.
+      if (claimed.capacityWait && dispatched === false) {
+        requeueClaimedCapacityWait(db, claimed.id, nowMs);
+        continue;
+      }
       settleRunContinuation(db, claimed.id, "completed");
     } catch (error) {
       settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error));
@@ -455,8 +508,9 @@ export class RunContinuationRunner {
   constructor(
     private readonly db: BridgeDb,
     private readonly surfaceIdentity: string,
-    private readonly dispatch: (continuation: RunContinuation) => Promise<void>,
+    private readonly dispatch: (continuation: RunContinuation) => Promise<void | boolean>,
     private readonly scanMs = DEFAULT_SCAN_MS,
+    private readonly options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
   ) {}
 
   start(): void {
@@ -464,7 +518,7 @@ export class RunContinuationRunner {
     const tick = () => {
       if (this.scanning) return;
       this.scanning = true;
-      void scanRunContinuations(this.db, this.surfaceIdentity, this.dispatch)
+      void scanRunContinuations(this.db, this.surfaceIdentity, this.dispatch, Date.now(), this.options)
         .catch((error) => console.error("[run-continuation] scan failed", error))
         .finally(() => { this.scanning = false; });
     };

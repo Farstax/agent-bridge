@@ -13,6 +13,7 @@ import {
   requestRunContinuation,
   scanRunContinuations,
   settleRunContinuation,
+  claimCapacityWaitNotice,
 } from "../src/runContinuation.js";
 
 const paths: string[] = [];
@@ -129,6 +130,61 @@ describe("ordinary Run continuation", () => {
     reopened.close();
   });
 
+  it("keeps a capacity wait pending when its wake did not claim progress", async () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-capacity-unclaimed",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    const dispatch = vi.fn(async () => false);
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 6_000);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "pending", expiresAt: continuation.expiresAt }));
+    db.close();
+  });
+
+  it("expires the original capacity lifetime without dispatching and reports it once", async () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-capacity-expiry",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    const expired = vi.fn();
+    await scanRunContinuations(db, "telegram:interactive", vi.fn(), Date.parse(continuation.expiresAt), { onCapacityExpired: expired });
+    expect(expired).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "expired" }));
+    db.close();
+  });
+
+  it("cancels a claimed capacity wake before it can requeue the retained task", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-capacity-cancelled-wake",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    expect(claimDueRunContinuation(db, continuation.id, 6_000)?.state).toBe("claimed");
+    expect(cancelPendingRunContinuation(db, continuation.id, "session reset by user", 6_001)).toBe(true);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "cancelled" }));
+    db.close();
+  });
+
   it("reschedules the same logical capacity wait after another rejected attempt", () => {
     const { db } = setup();
     const first = requestForActiveRun(db, {
@@ -157,8 +213,31 @@ describe("ordinary Run continuation", () => {
       capacityWait: true,
     }, 7_000);
     expect(rescheduled).toEqual(expect.objectContaining({ id: first.id, originRunId: "run-capacity-second", state: "pending" }));
+    expect(rescheduled.expiresAt).toBe(first.expiresAt);
     expect(listRunContinuations(db)).toHaveLength(1);
     db.close();
+  });
+
+  it("persists the single capacity notice decision across a restart", () => {
+    const { db, path } = setup();
+    const continuation = requestForActiveRun(db, {
+      continuationId: "capacity-wait:notice",
+      originRunId: "run-capacity-notice",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(claimCapacityWaitNotice(db, continuation.id)).toBe(true);
+    expect(claimCapacityWaitNotice(db, continuation.id)).toBe(false);
+    db.close();
+
+    const reopened = openDb(path, { serviceId: "run-continuation-test-reopen", runId: "test-process-2" });
+    expect(claimCapacityWaitNotice(reopened, continuation.id)).toBe(false);
+    expect(listRunContinuations(reopened)[0]).toEqual(expect.objectContaining({ capacityNoticeSent: true }));
+    reopened.close();
   });
 
   it("does not resume while the originating Run is still active", async () => {

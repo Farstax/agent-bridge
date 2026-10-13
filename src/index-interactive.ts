@@ -67,6 +67,8 @@ import {
   RunContinuationRunner,
   buildTelegramRunContinuationTurn,
 } from "./runContinuation.js";
+import { fetchCodexCapacityResetAt } from "./codexUsage.js";
+import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
 
 loadInteractiveEnvFile();
 
@@ -199,7 +201,7 @@ const fallbackChain = new ProviderFallbackChain(
   (cli) => getAvailableCliKinds().has(cli as CliKind),
 );
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
-const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; provider?: CliKind; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
   const detected = getAvailableCliKinds();
@@ -257,13 +259,21 @@ const engines = Object.fromEntries(
             onProviderFallbackRequested: async (chatKey, reason, context) => {
               fallbackRequests.set(chatKey, reason);
               if (reason === "capacity" && context) {
+                const resetAt = kind === "codex" && context.retryAfterSeconds === undefined
+                  ? await fetchCodexCapacityResetAt().catch(() => null)
+                  : null;
+                const retryAfterSeconds = resetAt
+                  ? capacityRetryAfterSeconds({ data: { capacityResetsAt: resetAt } }) ?? undefined
+                  : context.retryAfterSeconds;
                 const previous = capacityFallbackAttempts.get(chatKey);
                 capacityFallbackAttempts.set(chatKey, {
                   ...context,
-                  ...(previous?.retryAfterSeconds !== undefined && (context.retryAfterSeconds === undefined || previous.retryAfterSeconds < context.retryAfterSeconds)
+                  provider: kind,
+                  ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+                  ...(previous?.retryAfterSeconds !== undefined && (retryAfterSeconds === undefined || previous.retryAfterSeconds < retryAfterSeconds)
                     ? { retryAfterSeconds: previous.retryAfterSeconds }
                     : {}),
-                  ...(previous?.hasUnknownCapacityTiming || context.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
+                  ...((previous?.retryAfterSeconds === undefined && retryAfterSeconds === undefined && (previous?.hasUnknownCapacityTiming || context.hasUnknownCapacityTiming)) ? { hasUnknownCapacityTiming: true as const } : {}),
                 });
               }
             },
@@ -475,8 +485,7 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
   runtimePolicy.surfaceIdentity,
   async (continuation) => {
     if (continuation.capacityWait) {
-      await resumeCapacityHeldQueue(continuation, { engines, fallbackChain });
-      return;
+      return resumeCapacityHeldQueue(continuation, { engines, fallbackChain, db });
     }
     const provider = continuation.provider as CliKind;
     if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
@@ -503,6 +512,21 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
         }
       },
     }, new Set([provider]));
+  },
+  undefined,
+  {
+    onCapacityExpired: async (continuation) => {
+      const ids = continuation.retainedPendingMessageIds ?? [];
+      if (!ids.length || !db.retireQueuedPendingMsgs(continuation.surfaceIdentity, continuation.chatKey, ids)) return;
+      const delivery = continuation.delivery;
+      if (!delivery) return;
+      await sendTelegramMessage({
+        client,
+        kind: "interactive",
+        chatId: delivery.chatId,
+        body: { text: "I could not retry your task before the provider recovery window expired. Please send it again when you are ready.", message_thread_id: delivery.threadId === undefined ? undefined : Number(delivery.threadId) },
+      });
+    },
   },
 ) : null;
 runContinuationRunner?.start();

@@ -6,6 +6,7 @@ import {
   fetchCodexUsage,
   formatCodexUsage,
   readCodexAccessToken,
+  selectCodexCapacityResetAt,
 } from "../src/codexUsage.js";
 
 const usageFixture = {
@@ -51,6 +52,24 @@ describe("Codex usage formatting", () => {
     expect(text).not.toContain("person@example.com");
     expect(text).not.toContain("user-secret");
     expect(text).not.toContain("acct-secret");
+  });
+});
+
+describe("Codex capacity reset evidence", () => {
+  it("uses the earliest future provider reset only when the usage response confirms a limit", () => {
+    expect(selectCodexCapacityResetAt({
+      rate_limit: {
+        limit_reached: true,
+        primary_window: { reset_at: 1_700_000_200 },
+        secondary_window: { reset_at: 1_700_000_100 },
+      },
+    }, 1_700_000_000_000)).toBe("2023-11-14T22:15:00.000Z");
+  });
+
+  it("does not turn malformed, stale, or non-limited usage into reset evidence", () => {
+    expect(selectCodexCapacityResetAt({ rate_limit: { limit_reached: false, primary_window: { reset_at: 1_700_000_100 } } }, 1_700_000_000_000)).toBeNull();
+    expect(selectCodexCapacityResetAt({ rate_limit: { limit_reached: true, primary_window: { reset_at: "bad" } } }, 1_700_000_000_000)).toBeNull();
+    expect(selectCodexCapacityResetAt({ rate_limit: { limit_reached: true, primary_window: { reset_at: 1_699_999_999 } } }, 1_700_000_000_000)).toBeNull();
   });
 });
 

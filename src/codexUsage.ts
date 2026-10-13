@@ -42,6 +42,23 @@ type CodexUsageResponse = {
   } | null;
 };
 
+const MAX_CAPACITY_RESET_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * Turns the existing read-only usage payload into bounded retry evidence.
+ * Only a provider-confirmed exhausted account may influence retry timing.
+ */
+export function selectCodexCapacityResetAt(usage: CodexUsageResponse, nowMs = Date.now()): string | null {
+  const rateLimit = usage.rate_limit;
+  if (!rateLimit || (rateLimit.limit_reached !== true && rateLimit.allowed !== false)) return null;
+  const nowSeconds = Math.floor(nowMs / 1_000);
+  const candidates = [rateLimit.primary_window?.reset_at, rateLimit.secondary_window?.reset_at]
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    .filter((value) => value > nowSeconds && value - nowSeconds <= MAX_CAPACITY_RESET_WINDOW_SECONDS);
+  if (!candidates.length) return null;
+  return new Date(Math.min(...candidates) * 1_000).toISOString();
+}
+
 export function defaultCodexAuthPath(): string {
   return join(homedir(), ".codex", "auth.json");
 }
@@ -76,6 +93,11 @@ export async function fetchCodexUsage(accessToken: string, fetchImpl?: FetchLike
   }
 
   return body as CodexUsageResponse;
+}
+
+/** Read-only best-effort capacity evidence for the active Codex account. */
+export async function fetchCodexCapacityResetAt(authPath = defaultCodexAuthPath()): Promise<string | null> {
+  return selectCodexCapacityResetAt(await fetchCodexUsage(readCodexAccessToken(authPath)));
 }
 
 async function fetchCodexUsageWithFetch(accessToken: string, fetchImpl: FetchLike): Promise<unknown> {
