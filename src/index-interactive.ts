@@ -199,7 +199,7 @@ const fallbackChain = new ProviderFallbackChain(
   (cli) => getAvailableCliKinds().has(cli as CliKind),
 );
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
-const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number }>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
   const detected = getAvailableCliKinds();
@@ -256,7 +256,15 @@ const engines = Object.fromEntries(
             },
             onProviderFallbackRequested: async (chatKey, reason, context) => {
               fallbackRequests.set(chatKey, reason);
-              if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+              if (reason === "capacity" && context) {
+                const previous = capacityFallbackAttempts.get(chatKey);
+                capacityFallbackAttempts.set(chatKey, {
+                  ...context,
+                  ...(previous?.retryAfterSeconds !== undefined && (context.retryAfterSeconds === undefined || previous.retryAfterSeconds < context.retryAfterSeconds)
+                    ? { retryAfterSeconds: previous.retryAfterSeconds }
+                    : {}),
+                });
+              }
             },
           },
         },

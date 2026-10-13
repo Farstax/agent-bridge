@@ -298,7 +298,7 @@ export interface InteractiveDispatchDeps {
   engines: Record<string, InteractiveDispatchEngine>;
   fallbackChain: ProviderFallbackChain;
   fallbackRequests?: Map<string, ProviderFallbackReason>;
-  capacityFallbackAttempts?: Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>;
+  capacityFallbackAttempts?: Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number }>;
   /** Legacy test/embedding compatibility; production uses fallbackRequests. */
   exhaustedChats?: Set<string>;
   authRequiredChats?: Set<string>;
@@ -460,7 +460,7 @@ async function dispatchInteractiveExecutionWithFallback(
           chatKey,
           provider: activeCli,
           reason: "all permitted providers are temporarily at capacity",
-          afterSeconds: 300,
+          afterSeconds: attempt.retryAfterSeconds ?? 300,
           capacityWait: true,
           delivery: { chatId: attempt.chatId, chatType: attempt.chatType, ...(attempt.threadId === undefined ? {} : { threadId: attempt.threadId }) },
         });

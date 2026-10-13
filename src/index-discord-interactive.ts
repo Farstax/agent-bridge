@@ -108,7 +108,7 @@ const cliChain = parseCliChain(
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db, "discord:interactive", (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
-const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number }>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 let runContinuationRunner: RunContinuationRunner | null = null;
 // ── DiscordClient ─────────────────────────────────────────────────────────────
@@ -171,7 +171,15 @@ const engines = Object.fromEntries(
         hooks: {
           onProviderFallbackRequested: async (chatKey, reason, context) => {
             fallbackRequests.set(chatKey, reason);
-            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+            if (reason === "capacity" && context) {
+              const previous = capacityFallbackAttempts.get(chatKey);
+              capacityFallbackAttempts.set(chatKey, {
+                ...context,
+                ...(previous?.retryAfterSeconds !== undefined && (context.retryAfterSeconds === undefined || previous.retryAfterSeconds < context.retryAfterSeconds)
+                  ? { retryAfterSeconds: previous.retryAfterSeconds }
+                  : {}),
+              });
+            }
           },
         },
       },

@@ -317,13 +317,14 @@ function usageLimitedDiagnostic(
  * fails, that's stronger, unambiguous evidence than free-text matching on
  * whatever error message the SDK/Anthropic API happens to surface.
  */
-function claudeRateLimitRejected(notification: SessionNotification): boolean {
+function claudeRateLimitRejected(notification: SessionNotification): string | null {
   const update = notification.update as unknown as {
     sessionUpdate?: string;
-    _meta?: { "_claude/rateLimit"?: { status?: string } };
+    _meta?: { "_claude/rateLimit"?: { status?: string; resetsAt?: string } };
   };
-  return update.sessionUpdate === "usage_update"
-    && update._meta?.["_claude/rateLimit"]?.status === "rejected";
+  if (update.sessionUpdate !== "usage_update" || update._meta?.["_claude/rateLimit"]?.status !== "rejected") return null;
+  const reset = update._meta["_claude/rateLimit"]?.resetsAt;
+  return typeof reset === "string" ? reset : "rejected";
 }
 
 /**
@@ -334,13 +335,14 @@ function claudeRateLimitRejected(notification: SessionNotification): boolean {
  * before providerId is consulted), so this is a deliberate reuse, not a
  * naming mistake.
  */
-function withStructuredCapacityErrorInfo(error: unknown): Error {
+function withStructuredCapacityErrorInfo(error: unknown, capacityResetsAt: string | null): Error {
   const normalized = error instanceof Error ? error : new Error(String(error));
   const existingData = (normalized as { data?: unknown }).data;
   Object.assign(normalized, {
     data: {
       ...(existingData && typeof existingData === "object" ? existingData : {}),
       codexErrorInfo: "usageLimitExceeded",
+      ...(capacityResetsAt && capacityResetsAt !== "rejected" ? { capacityResetsAt } : {}),
     },
   });
   return normalized;
@@ -485,6 +487,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
   let promptSubmitted = false;
   let rootSystemErrorSeen = false;
   let rootClaudeRateLimitRejectedSeen = false;
+  let rootClaudeCapacityResetsAt: string | null = null;
 
   const remember = (event: AcpRetainedEvent) => {
     const tagged: AcpRetainedEvent = {
@@ -509,7 +512,11 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
           && Boolean(currentAcpSessionId)
           && observed.notification.sessionId === currentAcpSessionId;
         if (isRootLive && systemErrorUpdate(observed.notification)) rootSystemErrorSeen = true;
-        if (isRootLive && claudeRateLimitRejected(observed.notification)) rootClaudeRateLimitRejectedSeen = true;
+        const claudeRateLimit = isRootLive ? claudeRateLimitRejected(observed.notification) : null;
+        if (claudeRateLimit) {
+          rootClaudeRateLimitRejectedSeen = true;
+          if (claudeRateLimit !== "rejected") rootClaudeCapacityResetsAt = claudeRateLimit;
+        }
         const payload = observed.notification.update;
         const suppressPresentation = isRootLive
           && rootSystemErrorSeen
@@ -682,7 +689,7 @@ export async function runAcpTurn(input: AcpTurnInput): Promise<AcpTurnResult> {
     try {
       promptResponse = await requestPrompt();
     } catch (error) {
-      throw rootClaudeRateLimitRejectedSeen ? withStructuredCapacityErrorInfo(error) : error;
+      throw rootClaudeRateLimitRejectedSeen ? withStructuredCapacityErrorInfo(error, rootClaudeCapacityResetsAt) : error;
     }
 
     remember({ kind: "stop", channel: "live", stopReason: promptResponse.stopReason });
