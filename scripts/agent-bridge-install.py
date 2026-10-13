@@ -445,11 +445,15 @@ def service_values(
     for key in set(SERVICE_KEYS) - other_tokens:
         if env.get(key, "") != "":
             values[key] = env[key]
+    slack_keys = ("SLACK_BOT_TOKEN_FILE", "SLACK_APP_TOKEN_FILE", "SLACK_ALLOWED_USER_IDS", "SLACK_STATUS_FILE")
     if defaults_path.name == "agent-bridge-slack-interactive":
         # Slack is operator-opted-in with two external files; never persist raw tokens.
         values["BRIDGE_EXECUTION_MODE"] = "safe"
         values.pop("SLACK_BOT_TOKEN", None)
         values.pop("SLACK_APP_TOKEN", None)
+    else:
+        for key in slack_keys:
+            values.pop(key, None)
     if defaults_path.name == "agent-bridge-interactive":
         for key in ("BRIDGE_RUN_INGRESS_SOCKET", "BRIDGE_RUN_INGRESS_TOKEN"):
             if env.get(key, "") != "":
@@ -577,6 +581,12 @@ def accept(units: Sequence[str], databases: Sequence[Path], timeout: int, state_
                     and status.get("generation")
                 ):
                     os.kill(pid, 0)
+                    active_pid = systemctl(
+                        "show", "--property=MainPID", "--value",
+                        "agent-bridge-slack-interactive.service",
+                    ).stdout.strip()
+                    if active_pid != str(pid):
+                        raise ValueError("stale Slack status process")
                     ready = True
                     break
             except (OSError, ValueError, json.JSONDecodeError, TypeError):
