@@ -4,7 +4,10 @@ Use current product and operating contracts first. Historical implementation wor
 
 - [Architecture overview](architecture/overview.md)
 - [Architecture index](architecture/README.md)
-- [Examples](examples/README.md)
+- [Getting started and messaging surface examples](examples/README.md)
+- [Telegram onboarding](examples/telegram-multi-provider.md)
+- [Discord onboarding](examples/discord-interactive.md)
+- [Slack standalone setup and Socket Mode](slack.md)
 - [Adding a CLI provider](ADDING-A-PROVIDER.md)
 - [ACP provider-runtime boundary](ACP.md)
 - [Initial installation](INITIAL-INSTALL.md)

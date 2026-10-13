@@ -1,6 +1,6 @@
 # Telegram with multiple providers
 
-Use the source setup wizard when you want one Telegram bot that can switch between the coding-agent CLIs installed on the host.
+The source setup wizard currently supports **Telegram only**. Use it when you want one Telegram bot that can switch between the coding-agent CLIs installed on the host.
 
 ## 1. Install the source checkout
 

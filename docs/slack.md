@@ -1,6 +1,6 @@
 # Slack integration
 
-Agent Bridge can serve a **customer-owned Slack app** over outbound-only Socket
+Agent Bridge can serve an **operator-owned Slack app** over outbound-only Socket
 Mode. Slack is a thin transport into the existing Run, provider, session, queue,
 cancellation, fallback, continuation and delivery owners. There is no hosted
 service, OAuth broker, phone number or inbound HTTP endpoint, and nothing
@@ -23,6 +23,10 @@ interactive messages, passive channel reading, multiple workspaces or Enterprise
 Grid, Slack Connect, rotating (`xoxe`) tokens, and Slack Marketplace listing.
 
 ## Install
+
+**Portal walkthrough:** open [Your Slack apps](https://api.slack.com/apps), choose **Create New App → From an app manifest**, choose your intended workspace, select **YAML**, paste [the checked-in manifest](../examples/slack-app-manifest.yaml), review permissions and create the app. In the app's **OAuth & Permissions** area select **Install to Workspace** and approve (or request admin approval); copy its **Bot User OAuth Token**. Then open **Basic Information → App-Level Tokens → Generate Token and Scopes**, add `connections:write`, generate a **nonrotating app-level token**, and copy it. To find your own Slack member ID, open your profile and choose **Copy member ID**. Use that ID in `SLACK_ALLOWED_USER_IDS`, never the display name or email. A workspace may require administrator approval for installation.
+
+The `npm run setup` source wizard currently supports Telegram only; Slack setup is manual until the unified setup work in #1003 ships. This guide applies to standalone OSS installations.
 
 1. Create a Slack app **from manifest** using
    [`examples/slack-app-manifest.yaml`](../examples/slack-app-manifest.yaml).
@@ -75,6 +79,10 @@ manage it, but the guarded rollout knows the unit and its database role.
 > **Never run the same Slack app in two places.** Slack distributes events for
 > one app across every connected socket, including a second Agent Bridge. Agent
 > Bridge cannot detect or prevent an external consumer of your app.
+
+## First-message test
+
+After starting the Slack companion and observing a fresh connected readiness record, DM the **Agent Bridge** app as an allowlisted Slack user. To test a channel, use Slack's invite control (for example `/invite @Agent Bridge`), then post an **explicit mention** like `@Agent Bridge summarise this repository`. The response should appear in the **thread**, not as an unsolicited channel-wide response. Unmentioned channel traffic and messages from unallowlisted users must not trigger coding-agent Runs. Slack uses **plain-text** commands `!cli`, `!stop`, `!cancel` and `!reset`, not Slack slash commands. Never connect the same Slack app to two active Agent Bridge instances.
 
 ## Identity and authorization
 
