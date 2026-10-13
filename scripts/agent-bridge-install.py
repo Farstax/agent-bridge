@@ -11,6 +11,7 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import sqlite3
 import subprocess
 import sys
@@ -54,6 +55,7 @@ SERVICES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ("agent-bridge-claude.service", "agent-bridge-claude", ("TELEGRAM_BOT_TOKEN_CLAUDE",), "claude"),
     ("agent-bridge-interactive.service", "agent-bridge-interactive", ("TELEGRAM_BOT_TOKEN_INTERACTIVE",), "interactive"),
     ("agent-bridge-discord-interactive.service", "agent-bridge-discord-interactive", ("DISCORD_BOT_TOKEN",), "discord-interactive"),
+    ("agent-bridge-slack-interactive.service", "agent-bridge-slack-interactive", ("SLACK_BOT_TOKEN_FILE",), "slack-interactive"),
 )
 
 # Provenance roles are intentionally independent of service database paths:
@@ -65,6 +67,7 @@ DATABASE_ROLES = {
     "claude": "shared",
     "interactive": "interactive",
     "discord-interactive": "discord",
+    "slack-interactive": "slack",
 }
 
 # release path, installed path, rollout identity key
@@ -103,7 +106,9 @@ SERVICE_KEYS = (
     "TELEGRAM_BOT_TOKEN_GEMINI", "TELEGRAM_BOT_TOKEN_CLAUDE",
     "TELEGRAM_BOT_TOKEN_INTERACTIVE",
     "DISCORD_BOT_TOKEN", "DISCORD_APPLICATION_ID",
-    "DISCORD_GUILD_ID", "DISCORD_ALLOWED_USER_IDS", "GITHUB_USERNAME",
+    "DISCORD_GUILD_ID", "DISCORD_ALLOWED_USER_IDS",
+    "SLACK_BOT_TOKEN_FILE", "SLACK_APP_TOKEN_FILE", "SLACK_ALLOWED_USER_IDS", "SLACK_STATUS_FILE",
+    "GITHUB_USERNAME",
     "GITHUB_TOKEN_FILE",
     "INTERACTIVE_DEFAULT_CLI", "INTERACTIVE_CLI_CHAIN", "BRIDGE_COMPACTION_CHAIN",
     "BRIDGE_COMPACTION_MAX_ATTEMPTS", "BRIDGE_COMPACTION_REPAIR_ATTEMPTS",
@@ -145,7 +150,36 @@ def selected_services(env: Mapping[str, str]) -> list[tuple[str, str, tuple[str,
         fail("at least one Agent Bridge service token must be configured")
     if env.get("DISCORD_BOT_TOKEN", "").strip() and not env.get("DISCORD_APPLICATION_ID", "").strip():
         fail("DISCORD_APPLICATION_ID is required with DISCORD_BOT_TOKEN")
+    slack_fields = ("SLACK_BOT_TOKEN_FILE", "SLACK_APP_TOKEN_FILE", "SLACK_ALLOWED_USER_IDS")
+    if any(env.get(k, "").strip() for k in slack_fields) and not all(env.get(k, "").strip() for k in slack_fields):
+        fail("Slack requires both token FILE paths and a nonempty user ID allowlist")
+    if env.get("SLACK_BOT_TOKEN", "").strip() or env.get("SLACK_APP_TOKEN", "").strip():
+        fail("Production Slack credentials must be supplied as private token files, not env tokens")
     return selected
+
+
+def validate_slack_credentials(env: Mapping[str, str], account: pwd.struct_passwd, release_root: Path) -> None:
+    """Preflight two external, runtime-readable private token files before changing host state."""
+    if not env.get("SLACK_BOT_TOKEN_FILE", "").strip():
+        return
+    for key, prefix in (("SLACK_BOT_TOKEN_FILE", "xoxb-"), ("SLACK_APP_TOKEN_FILE", "xapp-")):
+        raw = env[key]
+        path = Path(raw)
+        if not path.is_absolute() or os.path.normpath(raw) != raw or release_root in path.parents:
+            fail(f"{key} must be a canonical absolute path outside the immutable release root")
+        try:
+            info = path.lstat()
+        except OSError:
+            fail(f"{key} is missing or unreadable")
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != account.pw_uid or info.st_mode & 0o077:
+            fail(f"{key} must be an owner-only regular file owned by the runtime user")
+        # Read prefix only, avoid exposing contents through argv, logs or permanent defaults.
+        if not path.read_text(encoding="utf-8").strip().startswith(prefix):
+            fail(f"{key} must contain the correct nonrotating Slack token type")
+    user_ids = [v.strip() for v in env["SLACK_ALLOWED_USER_IDS"].split(",") if v.strip()]
+    if not user_ids or any(re.fullmatch(r"[UW][A-Z0-9]{2,}", v) is None for v in user_ids):
+        fail("SLACK_ALLOWED_USER_IDS must contain Slack member IDs (default deny)")
+
 
 
 def database_path(state_root: Path, service: tuple[str, str, tuple[str, ...], str]) -> Path:
@@ -411,6 +445,11 @@ def service_values(
     for key in set(SERVICE_KEYS) - other_tokens:
         if env.get(key, "") != "":
             values[key] = env[key]
+    if defaults_path.name == "agent-bridge-slack-interactive":
+        # Slack is operator-opted-in with two external files; never persist raw tokens.
+        values["BRIDGE_EXECUTION_MODE"] = "safe"
+        values.pop("SLACK_BOT_TOKEN", None)
+        values.pop("SLACK_APP_TOKEN", None)
     if defaults_path.name == "agent-bridge-interactive":
         for key in ("BRIDGE_RUN_INGRESS_SOCKET", "BRIDGE_RUN_INGRESS_TOKEN"):
             if env.get(key, "") != "":
@@ -443,8 +482,8 @@ def configure_host(
         "FETCH_TIMEOUT_MS": env.get("FETCH_TIMEOUT_MS", "45000"),
     }
     shared.update({key: env[key] for key in SHARED_KEYS if env.get(key, "") != ""})
-    if not (shared.get("TELEGRAM_ALLOWED_USER_IDS") or shared.get("TELEGRAM_ALLOWED_USER_ID") or env.get("DISCORD_ALLOWED_USER_IDS")):
-        fail("an allowed Telegram or Discord user ID must be configured")
+    if not (shared.get("TELEGRAM_ALLOWED_USER_IDS") or shared.get("TELEGRAM_ALLOWED_USER_ID") or env.get("DISCORD_ALLOWED_USER_IDS") or env.get("SLACK_ALLOWED_USER_IDS")):
+        fail("an allowed Telegram, Discord or Slack user ID must be configured")
     safe_write(DEFAULTS_DIR / "agent-bridge-shared", render_env(shared), 0o600)
     safe_write(DEFAULTS_DIR / "agent-bridge-release", render_env({"BRIDGE_CURRENT_RELEASE_DIR": str(current)}), 0o600)
 
@@ -458,7 +497,10 @@ def configure_host(
         os.chown(db_path.parent, account.pw_uid, account.pw_gid)
         os.chmod(db_path.parent, 0o750)
         defaults_path = DEFAULTS_DIR / defaults_name
-        safe_write(defaults_path, render_env(service_values(env, defaults_path, db_path, token_keys)), 0o600)
+        settings = service_values(env, defaults_path, db_path, token_keys)
+        if db_name == "slack-interactive":
+            settings["SLACK_STATUS_FILE"] = str(db_path.parent / "slack-status.json")
+        safe_write(defaults_path, render_env(settings), 0o600)
         unit_source = release / "systemd" / unit
         if unit_source.is_symlink() or not unit_source.is_file():
             fail(f"release is missing systemd unit: {unit_source}")
@@ -503,7 +545,7 @@ def systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess[str
     return subprocess.run(["/usr/bin/systemctl", *args], check=check, capture_output=True, text=True)
 
 
-def accept(units: Sequence[str], databases: Sequence[Path], timeout: int) -> None:
+def accept(units: Sequence[str], databases: Sequence[Path], timeout: int, state_root: Path | None = None) -> None:
     deadline = time.monotonic() + timeout
     pending = set(units)
     while pending and time.monotonic() < deadline:
@@ -515,6 +557,33 @@ def accept(units: Sequence[str], databases: Sequence[Path], timeout: int) -> Non
             time.sleep(1)
     if pending:
         fail(f"services did not become active: {', '.join(sorted(pending))}")
+    if "agent-bridge-slack-interactive.service" in units and state_root is not None:
+        status_path = state_root / "slack-interactive" / "slack-status.json"
+        ready = False
+        while time.monotonic() < deadline:
+            try:
+                status_info = status_path.lstat()
+                if not stat.S_ISREG(status_info.st_mode) or status_info.st_mode & 0o077:
+                    fail("Slack readiness file has unsafe permissions")
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                pid = status.get("pid")
+                age = time.time() - (status_path.stat().st_mtime)
+                if (
+                    status.get("schemaVersion") == 1
+                    and status.get("state") == "connected"
+                    and status.get("errorCode") is None
+                    and status.get("appId") and status.get("teamId")
+                    and isinstance(pid, int) and pid > 1 and age < 45
+                    and status.get("generation")
+                ):
+                    os.kill(pid, 0)
+                    ready = True
+                    break
+            except (OSError, ValueError, json.JSONDecodeError, TypeError):
+                pass
+            time.sleep(1)
+        if not ready:
+            fail("Slack Socket Mode did not prove a live connected app/team before acceptance deadline")
     for database in databases:
         while not database.is_file() and time.monotonic() < deadline:
             time.sleep(0.25)
@@ -567,6 +636,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     current = release_root / "current"
     if current.exists() or current.is_symlink():
         fail("an active release already exists; use agent-bridge-deploy for upgrades")
+    validate_slack_credentials(os.environ, account, release_root)
     require_fresh_database_targets(state_root, selected, os.environ)
 
     bootstrap_stage = load_module("agent_bridge_bootstrap_stage", Path(__file__).with_name("release-stage.py"))
@@ -599,7 +669,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(activate.activate(release_root, current, activated_commit), flush=True)
 
             systemctl("start", *managed_units)
-            accept(units, databases, args.acceptance_timeout)
+            accept(units, databases, args.acceptance_timeout, state_root)
             result = {
                 "schema_version": 1,
                 "status": "installed",
