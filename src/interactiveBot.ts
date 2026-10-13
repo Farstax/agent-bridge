@@ -15,6 +15,7 @@ import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
 import type { ConversationIdentity } from "./conversationIdentity.js";
+import { requestRunContinuation } from "./runContinuation.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
 export type InteractiveCommandRegistration = {
@@ -297,6 +298,7 @@ export interface InteractiveDispatchDeps {
   engines: Record<string, InteractiveDispatchEngine>;
   fallbackChain: ProviderFallbackChain;
   fallbackRequests?: Map<string, ProviderFallbackReason>;
+  capacityFallbackAttempts?: Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>;
   /** Legacy test/embedding compatibility; production uses fallbackRequests. */
   exhaustedChats?: Set<string>;
   authRequiredChats?: Set<string>;
@@ -304,6 +306,24 @@ export interface InteractiveDispatchDeps {
   notify: (msg: string) => Promise<void> | void;
   onCliSwitched?: (newCli: CliKind) => Promise<void> | void;
   legacyUpdate?: TelegramUpdate;
+}
+
+/**
+ * Wake a capacity-held admission without manufacturing a second interactive
+ * turn. Each engine observes the same durable queue and handler, so a fresh
+ * queue claim re-enters the normal fallback chain with a fresh tried set.
+ */
+export async function resumeCapacityHeldQueue(
+  input: { chatKey: string; provider: string },
+  deps: Pick<InteractiveDispatchDeps, "engines" | "fallbackChain">,
+): Promise<boolean> {
+  const candidates = [input.provider, ...deps.fallbackChain.getChain()];
+  for (const candidate of candidates) {
+    const engine = deps.engines[candidate];
+    if (!engine?.recoverPendingQueue) continue;
+    if (await engine.recoverPendingQueue(input.chatKey)) return true;
+  }
+  return false;
 }
 
 const pendingFallbackTries = new WeakMap<ProviderFallbackChain, Map<string, Set<string>>>();
@@ -359,6 +379,7 @@ interface InteractiveFallbackExecution {
   execute: (engine: InteractiveDispatchEngine) => Promise<ExecutionOutcome>;
   recoverPendingQueue: boolean;
   exhaustedOutcome: ExecutionOutcome;
+  capacityContinuationId?: string;
 }
 
 async function dispatchInteractiveExecutionWithFallback(
@@ -367,11 +388,12 @@ async function dispatchInteractiveExecutionWithFallback(
   tried: Set<string>,
 ): Promise<ExecutionOutcome> {
   const { chatKey, identity } = execution;
-  const { engines, fallbackChain, fallbackRequests, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
+  const { engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
   fallbackRequests?.delete(chatKey);
   exhaustedChats?.delete(chatKey);
   authRequiredChats?.delete(chatKey);
   if (tried.size === 0) {
+    capacityFallbackAttempts?.delete(chatKey);
     const pref = getUserCliPreference(db, identity);
     fallbackChain.setActiveCli(chatKey, pref);
   }
@@ -400,12 +422,17 @@ async function dispatchInteractiveExecutionWithFallback(
     if (next) {
       prepareCliHandoff(db, identity, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
-      const notice = fallbackReason === "auth_required"
-        ? `${activeCli} needs re-authentication. Falling back to ${next}…`
-        : fallbackReason === "capacity"
-          ? `Switching to ${next} (${activeCli} at capacity)`
-          : `Switching to ${next} after ${activeCli} became unavailable.`;
-      await notify(notice);
+      // Legacy embeddings do not opt into durable capacity holding and retain
+      // their existing progress notices. Managed capacity waits emit only the
+      // final persisted waiting notice.
+      if (fallbackReason !== "capacity" || !capacityFallbackAttempts) {
+        const notice = fallbackReason === "auth_required"
+          ? `${activeCli} needs re-authentication. Falling back to ${next}…`
+          : fallbackReason === "capacity"
+            ? `Switching to ${next} (${activeCli} at capacity)`
+            : `Switching to ${next} after ${activeCli} became unavailable.`;
+        await notify(notice);
+      }
       if (onCliSwitched) await onCliSwitched(next);
       if (execution.recoverPendingQueue && engines[next].recoverPendingQueue) {
         markPendingFallbackResume(fallbackChain, chatKey, tried);
@@ -419,6 +446,27 @@ async function dispatchInteractiveExecutionWithFallback(
         clearPendingFallbackResume(fallbackChain, chatKey);
       }
       return dispatchInteractiveExecutionWithFallback(execution, deps, tried);
+    }
+    if (fallbackReason === "capacity") {
+      const attempt = capacityFallbackAttempts?.get(chatKey);
+      if (attempt) {
+        const heldReceipt = execution.recoverPendingQueue
+          ? db.dequeueMsgs(identity.surfaceIdentity, chatKey)[0]
+          : null;
+        requestRunContinuation(db, {
+          ...(execution.capacityContinuationId || heldReceipt ? { continuationId: execution.capacityContinuationId ?? `capacity-wait:${heldReceipt!.id}` } : {}),
+          originRunId: attempt.runId,
+          surfaceIdentity: identity.surfaceIdentity,
+          chatKey,
+          provider: activeCli,
+          reason: "all permitted providers are temporarily at capacity",
+          afterSeconds: 300,
+          capacityWait: true,
+          delivery: { chatId: attempt.chatId, chatType: attempt.chatType, ...(attempt.threadId === undefined ? {} : { threadId: attempt.threadId }) },
+        });
+        await notify("All available providers are temporarily at capacity. I’ll retry automatically and continue your task when one becomes available.");
+        return "deferred";
+      }
     }
     await notify(fallbackReason === "auth_required"
       ? `${activeCli} needs re-authentication. No remaining configured fallback provider is available.`
@@ -440,7 +488,8 @@ function dispatchClaimedInteractiveExecution(
     identity: { surfaceIdentity: deps.surfaceIdentity ?? "telegram:interactive", chatKey },
     chatKey,
     recoverPendingQueue: false,
-    exhaustedOutcome: "committed",
+    exhaustedOutcome: deps.capacityFallbackAttempts ? "deferred" : "committed",
+    capacityContinuationId: `capacity-wait:${message.id}`,
     execute: (engine) => engine.executeClaimedMessage(message),
   }, deps, tried);
 }

@@ -15,6 +15,7 @@ const DEFAULT_SCAN_MS = 5_000;
 const MIN_DELAY_SECONDS = 5;
 const MAX_DELAY_SECONDS = 30 * 60;
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1_000;
+const MAX_CAPACITY_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_REASON_CHARS = 500;
 
 export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired" | "cancelled";
@@ -46,9 +47,13 @@ export interface RunContinuation {
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   rolloutProvenance?: RolloutProvenance;
+  /** A settled capacity rejection may re-enter the existing fallback path. */
+  capacityWait?: true;
 }
 
 export interface RequestRunContinuationInput {
+  /** Stable logical-task key for a capacity wait; ordinary continuations use their Run id. */
+  continuationId?: string;
   originRunId: string;
   surfaceIdentity: string;
   chatKey: string;
@@ -57,6 +62,7 @@ export interface RequestRunContinuationInput {
   afterSeconds: number;
   /** Transport delivery coordinates, persisted as-is at request time. Omit only for legacy/test callers that rely on the one-time decode fallback in parse(). */
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
+  capacityWait?: boolean;
 }
 
 function key(id: string): string {
@@ -83,6 +89,7 @@ function parse(value: string): RunContinuation | null {
       || !candidate.reason
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
+    if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
       if (
@@ -133,11 +140,11 @@ export function requestRunContinuation(
   const provider = bounded(String(input.provider), "provider", 80) as RouteableBotKind;
   const requestedAt = new Date(nowMs).toISOString();
   const dueAt = new Date(nowMs + input.afterSeconds * 1_000).toISOString();
-  const expiresAt = new Date(nowMs + MAX_LIFETIME_MS).toISOString();
-  const id = originRunId;
+  const expiresAt = new Date(nowMs + (input.capacityWait ? MAX_CAPACITY_LIFETIME_MS : MAX_LIFETIME_MS)).toISOString();
+  const id = bounded(input.continuationId ?? originRunId, "continuation id", 240);
   const originRun = db.getRun(originRunId);
   if (originRun) {
-    if (originRun.status !== "running") throw new Error("originating Run is no longer active");
+    if (originRun.status !== "running" && !(input.capacityWait && originRun.status === "failed")) throw new Error("originating Run is no longer active");
     if (originRun.surface_identity !== surfaceIdentity) throw new Error("originating Run surface mismatch");
     if (originRun.chat_id !== chatKey) throw new Error("originating Run conversation mismatch");
     if (originRun.bot !== provider) throw new Error("originating Run provider mismatch");
@@ -146,7 +153,10 @@ export function requestRunContinuation(
   return db.runInTransaction(() => {
     const existingRow = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const existing = existingRow ? parse(existingRow.value) : null;
-    if (existing?.state === "claimed") throw new Error("continuation already claimed for this Run");
+    if (existing?.state === "claimed" && !(input.capacityWait && existing.capacityWait)) throw new Error("continuation already claimed for this Run");
+    if (input.capacityWait && existing?.capacityWait && (
+      existing.surfaceIdentity !== surfaceIdentity || existing.chatKey !== chatKey
+    )) throw new Error("capacity wait task identity changed");
     const continuation: RunContinuation = {
       version: 1,
       id,
@@ -160,6 +170,7 @@ export function requestRunContinuation(
       expiresAt,
       state: "pending",
       ...(input.delivery ? { delivery: input.delivery } : {}),
+      ...(input.capacityWait ? { capacityWait: true as const } : {}),
     };
     const persisted = parse(JSON.stringify(continuation));
     if (!persisted) throw new Error("continuation delivery coordinates are invalid");
@@ -214,6 +225,19 @@ export function claimDueRunContinuation(
         return cancel("originating Run process or descendant is still active");
       }
       return null;
+    }
+
+    if (current.capacityWait) {
+      if (
+        originRun.status !== "failed"
+        || originRun.surface_identity !== current.surfaceIdentity
+        || originRun.chat_id !== current.chatKey
+        || originRun.bot !== current.provider
+      ) return cancel("capacity wait origin no longer matches its settled provider attempt");
+      if (Date.parse(current.dueAt) > nowMs) return null;
+      const claimed: RunContinuation = { ...current, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
+      return claimed;
     }
 
     if (current.rolloutProvenance) {

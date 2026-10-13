@@ -8,6 +8,7 @@ import {
   getUserCliPreference,
   setUserCliPreference,
 } from "../src/interactiveBot.js";
+import { listRunContinuations } from "../src/runContinuation.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 // Claude (and, by shared ACP transport, Codex) resolve to ACP-stdio, which
@@ -68,6 +69,77 @@ function makeMockClient() {
 }
 
 describe("interactive capacity fallback durable admission", () => {
+  it("holds the original admission and creates one durable wait after every allowed provider is full", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive", () => true);
+    const fallbackRequests = new Map<string, import("../src/engine.js").ProviderFallbackReason>();
+    const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
+    const notifications: string[] = [];
+    const codexRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const makeEngine = (kind: "codex" | "claude", runCli: typeof codexRun) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        pollIntervalMs: 1_000,
+        hooks: {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
+            fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+          },
+        },
+      },
+      db,
+      client,
+      { runCli: runCli as any, runProviderInvocation: asAcpAdapter(runCli) },
+    );
+    const engines = { codex: makeEngine("codex", codexRun), claude: makeEngine("claude", claudeRun) };
+    const deps = {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      capacityFallbackAttempts,
+      db,
+      notify: async (message: string) => { notifications.push(message); },
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    try {
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
+      await dispatchInteractiveWithFallback({
+        update_id: 10_100,
+        message: {
+          message_id: 101,
+          chat: { id: 100, type: "private" },
+          from: { id: 42, first_name: "Test" },
+          text: "keep this exact request",
+        },
+      }, "100", deps);
+
+      expect(codexRun).toHaveBeenCalledTimes(1);
+      expect(claudeRun).toHaveBeenCalledTimes(1);
+      expect(db.dequeueMsgs("telegram:interactive", "100")).toEqual([
+        expect.objectContaining({ prompt: "keep this exact request", chatId: 100, chatType: "private" }),
+      ]);
+      expect(notifications).toEqual([
+        "All available providers are temporarily at capacity. I’ll retry automatically and continue your task when one becomes available.",
+      ]);
+      expect(listRunContinuations(db, "telegram:interactive")).toEqual([
+        expect.objectContaining({ state: "pending", capacityWait: true, provider: "claude" }),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("suppresses terminal error output when an abandoned Claude preview cannot be deleted", async () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();

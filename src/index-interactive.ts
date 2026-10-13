@@ -39,6 +39,7 @@ import {
   applyManualCliSwitchHandoff,
   handleInteractiveCliCommand,
   runUnifiedTelegramIngress,
+  resumeCapacityHeldQueue,
   type CliKind,
 } from "./interactiveBot.js";
 import { isAcpConfigControlCommand, prepareInteractiveAcpConfigControl } from "./interactiveAcpConfig.js";
@@ -198,6 +199,7 @@ const fallbackChain = new ProviderFallbackChain(
   (cli) => getAvailableCliKinds().has(cli as CliKind),
 );
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
   const detected = getAvailableCliKinds();
@@ -252,8 +254,9 @@ const engines = Object.fromEntries(
                 return { text: `Unable to load live ACP settings for ${kind}: ${userText}` };
               }
             },
-            onProviderFallbackRequested: async (chatKey, reason) => {
+            onProviderFallbackRequested: async (chatKey, reason, context) => {
               fallbackRequests.set(chatKey, reason);
+              if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
             },
           },
         },
@@ -364,7 +367,7 @@ for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     const chatKey = queued.chatKey;
     return dispatchClaimedInteractiveWithFallback(queued, chatKey, {
-      surfaceIdentity: runtimePolicy.surfaceIdentity, engines, fallbackChain, fallbackRequests, db,
+      surfaceIdentity: runtimePolicy.surfaceIdentity, engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
       notify: async (msg) => {
         await sendTelegramMessage({ client, kind: "interactive", chatId: queued.chatId, body: { text: msg, message_thread_id: queued.threadId ?? undefined } });
       },
@@ -446,6 +449,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       engines,
       fallbackChain,
       fallbackRequests,
+      capacityFallbackAttempts,
       db,
       notify: sendNotice,
       onCliSwitched: async (newCli) => {
@@ -461,6 +465,10 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
   db,
   runtimePolicy.surfaceIdentity,
   async (continuation) => {
+    if (continuation.capacityWait) {
+      await resumeCapacityHeldQueue(continuation, { engines, fallbackChain });
+      return;
+    }
     const provider = continuation.provider as CliKind;
     if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
     fallbackChain.setActiveCli(continuation.chatKey, provider);
@@ -469,6 +477,7 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
       engines,
       fallbackChain,
       fallbackRequests,
+      capacityFallbackAttempts,
       db,
       notify: async (msg) => {
         await sendTelegramMessage({
@@ -709,6 +718,7 @@ for (;;) {
                 engines,
                 fallbackChain,
                 fallbackRequests,
+                capacityFallbackAttempts,
                 db,
                 notify: async (msg) => {
                   await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: msg, message_thread_id: threadId } });

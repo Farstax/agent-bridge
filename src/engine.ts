@@ -98,7 +98,7 @@ export interface BridgeEngineHooks {
   onBeforeExecute?: (prompt: string, ctx: HookContext) => Promise<string>;
   onCapacityExhausted?: (chatKey: string) => void | Promise<void>;
   onAuthRequired?: (chatKey: string) => void | Promise<void>;
-  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason) => void | Promise<void>;
+  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason, context?: { runId: string; chatId: number | string; chatType: string; threadId?: number | string }) => void | Promise<void>;
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
   onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
 }
@@ -112,7 +112,8 @@ export interface PendingMessage {
   laneLifecycleManaged?: boolean;
 }
 
-export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
+/** `deferred` retains the claimed admission for an existing durable continuation. */
+export type ExecutionOutcome = "committed" | "queued" | "deferred" | "failed" | "fenced";
 export type { ProviderFallbackReason } from "./providers/recoveryVerdict.js";
 
 type StagedCliResult = CliResult & {
@@ -392,6 +393,7 @@ export class BridgeEngine {
         // Same normalisation as handleCommand, so "/reset@bot" also aborts and releases the lane.
         const isReset = normalizeCommand(commandText) === "/reset";
         if (isReset) {
+          cancelPendingRunContinuationsForChat(this.db, this.surfaceIdentity, chatKey, "originating Run reset by user");
           this.laneCoordinator.markResetting(executionLane);
           this.laneCoordinator.markAborted(executionLane);
           resetHandle = await abortExecutionAndWait(executionLane);
@@ -619,6 +621,10 @@ export class BridgeEngine {
     const sessionId = isRouteableKind(this.kind) ? lookupEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind) : null;
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
+    // A direct admission normally has no receipt row.  Once a routeable
+    // provider reports capacity, retain that exact admission before handing it
+    // to the existing cross-provider queue path.
+    let capacityPendingHeld = false;
 
     if (!laneHandle) {
       // No await is permitted between this synchronous claim and durable
@@ -816,7 +822,7 @@ export class BridgeEngine {
       if (authRequired && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
       } else if (capacityExhausted && this.hooks.onProviderFallbackRequested) {
-        await this.hooks.onProviderFallbackRequested(chatKey, "capacity");
+        await this.hooks.onProviderFallbackRequested(chatKey, "capacity", { runId, chatId, chatType, ...(threadId === undefined ? {} : { threadId }) });
       } else if (providerFallbackReason && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, providerFallbackReason);
       } else if (authRequired && this.hooks.onAuthRequired) {
@@ -832,6 +838,25 @@ export class BridgeEngine {
           chatId,
           body: { text: `Error: ${userText}`, message_thread_id: threadId },
         });
+      }
+      if (capacityExhausted && this.hooks.onProviderFallbackRequested && claimedPendingIds.length === 0 && activePendingIds.length === 0) {
+        // The initial direct execution has no pending_messages row.  Preserve
+        // its exact prompt, native coordinates, and already-downloaded
+        // attachments so the fallback dispatcher can claim it without asking
+        // the user to resend anything.  Claimed queue work already has this
+        // durable receipt and must never be duplicated here.
+        this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
+          prompt,
+          chatId,
+          threadId,
+          chatType,
+          userId,
+          attachments,
+          scheduledOccurrenceKey: scheduledOccurrenceKeys[0],
+        });
+        capacityPendingHeld = true;
+        outcome = "failed";
+        return "queued";
       }
       outcome = "failed";
       return "failed";
@@ -855,10 +880,10 @@ export class BridgeEngine {
         for (const id of activePendingIds) this.db.releasePendingClaim(laneHandle, id);
       }
       try {
-        if (drainOnCompletion && !this.laneCoordinator.isResetting(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
+        if (!capacityPendingHeld && drainOnCompletion && !this.laneCoordinator.isResetting(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
           await this._drainQueueAndUnlock(laneHandle, undefined, 0, true);
         }
-        if (!activeTaskCommitted && activePendingIds.length && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(laneHandle)) {
+        if ((capacityPendingHeld || (!activeTaskCommitted && activePendingIds.length)) && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(laneHandle)) {
           this.db.unlock(laneHandle);
         }
       } finally {
@@ -1324,6 +1349,11 @@ export class BridgeEngine {
           : await this.executeClaimedMessage({ ...next, laneHandle: handle, laneLifecycleManaged: lifecycleAlreadyManaged });
         if (outcome === "fenced") {
           for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
+          return;
+        }
+        if (outcome === "deferred") {
+          for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
+          this.db.unlock(handle);
           return;
         }
         if (outcome !== "committed") {

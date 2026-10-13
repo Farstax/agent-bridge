@@ -89,6 +89,78 @@ describe("ordinary Run continuation", () => {
     reopened.close();
   });
 
+  it("allows a capacity wait to resume after its failed provider attempt settles", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-capacity",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 60,
+      capacityWait: true,
+    }, 1_000);
+
+    expect(db.updateRunFailed("run-capacity", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    expect(claimDueRunContinuation(db, continuation.id, 61_000)?.state).toBe("claimed");
+    db.close();
+  });
+
+  it("survives restart and dispatches a settled capacity wait only once", async () => {
+    const { db, path } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-capacity-restart",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    db.close();
+
+    const reopened = openDb(path, { serviceId: "run-continuation-test-reopen", runId: "test-process-2" });
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(reopened, "telegram:interactive", dispatch, 6_000);
+    await scanRunContinuations(reopened, "telegram:interactive", dispatch, 7_000);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(reopened)[0]).toEqual(expect.objectContaining({ state: "completed", capacityWait: true }));
+    reopened.close();
+  });
+
+  it("reschedules the same logical capacity wait after another rejected attempt", () => {
+    const { db } = setup();
+    const first = requestForActiveRun(db, {
+      continuationId: "capacity-wait:42",
+      originRunId: "run-capacity-first",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed(first.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    expect(claimDueRunContinuation(db, first.id, 6_000)?.state).toBe("claimed");
+
+    db.insertRun("run-capacity-second", { surfaceIdentity: "telegram:interactive", chatKey: "123" }, "codex");
+    expect(db.updateRunFailed("run-capacity-second", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+    const rescheduled = requestRunContinuation(db, {
+      continuationId: first.id,
+      originRunId: "run-capacity-second",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 60,
+      capacityWait: true,
+    }, 7_000);
+    expect(rescheduled).toEqual(expect.objectContaining({ id: first.id, originRunId: "run-capacity-second", state: "pending" }));
+    expect(listRunContinuations(db)).toHaveLength(1);
+    db.close();
+  });
+
   it("does not resume while the originating Run is still active", async () => {
     const { db } = setup();
     requestForActiveRun(db, {

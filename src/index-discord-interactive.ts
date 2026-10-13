@@ -35,6 +35,7 @@ import {
   handleCliSwitchCallback,
   dispatchInteractiveTurnWithFallback,
   dispatchClaimedInteractiveWithFallback,
+  resumeCapacityHeldQueue,
   clearInteractiveFallbackState,
   applyManualCliSwitchHandoff,
   type CliKind,
@@ -107,6 +108,7 @@ const cliChain = parseCliChain(
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db, "discord:interactive", (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 let runContinuationRunner: RunContinuationRunner | null = null;
 // ── DiscordClient ─────────────────────────────────────────────────────────────
@@ -167,8 +169,9 @@ const engines = Object.fromEntries(
         fullConfig: config,
         advisorCapabilities: advisorBroker ?? undefined,
         hooks: {
-          onProviderFallbackRequested: async (chatKey, reason) => {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
             fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
           },
         },
       },
@@ -181,7 +184,7 @@ const engines = Object.fromEntries(
 for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     return dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
-      surfaceIdentity: "discord:interactive", engines, fallbackChain, fallbackRequests, db,
+      surfaceIdentity: "discord:interactive", engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
       notify: async (msg) => { await client.sendMessage({ chat_id: queued.chatKey, text: msg }); },
       onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: queued.chatKey }, newCli),
     });
@@ -213,6 +216,7 @@ if (scheduledOwnerKey && scheduledActorId) {
         engines,
         fallbackChain,
         fallbackRequests,
+        capacityFallbackAttempts,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: routine.chatKey, text: msg }); },
         onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey }, newCli),
@@ -226,6 +230,10 @@ if (scheduledActorId) {
     db,
     "discord:interactive",
     async (continuation) => {
+      if (continuation.capacityWait) {
+        await resumeCapacityHeldQueue(continuation, { engines, fallbackChain });
+        return;
+      }
       const provider = continuation.provider as CliKind;
       if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
       fallbackChain.setActiveCli(continuation.chatKey, provider);
@@ -234,6 +242,7 @@ if (scheduledActorId) {
         engines,
         fallbackChain,
         fallbackRequests,
+        capacityFallbackAttempts,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: continuation.chatKey, text: msg }); },
         onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, newCli),
@@ -370,6 +379,7 @@ async function handleMessage(d: any): Promise<void> {
     engines,
     fallbackChain,
     fallbackRequests,
+    capacityFallbackAttempts,
     db,
     notify: async (msg) => {
       await client.sendMessage({ chat_id: channelId, text: msg });

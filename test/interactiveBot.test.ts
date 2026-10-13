@@ -25,6 +25,7 @@ import {
   dispatchUnifiedTelegramUpdate,
   handleInteractiveCliCommand,
   runUnifiedTelegramIngress,
+  resumeCapacityHeldQueue,
   applyManualCliSwitchHandoff,
   getSelectableCliKinds,
   type CliKind,
@@ -802,6 +803,22 @@ describe("dispatchInteractiveWithFallback", () => {
     await dispatchInteractiveTurnWithFallback({ surfaceIdentity: "telegram:interactive", chatKey: "chat:1", actorId: "1", messageId: "2", text: "next", delivery: { chatId: 1, chatType: "private" }, attachments: [] }, deps());
     expect(codex.handleCount).toBe(1);
     expect(claude.handleCount).toBe(2);
+  });
+
+  it("wakes a capacity-held queue through the existing queue recovery boundary", async () => {
+    const recover = vi.fn().mockResolvedValue(true);
+    const result = await resumeCapacityHeldQueue(
+      { chatKey: "chat:1", provider: "claude" },
+      {
+        fallbackChain,
+        engines: {
+          codex: { executeClaimedMessage: vi.fn(), recoverPendingQueue: vi.fn().mockResolvedValue(false) },
+          claude: { executeClaimedMessage: vi.fn(), recoverPendingQueue: recover },
+        },
+      },
+    );
+    expect(result).toBe(true);
+    expect(recover).toHaveBeenCalledWith("chat:1");
   });
 
   it("clears the target CLI's stale session and marks handoff required on fallback", async () => {
