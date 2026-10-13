@@ -135,6 +135,10 @@ describe("interactive capacity fallback durable admission", () => {
       expect(listRunContinuations(db, "telegram:interactive")).toEqual([
         expect.objectContaining({ state: "pending", capacityWait: true, provider: "claude" }),
       ]);
+      expect(await engines.codex.recoverPendingQueue("100")).toBe(true);
+      expect(codexRun).toHaveBeenCalledTimes(1);
+      expect(claudeRun).toHaveBeenCalledTimes(1);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(1);
     } finally {
       db.close();
     }

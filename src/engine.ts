@@ -79,7 +79,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
-import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat } from "./runContinuation.js";
+import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, hasPendingCapacityWait } from "./runContinuation.js";
 import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
 
 export interface HookContext {
@@ -302,6 +302,7 @@ export class BridgeEngine {
 
   async recoverPendingQueues(): Promise<void> {
     await Promise.all(this.db.getPendingLaneKeys(this.surfaceIdentity).map(async (chatKey) => {
+      if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) return;
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
       if (handle) {
         await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
@@ -313,6 +314,7 @@ export class BridgeEngine {
 
   async recoverPendingQueue(chatKey: string): Promise<boolean> {
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
     if (handle) {
       await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
@@ -1313,6 +1315,10 @@ export class BridgeEngine {
   ): Promise<void> {
     const chatKey = handle.chatKey;
     const executionLane = this._executionLane(chatKey);
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) {
+      if (this.db.ownsLock(handle)) this.db.unlock(handle);
+      return;
+    }
     const scheduled = this.queueRecoveryTimers.get(chatKey);
     if (scheduled) {
       clearTimeout(scheduled);
@@ -1378,6 +1384,7 @@ export class BridgeEngine {
   }
 
   private _scheduleQueueRecovery(chatKey: string, attempt: number): void {
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) return;
     if (attempt > 3 || this.queueRecoveryTimers.has(chatKey)) return;
     const timer = setTimeout(() => {
       this.queueRecoveryTimers.delete(chatKey);

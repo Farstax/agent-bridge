@@ -189,6 +189,12 @@ export function listRunContinuations(db: BridgeDb, surfaceIdentity?: string): Ru
     .filter((item) => surfaceIdentity === undefined || item.surfaceIdentity === surfaceIdentity);
 }
 
+/** A pending capacity wait owns its lane until the continuation runner claims it. */
+export function hasPendingCapacityWait(db: BridgeDb, surfaceIdentity: string, chatKey: string): boolean {
+  return listRunContinuations(db, surfaceIdentity).some((continuation) =>
+    continuation.capacityWait === true && continuation.chatKey === chatKey && continuation.state === "pending");
+}
+
 export interface ClaimRunContinuationOptions {
   isProcessAlive?: (runId: string) => boolean;
 }
