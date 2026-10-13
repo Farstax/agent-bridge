@@ -407,3 +407,70 @@ except Exception as error:
     expect(result.error).toBe("DISCORD_APPLICATION_ID is required with DISCORD_BOT_TOKEN");
   });
 });
+
+
+describe("optional Slack immutable first-install (#1003)", () => {
+  it("selects Slack without a Telegram/Discord bot, preserving its dedicated DB role", () => {
+    const result = probe(`
+services = module.selected_services({
+  "SLACK_BOT_TOKEN_FILE": "/private/slack/bot",
+  "SLACK_APP_TOKEN_FILE": "/private/slack/app",
+  "SLACK_ALLOWED_USER_IDS": "U123456789",
+})
+service = services[0]
+values = module.service_values({
+  "SLACK_BOT_TOKEN_FILE": "/private/slack/bot",
+  "SLACK_APP_TOKEN_FILE": "/private/slack/app",
+  "SLACK_ALLOWED_USER_IDS": "U123456789",
+}, pathlib.Path("/etc/default/agent-bridge-slack-interactive"), pathlib.Path("/state/slack-interactive/bridge.sqlite"), service[2])
+print(json.dumps({"units": [s[0] for s in services], "role": module.DATABASE_ROLES[service[3]], "values": values}))
+`) as { units: string[]; role: string; values: Record<string, string> };
+    expect(result.units).toEqual(["agent-bridge-slack-interactive.service"]);
+    expect(result.role).toBe("slack");
+    expect(result.values.SLACK_BOT_TOKEN_FILE).toBe("/private/slack/bot");
+    expect(result.values.SLACK_APP_TOKEN_FILE).toBe("/private/slack/app");
+    expect(result.values.BRIDGE_EXECUTION_MODE).toBe("safe");
+    expect(result.values.SLACK_BOT_TOKEN).toBeUndefined();
+    expect(result.values.SLACK_APP_TOKEN).toBeUndefined();
+  });
+
+  it("rejects a half-configured Slack install and environment tokens", () => {
+    const result = probe(`
+failures = []
+for env in (
+ {"SLACK_BOT_TOKEN_FILE": "/private/bot"},
+ {"SLACK_BOT_TOKEN_FILE": "/private/bot", "SLACK_APP_TOKEN_FILE": "/private/app"},
+ {"SLACK_BOT_TOKEN": "xoxb-unsafe"},
+):
+  try:
+    module.selected_services(env)
+  except Exception as error:
+    failures.append(str(error))
+print(json.dumps(failures))
+`) as string[];
+    expect(result).toHaveLength(3);
+    expect(result[0]).toContain("both token FILE");
+    expect(result[1]).toContain("both token FILE");
+    expect(result[2]).toContain("not env tokens");
+  });
+
+  it("rejects token files not owned and restricted to the runtime account", () => {
+    const result = probe(`
+with tempfile.TemporaryDirectory() as directory:
+  root = pathlib.Path(directory)
+  bot = root / "bot"
+  app = root / "app"
+  bot.write_text("xoxb-test")
+  app.write_text("xapp-test")
+  bot.chmod(0o644)
+  app.chmod(0o600)
+  account = type("Account", (), {"pw_uid": os.getuid(), "pw_gid": os.getgid()})()
+  env = {"SLACK_BOT_TOKEN_FILE": str(bot), "SLACK_APP_TOKEN_FILE": str(app), "SLACK_ALLOWED_USER_IDS": "U123456"}
+  try:
+    module.validate_slack_credentials(env, account, root / "release")
+  except Exception as error:
+    print(json.dumps(str(error)))
+`) as string;
+    expect(result).toContain("owner-only");
+  });
+});
