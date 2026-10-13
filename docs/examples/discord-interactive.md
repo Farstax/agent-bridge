@@ -17,7 +17,13 @@ Node.js 24+, installed Agent Bridge dependencies, at least one authenticated pro
 
 ## 2. Configure the standalone companion
 
-From the OSS checkout:
+From the OSS checkout, run the guided source wizard (or follow the manual steps below):
+
+```bash
+npm run setup -- --surface discord
+```
+
+For manual configuration:
 
 ```bash
 cp .env.discord-interactive.example .env.discord-interactive
@@ -60,4 +66,4 @@ npx tsx src/index-discord-interactive.ts
 
 Wait for Discord gateway readiness and command registration. Send a direct message or a message in a permitted server channel as your allowlisted user. Provider switching reuses the same workstream. If nothing responds, check that the bot is installed to the intended guild, has channel access, Message Content Intent is enabled, IDs are correct, the provider CLI is authenticated, and Doctor passes. Do not assume Doctor alone validates a live Discord gateway.
 
-**Other surfaces:** [Telegram](telegram-multi-provider.md) · [Slack](../slack.md). The `npm run setup` wizard currently automates Telegram only.
+**Other surfaces:** [Telegram](telegram-multi-provider.md) · [Slack](../slack.md). The source wizard supports Telegram, Discord and Slack, but it does not install a production systemd unit.
