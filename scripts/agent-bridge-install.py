@@ -145,16 +145,16 @@ def load_module(name: str, path: Path):
 
 
 def selected_services(env: Mapping[str, str]) -> list[tuple[str, str, tuple[str, ...], str]]:
+    if env.get("SLACK_BOT_TOKEN", "").strip() or env.get("SLACK_APP_TOKEN", "").strip():
+        fail("Production Slack credentials must be supplied as private token files, not env tokens")
+    slack_fields = ("SLACK_BOT_TOKEN_FILE", "SLACK_APP_TOKEN_FILE", "SLACK_ALLOWED_USER_IDS")
+    if any(env.get(k, "").strip() for k in slack_fields) and not all(env.get(k, "").strip() for k in slack_fields):
+        fail("Slack requires both token FILE paths and a nonempty user ID allowlist")
     selected = [service for service in SERVICES if any(env.get(key, "").strip() for key in service[2])]
     if not selected:
         fail("at least one Agent Bridge service token must be configured")
     if env.get("DISCORD_BOT_TOKEN", "").strip() and not env.get("DISCORD_APPLICATION_ID", "").strip():
         fail("DISCORD_APPLICATION_ID is required with DISCORD_BOT_TOKEN")
-    slack_fields = ("SLACK_BOT_TOKEN_FILE", "SLACK_APP_TOKEN_FILE", "SLACK_ALLOWED_USER_IDS")
-    if any(env.get(k, "").strip() for k in slack_fields) and not all(env.get(k, "").strip() for k in slack_fields):
-        fail("Slack requires both token FILE paths and a nonempty user ID allowlist")
-    if env.get("SLACK_BOT_TOKEN", "").strip() or env.get("SLACK_APP_TOKEN", "").strip():
-        fail("Production Slack credentials must be supplied as private token files, not env tokens")
     return selected
 
 
