@@ -79,6 +79,45 @@ function writeAuthorization(fixture: Fixture, overrides: Record<string, unknown>
   return path;
 }
 
+function retireHealthInventory(fixture: Fixture): void {
+  rewriteConfig(fixture, (lines) => lines.filter((line) =>
+    line !== "unit=agent-bridge-health.service" && line !== `database=${fixture.dbPaths[2]}`));
+}
+
+function installCanonicalHealthUnit(fixture: Fixture, content = [
+  "User=rollout-test",
+  "ExecStart=/usr/bin/node --import tsx src/index-health.ts",
+  "",
+].join("\n")): string {
+  const unitPath = join(fixture.root, "systemd", "agent-bridge-health.service");
+  mkdirSync(dirname(unitPath), { recursive: true });
+  writeFileSync(unitPath, content);
+  return unitPath;
+}
+
+function stageSuccessorRelease(fixture: Fixture, currentPointer: string): void {
+  execFileSync("git", ["-C", fixture.project, "config", "user.email", "rollout-test@example.invalid"]);
+  execFileSync("git", ["-C", fixture.project, "config", "user.name", "Rollout Test"]);
+  execFileSync("git", ["-C", fixture.project, "commit", "--allow-empty", "-m", "successor release"], { stdio: "ignore" });
+  const secondCommit = execFileSync("git", ["-C", fixture.project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const releaseRoot = dirname(currentPointer);
+  const secondRelease = join(releaseRoot, secondCommit);
+  execFileSync("cp", ["-a", join(releaseRoot, fixture.expectedCommit), secondRelease]);
+  execFileSync("chmod", ["-R", "u+w", secondRelease]);
+  const manifestPath = join(secondRelease, "manifest.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.commit = secondCommit;
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  execFileSync("chmod", ["-R", "a-w", secondRelease]);
+  writeFileSync(join(releaseRoot, `.${secondCommit}.staging-provenance.json`), JSON.stringify({
+    schema_version: 1,
+    commit: secondCommit,
+    archive_sha256: "b".repeat(64),
+    release_stage_sha256: sha256(join(fixture.root, "bin", "release-stage")),
+  }) + "\n", { mode: 0o444 });
+  fixture.expectedCommit = secondCommit;
+}
+
 function runAuthorizedRollout(fixture: Fixture, authorizationFile: string, overrides: Record<string, string> = {}) {
   return spawnSync("bash", [helperPath,
     "--expected-commit", fixture.expectedCommit,
@@ -441,6 +480,215 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
     expect(existsSync(join(fixture.envDir, "agent-bridge-health"))).toBe(true);
     expect(actions(fixture)).toContain("systemctl:disable agent-bridge-health.service");
   }, 15_000);
+
+  describe("orphaned legacy health unit", () => {
+    it("retires a restarting canonical health unit that inventory no longer lists", () => {
+      const fixture = createFixture();
+      const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = installCanonicalHealthUnit(fixture);
+      const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+
+      const first = runRollout(fixture, undefined, undefined, {
+        FAKE_HEALTH_RESTART_LOOP: "1",
+        AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: "20261013T000000Z",
+      });
+      const output = `${first.stdout}\n${first.stderr}`;
+
+      expect(first.status, output).toBe(0);
+      expect(output).toMatch(/adopting orphaned canonical health unit/i);
+      expect(existsSync(unitPath)).toBe(false);
+      expect(existsSync(healthDefaults)).toBe(false);
+      expect(existsSync(fixture.dbPaths[2])).toBe(false);
+      expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
+      const config = readFileSync(fixture.configFile, "utf8");
+      expect(config).not.toContain("unit=agent-bridge-health.service");
+      expect(config).not.toContain(`database=${fixture.dbPaths[2]}`);
+      expect(actions(fixture).match(/systemctl:disable agent-bridge-health\.service/g)?.length ?? 0).toBe(1);
+      expect(actions(fixture)).toMatch(/systemctl:reset-failed .*agent-bridge-health\.service/);
+      expect(execFileSync("grep", ["-R", "phase=HEALTH_STATE_RETIRED", fixture.logDir], { encoding: "utf8" })).toContain("HEALTH_STATE_RETIRED");
+
+      stageSuccessorRelease(fixture, currentPointer);
+      const second = runRollout(fixture, undefined, undefined, {
+        FAKE_HEALTH_RESTART_LOOP: "1",
+        AGENT_BRIDGE_ROLLOUT_TEST_TIMESTAMP: "20261013T000001Z",
+      });
+      expect(second.status, `${second.stdout}\n${second.stderr}`).toBe(0);
+      expect(actions(fixture).match(/systemctl:disable agent-bridge-health\.service/g)?.length ?? 0).toBe(1);
+      expect(readlinkSync(currentPointer)).toBe(fixture.expectedCommit);
+      expect(readFileSync(fixture.configFile, "utf8")).not.toContain("agent-bridge-health.service");
+    }, 30_000);
+
+    it("leaves an already-absent health unit and clean inventory as a no-op", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const healthDefaults = join(fixture.envDir, "agent-bridge-health");
+
+      const result = runRollout(fixture, undefined, undefined, { FAKE_ABSENT_HEALTH: "1" });
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).toBe(0);
+      expect(output).not.toMatch(/adopting orphaned canonical health unit/i);
+      expect(actions(fixture)).not.toMatch(/systemctl:reset-failed .*agent-bridge-health\.service/);
+      expect(actions(fixture)).not.toContain("systemctl:disable agent-bridge-health.service");
+      expect(existsSync(join(fixture.root, "systemd", "agent-bridge-health.service"))).toBe(false);
+      expect(existsSync(healthDefaults)).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    }, 15_000);
+
+    it("fails closed on a noncanonical orphan fragment before stopping services", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = installCanonicalHealthUnit(fixture);
+
+      const result = runRollout(fixture, undefined, undefined, { FAKE_FRAGMENT_MODE: "unexpected" });
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/orphaned health unit FragmentPath/i);
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+      expect(existsSync(unitPath)).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    }, 15_000);
+
+    it("fails closed on an orphan drop-in before stopping services", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = installCanonicalHealthUnit(fixture);
+
+      const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: "path" });
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/orphaned health unit has unexpected systemd drop-ins/i);
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+      expect(existsSync(unitPath)).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    }, 15_000);
+
+    it("fails closed when the orphan ExecStart is not the retired health service", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = installCanonicalHealthUnit(fixture, [
+        "User=rollout-test",
+        "ExecStart=/usr/bin/node src/unrelated-service.ts",
+        "",
+      ].join("\n"));
+
+      const result = runRollout(fixture);
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/ExecStart is not the retired Agent Bridge health service/i);
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+      expect(existsSync(unitPath)).toBe(true);
+      expect(readFileSync(unitPath, "utf8")).toContain("src/unrelated-service.ts");
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    }, 15_000);
+
+    it("fails closed when the orphan unit owner does not match the runtime user", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = installCanonicalHealthUnit(fixture, [
+        "User=not-the-runtime-user",
+        "ExecStart=/usr/bin/node --import tsx src/index-health.ts",
+        "",
+      ].join("\n"));
+
+      const result = runRollout(fixture);
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/owner does not match/i);
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+      expect(existsSync(unitPath)).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    }, 15_000);
+
+    it("fails closed when the orphan unit file is a symlink", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = join(fixture.root, "systemd", "agent-bridge-health.service");
+      mkdirSync(dirname(unitPath), { recursive: true });
+      const target = join(fixture.root, "unexpected-health.service");
+      writeFileSync(target, [
+        "User=rollout-test",
+        "ExecStart=/usr/bin/node --import tsx src/index-health.ts",
+        "",
+      ].join("\n"));
+      symlinkSync(target, unitPath);
+
+      const result = runRollout(fixture);
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/not a regular Agent Bridge unit file/i);
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+      expect(lstatSync(unitPath).isSymbolicLink()).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    }, 15_000);
+
+    it("fails closed when the orphan health database is shared with an active unit", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      writeFileSync(join(fixture.envDir, "agent-bridge-health"), `HEALTH_DB_PATH=${fixture.dbPaths[0]}\n`, { mode: 0o600 });
+      const unitPath = installCanonicalHealthUnit(fixture);
+
+      const result = runRollout(fixture);
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/still selected by an active unit/i);
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+      expect(existsSync(unitPath)).toBe(true);
+      expect(existsSync(fixture.dbPaths[0])).toBe(true);
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+    }, 15_000);
+
+    it("fails closed when the orphan health database is missing", () => {
+      const fixture = createFixture();
+      prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = installCanonicalHealthUnit(fixture);
+      rmSync(fixture.dbPaths[2], { force: true });
+
+      const result = runRollout(fixture);
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/missing database/i);
+      expect(actions(fixture)).not.toContain("systemctl:stop");
+      expect(existsSync(unitPath)).toBe(true);
+    }, 15_000);
+
+    it("restores the previous release without resurrecting an orphaned health unit when migration fails", () => {
+      const fixture = createFixture();
+      const { currentPointer } = prepareImmutableRelease(fixture, fixture.previousCommit);
+      retireHealthInventory(fixture);
+      const unitPath = installCanonicalHealthUnit(fixture);
+
+      const result = runRollout(fixture, "migrate", undefined, { FAKE_HEALTH_RESTART_LOOP: "1" });
+      const output = `${result.stdout}\n${result.stderr}`;
+      const starts = actions(fixture).split("\n").filter((line) => line.startsWith("systemctl:start "));
+
+      expect(result.status, output).not.toBe(0);
+      expect(output).toMatch(/FAILED_RESTORED/);
+      expect(readlinkSync(currentPointer)).toBe(fixture.previousCommit);
+      expect(existsSync(unitPath)).toBe(true);
+      expect(readFileSync(unitPath, "utf8")).toContain("src/index-health.ts");
+      expect(existsSync(fixture.dbPaths[2])).toBe(true);
+      expect(readFileSync(fixture.stateFile, "utf8")).not.toContain("agent-bridge-health.service");
+      expect(starts.some((line) => line.includes("agent-bridge-health.service"))).toBe(false);
+      expect(actions(fixture)).not.toContain("systemctl:disable agent-bridge-health.service");
+    }, 20_000);
+  });
 
   it("accepts the retired health table through preflight, stopped inspection, and previous-release recovery", () => {
     const fixture = createFixture();
