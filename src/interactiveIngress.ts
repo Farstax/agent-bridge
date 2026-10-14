@@ -143,34 +143,39 @@ export function adaptDiscordMessage(data: any, surfaceIdentity = "discord:intera
   };
 }
 
-type FlushFn = (groupId: string | null, turns: InteractiveTurnInput[]) => void | Promise<void>;
-interface BufferEntry { timer?: NodeJS.Timeout; turns: InteractiveTurnInput[]; flushing: boolean; resolves: Array<() => void>; }
+type FlushFn<T = any> = (groupId: string | null, turns: InteractiveTurnInput[]) => Promise<T> | T;
+interface BufferEntry<T = any> { timer?: NodeJS.Timeout; turns: InteractiveTurnInput[]; flushing: boolean; resolves: Array<(value: T) => void>; }
 
-export class InteractiveTurnBuffer {
-  private readonly groups = new Map<string, BufferEntry>();
+export class InteractiveTurnBuffer<T = any> {
+  private readonly groups = new Map<string, BufferEntry<T>>();
   constructor(
-    private readonly onFlush: FlushFn,
+    private readonly onFlush: FlushFn<T>,
     private readonly timeoutMs = 1500,
   ) {}
 
-  private async flush(groupId: string | null, turns: InteractiveTurnInput[]): Promise<void> {
-    await this.onFlush(groupId, turns);
+  private async flush(groupId: string | null, turns: InteractiveTurnInput[]): Promise<T> {
+    return await this.onFlush(groupId, turns);
   }
 
-  push(turn: InteractiveTurnInput): Promise<void> {
-    if (!turn.mediaGroupId) return this.flush(null, [turn]).catch((error) => console.error("[InteractiveTurnBuffer] onFlush error", error));
+  push(turn: InteractiveTurnInput): Promise<T> {
+    if (!turn.mediaGroupId) return this.flush(null, [turn]);
     const key = `${turn.surfaceIdentity}:${turn.chatKey}:${turn.mediaGroupId}`;
     let entry = this.groups.get(key);
     if (entry && !entry.flushing) clearTimeout(entry.timer);
     else { entry = { turns: [], flushing: false, resolves: [] }; this.groups.set(key, entry); }
     entry.turns.push(turn);
-    const pending = new Promise<void>((resolve) => entry!.resolves.push(resolve));
+    const pending = new Promise<T>((resolve) => entry!.resolves.push(resolve));
     entry.timer = setTimeout(() => {
       entry!.flushing = true;
       const turns = [...entry!.turns];
       const resolves = [...entry!.resolves];
       this.groups.delete(key);
-      this.flush(turn.mediaGroupId!, turns).catch((error) => console.error("[InteractiveTurnBuffer] onFlush error", error)).finally(() => resolves.forEach((resolve) => resolve()));
+      this.flush(turn.mediaGroupId!, turns)
+        .then((result) => resolves.forEach((resolve) => resolve(result)))
+        .catch((error) => {
+          console.error("[InteractiveTurnBuffer] onFlush error", error);
+          resolves.forEach((resolve) => resolve("failed" as unknown as T));
+        });
     }, this.timeoutMs);
     return pending;
   }

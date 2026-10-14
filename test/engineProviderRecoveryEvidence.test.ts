@@ -73,6 +73,73 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
+  it("proves the authorised successor inspects seeded partial work, receives handoff context, and completes remaining work", async () => {
+    const db = openDb(":memory:");
+    const chatKey = "946";
+    const fallbackRequests = new Map<string, ProviderFallbackReason>();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive", () => true);
+    const telegram = client();
+
+    const partialWork = { step1Executed: false, step2Executed: false };
+    let capturedPrompt = "";
+
+    const codexRun = vi.fn(async () => {
+      partialWork.step1Executed = true;
+      throw submitted("Internal error: connection lost mid-task", true);
+    });
+
+    const claudeRun = vi.fn(async (_cmd: string, _args: string[], _cwd: string, _opts: any, acpRequest: any) => {
+      capturedPrompt = acpRequest?.prompt ?? "";
+      expect(partialWork.step1Executed).toBe(true);
+      partialWork.step2Executed = true;
+      return {
+        text: "Inspected partial work: Step 1 already complete. Completed Step 2 successfully.",
+        sessionId: "claude-fresh",
+        stopReason: "end_turn",
+      };
+    });
+
+    const make = (kind: "codex" | "claude", runProviderInvocation: any) => new BridgeEngine({
+      surfaceIdentity: "telegram:interactive",
+      kind,
+      botConfig: { command: kind, modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      busyMessageMode: "augment",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+      hooks: {
+        onProviderFallbackRequested: async (key, reason) => { fallbackRequests.set(key, reason); },
+      },
+    }, db, telegram, { runProviderInvocation } as any);
+
+    const engines = {
+      codex: make("codex", codexRun),
+      claude: make("claude", claudeRun),
+    };
+    const deps = { engines, fallbackChain, fallbackRequests, db, notify: async () => {} };
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey }, "codex");
+
+    await dispatchInteractiveWithFallback({
+      update_id: 946,
+      message: { message_id: 1, chat: { id: 946, type: "private" }, from: { id: 42, first_name: "T" }, text: "Execute two-step migration" },
+    }, chatKey, deps);
+
+    expect(codexRun).toHaveBeenCalledTimes(1);
+    expect(claudeRun).toHaveBeenCalledTimes(1);
+    expect(partialWork.step1Executed).toBe(true);
+    expect(partialWork.step2Executed).toBe(true);
+    expect(capturedPrompt).toContain("[Agent Bridge handoff]");
+    expect(capturedPrompt).toContain("Execute two-step migration");
+
+    const texts = telegram.sendMessage.mock.calls.map(([body]: [any]) => String(body?.text ?? ""));
+    expect(texts.filter((t) => t.includes("Completed Step 2 successfully"))).toHaveLength(1);
+    db.close();
+  });
+
   it("hands an evidenced post-submission failure to the authorised successor", async () => {
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: connection lost mid-task", true); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);

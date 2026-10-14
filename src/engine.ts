@@ -127,6 +127,13 @@ class LostExecutionLeaseError extends Error {
   constructor() { super("execution lane ownership lost"); }
 }
 
+export class PostExecutionHookError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PostExecutionHookError";
+  }
+}
+
 export interface BridgeEngineOptions {
   kind: string;
   surfaceIdentity: string;
@@ -226,9 +233,10 @@ export class BridgeEngine {
       runCliAsync,
       runProviderInvocation: exec.runProviderInvocation ?? _runProviderInvocation,
     };
-    this.mediaBuffer = new InteractiveTurnBuffer((_groupId, turns) => {
+    this.mediaBuffer = new InteractiveTurnBuffer<ExecutionOutcome>((_groupId, turns) => {
       return this.handleInteractiveMessages(turns).catch((err) => {
         console.error(`[${this.kind}] mediaBuffer flush error`, err);
+        return "failed";
       });
     }, 1500);
   }
@@ -331,11 +339,11 @@ export class BridgeEngine {
     if (turn) await this.handleInteractiveTurn(turn);
   }
 
-  async handleInteractiveTurn(turn: InteractiveTurnInput): Promise<void> {
+  async handleInteractiveTurn(turn: InteractiveTurnInput): Promise<ExecutionOutcome> {
     if (turn.surfaceIdentity !== this.surfaceIdentity) throw new Error(`interactive turn surface mismatch: ${turn.surfaceIdentity}`);
-    if (!this.opts.allowedUserIds.has(turn.actorId)) return;
+    if (!this.opts.allowedUserIds.has(turn.actorId)) return "failed";
     const dedupeKey = `${turn.surfaceIdentity}:${turn.chatKey}:${turn.messageId}`;
-    if (this.seenInteractiveMessageKeys.has(dedupeKey)) return;
+    if (this.seenInteractiveMessageKeys.has(dedupeKey)) return "committed";
     this.seenInteractiveMessageKeys.add(dedupeKey);
     while (this.seenInteractiveMessageKeys.size > 4096) {
       const oldest = this.seenInteractiveMessageKeys.values().next().value;
@@ -347,23 +355,25 @@ export class BridgeEngine {
       cancelPendingRunContinuationsForChat(this.db, this.surfaceIdentity, turn.chatKey, "originating Run cancelled by user");
       void this._cancelLane(turn.chatKey, "stop").catch((error) => console.error(`[${this.kind}] stop cleanup failed`, error));
       await this.sendText(turn.delivery.chatId, { text: "🛑 Execution aborted by user.", message_thread_id: turn.threadId });
-      return;
+      return "fenced";
     }
-    await this.mediaBuffer.push(turn);
+    const outcome = await this.mediaBuffer.push(turn);
+    return outcome ?? "failed";
   }
 
   /** Compatibility boundary for direct Telegram callers. New surfaces use handleInteractiveTurn. */
-  async handleMessages(messages: TelegramMessage[], providedChatKey?: string): Promise<void> {
+  async handleMessages(messages: TelegramMessage[], providedChatKey?: string): Promise<ExecutionOutcome> {
     const first = messages[0];
-    if (!first?.chat) return;
+    if (!first?.chat) return "failed";
     const chatKey = providedChatKey ?? topicChatKey(first.chat.id, first.chat.type ?? "private", first.message_thread_id);
     const turns = messages.map((message) => adaptTelegramMessage(message, this.surfaceIdentity, chatKey)).filter((turn): turn is InteractiveTurnInput => turn !== null);
-    if (turns.length > 0) await this.handleInteractiveMessages(turns);
+    if (turns.length > 0) return await this.handleInteractiveMessages(turns);
+    return "failed";
   }
 
-  async handleInteractiveMessages(messages: InteractiveTurnInput[]): Promise<void> {
+  async handleInteractiveMessages(messages: InteractiveTurnInput[]): Promise<ExecutionOutcome> {
     let primaryMessage = messages.find((message) => message.text) ?? messages[0];
-    if (!primaryMessage || !this.opts.allowedUserIds.has(primaryMessage.actorId)) return;
+    if (!primaryMessage || !this.opts.allowedUserIds.has(primaryMessage.actorId)) return "failed";
     if (messages.some((message) => message.surfaceIdentity !== this.surfaceIdentity || message.chatKey !== primaryMessage.chatKey)) {
       throw new Error("interactive media group crossed surface or conversation boundary");
     }
@@ -384,7 +394,7 @@ export class BridgeEngine {
         const hookResult = await this.hooks.onCommand(commandText, initialHookCtx);
         if (hookResult !== null) {
           if (hookResult.text) await this.sendText(initialChatId, { text: hookResult.text, reply_markup: hookResult.reply_markup, message_thread_id: initialThreadId });
-          return;
+          return "committed";
         }
       }
       if (isRouteableKind(this.kind) && isSlashCmd) {
@@ -405,20 +415,20 @@ export class BridgeEngine {
               try { await this.sendText(initialChatId, { text: commandResponse.text, message_thread_id: initialThreadId }); }
               finally { this.laneCoordinator.clearResetting(executionLane); if (resetHandle) this.db.unlock(resetHandle); }
             } else await this.sendText(initialChatId, { text: commandResponse.text, message_thread_id: initialThreadId });
-            return;
+            return "committed";
           }
-          if (commandResponse.kind === "keyboard_message") { await this.sendText(initialChatId, { text: commandResponse.text, reply_markup: commandResponse.reply_markup, message_thread_id: initialThreadId }); return; }
+          if (commandResponse.kind === "keyboard_message") { await this.sendText(initialChatId, { text: commandResponse.text, reply_markup: commandResponse.reply_markup, message_thread_id: initialThreadId }); return "committed"; }
           if (commandResponse.kind === "codex_usage") {
             try { await this.sendText(initialChatId, { text: await getCodexUsageText(), message_thread_id: initialThreadId }); }
             catch (error) { await this.sendText(initialChatId, { text: `Error: ${toUserMessage(error instanceof Error ? error : new Error(String(error)))}`, message_thread_id: initialThreadId }); }
-            return;
+            return "committed";
           }
-          if (commandResponse.kind === "execute") { await this._executeAndSend(commandResponse.prompt, initialChatId, chatKey, primaryMessage.delivery.chatType, initialThreadId, initialUserId, initialHookCtx, []); return; }
-          if (commandResponse.kind === "btw") { await this._executeBtw(commandResponse.prompt, initialChatId, chatKey, initialThreadId); return; }
+          if (commandResponse.kind === "execute") { return await this._executeAndSend(commandResponse.prompt, initialChatId, chatKey, primaryMessage.delivery.chatType, initialThreadId, initialUserId, initialHookCtx, []); }
+          if (commandResponse.kind === "btw") { await this._executeBtw(commandResponse.prompt, initialChatId, chatKey, initialThreadId); return "committed"; }
         }
-        return;
+        return "committed";
       }
-      return;
+      return "committed";
     }
 
     const preProviderScope = this.laneCoordinator.beginPreProviderIngress(executionLane);
@@ -444,10 +454,10 @@ export class BridgeEngine {
             await this.client.sendDocument(turn.delivery.chatId, filePath, undefined, turn.threadId ? { message_thread_id: turn.threadId } : undefined);
           },
         });
-        if (prepared.kind !== "ready") return;
+        if (prepared.kind !== "ready") return "failed";
         messages = prepared.turns;
         primaryMessage = messages.find((message) => message.text) ?? messages[0];
-        if (!primaryMessage) return;
+        if (!primaryMessage) return "failed";
       }
 
       const threadId = primaryMessage.threadId;
@@ -455,7 +465,7 @@ export class BridgeEngine {
       const attachmentInputs = messages.flatMap((message) => message.attachments);
       const hasAttachment = attachmentInputs.length > 0;
       const prompt = rawText || (hasAttachment ? "Describe the attached file." : null);
-      if (!prompt) return;
+      if (!prompt) return "failed";
 
       const chatId = primaryMessage.delivery.chatId;
       const userId = primaryMessage.actorId;
@@ -470,7 +480,7 @@ export class BridgeEngine {
       if (hasAttachment) {
         try {
           for (let index = 0; index < attachmentInputs.length; index += 1) {
-            if (preProviderScope.controller.signal.aborted) return;
+            if (preProviderScope.controller.signal.aborted) return "fenced";
             const prefix = attachmentInputs.length > 1 ? `attachment-${index + 1}-` : "";
             const info = await downloadSurfaceAttachment(this.client, attachmentInputs[index], uploadDir, prefix);
             if (!info) { attachmentDownloadFailed = true; break; }
@@ -480,12 +490,12 @@ export class BridgeEngine {
       }
       if (preProviderScope.controller.signal.aborted) {
         try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
-        return;
+        return "fenced";
       }
       if (attachmentDownloadFailed) {
         try { rmSync(uploadDir, { recursive: true, force: true }); } catch {}
         await this.sendText(chatId, { text: "Could not download all attachments. Please upload the album again.", message_thread_id: threadId });
-        return;
+        return "failed";
       }
       const attachmentLocalPath = attachments[0] ?? null;
       let executionOutcome: ExecutionOutcome = "failed";
@@ -509,6 +519,7 @@ export class BridgeEngine {
         if (transferred) this.laneCoordinator.clearAugmentTransferred(executionLane);
         if (ownsAugmentedTask && !retainedByCancellation && !transferred) this.laneCoordinator.clearAugmentedTask(executionLane);
       }
+      return executionOutcome;
     } finally {
       this.laneCoordinator.clearPreProviderIngress(executionLane, preProviderScope);
     }
@@ -626,6 +637,14 @@ export class BridgeEngine {
         chatId,
         body: { text: "Error: Unable to prepare this request. Please try again.", message_thread_id: threadId },
       }).catch((sendError) => console.error(`[${this.kind}] pre-admission failure notification failed`, sendError));
+      for (const key of scheduledOccurrenceKeys) {
+        if (key.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
+          const receiptId = Number(key.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
+          if (Number.isFinite(receiptId)) {
+            this.db.finishEventReceipt(receiptId, { status: "failed", error_class: "pre_admission_failed" });
+          }
+        }
+      }
       return "failed";
     }
 
@@ -756,6 +775,22 @@ export class BridgeEngine {
         outcome = "failed";
         return "failed";
       }
+      if (error instanceof PostExecutionHookError) {
+        try {
+          finalize();
+          this._linkScheduledOccurrences(scheduledOccurrenceKeys, runId);
+        } catch (linkError) {
+          console.error(`[${this.kind}] scheduled occurrence correlation failed after post-execution error`, linkError);
+        }
+        await sendSurfaceMessage({
+          client: this.client,
+          kind: this._deliveryKind(),
+          chatId,
+          body: { text: `Error: ${toUserMessage(error.cause instanceof Error ? error.cause : error)}`, message_thread_id: threadId },
+        }).catch((sendError) => console.error(`[${this.kind}] post-execution failure notification failed`, sendError));
+        outcome = "failed";
+        return "failed";
+      }
       let providerError = error instanceof Error ? error : new Error(String(error));
       let priorEvidence: ProviderFailureEvidence | null = null;
       const executionProvider = providerIdForBotName(this._executionKind());
@@ -834,17 +869,30 @@ export class BridgeEngine {
       if (providerFallbackReason && isRouteableKind(sourceKind)) {
         this._runWithFence(laneHandle, () => persistEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, sourceKind, null));
       }
-      if (authRequired && this.hooks.onProviderFallbackRequested) {
-        await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
-      } else if (capacityExhausted && this.hooks.onProviderFallbackRequested) {
-        await this.hooks.onProviderFallbackRequested(chatKey, "capacity");
-      } else if (providerFallbackReason && this.hooks.onProviderFallbackRequested) {
-        await this.hooks.onProviderFallbackRequested(chatKey, providerFallbackReason);
-      } else if (authRequired && this.hooks.onAuthRequired) {
-        await this.hooks.onAuthRequired(chatKey);
-      } else if (capacityExhausted && this.hooks.onCapacityExhausted) {
-        await this.hooks.onCapacityExhausted(chatKey);
-      } else if ((!capacityExhausted && !providerFallbackReason) || notifyCapacityFailure) {
+      let fallbackNotified = false;
+      let fallbackHookFailed = false;
+      try {
+        if (authRequired && this.hooks.onProviderFallbackRequested) {
+          await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
+          fallbackNotified = true;
+        } else if (capacityExhausted && this.hooks.onProviderFallbackRequested) {
+          await this.hooks.onProviderFallbackRequested(chatKey, "capacity");
+          fallbackNotified = true;
+        } else if (providerFallbackReason && this.hooks.onProviderFallbackRequested) {
+          await this.hooks.onProviderFallbackRequested(chatKey, providerFallbackReason);
+          fallbackNotified = true;
+        } else if (authRequired && this.hooks.onAuthRequired) {
+          await this.hooks.onAuthRequired(chatKey);
+          fallbackNotified = true;
+        } else if (capacityExhausted && this.hooks.onCapacityExhausted) {
+          await this.hooks.onCapacityExhausted(chatKey);
+          fallbackNotified = true;
+        }
+      } catch (hookError) {
+        console.error(`[${this.kind}] provider fallback notification hook failed`, hookError);
+        fallbackHookFailed = true;
+      }
+      if (fallbackHookFailed || (!fallbackNotified && ((!capacityExhausted && !providerFallbackReason) || notifyCapacityFailure))) {
         let userText = authRequired ? `${this._executionKind()} needs re-authentication.` : toUserMessage(providerError);
         if (capacityExhausted) userText += `\n\n💡 All models for ${this.kind} are currently exhausted. Please try again later.`;
         await sendSurfaceMessage({
@@ -852,13 +900,14 @@ export class BridgeEngine {
           kind: this._deliveryKind(),
           chatId,
           body: { text: `Error: ${userText}`, message_thread_id: threadId },
-        });
+        }).catch((sendError) => console.error(`[${this.kind}] error delivery failed`, sendError));
       }
       outcome = "failed";
       return "failed";
     } finally {
       const cancelled = this.laneCoordinator.hasCancellation(executionLane);
       if (!cancelled) finalize();
+      if (outcome == null) outcome = cancelled ? "fenced" : "failed";
       const run = this.db.getRun(runId);
       if (run?.status === "running") {
         if (cancelled || outcome === "fenced") this.db.updateRunCancelled(runId, cancelled ? "user" : "fenced");
@@ -1905,7 +1954,11 @@ export class BridgeEngine {
       }
       this._renewLaneOrThrow(laneHandle);
       if (this.hooks.onAfterExecute) {
-        await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
+        try {
+          await this.hooks.onAfterExecute(prompt, stagedResult.text, hookContext(chatId, chatKey, body.message_thread_id));
+        } catch (error) {
+          throw new PostExecutionHookError(error instanceof Error ? error.message : String(error), { cause: error });
+        }
       }
       this._renewLaneOrThrow(laneHandle);
       if (!publishArtifacts) {
@@ -1938,6 +1991,9 @@ export class BridgeEngine {
         // Fenced after losing the execution lease: never publish, and the
         // attempt owns no further continuation, so its output is terminal.
         await this._cleanTerminalOutputDir(outDir, "lease loss");
+        throw error;
+      }
+      if (error instanceof PostExecutionHookError) {
         throw error;
       }
       // A stopped, aborted or fenced lane never recovers through a provider

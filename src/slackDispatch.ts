@@ -67,14 +67,30 @@ export function createSlackReceiptRuntime(deps: SlackReceiptRuntimeDeps) {
         db.finishEventReceipt(receipt.id, { status: "completed" });
         return;
       }
-      await deps.dispatch(turn);
+      const outcome = await deps.dispatch(turn);
       // The engine settles a receipt from its Run. Work the durable queue still
       // owns stays open until that Run settles it; a turn that created no Run
       // (a bridge command) has nothing left to wait for.
       const settled = db.getEventReceipt(receipt.id);
-      if (settled && (settled.status === "dispatching" || settled.status === "run_created")
-        && !db.hasPendingMessageForCorrelationKey(slackSurfaceIdentity(context.teamId, context.appId), `${EVENT_RECEIPT_CORRELATION_PREFIX}${receipt.id}`)) {
-        db.finishEventReceipt(receipt.id, { status: "completed", result_reference: settled.run_id });
+      if (settled && (settled.status === "dispatching" || settled.status === "run_created")) {
+        const hasPending = db.hasPendingMessageForCorrelationKey(
+          slackSurfaceIdentity(context.teamId, context.appId),
+          `${EVENT_RECEIPT_CORRELATION_PREFIX}${receipt.id}`,
+        );
+        if (!hasPending) {
+          const run = settled.run_id ? db.getRun(settled.run_id) : null;
+          if (run) {
+            if (run.status === "done") {
+              db.finishEventReceipt(receipt.id, { status: "completed", result_reference: settled.run_id });
+            } else if (run.status === "failed" || run.status === "cancelled") {
+              db.finishEventReceipt(receipt.id, { status: run.status, result_reference: settled.run_id });
+            }
+          } else if (outcome === "failed" || outcome === "fenced") {
+            db.finishEventReceipt(receipt.id, { status: "failed", error_class: "dispatch_failed" });
+          } else if (outcome === "committed") {
+            db.finishEventReceipt(receipt.id, { status: "completed" });
+          }
+        }
       }
     } catch (error) {
       // The provider may already have started: fence, never replay.

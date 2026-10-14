@@ -412,6 +412,10 @@ export async function scanRunContinuations(
       if (outcome === "failed" || outcome === "fenced") {
         throw new Error(`continuation dispatch did not settle: ${outcome}`);
       }
+      if (outcome === "queued") {
+        // Accepted for later work is not task completion; preserve claimed state so it is not marked completed.
+        continue;
+      }
       settleRunContinuation(db, claimed.id, "completed");
     } catch (error) {
       settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error));
