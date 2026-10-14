@@ -753,27 +753,27 @@ describe("ordinary Run continuation", () => {
     expect(db.updateRunFailed("run-stale-callback", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
 
     // Runner 1 claims with short lease (1000ms) at t=6000
-    claimDueRunContinuation(db, continuation.id, 6_000, { runId: "runner-1", leaseMs: 1_000 });
+    const runner1Claim = claimDueRunContinuation(db, continuation.id, 6_000, { runId: "runner-1", leaseMs: 1_000 })!;
 
     // Lease expires at t=8000; Runner 2 claims continuation
     const runner2Claim = claimDueRunContinuation(db, continuation.id, 8_000, { runId: "runner-2", leaseMs: 10_000 });
     expect(runner2Claim?.claimRunId).toBe("runner-2");
 
     // Stale runner 1 returns late at t=8500 and attempts to requeue:
-    requeueClaimedCapacityWait(db, continuation.id, 8_500, "runner-1");
+    requeueClaimedCapacityWait(db, continuation.id, 8_500, runner1Claim.claimToken);
     // Ownership MUST still belong to runner 2, state still claimed:
     let current = listRunContinuations(db)[0];
     expect(current.state).toBe("claimed");
     expect(current.claimRunId).toBe("runner-2");
 
     // Stale runner 1 attempts to settle as completed:
-    settleRunContinuation(db, continuation.id, "completed", undefined, 8_600, "runner-1");
+    settleRunContinuation(db, continuation.id, "completed", undefined, 8_600, runner1Claim.claimToken);
     current = listRunContinuations(db)[0];
     expect(current.state).toBe("claimed");
     expect(current.claimRunId).toBe("runner-2");
 
     // Authoritative runner 2 settles as completed:
-    settleRunContinuation(db, continuation.id, "completed", undefined, 9_000, "runner-2");
+    settleRunContinuation(db, continuation.id, "completed", undefined, 9_000, runner2Claim.claimToken);
     current = listRunContinuations(db)[0];
     expect(current.state).toBe("completed");
     db.close();
@@ -885,6 +885,99 @@ describe("ordinary Run continuation", () => {
     // Exactly one scan delivered the notification:
     expect(onExpired).toHaveBeenCalledTimes(1);
     expect(listRunContinuations(db)[0].state).toBe("expired");
+    db.close();
+  });
+
+  it("fences concurrent expiry delivery attempts from the same service run", async () => {
+    const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const pendingMsg = db.dequeueMsgs("telegram:interactive", "123")[0];
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-exp-same-runner",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [pendingMsg.id],
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    let releaseDelivery!: () => void;
+    const deliveryPending = new Promise<void>((resolve) => { releaseDelivery = resolve; });
+    const onExpired = vi.fn(() => deliveryPending);
+    const expiryTime = Date.parse(continuation.expiresAt) + 1_000;
+
+    const first = scanRunContinuations(db, "telegram:interactive", vi.fn(), expiryTime, {
+      onCapacityExpired: onExpired,
+      runId: "same-service-run",
+    });
+    await vi.waitFor(() => expect(onExpired).toHaveBeenCalledTimes(1));
+    const second = scanRunContinuations(db, "telegram:interactive", vi.fn(), expiryTime, {
+      onCapacityExpired: onExpired,
+      runId: "same-service-run",
+    });
+    await second;
+    expect(onExpired).toHaveBeenCalledTimes(1);
+
+    releaseDelivery();
+    await first;
+    expect(listRunContinuations(db)[0].state).toBe("expired");
+    db.close();
+  });
+
+  it("fences a stale callback after same-service lease reclamation", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-same-service-stale",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    const first = claimDueRunContinuation(db, continuation.id, 6_000, { runId: "same-service", leaseMs: 1_000 })!;
+    const second = claimDueRunContinuation(db, continuation.id, 8_000, { runId: "same-service", leaseMs: 10_000 })!;
+    const firstToken = (first as any).claimToken ?? first.claimRunId;
+    const secondToken = (second as any).claimToken ?? second.claimRunId;
+
+    expect(firstToken).not.toBe(secondToken);
+    settleRunContinuation(db, continuation.id, "completed", undefined, 8_100, firstToken);
+    requeueClaimedCapacityWait(db, continuation.id, 8_200, firstToken);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "claimed", claimRunId: "same-service" }));
+
+    settleRunContinuation(db, continuation.id, "completed", undefined, 8_300, secondToken);
+    expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
+  });
+
+  it("keeps a thrown capacity wake under its continuation for a bounded retry", async () => {
+    const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const pendingMsg = db.dequeueMsgs("telegram:interactive", "123")[0];
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-wake-throw",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [pendingMsg.id],
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    await scanRunContinuations(db, "telegram:interactive", async () => {
+      throw new Error("transient queue recovery failure");
+    }, 6_000);
+
+    expect(db.hasAnyPendingMessageId("telegram:interactive", "123", [pendingMsg.id])).toBe(true);
+    expect(hasPendingCapacityWait(db, "telegram:interactive", "123")).toBe(true);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "pending", capacityWait: true }));
     db.close();
   });
 

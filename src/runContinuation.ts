@@ -5,6 +5,7 @@
  * This is intentionally not a scheduler or workflow engine.
  */
 import type { BridgeDb } from "./db.js";
+import { randomUUID } from "node:crypto";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
 import type { RouteableBotKind } from "./types.js";
 import { lookupProviderSession } from "./providers/sessionRuntime.js";
@@ -46,6 +47,8 @@ export interface RunContinuation {
   state: RunContinuationState;
   claimedAt?: string;
   claimRunId?: string;
+  /** Unique acquisition generation within a continuation-runner process. */
+  claimToken?: string;
   claimExpiresAt?: string;
   completedAt?: string;
   error?: string;
@@ -103,6 +106,7 @@ function parse(value: string): RunContinuation | null {
     if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
     if (candidate.capacityNoticeSent !== undefined && candidate.capacityNoticeSent !== true) return null;
     if (candidate.expiryDeliveryPending !== undefined && candidate.expiryDeliveryPending !== true) return null;
+    if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
     if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
@@ -240,6 +244,8 @@ export interface ClaimRunContinuationOptions {
   leaseMs?: number;
   isProcessAlive?: (runId: string) => boolean;
   onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void;
+  /** Test/embedding override; production uses a fresh token for each acquisition. */
+  claimToken?: string;
 }
 
 export function claimDueRunContinuation(
@@ -317,6 +323,7 @@ export function claimDueRunContinuation(
       ) return cancel("capacity wait origin no longer matches its settled provider attempt");
       if (isPending && Date.parse(current.dueAt) > nowMs) return null;
       const claimRunId = options?.runId ?? (db as any).runId;
+      const claimToken = options?.claimToken ?? randomUUID();
       const leaseMs = options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000;
       const claimExpiresAt = new Date(nowMs + leaseMs).toISOString();
       const claimed: RunContinuation = {
@@ -324,6 +331,7 @@ export function claimDueRunContinuation(
         state: "claimed",
         claimedAt: new Date(nowMs).toISOString(),
         claimRunId,
+        claimToken,
         claimExpiresAt,
       };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
@@ -502,12 +510,13 @@ export function settleRunContinuation(
     const current = row ? parse(row.value) : null;
     if (!current) return;
     if (current.state === "completed" || current.state === "cancelled") return;
-    if (outcome === "expired") {
-      if (current.state === "expired") return;
-    } else {
-      if (current.state !== "claimed") return;
-      if (claimantToken && current.claimRunId && current.claimRunId !== claimantToken) return;
-    }
+    if (outcome === "expired" && current.state === "expired") return;
+    if (outcome !== "expired" && current.state !== "claimed") return;
+    // Capacity callbacks must prove the exact acquisition, rather than the
+    // long-lived service process that happened to perform it.
+    if (current.capacityWait && current.state === "claimed") {
+      if (!claimantToken || current.claimToken !== claimantToken) return;
+    } else if (claimantToken && current.claimToken && current.claimToken !== claimantToken) return;
     const settled: RunContinuation = {
       ...current,
       state: outcome,
@@ -529,15 +538,21 @@ export function requeueClaimedCapacityWait(
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
     if (!current?.capacityWait || current.state !== "claimed") return;
-    if (claimantToken && current.claimRunId && current.claimRunId !== claimantToken) return;
+    if (!claimantToken || current.claimToken !== claimantToken) return;
     if (Date.parse(current.expiresAt) <= nowMs) {
-      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
-        .run(JSON.stringify({ ...current, state: "expired" }), key(id));
+      // Leave expiry finalisation to the expiry path so it can retire the
+      // original receipt and deliver its durable final notification.
       return;
     }
+    const ids = current.retainedPendingMessageIds ?? [];
+    // A thrown wake is retryable only after the durable receipt is known to be
+    // queued again.  Any active or ambiguous owner keeps the wait claimed.
+    if ((ids.length > 0 && (!db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, ids)
+      || db.isAnyPendingMessageClaimed(current.surfaceIdentity, current.chatKey, ids)))
+      || db.hasChatLock(current.chatKey)) return;
     const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
-      .run(JSON.stringify({ ...current, state: "pending", dueAt, claimedAt: undefined, claimRunId: undefined, claimExpiresAt: undefined }), key(id));
+    .run(JSON.stringify({ ...current, state: "pending", dueAt, claimedAt: undefined, claimRunId: undefined, claimToken: undefined, claimExpiresAt: undefined }), key(id));
   });
 }
 
@@ -564,6 +579,7 @@ export async function scanRunContinuations(
       }
 
       const runnerRunId = options?.runId ?? (db as any).runId ?? "continuation-runner";
+      const claimToken = options?.claimToken ?? randomUUID();
       const leaseMs = options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000;
       const claimExpiresAt = new Date(nowMs + leaseMs).toISOString();
 
@@ -572,21 +588,16 @@ export async function scanRunContinuations(
         const current = row ? parse(row.value) : null;
         if (!current || current.state === "completed" || current.state === "cancelled" || current.state === "expired") return null;
 
-        if (current.expiryDeliveryPending && current.claimRunId && current.claimRunId !== runnerRunId) {
+        if (current.expiryDeliveryPending) {
           const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
-          if (options?.isProcessAlive) {
-            if (options.isProcessAlive(current.claimRunId)) return null;
-          } else if (claimExpiresAtMs > nowMs) {
-            return null;
-          }
+          const claimantAlive = current.claimRunId && options?.isProcessAlive?.(current.claimRunId);
+          if (claimExpiresAtMs > nowMs && claimantAlive !== false) return null;
         }
 
         if (ids.length > 0 && !current.expiryDeliveryPending) {
-          if (!db.retireQueuedPendingMsgs(candidate.surfaceIdentity, candidate.chatKey, ids)) {
-            if (db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
-              return null;
-            }
-          }
+          if (db.hasChatLock(current.chatKey)
+            || db.isAnyPendingMessageClaimed(current.surfaceIdentity, current.chatKey, ids)
+            || !db.retireQueuedPendingMsgs(current.surfaceIdentity, current.chatKey, ids)) return null;
         }
 
         const updated: RunContinuation = {
@@ -594,6 +605,7 @@ export async function scanRunContinuations(
           state: "claimed",
           expiryDeliveryPending: true,
           claimRunId: runnerRunId,
+          claimToken,
           claimExpiresAt,
           claimedAt: current.claimedAt ?? new Date(nowMs).toISOString(),
         };
@@ -604,7 +616,7 @@ export async function scanRunContinuations(
       if (!claimedExpiry) continue;
 
       await options?.onCapacityExpired?.(claimedExpiry);
-      settleRunContinuation(db, claimedExpiry.id, "expired", undefined, nowMs, claimedExpiry.claimRunId);
+      settleRunContinuation(db, claimedExpiry.id, "expired", undefined, nowMs, claimedExpiry.claimToken);
       continue;
     }
     const claimed = claimDueRunContinuation(db, candidate.id, nowMs, options);
@@ -613,7 +625,7 @@ export async function scanRunContinuations(
       const outcome = await dispatch(claimed);
       if (claimed.capacityWait) {
         if (outcome === false || outcome === "queued") {
-          requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimRunId);
+          requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
           continue;
         }
       }
@@ -623,9 +635,13 @@ export async function scanRunContinuations(
       if (outcome === "queued") {
         continue;
       }
-      settleRunContinuation(db, claimed.id, "completed", undefined, nowMs, claimed.claimRunId);
+      settleRunContinuation(db, claimed.id, "completed", undefined, nowMs, claimed.claimToken);
     } catch (error) {
-      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error), nowMs, claimed.claimRunId);
+      if (claimed.capacityWait) {
+        requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
+        continue;
+      }
+      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error), nowMs, claimed.claimToken);
       throw error;
     }
   }
