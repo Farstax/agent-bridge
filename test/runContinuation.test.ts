@@ -499,4 +499,140 @@ describe("ordinary Run continuation", () => {
     expect(listRunContinuations(db)[0].state).toBe("completed");
     db.close();
   });
+
+  it("does not allow competing runner to reclaim active claimed capacity wait (P1)", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-origin",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [999],
+    }, 1_000);
+    expect(db.updateRunFailed("run-origin", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    // Runner 1 claims it at due time:
+    const claimed = claimDueRunContinuation(db, continuation.id, 6_000, { runId: "runner-1" });
+    expect(claimed).not.toBeNull();
+    expect(claimed?.state).toBe("claimed");
+
+    // Runner 2 attempts to claim it while Runner 1 is still alive and lease active:
+    const competing = claimDueRunContinuation(db, continuation.id, 7_000, {
+      runId: "runner-2",
+      isProcessAlive: (runId) => runId === "runner-1",
+    });
+    expect(competing).toBeNull();
+    db.close();
+  });
+
+  it("reclaims stale claimed capacity wait after claimant crashes before lock (P1)", () => {
+    const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const queuedId = db.dequeueMsgs("telegram:interactive", "123")[0].id;
+    // Re-enqueue so it exists in pending_messages:
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const pendingMsg = db.dequeueMsgs("telegram:interactive", "123")[0];
+
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-origin-crash",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [pendingMsg.id],
+    }, 1_000);
+    expect(db.updateRunFailed("run-origin-crash", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    // Runner 1 claimed it:
+    claimDueRunContinuation(db, continuation.id, 6_000, { runId: "dead-runner" });
+
+    // Dead-runner crashed (isProcessAlive returns false):
+    const reclaimed = claimDueRunContinuation(db, continuation.id, 8_000, {
+      runId: "recovering-runner",
+      isProcessAlive: (runId) => runId !== "dead-runner",
+    });
+    expect(reclaimed).not.toBeNull();
+    expect(reclaimed?.state).toBe("claimed");
+    db.close();
+  });
+
+  it("settles as completed without re-executing if task completed before crash (P1)", async () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-origin-done",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [888], // Note: 888 does NOT exist in pending_messages because it completed!
+    }, 1_000);
+    expect(db.updateRunFailed("run-origin-done", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    // Claimed before crash:
+    claimDueRunContinuation(db, continuation.id, 6_000, { runId: "dead-runner" });
+
+    const dispatch = vi.fn();
+    // Scan after crash:
+    await scanRunContinuations(db, "telegram:interactive", dispatch, 10_000, {
+      isProcessAlive: () => false,
+    });
+
+    // Should NOT have dispatched again:
+    expect(dispatch).not.toHaveBeenCalled();
+    // Should be settled as completed:
+    expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
+  });
+
+  it("does not mark capacity wait expired while chat execution lock is held (P1)", async () => {
+    const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const msg = db.dequeueMsgs("telegram:interactive", "123")[0];
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const pendingMsg = db.dequeueMsgs("telegram:interactive", "123")[0];
+
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-origin-exp",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [pendingMsg.id],
+    }, 1_000);
+    expect(db.updateRunFailed("run-origin-exp", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    // Hold chat execution lock (active execution in flight):
+    const handle = db.acquireLock("telegram:interactive", "123");
+    expect(handle).not.toBeNull();
+
+    const onExpired = vi.fn();
+    // Scan at expiry time:
+    await scanRunContinuations(db, "telegram:interactive", vi.fn(), Date.parse(continuation.expiresAt) + 1_000, {
+      onCapacityExpired: onExpired,
+    });
+
+    // Must NOT be marked expired while lock is held:
+    expect(onExpired).not.toHaveBeenCalled();
+    expect(listRunContinuations(db)[0].state).not.toBe("expired");
+
+    // Release chat lock:
+    db.unlock(handle!);
+
+    // Next scan now successfully retires and marks expired:
+    await scanRunContinuations(db, "telegram:interactive", vi.fn(), Date.parse(continuation.expiresAt) + 2_000, {
+      onCapacityExpired: onExpired,
+    });
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(db)[0].state).toBe("expired");
+    db.close();
+  });
 });

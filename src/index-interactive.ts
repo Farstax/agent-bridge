@@ -517,8 +517,6 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
   undefined,
   {
     onCapacityExpired: async (continuation) => {
-      const ids = continuation.retainedPendingMessageIds ?? [];
-      if (!ids.length || !db.retireQueuedPendingMsgs(continuation.surfaceIdentity, continuation.chatKey, ids)) return;
       const delivery = continuation.delivery;
       if (!delivery) return;
       await sendTelegramMessage({

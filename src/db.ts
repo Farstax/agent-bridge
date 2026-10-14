@@ -348,6 +348,14 @@ export class BridgeDb {
     return this.locks.hasRunLock(runId);
   }
 
+  get runId(): string {
+    return this.locks.runId;
+  }
+
+  get lockLeaseMs(): number {
+    return this.locks.leaseMs;
+  }
+
   // ── Global polling offset (per bot kind) ────────────────────────────────
 
   getLastUpdateId(bot: BotKind): number {
@@ -768,6 +776,27 @@ export class BridgeDb {
 
   deletePendingMsg(id: number): void {
     this.raw.prepare(`DELETE FROM pending_messages WHERE id = ?`).run(id);
+  }
+
+  hasAnyPendingMessageId(surface: string, chatKey: string, ids: number[]): boolean {
+    if (!ids.length) return false;
+    const placeholders = ids.map(() => "?").join(", ");
+    return !!this.raw.prepare(`
+      SELECT 1 FROM pending_messages
+      WHERE surface = ? AND chat_key = ? AND id IN (${placeholders})
+      LIMIT 1
+    `).get(surface, chatKey, ...ids);
+  }
+
+  isAnyPendingMessageClaimed(surface: string, chatKey: string, ids: number[]): boolean {
+    if (!ids.length) return false;
+    const placeholders = ids.map(() => "?").join(", ");
+    return !!this.raw.prepare(`
+      SELECT 1 FROM pending_messages
+      WHERE surface = ? AND chat_key = ? AND id IN (${placeholders})
+        AND (state = 'claimed' OR claim_run_id IS NOT NULL OR claim_acquisition_id IS NOT NULL)
+      LIMIT 1
+    `).get(surface, chatKey, ...ids);
   }
 
   retireQueuedPendingMsgs(surface: string, chatKey: string, ids: number[]): boolean {

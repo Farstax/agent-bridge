@@ -100,7 +100,7 @@ export interface BridgeEngineHooks {
   onBeforeExecute?: (prompt: string, ctx: HookContext) => Promise<string>;
   onCapacityExhausted?: (chatKey: string) => void | Promise<void>;
   onAuthRequired?: (chatKey: string) => void | Promise<void>;
-  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason, context?: { runId: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }) => void | Promise<void>;
+  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason, context?: { runId: string; provider?: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }) => void | Promise<void>;
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
   onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
 }
@@ -318,7 +318,7 @@ export class BridgeEngine {
     if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
     if (handle) {
-      await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
+      await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment", undefined, activeContinuationId);
       return true;
     }
     this._scheduleDurableQueueRecovery(chatKey);
@@ -827,7 +827,7 @@ export class BridgeEngine {
       if (authRequired && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
       } else if (capacityExhausted && this.hooks.onProviderFallbackRequested) {
-        await this.hooks.onProviderFallbackRequested(chatKey, "capacity", { runId, chatId, chatType, ...(threadId === undefined ? {} : { threadId }), ...(capacityRetryAfter === null ? { hasUnknownCapacityTiming: true as const } : { retryAfterSeconds: capacityRetryAfter }) });
+        await this.hooks.onProviderFallbackRequested(chatKey, "capacity", { runId, provider: this.kind, chatId, chatType, ...(threadId === undefined ? {} : { threadId }), ...(capacityRetryAfter === null ? { hasUnknownCapacityTiming: true as const } : { retryAfterSeconds: capacityRetryAfter }) });
       } else if (providerFallbackReason && this.hooks.onProviderFallbackRequested) {
         await this.hooks.onProviderFallbackRequested(chatKey, providerFallbackReason);
       } else if (authRequired && this.hooks.onAuthRequired) {
@@ -1268,13 +1268,13 @@ export class BridgeEngine {
     }
   }
 
-  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask): Promise<void> {
+  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask, activeContinuationId?: string): Promise<void> {
     const executionLane = this._executionLane(handle.chatKey);
     const existing = this.laneCoordinator.getDrainer(executionLane);
     if (existing) return existing.promise;
 
     const record = { promise: Promise.resolve() } as LaneDrainer;
-    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation);
+    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation, activeContinuationId);
     record.promise = operation.finally(() => {
       this.laneCoordinator.clearDrainer(executionLane, record);
     });
@@ -1314,10 +1314,11 @@ export class BridgeEngine {
     lifecycleAlreadyManaged: boolean,
     coalesce: boolean,
     augmentation?: AugmentedTask,
+    activeContinuationId?: string,
   ): Promise<void> {
     const chatKey = handle.chatKey;
     const executionLane = this._executionLane(chatKey);
-    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) {
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) {
       if (this.db.ownsLock(handle)) this.db.unlock(handle);
       return;
     }

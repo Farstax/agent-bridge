@@ -270,8 +270,6 @@ if (scheduledActorId) {
     undefined,
     {
       onCapacityExpired: async (continuation) => {
-        const ids = continuation.retainedPendingMessageIds ?? [];
-        if (!ids.length || !db.retireQueuedPendingMsgs(continuation.surfaceIdentity, continuation.chatKey, ids)) return;
         await client.sendMessage({ chat_id: continuation.chatKey, text: "I could not retry your task before the provider recovery window expired. Please send it again when you are ready." });
       },
     },

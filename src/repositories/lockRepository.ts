@@ -84,6 +84,10 @@ export class LockRepository {
     return this.options.serviceId;
   }
 
+  get leaseMs(): number {
+    return this.options.leaseMs;
+  }
+
   hasRunLock(runId: string): boolean {
     return !!this.db.prepare(`
       SELECT 1 FROM execution_locks WHERE run_id = ? LIMIT 1

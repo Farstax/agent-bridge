@@ -43,6 +43,8 @@ export interface RunContinuation {
   expiresAt: string;
   state: RunContinuationState;
   claimedAt?: string;
+  claimRunId?: string;
+  claimExpiresAt?: string;
   completedAt?: string;
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
@@ -229,7 +231,10 @@ export function hasPendingCapacityWait(
 }
 
 export interface ClaimRunContinuationOptions {
+  runId?: string;
+  leaseMs?: number;
   isProcessAlive?: (runId: string) => boolean;
+  onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void;
 }
 
 export function claimDueRunContinuation(
@@ -247,6 +252,7 @@ export function claimDueRunContinuation(
     if (!isPending && !isClaimedCapacity) return null;
 
     if (Date.parse(current.expiresAt) <= nowMs) {
+      if (current.capacityWait) return null;
       const expired = { ...current, state: "expired" as const };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
@@ -272,8 +278,34 @@ export function claimDueRunContinuation(
     }
 
     if (current.capacityWait) {
+      if (Date.parse(current.expiresAt) <= nowMs) {
+        return null;
+      }
       if (db.hasChatLock(current.chatKey)) {
         return null;
+      }
+      if (isClaimedCapacity) {
+        if (current.retainedPendingMessageIds?.length && !db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, current.retainedPendingMessageIds)) {
+          const settled: RunContinuation = {
+            ...current,
+            state: "completed",
+            completedAt: new Date(nowMs).toISOString(),
+          };
+          db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
+          return null;
+        }
+        const claimantRunId = current.claimRunId;
+        const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
+        if (claimantRunId && options?.isProcessAlive) {
+          if (options.isProcessAlive(claimantRunId)) {
+            return null;
+          }
+        } else if (claimExpiresAtMs > nowMs) {
+          const isAlive = options?.isProcessAlive ?? ((rId: string) => getRunOwnedProcessState(rId) !== "absent");
+          if (claimantRunId ? isAlive(claimantRunId) : true) {
+            return null;
+          }
+        }
       }
       if (
         originRun.status !== "failed"
@@ -282,7 +314,16 @@ export function claimDueRunContinuation(
         || originRun.bot !== current.provider
       ) return cancel("capacity wait origin no longer matches its settled provider attempt");
       if (isPending && Date.parse(current.dueAt) > nowMs) return null;
-      const claimed: RunContinuation = { ...current, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
+      const claimRunId = options?.runId ?? (db as any).runId;
+      const leaseMs = options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000;
+      const claimExpiresAt = new Date(nowMs + leaseMs).toISOString();
+      const claimed: RunContinuation = {
+        ...current,
+        state: "claimed",
+        claimedAt: new Date(nowMs).toISOString(),
+        claimRunId,
+        claimExpiresAt,
+      };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
       return claimed;
     }
@@ -449,14 +490,15 @@ export function cancelPendingRunContinuationsForChat(
 export function settleRunContinuation(
   db: BridgeDb,
   id: string,
-  outcome: "completed" | "failed",
+  outcome: "completed" | "failed" | "expired",
   error?: string,
   nowMs = Date.now(),
 ): void {
   db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || current.state !== "claimed") return;
+    if (!current) return;
+    if (outcome !== "expired" && current.state !== "claimed") return;
     const settled: RunContinuation = {
       ...current,
       state: outcome,
@@ -480,7 +522,7 @@ function requeueClaimedCapacityWait(db: BridgeDb, id: string, nowMs: number): vo
     }
     const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
-      .run(JSON.stringify({ ...current, state: "pending", dueAt, claimedAt: undefined }), key(id));
+      .run(JSON.stringify({ ...current, state: "pending", dueAt, claimedAt: undefined, claimRunId: undefined, claimExpiresAt: undefined }), key(id));
   });
 }
 
@@ -494,7 +536,20 @@ export async function scanRunContinuations(
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
     if (candidate.state !== "pending" && !(candidate.state === "claimed" && candidate.capacityWait)) continue;
     if (candidate.capacityWait && Date.parse(candidate.expiresAt) <= nowMs) {
-      claimDueRunContinuation(db, candidate.id, nowMs, options);
+      const ids = candidate.retainedPendingMessageIds ?? [];
+      if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+        settleRunContinuation(db, candidate.id, "completed", undefined, nowMs);
+        continue;
+      }
+      if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+        continue;
+      }
+      if (ids.length > 0) {
+        if (!db.retireQueuedPendingMsgs(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+          continue;
+        }
+      }
+      settleRunContinuation(db, candidate.id, "expired", undefined, nowMs);
       await options?.onCapacityExpired?.(candidate);
       continue;
     }
@@ -508,9 +563,9 @@ export async function scanRunContinuations(
         requeueClaimedCapacityWait(db, claimed.id, nowMs);
         continue;
       }
-      settleRunContinuation(db, claimed.id, "completed");
+      settleRunContinuation(db, claimed.id, "completed", undefined, nowMs);
     } catch (error) {
-      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error));
+      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error), nowMs);
       throw error;
     }
   }
