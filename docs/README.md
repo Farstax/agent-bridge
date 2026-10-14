@@ -2,6 +2,9 @@
 
 Use current product and operating contracts first. Historical implementation working notes are intentionally not kept in the active documentation tree once the shipped behavior is represented here.
 
+- [Security and hardening](SECURITY-AND-HARDENING.md)
+- [FAQ](FAQ.md)
+- [Vulnerability disclosure](../SECURITY.md)
 - [Architecture overview](architecture/overview.md)
 - [Architecture index](architecture/README.md)
 - [Getting started and messaging surface examples](examples/README.md)
