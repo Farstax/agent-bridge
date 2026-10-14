@@ -559,7 +559,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     }
   });
 
-  it("a configured hard timeout follows the /stop cancellation path — discards queued work, preserves last committed session (Issue #177)", async () => {
+  it("a configured hard timeout preserves separately queued work for normal settlement", async () => {
     const path = join(tmpdir(), `timeout-cancel-${Date.now()}-${Math.random()}.sqlite`);
     const db = openDb(path);
     const c = client();
@@ -567,7 +567,7 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
     const savedIdle = process.env.CURSOR_CLI_IDLE_TIMEOUT_MS;
     process.env.CURSOR_CLI_TIMEOUT_MS = "300";
     process.env.CURSOR_CLI_IDLE_TIMEOUT_MS = "0";
-    const secondRun = vi.fn().mockResolvedValue("should never run");
+    const secondRun = vi.fn().mockResolvedValue(cursorResult("queued work completed"));
     const engine = new BridgeEngine({ ...options("cursor"), busyMessageMode: "queue" }, db, c, cliExec({
       runCli: vi.fn()
         .mockImplementationOnce((_command, _args, cwd, cliOptions) => runCli(
@@ -584,11 +584,12 @@ describe("execution lane correctness", { timeout: 30_000 }, () => {
       const second = engine.handleMessages([message("queued behind the timeout", 7)]);
       await Promise.all([first, second]);
 
-      // The queued message must be discarded, not executed — same as /stop.
-      expect(secondRun).not.toHaveBeenCalled();
+      // Timeout of one attempt does not own or discard the separately admitted
+      // request behind it.
+      expect(secondRun).toHaveBeenCalledOnce();
       expect(db.pendingMsgCount("telegram:interactive", "100:7")).toBe(0);
-      // No session was committed by the timed-out turn.
-      expect(getCursorSession(db, "100:7")).toBeNull();
+      // The later, separately admitted turn may establish its own session.
+      expect(getCursorSession(db, "100:7")).toBe("cursor-session");
       // The lane is released, not stuck.
       expect(db.acquireLock("telegram:interactive", "100:7")).not.toBeNull();
     } finally {

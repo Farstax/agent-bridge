@@ -37,9 +37,9 @@ export interface ProviderRecoveryDecision {
  * (BridgeEngine/interactive dispatch and the surface-neutral router) consume
  * this instead of keeping their own eligibility checks.
  *
- * A broad `unknown` error is eligible only when the ACP runtime proved that no
- * `session/prompt` was ever submitted for this admitted action; classification
- * alone is never a side-effect safety proof (#575, #923).
+ * A broad `unknown` error is eligible only with ACP provenance.  After prompt
+ * submission the successor receives the normal inspection-first handoff; it
+ * must reconcile existing work instead of replaying effects.
  */
 export function decideProviderRecovery(
   provider: ProviderId | null,
@@ -64,13 +64,13 @@ export function decideProviderRecovery(
   // The ACP runtime can prove the narrower startup/setup case, where no
   // session/prompt was submitted and the existing fallback path is safe.
   else if (error instanceof CliTimeoutError) {
-    transportReason = evidence?.promptSubmitted === false ? "provider_transport_failure" : null;
+    transportReason = evidence ? "provider_transport_failure" : null;
   }
   else if (classification.kind === "transient") {
     transportReason = claudeContention ? null : "provider_transport_failure";
   } else if (classification.kind === "fatal" && !/not a git repository/i.test(classification.reason)) {
     transportReason = "provider_unavailable";
-  } else if (classification.kind === "unknown" && evidence?.promptSubmitted === false) {
+  } else if (classification.kind === "unknown" && evidence) {
     transportReason = "provider_transport_failure";
   }
   const reason: ProviderFallbackReason | null = authRequired

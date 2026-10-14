@@ -526,6 +526,23 @@ describe("BridgeEngine", () => {
       expect(capturedPrompt).toContain("what is the disk usage?");
     });
 
+    it("reports a rejecting pre-admission hook without invoking a provider or queueing the request", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const runCli = vi.fn();
+      const client = makeMockClient();
+      const engine = new BridgeEngine({
+        surfaceIdentity: "test", kind: "grok", botConfig: { command: "grok", modelPreference: [] },
+        allowedUserIds: new Set(["42"]), executionMode: "safe", pollIntervalMs: 1000, workingDir: process.cwd(),
+        hooks: { onBeforeExecute: async () => { throw new Error("hook failed"); } },
+      }, db, client, acpEngineExec(runCli));
+
+      await engine.handleMessages([makeMessage("do work")]);
+
+      expect(runCli).not.toHaveBeenCalled();
+      expect(db.pendingMsgCount("test", "100")).toBe(0);
+      expect(client.sendMessage.mock.calls.map(([body]: [any]) => body.text)).toContain("Error: Unable to prepare this request. Please try again.");
+    });
+
     it("does not call onBeforeExecute for commands (only for free-form prompts)", async () => {
       const { BridgeEngine } = await import("../src/engine.js");
       const beforeExecute = vi.fn().mockImplementation(async (p: string) => p);

@@ -16,6 +16,7 @@ import {
   persistEngineProviderSession,
 } from "../src/engine.js";
 import { verifyProviderApiKey } from "../src/providers/apiKeyAuth.js";
+import { readProviderFailureEvidence } from "../src/providers/failureEvidence.js";
 
 const fakeAgent = fileURLToPath(new URL("./support/fakeAcpAgent.ts", import.meta.url));
 
@@ -409,6 +410,23 @@ describe("ACP session persistence", () => {
 });
 
 describe("Codex ACP supervised stdio turn", () => {
+  it("retains provider provenance when a settled turn has no final answer", async () => {
+    const previousCommand = process.env.CODEX_ACP_COMMAND;
+    const previousArgs = process.env.CODEX_ACP_ARGS;
+    process.env.CODEX_ACP_COMMAND = process.execPath;
+    process.env.CODEX_ACP_ARGS = `${join(process.cwd(), "node_modules/tsx/dist/cli.mjs")} ${fakeAgent}`;
+    try {
+      await expect(runTurn({
+        prompt: "EMPTY_END_TURN", sessionId: null, command: "codex-acp", model: null, executionMode: "trusted", outputFormat: "json",
+        soulContext: null, attachments: [], outputDir: null, effort: null, toolMode: "default",
+      }, process.cwd(), { timeoutMs: 5_000, idleTimeoutMs: 5_000, chatId: `acp-empty-${Date.now()}` }, { conversationId: "empty", runId: "empty-run" }))
+        .rejects.toSatisfy((error: unknown) => readProviderFailureEvidence(error)?.promptSubmitted === true);
+    } finally {
+      if (previousCommand === undefined) delete process.env.CODEX_ACP_COMMAND; else process.env.CODEX_ACP_COMMAND = previousCommand;
+      if (previousArgs === undefined) delete process.env.CODEX_ACP_ARGS; else process.env.CODEX_ACP_ARGS = previousArgs;
+    }
+  }, 15_000);
+
   it("runs a fake ACP agent under the supervisor and suppresses replayed delivery text", async () => {
     const previousCommand = process.env.CODEX_ACP_COMMAND;
     const previousArgs = process.env.CODEX_ACP_ARGS;

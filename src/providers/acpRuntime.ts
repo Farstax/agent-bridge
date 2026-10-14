@@ -661,7 +661,26 @@ export async function runResolvedAcpProviderTurn(
   if (flushed) options.onProgress?.(flushed);
   answerPreview?.finish(result.stopReason);
   replaceAcpSessionConfigSnapshot(providerBotKind(providerId), result.configOptions, result.staleSessionConfig);
-  const parsed = acpTurnResultToCliResult(providerId, result, policy);
+  let parsed: CliResult;
+  try {
+    // Final-output selection is part of provider settlement.  Keep it in the
+    // same provenance boundary as protocol and transport failures so an empty
+    // settled turn reaches the route owner's recovery decision.
+    parsed = acpTurnResultToCliResult(providerId, result, policy);
+  } catch (error) {
+    const redacted = redactAcpFailure(error, redactionEnv);
+    const classifiedError = redacted instanceof Error ? redacted : new Error(String(redacted));
+    if (eventContext && onEvent) {
+      onEvent(buildAcpFailureDiagnosticEvent(
+        providerId as ProviderId,
+        classifiedError,
+        eventContext,
+        redactionEnv,
+        { attempt: currentAttempt, successorStarted: false, retryEligible: false, promptSubmitted: promptEverSubmitted },
+      ));
+    }
+    throw attachProviderFailureEvidence(classifiedError, { promptSubmitted: promptEverSubmitted });
+  }
   if (parsed.stopReason === "cancelled" && request.outputDir) {
     try {
       await cleanOutputDir(request.outputDir);

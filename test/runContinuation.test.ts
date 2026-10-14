@@ -112,6 +112,24 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it("does not mark a continuation complete when dispatch reports a failed Run", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-failed-dispatch",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-failed-dispatch");
+
+    await expect(scanRunContinuations(db, "telegram:interactive", async () => "failed", 6_000))
+      .rejects.toThrow(/did not settle/);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "failed" }));
+    db.close();
+  });
+
   it("does not resume if the provider session binding changed after the origin Run", async () => {
     const { db } = setup();
     requestForActiveRun(db, {

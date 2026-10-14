@@ -14,6 +14,8 @@ import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type In
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
+import { providerIdForBotName } from "./providers/registry.js";
+import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import type { ConversationIdentity } from "./conversationIdentity.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
@@ -380,7 +382,16 @@ async function dispatchInteractiveExecutionWithFallback(
   tried.add(activeCli);
   const engine = engines[activeCli];
   if (!engine) throw new Error(`No engine configured for CLI ${activeCli}`);
-  const outcome = await execution.execute(engine);
+  let outcome: ExecutionOutcome;
+  try {
+    outcome = await execution.execute(engine);
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    const decision = decideProviderRecovery(providerIdForBotName(activeCli), failure);
+    if (!decision.reason) throw error;
+    fallbackRequests?.set(chatKey, decision.reason);
+    outcome = "failed";
+  }
 
   const legacyAuthRequired = authRequiredChats?.has(chatKey) ?? false;
   const legacyCapacity = exhaustedChats?.has(chatKey) ?? false;
@@ -405,8 +416,11 @@ async function dispatchInteractiveExecutionWithFallback(
         : fallbackReason === "capacity"
           ? `Switching to ${next} (${activeCli} at capacity)`
           : `Switching to ${next} after ${activeCli} became unavailable.`;
-      await notify(notice);
-      if (onCliSwitched) await onCliSwitched(next);
+      // Notices and optional command-registration callbacks cannot strand a
+      // user task after recovery has already been authorised. Durable handoff
+      // state was written above; storage/fencing errors still fail closed.
+      await Promise.resolve(notify(notice)).catch((error) => console.warn("[interactive] fallback notice failed", error));
+      if (onCliSwitched) await Promise.resolve(onCliSwitched(next)).catch((error) => console.warn("[interactive] fallback switch callback failed", error));
       if (execution.recoverPendingQueue && engines[next].recoverPendingQueue) {
         markPendingFallbackResume(fallbackChain, chatKey, tried);
         try {

@@ -28,10 +28,10 @@ describe("Claude weekly limit (2026-10-10 incident)", () => {
 });
 
 describe("provider recovery verdict", () => {
-  it("makes an unclassified provider failure eligible only when no prompt was ever submitted", () => {
+  it("makes an evidenced provider failure eligible for inspection-first recovery", () => {
     expect(decideProviderRecovery("codex", tagged("Internal error: boom", false)).reason)
       .toBe("provider_transport_failure");
-    expect(decideProviderRecovery("codex", tagged("Internal error: boom", true)).reason).toBeNull();
+    expect(decideProviderRecovery("codex", tagged("Internal error: boom", true)).reason).toBe("provider_transport_failure");
   });
 
   it("never treats an untagged unknown error as a provider failure", () => {
@@ -42,7 +42,7 @@ describe("provider recovery verdict", () => {
   it("keeps submission evidence monotonic across attempts of the same admitted action", () => {
     const laterSetupFailure = tagged("Internal error: setup failed", false);
     const earlier = readProviderFailureEvidence(tagged("first attempt died", true));
-    expect(decideProviderRecovery("codex", laterSetupFailure, earlier).reason).toBeNull();
+    expect(decideProviderRecovery("codex", laterSetupFailure, earlier).reason).toBe("provider_transport_failure");
   });
 
   it("preserves the existing categorical routes regardless of submission evidence", () => {
@@ -56,7 +56,7 @@ describe("provider recovery verdict", () => {
     expect(decideProviderRecovery("codex", attachProviderFailureEvidence(new CliTimeoutError("t", "hard"), { promptSubmitted: false })).reason)
       .toBe("provider_transport_failure");
     expect(decideProviderRecovery("codex", attachProviderFailureEvidence(new CliTimeoutError("t", "hard"), { promptSubmitted: true })).reason)
-      .toBeNull();
+      .toBe("provider_transport_failure");
     expect(decideProviderRecovery("codex", new Error("spawn agent ENOENT")).reason).toBe("provider_unavailable");
   });
 

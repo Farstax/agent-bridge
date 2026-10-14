@@ -614,7 +614,20 @@ export class BridgeEngine {
   ): Promise<ExecutionOutcome> {
     void attachmentLocalPath;
     let prompt = rawPrompt;
-    if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
+    try {
+      if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
+    } catch (error) {
+      // This is a local ingress hook, before provider admission. Do not
+      // classify it as a provider failure or silently drop the user action.
+      console.error(`[${this.kind}] pre-admission hook failed`, error);
+      await sendSurfaceMessage({
+        client: this.client,
+        kind: this._deliveryKind(),
+        chatId,
+        body: { text: "Error: Unable to prepare this request. Please try again.", message_thread_id: threadId },
+      }).catch((sendError) => console.error(`[${this.kind}] pre-admission failure notification failed`, sendError));
+      return "failed";
+    }
 
     const sessionId = isRouteableKind(this.kind) ? lookupEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind) : null;
     const activePendingIds: number[] = [];
@@ -715,27 +728,33 @@ export class BridgeEngine {
         outcome = "fenced";
         return "fenced";
       }
+      if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane) || !this.db.ownsLock(laneHandle)) {
+        outcome = "fenced";
+        return "fenced";
+      }
       console.error(`[${this.kind}] prompt execution failed`, error);
       if (error instanceof PreviewCleanupError) {
         console.error(`[${this.kind}] abandoned preview cleanup failed; suppressing terminal output`, error.cause);
+        // Provider execution has already settled, but final delivery cannot be
+        // established. Retire only the rows owned by this lane as terminally
+        // uncertain: releasing them would blindly replay side effects.
         const terminalPendingIds = [...new Set([...activePendingIds, ...claimedPendingIds])];
         if (terminalPendingIds.length > 0) {
-          const claimedRetired = this.db.completePendingMsgs(laneHandle, terminalPendingIds);
-          if (!claimedRetired && !this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds)) {
-            console.error(`[${this.kind}] abandoned preview cleanup could not retire owned pending rows`);
+          const retired = this.db.completePendingMsgs(laneHandle, terminalPendingIds);
+          if (!retired && !this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds)) {
             outcome = "fenced";
             return "fenced";
           }
+          activeTaskCommitted = true;
         }
-        outcome = "committed";
-        return "committed";
-      }
-      if (error instanceof CliTimeoutError) {
-        const pendingTimeout = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
-        for (const queued of pendingTimeout) {
-          this._deleteQueuedAttachments(queued.attachments);
-          this.db.deletePendingMsg(queued.id);
-        }
+        await sendSurfaceMessage({
+          client: this.client,
+          kind: this._deliveryKind(),
+          chatId,
+          body: { text: "Error: Completion could not be verified safely. Please retry this request.", message_thread_id: threadId },
+        }).catch((sendError) => console.error(`[${this.kind}] preview-cleanup failure notification failed`, sendError));
+        outcome = "failed";
+        return "failed";
       }
       let providerError = error instanceof Error ? error : new Error(String(error));
       let priorEvidence: ProviderFailureEvidence | null = null;
@@ -792,12 +811,14 @@ export class BridgeEngine {
           }
           console.error(`[${this.kind}] same-provider fresh-session retry also failed`, retryError);
           providerError = retryError instanceof Error ? retryError : new Error(String(retryError));
-          // The retry may itself have executed the task; an error without
-          // provider evidence (a local post-provider failure) fails closed.
-          if (!readProviderFailureEvidence(providerError)) {
-            attachProviderFailureEvidence(providerError, { promptSubmitted: true });
-          }
-          decision = decideProviderRecovery(executionProvider, providerError, priorEvidence);
+          // A post-provider hook/storage error has no ACP provenance.  It
+          // must fail closed instead of borrowing an earlier attempt's
+          // evidence and causing a second provider execution.
+          decision = decideProviderRecovery(
+            executionProvider,
+            providerError,
+            readProviderFailureEvidence(providerError) ? priorEvidence : null,
+          );
         }
       }
 
@@ -903,12 +924,9 @@ export class BridgeEngine {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
-        // Only provider-level failures deliberately classified as fallback-eligible
-        // escape this delivery boundary. Ordinary task/code errors retain the prior
-        // in-place error delivery semantics.
-        propagateExecutionError: (error) =>
-          decideProviderRecovery(providerIdForBotName(this._executionKind()), error).reason !== null,
-        propagateTimeoutErrors: true,
+        // The Run owner, not delivery, settles every execution error. Final
+        // delivery errors remain separately handled by messageDelivery.
+        propagateExecutionErrors: true,
         runId: input.runId,
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {
