@@ -61,3 +61,13 @@ describe("Discord run continuation wiring", () => {
     expect(source).toContain("buildDiscordRunContinuationTurn");
   });
 });
+
+describe("Discord executable slash recovery wiring", () => {
+  it("passes the shared fallback request owner to /start and generic slash dispatch", () => {
+    const source = readFileSync(join(process.cwd(), "src", "index-discord-interactive.ts"), "utf8");
+    const start = source.match(/dispatchInteractiveTurnWithFallback\(resolution\.turn, \{([\s\S]*?)\}\);/);
+    const generic = source.match(/dispatchInteractiveTurnWithFallback\(turn, \{([\s\S]*?)\}\);\n  \}/);
+    expect(start?.[1]).toContain("fallbackRequests,");
+    expect(generic?.[1]).toContain("fallbackRequests,");
+  });
+});
