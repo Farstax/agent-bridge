@@ -16,6 +16,8 @@ import {
   claimScheduledRoutineOccurrence,
   createScheduledRoutine,
   type ScheduledRoutine,
+  scanScheduledRoutines,
+  requestScheduledRoutineRun,
 } from "../src/scheduledRoutines.js";
 import {
   linkScheduledOccurrenceRun,
@@ -267,6 +269,165 @@ describe("authoritative scheduled Run correlation", () => {
       db.insertRun("run-c", { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
       db.updateRunCompleted("run-c", "ok", null);
       expect(linkScheduledOccurrenceRun(db, key, "run-d")).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+  it("marks scheduled occurrence failed with pre_admission_failed when onBeforeExecute rejects before Run admission", async () => {
+    const path = join(tmpdir(), `scheduled-run-preadmit-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(path);
+    const db = openDb(path, { serviceId: "scheduled-preadmit-test", runId: "process-test" });
+    try {
+      const routine = routineFixture({ id: "preadmit-fail" });
+      createScheduledRoutine(db, routine);
+      const intendedAt = "2026-09-01T20:20:00.000Z";
+      expect(claimScheduledRoutineOccurrence(db, routine.id, intendedAt)).toBe(true);
+      const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
+
+      const runCli = vi.fn();
+      const engine = new BridgeEngine({
+        surfaceIdentity: "telegram:interactive",
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+        workingDir: process.cwd(),
+        hooks: {
+          onBeforeExecute: async (rawPrompt) => {
+            throw new Error("Admission policy gate rejected");
+          },
+        },
+      }, db, mockClient(), acpEngineExec(runCli));
+
+      const turn = buildScheduledInteractiveTurn(routine, intendedAt, "42", occurrenceKey);
+      const outcome = await engine.handleInteractiveTurn(turn);
+      expect(outcome).toBe("failed");
+      expect(runCli).not.toHaveBeenCalled();
+
+      const evidence = parseScheduledOccurrenceEvidence(db.getSetting(occurrenceKey));
+      expect(evidence?.version).toBe(1);
+      expect(evidence?.runId).toBeNull();
+      expect(evidence?.status).toBe("failed");
+      expect(evidence?.error).toBe("pre_admission_failed");
+
+      // Verify runtime inspector visibility
+      const { buildAgentBridgeInspection } = await import("../src/runtimeInspector.js");
+      const view = buildAgentBridgeInspection({
+        AGENT_BRIDGE_DB_PATH: path,
+        AGENT_BRIDGE_CONTEXT_DB: path,
+        AGENT_BRIDGE_CHAT_KEY: routine.chatKey,
+        AGENT_BRIDGE_SURFACE_IDENTITY: "telegram:interactive",
+        AGENT_BRIDGE_OWNER_KEY: routine.ownerKey,
+      });
+      expect(view.scheduledRoutines[0].recentOccurrence).toEqual(expect.objectContaining({
+        runId: null,
+        reasonCode: "pre_admission_failed",
+      }));
+    } finally {
+      db.close();
+    }
+  });
+
+  it("preserves once-routine disable on pre-admission failure without blind replay and allows manual recovery", async () => {
+    const path = join(tmpdir(), `scheduled-once-recovery-${Date.now()}-${Math.random()}.sqlite`);
+    paths.push(path);
+    const db = openDb(path, { serviceId: "scheduled-once-recovery-test", runId: "process-test" });
+    try {
+      const routine = {
+        ...routineFixture({ id: "once-routine-recover" }),
+        schedule: { type: "once" as const, localDateTime: "2026-09-01T20:00" },
+      };
+      createScheduledRoutine(db, routine);
+
+      let hookShouldFail = true;
+      const runCli = vi.fn().mockImplementation(async (_cmd, _args, _cwd, opts) => {
+        opts?.onEvent?.({
+          type: "run.started",
+          version: 1,
+          id: "evt-start",
+          runId: opts.eventContext.runId,
+          timestamp: new Date().toISOString(),
+          bot: "cursor",
+          chatId: String(routine.chatKey),
+          chatKey: routine.chatKey,
+          command: "cursor",
+          cwd: "/tmp",
+          model: null,
+        });
+        opts?.onEvent?.({
+          type: "run.completed",
+          version: 1,
+          id: "evt-done",
+          runId: opts.eventContext.runId,
+          timestamp: new Date().toISOString(),
+          bot: "cursor",
+          chatId: String(routine.chatKey),
+          chatKey: routine.chatKey,
+          text: "manual routine executed",
+          sessionId: "sess-1",
+        });
+        return { stdout: "manual routine executed", stderr: "", exitCode: 0 };
+      });
+
+      const engine = new BridgeEngine({
+        surfaceIdentity: "telegram:interactive",
+        kind: "cursor",
+        botConfig: { command: "cursor", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        pollIntervalMs: 1000,
+        workingDir: process.cwd(),
+        hooks: {
+          onBeforeExecute: async (p) => {
+            if (hookShouldFail) throw new Error("Temporary pre-admission failure");
+            return p;
+          },
+        },
+      }, db, mockClient(), {
+        runCli,
+        runCliAsync: runCli,
+        runProviderInvocation: async (_b, _p, _c, _i, _o, opts) => {
+          await runCli("cursor", [], "/tmp", opts);
+          return { text: "manual routine executed", sessionId: "sess-1", stopReason: "end_turn" };
+        },
+      } as any);
+
+      const nowMs = Date.parse("2026-09-01T20:05:00.000Z");
+
+      // First scan: once-routine is claimed and disabled, but pre-admission fails
+      await scanScheduledRoutines(db, "telegram:interactive", async (r, intendedAt, occurrenceKey) => {
+        const turn = buildScheduledInteractiveTurn(r, intendedAt, "42", occurrenceKey);
+        return engine.handleInteractiveTurn(turn);
+      }, nowMs);
+
+      // Verify occurrence failed before Run admission
+      const intendedAt = "2026-09-01T20:00:00.000Z";
+      const occurrenceKey = scheduledOccurrenceKey(routine.id, intendedAt);
+      const evidence = parseScheduledOccurrenceEvidence(db.getSetting(occurrenceKey));
+      expect(evidence?.status).toBe("failed");
+      expect(evidence?.runId).toBeNull();
+
+      // Verify the once-routine was disabled and is not blindly re-run on subsequent scan ticks
+      const secondScanDispatch = vi.fn();
+      await scanScheduledRoutines(db, "telegram:interactive", secondScanDispatch, nowMs + 5_000);
+      expect(secondScanDispatch).not.toHaveBeenCalled();
+
+      // Manual operator recovery: requestScheduledRoutineRun triggers an explicit run
+      hookShouldFail = false;
+      const requestedAt = requestScheduledRoutineRun(db, routine.id, "telegram:interactive", routine.chatKey, routine.ownerKey);
+
+      await scanScheduledRoutines(db, "telegram:interactive", async (r, intendedAt, occKey) => {
+        const turn = buildScheduledInteractiveTurn(r, intendedAt, "42", occKey);
+        return engine.handleInteractiveTurn(turn);
+      }, nowMs + 10_000);
+
+      expect(runCli).toHaveBeenCalled();
+      const manualKey = scheduledOccurrenceKey(routine.id, requestedAt, "manual");
+      const manualEvidence = parseScheduledOccurrenceEvidence(db.getSetting(manualKey));
+      expect(manualEvidence?.runId).toBeTruthy();
+      const run = db.getRun(manualEvidence!.runId!);
+      expect(run?.status).toBe("done");
     } finally {
       db.close();
     }

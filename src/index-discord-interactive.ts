@@ -232,7 +232,7 @@ if (scheduledOwnerKey && scheduledActorId) {
         return;
       }
       const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId, occurrenceKey);
-      await dispatchInteractiveTurnWithFallback(turn, {
+      return await dispatchInteractiveTurnWithFallback(turn, {
         engines,
         fallbackChain,
         fallbackRequests,

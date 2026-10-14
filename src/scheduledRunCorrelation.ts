@@ -7,12 +7,16 @@ export interface ScheduledOccurrenceEvidence {
   version: 1;
   claimedAt: string;
   runId: string | null;
+  status?: "claimed" | "running" | "completed" | "failed" | "fenced";
+  error?: string;
 }
 
 export interface ParsedScheduledOccurrenceEvidence {
   version: 0 | 1;
   claimedAt: string;
   runId: string | null;
+  status?: "claimed" | "running" | "completed" | "failed" | "fenced";
+  error?: string;
 }
 
 export function scheduledOccurrenceKey(
@@ -25,8 +29,19 @@ export function scheduledOccurrenceKey(
     : `${SCHEDULED_OCCURRENCE_PREFIX}${id}:${kind}:${intendedAt}`;
 }
 
-export function encodeScheduledOccurrenceEvidence(claimedAt: string, runId: string | null = null): string {
-  return JSON.stringify({ version: 1, claimedAt: new Date(claimedAt).toISOString(), runId } satisfies ScheduledOccurrenceEvidence);
+export function encodeScheduledOccurrenceEvidence(
+  claimedAt: string,
+  runId: string | null = null,
+  status?: "claimed" | "running" | "completed" | "failed" | "fenced",
+  error?: string,
+): string {
+  return JSON.stringify({
+    version: 1,
+    claimedAt: new Date(claimedAt).toISOString(),
+    runId,
+    ...(status ? { status } : {}),
+    ...(error ? { error: error.slice(0, 500) } : {}),
+  } satisfies ScheduledOccurrenceEvidence);
 }
 
 export function parseScheduledOccurrenceEvidence(value: unknown): ParsedScheduledOccurrenceEvidence | null {
@@ -40,7 +55,10 @@ export function parseScheduledOccurrenceEvidence(value: unknown): ParsedSchedule
     if (!Number.isFinite(claimedMs)) return null;
     const runId = parsed.runId == null ? null : String(parsed.runId).trim();
     if (runId !== null && !/^[A-Za-z0-9_.:-]{1,120}$/.test(runId)) return null;
-    return { version: 1, claimedAt: new Date(claimedMs).toISOString(), runId };
+    const status = typeof parsed.status === "string" && ["claimed", "running", "completed", "failed", "fenced"].includes(parsed.status)
+      ? (parsed.status as any) : undefined;
+    const error = typeof parsed.error === "string" ? parsed.error : undefined;
+    return { version: 1, claimedAt: new Date(claimedMs).toISOString(), runId, ...(status ? { status } : {}), ...(error ? { error } : {}) };
   } catch {
     return null;
   }
@@ -60,7 +78,25 @@ export function linkScheduledOccurrenceRun(db: BridgeDb, key: string, runId: str
     if (!row?.value || !evidence) return false;
     if (evidence.runId === runId) return true;
     if (evidence.runId && !canReplaceLinkedRun(db, evidence.runId)) return false;
-    const next = encodeScheduledOccurrenceEvidence(evidence.claimedAt, runId);
+    const run = db.getRun(runId);
+    const status = run?.status === "done" ? "completed" : run?.status === "failed" ? "failed" : run?.status === "cancelled" ? "fenced" : "running";
+    const next = encodeScheduledOccurrenceEvidence(evidence.claimedAt, runId, status, run?.error ?? undefined);
+    return db.raw.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
+      .run(next, key, row.value).changes === 1;
+  });
+}
+
+export function markScheduledOccurrenceFailed(db: BridgeDb, key: string, error: string): boolean {
+  if (!key.startsWith(SCHEDULED_OCCURRENCE_PREFIX)) return false;
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value?: string } | undefined;
+    const evidence = parseScheduledOccurrenceEvidence(row?.value);
+    if (!row?.value || !evidence) return false;
+    if (evidence.runId) {
+      const run = db.getRun(evidence.runId);
+      if (run && run.status === "done") return false;
+    }
+    const next = encodeScheduledOccurrenceEvidence(evidence.claimedAt, evidence.runId, "failed", error);
     return db.raw.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?")
       .run(next, key, row.value).changes === 1;
   });

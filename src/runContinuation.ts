@@ -11,7 +11,8 @@ import type { RouteableBotKind } from "./types.js";
 import { lookupProviderSession } from "./providers/sessionRuntime.js";
 import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
-const PREFIX = "run-continuation:v1:";
+export const RUN_CONTINUATION_PREFIX = "run-continuation:v1:";
+const PREFIX = RUN_CONTINUATION_PREFIX;
 const DEFAULT_SCAN_MS = 5_000;
 const MIN_DELAY_SECONDS = 5;
 const MAX_DELAY_SECONDS = 30 * 60;
@@ -54,6 +55,8 @@ export interface RunContinuation {
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   rolloutProvenance?: RolloutProvenance;
+  /** Ordinary continuation run admitted after its durable queue handoff. */
+  successorRunId?: string;
   /** A settled capacity rejection may re-enter the existing fallback path. */
   capacityWait?: true;
   /** The initial capacity notice is a durable one-shot delivery decision. */
@@ -108,6 +111,7 @@ function parse(value: string): RunContinuation | null {
     if (candidate.expiryDeliveryPending !== undefined && candidate.expiryDeliveryPending !== true) return null;
     if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
     if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
+    if (candidate.successorRunId !== undefined && typeof candidate.successorRunId !== "string") return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
       if (
@@ -464,7 +468,7 @@ export function cancelPendingRunContinuation(
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || (current.state !== "pending" && !(current.capacityWait && current.state === "claimed"))) return false;
+    if (!current || (current.state !== "pending" && current.state !== "claimed")) return false;
     const cancelled: RunContinuation = {
       ...current,
       state: "cancelled",
@@ -485,7 +489,7 @@ export function cancelPendingRunContinuationsForChat(
 ): number {
   return db.runInTransaction(() => {
     const continuations = listRunContinuations(db, surfaceIdentity).filter(
-      (c) => c.chatKey === chatKey && (c.state === "pending" || (c.capacityWait && c.state === "claimed")),
+      (c) => c.chatKey === chatKey && (c.state === "pending" || c.state === "claimed"),
     );
     let count = 0;
     for (const c of continuations) {
@@ -500,7 +504,7 @@ export function cancelPendingRunContinuationsForChat(
 export function settleRunContinuation(
   db: BridgeDb,
   id: string,
-  outcome: "completed" | "failed" | "expired",
+  outcome: "completed" | "failed" | "expired" | "cancelled",
   error?: string,
   nowMs = Date.now(),
   claimantToken?: string,
@@ -525,6 +529,38 @@ export function settleRunContinuation(
     };
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
   });
+}
+
+export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current || (current.capacityWait && current.state !== "claimed")) return false;
+    if (current.successorRunId === runId) return true;
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+      .run(JSON.stringify({ ...current, successorRunId: runId }), key(id));
+    return true;
+  });
+}
+
+/** Reconcile only ordinary handoffs. Capacity waits retain their original receipt. */
+export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string, nowMs = Date.now()): void {
+  for (const continuation of listRunContinuations(db, surfaceIdentity)) {
+    if (continuation.capacityWait || continuation.state !== "claimed") continue;
+    const correlationKey = `${PREFIX}${continuation.id}`;
+    if (db.hasPendingMessageForCorrelationKey(continuation.surfaceIdentity, correlationKey)) continue;
+    if (continuation.successorRunId) {
+      const run = db.getRun(continuation.successorRunId);
+      if (run) {
+        if (run.status === "done") settleRunContinuation(db, continuation.id, "completed", undefined, nowMs);
+        else if (run.status === "failed" || run.status === "cancelled") {
+          settleRunContinuation(db, continuation.id, run.status === "cancelled" ? "cancelled" : "failed", run.error ?? `run ${run.status}`, nowMs);
+        }
+        continue;
+      }
+    }
+    settleRunContinuation(db, continuation.id, "failed", "interrupted_by_restart", nowMs);
+  }
 }
 
 /** A wake that did not obtain the retained queue work remains retryable. */
@@ -563,6 +599,7 @@ export async function scanRunContinuations(
   nowMs = Date.now(),
   options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
 ): Promise<void> {
+  reconcileRunContinuations(db, surfaceIdentity, nowMs);
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
     if (candidate.state !== "pending" && !(candidate.state === "claimed" && candidate.capacityWait)) continue;
     if (candidate.capacityWait && Date.parse(candidate.expiresAt) <= nowMs) {
@@ -706,6 +743,7 @@ export function buildTelegramRunContinuationTurn(
     chatKey: continuation.chatKey,
     actorId,
     messageId: `continuation:${continuation.id}`,
+    scheduledOccurrenceKey: `${PREFIX}${continuation.id}`,
     text: isRollout
       ? buildPostRolloutVerificationTurnText(continuation.reason)
       : [
@@ -738,6 +776,7 @@ export function buildDiscordRunContinuationTurn(
     chatKey: continuation.chatKey,
     actorId,
     messageId: `continuation:${continuation.id}`,
+    scheduledOccurrenceKey: `${PREFIX}${continuation.id}`,
     text: isRollout
       ? buildPostRolloutVerificationTurnText(continuation.reason)
       : [

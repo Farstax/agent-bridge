@@ -249,7 +249,7 @@ if (scheduledOwnerKey) {
   scheduledRoutineRunner = new ScheduledRoutineRunner(db, surfaceIdentity, async (routine, intendedAt, occurrenceKey) => {
     if (routine.ownerKey !== scheduledOwnerKey || routine.kind !== "companion") return;
     const turn = buildScheduledInteractiveTurn(routine, intendedAt, scheduledActorId, occurrenceKey);
-    await dispatchInteractiveTurnWithFallback(turn, dispatchDeps(String(turn.delivery.chatId), turn.threadId, routine.chatKey));
+    return await dispatchInteractiveTurnWithFallback(turn, dispatchDeps(String(turn.delivery.chatId), turn.threadId, routine.chatKey));
   });
 }
 runContinuationRunner = new RunContinuationRunner(db, surfaceIdentity, async (continuation) => {

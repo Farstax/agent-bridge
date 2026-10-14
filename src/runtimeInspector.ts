@@ -204,7 +204,7 @@ function routines(db: Database.Database, s: ReturnType<typeof scope>, env: Env) 
       ? evidence
         ? evidence.runId
           ? "linked_run_unavailable"
-          : evidence.version === 0 ? "run_correlation_legacy_unavailable" : "run_not_created"
+          : evidence.version === 0 ? "run_correlation_legacy_unavailable" : (evidence.status === "failed" ? (evidence.error ?? "pre_admission_failed") : "run_not_created")
         : "occurrence_evidence_invalid"
       : null;
     if (evidence?.runId && hasTable(db, "bridge_runs")) {
