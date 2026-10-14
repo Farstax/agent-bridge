@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { rmSync } from "node:fs";
+import { rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { openDb } from "../src/db.js";
 import { persistProviderSession } from "../src/providers/sessionRuntime.js";
@@ -14,6 +15,7 @@ import {
   scanRunContinuations,
   settleRunContinuation,
   claimCapacityWaitNotice,
+  hasPendingCapacityWait,
 } from "../src/runContinuation.js";
 
 const paths: string[] = [];
@@ -129,6 +131,67 @@ describe("ordinary Run continuation", () => {
     expect(listRunContinuations(reopened)[0]).toEqual(expect.objectContaining({ state: "completed", capacityWait: true }));
     reopened.close();
   });
+
+  it("recovers a capacity continuation claimed before a crash and dispatches it exactly once on restart", async () => {
+    const { db, path } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-capacity-crash-claimed",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "all permitted providers are temporarily at capacity",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    const claimed = claimDueRunContinuation(db, continuation.id, 6_000);
+    expect(claimed?.state).toBe("claimed");
+
+    expect(hasPendingCapacityWait(db, "telegram:interactive", "123")).toBe(true);
+    expect(hasPendingCapacityWait(db, "telegram:interactive", "123", continuation.id)).toBe(false);
+
+    db.close();
+
+    const reopened = openDb(path, { serviceId: "run-continuation-test-reopen-crash", runId: "test-process-3" });
+    expect(hasPendingCapacityWait(reopened, "telegram:interactive", "123")).toBe(true);
+
+    const dispatch = vi.fn(async () => undefined);
+    await scanRunContinuations(reopened, "telegram:interactive", dispatch, 6_500);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(reopened)[0]).toEqual(expect.objectContaining({ state: "completed", capacityWait: true }));
+
+    await scanRunContinuations(reopened, "telegram:interactive", dispatch, 7_000);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    reopened.close();
+  });
+
+  it("cleans retained attachment files and parent directory on capacity retirement", () => {
+    const { db } = setup();
+    const uploadDir = join(tmpdir(), `bridge-uploads-test-${randomUUID()}`);
+    mkdirSync(uploadDir, { recursive: true });
+    const attachmentPath = join(uploadDir, "photo.jpg");
+    writeFileSync(attachmentPath, "dummy image data");
+    expect(existsSync(attachmentPath)).toBe(true);
+
+    db.enqueueMsg("telegram:interactive", "123", {
+      prompt: "analyze photo",
+      chatId: 123,
+      threadId: null,
+      chatType: "private",
+      userId: 42,
+      attachments: [attachmentPath],
+      scheduledOccurrenceKey: null,
+    });
+    const pending = db.dequeueMsgs("telegram:interactive", "123");
+    expect(pending).toHaveLength(1);
+
+    expect(db.retireQueuedPendingMsgs("telegram:interactive", "123", [pending[0].id])).toBe(true);
+    expect(existsSync(attachmentPath)).toBe(false);
+    expect(existsSync(uploadDir)).toBe(false);
+    db.close();
+  });
+
 
   it("keeps a capacity wait pending when its wake did not claim progress", async () => {
     const { db } = setup();

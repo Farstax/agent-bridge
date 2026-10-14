@@ -1,5 +1,7 @@
 import { mkdir, chmod } from "node:fs/promises";
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { unlinkSync, rmSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import type { TelegramMessage } from "./types.js";
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import type { InteractiveAttachment } from "./interactiveIngress.js";
@@ -113,4 +115,17 @@ export async function downloadTelegramAttachment(
   }
 
   return null;
+}
+
+export function deleteQueuedAttachments(attachments: string[]): void {
+  const uploadDirs = new Set<string>();
+  for (const attachment of attachments) {
+    const parent = dirname(attachment);
+    if (dirname(parent) !== tmpdir() || !basename(parent).startsWith("bridge-uploads-")) continue;
+    try { unlinkSync(attachment); } catch {}
+    uploadDirs.add(parent);
+  }
+  for (const dir of uploadDirs) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
 }

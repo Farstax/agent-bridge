@@ -1,3 +1,7 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { openDb } from "../src/db.js";
 import { BridgeEngine } from "../src/engine.js";
@@ -8,7 +12,7 @@ import {
   getUserCliPreference,
   setUserCliPreference,
 } from "../src/interactiveBot.js";
-import { listRunContinuations } from "../src/runContinuation.js";
+import { listRunContinuations, scanRunContinuations } from "../src/runContinuation.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
 
 // Claude (and, by shared ACP transport, Codex) resolve to ACP-stdio, which
@@ -441,4 +445,194 @@ describe("interactive capacity fallback durable admission", () => {
       db.close();
     }
   });
+  it("preserves retainedPendingMessageIds across two-provider fallback and cleans attachments on expiry", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive", () => true);
+    const fallbackRequests = new Map<string, import("../src/engine.js").ProviderFallbackReason>();
+    const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
+    const notifications: string[] = [];
+    const codexRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+
+    const makeEngine = (kind: "codex" | "claude", runCli: typeof codexRun) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        pollIntervalMs: 1_000,
+        hooks: {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
+            fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+          },
+        },
+      },
+      db,
+      client,
+      { runCli: runCli as any, runProviderInvocation: asAcpAdapter(runCli) },
+    );
+    const engines = { codex: makeEngine("codex", codexRun), claude: makeEngine("claude", claudeRun) };
+    const deps = {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      capacityFallbackAttempts,
+      db,
+      notify: async (message: string) => { notifications.push(message); },
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    const uploadDir = join(tmpdir(), `bridge-uploads-fallback-${randomUUID()}`);
+    mkdirSync(uploadDir, { recursive: true });
+    const attachmentPath = join(uploadDir, "spec.pdf");
+    writeFileSync(attachmentPath, "dummy pdf data");
+    expect(existsSync(attachmentPath)).toBe(true);
+
+    try {
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
+      db.enqueueMsg("telegram:interactive", "100", {
+        prompt: "review this file",
+        chatId: 100,
+        chatType: "private",
+        userId: 42,
+        attachments: [attachmentPath],
+      });
+      const handle = db.acquireLock("telegram:interactive", "100");
+      expect(handle).not.toBeNull();
+      const claimedMsg = db.claimNextPendingMsg(handle!);
+      expect(claimedMsg).not.toBeNull();
+      expect(claimedMsg!.attachments).toEqual([attachmentPath]);
+
+      // Dispatch as claimed message across the two-provider fallback:
+      const outcome = await dispatchClaimedInteractiveWithFallback(
+        { ...claimedMsg!, laneHandle: handle!, laneLifecycleManaged: true },
+        "100",
+        deps,
+      );
+      expect(outcome).toBe("deferred");
+
+      for (const id of claimedMsg!.pendingIds ?? [claimedMsg!.id]) {
+        db.releasePendingClaim(handle!, id);
+      }
+      db.unlock(handle!);
+
+      expect(codexRun).toHaveBeenCalledTimes(1);
+      expect(claudeRun).toHaveBeenCalledTimes(1);
+
+      const continuations = listRunContinuations(db, "telegram:interactive");
+      expect(continuations).toHaveLength(1);
+      const continuation = continuations[0];
+      expect(continuation.capacityWait).toBe(true);
+      expect(continuation.retainedPendingMessageIds).toEqual([claimedMsg!.id]);
+
+      // Now simulate expiry:
+      const expiredNotice: string[] = [];
+      const onCapacityExpired = async (c: any) => {
+        const ids = c.retainedPendingMessageIds ?? [];
+        if (!ids.length || !db.retireQueuedPendingMsgs(c.surfaceIdentity, c.chatKey, ids)) return;
+        expiredNotice.push("I could not retry your task before the provider recovery window expired.");
+      };
+
+      await scanRunContinuations(db, "telegram:interactive", vi.fn(), Date.parse(continuation.expiresAt), { onCapacityExpired });
+
+      expect(expiredNotice).toHaveLength(1);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      expect(existsSync(attachmentPath)).toBe(false);
+      expect(existsSync(uploadDir)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("cancels pending and claimed capacity waits when user sends /stop", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive", () => true);
+    const fallbackRequests = new Map<string, import("../src/engine.js").ProviderFallbackReason>();
+    const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string }>();
+    const notifications: string[] = [];
+    const codexRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+    const claudeRun = vi.fn().mockRejectedValue(new Error("MODEL_CAPACITY_EXHAUSTED"));
+
+    const makeEngine = (kind: "codex" | "claude", runCli: typeof codexRun) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        pollIntervalMs: 1_000,
+        hooks: {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
+            fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+          },
+        },
+      },
+      db,
+      client,
+      { runCli: runCli as any, runProviderInvocation: asAcpAdapter(runCli) },
+    );
+    const engines = { codex: makeEngine("codex", codexRun), claude: makeEngine("claude", claudeRun) };
+    const deps = {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      capacityFallbackAttempts,
+      db,
+      notify: async (message: string) => { notifications.push(message); },
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    try {
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
+      await dispatchInteractiveWithFallback({
+        update_id: 11_000,
+        message: {
+          message_id: 201,
+          chat: { id: 100, type: "private" },
+          from: { id: 42, first_name: "Test" },
+          text: "long running prompt",
+        },
+      }, "100", deps);
+
+      expect(listRunContinuations(db, "telegram:interactive")[0].state).toBe("pending");
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(1);
+
+      // Now send /stop:
+      await engines.codex.handleUpdate({
+        update_id: 11_001,
+        message: {
+          message_id: 202,
+          chat: { id: 100, type: "private" },
+          from: { id: 42, first_name: "Test" },
+          text: "/stop",
+        },
+      });
+
+      // The continuation must be cancelled:
+      expect(listRunContinuations(db, "telegram:interactive")[0].state).toBe("cancelled");
+      // The pending messages must be discarded:
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+
+      // Subsequent scan does not dispatch:
+      const dispatch = vi.fn();
+      await scanRunContinuations(db, "telegram:interactive", dispatch, Date.now() + 600_000);
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
 });

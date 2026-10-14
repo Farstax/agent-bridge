@@ -1,3 +1,4 @@
+import { deleteQueuedAttachments } from "./fileDownload.js";
 /**
  * PURPOSE: SQLite database storage interface and migration definitions for Agent Bridge state.
  * INPUTS: Database file paths, chat IDs, bot types, and session tokens.
@@ -774,14 +775,29 @@ export class BridgeDb {
     const mismatch = new Error("queued pending-message ownership changed");
     try {
       return this.runInTransaction(() => {
-        const statement = this.raw.prepare(`
+        const selectStmt = this.raw.prepare(`
+          SELECT attachments_json FROM pending_messages
+          WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'queued'
+            AND claim_run_id IS NULL AND claim_acquisition_id IS NULL
+        `);
+        const deleteStmt = this.raw.prepare(`
           DELETE FROM pending_messages
           WHERE id = ? AND surface = ? AND chat_key = ? AND state = 'queued'
             AND claim_run_id IS NULL AND claim_acquisition_id IS NULL
         `);
+        const allAttachments: string[] = [];
         for (const id of ids) {
-          if (statement.run(id, surface, chatKey).changes !== 1) throw mismatch;
+          const row = selectStmt.get(id, surface, chatKey) as { attachments_json: string } | undefined;
+          if (!row) throw mismatch;
+          if (row.attachments_json) {
+            try {
+              const parsed = JSON.parse(row.attachments_json);
+              if (Array.isArray(parsed)) allAttachments.push(...parsed);
+            } catch {}
+          }
+          if (deleteStmt.run(id, surface, chatKey).changes !== 1) throw mismatch;
         }
+        deleteQueuedAttachments(allAttachments);
         return true;
       });
     } catch (error) {

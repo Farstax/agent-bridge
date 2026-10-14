@@ -1,3 +1,4 @@
+import { deleteQueuedAttachments } from "./fileDownload.js";
 /**
  * PURPOSE: Reusable BridgeEngine — polling loop, concurrency locking, message queuing,
  *   and CLI execution dispatcher. Extracted from BridgeBot (index.ts) so both the agent
@@ -312,9 +313,9 @@ export class BridgeEngine {
     }));
   }
 
-  async recoverPendingQueue(chatKey: string): Promise<boolean> {
+  async recoverPendingQueue(chatKey: string, activeContinuationId?: string): Promise<boolean> {
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
-    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) return true;
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
     if (handle) {
       await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
@@ -1241,6 +1242,7 @@ export class BridgeEngine {
     // open pre-provider ingress scope (voice download/transcription, etc.)
     // on this lane. Non-stop busy-mode fencing (augment/interrupt) must not.
     this.laneCoordinator.abortPreProviderIngress(executionLane);
+    cancelPendingRunContinuationsForChat(this.db, this.surfaceIdentity, chatKey, "originating Run stopped by user");
     this._discardPendingMessages(chatKey);
   }
 
@@ -1453,16 +1455,7 @@ export class BridgeEngine {
   }
 
   private _deleteQueuedAttachments(attachments: string[]): void {
-    const uploadDirs = new Set<string>();
-    for (const attachment of attachments) {
-      const parent = dirname(attachment);
-      if (dirname(parent) !== tmpdir() || !basename(parent).startsWith("bridge-uploads-")) continue;
-      try { unlinkSync(attachment); } catch {}
-      uploadDirs.add(parent);
-    }
-    for (const dir of uploadDirs) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
-    }
+    deleteQueuedAttachments(attachments);
   }
 
   private _assertLaneOwned(handle: ExecutionLaneHandle): void {

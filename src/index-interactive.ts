@@ -68,7 +68,7 @@ import {
   buildTelegramRunContinuationTurn,
 } from "./runContinuation.js";
 import { fetchCodexCapacityResetAt } from "./codexUsage.js";
-import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
+import { capacityRetryAfterSeconds, combineCapacityRetryOpportunities } from "./providers/capacityRetryTiming.js";
 
 loadInteractiveEnvFile();
 

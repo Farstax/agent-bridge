@@ -290,7 +290,7 @@ export interface InteractiveDispatchEngine {
   handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<void>;
   handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
-  recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
+  recoverPendingQueue?: (chatKey: string, activeContinuationId?: string) => Promise<boolean>;
 }
 
 export interface InteractiveDispatchDeps {
@@ -314,14 +314,15 @@ export interface InteractiveDispatchDeps {
  * queue claim re-enters the normal fallback chain with a fresh tried set.
  */
 export async function resumeCapacityHeldQueue(
-  input: { chatKey: string; provider: string; surfaceIdentity: string },
+  input: { chatKey: string; provider: string; surfaceIdentity: string; id?: string },
   deps: Pick<InteractiveDispatchDeps, "engines" | "fallbackChain"> & Partial<Pick<InteractiveDispatchDeps, "db">>,
 ): Promise<boolean> {
   const candidates = [input.provider, ...deps.fallbackChain.getChain()];
   for (const candidate of candidates) {
     const engine = deps.engines[candidate];
     if (!engine?.recoverPendingQueue) continue;
-    if (await engine.recoverPendingQueue(input.chatKey)) {
+    const recovered = input.id !== undefined ? await engine.recoverPendingQueue(input.chatKey, input.id) : await engine.recoverPendingQueue(input.chatKey);
+    if (recovered) {
       // A callback returning is not proof of recovery. The original receipt
       // must have been consumed by its queue owner before this wait settles.
       return !deps.db || deps.db.pendingMsgCount(input.surfaceIdentity, input.chatKey) === 0;
@@ -365,11 +366,11 @@ export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chat
   clearPendingFallbackResume(chain, chatKey);
 }
 
-function capacityWaitNotice(retryAfterSeconds: number | undefined, unknownTiming: boolean | undefined): string {
+export function capacityWaitNotice(retryAfterSeconds: number | undefined, unknownTiming: boolean | undefined, userTimeZone?: string): string {
   if (unknownTiming || retryAfterSeconds === undefined) {
     return "All available providers are temporarily at capacity. I’ll retry automatically and continue your task when one becomes available.";
   }
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const timeZone = userTimeZone || "UTC";
   const when = new Intl.DateTimeFormat("en-GB", {
     timeZone,
     year: "numeric",
@@ -401,6 +402,7 @@ interface InteractiveFallbackExecution {
   recoverPendingQueue: boolean;
   exhaustedOutcome: ExecutionOutcome;
   capacityContinuationId?: string;
+  retainedPendingMessageIds?: number[];
 }
 
 async function dispatchInteractiveExecutionWithFallback(
@@ -476,6 +478,8 @@ async function dispatchInteractiveExecutionWithFallback(
         const heldReceipt = execution.recoverPendingQueue
           ? db.dequeueMsgs(identity.surfaceIdentity, chatKey)[0]
           : null;
+        const retainedPendingMessageIds = execution.retainedPendingMessageIds
+          ?? (heldReceipt ? [heldReceipt.id] : undefined);
         const continuation = requestRunContinuation(db, {
           ...(execution.capacityContinuationId || heldReceipt ? { continuationId: execution.capacityContinuationId ?? `capacity-wait:${heldReceipt!.id}` } : {}),
           originRunId: attempt.runId,
@@ -483,11 +487,9 @@ async function dispatchInteractiveExecutionWithFallback(
           chatKey,
           provider: attempt.provider ?? activeCli,
           reason: "all permitted providers are temporarily at capacity",
-          afterSeconds: attempt.hasUnknownCapacityTiming
-            ? Math.min(attempt.retryAfterSeconds ?? 300, 300)
-            : attempt.retryAfterSeconds ?? 300,
+          afterSeconds: attempt.retryAfterSeconds ?? 300,
           capacityWait: true,
-          ...(heldReceipt ? { retainedPendingMessageIds: [heldReceipt.id] } : {}),
+          ...(retainedPendingMessageIds ? { retainedPendingMessageIds } : {}),
           delivery: { chatId: attempt.chatId, chatType: attempt.chatType, ...(attempt.threadId === undefined ? {} : { threadId: attempt.threadId }) },
         });
         if (claimCapacityWaitNotice(db, continuation.id)) {
@@ -512,12 +514,16 @@ function dispatchClaimedInteractiveExecution(
   deps: InteractiveDispatchDeps,
   tried: Set<string>,
 ): Promise<ExecutionOutcome> {
+  const retainedPendingMessageIds = message.pendingIds && message.pendingIds.length > 0
+    ? message.pendingIds
+    : [message.id];
   return dispatchInteractiveExecutionWithFallback({
     identity: { surfaceIdentity: deps.surfaceIdentity ?? "telegram:interactive", chatKey },
     chatKey,
     recoverPendingQueue: false,
     exhaustedOutcome: deps.capacityFallbackAttempts ? "deferred" : "committed",
     capacityContinuationId: `capacity-wait:${message.id}`,
+    retainedPendingMessageIds,
     execute: (engine) => engine.executeClaimedMessage(message),
   }, deps, tried);
 }

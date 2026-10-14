@@ -214,10 +214,18 @@ export function listRunContinuations(db: BridgeDb, surfaceIdentity?: string): Ru
     .filter((item) => surfaceIdentity === undefined || item.surfaceIdentity === surfaceIdentity);
 }
 
-/** A pending capacity wait owns its lane until the continuation runner claims it. */
-export function hasPendingCapacityWait(db: BridgeDb, surfaceIdentity: string, chatKey: string): boolean {
+/** A pending or claimed capacity wait owns its lane until settled or cancelled. */
+export function hasPendingCapacityWait(
+  db: BridgeDb,
+  surfaceIdentity: string,
+  chatKey: string,
+  excludingContinuationId?: string,
+): boolean {
   return listRunContinuations(db, surfaceIdentity).some((continuation) =>
-    continuation.capacityWait === true && continuation.chatKey === chatKey && continuation.state === "pending");
+    continuation.capacityWait === true
+    && continuation.chatKey === chatKey
+    && (continuation.state === "pending" || continuation.state === "claimed")
+    && (!excludingContinuationId || continuation.id !== excludingContinuationId));
 }
 
 export interface ClaimRunContinuationOptions {
@@ -233,7 +241,11 @@ export function claimDueRunContinuation(
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || current.state !== "pending") return null;
+    if (!current) return null;
+    const isPending = current.state === "pending";
+    const isClaimedCapacity = current.state === "claimed" && current.capacityWait === true;
+    if (!isPending && !isClaimedCapacity) return null;
+
     if (Date.parse(current.expiresAt) <= nowMs) {
       const expired = { ...current, state: "expired" as const };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
@@ -260,13 +272,16 @@ export function claimDueRunContinuation(
     }
 
     if (current.capacityWait) {
+      if (db.hasChatLock(current.chatKey)) {
+        return null;
+      }
       if (
         originRun.status !== "failed"
         || originRun.surface_identity !== current.surfaceIdentity
         || originRun.chat_id !== current.chatKey
         || originRun.bot !== current.provider
       ) return cancel("capacity wait origin no longer matches its settled provider attempt");
-      if (Date.parse(current.dueAt) > nowMs) return null;
+      if (isPending && Date.parse(current.dueAt) > nowMs) return null;
       const claimed: RunContinuation = { ...current, state: "claimed", claimedAt: new Date(nowMs).toISOString() };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
       return claimed;
@@ -477,7 +492,7 @@ export async function scanRunContinuations(
   options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
 ): Promise<void> {
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
-    if (candidate.state !== "pending") continue;
+    if (candidate.state !== "pending" && !(candidate.state === "claimed" && candidate.capacityWait)) continue;
     if (candidate.capacityWait && Date.parse(candidate.expiresAt) <= nowMs) {
       claimDueRunContinuation(db, candidate.id, nowMs, options);
       await options?.onCapacityExpired?.(candidate);

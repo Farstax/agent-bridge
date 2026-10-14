@@ -51,7 +51,7 @@ import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { ScheduledRoutineRunner, buildScheduledInteractiveTurn } from "./scheduledRoutines.js";
 import { RunContinuationRunner, buildDiscordRunContinuationTurn, cancelPendingRunContinuationsForChat } from "./runContinuation.js";
 import { fetchCodexCapacityResetAt } from "./codexUsage.js";
-import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
+import { capacityRetryAfterSeconds, combineCapacityRetryOpportunities } from "./providers/capacityRetryTiming.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -181,14 +181,15 @@ const engines = Object.fromEntries(
                 ? capacityRetryAfterSeconds({ data: { capacityResetsAt: resetAt } }) ?? undefined
                 : context.retryAfterSeconds;
               const previous = capacityFallbackAttempts.get(chatKey);
+              const combined = combineCapacityRetryOpportunities(previous, {
+                ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+                ...(context.hasUnknownCapacityTiming || retryAfterSeconds === undefined ? { hasUnknownCapacityTiming: true } : {}),
+              });
               capacityFallbackAttempts.set(chatKey, {
                 ...context,
                 provider: kind,
-                ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
-                ...(previous?.retryAfterSeconds !== undefined && (retryAfterSeconds === undefined || previous.retryAfterSeconds < retryAfterSeconds)
-                  ? { retryAfterSeconds: previous.retryAfterSeconds }
-                  : {}),
-                ...((previous?.retryAfterSeconds === undefined && retryAfterSeconds === undefined && (previous?.hasUnknownCapacityTiming || context.hasUnknownCapacityTiming)) ? { hasUnknownCapacityTiming: true as const } : {}),
+                retryAfterSeconds: combined.retryAfterSeconds,
+                ...(combined.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
               });
             }
           },
