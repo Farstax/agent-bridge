@@ -478,6 +478,7 @@ async function handleInteraction(d: any): Promise<void> {
       await dispatchInteractiveTurnWithFallback(resolution.turn, {
         engines,
         fallbackChain,
+        fallbackRequests,
         db,
         notify: async (text) => { await client.sendMessage({ chat_id: channelId, text }); },
       });
@@ -509,6 +510,7 @@ async function handleInteraction(d: any): Promise<void> {
     await dispatchInteractiveTurnWithFallback(turn, {
       engines,
       fallbackChain,
+      fallbackRequests,
       db,
       notify: async (text) => { await client.sendMessage({ chat_id: channelId, text }); },
     });

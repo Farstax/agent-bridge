@@ -614,7 +614,20 @@ export class BridgeEngine {
   ): Promise<ExecutionOutcome> {
     void attachmentLocalPath;
     let prompt = rawPrompt;
-    if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
+    try {
+      if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
+    } catch (error) {
+      // This is a local ingress hook, before provider admission. Do not
+      // classify it as a provider failure or silently drop the user action.
+      console.error(`[${this.kind}] pre-admission hook failed`, error);
+      await sendSurfaceMessage({
+        client: this.client,
+        kind: this._deliveryKind(),
+        chatId,
+        body: { text: "Error: Unable to prepare this request. Please try again.", message_thread_id: threadId },
+      }).catch((sendError) => console.error(`[${this.kind}] pre-admission failure notification failed`, sendError));
+      return "failed";
+    }
 
     const sessionId = isRouteableKind(this.kind) ? lookupEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind) : null;
     const activePendingIds: number[] = [];
@@ -715,20 +728,21 @@ export class BridgeEngine {
         outcome = "fenced";
         return "fenced";
       }
+      if (this.laneCoordinator.hasCancellation(executionLane) || this.laneCoordinator.isAborted(executionLane) || !this.db.ownsLock(laneHandle)) {
+        outcome = "fenced";
+        return "fenced";
+      }
       console.error(`[${this.kind}] prompt execution failed`, error);
       if (error instanceof PreviewCleanupError) {
         console.error(`[${this.kind}] abandoned preview cleanup failed; suppressing terminal output`, error.cause);
-        const terminalPendingIds = [...new Set([...activePendingIds, ...claimedPendingIds])];
-        if (terminalPendingIds.length > 0) {
-          const claimedRetired = this.db.completePendingMsgs(laneHandle, terminalPendingIds);
-          if (!claimedRetired && !this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds)) {
-            console.error(`[${this.kind}] abandoned preview cleanup could not retire owned pending rows`);
-            outcome = "fenced";
-            return "fenced";
-          }
-        }
-        outcome = "committed";
-        return "committed";
+        await sendSurfaceMessage({
+          client: this.client,
+          kind: this._deliveryKind(),
+          chatId,
+          body: { text: "Error: Completion could not be verified safely. Please retry this request.", message_thread_id: threadId },
+        }).catch((sendError) => console.error(`[${this.kind}] preview-cleanup failure notification failed`, sendError));
+        outcome = "failed";
+        return "failed";
       }
       let providerError = error instanceof Error ? error : new Error(String(error));
       let priorEvidence: ProviderFailureEvidence | null = null;
