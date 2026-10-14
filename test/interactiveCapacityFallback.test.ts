@@ -68,6 +68,32 @@ function makeMockClient() {
 }
 
 describe("interactive capacity fallback durable admission", () => {
+  it("retires a claimed preview-cleanup failure without replaying its provider work", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    client.deleteMessage.mockRejectedValue(new Error("Telegram delete failed"));
+    const run = vi.fn().mockImplementation(async (_cmd: string, _args: string[], _cwd: string, options: any) => {
+      options.onProviderOutputChunk?.(`${JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "preview" } } })}\n`);
+      throw new Error("rate limit capacity exhausted");
+    });
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive", kind: "claude", botConfig: { command: "claude", modelPreference: [] },
+      allowedUserIds: new Set(["42"]), executionMode: "safe", busyMessageMode: "queue", pollIntervalMs: 1000,
+    }, db, client, { runCli: run, runProviderInvocation: asAcpAdapter(run) });
+    try {
+      db.enqueueMsg("telegram:interactive", "100", { prompt: "do work", chatId: 100, chatType: "private" });
+      const lane = db.acquireLock("telegram:interactive", "100")!;
+      const claimed = db.claimNextPendingMsg(lane)!;
+      const outcome = await engine.executeClaimedMessage({ ...claimed, laneHandle: lane });
+      expect(outcome).toBe("failed");
+      expect(run).toHaveBeenCalledOnce();
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(run).toHaveBeenCalledOnce();
+      expect(client.sendMessage.mock.calls.map(([body]: [any]) => body.text)).toContain("Error: Completion could not be verified safely. Please retry this request.");
+    } finally { db.close(); }
+  });
+
   it("reports completion as unverified without replaying when an abandoned Claude preview cannot be deleted", async () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
