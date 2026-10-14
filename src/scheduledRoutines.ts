@@ -8,7 +8,8 @@
 import { createHash } from "node:crypto";
 import type { BridgeDb } from "./db.js";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
-import { encodeScheduledOccurrenceEvidence, scheduledOccurrenceKey, type ScheduledOccurrenceKind } from "./scheduledRunCorrelation.js";
+import { encodeScheduledOccurrenceEvidence, markScheduledOccurrenceFailed, scheduledOccurrenceKey, type ScheduledOccurrenceKind } from "./scheduledRunCorrelation.js";
+import type { ExecutionOutcome } from "./engine.js";
 
 export type ScheduledRoutineKind = "companion" | "autonomous";
 export type ScheduledRoutineSchedule =
@@ -36,7 +37,7 @@ export interface ScheduledOccurrence {
   stale: boolean;
 }
 
-export type ScheduledRoutineDispatch = (routine: ScheduledRoutine, intendedAt: string, occurrenceKey: string) => Promise<void>;
+export type ScheduledRoutineDispatch = (routine: ScheduledRoutine, intendedAt: string, occurrenceKey: string) => Promise<ExecutionOutcome | void>;
 
 const ROUTINE_PREFIX = "scheduled-routine:v1:";
 const TRIGGER_PREFIX = "scheduled-routine-trigger:v1:";
@@ -432,7 +433,16 @@ export async function scanScheduledRoutines(
     const triggeredAt = claimPendingManualTrigger(db, routine.id);
     if (triggeredAt) {
       if (claimScheduledRoutineOccurrence(db, routine.id, triggeredAt, "manual")) {
-        await dispatch(routine, triggeredAt, scheduledOccurrenceKey(routine.id, triggeredAt, "manual"));
+        const key = scheduledOccurrenceKey(routine.id, triggeredAt, "manual");
+        try {
+          const outcome = await dispatch(routine, triggeredAt, key);
+          if (outcome === "failed" || outcome === "fenced") {
+            markScheduledOccurrenceFailed(db, key, `dispatch_${outcome}`);
+          }
+        } catch (error) {
+          markScheduledOccurrenceFailed(db, key, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
       }
     }
     if (!routine.enabled) continue;
@@ -441,7 +451,15 @@ export async function scanScheduledRoutines(
     const occurrenceKey = claimScheduledRoutineForDispatch(db, routine, occurrence.intendedAt);
     if (!occurrenceKey) continue;
     if (occurrence.stale) continue;
-    await dispatch(routine, occurrence.intendedAt, occurrenceKey);
+    try {
+      const outcome = await dispatch(routine, occurrence.intendedAt, occurrenceKey);
+      if (outcome === "failed" || outcome === "fenced") {
+        markScheduledOccurrenceFailed(db, occurrenceKey, `dispatch_${outcome}`);
+      }
+    } catch (error) {
+      markScheduledOccurrenceFailed(db, occurrenceKey, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   }
 }
 

@@ -10,7 +10,8 @@ import type { RouteableBotKind } from "./types.js";
 import { lookupProviderSession } from "./providers/sessionRuntime.js";
 import { getRunOwnedProcessState } from "./runOwnedProcesses.js";
 
-const PREFIX = "run-continuation:v1:";
+export const RUN_CONTINUATION_PREFIX = "run-continuation:v1:";
+const PREFIX = RUN_CONTINUATION_PREFIX;
 const DEFAULT_SCAN_MS = 5_000;
 const MIN_DELAY_SECONDS = 5;
 const MAX_DELAY_SECONDS = 30 * 60;
@@ -46,6 +47,7 @@ export interface RunContinuation {
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   rolloutProvenance?: RolloutProvenance;
+  successorRunId?: string;
 }
 
 export interface RequestRunContinuationInput {
@@ -96,6 +98,7 @@ function parse(value: string): RunContinuation | null {
         || typeof p.provider !== "string"
       ) return null;
     }
+    if (candidate.successorRunId && typeof candidate.successorRunId !== "string") return null;
     if (candidate.delivery) return candidate;
     if (candidate.surfaceIdentity.startsWith("telegram:")) {
       const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
@@ -342,7 +345,7 @@ export function cancelPendingRunContinuation(
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || current.state !== "pending") return false;
+    if (!current || (current.state !== "pending" && current.state !== "claimed")) return false;
     const cancelled: RunContinuation = {
       ...current,
       state: "cancelled",
@@ -363,7 +366,7 @@ export function cancelPendingRunContinuationsForChat(
 ): number {
   return db.runInTransaction(() => {
     const continuations = listRunContinuations(db, surfaceIdentity).filter(
-      (c) => c.chatKey === chatKey && c.state === "pending",
+      (c) => c.chatKey === chatKey && (c.state === "pending" || c.state === "claimed"),
     );
     let count = 0;
     for (const c of continuations) {
@@ -375,10 +378,29 @@ export function cancelPendingRunContinuationsForChat(
   });
 }
 
+export function linkRunContinuationRun(
+  db: BridgeDb,
+  id: string,
+  runId: string,
+): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current) return false;
+    if (current.successorRunId === runId) return true;
+    const updated: RunContinuation = {
+      ...current,
+      successorRunId: runId,
+    };
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(updated), key(id));
+    return true;
+  });
+}
+
 export function settleRunContinuation(
   db: BridgeDb,
   id: string,
-  outcome: "completed" | "failed",
+  outcome: "completed" | "failed" | "cancelled",
   error?: string,
   nowMs = Date.now(),
 ): void {
@@ -390,10 +412,39 @@ export function settleRunContinuation(
       ...current,
       state: outcome,
       completedAt: new Date(nowMs).toISOString(),
-      ...(outcome === "failed" && error ? { error: error.slice(0, 500) } : {}),
+      ...(error ? { error: error.slice(0, 500) } : {}),
     };
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
   });
+}
+
+export function reconcileRunContinuations(
+  db: BridgeDb,
+  surfaceIdentity: string,
+  nowMs = Date.now(),
+): void {
+  for (const c of listRunContinuations(db, surfaceIdentity)) {
+    if (c.state !== "claimed") continue;
+    const correlationKey = `${PREFIX}${c.id}`;
+    const hasPending = db.hasPendingMessageForCorrelationKey(c.surfaceIdentity, correlationKey);
+    if (hasPending) {
+      // Pending message is still in queue, will be processed when queue drains
+      continue;
+    }
+    if (c.successorRunId) {
+      const run = db.getRun(c.successorRunId);
+      if (run) {
+        if (run.status === "done") {
+          settleRunContinuation(db, c.id, "completed", undefined, nowMs);
+        } else if (run.status === "failed" || run.status === "cancelled") {
+          settleRunContinuation(db, c.id, run.status === "cancelled" ? "cancelled" : "failed", run.error ?? `run ${run.status}`, nowMs);
+        }
+        continue;
+      }
+    }
+    // No pending message and no surviving successor run: the queued turn was lost during restart or was not queued
+    settleRunContinuation(db, c.id, "failed", "interrupted_by_restart", nowMs);
+  }
 }
 
 export async function scanRunContinuations(
@@ -403,6 +454,7 @@ export async function scanRunContinuations(
   nowMs = Date.now(),
   options?: ClaimRunContinuationOptions,
 ): Promise<void> {
+  reconcileRunContinuations(db, surfaceIdentity, nowMs);
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
     if (candidate.state !== "pending") continue;
     const claimed = claimDueRunContinuation(db, candidate.id, nowMs, options);
@@ -482,6 +534,7 @@ export function buildTelegramRunContinuationTurn(
     chatKey: continuation.chatKey,
     actorId,
     messageId: `continuation:${continuation.id}`,
+    scheduledOccurrenceKey: `${PREFIX}${continuation.id}`,
     text: isRollout
       ? buildPostRolloutVerificationTurnText(continuation.reason)
       : [
@@ -514,6 +567,7 @@ export function buildDiscordRunContinuationTurn(
     chatKey: continuation.chatKey,
     actorId,
     messageId: `continuation:${continuation.id}`,
+    scheduledOccurrenceKey: `${PREFIX}${continuation.id}`,
     text: isRollout
       ? buildPostRolloutVerificationTurnText(continuation.reason)
       : [
