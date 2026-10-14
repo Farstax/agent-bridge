@@ -8,6 +8,7 @@ import { BridgeEngine } from "../src/engine.js";
 import { ProviderFallbackChain } from "../src/providerFallback.js";
 import {
   dispatchClaimedInteractiveWithFallback,
+  dispatchInteractiveTurnWithFallback,
   dispatchInteractiveWithFallback,
   getUserCliPreference,
   resumeCapacityHeldQueue,
@@ -1035,4 +1036,280 @@ describe("interactive capacity fallback durable admission", () => {
       }
     }
   });
+
+  it("terminates and retires task on capacity wake when all remaining providers require authentication (Telegram)", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive", () => true);
+    const fallbackRequests = new Map<string, any>();
+    const capacityFallbackAttempts = new Map<string, any>();
+    const notifications: string[] = [];
+
+    let wakePhase = false;
+    const codexRun = vi.fn().mockImplementation(async () => {
+      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+      throw new Error("authentication required: please run auth");
+    });
+    const claudeRun = vi.fn().mockImplementation(async () => {
+      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+      throw new Error("authentication required: please run auth");
+    });
+
+    const makeEngine = (kind: "codex" | "claude", runCli: any) => new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        pollIntervalMs: 1_000,
+        hooks: {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
+            fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+          },
+        },
+      },
+      db,
+      client,
+      { runCli, runProviderInvocation: asAcpAdapter(runCli) },
+    );
+    const engines = { codex: makeEngine("codex", codexRun), claude: makeEngine("claude", claudeRun) };
+    const deps = {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      capacityFallbackAttempts,
+      db,
+      notify: async (msg: string) => { notifications.push(msg); },
+      onCliSwitched: vi.fn(),
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    try {
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, "codex");
+      // Initial admission: capacity exhausted on all providers
+      await dispatchInteractiveWithFallback({
+        update_id: 1,
+        message: { message_id: 101, chat: { id: 100, type: "private" }, from: { id: 42, first_name: "Test" }, text: "initial task" },
+      }, "100", deps);
+
+      const continuations = listRunContinuations(db, "telegram:interactive");
+      expect(continuations).toHaveLength(1);
+      const originalId = continuations[0].retainedPendingMessageIds![0];
+      expect(db.hasAnyPendingMessageId("telegram:interactive", "100", [originalId])).toBe(true);
+      expect(notifications).toEqual([
+        "All available providers are temporarily at capacity. I’ll retry automatically and continue your task when one becomes available.",
+      ]);
+
+      // Phase 2: Wake up, but now all providers fail with auth_required
+      wakePhase = true;
+      notifications.length = 0;
+
+      await scanRunContinuations(db, "telegram:interactive", async (c) => {
+        return resumeCapacityHeldQueue(c, { engines, fallbackChain, db });
+      }, Date.now() + 400_000);
+
+      // Fallback notice followed by terminal blocker notification sent on this wake:
+      expect(notifications).toEqual([
+        "codex needs re-authentication. Falling back to claude…",
+        "claude needs re-authentication. No remaining configured fallback provider is available.",
+      ]);
+
+      // Original task safely retired from pending queue:
+      expect(db.hasAnyPendingMessageId("telegram:interactive", "100", [originalId])).toBe(false);
+      expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+
+      // Continuation settled as completed (not pending or requeued):
+      const settled = listRunContinuations(db, "telegram:interactive")[0];
+      expect(settled.state).toBe("completed");
+
+      // Subsequent scan must not retry or emit additional notices:
+      notifications.length = 0;
+      await scanRunContinuations(db, "telegram:interactive", async (c) => {
+        return resumeCapacityHeldQueue(c, { engines, fallbackChain, db });
+      }, Date.now() + 800_000);
+      expect(notifications).toEqual([]);
+      expect(codexRun).toHaveBeenCalledTimes(2); // 1 initial + 1 wake
+      expect(claudeRun).toHaveBeenCalledTimes(2); // 1 initial + 1 wake
+    } finally {
+      db.close();
+    }
+  });
+
+  it("terminates and retires task on capacity wake when all remaining providers require authentication (Discord)", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "discord:interactive", () => true);
+    const fallbackRequests = new Map<string, any>();
+    const capacityFallbackAttempts = new Map<string, any>();
+    const notifications: string[] = [];
+
+    let wakePhase = false;
+    const codexRun = vi.fn().mockImplementation(async () => {
+      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+      throw new Error("authentication required: please run auth");
+    });
+    const claudeRun = vi.fn().mockImplementation(async () => {
+      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+      throw new Error("authentication required: please run auth");
+    });
+
+    const makeEngine = (kind: "codex" | "claude", runCli: any) => new BridgeEngine(
+      {
+        surfaceIdentity: "discord:interactive",
+        kind,
+        botConfig: { command: kind, modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        pollIntervalMs: 1_000,
+        hooks: {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
+            fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+          },
+        },
+      },
+      db,
+      client,
+      { runCli, runProviderInvocation: asAcpAdapter(runCli) },
+    );
+    const engines = { codex: makeEngine("codex", codexRun), claude: makeEngine("claude", claudeRun) };
+    const deps = {
+      surfaceIdentity: "discord:interactive",
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      capacityFallbackAttempts,
+      db,
+      notify: async (msg: string) => { notifications.push(msg); },
+      onCliSwitched: vi.fn(),
+    };
+
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+
+    try {
+      setUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: "200" }, "codex");
+      // Initial admission: capacity exhausted
+      await dispatchInteractiveTurnWithFallback({
+        surfaceIdentity: "discord:interactive",
+        chatKey: "200",
+        actorId: "42",
+        messageId: "m1",
+        text: "discord task",
+        delivery: { chatId: "200", chatType: "private" },
+        attachments: [],
+      }, deps);
+
+      const continuations = listRunContinuations(db, "discord:interactive");
+      expect(continuations).toHaveLength(1);
+      const originalId = continuations[0].retainedPendingMessageIds![0];
+      expect(db.hasAnyPendingMessageId("discord:interactive", "200", [originalId])).toBe(true);
+
+      // Phase 2: Wake up on Discord, all providers fail with auth_required
+      wakePhase = true;
+      notifications.length = 0;
+
+      await scanRunContinuations(db, "discord:interactive", async (c) => {
+        return resumeCapacityHeldQueue(c, { engines, fallbackChain, db });
+      }, Date.now() + 400_000);
+
+      // Fallback notice followed by terminal blocker notification sent on this wake:
+      expect(notifications).toEqual([
+        "codex needs re-authentication. Falling back to claude…",
+        "claude needs re-authentication. No remaining configured fallback provider is available.",
+      ]);
+
+      // Original task safely retired:
+      expect(db.hasAnyPendingMessageId("discord:interactive", "200", [originalId])).toBe(false);
+      expect(db.pendingMsgCount("discord:interactive", "200")).toBe(0);
+      expect(listRunContinuations(db, "discord:interactive")[0].state).toBe("completed");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("terminates and retires task on capacity wake for provider-locked bots when auth fails", async () => {
+    const db = openDb(":memory:");
+    const client = makeMockClient();
+    const fallbackChain = new ProviderFallbackChain(["codex"], db, "telegram:interactive", () => true);
+    const fallbackRequests = new Map<string, any>();
+    const capacityFallbackAttempts = new Map<string, any>();
+    const notifications: string[] = [];
+
+    let wakePhase = false;
+    const codexRun = vi.fn().mockImplementation(async () => {
+      if (!wakePhase) throw new Error("MODEL_CAPACITY_EXHAUSTED");
+      throw new Error("authentication required: please run auth");
+    });
+
+    const engine = new BridgeEngine(
+      {
+        surfaceIdentity: "telegram:interactive",
+        kind: "codex",
+        botConfig: { command: "codex", modelPreference: [] },
+        allowedUserIds: new Set(["42"]),
+        executionMode: "safe",
+        busyMessageMode: "augment",
+        pollIntervalMs: 1_000,
+        hooks: {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
+            fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) capacityFallbackAttempts.set(chatKey, context);
+          },
+        },
+      },
+      db,
+      client,
+      { runCli: codexRun as any, runProviderInvocation: asAcpAdapter(codexRun) },
+    );
+    const engines = { codex: engine };
+    const deps = {
+      engines,
+      fallbackChain,
+      fallbackRequests,
+      capacityFallbackAttempts,
+      db,
+      notify: async (msg: string) => { notifications.push(msg); },
+      onCliSwitched: vi.fn(),
+    };
+
+    engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+
+    try {
+      setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "300" }, "codex");
+      await dispatchInteractiveWithFallback({
+        update_id: 1,
+        message: { message_id: 101, chat: { id: 300, type: "private" }, from: { id: 42, first_name: "Test" }, text: "locked task" },
+      }, "300", deps);
+
+      const continuations = listRunContinuations(db, "telegram:interactive");
+      expect(continuations).toHaveLength(1);
+      const originalId = continuations[0].retainedPendingMessageIds![0];
+
+      // Wake phase: auth required on the single locked provider
+      wakePhase = true;
+      notifications.length = 0;
+
+      await scanRunContinuations(db, "telegram:interactive", async (c) => {
+        return resumeCapacityHeldQueue(c, { engines, fallbackChain, db });
+      }, Date.now() + 400_000);
+
+      expect(notifications).toEqual([
+        "codex needs re-authentication. No remaining configured fallback provider is available.",
+      ]);
+      expect(db.hasAnyPendingMessageId("telegram:interactive", "300", [originalId])).toBe(false);
+      expect(listRunContinuations(db, "telegram:interactive")[0].state).toBe("completed");
+    } finally {
+      db.close();
+    }
+  });
+
 });

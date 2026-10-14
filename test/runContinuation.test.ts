@@ -14,6 +14,7 @@ import {
   requestRunContinuation,
   scanRunContinuations,
   settleRunContinuation,
+  requeueClaimedCapacityWait,
   claimCapacityWaitNotice,
   hasPendingCapacityWait,
 } from "../src/runContinuation.js";
@@ -145,7 +146,7 @@ describe("ordinary Run continuation", () => {
     }, 1_000);
     expect(db.updateRunFailed(continuation.originRunId, "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
 
-    const claimed = claimDueRunContinuation(db, continuation.id, 6_000);
+    const claimed = claimDueRunContinuation(db, continuation.id, 6_000, { leaseMs: 400 });
     expect(claimed?.state).toBe("claimed");
 
     expect(hasPendingCapacityWait(db, "telegram:interactive", "123")).toBe(true);
@@ -708,4 +709,183 @@ describe("ordinary Run continuation", () => {
     expect(listRunContinuations(db)[0].state).toBe("expired");
     db.close();
   });
+
+  it("competing runner cannot reclaim active claimed capacity wait before lease expiry under default options", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-compete-default",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed("run-compete-default", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    // Runner 1 claims with default lease (90s) at t=6000
+    const claim1 = claimDueRunContinuation(db, continuation.id, 6_000, { runId: "runner-1" });
+    expect(claim1).not.toBeNull();
+    expect(claim1?.claimRunId).toBe("runner-1");
+
+    // Runner 2 attempts to claim at t=10000 (before 90s lease expires, default options - no custom isProcessAlive)
+    const competing = claimDueRunContinuation(db, continuation.id, 10_000, { runId: "runner-2" });
+    expect(competing).toBeNull();
+
+    // Runner 2 attempts to claim at t=100000 (after 90s lease expired)
+    const reclaimed = claimDueRunContinuation(db, continuation.id, 100_000, { runId: "runner-2" });
+    expect(reclaimed).not.toBeNull();
+    expect(reclaimed?.claimRunId).toBe("runner-2");
+    db.close();
+  });
+
+  it("stale claimant callback cannot settle or requeue continuation after newer claimant took ownership", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-stale-callback",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+    expect(db.updateRunFailed("run-stale-callback", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    // Runner 1 claims with short lease (1000ms) at t=6000
+    claimDueRunContinuation(db, continuation.id, 6_000, { runId: "runner-1", leaseMs: 1_000 });
+
+    // Lease expires at t=8000; Runner 2 claims continuation
+    const runner2Claim = claimDueRunContinuation(db, continuation.id, 8_000, { runId: "runner-2", leaseMs: 10_000 });
+    expect(runner2Claim?.claimRunId).toBe("runner-2");
+
+    // Stale runner 1 returns late at t=8500 and attempts to requeue:
+    requeueClaimedCapacityWait(db, continuation.id, 8_500, "runner-1");
+    // Ownership MUST still belong to runner 2, state still claimed:
+    let current = listRunContinuations(db)[0];
+    expect(current.state).toBe("claimed");
+    expect(current.claimRunId).toBe("runner-2");
+
+    // Stale runner 1 attempts to settle as completed:
+    settleRunContinuation(db, continuation.id, "completed", undefined, 8_600, "runner-1");
+    current = listRunContinuations(db)[0];
+    expect(current.state).toBe("claimed");
+    expect(current.claimRunId).toBe("runner-2");
+
+    // Authoritative runner 2 settles as completed:
+    settleRunContinuation(db, continuation.id, "completed", undefined, 9_000, "runner-2");
+    current = listRunContinuations(db)[0];
+    expect(current.state).toBe("completed");
+    db.close();
+  });
+
+  it("settleRunContinuation cannot overwrite cancelled or completed continuation", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-protect-state",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+    }, 1_000);
+
+    // User cancels wait:
+    expect(cancelPendingRunContinuation(db, continuation.id, "user stopped")).toBe(true);
+    expect(listRunContinuations(db)[0].state).toBe("cancelled");
+
+    // Stale expiry or completion callback:
+    settleRunContinuation(db, continuation.id, "expired", undefined, 10_000);
+    expect(listRunContinuations(db)[0].state).toBe("cancelled");
+
+    settleRunContinuation(db, continuation.id, "completed", undefined, 10_000);
+    expect(listRunContinuations(db)[0].state).toBe("cancelled");
+    db.close();
+  });
+
+  it("recovers from terminal expiry notification delivery failure and retries on subsequent scan", async () => {
+    const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const pendingMsg = db.dequeueMsgs("telegram:interactive", "123")[0];
+
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-exp-retry",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [pendingMsg.id],
+    }, 1_000);
+    expect(db.updateRunFailed("run-exp-retry", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    const onExpired = vi.fn().mockRejectedValueOnce(new Error("Telegram transient delivery failure"))
+      .mockResolvedValueOnce(undefined);
+
+    const expiryTime = Date.parse(continuation.expiresAt) + 1_000;
+
+    // First scan: delivery fails (throws error)
+    await expect(
+      scanRunContinuations(db, "telegram:interactive", vi.fn(), expiryTime, {
+        onCapacityExpired: onExpired,
+        leaseMs: 500,
+      })
+    ).rejects.toThrow("Telegram transient delivery failure");
+
+    // Original pending message was safely retired from queue (cannot be replayed):
+    expect(db.hasAnyPendingMessageId("telegram:interactive", "123", [pendingMsg.id])).toBe(false);
+
+    // Continuation is marked expiryDeliveryPending and claimed, NOT expired:
+    const afterFail = listRunContinuations(db)[0];
+    expect(afterFail.state).toBe("claimed");
+    expect(afterFail.expiryDeliveryPending).toBe(true);
+
+    // Second scan (after lease): delivery succeeds
+    await scanRunContinuations(db, "telegram:interactive", vi.fn(), expiryTime + 1_000, {
+      onCapacityExpired: onExpired,
+    });
+
+    expect(onExpired).toHaveBeenCalledTimes(2);
+    const afterSuccess = listRunContinuations(db)[0];
+    expect(afterSuccess.state).toBe("expired");
+    db.close();
+  });
+
+  it("concurrent scans do not duplicate final expiry notification", async () => {
+    const { db } = setup();
+    db.enqueueMsg("telegram:interactive", "123", { prompt: "test prompt", chatId: 123, chatType: "private", userId: 42 });
+    const pendingMsg = db.dequeueMsgs("telegram:interactive", "123")[0];
+
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-exp-concurrent",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "capacity wait",
+      afterSeconds: 5,
+      capacityWait: true,
+      retainedPendingMessageIds: [pendingMsg.id],
+    }, 1_000);
+    expect(db.updateRunFailed("run-exp-concurrent", "MODEL_CAPACITY_EXHAUSTED")).toBe(true);
+
+    const onExpired = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    const expiryTime = Date.parse(continuation.expiresAt) + 1_000;
+
+    // Run two concurrent scans:
+    await Promise.all([
+      scanRunContinuations(db, "telegram:interactive", vi.fn(), expiryTime, { onCapacityExpired: onExpired, runId: "runner-a" }),
+      scanRunContinuations(db, "telegram:interactive", vi.fn(), expiryTime, { onCapacityExpired: onExpired, runId: "runner-b" }),
+    ]);
+
+    // Exactly one scan delivered the notification:
+    expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(listRunContinuations(db)[0].state).toBe("expired");
+    db.close();
+  });
+
 });
