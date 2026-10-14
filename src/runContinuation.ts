@@ -515,7 +515,9 @@ export function settleRunContinuation(
     if (!current) return;
     if (current.state === "completed" || current.state === "cancelled") return;
     if (outcome === "expired" && current.state === "expired") return;
-    if (outcome !== "expired" && current.state !== "claimed") return;
+    if (outcome !== "expired"
+      && current.state !== "claimed"
+      && !(current.capacityWait && outcome === "completed" && current.state === "pending")) return;
     // Capacity callbacks must prove the exact acquisition, rather than the
     // long-lived service process that happened to perform it.
     if (current.capacityWait && current.state === "claimed") {
@@ -607,7 +609,7 @@ export async function scanRunContinuations(
       const ids = candidate.retainedPendingMessageIds ?? [];
       if (!candidate.expiryDeliveryPending) {
         if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
-          settleRunContinuation(db, candidate.id, "completed", undefined, nowMs);
+          settleRunContinuation(db, candidate.id, "completed", undefined, nowMs, candidate.claimToken);
           continue;
         }
         if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
@@ -628,7 +630,10 @@ export async function scanRunContinuations(
         if (current.expiryDeliveryPending) {
           const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
           const claimantAlive = current.claimRunId && options?.isProcessAlive?.(current.claimRunId);
-          if (claimExpiresAtMs > nowMs && claimantAlive !== false) return null;
+          // A verified live claimant may still be inside an external delivery
+          // call after its lease. Do not duplicate that delivery; only a
+          // known-dead claimant or an unknown claimant past its lease yields.
+          if (claimantAlive === true || (claimExpiresAtMs > nowMs && claimantAlive !== false)) return null;
         }
 
         if (ids.length > 0 && !current.expiryDeliveryPending) {
