@@ -735,6 +735,18 @@ export class BridgeEngine {
       console.error(`[${this.kind}] prompt execution failed`, error);
       if (error instanceof PreviewCleanupError) {
         console.error(`[${this.kind}] abandoned preview cleanup failed; suppressing terminal output`, error.cause);
+        // Provider execution has already settled, but final delivery cannot be
+        // established. Retire only the rows owned by this lane as terminally
+        // uncertain: releasing them would blindly replay side effects.
+        const terminalPendingIds = [...new Set([...activePendingIds, ...claimedPendingIds])];
+        if (terminalPendingIds.length > 0) {
+          const retired = this.db.completePendingMsgs(laneHandle, terminalPendingIds);
+          if (!retired && !this.db.retireQueuedPendingMsgs(this.surfaceIdentity, chatKey, terminalPendingIds)) {
+            outcome = "fenced";
+            return "fenced";
+          }
+          activeTaskCommitted = true;
+        }
         await sendSurfaceMessage({
           client: this.client,
           kind: this._deliveryKind(),
