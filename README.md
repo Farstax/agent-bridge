@@ -122,6 +122,14 @@ Content Crawler is the reference extension:
 
 Additional external Sensors use the same file and automatically appear in `/sensors`; no Sensor daemon, scheduler, database, or plugin lifecycle is involved.
 
+## Security, authorization and autonomy limits
+
+Agent Bridge runs real coding agents with the runtime account's tools and host permissions. The production non-root account deliberately retains unrestricted passwordless sudo; messaging allowlists restrict **who can ask it to act**, not what an authorized agent can do. Follow [Security and hardening](docs/SECURITY-AND-HARDENING.md) before exposing a bot or attaching sensitive repositories. Suspected vulnerabilities should follow [private disclosure guidance](SECURITY.md).
+
+Autonomous Goals can use bounded **Episodes** composed of **Cycles**. Each Cycle executes through the same ordinary provider **Run**, with the runtime reconciling `continue`, `done` or `blocked` rather than trusting model-authored lifecycle JSON. Budgets bound Episode scheduling, **not** every interactive Run, provider token usage or real-world spending. Cancelled Runs are fenced, but past actions cannot be undone.
+
+See the [FAQ](docs/FAQ.md) for the difference between agent Skills and enforced host/GitHub permissions, messaging access, stopping work and where data goes.
+
 ## Quick start from source
 
 Requirements:
