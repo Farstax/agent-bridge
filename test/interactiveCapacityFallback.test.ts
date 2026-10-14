@@ -14,6 +14,7 @@ import {
 } from "../src/interactiveBot.js";
 import { listRunContinuations, scanRunContinuations } from "../src/runContinuation.js";
 import { TELEGRAM_SURFACE_CAPABILITIES } from "../src/platform.js";
+import { combineCapacityRetryOpportunities } from "../src/providers/capacityRetryTiming.js";
 
 // Claude (and, by shared ACP transport, Codex) resolve to ACP-stdio, which
 // engine.ts drives through exec.runProviderInvocation rather than
@@ -635,4 +636,98 @@ describe("interactive capacity fallback durable admission", () => {
     }
   });
 
+  it("combines mixed provider retry timing across attempt orders to preserve bounded 300s unknown timing", async () => {
+    for (const order of [["codex", "claude"], ["claude", "codex"]] as const) {
+      const db = openDb(":memory:");
+      const client = makeMockClient();
+      const fallbackChain = new ProviderFallbackChain([...order], db, "telegram:interactive", () => true);
+      const fallbackRequests = new Map<string, any>();
+      const capacityFallbackAttempts = new Map<string, any>();
+      const notifications: string[] = [];
+
+      const makeEngine = (kind: "codex" | "claude", error: Error) => new BridgeEngine(
+        {
+          surfaceIdentity: "telegram:interactive",
+          kind,
+          botConfig: { command: kind, modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          busyMessageMode: "augment",
+          pollIntervalMs: 1_000,
+          hooks: {
+            onProviderFallbackRequested: async (chatKey, reason, context) => {
+              fallbackRequests.set(chatKey, reason);
+              if (reason === "capacity" && context) {
+                const previous = capacityFallbackAttempts.get(chatKey);
+                const retryAfter = kind === "codex" ? 7200 : undefined;
+                const combined = combineCapacityRetryOpportunities(previous, {
+                  ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
+                  ...(retryAfter === undefined ? { hasUnknownCapacityTiming: true } : {}),
+                });
+                capacityFallbackAttempts.set(chatKey, {
+                  ...context,
+                  provider: kind,
+                  retryAfterSeconds: combined.retryAfterSeconds,
+                  ...(combined.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
+                });
+              }
+            },
+          },
+        },
+        db,
+        client,
+        {
+          runCli: vi.fn().mockRejectedValue(error) as any,
+          runProviderInvocation: asAcpAdapter(vi.fn().mockRejectedValue(error)),
+        },
+      );
+
+      const codexError = new Error("MODEL_CAPACITY_EXHAUSTED");
+      const claudeError = new Error("MODEL_CAPACITY_EXHAUSTED");
+      const engines = {
+        codex: makeEngine("codex", codexError),
+        claude: makeEngine("claude", claudeError),
+      };
+
+      const deps = {
+        engines,
+        fallbackChain,
+        fallbackRequests,
+        capacityFallbackAttempts,
+        db,
+        notify: async (msg: string) => { notifications.push(msg); },
+        onCliSwitched: async (cli: any) => setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, cli),
+      };
+
+      for (const engine of Object.values(engines)) {
+        engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+      }
+
+      try {
+        setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey: "100" }, order[0]);
+        const outcome = await dispatchInteractiveWithFallback({
+          update_id: 1,
+          message: {
+            message_id: 101,
+            chat: { id: 100, type: "private" },
+            from: { id: 42, first_name: "Test" },
+            text: "do research",
+          },
+        }, "100", deps);
+
+        expect(outcome).toBe("queued");
+        const continuations = listRunContinuations(db, "telegram:interactive");
+        expect(continuations).toHaveLength(1);
+        const continuation = continuations[0];
+        // Must be scheduled for 300s, not 7200s:
+        const scheduledDelaySeconds = Math.round((Date.parse(continuation.dueAt) - Date.parse(continuation.requestedAt)) / 1000);
+        expect(scheduledDelaySeconds).toBe(300);
+
+        // Must emit the generic automatic retry notice (since timing is unknown):
+        expect(notifications).toContain("All available providers are temporarily at capacity. I’ll retry automatically and continue your task when one becomes available.");
+      } finally {
+        db.close();
+      }
+    }
+  });
 });

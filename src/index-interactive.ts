@@ -266,14 +266,15 @@ const engines = Object.fromEntries(
                   ? capacityRetryAfterSeconds({ data: { capacityResetsAt: resetAt } }) ?? undefined
                   : context.retryAfterSeconds;
                 const previous = capacityFallbackAttempts.get(chatKey);
+                const combined = combineCapacityRetryOpportunities(previous, {
+                  ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+                  ...(context.hasUnknownCapacityTiming || retryAfterSeconds === undefined ? { hasUnknownCapacityTiming: true } : {}),
+                });
                 capacityFallbackAttempts.set(chatKey, {
                   ...context,
                   provider: kind,
-                  ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
-                  ...(previous?.retryAfterSeconds !== undefined && (retryAfterSeconds === undefined || previous.retryAfterSeconds < retryAfterSeconds)
-                    ? { retryAfterSeconds: previous.retryAfterSeconds }
-                    : {}),
-                  ...((previous?.retryAfterSeconds === undefined && retryAfterSeconds === undefined && (previous?.hasUnknownCapacityTiming || context.hasUnknownCapacityTiming)) ? { hasUnknownCapacityTiming: true as const } : {}),
+                  retryAfterSeconds: combined.retryAfterSeconds,
+                  ...(combined.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
                 });
               }
             },
