@@ -230,7 +230,7 @@ if (scheduledActorId) {
       if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
       fallbackChain.setActiveCli(continuation.chatKey, provider);
       const turn = buildDiscordRunContinuationTurn(continuation, scheduledActorId);
-      await dispatchInteractiveTurnWithFallback(turn, {
+      return dispatchInteractiveTurnWithFallback(turn, {
         engines,
         fallbackChain,
         fallbackRequests,
@@ -475,7 +475,12 @@ async function handleInteraction(d: any): Promise<void> {
         interaction_token: d.token,
         type: 5,
       }).catch((err) => console.warn("[discord-interactive] /start ACK failed", err));
-      await engines[getUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: channelId })].handleInteractiveTurn(resolution.turn);
+      await dispatchInteractiveTurnWithFallback(resolution.turn, {
+        engines,
+        fallbackChain,
+        db,
+        notify: async (text) => { await client.sendMessage({ chat_id: channelId, text }); },
+      });
       return;
     }
 
@@ -501,7 +506,12 @@ async function handleInteraction(d: any): Promise<void> {
       clearInteractiveFallbackState(fallbackChain, chatKey);
       cancelPendingRunContinuationsForChat(db, "discord:interactive", chatKey, "session reset by user");
     }
-    await engines[getUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey })].handleInteractiveTurn(turn);
+    await dispatchInteractiveTurnWithFallback(turn, {
+      engines,
+      fallbackChain,
+      db,
+      notify: async (text) => { await client.sendMessage({ chat_id: channelId, text }); },
+    });
   }
 }
 

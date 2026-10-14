@@ -730,13 +730,6 @@ export class BridgeEngine {
         outcome = "committed";
         return "committed";
       }
-      if (error instanceof CliTimeoutError) {
-        const pendingTimeout = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
-        for (const queued of pendingTimeout) {
-          this._deleteQueuedAttachments(queued.attachments);
-          this.db.deletePendingMsg(queued.id);
-        }
-      }
       let providerError = error instanceof Error ? error : new Error(String(error));
       let priorEvidence: ProviderFailureEvidence | null = null;
       const executionProvider = providerIdForBotName(this._executionKind());
@@ -792,12 +785,14 @@ export class BridgeEngine {
           }
           console.error(`[${this.kind}] same-provider fresh-session retry also failed`, retryError);
           providerError = retryError instanceof Error ? retryError : new Error(String(retryError));
-          // The retry may itself have executed the task; an error without
-          // provider evidence (a local post-provider failure) fails closed.
-          if (!readProviderFailureEvidence(providerError)) {
-            attachProviderFailureEvidence(providerError, { promptSubmitted: true });
-          }
-          decision = decideProviderRecovery(executionProvider, providerError, priorEvidence);
+          // A post-provider hook/storage error has no ACP provenance.  It
+          // must fail closed instead of borrowing an earlier attempt's
+          // evidence and causing a second provider execution.
+          decision = decideProviderRecovery(
+            executionProvider,
+            providerError,
+            readProviderFailureEvidence(providerError) ? priorEvidence : null,
+          );
         }
       }
 
@@ -903,12 +898,9 @@ export class BridgeEngine {
           finalDeliveryPhase = this._claimFinalDeliveryPhase(input.laneHandle);
           return finalDeliveryPhase !== null;
         },
-        // Only provider-level failures deliberately classified as fallback-eligible
-        // escape this delivery boundary. Ordinary task/code errors retain the prior
-        // in-place error delivery semantics.
-        propagateExecutionError: (error) =>
-          decideProviderRecovery(providerIdForBotName(this._executionKind()), error).reason !== null,
-        propagateTimeoutErrors: true,
+        // The Run owner, not delivery, settles every execution error. Final
+        // delivery errors remain separately handled by messageDelivery.
+        propagateExecutionErrors: true,
         runId: input.runId,
         onEvent: input.collect,
         execution: async (onProgress: (text: string) => void, onAnswerDelta: (text: string) => void) => {

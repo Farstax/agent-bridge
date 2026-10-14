@@ -73,13 +73,13 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
-  it("never replays after prompt submission when the failure is unclassified", async () => {
+  it("hands an evidenced post-submission failure to the authorised successor", async () => {
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: connection lost mid-task", true); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
     try {
       expect(sourceRun).toHaveBeenCalledTimes(1);
-      expect(targetRun).not.toHaveBeenCalled();
-      expect(texts.some((t: string) => t.includes("connection lost mid-task"))).toBe(true);
+      expect(targetRun).toHaveBeenCalledTimes(1);
+      expect(texts).toContain("answer from fallback");
     } finally { db.close(); }
   });
 
@@ -91,7 +91,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
-  it("does not let a later pre-prompt failure erase an earlier submission across the fresh-session retry", async () => {
+  it("keeps evidence monotonic across a fresh-session retry and hands off", async () => {
     let calls = 0;
     const sourceRun = vi.fn(async () => {
       calls += 1;
@@ -101,7 +101,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
     try {
       expect(sourceRun).toHaveBeenCalledTimes(2);
-      expect(targetRun).not.toHaveBeenCalled();
+      expect(targetRun).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 
@@ -120,7 +120,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
-  it("treats a first attempt without evidence as possibly submitted (fail closed)", async () => {
+  it("uses a classified transient route without treating an untagged unknown as provider-origin", async () => {
     let calls = 0;
     const sourceRun = vi.fn(async () => {
       calls += 1;
@@ -129,7 +129,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     });
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
     try {
-      expect(targetRun).not.toHaveBeenCalled();
+      expect(targetRun).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 });
@@ -188,11 +188,12 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
     } finally { db.close(); }
   });
 
-  it("advances on provider rejections but not on post-submission transport failures", async () => {
+  it("advances an authorised surface-neutral chain for evidenced provider failures", async () => {
     const advancing = [
       new Error("usage limit reached"),
       new Error("Failed to authenticate"),
       submitted("socket hang up", false),
+      submitted("socket hang up", true),
       attachProviderFailureEvidence(new CliTimeoutError("pre-prompt timeout", "hard"), { promptSubmitted: false }),
     ];
     for (const error of advancing) {
@@ -202,17 +203,10 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
         expect(claude).toHaveBeenCalledTimes(1);
       } finally { db.close(); }
     }
-    for (const error of [submitted("socket hang up", true), new Error("socket hang up"), new ProviderStallError("stalled")]) {
-      const { db, claude, router, input } = routerOver(error);
-      try {
-        await expect(router.executeSurfaceNeutralTurn(input as any)).rejects.toThrow();
-        expect(claude).not.toHaveBeenCalled();
-      } finally { db.close(); }
-    }
   });
 
-  it("does not advance on an unclassified failure after submission or without evidence", async () => {
-    for (const error of [submitted("Internal error: lost", true), new Error("Internal error: lost")]) {
+  it("does not advance an unclassified failure without provider evidence", async () => {
+    for (const error of [new Error("Internal error: lost")]) {
       const { db, claude, router, input } = routerOver(error);
       try {
         await expect(router.executeSurfaceNeutralTurn(input as any)).rejects.toThrow();

@@ -399,7 +399,7 @@ export function settleRunContinuation(
 export async function scanRunContinuations(
   db: BridgeDb,
   surfaceIdentity: string,
-  dispatch: (continuation: RunContinuation) => Promise<void>,
+  dispatch: (continuation: RunContinuation) => Promise<"committed" | "queued" | "failed" | "fenced" | void>,
   nowMs = Date.now(),
   options?: ClaimRunContinuationOptions,
 ): Promise<void> {
@@ -408,7 +408,10 @@ export async function scanRunContinuations(
     const claimed = claimDueRunContinuation(db, candidate.id, nowMs, options);
     if (!claimed) continue;
     try {
-      await dispatch(claimed);
+      const outcome = await dispatch(claimed);
+      if (outcome === "failed" || outcome === "fenced") {
+        throw new Error(`continuation dispatch did not settle: ${outcome}`);
+      }
       settleRunContinuation(db, claimed.id, "completed");
     } catch (error) {
       settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error));
@@ -424,7 +427,7 @@ export class RunContinuationRunner {
   constructor(
     private readonly db: BridgeDb,
     private readonly surfaceIdentity: string,
-    private readonly dispatch: (continuation: RunContinuation) => Promise<void>,
+    private readonly dispatch: (continuation: RunContinuation) => Promise<"committed" | "queued" | "failed" | "fenced" | void>,
     private readonly scanMs = DEFAULT_SCAN_MS,
   ) {}
 
