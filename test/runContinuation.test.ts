@@ -326,6 +326,79 @@ describe("ordinary Run continuation", () => {
     db.close();
   });
 
+  it("real continuation callback does not complete continuation when child interactive turn fails", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-failed-real-dispatch",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-failed-real-dispatch");
+
+    const { ProviderFallbackChain } = await import("../src/providerFallback.js");
+    const { dispatchInteractiveTurnWithFallback } = await import("../src/interactiveBot.js");
+    const fallbackChain = new ProviderFallbackChain(["codex"], db, "telegram:interactive", () => true);
+    const mockEngine = {
+      handleInteractiveTurn: vi.fn().mockResolvedValue("failed"),
+      executeClaimedMessage: vi.fn(),
+    };
+    const deps = {
+      engines: { codex: mockEngine as any },
+      fallbackChain,
+      db,
+      notify: vi.fn(),
+    };
+
+    const continuationCallback = async (continuation: RunContinuation) => {
+      const turn = buildTelegramRunContinuationTurn(continuation, 42);
+      return dispatchInteractiveTurnWithFallback(turn, deps, new Set([continuation.provider]));
+    };
+
+    await expect(scanRunContinuations(db, "telegram:interactive", continuationCallback, 6_000))
+      .rejects.toThrow();
+    expect(listRunContinuations(db)[0].state).toBe("failed");
+    db.close();
+  });
+
+  it("does not complete continuation when dispatch reports queued and preserves claimed state", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-queued-dispatch",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-queued-dispatch");
+
+    await scanRunContinuations(db, "telegram:interactive", async () => "queued", 6_000);
+    const continuations = listRunContinuations(db);
+    expect(continuations[0].state).toBe("claimed");
+    db.close();
+  });
+
+  it("does not mark a continuation complete when dispatch reports a failed Run", async () => {
+    const { db } = setup();
+    requestForActiveRun(db, {
+      originRunId: "run-failed-dispatch",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "123",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-failed-dispatch");
+
+    await expect(scanRunContinuations(db, "telegram:interactive", async () => "failed", 6_000))
+      .rejects.toThrow(/did not settle/);
+    expect(listRunContinuations(db)[0]).toEqual(expect.objectContaining({ state: "failed" }));
+    db.close();
+  });
+
   it("does not resume if the provider session binding changed after the origin Run", async () => {
     const { db } = setup();
     requestForActiveRun(db, {

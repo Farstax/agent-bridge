@@ -3,8 +3,8 @@ import type { BridgeEngine, SurfaceNeutralTurnInput } from "./engine.js";
 import type { BridgeEvent } from "./events/types.js";
 import { ProviderFallbackChain } from "./providerFallback.js";
 import { providerIdForBotName } from "./providers/registry.js";
-import { readProviderFailureEvidence } from "./providers/failureEvidence.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
+import { markHandoffRequired } from "./handoffState.js";
 import type { BotKind } from "./types.js";
 
 export interface SurfaceNeutralProviderRouterOptions {
@@ -113,9 +113,7 @@ export function createSurfaceNeutralProviderRouter(
           // failure proven to precede prompt submission may advance the chain.
           const failure = error instanceof Error ? error : new Error(String(error));
           const decision = decideProviderRecovery(providerIdForBotName(provider), failure);
-          const recoverable = decision.reason === "capacity"
-            || decision.reason === "auth_required"
-            || (decision.reason !== null && readProviderFailureEvidence(failure)?.promptSubmitted === false);
+          const recoverable = decision.reason !== null;
           if (!recoverable) {
             for (const event of attemptEvents) input.collect(event);
             throw error;
@@ -125,6 +123,10 @@ export function createSurfaceNeutralProviderRouter(
             for (const event of attemptEvents) input.collect(event);
             throw error;
           }
+          // This route has no chat-specific presentation layer, but uses the
+          // same durable inspection-first handoff context as interactive
+          // turns. The successor is instructed to reconcile prior work.
+          markHandoffRequired(options.db, options.surfaceIdentity, input.chatKey, next, `fallback_from_${provider}`);
           // The failed provider/model attempt was abandoned in favour of the
           // next configured CLI. Preserve its non-terminal diagnostics for
           // audit (especially prompt-submission evidence) without letting its

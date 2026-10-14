@@ -257,7 +257,7 @@ runContinuationRunner = new RunContinuationRunner(db, surfaceIdentity, async (co
   if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
   fallbackChain.setActiveCli(continuation.chatKey, provider);
   const turn = buildTelegramRunContinuationTurn(continuation, scheduledActorId);
-  await dispatchInteractiveTurnWithFallback(turn, dispatchDeps(String(turn.delivery.chatId), turn.threadId, continuation.chatKey), new Set([provider]));
+  return dispatchInteractiveTurnWithFallback(turn, dispatchDeps(String(turn.delivery.chatId), turn.threadId, continuation.chatKey), new Set([provider]));
 });
 
 // ── Socket Mode ──────────────────────────────────────────────────────────────

@@ -73,13 +73,80 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
-  it("never replays after prompt submission when the failure is unclassified", async () => {
+  it("proves the authorised successor inspects seeded partial work, receives handoff context, and completes remaining work", async () => {
+    const db = openDb(":memory:");
+    const chatKey = "946";
+    const fallbackRequests = new Map<string, ProviderFallbackReason>();
+    const fallbackChain = new ProviderFallbackChain(["codex", "claude"], db, "telegram:interactive", () => true);
+    const telegram = client();
+
+    const partialWork = { step1Executed: false, step2Executed: false };
+    let capturedPrompt = "";
+
+    const codexRun = vi.fn(async () => {
+      partialWork.step1Executed = true;
+      throw submitted("Internal error: connection lost mid-task", true);
+    });
+
+    const claudeRun = vi.fn(async (_cmd: string, _args: string[], _cwd: string, _opts: any, acpRequest: any) => {
+      capturedPrompt = acpRequest?.prompt ?? "";
+      expect(partialWork.step1Executed).toBe(true);
+      partialWork.step2Executed = true;
+      return {
+        text: "Inspected partial work: Step 1 already complete. Completed Step 2 successfully.",
+        sessionId: "claude-fresh",
+        stopReason: "end_turn",
+      };
+    });
+
+    const make = (kind: "codex" | "claude", runProviderInvocation: any) => new BridgeEngine({
+      surfaceIdentity: "telegram:interactive",
+      kind,
+      botConfig: { command: kind, modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      busyMessageMode: "augment",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+      hooks: {
+        onProviderFallbackRequested: async (key, reason) => { fallbackRequests.set(key, reason); },
+      },
+    }, db, telegram, { runProviderInvocation } as any);
+
+    const engines = {
+      codex: make("codex", codexRun),
+      claude: make("claude", claudeRun),
+    };
+    const deps = { engines, fallbackChain, fallbackRequests, db, notify: async () => {} };
+    for (const engine of Object.values(engines)) {
+      engine.setQueuedMessageHandler(async (queued) => dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, deps));
+    }
+    setUserCliPreference(db, { surfaceIdentity: "telegram:interactive", chatKey }, "codex");
+
+    await dispatchInteractiveWithFallback({
+      update_id: 946,
+      message: { message_id: 1, chat: { id: 946, type: "private" }, from: { id: 42, first_name: "T" }, text: "Execute two-step migration" },
+    }, chatKey, deps);
+
+    expect(codexRun).toHaveBeenCalledTimes(1);
+    expect(claudeRun).toHaveBeenCalledTimes(1);
+    expect(partialWork.step1Executed).toBe(true);
+    expect(partialWork.step2Executed).toBe(true);
+    expect(capturedPrompt).toContain("[Agent Bridge handoff]");
+    expect(capturedPrompt).toContain("Execute two-step migration");
+
+    const texts = telegram.sendMessage.mock.calls.map(([body]: [any]) => String(body?.text ?? ""));
+    expect(texts.filter((t) => t.includes("Completed Step 2 successfully"))).toHaveLength(1);
+    db.close();
+  });
+
+  it("hands an evidenced post-submission failure to the authorised successor", async () => {
     const sourceRun = vi.fn(async () => { throw submitted("Internal error: connection lost mid-task", true); });
     const { db, targetRun, texts } = await runCodexThenClaude(sourceRun);
     try {
       expect(sourceRun).toHaveBeenCalledTimes(1);
-      expect(targetRun).not.toHaveBeenCalled();
-      expect(texts.some((t: string) => t.includes("connection lost mid-task"))).toBe(true);
+      expect(targetRun).toHaveBeenCalledTimes(1);
+      expect(texts).toContain("answer from fallback");
     } finally { db.close(); }
   });
 
@@ -91,7 +158,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
-  it("does not let a later pre-prompt failure erase an earlier submission across the fresh-session retry", async () => {
+  it("keeps evidence monotonic across a fresh-session retry and hands off", async () => {
     let calls = 0;
     const sourceRun = vi.fn(async () => {
       calls += 1;
@@ -101,7 +168,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
     try {
       expect(sourceRun).toHaveBeenCalledTimes(2);
-      expect(targetRun).not.toHaveBeenCalled();
+      expect(targetRun).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 
@@ -120,7 +187,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     } finally { db.close(); }
   });
 
-  it("treats a first attempt without evidence as possibly submitted (fail closed)", async () => {
+  it("uses a classified transient route without treating an untagged unknown as provider-origin", async () => {
     let calls = 0;
     const sourceRun = vi.fn(async () => {
       calls += 1;
@@ -129,7 +196,7 @@ describe("evidence-based provider recovery through the interactive route owner",
     });
     const { db, targetRun } = await runCodexThenClaude(sourceRun);
     try {
-      expect(targetRun).not.toHaveBeenCalled();
+      expect(targetRun).toHaveBeenCalledTimes(1);
     } finally { db.close(); }
   });
 });
@@ -188,11 +255,12 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
     } finally { db.close(); }
   });
 
-  it("advances on provider rejections but not on post-submission transport failures", async () => {
+  it("advances an authorised surface-neutral chain for evidenced provider failures", async () => {
     const advancing = [
       new Error("usage limit reached"),
       new Error("Failed to authenticate"),
       submitted("socket hang up", false),
+      submitted("socket hang up", true),
       attachProviderFailureEvidence(new CliTimeoutError("pre-prompt timeout", "hard"), { promptSubmitted: false }),
     ];
     for (const error of advancing) {
@@ -202,17 +270,10 @@ describe("the surface-neutral route owner consumes the same verdict", () => {
         expect(claude).toHaveBeenCalledTimes(1);
       } finally { db.close(); }
     }
-    for (const error of [submitted("socket hang up", true), new Error("socket hang up"), new ProviderStallError("stalled")]) {
-      const { db, claude, router, input } = routerOver(error);
-      try {
-        await expect(router.executeSurfaceNeutralTurn(input as any)).rejects.toThrow();
-        expect(claude).not.toHaveBeenCalled();
-      } finally { db.close(); }
-    }
   });
 
-  it("does not advance on an unclassified failure after submission or without evidence", async () => {
-    for (const error of [submitted("Internal error: lost", true), new Error("Internal error: lost")]) {
+  it("does not advance an unclassified failure without provider evidence", async () => {
+    for (const error of [new Error("Internal error: lost")]) {
       const { db, claude, router, input } = routerOver(error);
       try {
         await expect(router.executeSurfaceNeutralTurn(input as any)).rejects.toThrow();

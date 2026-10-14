@@ -20,6 +20,8 @@ const MAX_REASON_CHARS = 500;
 
 export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired" | "cancelled";
 
+export type ContinuationDispatchOutcome = "committed" | "queued" | "failed" | "fenced" | "deferred" | void | boolean;
+
 export interface RolloutProvenance {
   reconciledAt: string;
   reason: string;
@@ -55,6 +57,8 @@ export interface RunContinuation {
   capacityNoticeSent?: true;
   /** Original queue receipt retained through capacity recovery. */
   retainedPendingMessageIds?: number[];
+  /** The task was retired due to capacity expiry and awaits final notification. */
+  expiryDeliveryPending?: true;
 }
 
 export interface RequestRunContinuationInput {
@@ -98,6 +102,7 @@ function parse(value: string): RunContinuation | null {
     ) return null;
     if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
     if (candidate.capacityNoticeSent !== undefined && candidate.capacityNoticeSent !== true) return null;
+    if (candidate.expiryDeliveryPending !== undefined && candidate.expiryDeliveryPending !== true) return null;
     if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
@@ -296,15 +301,12 @@ export function claimDueRunContinuation(
         }
         const claimantRunId = current.claimRunId;
         const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
-        if (claimantRunId && options?.isProcessAlive) {
+        if (options?.isProcessAlive && claimantRunId) {
           if (options.isProcessAlive(claimantRunId)) {
             return null;
           }
         } else if (claimExpiresAtMs > nowMs) {
-          const isAlive = options?.isProcessAlive ?? ((rId: string) => getRunOwnedProcessState(rId) !== "absent");
-          if (claimantRunId ? isAlive(claimantRunId) : true) {
-            return null;
-          }
+          return null;
         }
       }
       if (
@@ -493,12 +495,19 @@ export function settleRunContinuation(
   outcome: "completed" | "failed" | "expired",
   error?: string,
   nowMs = Date.now(),
+  claimantToken?: string,
 ): void {
   db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
     if (!current) return;
-    if (outcome !== "expired" && current.state !== "claimed") return;
+    if (current.state === "completed" || current.state === "cancelled") return;
+    if (outcome === "expired") {
+      if (current.state === "expired") return;
+    } else {
+      if (current.state !== "claimed") return;
+      if (claimantToken && current.claimRunId && current.claimRunId !== claimantToken) return;
+    }
     const settled: RunContinuation = {
       ...current,
       state: outcome,
@@ -510,11 +519,17 @@ export function settleRunContinuation(
 }
 
 /** A wake that did not obtain the retained queue work remains retryable. */
-function requeueClaimedCapacityWait(db: BridgeDb, id: string, nowMs: number): void {
+export function requeueClaimedCapacityWait(
+  db: BridgeDb,
+  id: string,
+  nowMs: number,
+  claimantToken?: string,
+): void {
   db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
     if (!current?.capacityWait || current.state !== "claimed") return;
+    if (claimantToken && current.claimRunId && current.claimRunId !== claimantToken) return;
     if (Date.parse(current.expiresAt) <= nowMs) {
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
         .run(JSON.stringify({ ...current, state: "expired" }), key(id));
@@ -529,43 +544,88 @@ function requeueClaimedCapacityWait(db: BridgeDb, id: string, nowMs: number): vo
 export async function scanRunContinuations(
   db: BridgeDb,
   surfaceIdentity: string,
-  dispatch: (continuation: RunContinuation) => Promise<void | boolean>,
+  dispatch: (continuation: RunContinuation) => Promise<ContinuationDispatchOutcome>,
   nowMs = Date.now(),
   options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
 ): Promise<void> {
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
     if (candidate.state !== "pending" && !(candidate.state === "claimed" && candidate.capacityWait)) continue;
     if (candidate.capacityWait && Date.parse(candidate.expiresAt) <= nowMs) {
+// Candidate state is pending or claimed capacity wait
       const ids = candidate.retainedPendingMessageIds ?? [];
-      if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
-        settleRunContinuation(db, candidate.id, "completed", undefined, nowMs);
-        continue;
-      }
-      if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
-        continue;
-      }
-      if (ids.length > 0) {
-        if (!db.retireQueuedPendingMsgs(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+      if (!candidate.expiryDeliveryPending) {
+        if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+          settleRunContinuation(db, candidate.id, "completed", undefined, nowMs);
+          continue;
+        }
+        if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
           continue;
         }
       }
-      settleRunContinuation(db, candidate.id, "expired", undefined, nowMs);
-      await options?.onCapacityExpired?.(candidate);
+
+      const runnerRunId = options?.runId ?? (db as any).runId ?? "continuation-runner";
+      const leaseMs = options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000;
+      const claimExpiresAt = new Date(nowMs + leaseMs).toISOString();
+
+      const claimedExpiry = db.runInTransaction((): RunContinuation | null => {
+        const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(candidate.id)) as { value: string } | undefined;
+        const current = row ? parse(row.value) : null;
+        if (!current || current.state === "completed" || current.state === "cancelled" || current.state === "expired") return null;
+
+        if (current.expiryDeliveryPending && current.claimRunId && current.claimRunId !== runnerRunId) {
+          const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
+          if (options?.isProcessAlive) {
+            if (options.isProcessAlive(current.claimRunId)) return null;
+          } else if (claimExpiresAtMs > nowMs) {
+            return null;
+          }
+        }
+
+        if (ids.length > 0 && !current.expiryDeliveryPending) {
+          if (!db.retireQueuedPendingMsgs(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+            if (db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+              return null;
+            }
+          }
+        }
+
+        const updated: RunContinuation = {
+          ...current,
+          state: "claimed",
+          expiryDeliveryPending: true,
+          claimRunId: runnerRunId,
+          claimExpiresAt,
+          claimedAt: current.claimedAt ?? new Date(nowMs).toISOString(),
+        };
+        db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(updated), key(candidate.id));
+        return updated;
+      });
+
+      if (!claimedExpiry) continue;
+
+      await options?.onCapacityExpired?.(claimedExpiry);
+      settleRunContinuation(db, claimedExpiry.id, "expired", undefined, nowMs, claimedExpiry.claimRunId);
       continue;
     }
     const claimed = claimDueRunContinuation(db, candidate.id, nowMs, options);
     if (!claimed) continue;
     try {
-      const dispatched = await dispatch(claimed);
-      // A capacity callback must prove that the retained queue item progressed.
-      // Returning false leaves the one admitted task pending for another wake.
-      if (claimed.capacityWait && dispatched === false) {
-        requeueClaimedCapacityWait(db, claimed.id, nowMs);
+      const outcome = await dispatch(claimed);
+      if (claimed.capacityWait) {
+        if (outcome === false || outcome === "queued") {
+          requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimRunId);
+          continue;
+        }
+      }
+      if (outcome === "failed" || outcome === "fenced") {
+        throw new Error(`continuation dispatch did not settle: ${outcome}`);
+      }
+      if (outcome === "queued") {
         continue;
       }
-      settleRunContinuation(db, claimed.id, "completed", undefined, nowMs);
+      settleRunContinuation(db, claimed.id, "completed", undefined, nowMs, claimed.claimRunId);
     } catch (error) {
-      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error), nowMs);
+      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error), nowMs, claimed.claimRunId);
       throw error;
     }
   }
@@ -578,7 +638,7 @@ export class RunContinuationRunner {
   constructor(
     private readonly db: BridgeDb,
     private readonly surfaceIdentity: string,
-    private readonly dispatch: (continuation: RunContinuation) => Promise<void | boolean>,
+    private readonly dispatch: (continuation: RunContinuation) => Promise<ContinuationDispatchOutcome>,
     private readonly scanMs = DEFAULT_SCAN_MS,
     private readonly options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
   ) {}

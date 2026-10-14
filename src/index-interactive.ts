@@ -492,7 +492,7 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
     if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
     fallbackChain.setActiveCli(continuation.chatKey, provider);
     const turn = buildTelegramRunContinuationTurn(continuation, scheduledActorId);
-    await dispatchInteractiveTurnWithFallback(turn, {
+    return dispatchInteractiveTurnWithFallback(turn, {
       engines,
       fallbackChain,
       fallbackRequests,

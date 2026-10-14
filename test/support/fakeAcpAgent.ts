@@ -203,6 +203,10 @@ export function createFakeAcpAgent(options: FakeAcpAgentOptions = {}): acp.Agent
         return { stopReason: "cancelled" };
       }
 
+      if (text.includes("EMPTY_END_TURN")) {
+        return { stopReason: "end_turn" };
+      }
+
       if (text.includes("KILL_UNCANCELLABLE")) {
         const outputFile = process.env.FAKE_ACP_OUTPUT_FILE;
         if (!outputFile) throw new Error("FAKE_ACP_OUTPUT_FILE is required for KILL_UNCANCELLABLE");

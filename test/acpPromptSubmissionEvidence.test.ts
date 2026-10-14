@@ -93,13 +93,13 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
       // Attempt 1 submitted; the later setup failure must not be recorded as pre-prompt.
       expect(events.filter((event) => event.type === "run.diagnostic").map((event) => event.promptSubmitted))
         .toEqual([true, true]);
-      expect(decideProviderRecovery("codex", error as Error).reason).toBeNull();
+      expect(decideProviderRecovery("codex", error as Error).reason).toBe("provider_transport_failure");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
 
-  it("does not start a successor attempt for an unclassified failure after prompt submission", async () => {
+  it("does not replay in the ACP runtime before handing an unclassified submitted failure to a route owner", async () => {
     const dir = mkdtempSync(join(tmpdir(), "acp-evidence-"));
     try {
       const events: any[] = [];
@@ -111,7 +111,7 @@ describe("ACP prompt submission evidence at the runtime boundary", () => {
       const diagnostics = events.filter((event) => event.type === "run.diagnostic");
       expect(diagnostics).toHaveLength(1);
       expect(diagnostics[0]).toMatchObject({ attempt: 1, successorStarted: false, retryEligible: false, promptSubmitted: true });
-      expect(decideProviderRecovery("codex", error as Error).reason).toBeNull();
+      expect(decideProviderRecovery("codex", error as Error).reason).toBe("provider_transport_failure");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

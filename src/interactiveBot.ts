@@ -14,6 +14,8 @@ import { adaptTelegramUpdate, type InteractiveSurroundingContextMessage, type In
 import { surfaceCapabilities, type MessagingPlatform } from "./platform.js";
 import { withPassiveSurroundingContext } from "./workspaceContext.js";
 import { persistProviderSession } from "./providers/sessionRuntime.js";
+import { providerIdForBotName } from "./providers/registry.js";
+import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import type { ConversationIdentity } from "./conversationIdentity.js";
 import { claimCapacityWaitNotice, requestRunContinuation } from "./runContinuation.js";
 
@@ -287,8 +289,8 @@ type PassiveContextClient = MessagingPlatform & {
 
 export interface InteractiveDispatchEngine {
   client?: PassiveContextClient;
-  handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<void>;
-  handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<void>;
+  handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<ExecutionOutcome | void>;
+  handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<ExecutionOutcome | void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
   recoverPendingQueue?: (chatKey: string, activeContinuationId?: string) => Promise<boolean>;
 }
@@ -446,7 +448,16 @@ async function dispatchInteractiveExecutionWithFallback(
   tried.add(activeCli);
   const engine = engines[activeCli];
   if (!engine) throw new Error(`No engine configured for CLI ${activeCli}`);
-  const outcome = await execution.execute(engine);
+  let outcome: ExecutionOutcome;
+  try {
+    outcome = await execution.execute(engine);
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    const decision = decideProviderRecovery(providerIdForBotName(activeCli), failure);
+    if (!decision.reason) throw error;
+    fallbackRequests?.set(chatKey, decision.reason);
+    outcome = "failed";
+  }
 
   const legacyAuthRequired = authRequiredChats?.has(chatKey) ?? false;
   const legacyCapacity = exhaustedChats?.has(chatKey) ?? false;
@@ -476,9 +487,9 @@ async function dispatchInteractiveExecutionWithFallback(
           : fallbackReason === "capacity"
             ? `Switching to ${next} (${activeCli} at capacity)`
             : `Switching to ${next} after ${activeCli} became unavailable.`;
-        await notify(notice);
+        await Promise.resolve(notify(notice)).catch((error) => console.warn("[interactive] fallback notice failed", error));
       }
-      if (onCliSwitched) await onCliSwitched(next);
+      if (onCliSwitched) await Promise.resolve(onCliSwitched(next)).catch((error) => console.warn("[interactive] fallback switch callback failed", error));
       if (execution.recoverPendingQueue && engines[next].recoverPendingQueue) {
         markPendingFallbackResume(fallbackChain, chatKey, tried, authRequiredClis);
         try {
@@ -547,7 +558,7 @@ function dispatchClaimedInteractiveExecution(
     identity: { surfaceIdentity: deps.surfaceIdentity ?? "telegram:interactive", chatKey },
     chatKey,
     recoverPendingQueue: false,
-    exhaustedOutcome: deps.capacityFallbackAttempts ? "deferred" : "committed",
+    exhaustedOutcome: "committed",
     capacityContinuationId: `capacity-wait:${message.id}`,
     retainedPendingMessageIds,
     execute: (engine) => engine.executeClaimedMessage(message),
@@ -599,16 +610,17 @@ export function dispatchInteractiveTurnWithFallback(
     execute: async (engine) => {
       const contextualTurn = await (contextualTurnPromise ??= loadPassiveContext(turn, engine));
       const context = contextualTurn.surroundingContext ?? [];
+      let outcome: ExecutionOutcome | void = undefined;
       await withPassiveSurroundingContext(context, async () => {
         if (deps.legacyUpdate && !engine.handleInteractiveTurn && engine.handleUpdate) {
-          await engine.handleUpdate(deps.legacyUpdate, chatKey);
+          outcome = await engine.handleUpdate(deps.legacyUpdate, chatKey);
         } else if (engine.handleInteractiveTurn) {
-          await engine.handleInteractiveTurn(contextualTurn);
+          outcome = await engine.handleInteractiveTurn(contextualTurn);
         } else {
           throw new Error(`interactive engine ${deps.fallbackChain.getActiveCli(chatKey)} does not accept neutral turns`);
         }
       });
-      return "committed";
+      return outcome ?? "committed";
     },
   }, deps, tried);
 }
