@@ -266,6 +266,20 @@ describe("slack surface through the existing engine (#943)", () => {
     expect(db.raw.prepare("SELECT COUNT(*) AS n FROM bridge_runs").get()).toEqual({ n: 0 });
   });
 
+  it("does not finish a receipt as completed when dispatch returns failed without a successful Run", async () => {
+    const h = harness();
+    const runtime = createSlackReceiptRuntime({
+      db, context: ctx, authorityScope: SURFACE,
+      dispatch: async () => "failed",
+      notify: async () => undefined,
+    });
+    const ack = vi.fn(async () => undefined);
+    await runtime.handleEnvelope({ ack, body: body(dm("hello"), "EvFailedDispatch") });
+    const receipt = db.getEventReceiptByIdempotencyKey("slack:T1:A1:EvFailedDispatch");
+    expect(receipt?.status).not.toBe("completed");
+    expect(receipt?.status).toBe("failed");
+  });
+
   it("a dispatch that throws fences the receipt and notifies once instead of replaying", async () => {
     const h = harness();
     const dispatchSpy = vi.fn(async () => { throw new Error("boom"); });

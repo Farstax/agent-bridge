@@ -288,8 +288,8 @@ type PassiveContextClient = MessagingPlatform & {
 
 export interface InteractiveDispatchEngine {
   client?: PassiveContextClient;
-  handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<void>;
-  handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<void>;
+  handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<ExecutionOutcome | void>;
+  handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<ExecutionOutcome | void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
   recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
 }
@@ -504,16 +504,17 @@ export function dispatchInteractiveTurnWithFallback(
     execute: async (engine) => {
       const contextualTurn = await (contextualTurnPromise ??= loadPassiveContext(turn, engine));
       const context = contextualTurn.surroundingContext ?? [];
+      let outcome: ExecutionOutcome | void = undefined;
       await withPassiveSurroundingContext(context, async () => {
         if (deps.legacyUpdate && !engine.handleInteractiveTurn && engine.handleUpdate) {
-          await engine.handleUpdate(deps.legacyUpdate, chatKey);
+          outcome = await engine.handleUpdate(deps.legacyUpdate, chatKey);
         } else if (engine.handleInteractiveTurn) {
-          await engine.handleInteractiveTurn(contextualTurn);
+          outcome = await engine.handleInteractiveTurn(contextualTurn);
         } else {
           throw new Error(`interactive engine ${deps.fallbackChain.getActiveCli(chatKey)} does not accept neutral turns`);
         }
       });
-      return "committed";
+      return outcome ?? "committed";
     },
   }, deps, tried);
 }

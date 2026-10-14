@@ -2054,4 +2054,123 @@ describe("BridgeEngine", () => {
       warn.mockRestore();
     });
   });
+
+  describe("post-execution hook and fallback reporting boundaries", () => {
+    it("does not re-execute or fall back to an alternate model when post-execution hook throws capacity-shaped error", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      let executionCount = 0;
+      const runCli = vi.fn().mockImplementation(async () => {
+        executionCount++;
+        return cursorResult("executed side effect");
+      });
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: ["model-1", "model-2"] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+          workingDir: process.cwd(),
+          hooks: {
+            onAfterExecute: async () => {
+              throw new Error("rate limit capacity exhausted");
+            },
+          },
+        },
+        db,
+        client,
+        acpEngineExec(runCli),
+      );
+
+      await engine.handleMessages([makeMessage("do work")]);
+      expect(executionCount).toBe(1);
+      expect(client.sendMessage).toHaveBeenCalled();
+      const sentText = client.sendMessage.mock.calls.map(([b]: [any]) => b?.text).join(" ");
+      expect(sentText).toContain("Error:");
+      expect(sentText).not.toContain("model-2");
+    });
+
+    it("settles Run as failed and does not strand running state when onProviderFallbackRequested rejects", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const runCli = vi.fn().mockRejectedValue(new Error("rate limit reached"));
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+          workingDir: process.cwd(),
+          hooks: {
+            onProviderFallbackRequested: async () => {
+              throw new Error("network partition during fallback notification");
+            },
+          },
+        },
+        db,
+        client,
+        acpEngineExec(runCli),
+      );
+
+      await engine.handleMessages([makeMessage("do work")]);
+      const runs = db.raw.prepare("SELECT * FROM bridge_runs").all() as any[];
+      expect(runs).toHaveLength(1);
+      expect(runs[0].status).toBe("failed");
+    });
+
+    it("settles correlated event receipt as failed when pre-admission hook throws", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const receipt = db.createEventReceipt({
+        event_id: "evt-pre-admission-fail",
+        source: "slack",
+        event_kind: "message",
+        idempotency_key: "test:pre-admission-failure",
+        received_at: new Date().toISOString(),
+        occurred_at: new Date().toISOString(),
+        payload_json: "{}",
+        authority_scope: "slack:team:app",
+      });
+      db.claimEventReceiptDispatch(receipt.id);
+
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000,
+          workingDir: process.cwd(),
+          hooks: {
+            onBeforeExecute: async () => {
+              throw new Error("pre-admission hook validation failed");
+            },
+          },
+        },
+        db,
+        client,
+      );
+
+      const outcome = await engine.handleInteractiveTurn({
+        surfaceIdentity: "test",
+        chatKey: "100",
+        actorId: "42",
+        messageId: "991",
+        text: "hello",
+        scheduledOccurrenceKey: `event-receipt:${receipt.id}`,
+        delivery: { chatId: 100, chatType: "private" },
+        attachments: [],
+      });
+
+      expect(outcome).toBe("failed");
+      const settled = db.getEventReceipt(receipt.id);
+      expect(settled?.status).toBe("failed");
+      expect(settled?.error_class).toBe("pre_admission_failed");
+    });
+  });
 });
