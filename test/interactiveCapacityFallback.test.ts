@@ -68,7 +68,7 @@ function makeMockClient() {
 }
 
 describe("interactive capacity fallback durable admission", () => {
-  it("suppresses terminal error output when an abandoned Claude preview cannot be deleted", async () => {
+  it("reports completion as unverified without replaying when an abandoned Claude preview cannot be deleted", async () => {
     const db = openDb(":memory:");
     const exhaustedChats = new Set<string>();
     const client = makeMockClient();
@@ -117,10 +117,12 @@ describe("interactive capacity fallback durable admission", () => {
 
       expect(claudeRun).toHaveBeenCalledTimes(1);
       expect(codexRun).not.toHaveBeenCalled();
-      expect(client.sendMessage).toHaveBeenCalledTimes(1);
+      expect(client.sendMessage).toHaveBeenCalledTimes(2);
       expect(client.sendMessage.mock.calls[0][0].text).toContain("stale Claude preview");
+      expect(client.sendMessage.mock.calls[1][0].text).toContain("Completion could not be verified safely");
       expect(notifications).toEqual([]);
       expect(db.pendingMsgCount("telegram:interactive", "100")).toBe(0);
+      expect(db.raw.prepare("SELECT status FROM bridge_runs WHERE chat_id = ?").get("100")).toEqual({ status: "failed" });
     } finally {
       db.close();
     }
