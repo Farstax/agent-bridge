@@ -13,7 +13,10 @@ import {
   requestRunContinuation,
   scanRunContinuations,
   settleRunContinuation,
+  reconcileRunContinuations,
+  linkRunContinuationRun,
 } from "../src/runContinuation.js";
+import { BridgeEngine } from "../src/engine.js";
 
 const paths: string[] = [];
 
@@ -356,6 +359,330 @@ describe("ordinary Run continuation", () => {
     claimDueRunContinuation(db, "run-8", 6_000);
     settleRunContinuation(db, "run-8", "completed", undefined, 7_000);
     expect(listRunContinuations(db)[0].state).toBe("completed");
+    db.close();
+  });
+  it("carries scheduledOccurrenceKey correlation on continuation turns", () => {
+    const { db } = setup();
+    const continuation = requestForActiveRun(db, {
+      originRunId: "run-turn-key",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "-100:42",
+      provider: "codex",
+      reason: "CI pending",
+      afterSeconds: 60,
+    }, 1_000);
+    const tgTurn = buildTelegramRunContinuationTurn(continuation, "123");
+    expect(tgTurn.scheduledOccurrenceKey).toBe("run-continuation:v1:run-turn-key");
+
+    const discordContinuation = requestForActiveRun(db, {
+      originRunId: "run-discord-key",
+      surfaceIdentity: "discord:interactive",
+      chatKey: "123456789",
+      provider: "claude",
+      reason: "CI pending",
+      afterSeconds: 60,
+    }, 1_000);
+    const dcTurn = buildDiscordRunContinuationTurn(discordContinuation, "456");
+    expect(dcTurn.scheduledOccurrenceKey).toBe("run-continuation:v1:run-discord-key");
+    db.close();
+  });
+  it("settles a queued continuation to completed when the queued turn later executes and succeeds", async () => {
+    const { db } = setup();
+    const chatKey = "123";
+    requestForActiveRun(db, {
+      originRunId: "run-queued-e2e-ok",
+      surfaceIdentity: "telegram:interactive",
+      chatKey,
+      provider: "claude",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-queued-e2e-ok");
+
+    const cliMock = vi.fn().mockImplementation(async (_cmd, _args, _cwd, opts) => {
+      opts?.onEvent?.({
+        type: "run.started",
+        version: 1,
+        id: "evt-start",
+        runId: opts.eventContext.runId,
+        timestamp: new Date().toISOString(),
+        bot: "claude",
+        chatId: chatKey,
+        chatKey,
+        command: "cursor",
+        cwd: "/tmp",
+        model: null,
+      });
+      opts?.onEvent?.({
+        type: "run.completed",
+        version: 1,
+        id: "evt-done",
+        runId: opts.eventContext.runId,
+        timestamp: new Date().toISOString(),
+        bot: "claude",
+        chatId: chatKey,
+        chatKey,
+        text: "Continuation work completed",
+        sessionId: "session-succ",
+      });
+      return { stdout: "Continuation work completed", stderr: "", exitCode: 0 };
+    });
+
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive",
+      kind: "claude",
+      botConfig: { command: "cursor", modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+    }, db, {
+      getSurfaceCapabilities: () => ({ maxMessageLength: 4096, editMessages: true, deleteMessages: true, previewStreaming: true, threads: true, attachments: true, typing: true, polling: true, remoteFileDownload: true, richMessages: true, passiveSurroundingContext: false, formatting: "telegram-html" }),
+      sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
+      getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),
+      sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+      setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
+      answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
+      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+      deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
+      sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
+      sendDocument: vi.fn().mockResolvedValue({ ok: true }),
+    } as any, {
+      runCli: cliMock,
+      runCliAsync: cliMock,
+      runProviderInvocation: async (_bot, _p, _c, _i, _o, opts) => {
+        await cliMock("cursor", [], "/tmp", opts);
+        return { text: "Continuation work completed", sessionId: "session-succ", stopReason: "end_turn" };
+      },
+    } as any);
+
+    // Acquire lock on lane to force incoming turn to queue
+    const handle = db.acquireLock("telegram:interactive", chatKey, "busy-owner");
+    expect(handle).not.toBeNull();
+
+    // Scan continuations: dispatch should return "queued"
+    await scanRunContinuations(db, "telegram:interactive", async (c) => {
+      const turn = buildTelegramRunContinuationTurn(c, "42");
+      return engine.handleInteractiveTurn(turn);
+    }, 6_000);
+
+    // Verify continuation is claimed and pending message has correlation key
+    const continuations = listRunContinuations(db);
+    expect(continuations[0].state).toBe("claimed");
+    expect(db.hasPendingMessageForCorrelationKey("telegram:interactive", "run-continuation:v1:run-queued-e2e-ok")).toBe(true);
+
+    // The active owner drains the queue using its owned handle
+    const nextMsg = db.claimNextPendingMsg(handle!);
+    expect(nextMsg).not.toBeNull();
+    await (engine as any)._drainQueueAndUnlock(handle!, nextMsg);
+
+    const settled = listRunContinuations(db);
+    expect(settled[0].state).toBe("completed");
+    expect(settled[0].successorRunId).toBeTruthy();
+    db.close();
+  });
+
+  it("settles a queued continuation to failed when the queued turn later executes and fails", async () => {
+    const { db } = setup();
+    const chatKey = "124";
+    requestForActiveRun(db, {
+      originRunId: "run-queued-e2e-fail",
+      surfaceIdentity: "telegram:interactive",
+      chatKey,
+      provider: "claude",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-queued-e2e-fail");
+
+    const cliMock = vi.fn().mockImplementation(async (_cmd, _args, _cwd, opts) => {
+      opts?.onEvent?.({
+        type: "run.started",
+        version: 1,
+        id: "evt-start",
+        runId: opts.eventContext.runId,
+        timestamp: new Date().toISOString(),
+        bot: "claude",
+        chatId: chatKey,
+        chatKey,
+        command: "cursor",
+        cwd: "/tmp",
+        model: null,
+      });
+      opts?.onEvent?.({
+        type: "run.failed",
+        version: 1,
+        id: "evt-fail",
+        runId: opts.eventContext.runId,
+        timestamp: new Date().toISOString(),
+        bot: "claude",
+        chatId: chatKey,
+        chatKey,
+        error: "fatal provider crash",
+      });
+      throw new Error("fatal provider crash");
+    });
+
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive",
+      kind: "claude",
+      botConfig: { command: "cursor", modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+    }, db, {
+      getSurfaceCapabilities: () => ({ maxMessageLength: 4096, editMessages: true, deleteMessages: true, previewStreaming: true, threads: true, attachments: true, typing: true, polling: true, remoteFileDownload: true, richMessages: true, passiveSurroundingContext: false, formatting: "telegram-html" }),
+      sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
+      getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),
+      sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+      setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
+      answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
+      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+      deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
+      sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
+      sendDocument: vi.fn().mockResolvedValue({ ok: true }),
+    } as any, {
+      runCli: cliMock,
+      runCliAsync: cliMock,
+      runProviderInvocation: async (_bot, _p, _c, _i, _o, opts) => cliMock("cursor", [], "/tmp", opts),
+    } as any);
+
+    const handle = db.acquireLock("telegram:interactive", chatKey, "busy-owner");
+    await scanRunContinuations(db, "telegram:interactive", async (c) => {
+      const turn = buildTelegramRunContinuationTurn(c, "42");
+      return engine.handleInteractiveTurn(turn);
+    }, 6_000);
+
+    const nextMsg = db.claimNextPendingMsg(handle!);
+    expect(nextMsg).not.toBeNull();
+    await (engine as any)._drainQueueAndUnlock(handle!, nextMsg);
+
+    const settled = listRunContinuations(db);
+    expect(settled[0].state).toBe("failed");
+    db.close();
+  });
+
+  it("settles a queued continuation to cancelled when /stop arrives while queued", async () => {
+    const { db } = setup();
+    const chatKey = "125";
+    requestForActiveRun(db, {
+      originRunId: "run-queued-e2e-stop",
+      surfaceIdentity: "telegram:interactive",
+      chatKey,
+      provider: "claude",
+      reason: "CI pending",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-queued-e2e-stop");
+
+    const engine = new BridgeEngine({
+      surfaceIdentity: "telegram:interactive",
+      kind: "claude",
+      botConfig: { command: "cursor", modelPreference: [] },
+      allowedUserIds: new Set(["42"]),
+      executionMode: "safe",
+      pollIntervalMs: 1000,
+      workingDir: process.cwd(),
+    }, db, {
+      getSurfaceCapabilities: () => ({ maxMessageLength: 4096, editMessages: true, deleteMessages: true, previewStreaming: true, threads: true, attachments: true, typing: true, polling: true, remoteFileDownload: true, richMessages: true, passiveSurroundingContext: false, formatting: "telegram-html" }),
+      sendMessage: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 1 } }),
+      getUpdates: vi.fn().mockResolvedValue({ result: [], ok: true }),
+      sendChatAction: vi.fn().mockResolvedValue({ ok: true }),
+      setMyCommands: vi.fn().mockResolvedValue({ ok: true }),
+      answerCallbackQuery: vi.fn().mockResolvedValue({ ok: true }),
+      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+      deleteMessage: vi.fn().mockResolvedValue({ ok: true }),
+      sendPhoto: vi.fn().mockResolvedValue({ ok: true }),
+      sendDocument: vi.fn().mockResolvedValue({ ok: true }),
+    } as any, {
+      runCli: vi.fn(),
+      runCliAsync: vi.fn(),
+      runProviderInvocation: vi.fn(),
+    } as any);
+
+    const handle = db.acquireLock("telegram:interactive", chatKey, "busy-owner");
+    await scanRunContinuations(db, "telegram:interactive", async (c) => {
+      const turn = buildTelegramRunContinuationTurn(c, "42");
+      return engine.handleInteractiveTurn(turn);
+    }, 6_000);
+
+    expect(db.hasPendingMessageForCorrelationKey("telegram:interactive", "run-continuation:v1:run-queued-e2e-stop")).toBe(true);
+    expect(listRunContinuations(db)[0].state).toBe("claimed");
+
+    // Send /stop
+    const stopOutcome = await engine.handleInteractiveTurn({
+      surfaceIdentity: "telegram:interactive",
+      chatKey,
+      actorId: "42",
+      messageId: "stop-msg",
+      text: "/stop",
+      delivery: { chatId: 125, chatType: "private" },
+    });
+    expect(stopOutcome).toBe("fenced");
+
+    // Continuation should be cancelled and pending messages discarded
+    expect(listRunContinuations(db)[0].state).toBe("cancelled");
+    expect(db.hasPendingMessageForCorrelationKey("telegram:interactive", "run-continuation:v1:run-queued-e2e-stop")).toBe(false);
+    db.unlock(handle!);
+    db.close();
+  });
+
+  it("reconcileRunContinuations reconciles restart state without leaving permanent orphans or replaying completed work", () => {
+    const { db } = setup();
+
+    // 1. Claimed continuation with pending message in queue remains claimed
+    const c1 = requestForActiveRun(db, {
+      originRunId: "run-rec-1",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "126",
+      provider: "claude",
+      reason: "wait",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-rec-1");
+    claimDueRunContinuation(db, "run-rec-1", 6_000);
+    db.enqueueMsg("telegram:interactive", "126", {
+      prompt: "continuation turn",
+      chatId: "rec-1",
+      chatType: "private",
+      scheduledOccurrenceKey: "run-continuation:v1:run-rec-1",
+    });
+
+    // 2. Claimed continuation with completed successor run settles completed
+    const c2 = requestForActiveRun(db, {
+      originRunId: "run-rec-2",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "127",
+      provider: "claude",
+      reason: "wait",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-rec-2");
+    claimDueRunContinuation(db, "run-rec-2", 6_000);
+    db.insertRun("successor-run-2", { surfaceIdentity: "telegram:interactive", chatKey: "127" }, "claude");
+    db.updateRunCompleted("successor-run-2", "success", "session-2");
+    linkRunContinuationRun(db, "run-rec-2", "successor-run-2");
+
+    // 3. Claimed continuation with no pending message and no successor run settles failed
+    const c3 = requestForActiveRun(db, {
+      originRunId: "run-rec-3",
+      surfaceIdentity: "telegram:interactive",
+      chatKey: "128",
+      provider: "claude",
+      reason: "wait",
+      afterSeconds: 5,
+    }, 1_000);
+    completeOriginRun(db, "run-rec-3");
+    claimDueRunContinuation(db, "run-rec-3", 6_000);
+
+    // Run reconciliation
+    reconcileRunContinuations(db, "telegram:interactive", 7_000);
+
+    const conts = Object.fromEntries(listRunContinuations(db).map((c) => [c.id, c.state]));
+    expect(conts["run-rec-1"]).toBe("claimed");
+    expect(conts["run-rec-2"]).toBe("completed");
+    expect(conts["run-rec-3"]).toBe("failed");
     db.close();
   });
 });

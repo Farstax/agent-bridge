@@ -65,7 +65,7 @@ import { EventStore } from "./events/store.js";
 import type { BridgeConfig, BotKind, RouteableBotKind, TelegramUpdate, TelegramMessage, TelegramCallbackQuery, CliResult, CliOptions } from "./types.js";
 import { ExecutionLockLostError, type BridgeDb, type ExecutionLaneHandle } from "./db.js";
 import { DEFAULT_CONTEXT_MAX_CHARS } from "./db.js";
-import { linkScheduledOccurrenceRun } from "./scheduledRunCorrelation.js";
+import { linkScheduledOccurrenceRun, markScheduledOccurrenceFailed, SCHEDULED_OCCURRENCE_PREFIX } from "./scheduledRunCorrelation.js";
 import { resolveTimeoutsForKind } from "./timeouts.js";
 import { SCRATCHPAD_GUIDANCE, prependHandoffModel, prependProviderFallbackContinuation } from "./promptWrapping.js";
 import type { AdvisorCapabilityIssuer } from "./advisorBroker.js";
@@ -79,7 +79,7 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
-import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat } from "./runContinuation.js";
+import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation } from "./runContinuation.js";
 
 export interface HookContext {
   chatId: number | string;
@@ -405,8 +405,7 @@ export class BridgeEngine {
           this.laneCoordinator.markResetting(executionLane);
           this.laneCoordinator.markAborted(executionLane);
           resetHandle = await abortExecutionAndWait(executionLane);
-          const pending = this.db.dequeueMsgs(this.surfaceIdentity, chatKey);
-          for (const queued of pending) { this._deleteQueuedAttachments(queued.attachments); this.db.deletePendingMsg(queued.id); }
+          this._discardPendingMessages(chatKey);
         }
         const commandResponse = handleCommand(this.kind, commandText, { db: this.db, chatId: chatKey, config: this._effectiveConfig(), surfaceIdentity: this.surfaceIdentity, defaultBusyMessageMode: this.opts.busyMessageMode ?? "augment" });
         if (commandResponse) {
@@ -626,7 +625,10 @@ export class BridgeEngine {
     void attachmentLocalPath;
     let prompt = rawPrompt;
     try {
-      if (this.hooks.onBeforeExecute) prompt = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
+      if (this.hooks.onBeforeExecute) {
+        const transformed = await this.hooks.onBeforeExecute(rawPrompt, hookCtx);
+        if (typeof transformed === "string") prompt = transformed;
+      }
     } catch (error) {
       // This is a local ingress hook, before provider admission. Do not
       // classify it as a provider failure or silently drop the user action.
@@ -643,6 +645,10 @@ export class BridgeEngine {
           if (Number.isFinite(receiptId)) {
             this.db.finishEventReceipt(receiptId, { status: "failed", error_class: "pre_admission_failed" });
           }
+        } else if (key.startsWith(SCHEDULED_OCCURRENCE_PREFIX)) {
+          markScheduledOccurrenceFailed(this.db, key, "pre_admission_failed");
+        } else if (key.startsWith(RUN_CONTINUATION_PREFIX)) {
+          settleRunContinuation(this.db, key.slice(RUN_CONTINUATION_PREFIX.length), "failed", "pre_admission_failed");
         }
       }
       return "failed";
@@ -914,6 +920,17 @@ export class BridgeEngine {
         else if (outcome === "failed") this.db.updateRunFailed(runId, "prompt execution failed");
       }
       if (cancelled || outcome === "fenced" || outcome === "failed") {
+        for (const key of scheduledOccurrenceKeys) {
+          if (key.startsWith(RUN_CONTINUATION_PREFIX)) {
+            const continuationId = key.slice(RUN_CONTINUATION_PREFIX.length);
+            settleRunContinuation(
+              this.db,
+              continuationId,
+              cancelled || outcome === "fenced" ? "cancelled" : "failed",
+              cancelled ? "Run cancelled by user" : outcome === "fenced" ? "Run lost execution ownership" : "Run failed",
+            );
+          }
+        }
         cancelPendingRunContinuation(
           this.db,
           runId,
@@ -1019,6 +1036,18 @@ export class BridgeEngine {
     }
   }
 
+  private _correlateRunContinuations(keys: string[], runId: string): void {
+    for (const key of keys) {
+      const continuationId = key.slice(RUN_CONTINUATION_PREFIX.length);
+      if (!continuationId) continue;
+      linkRunContinuationRun(this.db, continuationId, runId);
+      const status = this.db.getRun(runId)?.status;
+      if (status === "done") settleRunContinuation(this.db, continuationId, "completed");
+      else if (status === "failed") settleRunContinuation(this.db, continuationId, "failed", this.db.getRun(runId)?.error ?? "run failed");
+      else if (status === "cancelled") settleRunContinuation(this.db, continuationId, "cancelled", this.db.getRun(runId)?.error ?? "run cancelled");
+    }
+  }
+
   private _linkScheduledOccurrences(scheduledOccurrenceKeys: string[], runId: string): void {
     if (scheduledOccurrenceKeys.length === 0) return;
     if (!this.db.getRun(runId)) return;
@@ -1028,6 +1057,10 @@ export class BridgeEngine {
       // row rather than the scheduled-occurrence table.
       if (occurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
         this._correlateEventReceipts([occurrenceKey], runId);
+        continue;
+      }
+      if (occurrenceKey.startsWith(RUN_CONTINUATION_PREFIX)) {
+        this._correlateRunContinuations([occurrenceKey], runId);
         continue;
       }
       if (!linkScheduledOccurrenceRun(this.db, occurrenceKey, runId)) {
@@ -1073,6 +1106,19 @@ export class BridgeEngine {
     for (const queued of pending) {
       this._deleteQueuedAttachments(queued.attachments);
       this.db.deletePendingMsg(queued.id);
+      if (queued.scheduledOccurrenceKey) {
+        if (queued.scheduledOccurrenceKey.startsWith(RUN_CONTINUATION_PREFIX)) {
+          const continuationId = queued.scheduledOccurrenceKey.slice(RUN_CONTINUATION_PREFIX.length);
+          settleRunContinuation(this.db, continuationId, "cancelled", "continuation cancelled while queued");
+        } else if (queued.scheduledOccurrenceKey.startsWith(EVENT_RECEIPT_CORRELATION_PREFIX)) {
+          const receiptId = Number(queued.scheduledOccurrenceKey.slice(EVENT_RECEIPT_CORRELATION_PREFIX.length));
+          if (Number.isSafeInteger(receiptId)) {
+            this.db.finishEventReceipt(receiptId, { status: "cancelled", error_class: "cancelled_while_queued" });
+          }
+        } else if (queued.scheduledOccurrenceKey.startsWith(SCHEDULED_OCCURRENCE_PREFIX)) {
+          markScheduledOccurrenceFailed(this.db, queued.scheduledOccurrenceKey, "cancelled_while_queued");
+        }
+      }
     }
   }
 
