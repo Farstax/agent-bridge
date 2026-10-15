@@ -17,6 +17,7 @@ import { persistProviderSession } from "./providers/sessionRuntime.js";
 import { providerIdForBotName } from "./providers/registry.js";
 import { decideProviderRecovery } from "./providers/recoveryVerdict.js";
 import type { ConversationIdentity } from "./conversationIdentity.js";
+import { claimCapacityWaitNotice, requestRunContinuation } from "./runContinuation.js";
 
 export type CliKind = "codex" | "claude" | "antigravity" | "grok" | "cursor" | "custom-acp";
 export type InteractiveCommandRegistration = {
@@ -291,7 +292,7 @@ export interface InteractiveDispatchEngine {
   handleInteractiveTurn?: (turn: InteractiveTurnInput) => Promise<ExecutionOutcome | void>;
   handleUpdate?: (update: TelegramUpdate, chatKey?: string) => Promise<ExecutionOutcome | void>;
   executeClaimedMessage(message: PendingMessage): Promise<ExecutionOutcome>;
-  recoverPendingQueue?: (chatKey: string) => Promise<boolean>;
+  recoverPendingQueue?: (chatKey: string, activeContinuationId?: string) => Promise<boolean>;
 }
 
 export interface InteractiveDispatchDeps {
@@ -299,6 +300,7 @@ export interface InteractiveDispatchDeps {
   engines: Record<string, InteractiveDispatchEngine>;
   fallbackChain: ProviderFallbackChain;
   fallbackRequests?: Map<string, ProviderFallbackReason>;
+  capacityFallbackAttempts?: Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; provider?: CliKind; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>;
   /** Legacy test/embedding compatibility; production uses fallbackRequests. */
   exhaustedChats?: Set<string>;
   authRequiredChats?: Set<string>;
@@ -308,9 +310,41 @@ export interface InteractiveDispatchDeps {
   legacyUpdate?: TelegramUpdate;
 }
 
-const pendingFallbackTries = new WeakMap<ProviderFallbackChain, Map<string, Set<string>>>();
+/**
+ * Wake a capacity-held admission without manufacturing a second interactive
+ * turn. Each engine observes the same durable queue and handler, so a fresh
+ * queue claim re-enters the normal fallback chain with a fresh tried set.
+ */
+export async function resumeCapacityHeldQueue(
+  input: { chatKey: string; provider: string; surfaceIdentity: string; id?: string; retainedPendingMessageIds?: number[] },
+  deps: Pick<InteractiveDispatchDeps, "engines" | "fallbackChain"> & Partial<Pick<InteractiveDispatchDeps, "db">>,
+): Promise<boolean> {
+  const candidates = [input.provider, ...deps.fallbackChain.getChain()];
+  for (const candidate of candidates) {
+    const engine = deps.engines[candidate];
+    if (!engine?.recoverPendingQueue) continue;
+    const recovered = input.id !== undefined ? await engine.recoverPendingQueue(input.chatKey, input.id) : await engine.recoverPendingQueue(input.chatKey);
+    if (recovered) {
+      // A callback returning is not proof of recovery. The original receipt
+      // must have been consumed by its queue owner before this wait settles.
+      if (!deps.db) return true;
+      if (input.retainedPendingMessageIds && input.retainedPendingMessageIds.length > 0) {
+        return !deps.db.hasAnyPendingMessageId(input.surfaceIdentity, input.chatKey, input.retainedPendingMessageIds);
+      }
+      return deps.db.pendingMsgCount(input.surfaceIdentity, input.chatKey) === 0;
+    }
+  }
+  return false;
+}
 
-function fallbackTryMap(chain: ProviderFallbackChain): Map<string, Set<string>> {
+interface FallbackProgress {
+  tried: Set<string>;
+  authRequiredClis: Set<string>;
+}
+
+const pendingFallbackTries = new WeakMap<ProviderFallbackChain, Map<string, FallbackProgress>>();
+
+function fallbackTryMap(chain: ProviderFallbackChain): Map<string, FallbackProgress> {
   let pending = pendingFallbackTries.get(chain);
   if (!pending) {
     pending = new Map();
@@ -319,17 +353,20 @@ function fallbackTryMap(chain: ProviderFallbackChain): Map<string, Set<string>> 
   return pending;
 }
 
-function markPendingFallbackResume(chain: ProviderFallbackChain, chatKey: string, tried: ReadonlySet<string>): void {
-  fallbackTryMap(chain).set(chatKey, new Set(tried));
+function markPendingFallbackResume(chain: ProviderFallbackChain, chatKey: string, tried: ReadonlySet<string>, authRequiredClis?: ReadonlySet<string>): void {
+  fallbackTryMap(chain).set(chatKey, {
+    tried: new Set(tried),
+    authRequiredClis: new Set(authRequiredClis ?? []),
+  });
 }
 
-function consumePendingFallbackResume(chain: ProviderFallbackChain, chatKey: string): Set<string> | null {
+function consumePendingFallbackResume(chain: ProviderFallbackChain, chatKey: string): FallbackProgress | null {
   const pending = pendingFallbackTries.get(chain);
-  const tried = pending?.get(chatKey) ?? null;
-  if (!tried) return null;
+  const progress = pending?.get(chatKey) ?? null;
+  if (!progress) return null;
   pending!.delete(chatKey);
   if (pending!.size === 0) pendingFallbackTries.delete(chain);
-  return tried;
+  return progress;
 }
 
 function clearPendingFallbackResume(chain: ProviderFallbackChain, chatKey: string): void {
@@ -341,6 +378,31 @@ function clearPendingFallbackResume(chain: ProviderFallbackChain, chatKey: strin
 
 export function clearInteractiveFallbackState(chain: ProviderFallbackChain, chatKey: string): void {
   clearPendingFallbackResume(chain, chatKey);
+}
+
+export function capacityWaitNotice(
+  retryAfterSeconds: number | undefined,
+  unknownTiming: boolean | undefined,
+  userTimeZone?: string,
+  mixedAuthAndCapacity = false,
+): string {
+  const prefix = mixedAuthAndCapacity
+    ? "Configured providers are temporarily at capacity or require authentication."
+    : "All available providers are temporarily at capacity.";
+  if (unknownTiming || retryAfterSeconds === undefined) {
+    return `${prefix} I’ll retry automatically and continue your task when one becomes available.`;
+  }
+  const timeZone = userTimeZone || "UTC";
+  const when = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(Date.now() + retryAfterSeconds * 1_000));
+  return `${prefix} I’ll retry automatically at ${when} (${timeZone}) and continue your task.`;
 }
 
 function prepareCliHandoff(db: BridgeDb, identity: ConversationIdentity, targetCli: CliKind, reason: string): void {
@@ -361,19 +423,23 @@ interface InteractiveFallbackExecution {
   execute: (engine: InteractiveDispatchEngine) => Promise<ExecutionOutcome>;
   recoverPendingQueue: boolean;
   exhaustedOutcome: ExecutionOutcome;
+  capacityContinuationId?: string;
+  retainedPendingMessageIds?: number[];
 }
 
 async function dispatchInteractiveExecutionWithFallback(
   execution: InteractiveFallbackExecution,
   deps: InteractiveDispatchDeps,
   tried: Set<string>,
+  authRequiredClis = new Set<string>(),
 ): Promise<ExecutionOutcome> {
   const { chatKey, identity } = execution;
-  const { engines, fallbackChain, fallbackRequests, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
+  const { engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, exhaustedChats, authRequiredChats, db, notify, onCliSwitched } = deps;
   fallbackRequests?.delete(chatKey);
   exhaustedChats?.delete(chatKey);
   authRequiredChats?.delete(chatKey);
   if (tried.size === 0) {
+    capacityFallbackAttempts?.delete(chatKey);
     const pref = getUserCliPreference(db, identity);
     fallbackChain.setActiveCli(chatKey, pref);
   }
@@ -398,6 +464,7 @@ async function dispatchInteractiveExecutionWithFallback(
   const fallbackReason = fallbackRequests?.get(chatKey)
     ?? (legacyAuthRequired ? "auth_required" : legacyCapacity ? "capacity" : null);
   if (fallbackReason) {
+    if (fallbackReason === "auth_required") authRequiredClis.add(activeCli);
     fallbackRequests?.delete(chatKey);
     exhaustedChats?.delete(chatKey);
     authRequiredChats?.delete(chatKey);
@@ -411,18 +478,20 @@ async function dispatchInteractiveExecutionWithFallback(
     if (next) {
       prepareCliHandoff(db, identity, next, `fallback_from_${activeCli}`);
       fallbackChain.setActiveCli(chatKey, next);
-      const notice = fallbackReason === "auth_required"
-        ? `${activeCli} needs re-authentication. Falling back to ${next}…`
-        : fallbackReason === "capacity"
-          ? `Switching to ${next} (${activeCli} at capacity)`
-          : `Switching to ${next} after ${activeCli} became unavailable.`;
-      // Notices and optional command-registration callbacks cannot strand a
-      // user task after recovery has already been authorised. Durable handoff
-      // state was written above; storage/fencing errors still fail closed.
-      await Promise.resolve(notify(notice)).catch((error) => console.warn("[interactive] fallback notice failed", error));
+      // Legacy embeddings do not opt into durable capacity holding and retain
+      // their existing progress notices. Managed capacity waits emit only the
+      // final persisted waiting notice.
+      if (fallbackReason !== "capacity" || !capacityFallbackAttempts) {
+        const notice = fallbackReason === "auth_required"
+          ? `${activeCli} needs re-authentication. Falling back to ${next}…`
+          : fallbackReason === "capacity"
+            ? `Switching to ${next} (${activeCli} at capacity)`
+            : `Switching to ${next} after ${activeCli} became unavailable.`;
+        await Promise.resolve(notify(notice)).catch((error) => console.warn("[interactive] fallback notice failed", error));
+      }
       if (onCliSwitched) await Promise.resolve(onCliSwitched(next)).catch((error) => console.warn("[interactive] fallback switch callback failed", error));
       if (execution.recoverPendingQueue && engines[next].recoverPendingQueue) {
-        markPendingFallbackResume(fallbackChain, chatKey, tried);
+        markPendingFallbackResume(fallbackChain, chatKey, tried, authRequiredClis);
         try {
           const hasPending = await engines[next].recoverPendingQueue!(chatKey);
           if (hasPending) return "queued";
@@ -432,7 +501,38 @@ async function dispatchInteractiveExecutionWithFallback(
         }
         clearPendingFallbackResume(fallbackChain, chatKey);
       }
-      return dispatchInteractiveExecutionWithFallback(execution, deps, tried);
+      return dispatchInteractiveExecutionWithFallback(execution, deps, tried, authRequiredClis);
+    }
+    // Capacity recovery remains valid if a later eligible fallback needs auth:
+    // the existing configured chain still contains a provider that can recover.
+    if (fallbackReason === "capacity" || capacityFallbackAttempts?.has(chatKey)) {
+      const attempt = capacityFallbackAttempts?.get(chatKey);
+      if (attempt) {
+        const heldReceipt = execution.recoverPendingQueue
+          ? db.dequeueMsgs(identity.surfaceIdentity, chatKey)[0]
+          : null;
+        const retainedPendingMessageIds = execution.retainedPendingMessageIds
+          ?? (heldReceipt ? [heldReceipt.id] : undefined);
+        const isMixed = authRequiredClis.size > 0;
+        const continuation = requestRunContinuation(db, {
+          ...(execution.capacityContinuationId || heldReceipt ? { continuationId: execution.capacityContinuationId ?? `capacity-wait:${heldReceipt!.id}` } : {}),
+          originRunId: attempt.runId,
+          surfaceIdentity: identity.surfaceIdentity,
+          chatKey,
+          provider: attempt.provider ?? activeCli,
+          reason: isMixed
+            ? "configured providers are temporarily at capacity or require authentication"
+            : "all permitted providers are temporarily at capacity",
+          afterSeconds: attempt.retryAfterSeconds ?? 300,
+          capacityWait: true,
+          ...(retainedPendingMessageIds ? { retainedPendingMessageIds } : {}),
+          delivery: { chatId: attempt.chatId, chatType: attempt.chatType, ...(attempt.threadId === undefined ? {} : { threadId: attempt.threadId }) },
+        });
+        if (claimCapacityWaitNotice(db, continuation.id)) {
+          await notify(capacityWaitNotice(attempt.retryAfterSeconds, attempt.hasUnknownCapacityTiming, undefined, isMixed));
+        }
+        return "deferred";
+      }
     }
     await notify(fallbackReason === "auth_required"
       ? `${activeCli} needs re-authentication. No remaining configured fallback provider is available.`
@@ -449,14 +549,20 @@ function dispatchClaimedInteractiveExecution(
   chatKey: string,
   deps: InteractiveDispatchDeps,
   tried: Set<string>,
+  authRequiredClis = new Set<string>(),
 ): Promise<ExecutionOutcome> {
+  const retainedPendingMessageIds = message.pendingIds && message.pendingIds.length > 0
+    ? message.pendingIds
+    : [message.id];
   return dispatchInteractiveExecutionWithFallback({
     identity: { surfaceIdentity: deps.surfaceIdentity ?? "telegram:interactive", chatKey },
     chatKey,
     recoverPendingQueue: false,
     exhaustedOutcome: "committed",
+    capacityContinuationId: `capacity-wait:${message.id}`,
+    retainedPendingMessageIds,
     execute: (engine) => engine.executeClaimedMessage(message),
-  }, deps, tried);
+  }, deps, tried, authRequiredClis);
 }
 
 function shouldLoadPassiveContext(turn: InteractiveTurnInput): boolean {
@@ -598,6 +704,12 @@ export function dispatchClaimedInteractiveWithFallback(
   chatKey: string,
   deps: InteractiveDispatchDeps,
 ): Promise<ExecutionOutcome> {
-  const resumedTries = consumePendingFallbackResume(deps.fallbackChain, chatKey);
-  return dispatchClaimedInteractiveExecution(message, chatKey, deps, resumedTries ?? new Set());
+  const resumedProgress = consumePendingFallbackResume(deps.fallbackChain, chatKey);
+  return dispatchClaimedInteractiveExecution(
+    message,
+    chatKey,
+    deps,
+    resumedProgress?.tried ?? new Set(),
+    resumedProgress?.authRequiredClis ?? new Set(),
+  );
 }

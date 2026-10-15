@@ -5,6 +5,7 @@
  * This is intentionally not a scheduler or workflow engine.
  */
 import type { BridgeDb } from "./db.js";
+import { randomUUID } from "node:crypto";
 import type { InteractiveTurnInput } from "./interactiveIngress.js";
 import type { RouteableBotKind } from "./types.js";
 import { lookupProviderSession } from "./providers/sessionRuntime.js";
@@ -16,9 +17,12 @@ const DEFAULT_SCAN_MS = 5_000;
 const MIN_DELAY_SECONDS = 5;
 const MAX_DELAY_SECONDS = 30 * 60;
 const MAX_LIFETIME_MS = 2 * 60 * 60 * 1_000;
+const MAX_CAPACITY_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_REASON_CHARS = 500;
 
 export type RunContinuationState = "pending" | "claimed" | "completed" | "failed" | "expired" | "cancelled";
+
+export type ContinuationDispatchOutcome = "committed" | "queued" | "failed" | "fenced" | "deferred" | void | boolean;
 
 export interface RolloutProvenance {
   reconciledAt: string;
@@ -43,14 +47,29 @@ export interface RunContinuation {
   expiresAt: string;
   state: RunContinuationState;
   claimedAt?: string;
+  claimRunId?: string;
+  /** Unique acquisition generation within a continuation-runner process. */
+  claimToken?: string;
+  claimExpiresAt?: string;
   completedAt?: string;
   error?: string;
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
   rolloutProvenance?: RolloutProvenance;
+  /** Ordinary continuation run admitted after its durable queue handoff. */
   successorRunId?: string;
+  /** A settled capacity rejection may re-enter the existing fallback path. */
+  capacityWait?: true;
+  /** The initial capacity notice is a durable one-shot delivery decision. */
+  capacityNoticeSent?: true;
+  /** Original queue receipt retained through capacity recovery. */
+  retainedPendingMessageIds?: number[];
+  /** The task was retired due to capacity expiry and awaits final notification. */
+  expiryDeliveryPending?: true;
 }
 
 export interface RequestRunContinuationInput {
+  /** Stable logical-task key for a capacity wait; ordinary continuations use their Run id. */
+  continuationId?: string;
   originRunId: string;
   surfaceIdentity: string;
   chatKey: string;
@@ -59,6 +78,8 @@ export interface RequestRunContinuationInput {
   afterSeconds: number;
   /** Transport delivery coordinates, persisted as-is at request time. Omit only for legacy/test callers that rely on the one-time decode fallback in parse(). */
   delivery?: { chatId: string | number; chatType: string; threadId?: string | number };
+  capacityWait?: boolean;
+  retainedPendingMessageIds?: number[];
 }
 
 function key(id: string): string {
@@ -85,6 +106,12 @@ function parse(value: string): RunContinuation | null {
       || !candidate.reason
       || !["pending", "claimed", "completed", "failed", "expired", "cancelled"].includes(candidate.state)
     ) return null;
+    if (candidate.capacityWait !== undefined && candidate.capacityWait !== true) return null;
+    if (candidate.capacityNoticeSent !== undefined && candidate.capacityNoticeSent !== true) return null;
+    if (candidate.expiryDeliveryPending !== undefined && candidate.expiryDeliveryPending !== true) return null;
+    if (candidate.claimToken !== undefined && (typeof candidate.claimToken !== "string" || !candidate.claimToken)) return null;
+    if (candidate.retainedPendingMessageIds !== undefined && (!Array.isArray(candidate.retainedPendingMessageIds) || candidate.retainedPendingMessageIds.some((id) => !Number.isSafeInteger(id) || id < 1))) return null;
+    if (candidate.successorRunId !== undefined && typeof candidate.successorRunId !== "string") return null;
     if (candidate.rolloutProvenance) {
       const p = candidate.rolloutProvenance;
       if (
@@ -98,7 +125,6 @@ function parse(value: string): RunContinuation | null {
         || typeof p.provider !== "string"
       ) return null;
     }
-    if (candidate.successorRunId && typeof candidate.successorRunId !== "string") return null;
     if (candidate.delivery) return candidate;
     if (candidate.surfaceIdentity.startsWith("telegram:")) {
       const match = /^(-?\d+)(?::(\d+))?$/.exec(candidate.chatKey);
@@ -126,8 +152,9 @@ export function requestRunContinuation(
   input: RequestRunContinuationInput,
   nowMs = Date.now(),
 ): RunContinuation {
-  if (!Number.isInteger(input.afterSeconds) || input.afterSeconds < MIN_DELAY_SECONDS || input.afterSeconds > MAX_DELAY_SECONDS) {
-    throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${MAX_DELAY_SECONDS}`);
+  const maximumDelay = input.capacityWait ? MAX_CAPACITY_LIFETIME_MS / 1_000 : MAX_DELAY_SECONDS;
+  if (!Number.isInteger(input.afterSeconds) || input.afterSeconds < MIN_DELAY_SECONDS || input.afterSeconds > maximumDelay) {
+    throw new Error(`after-seconds must be an integer between ${MIN_DELAY_SECONDS} and ${maximumDelay}`);
   }
   const originRunId = bounded(input.originRunId, "origin run id", 200);
   const surfaceIdentity = bounded(input.surfaceIdentity, "surface identity", 160);
@@ -136,11 +163,11 @@ export function requestRunContinuation(
   const provider = bounded(String(input.provider), "provider", 80) as RouteableBotKind;
   const requestedAt = new Date(nowMs).toISOString();
   const dueAt = new Date(nowMs + input.afterSeconds * 1_000).toISOString();
-  const expiresAt = new Date(nowMs + MAX_LIFETIME_MS).toISOString();
-  const id = originRunId;
+  const proposedExpiresAt = new Date(nowMs + (input.capacityWait ? MAX_CAPACITY_LIFETIME_MS : MAX_LIFETIME_MS)).toISOString();
+  const id = bounded(input.continuationId ?? originRunId, "continuation id", 240);
   const originRun = db.getRun(originRunId);
   if (originRun) {
-    if (originRun.status !== "running") throw new Error("originating Run is no longer active");
+    if (originRun.status !== "running" && !(input.capacityWait && originRun.status === "failed")) throw new Error("originating Run is no longer active");
     if (originRun.surface_identity !== surfaceIdentity) throw new Error("originating Run surface mismatch");
     if (originRun.chat_id !== chatKey) throw new Error("originating Run conversation mismatch");
     if (originRun.bot !== provider) throw new Error("originating Run provider mismatch");
@@ -149,7 +176,10 @@ export function requestRunContinuation(
   return db.runInTransaction(() => {
     const existingRow = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const existing = existingRow ? parse(existingRow.value) : null;
-    if (existing?.state === "claimed") throw new Error("continuation already claimed for this Run");
+    if (existing?.state === "claimed" && !(input.capacityWait && existing.capacityWait)) throw new Error("continuation already claimed for this Run");
+    if (input.capacityWait && existing?.capacityWait && (
+      existing.surfaceIdentity !== surfaceIdentity || existing.chatKey !== chatKey
+    )) throw new Error("capacity wait task identity changed");
     const continuation: RunContinuation = {
       version: 1,
       id,
@@ -160,14 +190,33 @@ export function requestRunContinuation(
       reason,
       requestedAt,
       dueAt,
-      expiresAt,
+      // A capacity retry represents one admitted task.  Rejections may move
+      // its wake time but must never grant it a fresh seven-day lifetime.
+      expiresAt: input.capacityWait && existing?.capacityWait ? existing.expiresAt : proposedExpiresAt,
       state: "pending",
       ...(input.delivery ? { delivery: input.delivery } : {}),
+      ...(input.capacityWait ? { capacityWait: true as const } : {}),
+      ...(existing?.capacityNoticeSent ? { capacityNoticeSent: true as const } : {}),
+      ...(input.capacityWait && (input.retainedPendingMessageIds?.length || existing?.retainedPendingMessageIds?.length)
+        ? { retainedPendingMessageIds: input.retainedPendingMessageIds ?? existing!.retainedPendingMessageIds! }
+        : {}),
     };
     const persisted = parse(JSON.stringify(continuation));
     if (!persisted) throw new Error("continuation delivery coordinates are invalid");
     db.raw.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key(id), JSON.stringify(persisted));
     return persisted;
+  });
+}
+
+/** Mark before external delivery so a restart cannot emit a second wait notice. */
+export function claimCapacityWaitNotice(db: BridgeDb, id: string): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current?.capacityWait || current.capacityNoticeSent) return false;
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+      .run(JSON.stringify({ ...current, capacityNoticeSent: true }), key(id));
+    return true;
   });
 }
 
@@ -180,8 +229,27 @@ export function listRunContinuations(db: BridgeDb, surfaceIdentity?: string): Ru
     .filter((item) => surfaceIdentity === undefined || item.surfaceIdentity === surfaceIdentity);
 }
 
+/** A pending or claimed capacity wait owns its lane until settled or cancelled. */
+export function hasPendingCapacityWait(
+  db: BridgeDb,
+  surfaceIdentity: string,
+  chatKey: string,
+  excludingContinuationId?: string,
+): boolean {
+  return listRunContinuations(db, surfaceIdentity).some((continuation) =>
+    continuation.capacityWait === true
+    && continuation.chatKey === chatKey
+    && (continuation.state === "pending" || continuation.state === "claimed")
+    && (!excludingContinuationId || continuation.id !== excludingContinuationId));
+}
+
 export interface ClaimRunContinuationOptions {
+  runId?: string;
+  leaseMs?: number;
   isProcessAlive?: (runId: string) => boolean;
+  onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void;
+  /** Test/embedding override; production uses a fresh token for each acquisition. */
+  claimToken?: string;
 }
 
 export function claimDueRunContinuation(
@@ -193,8 +261,13 @@ export function claimDueRunContinuation(
   return db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || current.state !== "pending") return null;
+    if (!current) return null;
+    const isPending = current.state === "pending";
+    const isClaimedCapacity = current.state === "claimed" && current.capacityWait === true;
+    if (!isPending && !isClaimedCapacity) return null;
+
     if (Date.parse(current.expiresAt) <= nowMs) {
+      if (current.capacityWait) return null;
       const expired = { ...current, state: "expired" as const };
       db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(expired), key(id));
       return null;
@@ -217,6 +290,56 @@ export function claimDueRunContinuation(
         return cancel("originating Run process or descendant is still active");
       }
       return null;
+    }
+
+    if (current.capacityWait) {
+      if (Date.parse(current.expiresAt) <= nowMs) {
+        return null;
+      }
+      if (db.hasChatLock(current.chatKey)) {
+        return null;
+      }
+      if (isClaimedCapacity) {
+        if (current.retainedPendingMessageIds?.length && !db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, current.retainedPendingMessageIds)) {
+          const settled: RunContinuation = {
+            ...current,
+            state: "completed",
+            completedAt: new Date(nowMs).toISOString(),
+          };
+          db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
+          return null;
+        }
+        const claimantRunId = current.claimRunId;
+        const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
+        if (options?.isProcessAlive && claimantRunId) {
+          if (options.isProcessAlive(claimantRunId)) {
+            return null;
+          }
+        } else if (claimExpiresAtMs > nowMs) {
+          return null;
+        }
+      }
+      if (
+        originRun.status !== "failed"
+        || originRun.surface_identity !== current.surfaceIdentity
+        || originRun.chat_id !== current.chatKey
+        || originRun.bot !== current.provider
+      ) return cancel("capacity wait origin no longer matches its settled provider attempt");
+      if (isPending && Date.parse(current.dueAt) > nowMs) return null;
+      const claimRunId = options?.runId ?? (db as any).runId;
+      const claimToken = options?.claimToken ?? randomUUID();
+      const leaseMs = options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000;
+      const claimExpiresAt = new Date(nowMs + leaseMs).toISOString();
+      const claimed: RunContinuation = {
+        ...current,
+        state: "claimed",
+        claimedAt: new Date(nowMs).toISOString(),
+        claimRunId,
+        claimToken,
+        claimExpiresAt,
+      };
+      db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(claimed), key(id));
+      return claimed;
     }
 
     if (current.rolloutProvenance) {
@@ -378,99 +501,189 @@ export function cancelPendingRunContinuationsForChat(
   });
 }
 
-export function linkRunContinuationRun(
-  db: BridgeDb,
-  id: string,
-  runId: string,
-): boolean {
-  return db.runInTransaction(() => {
-    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
-    const current = row ? parse(row.value) : null;
-    if (!current) return false;
-    if (current.successorRunId === runId) return true;
-    const updated: RunContinuation = {
-      ...current,
-      successorRunId: runId,
-    };
-    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(updated), key(id));
-    return true;
-  });
-}
-
 export function settleRunContinuation(
   db: BridgeDb,
   id: string,
-  outcome: "completed" | "failed" | "cancelled",
+  outcome: "completed" | "failed" | "expired" | "cancelled",
   error?: string,
   nowMs = Date.now(),
+  claimantToken?: string,
 ): void {
   db.runInTransaction(() => {
     const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
     const current = row ? parse(row.value) : null;
-    if (!current || current.state !== "claimed") return;
+    if (!current) return;
+    if (current.state === "completed" || current.state === "cancelled") return;
+    if (outcome === "expired" && current.state === "expired") return;
+    if (outcome !== "expired"
+      && current.state !== "claimed"
+      && !(current.capacityWait && outcome === "completed" && current.state === "pending")) return;
+    // Capacity callbacks must prove the exact acquisition, rather than the
+    // long-lived service process that happened to perform it.
+    if (current.capacityWait && current.state === "claimed") {
+      if (!claimantToken || current.claimToken !== claimantToken) return;
+    } else if (claimantToken && current.claimToken && current.claimToken !== claimantToken) return;
     const settled: RunContinuation = {
       ...current,
       state: outcome,
       completedAt: new Date(nowMs).toISOString(),
-      ...(error ? { error: error.slice(0, 500) } : {}),
+      ...(outcome === "failed" && error ? { error: error.slice(0, 500) } : {}),
     };
     db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(settled), key(id));
   });
 }
 
-export function reconcileRunContinuations(
-  db: BridgeDb,
-  surfaceIdentity: string,
-  nowMs = Date.now(),
-): void {
-  for (const c of listRunContinuations(db, surfaceIdentity)) {
-    if (c.state !== "claimed") continue;
-    const correlationKey = `${PREFIX}${c.id}`;
-    const hasPending = db.hasPendingMessageForCorrelationKey(c.surfaceIdentity, correlationKey);
-    if (hasPending) {
-      // Pending message is still in queue, will be processed when queue drains
-      continue;
-    }
-    if (c.successorRunId) {
-      const run = db.getRun(c.successorRunId);
+export function linkRunContinuationRun(db: BridgeDb, id: string, runId: string): boolean {
+  return db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current || (current.capacityWait && current.state !== "claimed")) return false;
+    if (current.successorRunId === runId) return true;
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+      .run(JSON.stringify({ ...current, successorRunId: runId }), key(id));
+    return true;
+  });
+}
+
+/** Reconcile only ordinary handoffs. Capacity waits retain their original receipt. */
+export function reconcileRunContinuations(db: BridgeDb, surfaceIdentity: string, nowMs = Date.now()): void {
+  for (const continuation of listRunContinuations(db, surfaceIdentity)) {
+    if (continuation.capacityWait || continuation.state !== "claimed") continue;
+    const correlationKey = `${PREFIX}${continuation.id}`;
+    if (db.hasPendingMessageForCorrelationKey(continuation.surfaceIdentity, correlationKey)) continue;
+    if (continuation.successorRunId) {
+      const run = db.getRun(continuation.successorRunId);
       if (run) {
-        if (run.status === "done") {
-          settleRunContinuation(db, c.id, "completed", undefined, nowMs);
-        } else if (run.status === "failed" || run.status === "cancelled") {
-          settleRunContinuation(db, c.id, run.status === "cancelled" ? "cancelled" : "failed", run.error ?? `run ${run.status}`, nowMs);
+        if (run.status === "done") settleRunContinuation(db, continuation.id, "completed", undefined, nowMs);
+        else if (run.status === "failed" || run.status === "cancelled") {
+          settleRunContinuation(db, continuation.id, run.status === "cancelled" ? "cancelled" : "failed", run.error ?? `run ${run.status}`, nowMs);
         }
         continue;
       }
     }
-    // No pending message and no surviving successor run: the queued turn was lost during restart or was not queued
-    settleRunContinuation(db, c.id, "failed", "interrupted_by_restart", nowMs);
+    settleRunContinuation(db, continuation.id, "failed", "interrupted_by_restart", nowMs);
   }
+}
+
+/** A wake that did not obtain the retained queue work remains retryable. */
+export function requeueClaimedCapacityWait(
+  db: BridgeDb,
+  id: string,
+  nowMs: number,
+  claimantToken?: string,
+): void {
+  db.runInTransaction(() => {
+    const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(id)) as { value: string } | undefined;
+    const current = row ? parse(row.value) : null;
+    if (!current?.capacityWait || current.state !== "claimed") return;
+    if (!claimantToken || current.claimToken !== claimantToken) return;
+    if (Date.parse(current.expiresAt) <= nowMs) {
+      // Leave expiry finalisation to the expiry path so it can retire the
+      // original receipt and deliver its durable final notification.
+      return;
+    }
+    const ids = current.retainedPendingMessageIds ?? [];
+    // A thrown wake is retryable only after the durable receipt is known to be
+    // queued again.  Any active or ambiguous owner keeps the wait claimed.
+    if ((ids.length > 0 && (!db.hasAnyPendingMessageId(current.surfaceIdentity, current.chatKey, ids)
+      || db.isAnyPendingMessageClaimed(current.surfaceIdentity, current.chatKey, ids)))
+      || db.hasChatLock(current.chatKey)) return;
+    const dueAt = new Date(Math.min(Date.parse(current.expiresAt), nowMs + 300_000)).toISOString();
+    db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?")
+    .run(JSON.stringify({ ...current, state: "pending", dueAt, claimedAt: undefined, claimRunId: undefined, claimToken: undefined, claimExpiresAt: undefined }), key(id));
+  });
 }
 
 export async function scanRunContinuations(
   db: BridgeDb,
   surfaceIdentity: string,
-  dispatch: (continuation: RunContinuation) => Promise<"committed" | "queued" | "failed" | "fenced" | void>,
+  dispatch: (continuation: RunContinuation) => Promise<ContinuationDispatchOutcome>,
   nowMs = Date.now(),
-  options?: ClaimRunContinuationOptions,
+  options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
 ): Promise<void> {
   reconcileRunContinuations(db, surfaceIdentity, nowMs);
   for (const candidate of listRunContinuations(db, surfaceIdentity)) {
-    if (candidate.state !== "pending") continue;
+    if (candidate.state !== "pending" && !(candidate.state === "claimed" && candidate.capacityWait)) continue;
+    if (candidate.capacityWait && Date.parse(candidate.expiresAt) <= nowMs) {
+// Candidate state is pending or claimed capacity wait
+      const ids = candidate.retainedPendingMessageIds ?? [];
+      if (!candidate.expiryDeliveryPending) {
+        if (ids.length > 0 && !db.hasAnyPendingMessageId(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+          settleRunContinuation(db, candidate.id, "completed", undefined, nowMs, candidate.claimToken);
+          continue;
+        }
+        if (db.hasChatLock(candidate.chatKey) || db.isAnyPendingMessageClaimed(candidate.surfaceIdentity, candidate.chatKey, ids)) {
+          continue;
+        }
+      }
+
+      const runnerRunId = options?.runId ?? (db as any).runId ?? "continuation-runner";
+      const claimToken = options?.claimToken ?? randomUUID();
+      const leaseMs = options?.leaseMs ?? (db as any).lockLeaseMs ?? 90_000;
+      const claimExpiresAt = new Date(nowMs + leaseMs).toISOString();
+
+      const claimedExpiry = db.runInTransaction((): RunContinuation | null => {
+        const row = db.raw.prepare("SELECT value FROM settings WHERE key = ?").get(key(candidate.id)) as { value: string } | undefined;
+        const current = row ? parse(row.value) : null;
+        if (!current || current.state === "completed" || current.state === "cancelled" || current.state === "expired") return null;
+
+        if (current.expiryDeliveryPending) {
+          const claimExpiresAtMs = current.claimExpiresAt ? Date.parse(current.claimExpiresAt) : 0;
+          const claimantAlive = current.claimRunId && options?.isProcessAlive?.(current.claimRunId);
+          // A verified live claimant may still be inside an external delivery
+          // call after its lease. Do not duplicate that delivery; only a
+          // known-dead claimant or an unknown claimant past its lease yields.
+          if (claimantAlive === true || (claimExpiresAtMs > nowMs && claimantAlive !== false)) return null;
+        }
+
+        if (ids.length > 0 && !current.expiryDeliveryPending) {
+          if (db.hasChatLock(current.chatKey)
+            || db.isAnyPendingMessageClaimed(current.surfaceIdentity, current.chatKey, ids)
+            || !db.retireQueuedPendingMsgs(current.surfaceIdentity, current.chatKey, ids)) return null;
+        }
+
+        const updated: RunContinuation = {
+          ...current,
+          state: "claimed",
+          expiryDeliveryPending: true,
+          claimRunId: runnerRunId,
+          claimToken,
+          claimExpiresAt,
+          claimedAt: current.claimedAt ?? new Date(nowMs).toISOString(),
+        };
+        db.raw.prepare("UPDATE settings SET value = ? WHERE key = ?").run(JSON.stringify(updated), key(candidate.id));
+        return updated;
+      });
+
+      if (!claimedExpiry) continue;
+
+      await options?.onCapacityExpired?.(claimedExpiry);
+      settleRunContinuation(db, claimedExpiry.id, "expired", undefined, nowMs, claimedExpiry.claimToken);
+      continue;
+    }
     const claimed = claimDueRunContinuation(db, candidate.id, nowMs, options);
     if (!claimed) continue;
     try {
       const outcome = await dispatch(claimed);
+      if (claimed.capacityWait) {
+        if (outcome === false || outcome === "queued") {
+          requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
+          continue;
+        }
+      }
       if (outcome === "failed" || outcome === "fenced") {
         throw new Error(`continuation dispatch did not settle: ${outcome}`);
       }
       if (outcome === "queued") {
-        // Accepted for later work is not task completion; preserve claimed state so it is not marked completed.
         continue;
       }
-      settleRunContinuation(db, claimed.id, "completed");
+      settleRunContinuation(db, claimed.id, "completed", undefined, nowMs, claimed.claimToken);
     } catch (error) {
-      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error));
+      if (claimed.capacityWait) {
+        requeueClaimedCapacityWait(db, claimed.id, nowMs, claimed.claimToken);
+        continue;
+      }
+      settleRunContinuation(db, claimed.id, "failed", error instanceof Error ? error.message : String(error), nowMs, claimed.claimToken);
       throw error;
     }
   }
@@ -483,8 +696,9 @@ export class RunContinuationRunner {
   constructor(
     private readonly db: BridgeDb,
     private readonly surfaceIdentity: string,
-    private readonly dispatch: (continuation: RunContinuation) => Promise<"committed" | "queued" | "failed" | "fenced" | void>,
+    private readonly dispatch: (continuation: RunContinuation) => Promise<ContinuationDispatchOutcome>,
     private readonly scanMs = DEFAULT_SCAN_MS,
+    private readonly options?: ClaimRunContinuationOptions & { onCapacityExpired?: (continuation: RunContinuation) => Promise<void> | void },
   ) {}
 
   start(): void {
@@ -492,7 +706,7 @@ export class RunContinuationRunner {
     const tick = () => {
       if (this.scanning) return;
       this.scanning = true;
-      void scanRunContinuations(this.db, this.surfaceIdentity, this.dispatch)
+      void scanRunContinuations(this.db, this.surfaceIdentity, this.dispatch, Date.now(), this.options)
         .catch((error) => console.error("[run-continuation] scan failed", error))
         .finally(() => { this.scanning = false; });
     };

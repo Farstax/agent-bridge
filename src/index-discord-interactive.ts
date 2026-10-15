@@ -35,6 +35,7 @@ import {
   handleCliSwitchCallback,
   dispatchInteractiveTurnWithFallback,
   dispatchClaimedInteractiveWithFallback,
+  resumeCapacityHeldQueue,
   clearInteractiveFallbackState,
   applyManualCliSwitchHandoff,
   type CliKind,
@@ -49,6 +50,8 @@ import { parseCliChain, interactiveChainKinds } from "./providers/selection.js";
 import { deriveConversationOwnerKey } from "./conversationOwnerKey.js";
 import { ScheduledRoutineRunner, buildScheduledInteractiveTurn } from "./scheduledRoutines.js";
 import { RunContinuationRunner, buildDiscordRunContinuationTurn, cancelPendingRunContinuationsForChat } from "./runContinuation.js";
+import { fetchCodexCapacityResetAt } from "./codexUsage.js";
+import { capacityRetryAfterSeconds, combineCapacityRetryOpportunities } from "./providers/capacityRetryTiming.js";
 
 dotenv.config({
   path: process.env.BRIDGE_ENV_FILE || ".env.discord-interactive",
@@ -107,6 +110,7 @@ const cliChain = parseCliChain(
 );
 const fallbackChain = new ProviderFallbackChain(cliChain, db, "discord:interactive", (cli) => getAvailableCliKinds().has(cli as CliKind));
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; provider?: CliKind; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>();
 let scheduledRoutineRunner: ScheduledRoutineRunner | null = null;
 let runContinuationRunner: RunContinuationRunner | null = null;
 // ── DiscordClient ─────────────────────────────────────────────────────────────
@@ -167,8 +171,27 @@ const engines = Object.fromEntries(
         fullConfig: config,
         advisorCapabilities: advisorBroker ?? undefined,
         hooks: {
-          onProviderFallbackRequested: async (chatKey, reason) => {
+          onProviderFallbackRequested: async (chatKey, reason, context) => {
             fallbackRequests.set(chatKey, reason);
+            if (reason === "capacity" && context) {
+              const resetAt = kind === "codex" && context.retryAfterSeconds === undefined
+                ? await fetchCodexCapacityResetAt().catch(() => null)
+                : null;
+              const retryAfterSeconds = resetAt
+                ? capacityRetryAfterSeconds({ data: { capacityResetsAt: resetAt } }) ?? undefined
+                : context.retryAfterSeconds;
+              const previous = capacityFallbackAttempts.get(chatKey);
+              const combined = combineCapacityRetryOpportunities(previous, {
+                ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+                ...(context.hasUnknownCapacityTiming || retryAfterSeconds === undefined ? { hasUnknownCapacityTiming: true } : {}),
+              });
+              capacityFallbackAttempts.set(chatKey, {
+                ...context,
+                provider: kind,
+                retryAfterSeconds: combined.retryAfterSeconds,
+                ...(combined.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
+              });
+            }
           },
         },
       },
@@ -181,7 +204,7 @@ const engines = Object.fromEntries(
 for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     return dispatchClaimedInteractiveWithFallback(queued, queued.chatKey, {
-      surfaceIdentity: "discord:interactive", engines, fallbackChain, fallbackRequests, db,
+      surfaceIdentity: "discord:interactive", engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
       notify: async (msg) => { await client.sendMessage({ chat_id: queued.chatKey, text: msg }); },
       onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: "discord:interactive", chatKey: queued.chatKey }, newCli),
     });
@@ -213,6 +236,7 @@ if (scheduledOwnerKey && scheduledActorId) {
         engines,
         fallbackChain,
         fallbackRequests,
+        capacityFallbackAttempts,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: routine.chatKey, text: msg }); },
         onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: routine.surfaceIdentity, chatKey: routine.chatKey }, newCli),
@@ -226,6 +250,9 @@ if (scheduledActorId) {
     db,
     "discord:interactive",
     async (continuation) => {
+    if (continuation.capacityWait) {
+      return resumeCapacityHeldQueue(continuation, { engines, fallbackChain, db });
+      }
       const provider = continuation.provider as CliKind;
       if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
       fallbackChain.setActiveCli(continuation.chatKey, provider);
@@ -234,10 +261,17 @@ if (scheduledActorId) {
         engines,
         fallbackChain,
         fallbackRequests,
+        capacityFallbackAttempts,
         db,
         notify: async (msg) => { await client.sendMessage({ chat_id: continuation.chatKey, text: msg }); },
         onCliSwitched: async (newCli) => setUserCliPreference(db, { surfaceIdentity: continuation.surfaceIdentity, chatKey: continuation.chatKey }, newCli),
       }, new Set([provider]));
+    },
+    undefined,
+    {
+      onCapacityExpired: async (continuation) => {
+        await client.sendMessage({ chat_id: continuation.chatKey, text: "I could not retry your task before the provider recovery window expired. Please send it again when you are ready." });
+      },
     },
   );
 }
@@ -370,6 +404,7 @@ async function handleMessage(d: any): Promise<void> {
     engines,
     fallbackChain,
     fallbackRequests,
+    capacityFallbackAttempts,
     db,
     notify: async (msg) => {
       await client.sendMessage({ chat_id: channelId, text: msg });

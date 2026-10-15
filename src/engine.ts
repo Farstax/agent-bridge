@@ -79,7 +79,8 @@ import {
   type FinalDeliveryPhase,
 } from "./executionLaneCoordinator.js";
 import { scheduleDurableQueueRecovery } from "./durableQueueRecovery.js";
-import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation } from "./runContinuation.js";
+import { cancelPendingRunContinuation, cancelPendingRunContinuationsForChat, RUN_CONTINUATION_PREFIX, linkRunContinuationRun, settleRunContinuation, hasPendingCapacityWait } from "./runContinuation.js";
+import { capacityRetryAfterSeconds } from "./providers/capacityRetryTiming.js";
 
 export interface HookContext {
   chatId: number | string;
@@ -98,7 +99,7 @@ export interface BridgeEngineHooks {
   onBeforeExecute?: (prompt: string, ctx: HookContext) => Promise<string>;
   onCapacityExhausted?: (chatKey: string) => void | Promise<void>;
   onAuthRequired?: (chatKey: string) => void | Promise<void>;
-  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason) => void | Promise<void>;
+  onProviderFallbackRequested?: (chatKey: string, reason: ProviderFallbackReason, context?: { runId: string; provider?: string; chatId: number | string; chatType: string; threadId?: number | string; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }) => void | Promise<void>;
   onAfterExecute?: (prompt: string, resultText: string, ctx: HookContext) => void | Promise<void>;
   onQueuedMessage?: (message: PendingMessage) => Promise<ExecutionOutcome>;
 }
@@ -112,7 +113,8 @@ export interface PendingMessage {
   laneLifecycleManaged?: boolean;
 }
 
-export type ExecutionOutcome = "committed" | "queued" | "failed" | "fenced";
+/** `deferred` retains the claimed admission for an existing durable continuation. */
+export type ExecutionOutcome = "committed" | "queued" | "deferred" | "failed" | "fenced";
 export type { ProviderFallbackReason } from "./providers/recoveryVerdict.js";
 
 type StagedCliResult = CliResult & {
@@ -308,6 +310,7 @@ export class BridgeEngine {
 
   async recoverPendingQueues(): Promise<void> {
     await Promise.all(this.db.getPendingLaneKeys(this.surfaceIdentity).map(async (chatKey) => {
+      if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) return;
       const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
       if (handle) {
         await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
@@ -317,11 +320,12 @@ export class BridgeEngine {
     }));
   }
 
-  async recoverPendingQueue(chatKey: string): Promise<boolean> {
+  async recoverPendingQueue(chatKey: string, activeContinuationId?: string): Promise<boolean> {
     if (this.db.pendingMsgCount(this.surfaceIdentity, chatKey) === 0) return false;
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) return true;
     const handle = this.db.acquireLock(this.surfaceIdentity, chatKey);
     if (handle) {
-      await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment");
+      await this._drainQueueAndUnlock(handle, undefined, 0, false, this.opts.busyMessageMode === "augment", undefined, activeContinuationId);
       return true;
     }
     this._scheduleDurableQueueRecovery(chatKey);
@@ -657,6 +661,9 @@ export class BridgeEngine {
     const sessionId = isRouteableKind(this.kind) ? lookupEngineProviderSession(this.db, { surfaceIdentity: this.surfaceIdentity, chatKey }, this.kind) : null;
     const activePendingIds: number[] = [];
     let activeTaskCommitted = false;
+    // Direct capacity failures have no durable receipt yet. Preserve the
+    // original admission before the existing fallback dispatcher takes over.
+    let capacityPendingHeld = false;
 
     if (!laneHandle) {
       // No await is permitted between this synchronous claim and durable
@@ -870,6 +877,7 @@ export class BridgeEngine {
         console.error(`[${this.kind}] scheduled occurrence correlation failed after execution error`, linkError);
       }
       const capacityExhausted = decision.capacityExhausted;
+      const capacityRetryAfter = capacityExhausted ? capacityRetryAfterSeconds(providerError) : null;
       const authRequired = decision.authRequired;
       const providerFallbackReason = isRouteableKind(this._executionKind()) ? decision.transportReason : null;
       if (providerFallbackReason && isRouteableKind(sourceKind)) {
@@ -882,7 +890,14 @@ export class BridgeEngine {
           await this.hooks.onProviderFallbackRequested(chatKey, "auth_required");
           fallbackNotified = true;
         } else if (capacityExhausted && this.hooks.onProviderFallbackRequested) {
-          await this.hooks.onProviderFallbackRequested(chatKey, "capacity");
+          await this.hooks.onProviderFallbackRequested(chatKey, "capacity", {
+            runId,
+            provider: this.kind,
+            chatId,
+            chatType,
+            ...(threadId === undefined ? {} : { threadId }),
+            ...(capacityRetryAfter === null ? { hasUnknownCapacityTiming: true as const } : { retryAfterSeconds: capacityRetryAfter }),
+          });
           fallbackNotified = true;
         } else if (providerFallbackReason && this.hooks.onProviderFallbackRequested) {
           await this.hooks.onProviderFallbackRequested(chatKey, providerFallbackReason);
@@ -907,6 +922,20 @@ export class BridgeEngine {
           chatId,
           body: { text: `Error: ${userText}`, message_thread_id: threadId },
         }).catch((sendError) => console.error(`[${this.kind}] error delivery failed`, sendError));
+      }
+      if (capacityExhausted && this.hooks.onProviderFallbackRequested && claimedPendingIds.length === 0 && activePendingIds.length === 0) {
+        this.db.enqueueMsg(this.surfaceIdentity, chatKey, {
+          prompt,
+          chatId,
+          threadId,
+          chatType,
+          userId,
+          attachments,
+          scheduledOccurrenceKey: scheduledOccurrenceKeys[0],
+        });
+        capacityPendingHeld = true;
+        outcome = "failed";
+        return "queued";
       }
       outcome = "failed";
       return "failed";
@@ -942,10 +971,10 @@ export class BridgeEngine {
         for (const id of activePendingIds) this.db.releasePendingClaim(laneHandle, id);
       }
       try {
-        if (drainOnCompletion && !this.laneCoordinator.isResetting(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
+        if (!capacityPendingHeld && drainOnCompletion && !this.laneCoordinator.isResetting(executionLane) && (activeTaskCommitted || activePendingIds.length === 0)) {
           await this._drainQueueAndUnlock(laneHandle, undefined, 0, true);
         }
-        if (!activeTaskCommitted && activePendingIds.length && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(laneHandle)) {
+        if ((capacityPendingHeld || (!activeTaskCommitted && activePendingIds.length)) && !this.laneCoordinator.hasCancellation(executionLane) && this.db.ownsLock(laneHandle)) {
           this.db.unlock(laneHandle);
         }
       } finally {
@@ -1350,13 +1379,13 @@ export class BridgeEngine {
     }
   }
 
-  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask): Promise<void> {
+  private async _drainQueueAndUnlock(handle: ExecutionLaneHandle, initial?: PendingMessage, recoveryAttempt = 0, lifecycleAlreadyManaged = false, coalesce = false, augmentation?: AugmentedTask, activeContinuationId?: string): Promise<void> {
     const executionLane = this._executionLane(handle.chatKey);
     const existing = this.laneCoordinator.getDrainer(executionLane);
     if (existing) return existing.promise;
 
     const record = { promise: Promise.resolve() } as LaneDrainer;
-    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation);
+    const operation = this._drainQueueAndUnlockOwned(handle, initial, recoveryAttempt, lifecycleAlreadyManaged, coalesce, augmentation, activeContinuationId);
     record.promise = operation.finally(() => {
       this.laneCoordinator.clearDrainer(executionLane, record);
     });
@@ -1396,9 +1425,14 @@ export class BridgeEngine {
     lifecycleAlreadyManaged: boolean,
     coalesce: boolean,
     augmentation?: AugmentedTask,
+    activeContinuationId?: string,
   ): Promise<void> {
     const chatKey = handle.chatKey;
     const executionLane = this._executionLane(chatKey);
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey, activeContinuationId)) {
+      if (this.db.ownsLock(handle)) this.db.unlock(handle);
+      return;
+    }
     const scheduled = this.queueRecoveryTimers.get(chatKey);
     if (scheduled) {
       clearTimeout(scheduled);
@@ -1439,6 +1473,11 @@ export class BridgeEngine {
           for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           return;
         }
+        if (outcome === "deferred") {
+          for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
+          this.db.unlock(handle);
+          return;
+        }
         if (outcome !== "committed") {
           for (const id of next.pendingIds ?? [next.id]) this.db.releasePendingClaim(handle, id);
           this.db.unlock(handle);
@@ -1459,6 +1498,7 @@ export class BridgeEngine {
   }
 
   private _scheduleQueueRecovery(chatKey: string, attempt: number): void {
+    if (hasPendingCapacityWait(this.db, this.surfaceIdentity, chatKey)) return;
     if (attempt > 3 || this.queueRecoveryTimers.has(chatKey)) return;
     const timer = setTimeout(() => {
       this.queueRecoveryTimers.delete(chatKey);

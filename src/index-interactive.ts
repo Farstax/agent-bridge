@@ -39,6 +39,7 @@ import {
   applyManualCliSwitchHandoff,
   handleInteractiveCliCommand,
   runUnifiedTelegramIngress,
+  resumeCapacityHeldQueue,
   type CliKind,
 } from "./interactiveBot.js";
 import { isAcpConfigControlCommand, prepareInteractiveAcpConfigControl } from "./interactiveAcpConfig.js";
@@ -66,6 +67,8 @@ import {
   RunContinuationRunner,
   buildTelegramRunContinuationTurn,
 } from "./runContinuation.js";
+import { fetchCodexCapacityResetAt } from "./codexUsage.js";
+import { capacityRetryAfterSeconds, combineCapacityRetryOpportunities } from "./providers/capacityRetryTiming.js";
 
 loadInteractiveEnvFile();
 
@@ -198,6 +201,7 @@ const fallbackChain = new ProviderFallbackChain(
   (cli) => getAvailableCliKinds().has(cli as CliKind),
 );
 const fallbackRequests = new Map<string, import("./engine.js").ProviderFallbackReason>();
+const capacityFallbackAttempts = new Map<string, { runId: string; chatId: number | string; chatType: string; threadId?: number | string; provider?: CliKind; retryAfterSeconds?: number; hasUnknownCapacityTiming?: true }>();
 
 function resolveCredentialCheckedPreference(chatKey: string): { pref: CliKind | null; available: Set<CliKind>; stored: CliKind } {
   const detected = getAvailableCliKinds();
@@ -252,8 +256,27 @@ const engines = Object.fromEntries(
                 return { text: `Unable to load live ACP settings for ${kind}: ${userText}` };
               }
             },
-            onProviderFallbackRequested: async (chatKey, reason) => {
+            onProviderFallbackRequested: async (chatKey, reason, context) => {
               fallbackRequests.set(chatKey, reason);
+              if (reason === "capacity" && context) {
+                const resetAt = kind === "codex" && context.retryAfterSeconds === undefined
+                  ? await fetchCodexCapacityResetAt().catch(() => null)
+                  : null;
+                const retryAfterSeconds = resetAt
+                  ? capacityRetryAfterSeconds({ data: { capacityResetsAt: resetAt } }) ?? undefined
+                  : context.retryAfterSeconds;
+                const previous = capacityFallbackAttempts.get(chatKey);
+                const combined = combineCapacityRetryOpportunities(previous, {
+                  ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+                  ...(context.hasUnknownCapacityTiming || retryAfterSeconds === undefined ? { hasUnknownCapacityTiming: true } : {}),
+                });
+                capacityFallbackAttempts.set(chatKey, {
+                  ...context,
+                  provider: kind,
+                  retryAfterSeconds: combined.retryAfterSeconds,
+                  ...(combined.hasUnknownCapacityTiming ? { hasUnknownCapacityTiming: true as const } : {}),
+                });
+              }
             },
           },
         },
@@ -364,7 +387,7 @@ for (const engine of Object.values(engines)) {
   engine.setQueuedMessageHandler(async (queued) => {
     const chatKey = queued.chatKey;
     return dispatchClaimedInteractiveWithFallback(queued, chatKey, {
-      surfaceIdentity: runtimePolicy.surfaceIdentity, engines, fallbackChain, fallbackRequests, db,
+      surfaceIdentity: runtimePolicy.surfaceIdentity, engines, fallbackChain, fallbackRequests, capacityFallbackAttempts, db,
       notify: async (msg) => {
         await sendTelegramMessage({ client, kind: "interactive", chatId: queued.chatId, body: { text: msg, message_thread_id: queued.threadId ?? undefined } });
       },
@@ -446,6 +469,7 @@ const scheduledRoutineRunner = scheduledOwnerKey && scheduledActorId ? new Sched
       engines,
       fallbackChain,
       fallbackRequests,
+      capacityFallbackAttempts,
       db,
       notify: sendNotice,
       onCliSwitched: async (newCli) => {
@@ -461,6 +485,9 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
   db,
   runtimePolicy.surfaceIdentity,
   async (continuation) => {
+    if (continuation.capacityWait) {
+      return resumeCapacityHeldQueue(continuation, { engines, fallbackChain, db });
+    }
     const provider = continuation.provider as CliKind;
     if (!engines[provider]) throw new Error(`continuation provider is unavailable: ${provider}`);
     fallbackChain.setActiveCli(continuation.chatKey, provider);
@@ -469,6 +496,7 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
       engines,
       fallbackChain,
       fallbackRequests,
+      capacityFallbackAttempts,
       db,
       notify: async (msg) => {
         await sendTelegramMessage({
@@ -485,6 +513,19 @@ const runContinuationRunner = scheduledActorId ? new RunContinuationRunner(
         }
       },
     }, new Set([provider]));
+  },
+  undefined,
+  {
+    onCapacityExpired: async (continuation) => {
+      const delivery = continuation.delivery;
+      if (!delivery) return;
+      await sendTelegramMessage({
+        client,
+        kind: "interactive",
+        chatId: delivery.chatId,
+        body: { text: "I could not retry your task before the provider recovery window expired. Please send it again when you are ready.", message_thread_id: delivery.threadId === undefined ? undefined : Number(delivery.threadId) },
+      });
+    },
   },
 ) : null;
 runContinuationRunner?.start();
@@ -709,6 +750,7 @@ for (;;) {
                 engines,
                 fallbackChain,
                 fallbackRequests,
+                capacityFallbackAttempts,
                 db,
                 notify: async (msg) => {
                   await sendTelegramMessage({ client, kind: "interactive", chatId, body: { text: msg, message_thread_id: threadId } });
