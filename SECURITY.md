@@ -4,7 +4,7 @@
 
 Please report suspected security vulnerabilities **privately**. Start at the repository's [Security Advisories](https://github.com/Farstax/agent-bridge/security/advisories) page and use **Report a vulnerability** when GitHub offers that option.
 
-If private reporting is not available, open a [public issue](https://github.com/Farstax/agent-bridge/issues/new) requesting a private contact channel **without** including an exploit, credentials, customer data or other sensitive details. Do not publish a proof of concept before a private channel is established. This project does not advertise an unverified security mailbox.
+Alternatively, email **security@farstax.com** to disclose the vulnerability privately. This security mailbox has been verified. If neither private reporting channel is usable, open a [public issue](https://github.com/Farstax/agent-bridge/issues/new) requesting a private contact channel **without** including an exploit, credentials, customer data or other sensitive details. Do not publish a proof of concept before a private channel is established.
 
 Include the affected version or commit, reproduction steps, realistic impact and a minimal sanitized test case once a private exchange is available. Maintainers will triage reports and coordinate disclosure; no fixed response or remediation SLA is promised.
 
