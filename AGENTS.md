@@ -130,6 +130,8 @@ After scope is agreed, `ship it` authorizes the unchanged code-delivery scope en
 
 `issue/requirements -> draft PR -> implementation/focused evidence -> review it -> repairs/re-review -> final candidate -> exact-head checks -> merge -> cleanup -> compact report`
 
+Merge policy (single maintainer): a PR may merge when an independent, context-isolated `review it` returns PASS, every blocking finding is repaired and re-reviewed, required exact-head CI passes, and the candidate is mergeable against current `main`. A formal GitHub approval from another human maintainer is not required. Do not fabricate approvals, use alternate identities, or bypass required GitHub rules or checks.
+
 It does not authorize scope expansion, bypassing gates, production deployment, destructive operations, or credential/permission mutation unless those were explicitly part of the approved scope and separately qualified.
 
 Routine completion reports answer: **what changed, did it work, and do you need to do anything next?** Add material residual risk when present; omit internal process narration unless requested or needed to explain a blocker.

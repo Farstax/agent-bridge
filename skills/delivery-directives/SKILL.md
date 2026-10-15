@@ -17,6 +17,7 @@ Execute the already-agreed scope end to end without routine confirmation:
 - Keep iterative work draft/local where practical so intermediate RED/GREEN and repair states do not trigger full qualification unnecessarily.
 - `review it` is the authoritative independent adversarial review contract; do not maintain a second review checklist here.
 - Once review passes, qualify the exact merge-candidate head. Any head change invalidates head-bound evidence that depends on it.
+- Merge requires independent review PASS, resolved and re-reviewed blocking findings, passing required exact-head CI, and a candidate mergeable against current `main`. A second human GitHub approval is not required; never fabricate approvals or bypass required GitHub rules.
 - Routine completion reports answer: what changed, whether it worked, and whether the user must do anything next. Include residual risk only when material.
 
 ## `review it`
