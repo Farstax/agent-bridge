@@ -358,6 +358,18 @@ function boundedEvidence(goal: AutonomousGoal, evidence: string): string[] {
 }
 
 /**
+ * A provider failure normally leaves the owning objective recoverable.  These
+ * messages identify the small class that cannot be repaired by another agent
+ * cycle: authority, a required credential, or an explicit human decision.
+ * Keep this deliberately narrow; ambiguous operational failures must retain
+ * the objective and be diagnosed by a fresh bounded cycle.
+ */
+function requiresHumanEscalation(error: string): boolean {
+  return /\b(?:missing|requires?)\s+(?:human\s+)?(?:authority|approval|decision|credential(?:s)?|access)\b/i.test(error)
+    || /\b(?:credential(?:s)?|authority|access)\s+(?:is|are)\s+required\b/i.test(error);
+}
+
+/**
  * A claimed wake is deliberately never replayed after restart: the provider
  * boundary may already have been crossed before the process died. Reconcile
  * the orphaned ordinary Run and wake one fresh cycle with bounded evidence.
@@ -424,11 +436,12 @@ function reconcile(
     if (error) {
       db.raw.prepare("UPDATE bridge_runs SET status = 'failed', ended_at = CURRENT_TIMESTAMP, error = ?, final_text_preview = COALESCE(?, final_text_preview) WHERE run_id = ? AND status IN ('running', 'done')")
         .run(error, responseText ?? null, runId);
+      const terminal = requiresHumanEscalation(error);
       const exhausted = goal.cycle + 1 >= goal.maxCycles;
       if (currentGoal.status === "active") {
         db.raw.prepare("UPDATE autonomous_goals SET cycle = ?, status = ?, evidence_json = ?, updated_at = CURRENT_TIMESTAMP WHERE goal_id = ?")
-          .run(goal.cycle + 1, exhausted ? "budget_exhausted" : "active", JSON.stringify(nextEvidence), goal.goalId);
-        if (!exhausted) {
+          .run(goal.cycle + 1, terminal ? "blocked" : exhausted ? "budget_exhausted" : "active", JSON.stringify(nextEvidence), goal.goalId);
+        if (!terminal && !exhausted) {
           // A failed operation is evidence, not a decision to abandon the
           // owning goal. The next fresh cycle must diagnose current state,
           // repair if authorised, then re-qualify before retrying.

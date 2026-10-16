@@ -138,6 +138,21 @@ describe("run-scoped autonomous disposition contract", () => {
     }
   });
 
+  it("escalates a missing credential without spending further recovery attempts", async () => {
+    const { db, dbPath } = makeDb();
+    try {
+      createAutonomousGoal(db, { goalId: "missing-credential", prompt: "Deploy the qualified release", constraints: [], bot: "claude", maxCycles: 3 });
+      const engine = { executeSurfaceNeutralTurn: vi.fn(async () => { throw new Error("missing credential for production deployment"); }) } as any;
+
+      await runNextAutonomousGoal(db, "missing-credential", engine);
+      expect(getAutonomousGoal(db, "missing-credential")).toMatchObject({ status: "blocked", cycle: 1 });
+      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM event_receipts WHERE source = 'autonomous' AND event_kind = 'goal_wake' AND status = 'received'").get()).toEqual({ count: 0 });
+    } finally {
+      db.close();
+      removeDb(dbPath);
+    }
+  });
+
   it("bounds prior-evidence projection without rejecting a long successful final response", async () => {
     const { db, dbPath } = makeDb();
     try {
