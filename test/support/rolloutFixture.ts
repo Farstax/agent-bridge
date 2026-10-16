@@ -362,6 +362,16 @@ echo "systemctl:$*" >> "${fixture.actionLog}"
         DropInPaths)
           case "\${FAKE_DROPIN_MODE:-empty}" in
             extra|path) echo "${fixture.root}/systemd/agent-bridge.service.d/override.conf" ;;
+            managed)
+              if [ "$unit" = agent-bridge-bot.service ]; then
+                printf '%s %s\\n' "${fixture.root}/systemd/agent-bridge-bot.service.d/owner-notification.conf" "${fixture.root}/systemd/agent-bridge-bot.service.d/provider-api-keys.conf"
+              fi
+              ;;
+            managed-reordered)
+              if [ "$unit" = agent-bridge-bot.service ]; then
+                printf '%s %s\\n' "${fixture.root}/systemd/agent-bridge-bot.service.d/provider-api-keys.conf" "${fixture.root}/systemd/agent-bridge-bot.service.d/owner-notification.conf"
+              fi
+              ;;
             newline) printf '\\n' ;;
             multiple-newlines) printf '\\n\\n\\n' ;;
             spaces) printf ' \\n' ;;

@@ -84,6 +84,17 @@ function retireHealthInventory(fixture: Fixture): void {
     line !== "unit=agent-bridge-health.service" && line !== `database=${fixture.dbPaths[2]}`));
 }
 
+function useLegacyBotInventory(fixture: Fixture): void {
+  const unit = "agent-bridge-bot.service";
+  writeFileSync(join(fixture.envDir, "agent-bridge-bot"), `DB_PATH=${fixture.dbPaths[3]}\n`, { mode: 0o600 });
+  rewriteConfig(fixture, (lines) => [
+    ...lines.filter((line) => !line.startsWith("unit=") && !line.startsWith("database=")),
+    `unit=${unit}`,
+    `database=${fixture.dbPaths[3]}`,
+  ]);
+  writeFileSync(fixture.stateFile, `${unit}\n`);
+}
+
 function installCanonicalHealthUnit(fixture: Fixture, content = [
   "User=rollout-test",
   "ExecStart=/usr/bin/node --import tsx src/index-health.ts",
@@ -168,6 +179,25 @@ describe("guarded rollout helper", { timeout: 30_000 }, () => {
         mode === "empty" ? "" : mode === "newline" ? "\n" : "\n\n\n",
       );
     }
+  });
+
+  it("accepts only the Platform-owned bot drop-in pair", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    useLegacyBotInventory(fixture);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: "managed", FAKE_FAIL_PHASE: "inspect" });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).not.toMatch(/unexpected systemd drop-in/i);
+  });
+
+  it("rejects a reordered managed bot drop-in pair before stopping services", () => {
+    const fixture = createFixture();
+    prepareImmutableRelease(fixture, fixture.previousCommit);
+    useLegacyBotInventory(fixture);
+    const result = runRollout(fixture, undefined, undefined, { FAKE_DROPIN_MODE: "managed-reordered" });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/unexpected systemd drop-in/i);
+    expect(readFileSync(fixture.actionLog, "utf8")).not.toContain("systemctl:stop");
   });
 
   it("resolves the release environment file for the active pointer", () => {
