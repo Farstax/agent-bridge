@@ -336,6 +336,7 @@ export class BridgeEngine {
     const chatKey = providedChatKey ?? telegramUpdateChatKey(update);
     if (!chatKey) return;
     if (update.callback_query) {
+      if (!this._admitOnce(`cb:${this.surfaceIdentity}:${update.callback_query.id}`)) return;
       await this.handleCallback(update.callback_query, chatKey);
       return;
     }
@@ -343,17 +344,22 @@ export class BridgeEngine {
     if (turn) await this.handleInteractiveTurn(turn);
   }
 
-  async handleInteractiveTurn(turn: InteractiveTurnInput): Promise<ExecutionOutcome> {
-    if (turn.surfaceIdentity !== this.surfaceIdentity) throw new Error(`interactive turn surface mismatch: ${turn.surfaceIdentity}`);
-    if (!this.opts.allowedUserIds.has(turn.actorId)) return "failed";
-    const dedupeKey = `${turn.surfaceIdentity}:${turn.chatKey}:${turn.messageId}`;
-    if (this.seenInteractiveMessageKeys.has(dedupeKey)) return "committed";
+  /** Bounded recent-delivery memory so a Telegram-retried update id is not reprocessed. */
+  private _admitOnce(dedupeKey: string): boolean {
+    if (this.seenInteractiveMessageKeys.has(dedupeKey)) return false;
     this.seenInteractiveMessageKeys.add(dedupeKey);
     while (this.seenInteractiveMessageKeys.size > 4096) {
       const oldest = this.seenInteractiveMessageKeys.values().next().value;
       if (oldest === undefined) break;
       this.seenInteractiveMessageKeys.delete(oldest);
     }
+    return true;
+  }
+
+  async handleInteractiveTurn(turn: InteractiveTurnInput): Promise<ExecutionOutcome> {
+    if (turn.surfaceIdentity !== this.surfaceIdentity) throw new Error(`interactive turn surface mismatch: ${turn.surfaceIdentity}`);
+    if (!this.opts.allowedUserIds.has(turn.actorId)) return "failed";
+    if (!this._admitOnce(`${turn.surfaceIdentity}:${turn.chatKey}:${turn.messageId}`)) return "committed";
     const rawText = turn.text.trim().toLowerCase();
     if (rawText === "/stop" || rawText === "/cancel") {
       cancelPendingRunContinuationsForChat(this.db, this.surfaceIdentity, turn.chatKey, "originating Run cancelled by user");

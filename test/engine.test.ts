@@ -809,6 +809,38 @@ describe("BridgeEngine", () => {
 
       expect(runCli).toHaveBeenCalledOnce();
     });
+
+    it("applies a repeated callback query only once even when Telegram assigns another update id", async () => {
+      const { BridgeEngine } = await import("../src/engine.js");
+      const client = makeMockClient();
+      const engine = new BridgeEngine(
+        {
+          surfaceIdentity: "test",
+          kind: "grok",
+          botConfig: { command: "grok", modelPreference: [] },
+          allowedUserIds: new Set(["42"]),
+          executionMode: "safe",
+          pollIntervalMs: 1000, workingDir: process.cwd(),
+          fullConfig: makeFullConfig(dbPath),
+        },
+        db,
+        client,
+        {},
+      );
+      const callback_query = {
+        id: "cb-dup-1",
+        from: { id: 42, first_name: "Test" },
+        message: { message_id: 123, chat: { id: 100, type: "private" } },
+        data: "queue_mode:augment",
+      };
+
+      await engine.handleUpdate({ update_id: 1, callback_query });
+      await engine.handleUpdate({ update_id: 2, callback_query: { ...callback_query } });
+
+      expect(client.answerCallbackQuery).toHaveBeenCalledOnce();
+      expect(client.editMessageText).toHaveBeenCalledOnce();
+      expect(client.sendMessage).toHaveBeenCalledOnce();
+    });
   });
 
   describe("concurrency lock", () => {
