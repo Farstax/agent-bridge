@@ -1,5 +1,5 @@
 /** Provider-neutral ACP launch, lifecycle, presentation and result plumbing. */
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { extname } from "node:path";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -187,6 +187,21 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * A managed service launches bundled adapters through the stable current-release
+ * symlink, while qualification can resolve the same executable through that
+ * release's physical directory. Those are one installed runtime, not two
+ * qualification targets. Preserve a command name when it cannot be resolved so
+ * registry launchers such as `npx` keep their explicit identity.
+ */
+function canonicalExecutableIdentity(executable: string): string {
+  try {
+    return realpathSync.native(executable);
+  } catch {
+    return executable;
+  }
+}
+
 function acpRuntimeIdentity(
   entry: AcpRegistryAgentEntry,
   executable: string,
@@ -195,7 +210,7 @@ function acpRuntimeIdentity(
 ): string {
   const fingerprint = createHash("sha256").update(canonicalJson({
     distribution: entry.distribution,
-    executable,
+    executable: canonicalExecutableIdentity(executable),
     args,
     versionArgs,
   })).digest("hex");
