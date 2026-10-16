@@ -360,6 +360,17 @@ function retirePendingSupervisorInputs(db: BridgeDb, goalId: string, errorClass:
     .run(errorClass, AUTONOMOUS_SUPERVISOR_INPUT_KIND, goalId);
 }
 
+/**
+ * A recoverable failure that reaches the cycle bound ends the goal. Say so
+ * explicitly in the supervisor-facing evidence instead of relaying a last
+ * response that may still read as work in progress.
+ */
+function failureOutcomeEvidence(db: BridgeDb, goalId: string, cause: string, detail: string): string {
+  const after = getAutonomousGoal(db, goalId);
+  if (after.status === "active") return detail;
+  return `Autonomous goal ended (${after.status}) after ${after.cycle} of ${after.maxCycles} cycles; the final cycle ${cause}.\n${detail}`;
+}
+
 function boundedEvidence(goal: AutonomousGoal, evidence: string): string[] {
   const nextEvidence: string[] = [];
   for (const item of [...goal.evidence, evidence].reverse()) {
@@ -457,7 +468,8 @@ function reconcile(
       if (getAutonomousGoal(db, goal.goalId).status === "active") carrySupervisorInputsForward(db, runId);
       settleSupervisorInputsForRun(db, runId, "failed", "provider_failure");
       if (getAutonomousGoal(db, goal.goalId).status !== "active") retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
-      return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: responseText ?? error, notify: false };
+      const errorDetail = responseText ? `${error}\n${responseText}` : error;
+      return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: failureOutcomeEvidence(db, goal.goalId, "failed", errorDetail), notify: false };
     }
 
     if (responseText === undefined) {
@@ -480,7 +492,7 @@ function reconcile(
       if (getAutonomousGoal(db, goal.goalId).status === "active") carrySupervisorInputsForward(db, runId);
       settleSupervisorInputsForRun(db, runId, "failed", missing);
       if (getAutonomousGoal(db, goal.goalId).status !== "active") retirePendingSupervisorInputs(db, goal.goalId, "episode_terminal");
-      return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: responseText, notify: false };
+      return { goalStatus: getAutonomousGoal(db, goal.goalId).status, disposition: null, evidence: failureOutcomeEvidence(db, goal.goalId, "ended without a disposition", responseText), notify: false };
     }
 
     db.updateRunCompleted(runId, responseText, null);
@@ -561,7 +573,9 @@ export async function runNextAutonomousGoal(
             runId: currentClaimed.run_id ?? "",
             goalStatus: recovered.status,
             disposition: null,
-            evidence: `Autonomous goal ended (${recovered.status}) after a restart interrupted its final cycle; the interrupted Run was not replayed.`,
+            evidence: recovered.status === "cancelled"
+              ? "Autonomous goal cancelled; a restart interrupted its in-flight cycle, which was not replayed."
+              : `Autonomous goal ended (${recovered.status}) after ${recovered.cycle} of ${recovered.maxCycles} cycles; a restart interrupted the final cycle, which was not replayed.`,
             notify: false,
           });
         } catch {

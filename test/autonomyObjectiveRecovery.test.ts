@@ -254,7 +254,8 @@ describe("autonomous objective recovery (#1021)", () => {
       expect(getAutonomousGoal(db, "provider-error")).toMatchObject({ status: "budget_exhausted", cycle: 2 });
       expect(engine.executeSurfaceNeutralTurn).toHaveBeenCalledTimes(2);
       expect(events.map((event) => event.goalStatus)).toEqual(["active", "budget_exhausted"]);
-      expect(events.at(-1).evidence).toContain(message);
+      expect(events[0].evidence).toBe(message);
+      expect(events.at(-1).evidence).toBe(`Autonomous goal ended (budget_exhausted) after 2 of 2 cycles; the final cycle failed.\n${message}`);
     } finally {
       db.close();
       removeDb(dbPath);
@@ -300,6 +301,23 @@ describe("autonomous objective recovery (#1021)", () => {
 
       expect(getAutonomousGoal(db, "undeclared")).toMatchObject({ status: "complete", cycle: 2 });
       expect(wakeReasons(db)[1]).toContain("recoverable execution failure");
+    } finally {
+      db.close();
+      removeDb(dbPath);
+    }
+  });
+
+  it("states that the goal ended when its final cycle declares no disposition", async () => {
+    const { db, dbPath } = makeDb();
+    try {
+      createAutonomousGoal(db, { goalId: "undeclared-last", prompt: "Publish release R", constraints: [], bot: "claude", maxCycles: 1 });
+      const events: any[] = [];
+
+      await drainAutonomousGoal(db, "undeclared-last", agent(() => "Release build still running; will check again."), (event) => events.push(event));
+
+      expect(getAutonomousGoal(db, "undeclared-last")).toMatchObject({ status: "budget_exhausted", cycle: 1 });
+      expect(events).toHaveLength(1);
+      expect(events[0].evidence).toBe("Autonomous goal ended (budget_exhausted) after 1 of 1 cycles; the final cycle ended without a disposition.\nRelease build still running; will check again.");
     } finally {
       db.close();
       removeDb(dbPath);
