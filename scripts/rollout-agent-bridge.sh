@@ -248,6 +248,15 @@ read_convergence_env_key() {
   convergence_env_value="$value"
 }
 
+# Provider API keys are supplied by the Platform-owned, root-managed drop-in.
+# Accept only its complete fixed inventory; any other addition remains a
+# fail-closed unit-definition mismatch.
+environment_files_are_supported() {
+  local actual="$1" base="$2" provider_files
+  provider_files="/var/lib/agent-bridge/provider-api-keys/codex.env (ignore_errors=yes)"$'\n'"/var/lib/agent-bridge/provider-api-keys/claude.env (ignore_errors=yes)"$'\n'"/var/lib/agent-bridge/provider-api-keys/antigravity.env (ignore_errors=yes)"$'\n'"/var/lib/agent-bridge/provider-api-keys/grok.env (ignore_errors=yes)"$'\n'"/var/lib/agent-bridge/provider-api-keys/cursor.env (ignore_errors=yes)"
+  [[ "$actual" == "$base" || "$actual" == "$base"$'\n'"$provider_files" ]]
+}
+
 converge_deployer_autonomy_config() {
   [[ "$deployer_mode" == "1" ]] || return 0
   local autonomy_unit="" unit
@@ -273,7 +282,7 @@ converge_deployer_autonomy_config() {
   local expected_environment_files actual_environment_files explicit_environment
   expected_environment_files="$shared_env (ignore_errors=yes)"$'\n'"$release_env (ignore_errors=no)"$'\n'"$unit_env (ignore_errors=no)"
   actual_environment_files="$("$systemctl_cmd" show "$autonomy_unit" --property=EnvironmentFiles --value)"
-  [[ "$actual_environment_files" == "$expected_environment_files" ]] || die "effective EnvironmentFiles mismatch for $autonomy_unit during autonomy config convergence"
+  environment_files_are_supported "$actual_environment_files" "$expected_environment_files" || die "effective EnvironmentFiles mismatch for $autonomy_unit during autonomy config convergence"
   explicit_environment="$("$systemctl_cmd" show "$autonomy_unit" --property=Environment --value)"
   [[ " $explicit_environment " != *" AGENT_BRIDGE_AUTONOMY_DB_PATH="* ]] || die "explicit systemd AGENT_BRIDGE_AUTONOMY_DB_PATH override is unsupported for $autonomy_unit"
   [[ " $explicit_environment " != *" DB_PATH="* ]] || die "explicit systemd DB_PATH override is unsupported for $autonomy_unit"
@@ -610,7 +619,7 @@ for unit in "${units[@]}"; do
   validate_secure_path "$unit_env" file
   expected_environment_files="$shared_env (ignore_errors=yes)"$'\n'"$release_env (ignore_errors=no)"$'\n'"$unit_env (ignore_errors=no)"
   actual_environment_files="$("$systemctl_cmd" show "$unit" --property=EnvironmentFiles --value)"
-  [[ "$actual_environment_files" == "$expected_environment_files" ]] || die "effective EnvironmentFiles mismatch for $unit"
+  environment_files_are_supported "$actual_environment_files" "$expected_environment_files" || die "effective EnvironmentFiles mismatch for $unit"
   db_key=DB_PATH
   [[ "$unit" == "agent-bridge-health.service" ]] && db_key=HEALTH_DB_PATH
   explicit_environment="$("$systemctl_cmd" show "$unit" --property=Environment --value)"
