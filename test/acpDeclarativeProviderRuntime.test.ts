@@ -1,4 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -144,6 +146,37 @@ describe("declarative ACP provider runtime", () => {
       },
     });
     expect(changed.runtimeIdentity).not.toBe(first.runtimeIdentity);
+  });
+
+  it("treats a managed current-release symlink and its installed adapter as one runtime", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-bridge-acp-runtime-"));
+    try {
+      const adapter = join(root, "release", "codex-acp");
+      const current = join(root, "current");
+      mkdirSync(join(root, "release"));
+      writeFileSync(adapter, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      chmodSync(adapter, 0o755);
+      symlinkSync(join(root, "release"), current, "dir");
+
+      const entry = {
+        id: "fixture-agent",
+        name: "Fixture Agent",
+        version: "2.3.4",
+        distribution: { npx: { package: "@example/fixture-agent@2.3.4", args: ["--acp"] } },
+      } as const;
+      const serviceRuntime = resolveAcpProviderRuntime(fixturePolicy, entry, {
+        executable: join(current, "codex-acp"),
+      });
+      const qualificationRuntime = resolveAcpProviderRuntime(fixturePolicy, entry, {
+        executable: adapter,
+      });
+
+      expect(serviceRuntime.runtimeIdentity).toBe(qualificationRuntime.runtimeIdentity);
+      expect(serviceRuntime.executable).toBe(join(current, "codex-acp"));
+      expect(qualificationRuntime.executable).toBe(adapter);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("lets engine presentation and session routing consume a resolved second-provider runtime", () => {
